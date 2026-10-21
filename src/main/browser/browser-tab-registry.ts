@@ -16,13 +16,13 @@
  * the window scope, and a handle of another window answers exactly like one
  * that does not exist.
  *
- * PROVENANCE. A tab is the agent's only when main created it for
- * `browser_tab_new` and the renderer's bind echoes that request's id. The
- * badge's stop button releases it to the user for good.
+ * PROVENANCE. A matching fresh blank bind attributes creation to the actual
+ * tool session. Creator identity survives temporary control and human pause;
+ * permission provenance remains separately bound to the approved origin.
  *
  * USER INPUT. Keyboard or mouse input the user gives an agent-controlled tab
- * aborts the tab's pending tool actions. Input the tools inject themselves is
- * fenced off with {@link BrowserTabRegistry.withAgentInput}.
+ * persistently pauses mutation. Native input marks and bounded delivery
+ * watches attribute injected events independently of asynchronous actions.
  *
  * ACTIVE SURFACE. Per window, the browser/terminal tab the user is looking at
  * — a hint tools default to when no tab is named, never an authority.
@@ -39,6 +39,10 @@ import type {
   BrowserTabBindRequest,
   BrowserTabBindResult,
   BrowserTabControlState,
+  BrowserControlMode,
+  BrowserControlLease,
+  BrowserSessionActor,
+  BrowserTabControlView,
   BrowserTabOpRequest,
 } from "../../shared/browser-surface.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
@@ -50,6 +54,18 @@ export interface TouchDeliveryReport {
   ended: boolean;
   tapped: boolean;
   elsewhere: number;
+}
+
+export interface MouseDeliveryReport {
+  pressed: boolean;
+  released: boolean;
+  elsewhere: number;
+}
+
+interface MouseWatchState {
+  readonly guestId: number;
+  readonly windowId: number | undefined;
+  readonly report: MouseDeliveryReport;
 }
 
 interface TouchWatchState {
@@ -69,20 +85,23 @@ export interface BrowserGuest {
 export interface BrowserTabRecord<G extends BrowserGuest> {
   readonly handle: string;
   readonly windowId: number;
-  readonly rendererTabId: string;
+  readonly rendererTabId: string | null;
   guest: G | null;
   opener: BrowserTabOpener;
   documentId: number;
   agentOrigin: string | null;
-  /** Aborted (and replaced) on user input into an agent tab, on stop, and on unbind. */
+  controlMode: BrowserControlMode;
+  controlGeneration: number;
+  readonly targetKind: "embedded" | "popup";
+  readonly openerTabId: string | null;
+  owner: BrowserSessionActor | null;
+  lease: BrowserControlLease | null;
+  /** Aborted on pause; only explicit Resume may replace a paused controller. */
   actions: AbortController;
 }
 
 /** One tab as a tool sees it. */
-export interface BrowserTabView {
-  readonly tabId: string;
-  readonly url: string;
-  readonly title: string;
+export interface BrowserTabView extends BrowserTabControlView {
   readonly openedBy: BrowserTabOpener;
   readonly active: boolean;
 }
@@ -101,13 +120,18 @@ export type DefaultBrowserTab =
 const NO_SHOWN_BROWSER_TAB = "no browser tab is shown; pass a tabId from browser_tabs or open one with browser_tab_new";
 
 export type BrowserTabOpOutcome =
-  | { readonly ok: true; readonly tabId: string }
-  | { readonly ok: false; readonly error: "no-window-renderer" | "timeout" | "aborted" | "no-such-tab" };
+  | { readonly ok: true; readonly tabId: string; readonly retained?: true }
+  | { readonly ok: false; readonly error: "no-window-renderer" | "timeout" | "aborted" | "no-such-tab" | "not-authorized" | "control-paused" | "native-operation-failed" };
+
+type RequestedTabOp =
+  | { readonly op: "new"; readonly url: string; readonly sessionId?: string; readonly actor?: BrowserSessionActor; readonly active?: boolean }
+  | { readonly op: "select" | "close"; readonly tabId: string; readonly actor?: BrowserSessionActor };
 
 interface PendingTabOp {
   readonly windowId: number;
   readonly request: BrowserTabOpRequest;
   readonly attachmentSequence: number;
+  readonly actor: BrowserSessionActor | undefined;
   readonly settle: (outcome: BrowserTabOpOutcome) => void;
 }
 
@@ -146,8 +170,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly handleByWindowTab = new Map<string, string>();
-  // A takeover before bind must also prevent a pending new-tab request from granting ownership later.
+  // A takeover before bind must also prevent a pending new-tab request from granting control later.
   private readonly userOwnedTabs = new Set<string>();
+  private readonly pausedControllers = new Map<string, BrowserSessionActor>();
+  private readonly nativeTabs = new Map<string, { select(): boolean | Promise<boolean>; close(): void }>();
+  private readonly activePopup = new Map<number, string>();
+  private readonly revisions = new Map<number, number>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
   private readonly boundSurface = new Map<string, { windowId: number; surface: ActiveWorkspaceSurface }>();
   // Pane tabs an agent asked to close while a conversation was bound to them.
@@ -156,9 +184,11 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private nextAttachment = 0;
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
   private readonly touchWatches = new Set<TouchWatchState>();
+  private readonly mouseWatches = new Set<MouseWatchState>();
   private link: BrowserTabRendererLink | null = null;
   private nextHandle = 1;
   private nextRequest = 1;
+  private nextLease = 1;
 
   setRendererLink(link: BrowserTabRendererLink | null): void {
     this.link = link;
@@ -177,9 +207,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.guest = null;
-      tab.actions.abort(new Error("the tab's page was closed"));
-      tab.actions = new AbortController();
+      this.invalidateActions(tab, "the tab's page was closed");
+      tab.lease = null;
+      if (this.activePopup.get(tab.windowId) === tab.handle) this.activePopup.delete(tab.windowId);
+      this.nativeTabs.delete(tab.handle);
       this.settlePending((op) => op.request.op === "close" && op.request.tabId === tab.handle, { ok: true, tabId: tab.handle });
+      if (tab.targetKind === "popup") {
+        this.pausedControllers.delete(tab.handle);
+        this.tabs.delete(tab.handle);
+      }
       this.broadcastControl(tab.windowId);
     }
   }
@@ -189,6 +225,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const entry = this.attached.get(request.webContentsId);
     if (!entry || entry.guest.isDestroyed()) return { ok: false, error: "guest-not-live" };
     if (entry.windowId !== senderWindowId) return { ok: false, error: "guest-not-hosted" };
+    if ([...this.tabs.values()].some((tab) => tab.targetKind === "popup" && tab.guest?.id === entry.guest.id)) {
+      return { ok: false, error: "guest-not-hosted" };
+    }
     const key = windowTabKey(senderWindowId, request.tabId);
     const takenOver = this.userOwnedTabs.has(key);
     let handle = this.handleByWindowTab.get(key);
@@ -213,6 +252,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         opener: "user",
         documentId: 1,
         agentOrigin: null,
+        controlMode: "human",
+        controlGeneration: 1,
+        targetKind: "embedded",
+        openerTabId: null,
+        owner: null,
+        lease: null,
         actions: new AbortController(),
       };
       this.tabs.set(handle, tab);
@@ -223,20 +268,27 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (other !== tab && other.guest?.id === entry.guest.id) {
         other.guest = null;
         other.documentId++;
-        other.actions.abort(new Error("the tab's page moved"));
-        other.actions = new AbortController();
+        this.invalidateActions(other, "the tab's page moved");
+        other.lease = null;
         this.broadcastControl(other.windowId);
       }
     }
     if (tab.guest !== entry.guest) {
       tab.documentId++;
-      tab.actions.abort(new Error("the tab's page was replaced"));
-      tab.actions = new AbortController();
+      this.invalidateActions(tab, "the tab's page was replaced");
+      tab.lease = null;
     }
     tab.guest = entry.guest;
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
-      tab.opener = takenOver ? "user" : "agent";
-      tab.agentOrigin = takenOver ? null : browserOrigin(pendingNew.request.url);
+      const actor = pendingNew.actor;
+      tab.owner = actor ?? null;
+      tab.opener = takenOver || actor === undefined ? "user" : "agent";
+      tab.agentOrigin = takenOver || actor === undefined ? null : browserOrigin(pendingNew.request.url);
+      tab.controlMode = actor === undefined ? "human" : takenOver ? "human-paused" : "agent-active";
+      if (takenOver && actor) {
+        this.pausedControllers.set(tab.handle, actor);
+        tab.actions.abort(new Error("the user stopped the agent in this tab"));
+      }
       this.pending.delete(request.requestId!);
       pendingNew.settle(takenOver ? { ok: false, error: "aborted" } : { ok: true, tabId: tab.handle });
     }
@@ -245,19 +297,110 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ok: true };
   }
 
-  /** Stop or user navigation: revoke authority even before the tab's first bind. */
+  /** Stop or user navigation clears origin approval, retaining the durable creator. */
   stop(senderWindowId: number, rendererTabId: string): boolean {
     const key = windowTabKey(senderWindowId, rendererTabId);
     this.userOwnedTabs.add(key);
     const handle = this.handleByWindowTab.get(key);
     const tab = handle === undefined ? undefined : this.tabs.get(handle);
     if (!tab) return true;
-    tab.opener = "user";
-    tab.agentOrigin = null;
-    tab.actions.abort(new Error("the user stopped the agent in this tab"));
+    return this.pauseRecord(tab, true);
+  }
+
+  liveRendererTab(windowId: number, rendererTabId: string): BrowserTabRecord<G> | null {
+    const handle = this.handleByWindowTab.get(windowTabKey(windowId, rendererTabId));
+    return handle === undefined ? null : this.liveTabInWindow(handle, windowId) ?? null;
+  }
+
+  /** A trusted chrome pause may precede the first blank bind. */
+  pause(windowId: number, rendererTabId: string): boolean {
+    this.userOwnedTabs.add(windowTabKey(windowId, rendererTabId));
+    const tab = this.liveRendererTab(windowId, rendererTabId);
+    return tab === null ? false : this.pauseRecord(tab, false);
+  }
+
+  resume(windowId: number, rendererTabId: string): boolean {
+    const tab = this.liveRendererTab(windowId, rendererTabId);
+    return tab === null ? false : this.resumeRecord(tab);
+  }
+
+  pausePopup(windowId: number, handle: string): boolean {
+    const tab = this.liveTabInWindow(handle, windowId);
+    return !tab || tab.targetKind !== "popup" ? false : this.pauseRecord(tab, false);
+  }
+
+  resumePopup(windowId: number, handle: string): boolean {
+    const tab = this.liveTabInWindow(handle, windowId);
+    return !tab || tab.targetKind !== "popup" ? false : this.resumeRecord(tab);
+  }
+
+  private resumeRecord(tab: BrowserTabRecord<G>): boolean {
+    if (!tab || tab.controlMode !== "human-paused" || (!tab.owner && !this.pausedControllers.has(tab.handle))) return false;
+    const url = tab.guest!.getURL();
+    if (url !== "about:blank" && browserOrigin(url) === null) return false;
+    tab.actions.abort(new Error("browser control was resumed with new authority"));
     tab.actions = new AbortController();
-    this.broadcastControl(senderWindowId);
+    tab.controlGeneration++;
+    tab.lease = null;
+    tab.controlMode = "agent-active";
+    if (tab.rendererTabId !== null) this.userOwnedTabs.delete(windowTabKey(tab.windowId, tab.rendererTabId));
+    this.broadcastControl(tab.windowId);
     return true;
+  }
+
+  assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void {
+    validateActor(actor);
+    if (this.tabs.get(tab.handle) !== tab || !this.isLive(tab)) throw new Error("no such live browser tab");
+    if (tab.owner !== null && tab.owner.sessionId !== actor.sessionId && tab.owner.directParentSessionId !== actor.sessionId) {
+      throw new Error("this browser tab belongs to another conversation");
+    }
+    if (tab.lease !== null && tab.lease.actor.sessionId !== actor.sessionId) {
+      throw new Error("this browser tab is controlled by another conversation");
+    }
+  }
+
+  acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease {
+    this.assertActorAccess(tab, actor);
+    if (tab.controlMode === "human-paused") throw new Error("browser control is paused; ask the user to resume this tab");
+    if (tab.lease !== null) throw new Error("another browser action is still controlling this tab");
+    const lease: BrowserControlLease = Object.freeze({
+      id: `browser-lease-${this.nextLease++}`,
+      actor: copyActor(actor),
+      lifetime: tab.owner === null ? "borrowed" : "owned",
+    });
+    tab.lease = lease;
+    tab.controlMode = "agent-active";
+    this.broadcastControl(tab.windowId);
+    return lease;
+  }
+
+  releaseControl(tabId: string, leaseId: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.lease?.id !== leaseId) return;
+    tab.lease = null;
+    if (tab.controlMode !== "human-paused") tab.controlMode = "human";
+    tab.actions.abort(new Error("browser control was released"));
+    if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
+    this.broadcastControl(tab.windowId);
+  }
+
+  /** Only a validated native child callback may register a popup. */
+  registerPopup(openerGuestId: number, guest: G, native: { select(): boolean | Promise<boolean>; close(): void }): string | null {
+    const opener = [...this.tabs.values()].find((tab) => tab.guest?.id === openerGuestId && this.isLive(tab));
+    if (!opener || guest.isDestroyed() || [...this.tabs.values()].some((tab) => tab.guest?.id === guest.id)) return null;
+    const attached = this.attached.get(guest.id);
+    if (attached && attached.windowId !== opener.windowId) return null;
+    if (!attached) this.guestAttached(guest, opener.windowId);
+    const handle = `tab-${this.nextHandle++}`;
+    const creator = opener.controlMode === "agent-active" ? opener.lease?.actor ?? opener.owner : null;
+    this.tabs.set(handle, {
+      handle, windowId: opener.windowId, rendererTabId: null, guest, opener: "user", documentId: 1,
+      agentOrigin: null, controlMode: "human", controlGeneration: 1, targetKind: "popup",
+      openerTabId: opener.handle, owner: creator, lease: null, actions: new AbortController(),
+    });
+    this.nativeTabs.set(handle, native);
+    this.broadcastControl(opener.windowId);
+    return handle;
   }
 
   /**
@@ -267,6 +410,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   userInput(guestId: number, input?: { type: string; _modifiers?: number }): void {
     const modifiers = input?._modifiers ?? 0;
     if (input) this.recordTouch(guestId, input.type, modifiers);
+    if (input && this.recordMouse(guestId, input.type, modifiers)) return;
+    if (input?.type === "mouseUp") return;
     // Native provenance marks the raw injected touch and key events.
     if (input && input.type !== "mouseDown" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
       if (input.type === "touchStart") this.injectedTouches.set(guestId, { pressed: true, down: false, shown: false });
@@ -297,8 +442,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.injectedTouches.delete(guestId);
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
-      tab.actions.abort(new Error("the user took over this tab"));
-      tab.actions = new AbortController();
+      this.pauseRecord(tab, false);
     }
   }
 
@@ -327,6 +471,38 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     };
   }
 
+  /** Attribute one native injected press/release, independently of touch gestures. */
+  watchMouse(guestId: number): { delivery(): MouseDeliveryReport; stop(): void } {
+    const state: MouseWatchState = {
+      guestId, windowId: this.attached.get(guestId)?.windowId,
+      report: { pressed: false, released: false, elsewhere: 0 },
+    };
+    this.mouseWatches.add(state);
+    return { delivery: () => ({ ...state.report }), stop: () => { this.mouseWatches.delete(state); } };
+  }
+
+  private recordMouse(guestId: number, type: string, modifiers: number): boolean {
+    if ((modifiers & DEBUGGER_INPUT_MODIFIER) === 0 || (type !== "mouseDown" && type !== "mouseUp")) return false;
+    const windowId = this.attached.get(guestId)?.windowId;
+    let attributed = false;
+    for (const watch of this.mouseWatches) {
+      if (watch.windowId === undefined || watch.windowId !== windowId) continue;
+      if (guestId !== watch.guestId) {
+        if (type === "mouseDown") watch.report.elsewhere++;
+        continue;
+      }
+      if (type === "mouseDown" && !watch.report.pressed) {
+        watch.report.pressed = true;
+        attributed = true;
+      }
+      if (type === "mouseUp" && watch.report.pressed && !watch.report.released) {
+        watch.report.released = true;
+        attributed = true;
+      }
+    }
+    return attributed;
+  }
+
   private recordTouch(guestId: number, type: string, modifiers: number): void {
     if (this.touchWatches.size === 0) return;
     const windowId = this.attached.get(guestId)?.windowId;
@@ -351,6 +527,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   releaseFocus(guestId: number): void {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
+      if (tab.rendererTabId === null) return;
       this.link?.sendTabOp(tab.windowId, {
         requestId: `browser-op-${this.nextRequest++}`,
         op: "restore-focus",
@@ -370,17 +547,25 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
+      this.invalidateActions(tab, "the page started navigating");
       this.checkProvenance(tab, url);
+      this.broadcastControl(tab.windowId);
     }
   }
 
   documentChanged(guestId: number): void {
-    for (const tab of this.tabs.values()) if (tab.guest?.id === guestId) tab.documentId++;
+    for (const tab of this.tabs.values()) {
+      if (tab.guest?.id !== guestId) continue;
+      tab.documentId++;
+      this.invalidateActions(tab, "the page document changed");
+      this.broadcastControl(tab.windowId);
+    }
   }
 
   // ── active surface ─────────────────────────────────────────────────────
 
   setActiveSurface(windowId: number, surface: ActiveWorkspaceSurface | null): void {
+    this.activePopup.delete(windowId);
     if (surface === null) this.activeSurface.delete(windowId);
     else this.activeSurface.set(windowId, surface);
     this.settleSelectIfShown(windowId);
@@ -398,6 +583,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   /** The handle of the window's active browser tab, if one is shown and bound. */
   activeBrowserTab(windowId: number): string | undefined {
+    const popup = this.activePopup.get(windowId);
+    if (popup && this.liveTabInWindow(popup, windowId)) return popup;
     const surface = this.activeSurface.get(windowId);
     if (surface?.kind !== "browser") return undefined;
     const handle = this.handleByWindowTab.get(windowTabKey(windowId, surface.tabId));
@@ -474,6 +661,28 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const key of this.closingByAgent) {
       if (key.startsWith(`${windowId}\u0000`)) this.closingByAgent.delete(key);
     }
+    for (const tab of this.tabs.values()) {
+      if (tab.windowId !== windowId) continue;
+      this.invalidateActions(tab, "the browser window was closed");
+      tab.lease = null;
+      const native = this.nativeTabs.get(tab.handle);
+      this.nativeTabs.delete(tab.handle);
+      native?.close();
+      if (tab.rendererTabId !== null) this.handleByWindowTab.delete(windowTabKey(windowId, tab.rendererTabId));
+      this.pausedControllers.delete(tab.handle);
+      this.tabs.delete(tab.handle);
+    }
+    for (const [guestId, attached] of this.attached) {
+      if (attached.windowId === windowId) {
+        this.attached.delete(guestId);
+        this.injectedTouches.delete(guestId);
+      }
+    }
+    for (const key of this.userOwnedTabs) if (key.startsWith(`${windowId}\u0000`)) this.userOwnedTabs.delete(key);
+    this.activeSurface.delete(windowId);
+    this.activePopup.delete(windowId);
+    this.settlePending((op) => op.windowId === windowId, { ok: false, error: "no-window-renderer" });
+    this.broadcastControl(windowId);
   }
 
   /** The surface conversation `sessionId` is bound to in `windowId`, if any. */
@@ -526,8 +735,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   /** A live tab of `windowId`. Another window's tab answers like a missing one. */
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined {
-    const tab = this.liveTab(handle);
-    return tab && tab.windowId === windowId ? tab : undefined;
+    const tab = this.tabs.get(handle);
+    return tab?.windowId === windowId ? this.liveTab(handle) : undefined;
   }
 
   listTabs(windowId: number): BrowserTabView[] {
@@ -535,12 +744,26 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return [...this.tabs.values()]
       .filter((tab) => tab.windowId === windowId && this.isLive(tab))
       .map((tab) => ({
-        tabId: tab.handle,
-        url: tab.guest!.getURL(),
-        title: tab.guest!.getTitle(),
+        ...this.controlView(tab),
         openedBy: tab.opener,
         active: tab.handle === active,
       }));
+  }
+
+  listSessionTabs(windowId: number, actor: BrowserSessionActor, includeDirectChildren: boolean): BrowserTabView[] {
+    validateActor(actor);
+    return this.listTabs(windowId).filter((tab) => {
+      const belongs = (candidate: BrowserSessionActor | null | undefined) => candidate?.sessionId === actor.sessionId
+        || (includeDirectChildren && candidate?.directParentSessionId === actor.sessionId);
+      return belongs(tab.owner) || belongs(tab.lease?.actor);
+    });
+  }
+
+  controlState(windowId: number): BrowserTabControlState {
+    return {
+      revision: this.revisions.get(windowId) ?? 0,
+      tabs: [...this.tabs.values()].filter((tab) => tab.windowId === windowId && this.isLive(tab)).map((tab) => this.controlView(tab)),
+    };
   }
 
   // ── tab UI operations ──────────────────────────────────────────────────
@@ -552,18 +775,33 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    */
   requestTabOp(
     windowId: number,
-    op: { op: "new"; url: string; sessionId?: string } | { op: "select" | "close"; tabId: string },
+    op: RequestedTabOp,
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<BrowserTabOpOutcome> {
-    if (op.op !== "new" && !this.liveTabInWindow(op.tabId, windowId)) {
-      return Promise.resolve({ ok: false, error: "no-such-tab" });
+    if (op.actor !== undefined) validateActor(op.actor);
+    const actor = op.actor === undefined ? undefined : copyActor(op.actor);
+    if (options.signal?.aborted) return Promise.resolve({ ok: false, error: "aborted" });
+    const target = op.op === "new" ? undefined : this.liveTabInWindow(op.tabId, windowId);
+    if (op.op !== "new") {
+      if (!target) return Promise.resolve({ ok: false, error: "no-such-tab" });
+      if (actor) {
+        try { this.assertActorAccess(target, actor); }
+        catch { return Promise.resolve({ ok: false, error: "not-authorized" }); }
+        if (op.op === "close" && target.owner === null) {
+          if (target.lease?.actor.sessionId === actor.sessionId) this.releaseControl(target.handle, target.lease.id);
+          return Promise.resolve({ ok: true, tabId: target.handle, retained: true });
+        }
+        if (op.op === "close" && target.controlMode === "human-paused") {
+          return Promise.resolve({ ok: false, error: "control-paused" });
+        }
+      }
     }
     // Closing a pane's page from an agent turn ends that pane's chat only once
     // the turn is over (see `isClosedByAgent`); a close that does not happen
     // takes the mark back.
     let closingKey: string | undefined;
-    if (op.op === "close") {
-      const rendererTabId = this.tabs.get(op.tabId)!.rendererTabId;
+    if (op.op === "close" && target?.rendererTabId !== null) {
+      const rendererTabId = target!.rendererTabId!;
       const key = windowTabKey(windowId, rendererTabId);
       if (this.paneConversation(windowId, rendererTabId) !== undefined && !this.closingByAgent.has(key)) {
         this.closingByAgent.add(key);
@@ -572,8 +810,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
-      ? { requestId, op: "new", url: "about:blank", ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
-      : { requestId, op: op.op, tabId: this.tabs.get(op.tabId)!.rendererTabId };
+      ? { requestId, op: "new", url: "about:blank", active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
+      : { requestId, op: op.op, tabId: target!.rendererTabId ?? target!.handle };
     return new Promise<BrowserTabOpOutcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const onAbort = () => settle({ ok: false, error: "aborted" });
@@ -585,14 +823,42 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         resolve(outcome);
       };
       // Keep the handle main knows (not the renderer id) for close/select.
-      const pendingRequest: BrowserTabOpRequest = op.op === "new" ? { ...request, ...op } : { requestId, op: op.op, tabId: op.tabId };
-      this.pending.set(requestId, { windowId, request: pendingRequest, attachmentSequence: this.nextAttachment, settle });
+      const pendingRequest: BrowserTabOpRequest = op.op === "new"
+        ? { requestId, op: "new", url: op.url, active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
+        : { requestId, op: op.op, tabId: op.tabId };
+      this.pending.set(requestId, { windowId, request: pendingRequest, actor, attachmentSequence: this.nextAttachment, settle });
       if (options.signal?.aborted) {
         settle({ ok: false, error: "aborted" });
         return;
       }
       options.signal?.addEventListener("abort", onAbort, { once: true });
       timer = setTimeout(() => settle({ ok: false, error: "timeout" }), options.timeoutMs ?? BROWSER_TAB_OP_TIMEOUT_MS);
+      if (target?.targetKind === "popup" && op.op === "select") {
+        try {
+          const native = this.nativeTabs.get(target.handle);
+          if (!native) { settle({ ok: false, error: "native-operation-failed" }); return; }
+          void Promise.resolve(native.select()).then((focused) => {
+            if (!this.pending.has(requestId)) return;
+            if (!focused || !this.isLive(target)) { settle({ ok: false, error: "native-operation-failed" }); return; }
+            if (actor) {
+              try { this.assertActorAccess(target, actor); }
+              catch { settle({ ok: false, error: "not-authorized" }); return; }
+            }
+            this.activePopup.set(windowId, target.handle);
+            settle({ ok: true, tabId: target.handle });
+          }, () => settle({ ok: false, error: "native-operation-failed" }));
+        } catch { settle({ ok: false, error: "native-operation-failed" }); }
+        return;
+      }
+      if (target?.targetKind === "popup" && op.op === "close") {
+        try {
+          const native = this.nativeTabs.get(target.handle);
+          if (!native) { settle({ ok: false, error: "native-operation-failed" }); return; }
+          native.close();
+          if (target.guest?.isDestroyed()) this.guestDestroyed(target.guest.id);
+        } catch { settle({ ok: false, error: "native-operation-failed" }); }
+        return;
+      }
       if (!this.link || !this.link.sendTabOp(windowId, request)) {
         settle({ ok: false, error: "no-window-renderer" });
         return;
@@ -607,12 +873,44 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return tab.guest !== null && !tab.guest.isDestroyed();
   }
 
+  private controlView(tab: BrowserTabRecord<G>): BrowserTabControlView {
+    return {
+      tabId: tab.handle, rendererTabId: tab.rendererTabId, url: tab.guest!.getURL(), title: tab.guest!.getTitle(),
+      mode: tab.controlMode, owner: tab.owner === null ? null : copyActor(tab.owner),
+      lease: tab.lease === null ? null : { ...tab.lease, actor: copyActor(tab.lease.actor) },
+      generation: tab.controlGeneration, kind: tab.targetKind, openerTabId: tab.openerTabId,
+    };
+  }
+
+  private invalidateActions(tab: BrowserTabRecord<G>, reason: string): void {
+    tab.actions.abort(new Error(reason));
+    tab.controlGeneration++;
+    if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
+  }
+
+  private pauseRecord(tab: BrowserTabRecord<G>, clearOrigin: boolean): boolean {
+    const controller = tab.lease?.actor ?? tab.owner;
+    if (controller) this.pausedControllers.set(tab.handle, controller);
+    if (controller || tab.controlMode === "agent-active" || tab.controlMode === "human-paused") {
+      tab.controlMode = "human-paused";
+      if (tab.rendererTabId !== null) this.userOwnedTabs.add(windowTabKey(tab.windowId, tab.rendererTabId));
+    }
+    if (clearOrigin) {
+      tab.opener = "user";
+      tab.agentOrigin = null;
+    }
+    this.invalidateActions(tab, "browser control is paused; ask the user to resume this tab");
+    this.broadcastControl(tab.windowId);
+    return true;
+  }
+
   private checkProvenance(tab: BrowserTabRecord<G>, url: string): void {
     // The initial empty document is never an independently approved site.
     if (url === "" || url === "about:blank") return;
     if (tab.opener !== "agent" || browserOrigin(url) === tab.agentOrigin) return;
     tab.opener = "user";
     tab.agentOrigin = null;
+    this.invalidateActions(tab, "the approved page origin changed");
     this.broadcastControl(tab.windowId);
   }
 
@@ -632,10 +930,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private broadcastControl(windowId: number): void {
-    const agentControlledTabIds = [...this.tabs.values()]
-      .filter((tab) => tab.windowId === windowId && tab.opener === "agent" && this.isLive(tab))
-      .map((tab) => tab.rendererTabId);
-    this.link?.sendControl(windowId, { agentControlledTabIds });
+    this.revisions.set(windowId, (this.revisions.get(windowId) ?? 0) + 1);
+    this.link?.sendControl(windowId, this.controlState(windowId));
   }
 
   /** Test-only. */
@@ -644,17 +940,35 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.tabs.clear();
     this.handleByWindowTab.clear();
     this.userOwnedTabs.clear();
+    this.pausedControllers.clear();
+    this.nativeTabs.clear();
+    this.activePopup.clear();
+    this.revisions.clear();
     this.activeSurface.clear();
     this.boundSurface.clear();
     this.closingByAgent.clear();
     this.pending.clear();
     this.injectedTouches.clear();
     this.touchWatches.clear();
+    this.mouseWatches.clear();
     this.link = null;
     this.nextHandle = 1;
     this.nextRequest = 1;
+    this.nextLease = 1;
     this.nextAttachment = 0;
   }
+}
+
+function validateActor(actor: BrowserSessionActor): void {
+  if (!actor || typeof actor.sessionId !== "string" || actor.sessionId.length === 0
+    || (actor.directParentSessionId !== undefined && (typeof actor.directParentSessionId !== "string"
+      || actor.directParentSessionId.length === 0 || actor.directParentSessionId === actor.sessionId))) {
+    throw new Error("invalid browser session actor");
+  }
+}
+
+function copyActor(actor: BrowserSessionActor): BrowserSessionActor {
+  return Object.freeze({ sessionId: actor.sessionId, ...(actor.directParentSessionId === undefined ? {} : { directParentSessionId: actor.directParentSessionId }) });
 }
 
 function windowTabKey(windowId: number, tabId: string): string {

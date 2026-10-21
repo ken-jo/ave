@@ -5,7 +5,9 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
-import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
+import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
+
+const ACTOR = { sessionId: "conversation" };
 
 class FakeGuest implements BrowserGuest {
   destroyed = false;
@@ -47,7 +49,7 @@ describe("BrowserTabRegistry", () => {
     expect(registry.bindTab(2, { tabId: "browser:1", webContentsId: 11 })).toEqual({ ok: false, error: "guest-not-hosted" });
     expect(registry.bindTab(1, { tabId: "browser:1", webContentsId: 99 })).toEqual({ ok: false, error: "guest-not-live" });
     expect(registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 })).toEqual({ ok: true });
-    expect(registry.listTabs(1)).toEqual([
+    expect(registry.listTabs(1)).toMatchObject([
       { tabId: "tab-1", url: "https://a.example/", title: "A", openedBy: "user", active: false },
     ]);
   });
@@ -80,19 +82,22 @@ describe("BrowserTabRegistry", () => {
     registry.bindTab(1, { tabId: "browser:0", webContentsId: 10, requestId: "made-up" });
     expect(registry.liveTab("tab-1")?.opener).toBe("user");
 
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "new", url: "about:blank" } });
     const requestId = ops.at(-1)!.request.requestId;
     registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId });
     await expect(opened).resolves.toEqual({ ok: true, tabId: "tab-2" });
     expect(registry.liveTab("tab-2")?.opener).toBe("agent");
-    expect(control.at(-1)).toEqual({ windowId: 1, state: { agentControlledTabIds: ["browser:1"] } });
+    expect(control.at(-1)).toMatchObject({ windowId: 1, state: { revision: expect.any(Number), tabs: [
+      { rendererTabId: "browser:0", mode: "human", owner: null },
+      { rendererTabId: "browser:1", mode: "agent-active", owner: ACTOR },
+    ] } });
   });
 
   it("keeps an unknown tab user-owned when takeover arrives before its first bind", async () => {
     const { registry, ops } = setup();
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     const requestId = ops.at(-1)!.request.requestId;
     registry.stop(1, "browser:restoring");
     registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
@@ -105,16 +110,16 @@ describe("BrowserTabRegistry", () => {
   it.each(["https://a.example/user-chosen", "https://b.example/user-chosen"])("binds a user-navigated bootstrap after takeover without granting agent control (%s)", async (url) => {
     const { registry, ops, control } = setup();
     const abort = new AbortController();
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { signal: abort.signal });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" }, { signal: abort.signal });
     const requestId = ops.at(-1)!.request.requestId;
     try {
       expect(registry.stop(1, "browser:early")).toBe(true);
       registry.guestAttached(new FakeGuest(31, url), 1);
       expect(registry.bindTab(1, { tabId: "browser:early", webContentsId: 31, requestId })).toEqual({ ok: true });
       await expect(opened).resolves.toEqual({ ok: false, error: "aborted" });
-      expect(registry.listTabs(1)).toEqual([{ tabId: "tab-1", url, title: "A", openedBy: "user", active: false }]);
+      expect(registry.listTabs(1)).toMatchObject([{ tabId: "tab-1", url, title: "A", openedBy: "user", active: false }]);
       expect(registry.liveTab("tab-1")?.agentOrigin).toBeNull();
-      expect(control.at(-1)?.state.agentControlledTabIds).toEqual([]);
+      expect(control.at(-1)?.state.tabs[0]).toMatchObject({ mode: "human-paused", owner: ACTOR, lease: null });
     } finally {
       abort.abort();
       await opened;
@@ -124,7 +129,7 @@ describe("BrowserTabRegistry", () => {
   it.each(["tab", "window"])("does not relax bootstrap provenance for a takeover in another %s", async (scope) => {
     const { registry, ops } = setup();
     const abort = new AbortController();
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { signal: abort.signal });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" }, { signal: abort.signal });
     try {
       registry.stop(scope === "window" ? 2 : 1, scope === "tab" ? "browser:other" : "browser:early");
       registry.guestAttached(new FakeGuest(31, "https://a.example/user-chosen"), 1);
@@ -140,7 +145,7 @@ describe("BrowserTabRegistry", () => {
   it("does not let another window's bind claim a new-tab request", async () => {
     vi.useFakeTimers();
     const { registry, ops } = setup();
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { timeoutMs: 1000 });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" }, { timeoutMs: 1000 });
     registry.guestAttached(new FakeGuest(21), 2);
     registry.bindTab(2, { tabId: "browser:1", webContentsId: 21, requestId: ops.at(-1)!.request.requestId });
     expect(registry.liveTab("tab-1")?.opener).toBe("user");
@@ -170,12 +175,12 @@ describe("BrowserTabRegistry", () => {
     const { registry } = setup();
     await expect(registry.requestTabOp(1, { op: "close", tabId: "tab-9" })).resolves.toEqual({ ok: false, error: "no-such-tab" });
     registry.setRendererLink(null);
-    await expect(registry.requestTabOp(1, { op: "new", url: "https://a.example/" })).resolves.toEqual({ ok: false, error: "no-window-renderer" });
+    await expect(registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" })).resolves.toEqual({ ok: false, error: "no-window-renderer" });
   });
 
   it("cancels an agent tab's pending actions on user input, but not on its own injected input", async () => {
     const { registry, ops } = setup();
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
     await opened;
@@ -187,10 +192,11 @@ describe("BrowserTabRegistry", () => {
 
     registry.userInput(11);
     expect(first.aborted).toBe(true);
-    expect(tab.actions.signal.aborted).toBe(false);
+    expect(tab.actions.signal.aborted).toBe(true);
+    expect(tab.controlMode).toBe("human-paused");
   });
 
-  it("cancels user-tab work on input; stop releases an agent tab to the user", async () => {
+  it("cancels user-tab work on input; Stop pauses agent control while preserving its creator", async () => {
     const { registry, ops, control } = setup();
     registry.guestAttached(new FakeGuest(10), 1);
     registry.bindTab(1, { tabId: "browser:0", webContentsId: 10 });
@@ -198,7 +204,7 @@ describe("BrowserTabRegistry", () => {
     registry.userInput(10);
     expect(userSignal.aborted).toBe(true);
 
-    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
     await opened;
@@ -206,10 +212,10 @@ describe("BrowserTabRegistry", () => {
     expect(registry.stop(1, "browser:1")).toBe(true);
     expect(agentSignal.aborted).toBe(true);
     expect(registry.liveTab("tab-2")?.opener).toBe("user");
-    expect(control.at(-1)).toEqual({ windowId: 1, state: { agentControlledTabIds: [] } });
+    expect(control.at(-1)?.state.tabs[1]).toMatchObject({ mode: "human-paused", owner: ACTOR });
     const currentSignal = registry.liveTab("tab-2")!.actions.signal;
     expect(registry.stop(2, "browser:1")).toBe(true);
-    expect(currentSignal.aborted).toBe(false);
+    expect(registry.liveTab("tab-2")!.actions.signal).toBe(currentSignal);
   });
 
   it("keeps the active surface per window and reports the active terminal", () => {
@@ -242,7 +248,7 @@ describe("BrowserTabRegistry", () => {
 describe("injected interval intervention", () => {
   it("cancels genuine user input while an injection is pending", async () => {
     const { registry, ops } = setup();
-    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
     await opening;
@@ -255,7 +261,7 @@ describe("injected interval intervention", () => {
 
   it("bootstraps an agent-created view without issuing the approved URL first", async () => {
     const { registry, ops } = setup();
-    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/redirect" });
+    const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/redirect" });
     expect(ops.at(-1)?.request).toMatchObject({ op: "new", url: "about:blank" });
     registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
@@ -264,7 +270,7 @@ describe("injected interval intervention", () => {
 
   it("requires site approval again when an agent tab reaches another origin", async () => {
     const { registry, ops } = setup();
-    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
     const guest = new FakeGuest(91, "about:blank");
     registry.guestAttached(guest, 1);
     registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
@@ -288,7 +294,7 @@ describe("concrete new-tab attachment", () => {
     const { registry, ops } = setup();
     if (kind !== "nonblank") registry.guestAttached(new FakeGuest(1, "about:blank"), 1);
     if (kind === "bound") registry.bindTab(1, { tabId: "user", webContentsId: 1 });
-    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { timeoutMs: 20 });
+    const opening = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" }, { timeoutMs: 20 });
     // Revocation does not relax attachment identity or freshness checks.
     if (kind !== "nonblank") registry.stop(1, kind === "bound" ? "user" : "new");
     if (kind === "nonblank") registry.guestAttached(new FakeGuest(1), 1);
@@ -520,5 +526,358 @@ describe("watching one press's touch input", () => {
     expect(signal.aborted).toBe(false);
     registry.userInput(11, { type: "touchStart", _modifiers: 0 });
     expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("scoped browser control", () => {
+  async function owned(actor = ACTOR, guestId = 71) {
+    const state = setup();
+    const opening = state.registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor });
+    const guest = new FakeGuest(guestId, "about:blank");
+    state.registry.guestAttached(guest, 1);
+    state.registry.bindTab(1, { tabId: "page", webContentsId: guestId, requestId: state.ops.at(-1)!.request.requestId });
+    await opening;
+    return { ...state, guest, tab: state.registry.liveTab("tab-1")! };
+  }
+
+  it("persists native takeover through new calls, document events and a remount until explicit Resume", async () => {
+    const { registry, tab } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    const generation = tab.controlGeneration;
+    registry.userInput(71, { type: "keyDown" });
+    expect(tab.actions.signal.aborted).toBe(true);
+    expect(tab.controlGeneration).toBeGreaterThan(generation);
+    registry.releaseControl(tab.handle, lease.id);
+    registry.documentChanged(71);
+    registry.navigationStarted(71, "https://b.example/");
+    expect(() => registry.acquireControl(tab, ACTOR)).toThrow("browser control is paused; ask the user to resume this tab");
+    registry.guestDestroyed(71);
+    registry.guestAttached(new FakeGuest(72, "https://b.example/"), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 72 });
+    expect(tab).toMatchObject({ owner: ACTOR, controlMode: "human-paused", opener: "user", agentOrigin: null });
+    expect(registry.resume(2, "page")).toBe(false);
+    expect(registry.resume(1, "missing")).toBe(false);
+    expect(registry.resume(1, "page")).toBe(true);
+    expect(tab.actions.signal.aborted).toBe(false);
+    expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("owned");
+  });
+
+  it("does not let stale cleanup release a later lease after pause and resume", async () => {
+    const { registry, tab } = await owned();
+    const first = registry.acquireControl(tab, ACTOR);
+    registry.pause(1, "page");
+    registry.resume(1, "page");
+    const second = registry.acquireControl(tab, ACTOR);
+    registry.releaseControl(tab.handle, first.id);
+    expect(tab.lease).toBe(second);
+    expect(tab.controlMode).toBe("agent-active");
+    registry.releaseControl(tab.handle, second.id);
+    expect(tab).toMatchObject({ owner: ACTOR, lease: null, controlMode: "human" });
+    expect(registry.listTabs(1)).toHaveLength(1);
+  });
+
+  it("preserves a sealed security epoch and action signal during lease acquisition", async () => {
+    const { registry, tab } = await owned();
+    const generation = tab.controlGeneration;
+    const signal = tab.actions.signal;
+    const lease = registry.acquireControl(tab, ACTOR);
+    expect(tab.controlGeneration).toBe(generation);
+    expect(tab.actions.signal).toBe(signal);
+    expect(signal.aborted).toBe(false);
+    registry.releaseControl(tab.handle, lease.id);
+    expect(tab.controlGeneration).toBe(generation);
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("retains a borrowed user tab and releases only its caller association on agent close", async () => {
+    const { registry, ops } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = registry.liveTab("tab-1")!;
+    const lease = registry.acquireControl(tab, ACTOR);
+    expect(lease.lifetime).toBe("borrowed");
+    expect(registry.listSessionTabs(1, ACTOR, false)).toHaveLength(1);
+    await expect(registry.requestTabOp(1, { op: "close", tabId: tab.handle, actor: ACTOR }))
+      .resolves.toEqual({ ok: true, tabId: tab.handle, retained: true });
+    expect(registry.listTabs(1)).toHaveLength(1);
+    expect(registry.listSessionTabs(1, ACTOR, false)).toEqual([]);
+    expect(tab).toMatchObject({ owner: null, lease: null, controlMode: "human" });
+    expect(ops).toEqual([]);
+  });
+
+  it("keeps borrowed pause after lease cleanup and requires a trusted Resume", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = registry.liveTab("tab-1")!;
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.userInput(71, { type: "mouseDown" });
+    registry.releaseControl(tab.handle, lease.id);
+    expect(() => registry.acquireControl(tab, ACTOR)).toThrow("paused");
+    expect(registry.resume(1, "page")).toBe(true);
+    expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
+  });
+
+  it("keeps a human-only tab borrowable after native interaction and manual navigation", () => {
+    const { registry } = setup();
+    registry.stop(1, "page");
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = registry.liveTab("tab-1")!;
+    const generation = tab.controlGeneration;
+    registry.userInput(71, { type: "keyDown" });
+    registry.stop(1, "page");
+    registry.navigationStarted(71, "https://a.example/next");
+    expect(tab.controlMode).toBe("human");
+    expect(tab.controlGeneration).toBeGreaterThan(generation);
+    expect(registry.resume(1, "page")).toBe(false);
+    expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
+  });
+
+  it("keeps an unattributed bootstrap human after a pre-bind Stop", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    registry.stop(1, "page");
+    registry.guestAttached(new FakeGuest(71, "about:blank"), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71, requestId: ops.at(-1)!.request.requestId });
+    await expect(opening).resolves.toEqual({ ok: false, error: "aborted" });
+    const tab = registry.liveTab("tab-1")!;
+    expect(tab).toMatchObject({ controlMode: "human", owner: null });
+    expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
+  });
+
+  it("permits only a creator and its actual direct parent, with nonrecursive child listing", async () => {
+    const child = { sessionId: "child", directParentSessionId: "parent" };
+    const { registry, tab } = await owned(child);
+    expect(() => registry.assertActorAccess(tab, { sessionId: "parent" })).not.toThrow();
+    for (const actor of [ACTOR, { sessionId: "grandparent" }, { sessionId: "grandchild", directParentSessionId: "child" }]) {
+      expect(() => registry.assertActorAccess(tab, actor)).toThrow("another conversation");
+    }
+    expect(registry.listSessionTabs(1, { sessionId: "parent" }, false)).toEqual([]);
+    expect(registry.listSessionTabs(1, { sessionId: "parent" }, true).map((item) => item.tabId)).toEqual([tab.handle]);
+    expect(registry.listSessionTabs(1, { sessionId: "grandparent" }, true)).toEqual([]);
+    expect(registry.listSessionTabs(2, child, true)).toEqual([]);
+    await expect(registry.requestTabOp(1, { op: "close", tabId: tab.handle, actor: ACTOR }))
+      .resolves.toEqual({ ok: false, error: "not-authorized" });
+    await expect(registry.requestTabOp(2, { op: "select", tabId: tab.handle, actor: child }))
+      .resolves.toEqual({ ok: false, error: "no-such-tab" });
+  });
+
+  it("rejects concurrent leases and keeps caller identity copied across an await", async () => {
+    const actor = { sessionId: "child", directParentSessionId: "parent" };
+    const state = setup();
+    const opening = state.registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor });
+    actor.sessionId = "unrelated";
+    state.registry.guestAttached(new FakeGuest(71, "about:blank"), 1);
+    state.registry.bindTab(1, { tabId: "page", webContentsId: 71, requestId: state.ops.at(-1)!.request.requestId });
+    await opening;
+    const tab = state.registry.liveTab("tab-1")!;
+    expect(tab.owner).toEqual({ sessionId: "child", directParentSessionId: "parent" });
+    state.registry.acquireControl(tab, { sessionId: "child", directParentSessionId: "parent" });
+    expect(() => state.registry.acquireControl(tab, { sessionId: "child" })).toThrow("still controlling");
+    expect(() => state.registry.acquireControl(tab, { sessionId: "parent" })).toThrow("controlled by another conversation");
+  });
+
+  it("publishes revisioned independent snapshots and opens agent tabs in the background by default", async () => {
+    const { registry, tab, ops, control } = await owned();
+    expect(ops[0]?.request).toMatchObject({ op: "new", active: false, url: "about:blank" });
+    const first = registry.controlState(1);
+    registry.pause(1, "page");
+    expect(registry.controlState(1).revision).toBeGreaterThan(first.revision);
+    expect(first.tabs[0]?.mode).toBe("agent-active");
+    expect(control.at(-1)?.state).toEqual(registry.controlState(1));
+    expect(parseBrowserTabControlState(registry.controlState(1))).toEqual(registry.controlState(1));
+    expect(tab.owner).toEqual(ACTOR);
+  });
+
+  it("keeps blank-bind takeover strict while retaining known creation identity", async () => {
+    const state = setup();
+    const opening = state.registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR, active: true });
+    state.registry.stop(1, "page");
+    state.registry.guestAttached(new FakeGuest(71, "about:blank"), 1);
+    state.registry.bindTab(1, { tabId: "page", webContentsId: 71, requestId: state.ops.at(-1)!.request.requestId });
+    await expect(opening).resolves.toEqual({ ok: false, error: "aborted" });
+    expect(state.registry.liveTab("tab-1")).toMatchObject({ owner: ACTOR, controlMode: "human-paused", agentOrigin: null, opener: "user" });
+    expect(state.ops[0]?.request).toMatchObject({ active: true });
+    expect(state.registry.resume(1, "page")).toBe(true);
+  });
+
+  it("invalidates action generations before navigation and document replacement", async () => {
+    const { registry, tab } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    const first = tab.actions.signal;
+    const firstGeneration = tab.controlGeneration;
+    registry.navigationStarted(71, "https://a.example/next");
+    expect(first.aborted).toBe(true);
+    expect(tab.controlGeneration).toBeGreaterThan(firstGeneration);
+    const next = tab.actions.signal;
+    registry.documentChanged(71);
+    expect(next.aborted).toBe(true);
+    expect(tab.lease).toBe(lease);
+  });
+
+  it("releases window resources without closing another window's tabs", async () => {
+    const { registry, tab } = await owned();
+    registry.guestAttached(new FakeGuest(72), 2);
+    registry.bindTab(2, { tabId: "other", webContentsId: 72 });
+    registry.acquireControl(tab, ACTOR);
+    const signal = tab.actions.signal;
+    registry.releaseWindow(1);
+    expect(signal.aborted).toBe(true);
+    expect(registry.listTabs(1)).toEqual([]);
+    expect(registry.liveRendererTab(1, "page")).toBeNull();
+    expect(registry.listTabs(2)).toHaveLength(1);
+  });
+});
+
+describe("native popup lifecycle", () => {
+  function popup() {
+    const state = setup();
+    state.registry.guestAttached(new FakeGuest(71), 1);
+    state.registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const guest = new FakeGuest(72, "https://b.example/", "Popup");
+    const native = { select: vi.fn(() => true), close: vi.fn() };
+    const handle = state.registry.registerPopup(71, guest, native)!;
+    return { ...state, guest, native, handle };
+  }
+
+  it("registers a same-window popup without a renderer slot or inherited origin approval", () => {
+    const { registry, handle } = popup();
+    expect(registry.liveTab(handle)).toMatchObject({ windowId: 1, rendererTabId: null, targetKind: "popup", openerTabId: "tab-1", opener: "user", agentOrigin: null });
+    expect(registry.listTabs(1)[1]).toMatchObject({ kind: "popup", rendererTabId: null, openerTabId: "tab-1" });
+    expect(parseBrowserTabControlState(registry.controlState(1))).not.toBeNull();
+    expect(registry.registerPopup(404, new FakeGuest(73), { select: () => true, close() {} })).toBeNull();
+    registry.guestAttached(new FakeGuest(74), 2);
+    expect(registry.registerPopup(71, new FakeGuest(74), { select: () => true, close() {} })).toBeNull();
+    expect(registry.registerPopup(71, registry.liveTab(handle)!.guest!, { select: () => true, close() {} })).toBeNull();
+  });
+
+  it("selects through native focus confirmation and closes only after observed destruction", async () => {
+    const { registry, handle, native, ops } = popup();
+    await expect(registry.requestTabOp(1, { op: "select", tabId: handle, actor: ACTOR })).resolves.toEqual({ ok: true, tabId: handle });
+    expect(registry.activeBrowserTab(1)).toBe(handle);
+    const closed = registry.requestTabOp(1, { op: "close", tabId: handle });
+    const settled = vi.fn();
+    void closed.then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(native.close).toHaveBeenCalledOnce();
+    expect(ops).toEqual([]);
+    registry.guestDestroyed(72);
+    await expect(closed).resolves.toEqual({ ok: true, tabId: handle });
+    expect(registry.activeBrowserTab(1)).toBeUndefined();
+  });
+
+  it("fails selection when native focus is unconfirmed and retains a borrowed popup on agent close", async () => {
+    const { registry, handle, native } = popup();
+    native.select.mockReturnValue(false);
+    await expect(registry.requestTabOp(1, { op: "select", tabId: handle, actor: ACTOR })).resolves.toEqual({ ok: false, error: "native-operation-failed" });
+    await expect(registry.requestTabOp(1, { op: "close", tabId: handle, actor: ACTOR })).resolves.toEqual({ ok: true, tabId: handle, retained: true });
+    expect(native.close).not.toHaveBeenCalled();
+    expect(registry.liveTab(handle)).toBeDefined();
+  });
+
+  it("resumes a paused popup only through its explicit same-window handle API", () => {
+    const { registry, handle } = popup();
+    const tab = registry.liveTab(handle)!;
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.userInput(72, { type: "keyDown" });
+    registry.releaseControl(handle, lease.id);
+    expect(registry.resume(1, handle)).toBe(false);
+    expect(registry.resumePopup(2, handle)).toBe(false);
+    expect(registry.resumePopup(1, "tab-1")).toBe(false);
+    expect(registry.resumePopup(1, handle)).toBe(true);
+    expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
+    expect(registry.pausePopup(1, handle)).toBe(true);
+    expect(tab.controlMode).toBe("human-paused");
+  });
+
+  it("waits for native focus confirmation and discards it after cancellation", async () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    let confirm!: (focused: boolean) => void;
+    const focused = new Promise<boolean>((resolve) => { confirm = resolve; });
+    const handle = registry.registerPopup(71, new FakeGuest(72), { select: () => focused, close() {} })!;
+    const abort = new AbortController();
+    const selecting = registry.requestTabOp(1, { op: "select", tabId: handle, actor: ACTOR }, { signal: abort.signal });
+    expect(registry.activeBrowserTab(1)).toBeUndefined();
+    abort.abort();
+    confirm(true);
+    await expect(selecting).resolves.toEqual({ ok: false, error: "aborted" });
+    await Promise.resolve();
+    expect(registry.activeBrowserTab(1)).toBeUndefined();
+  });
+
+  it("attributes a new popup to the active caller without granting origin provenance", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    registry.acquireControl(registry.liveTab("tab-1")!, ACTOR);
+    const handle = registry.registerPopup(71, new FakeGuest(72, "https://b.example/"), { select: () => true, close() {} })!;
+    expect(registry.liveTab(handle)).toMatchObject({ owner: ACTOR, opener: "user", agentOrigin: null });
+    expect(registry.listSessionTabs(1, ACTOR, false).map((tab) => tab.tabId)).toContain(handle);
+    expect(registry.bindTab(1, { tabId: "stolen", webContentsId: 72 })).toEqual({ ok: false, error: "guest-not-hosted" });
+  });
+});
+
+describe("strict browser chrome contracts", () => {
+  it("rejects missing presentation intent and malformed hosting identity", () => {
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank" })).toBeNull();
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, sessionId: 7 })).toBeNull();
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false }))
+      .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false });
+  });
+
+  it("rejects mixed-version state, extra fields, duplicate handles, impossible leases and malformed actors", () => {
+    expect(parseBrowserTabControlState({ agentControlledTabIds: [] })).toBeNull();
+    const tab = {
+      tabId: "tab-1", rendererTabId: "page", url: "about:blank", title: "Page", mode: "agent-active",
+      owner: ACTOR, lease: null, generation: 1, kind: "embedded", openerTabId: null,
+    };
+    const state = { revision: 1, tabs: [tab] };
+    expect(parseBrowserTabControlState(state)).toEqual(state);
+    for (const candidate of [
+      { ...state, revision: -1 }, { ...state, unexpected: true }, { ...state, tabs: [tab, tab] },
+      { ...state, tabs: [{ ...tab, generation: 0.5 }] }, { ...state, tabs: [{ ...tab, rendererTabId: null }] },
+      { ...state, tabs: [{ ...tab, owner: { sessionId: "a", directParentSessionId: "a" } }] },
+      { ...state, tabs: [{ ...tab, lease: { id: "l", actor: ACTOR, lifetime: "borrowed" } }] },
+      { ...state, tabs: [{ ...tab, mode: "human", lease: { id: "l", actor: ACTOR, lifetime: "owned" } }] },
+    ]) expect(parseBrowserTabControlState(candidate)).toBeNull();
+  });
+});
+
+describe("native injected mouse attribution", () => {
+  it("requires a marked bounded press/release and rejects any other same-window recipient", () => {
+    const { registry } = setup();
+    for (const [guestId, windowId] of [[71, 1], [72, 1], [73, 2]]) {
+      registry.guestAttached(new FakeGuest(guestId!), windowId!);
+      registry.bindTab(windowId!, { tabId: `page-${guestId}`, webContentsId: guestId! });
+    }
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    const watch = registry.watchMouse(71);
+    registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
+    registry.userInput(71, { type: "mouseUp", _modifiers: 1 << 23 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(72, { type: "mouseDown", _modifiers: 1 << 23 });
+    registry.userInput(73, { type: "mouseDown", _modifiers: 1 << 23 });
+    expect(watch.delivery()).toEqual({ pressed: true, released: true, elsewhere: 1 });
+    watch.stop();
+    registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("never hides unmarked human input during a marked drag", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = registry.liveTab("tab-1")!;
+    registry.acquireControl(tab, ACTOR);
+    const watch = registry.watchMouse(71);
+    registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
+    registry.userInput(71, { type: "mouseDown", _modifiers: 0 });
+    expect(tab.controlMode).toBe("human-paused");
+    expect(tab.actions.signal.aborted).toBe(true);
+    watch.stop();
   });
 });

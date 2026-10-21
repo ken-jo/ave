@@ -16,7 +16,7 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
     if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
   });
   contents.on("before-mouse-event", (_event, mouse) => {
-    if (isUserActionInputType(mouse.type)) browserTabRegistry.userInput(guestId, mouse);
+    if (isUserActionInputType(mouse.type) || mouse.type === "mouseUp") browserTabRegistry.userInput(guestId, mouse);
   });
   contents.on("input-event", (_event, input) => {
     if (/^(?:touch|gesture)|^pointerDown$/.test(input.type)) browserTabRegistry.userInput(guestId, input);
