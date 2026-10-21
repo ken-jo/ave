@@ -8,10 +8,10 @@ import {
   wrapCommandWithSandboxLinux,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
-// Patch part 6: a race at any syscall boundary may only skip a cleanup, never
-// delete an entry the sandbox did not create. Each case replaces a name right
-// after a real syscall returns, where another process could. These cases only
-// plan a wrap (bwrapPath is /usr/bin/true); nothing is executed.
+// Patch part 6: selected public-name replacement races preserve foreign entries.
+// Replacements follow real syscalls; publication failures precede rename.
+// The patch preamble documents the remaining path-syscall windows.
+// These cases only plan a wrap (bwrapPath is /usr/bin/true); nothing is executed.
 
 type Kind = "file" | "directory";
 type Identity = { dev: bigint; ino: bigint };
@@ -61,6 +61,7 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
 
   afterEach(() => {
     restoreFs();
+    vi.unstubAllEnvs();
     cleanupBwrapMountPoints({ force: true });
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -155,6 +156,29 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
     restoreFs();
     expect(same(identityOf(target), foreign!)).toBe(true);
     expect(fs.readFileSync(join(target, "keep"), "utf8")).toBe("kept");
+    expect(privateNames(root)).toEqual([]);
+  });
+
+  it("reports an unclaimed reservation when publication fails without a replacement", async () => {
+    vi.stubEnv("SRT_DEBUG", "1");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let reservation: Identity | undefined;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (to === target && typeof from === "string" && from.includes(".ave-mount-")) {
+        reservation = identityOf(target);
+        throw Object.assign(new Error("publication denied"), { code: "EACCES" });
+      }
+      real.rename(from, to);
+    });
+    syncBuiltinESMExports();
+    await expect(plan("directory")).rejects.toThrow("Sandbox mount publication changed");
+    expect(reservation).toBeDefined();
+    expect(warning).toHaveBeenCalledWith(
+      `[SandboxDebug] [Sandbox Linux] Mount publication failed; reservation may remain at ${target} (EACCES)`,
+    );
+    restoreFs();
+    cleanupBwrapMountPoints({ force: true });
+    expect(same(identityOf(target), reservation!)).toBe(true);
     expect(privateNames(root)).toEqual([]);
   });
 

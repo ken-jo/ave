@@ -150,6 +150,9 @@ the installed package.
    aside and put back is briefly absent from its name.
    Incompatible bind targets still fail closed. Concurrent-wrap cleanup
    remains deferred until all wraps have ended.
+   If publication fails after reserving the target, its reservation may
+   remain unclaimed: that identity was not recorded. Debug logging reports
+   the target for inspection instead of risking removal of a replacement.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
@@ -460,7 +463,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c578642852603838867967 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e71748877ce8f84 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -477,7 +480,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
                  return MountPointKind.Directory;
              }
          }
-@@ -502,16 +502,165 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+@@ -502,16 +502,167 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
      }
      return [...new Set(denyPaths)];
  }
@@ -548,6 +551,8 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
 +    }
 +    catch (error) {
 +        discardStaged(staged, identity);
++        // The reservation's identity was not recorded: never claim a replacement.
++        logForDebugging(`[Sandbox Linux] Mount publication failed; reservation may remain at ${entry} (${error.code ?? error})`, { level: 'warn' });
 +        throw new Error(`Sandbox mount publication changed: ${entry}`, { cause: error });
 +    }
 +    return identity;
@@ -648,7 +653,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
  function ensureEmptyMountSourceDir() {
      if (emptyMountSourceDir !== undefined) {
          // Revalidated, not trusted: the path is under the system temp dir, which
-@@ -520,10 +669,12 @@ function ensureEmptyMountSourceDir() {
+@@ -520,10 +671,12 @@ function ensureEmptyMountSourceDir() {
          // would publish whatever it points at. Anything that is not our own
          // private empty directory is left where it is: it is not ours to delete.
          try {
@@ -665,7 +670,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
                  fs.readdirSync(emptyMountSourceDir).length === 0) {
                  return emptyMountSourceDir;
              }
-@@ -538,6 +689,8 @@ function ensureEmptyMountSourceDir() {
+@@ -538,6 +691,8 @@ function ensureEmptyMountSourceDir() {
      // directory lands on 0500. Set the mode here rather than let the check
      // above reject the directory this call has just made.
      fs.chmodSync(emptyMountSourceDir, 0o700);
@@ -674,7 +679,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
      return emptyMountSourceDir;
  }
  export const CAP_SETFCAP = 31;
-@@ -894,11 +1047,12 @@ function registerExitCleanupHandler() {
+@@ -894,11 +1049,12 @@ function registerExitCleanupHandler() {
      exitHandlerRegistered = true;
  }
  /**
@@ -691,7 +696,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
   *
   * This should be called after each sandboxed command completes to prevent
   * ghost dotfiles (e.g. .bashrc, .gitconfig) from appearing in the working
-@@ -911,8 +1065,8 @@ function registerExitCleanupHandler() {
+@@ -911,8 +1067,8 @@ function registerExitCleanupHandler() {
   * is unhashed, so path lookup no longer finds the mount) and the deny rule
   * stops applying inside that sandbox.
   *
@@ -702,7 +707,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
   *
   * Also closes the `--args` profiles the wraps of this batch opened.
   */
-@@ -932,24 +1086,13 @@ export function cleanupBwrapMountPoints(opts) {
+@@ -932,24 +1088,13 @@ export function cleanupBwrapMountPoints(opts) {
      }
      // Deepest first: a sandbox wrapped while another's directory mount point is
      // there gets its own inside it, and a directory goes only when it is empty.
@@ -733,7 +738,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
              }
          }
          catch {
-@@ -959,24 +1102,31 @@ export function cleanupBwrapMountPoints(opts) {
+@@ -959,24 +1104,31 @@ export function cleanupBwrapMountPoints(opts) {
      bwrapMountPoints.clear();
      if (emptyMountSourceDir !== undefined) {
          try {
@@ -776,7 +781,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
              }
          }
      }
-@@ -2322,12 +2472,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2322,12 +2474,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
                  unmakeableDenyDests.add(dest);
              }
              else {
@@ -800,7 +805,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
              }
              return { dest, kind };
          };
-@@ -2851,7 +3006,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2851,7 +3008,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
   * inheritable sets.
   */
  export async function wrapCommandWithSandboxLinux(params) {
@@ -809,7 +814,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..ff127bdbfd42049568c5786428526038
      // bubblewrap takes no patterns, so every path here is a name. The literal
      // lists are folded into the lists they belong to, once, so that nothing
      // below can read a list and miss them; a pattern in `allowOnly` that is no
-@@ -3029,6 +3184,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+@@ -3029,6 +3186,18 @@ export async function wrapCommandWithSandboxLinux(params) {
          };
          // Always bind /dev
          bwrapArgs.push('--dev', '/dev');
