@@ -34,6 +34,7 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { typeTerminalCommand, verifyTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 
@@ -150,7 +151,7 @@ export async function setupWorkflowStores(
     // The workspace terminal and the browser tabs exist only in the desktop
     // host. A conversation reaches the window that shows it: a chat tile's
     // session the window whose tile holds it, the side chat the window it was
-    // last typed in. A sub-agent inherits its parent's (session-window-scope.ts);
+    // last typed in, a pane chat its pane's window. A sub-agent inherits its parent's (session-window-scope.ts);
     // routine and work-board loops are shown nowhere and get neither. Read at
     // call time: the loops are wired after this step.
     ...(ctx.host.desktop !== undefined
@@ -163,7 +164,8 @@ export async function setupWorkflowStores(
           if (ctx.sideChatConversationLoop.getSessionId() === sessionId) {
             return sideChatOwnerWindow()?.id ?? null;
           }
-          return null;
+          // A pane chat reaches the window its pane is in.
+          return ctx.paneChatLoops.holding(sessionId)?.windowId ?? null;
         };
         const liveOriginSessionId = (sessionId: string): string | undefined =>
           subAgentRunnerRef.fn?.liveOriginSessionId(sessionId);
@@ -171,8 +173,29 @@ export async function setupWorkflowStores(
           terminalRead: {
             windowIdForHostedSession,
             liveOriginSessionId,
+            defaultTerminalTabId: (windowId: number, sessionId: string): string | undefined =>
+              browserTabRegistry.defaultTerminalTabId(windowId, sessionId),
+          },
+          terminalRun: {
+            windowIdForHostedSession,
+            liveOriginSessionId,
             activeTerminalTabId: (windowId: number): string | undefined =>
               browserTabRegistry.activeTerminalTabId(windowId),
+            // A pane chat's own terminal (or its page, which has none).
+            boundSurface: (windowId: number, hostSessionId: string) =>
+              browserTabRegistry.conversationSurface(windowId, hostSessionId),
+            typeCommand: typeTerminalCommand,
+            verifyShell: verifyTerminalShell,
+            auditMismatch: (mismatch) => {
+              ctx.bootAuditLogger.log({
+                timestamp: new Date().toISOString(),
+                sessionId: mismatch.sessionId ?? "unknown",
+                type: "warn",
+                // Digests, not text: a command can hold secrets.
+                output: `terminal_run: terminal ${mismatch.tabId} ran a different command from the one approved `
+                  + `(approved sha256 ${mismatch.approvedSha256}, ran sha256 ${mismatch.ranSha256})`,
+              });
+            },
           },
           browser: {
             windowIdForHostedSession,
@@ -181,7 +204,13 @@ export async function setupWorkflowStores(
             // Page actions (CDP) load on first use, outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
-              return createBrowserPageActions(browserTabRegistry, browserOrigin);
+              return createBrowserPageActions(browserTabRegistry, browserOrigin, (guest) => {
+                const host = guest.hostWebContents;
+                const window = host && !host.isDestroyed() ? mainWindowForContents(host) : null;
+                if (!window || window.isDestroyed()) return null;
+                const bounds = window.getContentBounds();
+                return { x: bounds.x, y: bounds.y, windowId: window.id };
+              });
             },
           },
         };

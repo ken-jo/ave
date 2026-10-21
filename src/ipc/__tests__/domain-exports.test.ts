@@ -179,6 +179,7 @@ describe("IPC domain runtime named-export lock", () => {
           "broadcastSettingsSnapshot",
           "mutateMarketplaceProviderPresets",
           "registerSettingsHandlers",
+          "rendererSettingsSnapshot",
         ],
         "tour": [
           "TOUR_START_CHANNEL",

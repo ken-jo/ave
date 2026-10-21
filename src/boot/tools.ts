@@ -33,6 +33,7 @@ import {
 } from "../tools/mcp-resource-tools.js";
 import { createAgentListTool } from "../tools/agent-list.js";
 import { createTerminalReadTool, type TerminalReadToolDeps } from "../tools/terminal-read.js";
+import { createTerminalRunTool, type TerminalRunToolDeps } from "../tools/terminal-run.js";
 import { createBrowserTools, type BrowserToolDeps } from "../tools/browser-tools.js";
 import type { WebContents } from "electron";
 import { createAgentGuideTool } from "../tools/agent-guide.js";
@@ -129,6 +130,11 @@ export interface WorkflowToolDeps {
    */
   terminalRead?: TerminalReadToolDeps;
   /**
+   * Register `terminal_run`: type an approved command into a workspace
+   * terminal. Desktop-only, like `terminalRead`.
+   */
+  terminalRun?: TerminalRunToolDeps;
+  /**
    * Register the agent browser tools with the tab registry and the page
    * actions they drive. Only a host with app windows has browser tabs; unset
    * elsewhere, like `terminalRead`.
@@ -216,6 +222,9 @@ export function registerBuiltinTools(
   }
   if (workflowDeps?.terminalRead) {
     builtins.push(createTerminalReadTool(workflowDeps.terminalRead));
+  }
+  if (workflowDeps?.terminalRun) {
+    builtins.push(createTerminalRunTool(workflowDeps.terminalRun));
   }
   if (workflowDeps?.browser) {
     builtins.push(...createBrowserTools(workflowDeps.browser));

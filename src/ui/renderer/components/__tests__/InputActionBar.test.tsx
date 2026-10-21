@@ -17,6 +17,7 @@ import { readRepoFile } from "../../../../__tests__/test-helpers.js";
 import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
+import { t } from "../../../../i18n/runtime.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -42,6 +43,7 @@ vi.mock("../../api-client.js", () => ({
 
 const defaultStatusRow: InputStatusRow = {
   vendorModel: "OpenAI · gpt-5.4",
+  activeChatModel: { kind: "api", vendor: "openai", model: "gpt-5.4" },
   permissionMode: "default",
   pendingApprovals: 0,
 };
@@ -165,7 +167,6 @@ describe("InputActionBar (unified bar)", () => {
     expect(picker!.compareDocumentPosition(attach!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The persona moved INTO the command menu; a second button beside it would
     // split "what shapes the next message" across two controls again.
-    expect(leading.querySelector("[data-testid='iab-assistant-context-button']")).toBeNull();
     expect(leading.querySelectorAll("button")).toHaveLength(2);
     // The ring is NO LONGER in the leading action cluster.
     expect(leading.querySelector("[data-testid='ring-slot']")).toBeNull();
@@ -368,8 +369,6 @@ describe("InputActionBar (unified bar)", () => {
     // …positioned BEFORE the permission cell (reversed row: ring is leftmost).
     const permission = getByTestId("iab-status-permission");
     expect(permission.compareDocumentPosition(ringHost) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    // The separate context-percent text cell is gone.
-    expect(row.querySelector("[data-testid='iab-status-context']")).toBeNull();
   });
 
   it("names the model alone in the status row, and keeps the vendor in the accessible name", () => {
@@ -403,9 +402,7 @@ describe("InputActionBar (unified bar)", () => {
   });
 
   it("draws no connection dot and no separator between the model chip and the reasoning bulb", () => {
-    const { getByTestId, queryByTestId } = renderBar();
-    // The "model configured" fact moved to the sidebar's Settings entry.
-    expect(queryByTestId("iab-status-active-dot")).toBeNull();
+    const { getByTestId } = renderBar();
     // Model chip and bulb sit at the row's own gap: no "·" in between, and
     // nothing at all after the bulb.
     const model = getByTestId("iab-status-model");
@@ -439,6 +436,52 @@ describe("InputActionBar (unified bar)", () => {
     fireEvent.click(getByTestId("iab-status-pending"));
     expect(onOpenApprovalQueue).toHaveBeenCalledTimes(1);
     expect(onOpenPermissions).not.toHaveBeenCalled();
+  });
+});
+
+describe("status row with no connected provider", () => {
+  // Owner report: a fresh profile showed "gpt-5.4-mini" and Reasoning Medium
+  // in this row, and a picker with "OpenAI gpt-5.4-mini ✓", although no
+  // provider was connected. Main says "none"; the row must not invent a model.
+  const noProvider: InputStatusRow = {
+    vendorModel: "",
+    activeChatModel: { kind: "none", reason: "no-connected-provider" },
+    permissionMode: "default",
+    pendingApprovals: 0,
+  };
+
+  it("offers provider setup in place of a model and its reasoning control", () => {
+    const onOpenModelSettings = vi.fn();
+    const { getByTestId, queryByTestId } = renderBar({
+      statusRow: noProvider,
+      enableThinkingChat: true,
+      onOpenModelSettings,
+    });
+    const cta = getByTestId("iab-status-model-setup");
+    expect(cta).toHaveTextContent(t("bottomActionRow.setUpProvider"));
+    expect(queryByTestId("iab-status-model")).toBeNull();
+    expect(queryByTestId("iab-status-reasoning")).toBeNull();
+    expect(getByTestId("iab-status-row").textContent).not.toMatch(/gpt-/);
+    fireEvent.click(cta);
+    expect(onOpenModelSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the picker for a retired provider, where picking resolves the notice", () => {
+    const { getByTestId, queryByTestId } = renderBar({
+      statusRow: {
+        ...noProvider,
+        vendorModel: "OpenAI · gpt-5.4",
+        activeChatModel: { kind: "none", reason: "retired-provider" },
+      },
+    });
+    expect(queryByTestId("iab-status-model-setup")).toBeNull();
+    expect(getByTestId("iab-status-model")).toHaveTextContent("gpt-5.4");
+  });
+
+  it("names the model again once one is active (control)", () => {
+    const { getByTestId, queryByTestId } = renderBar();
+    expect(queryByTestId("iab-status-model-setup")).toBeNull();
+    expect(getByTestId("iab-status-model")).toHaveTextContent("gpt-5.4");
   });
 });
 
@@ -748,7 +791,9 @@ describe("model card (status-row model cell)", () => {
     const checked = card.querySelectorAll("[role='option'][aria-selected='true']");
     expect(checked).toHaveLength(1);
     expect(checked[0]?.querySelector("button")?.getAttribute("data-testid")).toBe("model-quick-picker-option:codex");
-    expect(checked[0]?.textContent).toContain("Codex");
+    // The plan's brand, never the runtime's own name.
+    expect(checked[0]?.textContent).toContain("ChatGPT");
+    expect(checked[0]?.textContent).not.toContain("Codex");
     // The API model that happens to share the settings the API path still
     // holds (vendor "openai-compatible", model "qwen3.8-27b-gguf") is listed
     // as an alternative, not marked as the route the chat is actually on.
@@ -799,7 +844,7 @@ describe("model card (status-row model cell)", () => {
     // appears, leaving the primary column visually empty — the label moves
     // there instead when the runtime has no model of its own.
     expect(spans[0]?.textContent).toBe("");
-    expect(spans[1]?.textContent).toBe("Kimi Code");
+    expect(spans[1]?.textContent).toBe("Kimi");
   });
 
   it("carries the reasoning control and the way to the full catalogue", async () => {

@@ -5,7 +5,7 @@
 import { app, net, powerMonitor } from "electron";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
 import { writeSync } from "node:fs";
-import { t } from "./i18n/index.js";
+import { onLocaleChange, t } from "./i18n/index.js";
 import { registerIpcHandlers, unregisterPluginWebview } from "./ipc-bridge.js";
 import { installHtmlPreviewPartitionBlock } from "./main/html-preview-partition.js";
 import { isAuthOwned } from "./main/auth-window-registry.js";
@@ -170,6 +170,12 @@ async function main() {
         refreshApplicationMenu();
         refreshTrayMenu();
       },
+    });
+    // Native menus are built once from `t()` and plugin labels resolved at that
+    // moment; a language switch must rebuild them or they keep the old one.
+    onLocaleChange(() => {
+      refreshApplicationMenu();
+      refreshTrayMenu();
     });
     // Initialise WindowManager before createWindow so registerMainWindow()
     // can be called synchronously inside createWindow().

@@ -9,6 +9,7 @@ import {
   __resetTerminalBlocksForTest,
 } from "../../main/terminal/terminal-blocks.js";
 import type { ToolExecutionContext } from "../types.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 /** Window 1 hosts the session "main"; "child" is its running sub-agent. */
 const WINDOW = 1;
@@ -21,13 +22,13 @@ const ctxFor = (sessionId?: string) =>
 const ctx = ctxFor("main");
 const register = (tabId: string, tracker: TerminalBlockTracker, windowId: number | null = WINDOW) =>
   registerTerminalBlockTracker(tabId, tracker, windowId);
-const NONCE = "0123456789abcdef0123456789abcdef";
-const mark = (fields: string): string => `\u001b]133;${fields};${NONCE}\u0007`;
+const NONCE = TERMINAL_TEST_NONCE;
+const mark = terminalMarker;
 
 function trackerWith(commands: Array<{ command: string; output: string; exit: number }>): TerminalBlockTracker {
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   for (const { command, output, exit } of commands) {
-    tracker.recordOutput(`${mark("P;Cwd=/repo")}${mark(`C;cmdline_url=${encodeURIComponent(command)}`)}${output}${mark(`D;${exit}`)}`);
+    tracker.recordOutput(`${mark("P;Cwd=/repo;Keys=emacs;Paste=1")}${mark(`C;cmdline_url=${encodeURIComponent(command)}`)}${output}${mark(`D;${exit}`)}`);
   }
   return tracker;
 }
@@ -175,7 +176,10 @@ describe("terminal_read", () => {
   it("defaults blockId/limit to the active terminal, marks it in the listing, and lets tabId win", async () => {
     register("terminal:1", trackerWith([{ command: "echo one", output: "one\n", exit: 0 }]));
     register("terminal:2", trackerWith([{ command: "echo two", output: "two\n", exit: 0 }]));
-    const withActive: TerminalReadToolDeps = { ...deps, activeTerminalTabId: (windowId) => (windowId === WINDOW ? "terminal:2" : undefined) };
+    const withActive: TerminalReadToolDeps = {
+      ...deps,
+      defaultTerminalTabId: (windowId, sessionId) => (windowId === WINDOW && sessionId === "main" ? "terminal:2" : undefined),
+    };
     const run = async (input: unknown) => {
       const result = await createTerminalReadTool(withActive).execute(input, ctx);
       return bodyOf(result.output as string, result.isError);

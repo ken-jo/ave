@@ -8,6 +8,8 @@
 import { vi, type Mock } from "vitest";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
+import { resolveActiveChatModel, type ActiveChatModelSettings } from "../../src/shared/active-chat-model.js";
+import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings } from "../../src/shared/llm-vendor-defaults.js";
 import type { ChatEntry, ChatStreamEvent } from "../../src/lib/chat-stream-state.js";
 import type { AgentSpawnEvent as SharedAgentSpawnEvent } from "../../src/shared/subagent-events.js";
 import type { AppBootstrapStatus } from "../../src/shared/bootstrap-status.js";
@@ -293,6 +295,11 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   emitNotificationClicked: (payload: unknown) => void;
   emitSubscriptionRuntimeStatusUpdated: (event: SubscriptionRuntimeStatusUpdatedEvent) => void;
 } {
+  // Main's pane chats: each pane tab's conversation, as `paneHistory` reads it back.
+  const paneChats = new Map<string, { sessionId: string; messages: Array<{ index: number; role: "user"; content: string }> }>();
+  let mintedPaneChats = 0;
+  let paneChatStreams = 1000;
+  const sideStreamHandlers = new Set<(event: ChatStreamEvent) => void>();
   let settings = overrides.settings ?? MOCK_DEFAULT_SETTINGS;
   let personaPrompts = overrides.personaPrompts ?? [];
   const sessions = (overrides.sessions ?? []).map(sessionRow);
@@ -302,6 +309,25 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const history = overrides.history ?? { sessionId: currentSession, messages: [] };
   const historyBySession = overrides.historyBySession ?? {};
   const hasApiKey = overrides.hasApiKey ?? true;
+  // Main derives `activeChatModel` onto every snapshot it sends
+  // (`rendererSettingsSnapshot`); the mock does the same from its own key
+  // answer, unless a test hands one in explicitly.
+  const projectSnapshot = (value: unknown): unknown => {
+    const record = value as { llm?: Partial<ActiveChatModelSettings>; activeChatModel?: unknown };
+    if (record.activeChatModel !== undefined) return record;
+    // Many fixtures hand-write a partial `llm`; main's store would have
+    // normalized it, so fill what normalization fills before deriving.
+    const llm = {
+      ...MOCK_DEFAULT_SETTINGS.llm,
+      ...record.llm,
+      activeChatRuntime: record.llm?.activeChatRuntime ?? { kind: "api" as const },
+    } as ActiveChatModelSettings;
+    // Main's rule (`activeApiRouteConnected`): a stored key, or a route that
+    // runs without one.
+    const connected = hasApiKey
+      || canUseLlmVendorWithoutApiKey(llm.provider, getLlmVendorSettings(llm.vendors, llm.provider));
+    return { ...record, activeChatModel: resolveActiveChatModel(llm, connected) };
+  };
   const chatGroupApis = new Map<string, {
     chatGetHistory: ReturnType<typeof vi.fn>;
     chatGroupRelease: ReturnType<typeof vi.fn>;
@@ -412,11 +438,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       listPending: vi.fn(async () => ({ ok: true, pending: [] })),
       answer: vi.fn(async () => ({ ok: true, pending: [] })),
     } as unknown as Mock,
-    getSettings: vi.fn(overrides.getSettings ?? (async () => settings)),
+    getSettings: vi.fn(overrides.getSettings ?? (async () => projectSnapshot(settings))),
     updateSettings: vi.fn(async (p: unknown) => {
       settings = { ...(settings as object), ...(p as object) };
-      settingsUpdatedHandlers.forEach((handler) => handler(settings));
-      return settings;
+      const snapshot = projectSnapshot(settings);
+      settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
+      return snapshot;
     }),
     // Nothing is env-forced by default: a test that cares about the forced
     // notice says so explicitly, and every other test gets the ordinary case
@@ -863,7 +890,31 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     ...(overrides.sideChat ? {
       sideChat: {
-        send: vi.fn(async () => ({ ok: true, result: {} })),
+        // A pane's turn lands in that pane's own conversation, as main keeps it.
+        send: vi.fn(async (input: string, _attachments?: unknown[], _origin?: string, _request?: string, surface?: { tabId: string }) => {
+          if (surface) {
+            const chat = paneChats.get(surface.tabId) ?? { sessionId: `00000000-0000-4000-8000-${String(++mintedPaneChats).padStart(12, "0")}`, messages: [] };
+            chat.messages.push({ index: chat.messages.length, role: "user" as const, content: input });
+            paneChats.set(surface.tabId, chat);
+            // Main announces the turn's session in its prelude and closes the
+            // stream with `done`; the pane chat's turn then reads as finished.
+            const streamId = ++paneChatStreams;
+            for (const handler of [...sideStreamHandlers]) {
+              handler({ type: "user_message", streamId, sessionId: chat.sessionId, sendRequestId: _request, text: input } as ChatStreamEvent);
+              handler({ type: "done", streamId } as ChatStreamEvent);
+            }
+          }
+          return { ok: true, result: {} };
+        }),
+        paneHistory: vi.fn(async (tabId: string) => {
+          const chat = paneChats.get(tabId);
+          return { ok: true, sessionId: chat?.sessionId ?? null, messages: chat ? [...chat.messages] : [] };
+        }),
+        endPaneChat: vi.fn(async (tabId: string, _reason: "new" | "closed") => {
+          const chat = paneChats.get(tabId);
+          paneChats.delete(tabId);
+          return { ok: true, sessionId: chat?.sessionId ?? null };
+        }),
         new: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID })),
         load: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID, messages: [] })),
         getSubAgentTranscript: vi.fn(async (_request: SubAgentTranscriptRequest): Promise<SubAgentTranscriptResult> => ({
@@ -872,7 +923,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         })),
         list: vi.fn(async () => ({ current: null, sessions: [] })),
         abort: vi.fn(async () => ({ ok: true })),
-        onStream: vi.fn(() => () => undefined),
+        onStream: vi.fn((handler: (event: ChatStreamEvent) => void) => {
+          sideStreamHandlers.add(handler);
+          return () => sideStreamHandlers.delete(handler);
+        }),
         onFallback: vi.fn(() => () => undefined),
       },
     } : {}),

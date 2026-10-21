@@ -17,6 +17,7 @@ export const en = {
   "bottomActionRow.modelPickerModels": "Models",
   "bottomActionRow.modelPickerNoPins": "No pinned models yet. Pin one in Settings.",
   "bottomActionRow.modelPickerMore": "More models…",
+  "bottomActionRow.setUpProvider": "Set up a provider",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "bottomActionRow.newline": "줄바꿈",
@@ -36,4 +37,5 @@ export const ko: Record<keyof typeof en, string> = {
   "bottomActionRow.modelPickerModels": "모델",
   "bottomActionRow.modelPickerNoPins": "핀된 모델이 없습니다. 설정에서 핀을 지정하세요.",
   "bottomActionRow.modelPickerMore": "모델 더보기",
+  "bottomActionRow.setUpProvider": "프로바이더를 설정하세요",
 };

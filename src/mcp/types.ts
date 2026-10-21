@@ -494,7 +494,7 @@ export interface PluginUiResourceDecl {
 /**
  * The MCP Apps TOOL-RESULT `_meta.ui` extension (spec §3.2) — how a server says
  * "render this card with my result". These are the STANDARD `_meta.ui.*` keys, not
- * an `xyz.ave/*` vendor extension, so both arms declare a card identically: an
+ * a legacy reverse-DNS vendor extension, so both arms declare a card identically: an
  * external MCP server puts it on its `CallToolResult`, and a first-party plugin
  * puts it on its handler's return value (the loopback delegate lifts it onto the
  * wire, see `plugin-runtime-delegate.ts`).

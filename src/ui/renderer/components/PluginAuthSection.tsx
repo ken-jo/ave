@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { resolvePluginLocalizedText } from "../../../shared/plugin-localized-text.js";
 import type { PluginAuthState } from "../hooks/use-plugin-auth-status.js";
 import type { AveApi, PluginAuthSummary } from "../types.js";
 
@@ -28,7 +29,7 @@ export function PluginAuthSection({
   state,
   onRefresh,
 }: PluginAuthSectionProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [working, setWorking] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -73,7 +74,7 @@ export function PluginAuthSection({
     }
   }, [api, auth.logoutTool, onRefresh, pluginId, t]);
 
-  const label = auth.label?.trim() || pluginName;
+  const label = resolvePluginLocalizedText(auth, auth.locales, locale, ["label"]) || pluginName;
 
   return (
     <div className="space-y-1" data-testid={`plugin-auth-section-${pluginId}`}>

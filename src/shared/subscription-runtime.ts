@@ -6,6 +6,7 @@
  * so treating one as an API vendor would leak the wrong settings, fallback,
  * pricing, and tool-execution assumptions into the application.
  */
+import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
 const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code"] as const;
@@ -230,15 +231,43 @@ interface ApiChatRuntimeSelection {
 
 export type ActiveChatRuntime = ApiChatRuntimeSelection | SubscriptionChatRuntimeSelection;
 
+/**
+ * How a runtime's official CLI is found. `discovered`: Ave looks for the CLI
+ * the user installed (PATH and the official install locations) and the user
+ * never picks a file. `user-selected`: the user points Ave at the executable.
+ */
+export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected";
+
 export interface SubscriptionRuntimeDescriptor {
   id: SubscriptionRuntimeId;
+  /**
+   * Internal runtime name for logs and audit. Settings names the company
+   * (the API counterpart's label) and the plan (`planName`), never this.
+   */
   label: string;
+  /** The subscription plan as the provider brands it ("ChatGPT", "Claude"). */
+  planName: string;
+  /** The CLI's own name, used only to say what to install. */
+  cliName: string;
   transport: SubscriptionRuntimeTransport;
-  requiresExecutable: boolean;
+  executable: SubscriptionRuntimeExecutableSource;
   loginMethods: readonly SubscriptionLoginMethod[];
   supportsManagedLogout: boolean;
   /** Only surface a picker when the runtime supplies a trustworthy model list. */
   supportsModelSelection: boolean;
+  /** The oldest CLI version Ave can run, when the runtime enforces one. */
+  minimumVersion?: string;
+  /** Official install instructions shown while no runtime is found. */
+  installGuidance?: SubscriptionRuntimeInstallGuidance;
+}
+
+/**
+ * How the provider's own documentation says to install its CLI. Shown as
+ * text; Ave never runs these commands.
+ */
+export interface SubscriptionRuntimeInstallGuidance {
+  readonly documentationUrl: string;
+  readonly commands: readonly { readonly label: string; readonly command: string }[];
 }
 
 /**
@@ -283,7 +312,7 @@ export interface SubscriptionRuntimeCapabilities {
 /**
  * The API-key vendor that reaches the same provider as a subscription runtime.
  *
- * A user recognises OpenAI, xAI, and Moonshot as one company each — the two
+ * A user recognises OpenAI, Anthropic, xAI, and Moonshot as one company each — the two
  * ways in are an API key or signing in to that company's runtime, not two
  * providers with similar names. Settings lists the provider once and offers
  * the authentication methods, and this is the join that makes that possible.
@@ -296,6 +325,7 @@ export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
   Partial<Record<SubscriptionRuntimeId, string>>
 > = Object.freeze({
   codex: "openai",
+  "claude-code": "claude",
   "grok-build": "xai",
   "kimi-code": "moonshot",
 });
@@ -320,17 +350,36 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
   {
     id: "codex",
     label: "Codex",
+    planName: "ChatGPT",
+    cliName: "Codex CLI",
     transport: "codex-app-server",
-    requiresExecutable: false,
+    // The user's own `codex` CLI, found on PATH or in an official install
+    // location. Ave ships none, and the user never picks the file.
+    executable: "discovered",
     loginMethods: ["browser", "device-code"],
     supportsManagedLogout: true,
     supportsModelSelection: true,
+    minimumVersion: CODEX_CLI_MINIMUM_VERSION,
+    installGuidance: Object.freeze({
+      documentationUrl: "https://learn.chatgpt.com/docs/codex/cli",
+      commands: Object.freeze([
+        Object.freeze({ label: "macOS / Linux", command: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" }),
+        Object.freeze({
+          label: "Windows (PowerShell)",
+          command: "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+        }),
+        Object.freeze({ label: "npm", command: "npm install -g @openai/codex" }),
+        Object.freeze({ label: "Homebrew", command: "brew install --cask codex" }),
+      ]),
+    }),
   },
   {
     id: "kimi-code",
     label: "Kimi Code",
+    planName: "Kimi",
+    cliName: "Kimi Code CLI",
     transport: "acp",
-    requiresExecutable: true,
+    executable: "user-selected",
     loginMethods: ["device-code"],
     supportsManagedLogout: false,
     supportsModelSelection: false,
@@ -338,8 +387,10 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
   {
     id: "grok-build",
     label: "Grok Build",
+    planName: "Grok",
+    cliName: "Grok Build CLI",
     transport: "acp",
-    requiresExecutable: true,
+    executable: "user-selected",
     loginMethods: ["device-code"],
     supportsManagedLogout: true,
     supportsModelSelection: false,
@@ -347,11 +398,25 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
   {
     id: "claude-code",
     label: "Claude Code",
+    planName: "Claude",
+    cliName: "Claude Code CLI",
     transport: "claude-cli",
-    requiresExecutable: true,
+    // The user's own `claude` CLI, found on PATH or in an official install
+    // location and qualified against the options Ave passes.
+    executable: "discovered",
     loginMethods: ["browser"],
     supportsManagedLogout: true,
     supportsModelSelection: false,
+    installGuidance: Object.freeze({
+      documentationUrl: "https://code.claude.com/docs/en/setup",
+      commands: Object.freeze([
+        Object.freeze({ label: "macOS / Linux", command: "curl -fsSL https://claude.ai/install.sh | bash" }),
+        Object.freeze({ label: "Windows (PowerShell)", command: "irm https://claude.ai/install.ps1 | iex" }),
+        Object.freeze({ label: "Homebrew", command: "brew install --cask claude-code" }),
+        Object.freeze({ label: "WinGet", command: "winget install Anthropic.ClaudeCode" }),
+        Object.freeze({ label: "npm", command: "npm install -g @anthropic-ai/claude-code" }),
+      ]),
+    }),
   },
 ] as const;
 
@@ -393,6 +458,9 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-provider-not-supported"
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
+  | "subscription-runtime-unsafe-location"
+  | "subscription-runtime-version-unsupported"
+  | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"
   | "subscription-login-failed"
   | "subscription-verification-url-unavailable"

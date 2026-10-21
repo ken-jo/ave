@@ -751,6 +751,39 @@ chat a file. The sidebar draws the row under that conversation. A side chat
 whose conversation is not in the list — a page that did not reach it, a
 conversation since deleted — is listed in its own right rather than dropped.
 
+A terminal or web pane opens the side chat in its own panel (the header's
+panel toggle), beside the page or terminal, as that pane's own conversation.
+Each open pane chat has its own conversation loop, made on its first turn and
+kept by main per window and pane tab (`paneChatLoops`); the side panel's chat
+keeps the app's side loop. Pane chats and the side panel therefore stream at
+the same time, and each refuses only a second send on its own loop
+(`streaming-active`). There is no cap: a pane loop lives only while its pane
+is open, and ends with the pane, its window, or the app. All of them write the
+side-chat store. A pane's turn binds its session to the pane's tab
+(`browserTabRegistry` bound conversations), and the session's row records the
+tab (`paneTabId`), so a restart reopens each restored pane on its conversation
+(restored tabs keep their ids). A turn from a conversation's side panel runs
+on the side loop in the session its view shows; a conversation a pane holds
+is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
+history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
+and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
+that pane's turn and archiving a closed pane's conversation. A pane that ends
+while its conversation is loading sends nothing (`pane-chat-ended`). A turn
+that closes its own pane's page (`browser_tab_close`) runs to its end before
+its pane chat ends.
+
+The browser tools and `terminal_read` called without a tab id act on the bound
+tab, and sub-agents inherit it through their hosting session; a bound tab that
+is gone, or of the other kind, is an error, never another tab. A press on a
+page is touch input, which the window routes through its one touch sequence
+even when sent through the page's own protocol session; so each press runs
+alone in its window, a started press always ends, and a press counts only when
+its own page reports it and no other page of the window took a touch. A conversation
+that is not a pane's acts on the window's active surface, which the side
+panel's chat shows as its target chip; its × drops the target until another
+terminal or page is shown. The pane chat claims its session's approval cards,
+so the window's lane does not draw them again.
+
 ## Extension Runtime
 
 Extension installation and runtime behavior are governed by manifest declarations,
@@ -818,6 +851,20 @@ Key boundaries:
   Bundled `manifest.skills` contribute instructions, while host-selected extension
   scope and `tool_search` control model-visible Tool discovery;
 - extension UI can render in host slots but cannot bypass permission review;
+- the text a host renders from a manifest can be localized per entry. A `ui[]`
+  entry may carry `locales: { [tag]: { displayName?, title?, description? } }`
+  (normalized lower-case BCP-47 tags, 1 to 16; empty entries, blank strings and
+  unknown fields are refused). The host resolves against its current UI
+  language: the exact tag, then its base language (`pt-br` → `pt`), then the
+  entry's own fields, then the plugin id; for the label, `displayName` precedes
+  `title` within each language step. The sidebar and its Extensions menu, the
+  plugin pane header, the command list, the native app menu and the floating
+  dock's slot titles share `src/shared/plugin-view-label.ts` and re-render on a
+  language switch. `configSchema` properties (`title`, `description`) and
+  `auth` (`label`) accept the same `locales` shape. A host that predates the
+  field refuses the manifest as an unknown key: the field requires Ave 0.14.1 or
+  later, and an extension declaring any of these `locales` sets
+  `requires.minAppVersion` to `0.14.1` or later;
 - optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in

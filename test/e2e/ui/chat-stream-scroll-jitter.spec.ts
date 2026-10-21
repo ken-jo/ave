@@ -5,7 +5,7 @@ import {
   launchSeededElectron,
   teardownSeededElectron,
   type SeededElectronContext,
-} from "./seeded-electron";
+} from "./seeded-electron.js";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
 const CHAT_VIEWPORT_SELECTOR = ".ave-chat-scroll [data-radix-scroll-area-viewport]";
@@ -272,9 +272,16 @@ test.describe("chat stream bottom-follow jitter", () => {
       expect(before.bottomGap).toBeGreaterThan(120);
       await expect(ctx.page.getByTestId("jump-to-bottom")).toBeVisible();
 
-      await ctx.page.getByTestId("sidebar-memory").click();
-      await expect(ctx.page.getByTestId("view-path-current-memory")).toBeVisible({ timeout: 10_000 });
-      await expect(ctx.page.getByTestId("main-content-back")).toHaveCount(0);
+      // Leave home through the same view-activation channel the menu and the
+      // sidebar's view rows use; the sidebar has no Memory row of its own.
+      await ctx.app.evaluate(({ BrowserWindow }) => {
+        const target = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
+        if (!target) throw new Error("no visible window to activate the memory view in");
+        target.webContents.send("ave:view:activate", { viewKey: "memory" });
+      });
+      // At this width the breadcrumb label is collapsed out of view; the path
+      // still names Memory as the current page.
+      await expect(ctx.page.getByTestId("view-path-current-memory")).toHaveAttribute("aria-current", "page", { timeout: 10_000 });
       await ctx.page.getByTestId(TEST_IDS.viewPathBack).click();
       await expect(ctx.page.locator(CHAT_VIEWPORT_SELECTOR)).toBeVisible({ timeout: 10_000 });
 

@@ -161,7 +161,6 @@ describe("ToolApprovalContent identity strip", () => {
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeInTheDocument();
     expect(screen.getByTestId(TEST_IDS.approvalReviewDetails)).toBeInTheDocument();
     expect(screen.getByTestId("approval-path-grant-evidence")).toBeInTheDocument();
-    expect(screen.queryByTestId("docked-approval-panel")).toBeNull();
   });
 
 

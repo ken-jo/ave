@@ -28,6 +28,7 @@ import type {
   AudioCaptureRequest,
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
+import { onLocaleChange } from "../../../i18n/index.js";
 import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
@@ -232,10 +233,19 @@ function audioCaptureService(host: BootHost): AudioCaptureService {
  */
 let sharedFloatingDock: FloatingDock | null = null;
 function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): FloatingDock {
-  sharedFloatingDock ??= new FloatingDock(
-    requireDesktopHost(host).createFloatingDockSurface(),
-    (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
-  );
+  if (!sharedFloatingDock) {
+    const dock = new FloatingDock(
+      requireDesktopHost(host).createFloatingDockSurface(),
+      (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
+    );
+    // Slot titles are manifest text in the UI language; a switch re-resolves
+    // them. Process-lifetime, like the dock itself. Re-resolving runs the full
+    // surface lookup (entry containment included), so an entry rejected at
+    // attach is rejected — and audited — again here; that is the lookup's own
+    // rule, not a second one.
+    onLocaleChange(() => dock.refreshTitles());
+    sharedFloatingDock = dock;
+  }
   return sharedFloatingDock;
 }
 

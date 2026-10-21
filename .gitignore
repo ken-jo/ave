@@ -7,8 +7,7 @@ release-fast/
 .cache/
 *.log
 .omx/
-.pageindex-workspace/
-.pageindex-workspace-test/
+.local-indexer-workspace/
 .DS_Store
 .omc/
 

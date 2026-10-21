@@ -166,11 +166,24 @@ describe("probePrivateHost", () => {
   });
 
   it("clamps an absurdly large timeout so a hung lookup still fails-safe within bounds", async () => {
-    // timeoutMs far above the max clamp; the lookup hangs. If the clamp did not
-    // apply the deadline would be ~1h; the test's own 45s vitest timeout proves
-    // the deadline was clamped into range because the call resolves to false.
-    mockLookup.mockReturnValueOnce(new Promise(() => {}) as unknown as Promise<never>);
-    expect(await probePrivateHost("hang.example.com", { timeoutMs: 3_600_000 })).toBe(false);
+    // timeoutMs far above the max clamp; the lookup hangs. Unclamped, the
+    // deadline would be ~1h; clamped, it is the module's 10 s ceiling. Virtual
+    // time pins the deadline to that ceiling instead of waiting it out.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      mockLookup.mockReturnValueOnce(new Promise(() => {}) as unknown as Promise<never>);
+      let answer: boolean | undefined;
+      const probe = probePrivateHost("hang.example.com", { timeoutMs: 3_600_000 }).then((value) => {
+        answer = value;
+      });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(answer).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await probe;
+      expect(answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to the default timeout for NaN / negative / non-number input", async () => {

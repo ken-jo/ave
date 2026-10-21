@@ -1,3 +1,4 @@
+import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVendorOption } from "../constants.js";
 import { llmRouteModel } from "../../../shared/llm-vendor-defaults.js";
@@ -130,6 +131,13 @@ export interface UseSettingsResult {
   llmRouteModalities: RouteInputModalities | undefined;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
+  /**
+   * Main's answer to which model chat is on (`RendererSettingsSnapshot`),
+   * null until the first snapshot lands. `kind: "none"` is a first-class
+   * state: `llmModel` may still hold the vendor default, but nothing chose it
+   * and no route can answer on it.
+   */
+  activeChatModel: ActiveChatModel | null;
   /** Cached `enableThinking` flag for the active vendor. */
   enableThinkingChat: boolean;
   /** User-selected detail shown inside transcript work groups. */
@@ -193,6 +201,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     useState<SubscriptionRuntimeCapabilities | null>(null);
   const [subscriptionStatusRevision, setSubscriptionStatusRevision] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
   // Guard late callbacks firing after unmount (matches pattern in renderer.tsx
   // where this state lived before the hook extraction).
   const isMountedRef = useRef(true);
@@ -213,6 +222,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
       const provider = narrowLlmVendor(settings.llm.provider);
       const block = getLlmVendorSettings(settings.llm.vendors, provider);
       setLlmVendor(provider);
+      setActiveChatModel((current) =>
+        JSON.stringify(current) === JSON.stringify(settings.activeChatModel) ? current : settings.activeChatModel);
       const routeModel = llmRouteModel(
         block,
         provider === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined,
@@ -415,6 +426,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     refresh,
     toggleThinking,
     settingsLoaded,
+    activeChatModel,
   };
 }
 
@@ -545,7 +557,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     // ids, wrong here: an unrecognised id must show as itself, never borrow
     // another provider's label.
     const vendorLabel = isSubscriptionRuntimeId(subscription.provider)
-      ? subscriptionRuntimeDescriptor(subscription.provider).label
+      ? subscriptionRuntimeDescriptor(subscription.provider).planName
       : subscription.provider;
     choices.unshift({
       kind: "subscription",

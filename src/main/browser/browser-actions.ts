@@ -19,6 +19,7 @@
 import type { WebContents } from "electron";
 import type { BrowserPageActions } from "../../tools/browser-tools.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -240,7 +241,7 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
     target.expectNode(backendNodeId);
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
-    await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y, target.finishWithInput)));
+    await target.injectInput(() => withPageFocus(target, () => pressAt(target, x, y, target.finishWithInput)));
   });
 }
 
@@ -271,7 +272,7 @@ async function pollUntil<T>(signal: AbortSignal, maxMs: number, probe: () => Pro
 async function pressForFocus(target: ActionTarget, x: number, y: number): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < FOCUS_MAX_MS) {
-    await pressAt(target.cdp, x, y);
+    await pressAt(target, x, y);
     if (await pollUntil(target.signal, FOCUS_PRESS_WAIT_MS, async () => (await pageHasFocus(target.cdp)) || undefined)) return;
   }
   throw new BrowserActionError("no-focus", "the page did not take keyboard focus, so nothing was typed; try again");
@@ -300,10 +301,12 @@ async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Pr
   }
 }
 
-async function pressAt(cdp: CdpSession, x: number, y: number, finish = (dispatch: () => Promise<unknown>) => dispatch()): Promise<void> {
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
-  await finish(() => cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
+async function pressAt(target: ActionTarget, x: number, y: number, finish = (dispatch: () => Promise<unknown>) => dispatch()): Promise<void> {
+  await target.press(async () => {
+    await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await target.cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await finish(() => target.cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
+  });
 }
 
 /** Why a field is refused for agent typing, or null when it is not sensitive. */
@@ -565,6 +568,223 @@ interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
   documentChanged(guestId: number): void;
+  /** Record the touch input every guest of `guestId`'s window reports until `stop`. */
+  watchTouches(guestId: number): TouchWatch;
+}
+
+interface TouchWatch {
+  delivery(): TouchDeliveryReport;
+  stop(): void;
+}
+
+/**
+ * The screen position of the content area of the window that hosts `guest`,
+ * or null when the guest has no live host window. Production reads the
+ * owning BrowserWindow's content bounds.
+ */
+export type HostContentOrigin = (guest: WebContents) => { x: number; y: number; windowId: number } | null;
+
+/** How long a pointer move may take to be reported back before a tap is refused. */
+const POINTER_ECHO_MAX_MS = 1_000;
+/** How long one pointer or touch dispatch may take; healthy ones return in milliseconds. */
+const INPUT_DISPATCH_MAX_MS = 3_000;
+/**
+ * How long one press may hold its window: every protocol call it makes, the
+ * guard's reads included, and its delivery check share this budget. Its
+ * closing touch cancel, if needed, has its own dispatch budget after it.
+ */
+const PRESS_MAX_MS = 5_000;
+/** How long the tap derived from a press may take to be reported back. */
+const TAP_ECHO_MAX_MS = 1_000;
+const TAP_POLL_MS = 20;
+
+/**
+ * ONE TOUCH SEQUENCE PER WINDOW. A touch sent through a page's own protocol
+ * session is still routed by its window's one touch sequence (measured with
+ * two pages in one window): a lone sequence reaches the page that sent it, but
+ * a touch start sent while another page's sequence is open joins that
+ * sequence and lands in the other page, and a sequence left open (a start
+ * without its end) leaves later touches of another page undelivered, its
+ * dispatch unanswered, and that page taking no touch again. So each press
+ * runs alone in its window, from its pointer move to its derived tap, and a
+ * press that started always ends.
+ */
+const windowPresses = new Map<number, Promise<void>>();
+
+/**
+ * Windows whose touch path is wedged: a press's sequence stayed open because
+ * the page did not acknowledge its touch start or end, and the closing touch
+ * cancel did not come back either. Until that page acknowledges the cancel,
+ * or navigates, or goes away, a touch any other page of the window sends
+ * would join the open sequence and be delivered into that page when it
+ * wakes (measured), so every press in the window is refused without
+ * dispatching anything.
+ */
+const wedgedWindows = new Map<number, symbol>();
+
+/** Name `windowId` wedged until `cancelled` settles or `guest` navigates or goes away. */
+function markWedged(windowId: number, guest: WebContents, cancelled: Promise<unknown>): void {
+  const mark = Symbol("wedged");
+  wedgedWindows.set(windowId, mark);
+  const events = ["did-navigate", "destroyed", "render-process-gone"] as const;
+  const clear = () => {
+    if (wedgedWindows.get(windowId) === mark) wedgedWindows.delete(windowId);
+    for (const event of events) guest.removeListener(event as never, clear);
+  };
+  for (const event of events) guest.once(event as never, clear);
+  cancelled.then(clear, clear);
+}
+
+function refuseIfWedged(windowId: number): void {
+  if (wedgedWindows.has(windowId)) {
+    throw new BrowserActionError(
+      "window-input-busy",
+      "a page in this window has not answered an earlier press, so nothing was pressed here; try again once it responds, or close that page",
+    );
+  }
+}
+
+async function aloneInWindow<T>(windowId: number, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  const before = windowPresses.get(windowId) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const turn = before.then(() => mine);
+  windowPresses.set(windowId, turn);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        try { throwIfAborted(signal); } catch (err) { reject(err); }
+      };
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+      void before.then(() => { signal.removeEventListener("abort", onAbort); resolve(); });
+    });
+    return await run();
+  } finally {
+    release();
+    if (windowPresses.get(windowId) === turn) windowPresses.delete(windowId);
+  }
+}
+
+/**
+ * `call`, or a clear failure once `ms` pass or `signal` aborts. Inside a press
+ * every protocol call is bounded this way: a page that stops answering must
+ * not hold its window's press lock (and every other page's press) with it.
+ */
+function within<T>(call: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
+  // A call that loses the race still settles later; nobody awaits it then.
+  call.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const cut = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BrowserActionError(
+      "input-not-delivered",
+      "the page did not answer in time, so the action did not complete; close and reopen the page if this keeps happening",
+    )), Math.max(0, ms));
+    if (signal) {
+      onAbort = () => {
+        try { throwIfAborted(signal); } catch (err) { reject(err); }
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+  return Promise.race([call, cut]).finally(() => {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  });
+}
+
+/**
+ * The press reached this page and only this page. Touch echoes carry no
+ * point (measured), so the point itself rests on the offset measured from
+ * the pointer move's echo inside the same press; what is confirmed here is
+ * the recipient: this page reported the marked touch start and end and the
+ * tap derived from them, and no other page of the window took a touch.
+ */
+async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean, deadline: number): Promise<void> {
+  const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, deadline);
+  // Judge once this page's sequence is complete (or never will be): its
+  // derived tap arrives after the touch end.
+  let delivery = watch.delivery();
+  while (!(delivery.started && delivery.ended && (delivery.tapped || !requireTap)) && Date.now() < until) {
+    await sleep(TAP_POLL_MS, signal);
+    throwIfAborted(signal);
+    delivery = watch.delivery();
+  }
+  if (delivery.elsewhere > 0) {
+    throw new BrowserActionError("input-not-delivered", "the press reached another page in this window, so this action did not complete; take a new snapshot and try again");
+  }
+  if (!(delivery.started && delivery.ended)) {
+    throw new BrowserActionError("input-not-delivered", "this page did not report the press, so the action did not complete; try again");
+  }
+  if (requireTap && !delivery.tapped) {
+    throw new BrowserActionError("input-not-delivered", "the page took the touch but made no tap of it, so nothing is known to have been pressed; try again");
+  }
+}
+
+/**
+ * TOUCH COORDINATES. For a page shown in a `<webview>`, the protocol takes a
+ * mouse event's point in the page's own viewport but a touch event's point in
+ * the hosting window's content area (measured: a tap at the page point of a
+ * button landed on the page root; the same point offset by the page's place in
+ * the window pressed the button). The guard checks every input against the
+ * page point, so the point is only moved here, at the native boundary.
+ *
+ * Where the page sits is measured, not reported by the renderer: the pointer
+ * move sent before every press comes back as a native input event carrying
+ * both the page point and its screen point, and the host window's content
+ * origin turns the screen point into the window point.
+ */
+function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
+  let offset: { x: number; y: number } | null = null;
+  type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
+  return {
+    /**
+     * Before a pointer move is sent: listen for its native echo. `settle`,
+     * after the send, learns the page's offset in its window from it.
+     */
+    watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void> } | null {
+      if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
+      // Each pointer move measures afresh: an echo that never comes must
+      // leave no earlier offset behind for the press that follows.
+      offset = null;
+      const point = { x: params.x, y: params.y };
+      let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
+      const echo = new Promise<PointerEcho | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
+        onInput = (_event, input) => {
+          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
+          if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
+          clearTimeout(timer);
+          resolve(input);
+        };
+        guest.on("input-event", onInput as never);
+      });
+      return {
+        settle: async () => {
+          try {
+            const seen = await echo;
+            const host = hostContentOrigin(guest);
+            if (seen && host) offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+          } finally {
+            guest.removeListener("input-event", onInput as never);
+          }
+        },
+      };
+    },
+    /** A touch event's page points as window points; a clear refusal when never measured. */
+    placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+      if (method !== "Input.dispatchTouchEvent") return params;
+      const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
+      if (points.length === 0) return params;
+      if (!offset) {
+        throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
+      }
+      const by = offset;
+      return { ...params, touchPoints: points.map((point) => ({ ...point, x: point.x + by.x, y: point.y + by.y })) };
+    },
+  };
 }
 
 /** One live registry tab and the signal that cancels its action. */
@@ -574,7 +794,7 @@ interface LiveTab {
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
 }
 
-async function targetFor(live: LiveTab, attribution: InputAttribution, input = false): Promise<ActionTarget> {
+async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
@@ -595,11 +815,30 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
   assertCurrent(false);
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
+  const touch = createTouchPlacement(guest, hostContentOrigin);
+  // A touch start went out and its sequence is not ended yet.
+  let touchOpen = false;
+  let touchEnded = false;
+  // While a press holds the window: when its budget runs out.
+  let pressDeadline: number | null = null;
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
-      const result = await session.send(method, params);
+      params = touch.placed(method, params);
+      const echo = touch.watch(method, params);
+      const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
+      const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
+      if (phase === "touchStart") touchOpen = true;
+      const sent = session.send(method, params);
+      const result = pressDeadline !== null
+        ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.signal)
+        : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
+      if (phase === "touchEnd" || phase === "touchCancel") {
+        touchOpen = false;
+        touchEnded = phase === "touchEnd";
+      }
+      await echo?.settle();
       // The action guard owns input completion: its last input may navigate.
       if (method.startsWith("Input.")) assertGuest();
       else assertCurrent(false);
@@ -612,6 +851,49 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
     title: () => guest.getTitle(),
     cdp,
     injectInput: (inject) => attribution.withAgentInput(guest.id, inject),
+    press: async (run) => {
+      const host = hostContentOrigin(guest);
+      if (!host) {
+        throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
+      }
+      refuseIfWedged(host.windowId);
+      return aloneInWindow(host.windowId, live.signal, async () => {
+        refuseIfWedged(host.windowId);
+        touchEnded = false;
+        const deadline = Date.now() + PRESS_MAX_MS;
+        pressDeadline = deadline;
+        const watch = attribution.watchTouches(guest.id);
+        try {
+          let result: Awaited<ReturnType<typeof run>>;
+          try {
+            result = await run();
+          } catch (err) {
+            // A press whose end went out and then changed the document is a
+            // completed effect (the action guard decides); it still must have
+            // reached this page and no other.
+            if (touchEnded && err instanceof BrowserActionError && err.code === "document-changed") {
+              await confirmDelivery(watch, new AbortController().signal, false, deadline);
+            }
+            throw err;
+          }
+          await confirmDelivery(watch, live.signal, true, deadline);
+          return result;
+        } finally {
+          pressDeadline = null;
+          if (touchOpen) {
+            // The one dispatch made after a failure, past the document checks:
+            // it presses nothing, it only ends the window's open sequence.
+            touchOpen = false;
+            const cancelled = session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+            const closed = await within(cancelled, INPUT_DISPATCH_MAX_MS).then(() => true, (err: unknown) =>
+              // A refused cancel (the page holds no sequence) leaves nothing open.
+              !(err instanceof BrowserActionError && err.code === "input-not-delivered"));
+            if (!closed) markWedged(host.windowId, guest, cancelled);
+          }
+          watch.stop();
+        }
+      });
+    },
     releaseFocus: () => attribution.releaseFocus(guest.id),
     signal: live.signal,
     documentId: () => live.tab.documentId,
@@ -629,6 +911,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
 export function createBrowserPageActions(
   attribution: InputAttribution,
   originOf: (url: string) => string | null,
+  hostContentOrigin: HostContentOrigin,
 ): BrowserPageActions<WebContents> {
   return {
     prepare: async (live) => {
@@ -639,14 +922,15 @@ export function createBrowserPageActions(
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      snapshot(await targetFor(live, attribution), options),
-    screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution)),
+      snapshot(await targetFor(live, attribution, hostContentOrigin), options),
+    screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution, hostContentOrigin)),
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
-      waitFor(await targetFor(live, attribution), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, true), ref),
+      waitFor(await targetFor(live, attribution, hostContentOrigin), options),
+    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, true), ref, text, options),
-    pressKey: async (live: LiveTab, key: string, ref?: string) => pressKey(await targetFor(live, attribution, true), key, ref),
+      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options),
+    pressKey: async (live: LiveTab, key: string, ref?: string) =>
+      pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");

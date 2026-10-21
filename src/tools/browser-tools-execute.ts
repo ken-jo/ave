@@ -131,9 +131,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     }
     const approved = authorizedApprovalMemoryScope(ctx);
     const approvedTabId = approved?.kind === "browser-origin" || approved?.kind === "browser-agent-tabs" ? approved.tabId : undefined;
-    const handle = (input.tabId as string | undefined) ?? approvedTabId ?? deps.tabs.activeBrowserTab(scope.windowId);
+    let handle = (input.tabId as string | undefined) ?? approvedTabId;
     if (handle === undefined) {
-      return { ok: false, result: failure("no browser tab is shown; pass a tabId from browser_tabs or open one with browser_tab_new") };
+      const fallback = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
+      if (!fallback.ok) return { ok: false, result: failure(fallback.error) };
+      handle = fallback.handle;
     }
     const resolved = policy.resolveTab({ ...input, tabId: handle }, sessionId);
     if (!resolved) {

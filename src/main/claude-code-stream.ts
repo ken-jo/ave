@@ -21,7 +21,7 @@ function invalid(): never {
 }
 
 /**
- * Validates the print stream for verification and chat. Tool announcements
+ * Validates each user-requested print stream. Tool announcements
  * never authorize a host call. Ave supplies complete history on every round,
  * so native session ids are checked but never resumed.
  */

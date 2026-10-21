@@ -264,16 +264,6 @@
     },
     {
       "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/runtime.ts",
-      "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
       "file": "src/ipc/handlers/chat.ts",
       "name": "normalizePersonaPromptId"
     },
@@ -486,11 +476,6 @@
       "type": "exports",
       "file": "src/plugins/plugin-id.ts",
       "name": "SAFE_ARTIFACT_SLUG_RE"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/plugin-removal-transaction.ts",
-      "name": "readRemovalTransactionJournal"
     },
     {
       "type": "exports",
@@ -926,11 +911,6 @@
       "type": "files",
       "file": "src/ui/renderer/components/AveLogo.tsx",
       "name": "src/ui/renderer/components/AveLogo.tsx"
-    },
-    {
-      "type": "files",
-      "file": "web/infra/edge-router/worker.js",
-      "name": "web/infra/edge-router/worker.js"
     },
     {
       "type": "types",

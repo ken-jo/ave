@@ -435,6 +435,7 @@ export type SideChatConversationLoopDeps = Pick<
   | "subscriptionProviderFactory"
   | "broadcastPermissionConfigChanged"
   | "approvalSurface"
+  | "sessionHeldElsewhere"
 > & {
   /** Isolated MemoryManager rooted at `~/.ave/side-chat/`. */
   sideChatMemoryManager: MemoryManager;
@@ -505,6 +506,9 @@ export function createSideChatConversationLoop(
     ...(deps.getAdditionalDirectories
       ? { getAdditionalDirectories: deps.getAdditionalDirectories }
       : {}),
+    // The rail and every pane chat run over the one side-chat store: a
+    // session one of them holds is not loaded into another.
+    ...(deps.sessionHeldElsewhere ? { sessionHeldElsewhere: deps.sessionHeldElsewhere } : {}),
     // headless defaults to false — interactive, streaming loop.
   });
 }

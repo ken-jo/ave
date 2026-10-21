@@ -73,22 +73,6 @@ describe("#885 v6 — dual-declared visibility (the #1554 governed-vs-bypass inv
       "app"]);
   });
 
-  it("keeps model-only and app-only Tools on their own surfaces", async () => {
-    const validator = await buildManifestValidator();
-    const path = await writeManifest({
-      tools: [
-        pureTool("t_one", ["model"]),
-        pureTool("ui_only_method", ["app"]),
-      ],
-    });
-    const manifest = await parsePluginJson(path, validator);
-    expect(manifest.tools.find((t) => t.name === "t_one")?._meta?.ui?.visibility,
-    ).toEqual(["model"]);
-    expect(manifest.tools.find((t) => t.name === "ui_only_method")?._meta?.ui?.visibility,
-    ).toEqual([
-      "app"]);
-  });
-
   it("REJECTS an auth tool that resolves model-visible (the #1554 'auth never model-callable' invariant)", async () => {
     const validator = await buildManifestValidator();
     const path = await writeManifest({

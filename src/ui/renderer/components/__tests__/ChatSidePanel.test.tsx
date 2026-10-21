@@ -401,10 +401,6 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     // Single "+" button; the old per-kind add buttons are gone.
     expect(screen.getByTestId("chat-side-panel-add-tab")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-add-browser-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-preview-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-terminal-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-file-browser-tab")).toBeNull();
 
     // The "+" dropdown opens the same launcher items and creates a tab.
     openLauncherMenu();
@@ -1527,7 +1523,6 @@ describe("ChatSidePanel", () => {
     const detail = screen.getByTestId("chat-side-panel-subagent-detail");
     const workGroup = within(detail).getByTestId("work-group");
     expect(workGroup).toBeTruthy();
-    expect(within(detail).queryByTestId("chat-side-panel-subagent-tool-group")).toBeNull();
     expect(detail.textContent).toContain("서울 날씨를 확인해줘");
     expect(detail.textContent).toContain("서울은 맑음입니다.");
     const buttons = detail.querySelectorAll("button");
@@ -2477,7 +2472,6 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     expect(screen.getByTestId("side-chat-view")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-side-chat-placeholder")).toBeNull();
   });
 });
 

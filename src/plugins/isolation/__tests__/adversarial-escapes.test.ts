@@ -54,7 +54,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 
-import { execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -120,11 +120,16 @@ function deniedReadCodes(): readonly string[] {
  * for a headless host. A job that requires the measurement runs the case and
  * lets a helper that cannot start fail it.
  */
-function electronControlLauncher(): { readonly command: string; readonly prefix: readonly string[] } | undefined {
-  if (process.platform !== "linux" || process.env.DISPLAY) return { command: process.execPath, prefix: [] };
+function electronControlLauncher():
+  | { readonly command: string; readonly prefix: (scratchDir: string) => readonly string[] }
+  | undefined {
+  if (process.platform !== "linux" || process.env.DISPLAY) return { command: process.execPath, prefix: () => [] };
   try {
     execFileSync("xvfb-run", ["--help"], { stdio: "ignore" });
-    return { command: "xvfb-run", prefix: ["-a", process.execPath] };
+    // Without `-f`, xvfb-run keeps its auth cookie in its own `mktemp -d`
+    // directory, which a SIGKILLed run leaves behind; `-f` puts the cookie in
+    // the control's scratch directory, which the harness removes.
+    return { command: "xvfb-run", prefix: (scratchDir) => ["-a", "-f", join(scratchDir, "Xauthority"), process.execPath] };
   } catch {
     return undefined;
   }
@@ -212,6 +217,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (liveControl !== undefined) killControl(liveControl.child, liveControl.group);
+  await controlExit;
   await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
@@ -371,8 +378,151 @@ async function call(spawned: Spawned, tool: string, args: Record<string, unknown
   return (await spawned.instance.handlers[tool]!(args)) as Record<string, unknown>;
 }
 
-/** Run the Electron control helper and read its one line. */
-async function runElectronControl(): Promise<Record<string, unknown>> {
+/**
+ * How long the control may take to report, and then to exit by itself before it
+ * is reaped. A healthy control exits within about 2 s of reporting; on a
+ * contended macOS host its main thread can then wait in Chromium's shutdown far
+ * longer (observed past 60 s), which is scheduler latency, not anything the
+ * control proves, so it is killed with its helpers and the stall logged.
+ */
+const CONTROL_REPORT_TIMEOUT_MS = 60_000;
+const CONTROL_EXIT_GRACE_MS = 5_000;
+
+/** How the control process ended after it reported. */
+interface ControlExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  /** Whether the harness had to kill it after the grace period. */
+  readonly reaped: boolean;
+  /** A process of its group still alive after it ended (POSIX only). */
+  readonly survivor: boolean;
+  /**
+   * Descendants alive at reap time that had left its process group, so the
+   * group kill could not reach them: `ps` rows, empty when none (POSIX only).
+   */
+  readonly escaped: readonly string[];
+  /** Its stderr, and where it was stuck if it had to be reaped. */
+  readonly diagnostics: string;
+}
+
+/** The Electron control's report, and its exit, observed separately. */
+interface ControlRun {
+  readonly report: Record<string, unknown>;
+  readonly exited: Promise<ControlExit>;
+}
+
+/** The control's exit, asserted on its own once the report has held. */
+let controlExit: Promise<ControlExit> | undefined;
+/** A control still running, so `afterAll` can reap its process group. */
+let liveControl: { readonly child: ChildProcess; readonly group: boolean } | undefined;
+
+/**
+ * Kill the control and every helper it started. On POSIX it leads its own
+ * process group (`detached`), so the GPU, network and renderer helpers — and
+ * `xvfb-run`'s server on Linux — go with it; on Windows the job object Chromium
+ * keeps for its helpers closes with the main process.
+ */
+function killControl(child: ChildProcess, group: boolean): void {
+  if (!group || child.pid === undefined) {
+    child.kill("SIGKILL");
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    // ESRCH: the group is gone. EPERM: macOS refuses to signal a group whose
+    // only members are zombies, as when the control exits while it is sampled;
+    // whether anything really survived is `controlGroupAlive`'s question.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH" && code !== "EPERM") throw error;
+  }
+}
+
+/**
+ * Whether any process of the control's group is still alive (POSIX). Read from
+ * `ps`, not `kill(-pgid, 0)`: macOS answers that EPERM while the group's last
+ * members are zombies awaiting their reaper, which is not a survivor.
+ */
+function controlGroupAlive(pid: number): boolean {
+  const table = execFileSync("/bin/ps", ["-Ao", "pgid=,stat="], { encoding: "utf-8" });
+  return table.split("\n").some((row) => {
+    const [pgid, stat] = row.trim().split(/\s+/);
+    return pgid === String(pid) && stat !== undefined && !stat.startsWith("Z");
+  });
+}
+
+/**
+ * The live descendants of the control (by `ppid`, from one `ps` snapshot) that
+ * are not in its process group: a group kill cannot reach them, so they are
+ * what a "no helper outlives it" claim has to rule out (POSIX).
+ */
+function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; readonly row: string }[] {
+  const rows = execFileSync("/bin/ps", ["-Ao", "pid=,ppid=,pgid=,stat=,command="], { encoding: "utf-8" })
+    .split("\n")
+    .map((row) => {
+      const [own, parent, pgid, stat] = row.trim().split(/\s+/);
+      return { pid: Number(own), ppid: Number(parent), pgid: Number(pgid), stat: stat ?? "", row: row.trim().slice(0, 240) };
+    })
+    .filter((entry) => Number.isInteger(entry.pid) && entry.pid > 0);
+  const descendants = new Set([pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const entry of rows) {
+      if (descendants.has(entry.ppid) && !descendants.has(entry.pid)) {
+        descendants.add(entry.pid);
+        grew = true;
+      }
+    }
+  }
+  return rows
+    .filter((entry) => entry.pid !== pid && descendants.has(entry.pid) && entry.pgid !== pid && !entry.stat.startsWith("Z"))
+    .map(({ pid: own, row }) => ({ pid: own, row }));
+}
+
+/**
+ * Where a control that did not finish is stuck, for the failure message: its
+ * main thread's stack (macOS `sample`) and its process group. Each part names
+ * its own failure, so a missing tool reads as that, never as a clean process.
+ */
+function controlDiagnostics(pid: number, userData: string): string {
+  const parts: string[] = [];
+  if (process.platform === "darwin") {
+    const sampleFile = join(userData, "control.sample.txt");
+    try {
+      execFileSync("/usr/bin/sample", [String(pid), "2", "-file", sampleFile], { stdio: "ignore", timeout: 20_000 });
+      const sample = readFileSync(sampleFile, "utf-8");
+      // The frames each thread was waiting in, then the call graph that led there.
+      const top = sample.indexOf("Sort by top of stack");
+      const tree = Math.max(0, sample.indexOf("Call graph:"));
+      parts.push(
+        `sample ${pid}:\n${top === -1 ? "" : `${sample.slice(top, top + 3_000)}\n`}${sample.slice(tree, tree + 6_000)}`,
+      );
+    } catch (error) {
+      parts.push(`sample ${pid} failed: ${String(error)}`);
+    }
+  }
+  if (process.platform !== "win32") {
+    try {
+      const table = execFileSync("/bin/ps", ["-Ao", "pid,ppid,pgid,etime,stat,command"], { encoding: "utf-8" });
+      const group = table
+        .split("\n")
+        .filter((row, index) => index === 0 || row.trim().split(/\s+/)[2] === String(pid))
+        .map((row) => row.slice(0, 240));
+      parts.push(`process group ${pid}:\n${group.join("\n")}`);
+    } catch (error) {
+      parts.push(`ps failed: ${String(error)}`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Run the Electron control helper and read its one line as soon as it is
+ * written. Its exit is a separate promise: the report is what the control
+ * proves, and a process that then fails to exit is its own failure, killed with
+ * its helpers after a grace period and reported with where it was stuck.
+ */
+async function runElectronControl(): Promise<ControlRun> {
   const launcher = ELECTRON_CONTROL;
   if (launcher === undefined) {
     throw new Error("the Electron control cannot start here: no DISPLAY and no xvfb-run");
@@ -380,46 +530,137 @@ async function runElectronControl(): Promise<Record<string, unknown>> {
   const userData = mkdtempSync(join(tmpdir(), "adversarial-control-"));
   const env: NodeJS.ProcessEnv = { ...process.env, AVE_HOME: join(userData, ".ave") };
   delete env.ELECTRON_RUN_AS_NODE;
-  try {
-    const { code, stdout, stderr } = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
-      (resolve, reject) => {
-        const child = spawn(
-          launcher.command,
-          // `--no-sandbox`: Chromium's own renderer sandbox is not what this
-          // control measures, and on a Linux host that restricts unprivileged
-          // user namespaces (Ubuntu 24.04's default) with an unprivileged
-          // `chrome-sandbox` helper the zygote aborts with SIGTRAP (exit 133)
-          // before the main script runs.
-          [...launcher.prefix, join(FIXTURE_SOURCE, "control-electron-main.cjs"), "--no-sandbox", `--user-data-dir=${userData}`],
-          { env, stdio: ["ignore", "pipe", "pipe"] },
-        );
-        let out = "";
-        let err = "";
-        child.stdout.on("data", (chunk: Buffer) => {
-          out += chunk.toString("utf-8");
-        });
-        child.stderr.on("data", (chunk: Buffer) => {
-          err += chunk.toString("utf-8");
-        });
-        const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
-        child.once("error", (error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-        child.once("exit", (exitCode) => {
-          clearTimeout(timer);
-          resolve({ code: exitCode, stdout: out, stderr: err });
-        });
-      },
-    );
-    const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
-    if (code !== 0 || line === undefined) {
-      throw new Error(`the Electron control did not report (exit ${String(code)}): ${stderr.slice(-2_000)}`);
-    }
-    return JSON.parse(line) as Record<string, unknown>;
-  } finally {
-    rmSync(userData, { recursive: true, force: true });
+  const group = process.platform !== "win32";
+  const child = spawn(
+    launcher.command,
+    [
+      ...launcher.prefix(userData),
+      join(FIXTURE_SOURCE, "control-electron-main.cjs"),
+      // `--no-sandbox`: Chromium's own renderer sandbox is not what this
+      // control measures, and on a Linux host that restricts unprivileged
+      // user namespaces (Ubuntu 24.04's default) with an unprivileged
+      // `chrome-sandbox` helper the zygote aborts with SIGTRAP (exit 133)
+      // before the main script runs.
+      "--no-sandbox",
+      `--user-data-dir=${userData}`,
+      // macOS: safeStorage would otherwise open the login Keychain item for
+      // this binary, which can wait on a prompt nobody answers.
+      ...(process.platform === "darwin" ? ["--use-mock-keychain"] : []),
+    ],
+    { env, stdio: ["ignore", "pipe", "pipe"], detached: group },
+  );
+  const pid = child.pid;
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    out += chunk.toString("utf-8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    err += chunk.toString("utf-8");
+  });
+  const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null } | Error>((resolve) => {
+    child.once("error", resolve);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  liveControl = { child, group };
+  const reportLine = (): string | undefined =>
+    out
+      .split("\n")
+      .slice(0, -1)
+      .find((entry) => entry.startsWith("{"));
+
+  const reported = new Promise<void>((resolve) => {
+    const check = (): void => {
+      if (reportLine() !== undefined) resolve();
+    };
+    child.stdout.on("data", check);
+    check();
+  });
+  let reportTimer: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    reported.then(() => "reported" as const),
+    ended.then(() => "ended" as const),
+    new Promise<"timeout">((resolve) => {
+      reportTimer = setTimeout(() => resolve("timeout"), CONTROL_REPORT_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(reportTimer);
+  if (outcome === "ended" && reportLine() === undefined && !child.stdout.readableEnded) {
+    // `exit` can precede the last stdout chunk; let the pipe drain before
+    // concluding the control wrote nothing.
+    await Promise.race([reported, new Promise((resolve) => setTimeout(resolve, 2_000))]);
   }
+  const line = reportLine();
+  if (line === undefined) {
+    const diagnostics = outcome === "timeout" && pid !== undefined ? controlDiagnostics(pid, userData) : "";
+    if (pid !== undefined) killControl(child, group);
+    const end = await ended;
+    liveControl = undefined;
+    rmSync(userData, { recursive: true, force: true });
+    const how = end instanceof Error ? String(end) : `exit ${String(end.code)}, signal ${String(end.signal)}`;
+    throw new Error(
+      `the Electron control did not report within ${CONTROL_REPORT_TIMEOUT_MS} ms (${outcome}; ${how}): ` +
+        `stderr: ${err.slice(-2_000)}${diagnostics === "" ? "" : `\n\n${diagnostics}`}`,
+    );
+  }
+
+  const exited = (async (): Promise<ControlExit> => {
+    let diagnostics = "";
+    let reaped = false;
+    let escaped: readonly string[] = [];
+    const grace = setTimeout(() => {
+      if (pid === undefined) return;
+      reaped = true;
+      diagnostics = controlDiagnostics(pid, userData);
+      if (group) {
+        // Taken while the control is still alive, so its helpers still name it
+        // as their parent; any that left its group would survive the group kill.
+        const outside = controlDescendantsOutsideGroup(pid);
+        escaped = outside.map((entry) => entry.row);
+        killControl(child, group);
+        for (const entry of outside) {
+          try {
+            process.kill(entry.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+        }
+      } else {
+        killControl(child, group);
+      }
+    }, CONTROL_EXIT_GRACE_MS);
+    const end = await ended;
+    clearTimeout(grace);
+    // The main process is reaped, so its pid — and with it the pgid `afterAll`
+    // would signal — may be recycled from here on.
+    liveControl = undefined;
+    // A helper that outlived its main process is a finding, then reaped too. A
+    // pgid with a live member cannot be recycled, so the group kill below only
+    // ever reaches this control's own group.
+    let survivor = false;
+    if (pid !== undefined && group) {
+      const settle = Date.now() + 2_000;
+      while (controlGroupAlive(pid) && Date.now() < settle) await new Promise((resolve) => setTimeout(resolve, 100));
+      survivor = controlGroupAlive(pid);
+      if (survivor) {
+        diagnostics += `\n\n${controlDiagnostics(pid, userData)}`;
+        killControl(child, group);
+      }
+    }
+    rmSync(userData, { recursive: true, force: true });
+    if (end instanceof Error) {
+      return { code: null, signal: null, reaped, survivor, escaped, diagnostics: `${String(end)}\n${diagnostics}` };
+    }
+    return {
+      code: end.code,
+      signal: end.signal,
+      reaped,
+      survivor,
+      escaped,
+      diagnostics: `stderr: ${err.slice(-2_000)}\n\n${diagnostics}`,
+    };
+  })();
+  return { report: JSON.parse(line) as Record<string, unknown>, exited };
 }
 
 describe("the controls, which must hold before any escape is asserted", () => {
@@ -450,7 +691,9 @@ describe("the controls, which must hold before any escape is asserted", () => {
     async () => {
       // The test process is NOT this control: it runs as Node itself.
       expect(process.env.ELECTRON_RUN_AS_NODE).toBe("1");
-      const control = (await runElectronControl()) as {
+      const run = await runElectronControl();
+      controlExit = run.exited;
+      const control = run.report as {
         detector: { outcome: string; usable: string[] };
       };
       expect(control).toMatchObject({ BrowserWindow: "function", defaultSession: "object", ipcMain: "object" });
@@ -463,6 +706,37 @@ describe("the controls, which must hold before any escape is asserted", () => {
       controls.electron = "held";
     },
     90_000,
+  );
+
+  it.runIf(ELECTRON_CONTROL_RUNS)(
+    process.platform === "win32"
+      ? "the Electron control ends after reporting (helper survival not observable: Windows has no process group)"
+      : "the Electron control ends after reporting, and none of its helpers outlives it",
+    async () => {
+      expect(controlExit, "the Electron control did not start").toBeDefined();
+      const exit = await controlExit!;
+      if (exit.reaped) {
+        // Not a failure of what the control proves: its report already held.
+        // The stack says where Chromium's shutdown was waiting, for the log.
+        // Written to stderr, as the python smoke reports, so it reaches the run log.
+        process.stderr.write(
+          `[adversarial-escapes] the Electron control was reaped ${CONTROL_EXIT_GRACE_MS} ms after reporting:\n${exit.diagnostics}\n`,
+        );
+      }
+      // A reaped control is killed, unless it exited by itself while sampled.
+      const ended = [{ code: 0, signal: null }, ...(exit.reaped ? [{ code: null, signal: "SIGKILL" }] : [])];
+      expect(ended, `the Electron control ended badly:\n${exit.diagnostics}`).toContainEqual({
+        code: exit.code,
+        signal: exit.signal,
+      });
+      // On Windows nothing below is measured (see the title); `survivor` and
+      // `escaped` stay at their unmeasured defaults there, so they are not asserted.
+      if (process.platform !== "win32") {
+        expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
+        expect(exit.escaped, `a helper had left the control's process group, out of the group kill's reach:\n${exit.diagnostics}`).toEqual([]);
+      }
+    },
+    CONTROL_EXIT_GRACE_MS + 60_000,
   );
 
   it("replaces globalThis.fetch where patch() runs", async () => {

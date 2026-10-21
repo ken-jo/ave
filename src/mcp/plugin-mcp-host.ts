@@ -252,7 +252,7 @@ export class PluginMcpHost {
     // Box the raw plugin return value iff the server included it (success path),
     // so the reverse adapter can re-surface metadata.rawResult with presence
     // preserved even when the value itself is undefined (a void plugin tool).
-    // Reads the SOLE `ave/rawResult` key; the legacy `xyz.ave/rawResult`
+    // Reads the SOLE `ave/rawResult` key; the legacy reverse-DNS `rawResult`
     // dual-read was removed alongside the `_meta` vendor-namespace rename.
     const meta = result._meta;
     let rawResult: { value: unknown } | undefined;

@@ -6,9 +6,10 @@ import {
   openSync,
   readSync,
   realpathSync,
-  type Stats,
+  type BigIntStats,
 } from "node:fs";
 import { dirname, isAbsolute, normalize } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { parseStrictJson } from "../shared/strict-json.js";
 import {
   WORKLOAD_BROKER_LIMITS,
@@ -35,34 +36,33 @@ function currentUid(): number {
   return process.geteuid();
 }
 
-function sameFile(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev
-    && left.ino === right.ino
+function sameFile(left: BigIntStats, right: BigIntStats): boolean {
+  return sameFileIdentity(left, right)
     && left.uid === right.uid
     && left.mode === right.mode
     && left.nlink === right.nlink
     && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
 }
 
-function assertCapabilityFile(stats: Stats, uid: number): void {
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+function assertCapabilityFile(stats: BigIntStats, uid: number): void {
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1n) {
     fail("capability-file-type-invalid");
   }
-  if (stats.uid !== uid) fail("capability-file-owner-invalid");
-  if ((stats.mode & 0o7777) !== 0o400) fail("capability-file-mode-invalid");
-  if (stats.size < 2 || stats.size > WORKLOAD_BROKER_LIMITS.capabilityBytes) {
+  if (stats.uid !== BigInt(uid)) fail("capability-file-owner-invalid");
+  if ((stats.mode & 0o7777n) !== 0o400n) fail("capability-file-mode-invalid");
+  if (stats.size < 2n || stats.size > BigInt(WORKLOAD_BROKER_LIMITS.capabilityBytes)) {
     fail("capability-file-size-invalid");
   }
 }
 
-function assertCapabilityDirectory(stats: Stats, uid: number): void {
+function assertCapabilityDirectory(stats: BigIntStats, uid: number): void {
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     fail("capability-directory-invalid");
   }
-  if (stats.uid !== uid) fail("capability-directory-owner-invalid");
-  if ((stats.mode & 0o7777) !== 0o700) fail("capability-directory-mode-invalid");
+  if (stats.uid !== BigInt(uid)) fail("capability-directory-owner-invalid");
+  if ((stats.mode & 0o7777n) !== 0o700n) fail("capability-directory-mode-invalid");
 }
 
 function openCapabilityDirectory(path: string): number {
@@ -130,9 +130,9 @@ export function loadWorkloadBrokerCapabilityFile(
   let bytes: Buffer | undefined;
   try {
     parentFd = openCapabilityDirectory(parentPath);
-    const openedParent = fstatSync(parentFd);
+    const openedParent = fstatSync(parentFd, { bigint: true });
     assertCapabilityDirectory(openedParent, uid);
-    const openedParentPath = lstatSync(parentPath);
+    const openedParentPath = lstatSync(parentPath, { bigint: true });
     assertCapabilityDirectory(openedParentPath, uid);
     if (realpathSync.native(parentPath) !== parentPath) {
       fail("capability-directory-symlink-invalid");
@@ -144,11 +144,11 @@ export function loadWorkloadBrokerCapabilityFile(
       capabilityPath,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     assertCapabilityFile(opened, uid);
-    bytes = readWholeFile(fd, opened.size);
-    const afterHandle = fstatSync(fd);
-    const afterPath = lstatSync(capabilityPath);
+    bytes = readWholeFile(fd, Number(opened.size));
+    const afterHandle = fstatSync(fd, { bigint: true });
+    const afterPath = lstatSync(capabilityPath, { bigint: true });
     assertCapabilityFile(afterHandle, uid);
     assertCapabilityFile(afterPath, uid);
     if (!sameFile(opened, afterHandle) || !sameFile(opened, afterPath)) {
@@ -157,11 +157,11 @@ export function loadWorkloadBrokerCapabilityFile(
     if (realpathSync.native(capabilityPath) !== capabilityPath) {
       fail("capability-path-symlink-invalid");
     }
-    const finalPath = lstatSync(capabilityPath);
+    const finalPath = lstatSync(capabilityPath, { bigint: true });
     assertCapabilityFile(finalPath, uid);
     if (!sameFile(opened, finalPath)) fail("capability-file-changed");
-    const finalParentHandle = fstatSync(parentFd);
-    const finalParentPath = lstatSync(parentPath);
+    const finalParentHandle = fstatSync(parentFd, { bigint: true });
+    const finalParentPath = lstatSync(parentPath, { bigint: true });
     assertCapabilityDirectory(finalParentHandle, uid);
     assertCapabilityDirectory(finalParentPath, uid);
     if (realpathSync.native(parentPath) !== parentPath) {

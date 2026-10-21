@@ -2,7 +2,7 @@ import type { ThemeBundle } from "./types.js";
 
 /**
  * Gallery — a quiet white gallery: ink typography on off-white, hairline frames
- * (inspired by the marketplace.former-site.invalid reference).
+ * (inspired by the former marketplace site's look).
  *
  * Canvas is a near-white #fafafa with pure-white cards, near-black ink text,
  * and a single restrained #e5e5e5 hairline frame. The primary is the ink
