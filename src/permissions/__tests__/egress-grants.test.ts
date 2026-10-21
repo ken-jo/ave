@@ -56,6 +56,18 @@ describe("EgressGrantStore", () => {
     expect(await store.matchingScope(subject, github, [])).toBeUndefined();
   });
 
+  it("uses an eligible always grant when the matching workspace grant is ineligible", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("workspace", ALL, subject, github);
+    await store.grant("always", ALL, subject, github);
+    const saved = readFileSync(file, "utf8");
+    const reloaded = new EgressGrantStore(file);
+
+    expect(await reloaded.matchingScope(subject, github, ["always"])).toBe("always");
+    expect(await reloaded.matchingScope(subject, github, ALL)).toBe("workspace");
+    expect(readFileSync(file, "utf8")).toBe(saved);
+  });
+
   it.each(["once", "conversation", "tab"] as const)("keeps %s grants separate for every approved network class", async (scope) => {
     const store = new EgressGrantStore(file);
     const owner = scope === "tab"
