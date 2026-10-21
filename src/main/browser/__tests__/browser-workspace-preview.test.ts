@@ -21,14 +21,16 @@ const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
 describe("browser preview capture", () => {
   it("captures a compressed bounded thumbnail without showing, focusing or navigating its guest", async () => {
-    const { preview, capturePage, focus, loadURL } = setup();
+    const { preview, capturePage, focus, loadURL, advance } = setup();
     const result = await preview.capture(1, TARGET);
     expect(capturePage).toHaveBeenCalledWith(undefined, { stayHidden: true, stayAwake: false });
     expect(result.width).toBe(320); expect(result.height).toBe(180);
     expect(result.dataUrl).toMatch(/^data:image\/jpeg;base64,/);
     expect(focus).not.toHaveBeenCalled(); expect(loadURL).not.toHaveBeenCalled();
+    await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-throttled");
+    advance(1500);
     await preview.capture(1, TARGET);
-    expect(capturePage).toHaveBeenCalledTimes(1);
+    expect(capturePage).toHaveBeenCalledTimes(2);
   });
   it("does no native capture for hidden, stale, missing or cross-window requests", async () => {
     const { preview, capturePage, setVisible } = setup();
@@ -52,25 +54,22 @@ describe("browser preview capture", () => {
     expect(capturePage).toHaveBeenCalledTimes(2);
   });
   it("discards late bytes after a hide followed by show, navigation, or close", async () => {
-    for (const change of ["hide", "navigation", "close"] as const) {
-      const { preview, capturePage, setVisible, setGeneration, setLive } = setup();
+    for (const change of ["hide", "navigation", "close", "guest-invalidated"] as const) {
+      const { preview, capturePage, setVisible, setGeneration, setLive, guest } = setup();
       let finish!: (value: NativeImage) => void;
       capturePage.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
       const pending = preview.capture(1, TARGET);
       if (change === "hide") { setVisible(false); preview.invalidateWindow(1); setVisible(true); }
       if (change === "navigation") setGeneration(2);
       if (change === "close") setLive(false);
+      if (change === "guest-invalidated") preview.invalidateGuest(guest.id);
       finish(image());
       await expect(pending).rejects.toThrow("stale-document");
     }
   });
-  it("rejects over-limit image bytes and evicts the bounded document cache", async () => {
-    const { preview, capturePage, advance } = setup();
+  it("rejects over-limit image bytes", async () => {
+    const { preview, capturePage } = setup();
     capturePage.mockResolvedValueOnce(image(256_001));
     await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-unavailable");
-    for (let i = 0; i < 17; i++) { advance(1500); await preview.capture(1, { ...TARGET, tabId: `browser:${i}` }); }
-    advance(1500);
-    await preview.capture(1, { ...TARGET, tabId: "browser:0" });
-    expect(capturePage).toHaveBeenCalledTimes(19);
   });
 });

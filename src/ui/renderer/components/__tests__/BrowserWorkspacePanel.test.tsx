@@ -3,7 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserWorkspacePanel } from "../BrowserWorkspacePanel.js";
-import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
+import type { BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceResult, BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 
 vi.mock("../../../../i18n/react.js", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -82,5 +82,28 @@ describe("browser workspace panel", () => {
     rerender(<BrowserWorkspacePanel {...props} visible={false} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(api.preview).toHaveBeenCalledTimes(1);
+  });
+  it("requests fresh bytes after closing a panel whose preview completes late and reopening within ten seconds", async () => {
+    const intersect = intersection();
+    const { props, api } = setup();
+    let finish!: (result: BrowserWorkspaceResult<BrowserPreview>) => void;
+    vi.mocked(api.preview).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const fresh: BrowserPreview = { tabId: "browser:one", documentGeneration: 4, dataUrl: "data:image/jpeg;base64,Yg==", width: 100, height: 50 };
+    vi.mocked(api.preview).mockResolvedValue({ ok: true, value: fresh });
+    render(<BrowserWorkspacePanel {...props} />);
+    await act(async () => { await Promise.resolve(); });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
+    act(() => intersect(true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.preview).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
+    await act(async () => { finish({ ok: true, value: { ...fresh, dataUrl: "data:image/jpeg;base64,YQ==" } }); await vi.advanceTimersByTimeAsync(1600); });
+    fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
+    act(() => intersect(true));
+    expect(document.querySelector("img")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.preview).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("img")?.getAttribute("src")).toBe(fresh.dataUrl);
   });
 });

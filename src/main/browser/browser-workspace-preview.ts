@@ -8,21 +8,17 @@ export interface BrowserWorkspacePreviewDeps {
   now?: () => number;
 }
 const CAPTURE_INTERVAL_MS = 1500;
-const CACHE_TTL_MS = 10_000;
-const CACHE_LIMIT = 16;
 
 export class BrowserWorkspacePreview {
-  private readonly inFlight = new Set<number>();
+  private readonly inFlight = new Map<number, number>();
   private readonly epochs = new Map<number, object>();
   private readonly lastCapture = new Map<number, number>();
-  private readonly cache = new Map<string, { preview: BrowserPreview; guestId: number; at: number; windowId: number }>();
   constructor(private readonly deps: BrowserWorkspacePreviewDeps) {}
   invalidateWindow(windowId: number): void {
     this.epochs.set(windowId, {});
-    for (const [key, entry] of this.cache) if (entry.windowId === windowId) this.cache.delete(key);
   }
   invalidateGuest(guestId: number): void {
-    for (const [key, entry] of this.cache) if (entry.guestId === guestId) this.cache.delete(key);
+    for (const [windowId, activeGuestId] of this.inFlight) if (activeGuestId === guestId) this.invalidateWindow(windowId);
   }
   disposeWindow(windowId: number): void {
     this.invalidateWindow(windowId);
@@ -35,9 +31,6 @@ export class BrowserWorkspacePreview {
     if (target.documentGeneration !== request.documentGeneration) throw new Error("stale-document");
     if (!this.deps.isWindowVisible(windowId)) { this.invalidateWindow(windowId); throw new Error("window-hidden"); }
     const now = (this.deps.now ?? Date.now)();
-    const key = `${windowId}:${request.tabId}:${request.documentGeneration}`;
-    const cached = this.cache.get(key);
-    if (cached && cached.guestId === target.guest.id && now - cached.at < CACHE_TTL_MS) return cached.preview;
     if (this.inFlight.has(windowId)) throw new Error("capture-busy");
     if (now - (this.lastCapture.get(windowId) ?? -Infinity) < CAPTURE_INTERVAL_MS) throw new Error("capture-throttled");
     const epoch = this.epochs.get(windowId) ?? {};
@@ -46,7 +39,7 @@ export class BrowserWorkspacePreview {
       const live = this.deps.liveTab(windowId, request.tabId);
       return this.deps.isWindowVisible(windowId) && this.epochs.get(windowId) === epoch && live?.guest === target.guest && !target.guest.isDestroyed() && live.documentGeneration === request.documentGeneration;
     };
-    this.inFlight.add(windowId);
+    this.inFlight.set(windowId, target.guest.id);
     this.lastCapture.set(windowId, now);
     try {
       let image: NativeImage;
@@ -60,10 +53,7 @@ export class BrowserWorkspacePreview {
       const height = Math.max(1, Math.floor(size.height * scale));
       const bytes = image.resize({ width, height, quality: "good" }).toJPEG(65);
       if (bytes.byteLength > BROWSER_WORKSPACE_LIMITS.previewBytes || !valid()) throw new Error("capture-unavailable");
-      const preview: BrowserPreview = { ...request, dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}`, width, height };
-      this.cache.set(key, { preview, guestId: target.guest.id, at: now, windowId });
-      while (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
-      return preview;
+      return { ...request, dataUrl: `data:image/jpeg;base64,${bytes.toString("base64")}`, width, height };
     } finally { this.inFlight.delete(windowId); }
   }
 }
