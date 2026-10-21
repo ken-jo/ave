@@ -64,6 +64,16 @@ function isAveHomeGuardSeam(id: string): boolean {
   }
 }
 
+const DEFAULT_MAX_WORKERS = 4;
+
+function vitestMaxWorkers(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_WORKERS;
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`AVE_VITEST_MAX_WORKERS must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+  return Number(value);
+}
+
 export default defineConfig({
   // This file lives under config/; anchor every path at the repository root
   // so the config behaves the same from any working directory.
@@ -100,7 +110,10 @@ export default defineConfig({
     //   - executor Layer-1 approvals race the audit-log subprocess
     // maxWorkers=4 keeps moderate parallelism for the rest of the suite
     // while leaving headroom for each test's spawned subprocesses.
-    maxWorkers: 4,
+    // AVE_VITEST_MAX_WORKERS lets a host whose CPU budget is not its core
+    // count (a CI runner under a cgroup CPU quota) size the pool to that
+    // budget; anything but a positive integer is refused, not ignored.
+    maxWorkers: vitestMaxWorkers(process.env.AVE_VITEST_MAX_WORKERS),
     // Node v25 enabled experimental WebStorage by default. Its
     // `localStorage` getter trips `Warning: --localstorage-file was
     // provided without a valid path` and shadows the jsdom implementation,
