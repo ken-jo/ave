@@ -1,5 +1,6 @@
 /**
- * `terminal_run` LLM tool — run one command in a terminal the user can see.
+ * `terminal_run` LLM tool — run in the isolated Agent companion of a visible tab.
+ * The Manual host PTY is never an agent typing target.
  *
  * The command is typed into the terminal's shell and Enter is pressed, as if
  * the user had typed it: it appears and runs in the visible terminal, under
@@ -47,6 +48,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { getWindowTerminalBlockTracker, type TerminalBlockTracker } from "../main/terminal/terminal-blocks.js";
+import type { TerminalSessionRef, TerminalSessionInfo } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import type { ApprovalMemory, ApprovalMemoryScope } from "../shared/permissions-events.js";
 import {
@@ -69,24 +71,25 @@ const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 
 /**
- * Type a command into a terminal (pty-manager `typeTerminalCommand`): reset
+ * Type a command into a terminal (pty-manager `typeAgentTerminalCommand`): reset
  * the line editor, check the shell against the operating system, paste the
  * line, and press Enter once the edit line shows exactly that line.
  */
 export type TypeTerminalCommand = (
-  tabId: string,
+  ref: TerminalSessionRef,
   ownerWindowId: number,
   line: string,
   expectedCwd: string,
+  signal?: AbortSignal,
 ) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
 
 /**
  * Check a terminal's shell against the operating system (pty-manager
- * `verifyTerminalShell`): its own process holds the terminal, and its real
+ * `verifyAgentTerminalShell`): its own process holds the terminal, and its real
  * directory is the one its markers reported.
  */
 type VerifyTerminalShell = (
-  tabId: string,
+  ref: TerminalSessionRef,
   ownerWindowId: number,
   reportedCwd: string,
 ) => Promise<{ ok: true; cwd: string } | { ok: false; reason: string; message: string }>;
@@ -95,11 +98,14 @@ type VerifyTerminalShell = (
 export interface TerminalCommandMismatch {
   readonly sessionId: string | undefined;
   readonly tabId: string;
+  readonly lane: "agent";
+  readonly terminalSessionId: string;
   readonly approvedSha256: string;
   readonly ranSha256: string;
 }
 
 export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
+  ensureAgentTerminal: (tabId: string, ownerWindowId: number, signal?: AbortSignal) => Promise<TerminalSessionInfo>;
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
   activeTerminalTabId: (windowId: number) => string | undefined;
   /**
@@ -261,6 +267,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     windowId: number;
     tabId: string;
     tracker: TerminalBlockTracker;
+    session: Extract<TerminalSessionInfo, { lane: "agent" }>;
     cwd: string;
     /** The directory as the operating system resolves it (realpath). */
     verifiedCwd: string;
@@ -284,7 +291,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       throw new Error("no terminal is bound to this conversation or shown in its window; pass tabId (call terminal_read with no arguments to list terminals)");
     }
     // A tab of another window answers exactly like a tab that does not exist.
-    const tracker = getWindowTerminalBlockTracker(tabId, windowId);
+    const session = await deps.ensureAgentTerminal(tabId, windowId);
+    if (session.lane !== "agent" || session.substrate !== "asrt") throw new Error("terminal_run requires an isolated agent terminal");
+    const tracker = getWindowTerminalBlockTracker(session, windowId);
     if (!tracker) {
       throw new Error(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
     }
@@ -299,9 +308,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (cwd === null) throw new Error(`terminal ${tabId} has not reported its working directory yet`);
     // The directory decides the rules, the project rules and the card: take
     // it from the markers only when the operating system agrees.
-    const verified = await deps.verifyShell(tabId, windowId, cwd);
+    const verified = await deps.verifyShell(session, windowId, cwd);
     if (!verified.ok) throw new Error(`terminal ${tabId} cannot take a command: ${verified.message}. Nothing was typed`);
-    return { windowId, tabId, tracker, cwd, verifiedCwd: verified.cwd };
+    return { windowId, tabId, tracker, session, cwd, verifiedCwd: verified.cwd };
   };
 
   const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
@@ -311,6 +320,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       kind: "terminal-command",
       commandSha256: sha256Hex(input.command),
       tabId: target.tabId,
+      lane: "agent",
+      terminalSessionId: target.session.terminalSessionId,
+      sandboxGeneration: target.session.sandboxGeneration,
       cwd: target.cwd,
       // The form the allowed-directory list is kept in (allowed-directories.ts),
       // so the card can compare the two as strings: a symlinked $PWD and a
@@ -327,15 +339,21 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       return terminalToolFailure((error as Error).message);
     }
     const scope = authorizedApprovalMemoryScope(ctx);
-    if (scope?.kind !== "terminal-command" || scope.commandSha256 !== sha256Hex(input.command)
+    if (scope?.kind !== "terminal-command" || scope.lane !== "agent" || scope.commandSha256 !== sha256Hex(input.command)
       || (input.tabId !== undefined && input.tabId !== scope.tabId)) {
       return terminalToolFailure("this command was not authorized for a terminal; nothing was typed. Call terminal_run again.");
     }
     const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
     const windowId = resolveSessionWindowId(sessionId, deps);
-    const tracker = windowId === null ? undefined : getWindowTerminalBlockTracker(scope.tabId, windowId);
+    const tracker = windowId === null ? undefined : getWindowTerminalBlockTracker(scope, windowId);
     if (windowId === null || !tracker) {
       return terminalToolFailure(`terminal ${scope.tabId} is no longer open; nothing was typed`);
+    }
+    let live: TerminalSessionInfo;
+    try { live = await deps.ensureAgentTerminal(scope.tabId, windowId, ctx.abortSignal); }
+    catch (error) { return terminalToolFailure(error instanceof Error ? error.message : "agent terminal unavailable"); }
+    if (live.lane !== "agent" || live.terminalSessionId !== scope.terminalSessionId || live.sandboxGeneration !== scope.sandboxGeneration) {
+      return terminalToolFailure("the approved agent terminal changed; nothing was typed. Call terminal_run again.");
     }
     if (tracker.currentCwd() !== scope.cwd) {
       return terminalToolFailure(
@@ -343,7 +361,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       );
     }
     ctx.abortSignal?.throwIfAborted();
-    const typed = await deps.typeCommand(scope.tabId, windowId, input.command, scope.cwd);
+    const typed = await deps.typeCommand(scope, windowId, input.command, scope.cwd, ctx.abortSignal);
     if (!typed.ok) {
       return terminalToolFailure(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
@@ -353,7 +371,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
     if (block === null) {
       return {
-        ...fenceTerminalData({ tabId: scope.tabId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
+        ...fenceTerminalData({ tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
         isError: true,
       };
     }
@@ -363,13 +381,13 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (block.command.trim() !== input.command.trim()) {
       deps.auditMismatch({
         sessionId,
-        tabId: scope.tabId,
+        tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
         approvedSha256: sha256Hex(input.command),
         ranSha256: sha256Hex(block.command),
       });
       return {
         ...fenceTerminalData({
-          tabId: scope.tabId,
+          tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
           typed: true,
           error: t("be_terminalRun.ranDifferentCommand", { tabId: scope.tabId }),
           finished,
@@ -379,11 +397,11 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       };
     }
     return fenceTerminalData({
-      tabId: scope.tabId,
+      tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId,
       typed: true,
       finished,
       block: withOutputBudget([block])[0],
-      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }) }),
+      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }), continuation: { tabId: scope.tabId, lane: "agent", terminalSessionId: scope.terminalSessionId, blockId: block.id } }),
     });
   };
 

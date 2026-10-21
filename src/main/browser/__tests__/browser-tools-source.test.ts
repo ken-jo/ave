@@ -2,7 +2,7 @@
  * The agent browser tools reach pages only through an allow-list of DevTools
  * methods: accessibility reads, DOM node lookups, synthesized input and a
  * screenshot. No script evaluation, cookies, storage, network bodies,
- * downloads or file uploads — not as tools, and not as CDP calls a tool
+ * downloads or unselected file uploads — not as tools, and not as CDP calls a tool
  * could make on the model's behalf.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -29,6 +29,7 @@ const ALLOWED_CDP_METHODS = new Set([
   "DOM.discardSearchResults",
   "DOM.describeNode",
   "DOM.focus",
+  "DOM.setFileInputFiles",
   "DOM.scrollIntoViewIfNeeded",
   "DOM.getContentQuads",
   "DOM.getNodeForLocation",
@@ -36,6 +37,10 @@ const ALLOWED_CDP_METHODS = new Set([
   "Input.dispatchTouchEvent",
   "Input.dispatchKeyEvent",
   "Input.insertText",
+  "Input.setInterceptDrags",
+  "Input.dragIntercepted",
+  "Input.dispatchDragEvent",
+  "Input.cancelDragging",
   "Page.enable",
   "Page.captureScreenshot",
   "Page.getFrameTree",
@@ -67,12 +72,24 @@ describe("browser tool CDP surface", () => {
       /\bStorage\./,
       /\bFetch\./,
       /\bsetDownloadBehavior\b/,
-      /\bsetFileInputFiles\b/,
+
       /\bexecuteJavaScript\b/,
       /\.cookies\b/,
     ]) {
       expect(source, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
     }
+  });
+
+  it("restricts the file effect to broker-produced paths and a live file input", () => {
+    const actions = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
+    const guard = readFileSync(join(REPO, "src/main/browser/browser-action-guard.ts"), "utf8");
+    const execute = readFileSync(join(REPO, "src/tools/browser-tools-execute.ts"), "utf8");
+    expect(actions.match(/send\("DOM\.setFileInputFiles"/g)).toHaveLength(1);
+    expect(actions).toContain("selection.dispatch(options");
+    expect(guard).toContain('const upload = method === "DOM.setFileInputFiles"');
+    expect(guard).toContain('containsNode(document.root, inputNode)');
+    expect(guard).toContain('described.node?.nodeName?.toUpperCase() !== "INPUT"');
+    expect(execute).toContain('[BROWSER_TOOL.upload]: ["tabId", "ref"]');
   });
 
   it("keeps dynamic dispatch confined to the checked session adapter", () => {
@@ -84,7 +101,7 @@ describe("browser tool CDP surface", () => {
     expect(source).toContain("const sent = session.send(method, params);");
   });
 
-  it("sends past the action guard only the touch cancel that closes a press", () => {
+  it("limits unguarded input to noninteractive sequence teardown", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
     const start = source.indexOf("async function targetFor(");
     const body = source.slice(start, source.indexOf("\n}\n", start));
@@ -92,6 +109,9 @@ describe("browser tool CDP surface", () => {
     // this one, which presses nothing: it only ends the window's open sequence.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
+      'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',
+      'session.send("Input.cancelDragging")',
+      'session.send("Input.setInterceptDrags", { enabled: false })',
     ]);
   });
 });

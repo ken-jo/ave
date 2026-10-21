@@ -34,7 +34,7 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
-import { typeTerminalCommand, verifyTerminalShell } from "../../main/terminal/pty-manager.js";
+import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 
@@ -156,6 +156,7 @@ export async function setupWorkflowStores(
     // call time: the loops are wired after this step.
     ...(ctx.host.desktop !== undefined
       ? (() => {
+        const desktop = ctx.host.desktop!;
         const windowIdForHostedSession = (sessionId: string): number | null => {
           if (ctx.findLoopBySessionId(sessionId) !== undefined) {
             const holder = findSessionMainWindowContents(sessionId);
@@ -184,8 +185,9 @@ export async function setupWorkflowStores(
             // A pane chat's own terminal (or its page, which has none).
             boundSurface: (windowId: number, hostSessionId: string) =>
               browserTabRegistry.conversationSurface(windowId, hostSessionId),
-            typeCommand: typeTerminalCommand,
-            verifyShell: verifyTerminalShell,
+            ensureAgentTerminal,
+            typeCommand: typeAgentTerminalCommand,
+            verifyShell: verifyAgentTerminalShell,
             auditMismatch: (mismatch) => {
               ctx.bootAuditLogger.log({
                 timestamp: new Date().toISOString(),
@@ -201,16 +203,11 @@ export async function setupWorkflowStores(
             windowIdForHostedSession,
             liveOriginSessionId,
             tabs: browserTabRegistry,
+            pickUploadFiles: desktop.pickBrowserUploadFiles,
             // Page actions (CDP) load on first use, outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
-              return createBrowserPageActions(browserTabRegistry, browserOrigin, (guest) => {
-                const host = guest.hostWebContents;
-                const window = host && !host.isDestroyed() ? mainWindowForContents(host) : null;
-                if (!window || window.isDestroyed()) return null;
-                const bounds = window.getContentBounds();
-                return { x: bounds.x, y: bounds.y, windowId: window.id };
-              });
+              return createBrowserPageActions(browserTabRegistry, browserOrigin, desktop.browserGuestContentOrigin);
             },
           },
         };

@@ -1,6 +1,7 @@
+import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
 import { clearActiveSurface, useActiveSurface, type ActiveSurface } from "../preview/active-surface.js";
 import { BoundSurfaceChip } from "./BoundSurfaceChip.js";
-import { directoryName, hostOf, useGuestNavigation, useWebSurfaceGuest, webPanelTitle } from "./MainSurfacePanels.js";
+import { directoryName, hostOf, webPanelTitle } from "./MainSurfacePanels.js";
 
 /**
  * The rail side chat's target chip: the terminal or page its tools act on

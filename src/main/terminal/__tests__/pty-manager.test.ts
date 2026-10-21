@@ -1,3 +1,5 @@
+import { spawnTerminal as spawnLane, writeTerminal as writeLane, resizeTerminal as resizeLane, ensureAgentTerminal, typeAgentTerminalCommand, terminalTabOwnerWindow } from "../pty-manager.js";
+import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker } from "../../../__tests__/support/terminal-agent-fixture.js";
 /**
  * pty-manager unit tests (#1444). Stub ASRT (gate + wrap + cleanup) + the
  * sandbox-capability shell-containment gate + node-pty, and assert the
@@ -18,12 +20,14 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
+const nativePlatform = process.platform;
+let additionalProjectDirectories: string[] = [];
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
@@ -47,6 +51,17 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
     "/home/u/.config",
     "/home/u/Library/LaunchAgents",
   ],
+}));
+
+// The real project resolver consumes this host-owned permission-store fixture.
+vi.mock("../../../permissions/permission-settings-store.js", async () => ({
+  ...await vi.importActual<typeof import("../../../permissions/permission-settings-store.js")>("../../../permissions/permission-settings-store.js"),
+  readPermissionSettings: () => ({ permissions: { additionalDirectories: additionalProjectDirectories } }),
+}));
+vi.mock("../../../workload/runtime.js", () => ({
+  isWorkloadBrokerActive: () => false,
+  getActiveWorkloadBrokerProjection: () => undefined,
+  isActiveWorkloadBrokerCwd: () => false,
 }));
 
 // ─── macOS own-tty handoff — platform + fifo controllable per test ──
@@ -78,8 +93,10 @@ vi.mock("../terminal-tty-handoff.js", async () => {
 
 // ─── shell-containment gate ─────────────────────────────────
 let shellContained = true;
+let sandboxGeneration = "0";
 vi.mock("../../../permissions/sandbox-capability.js", () => ({
   isActiveSandboxShellContained: () => shellContained,
+  getSandboxGeneration: () => sandboxGeneration,
 }));
 
 // ─── write-jail derivation (deterministic) ──────────────────
@@ -89,6 +106,7 @@ vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
 
 // ─── env sanitizer (identity-ish) ───────────────────────────
 vi.mock("../../../tools/safe-env.js", () => ({
+  buildHostShellChildEnv: () => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin" }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
     ...env,
     PATH: "/usr/bin",
@@ -188,17 +206,12 @@ vi.mock("node-pty", () => ({
 
 // Module under test — imported AFTER mocks.
 import {
-  spawnTerminal,
   terminalOwnedBy,
-  writeTerminal,
-  resizeTerminal,
   killTerminal,
   killAllTerminals,
   killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
-  typeTerminalCommand,
-  verifyTerminalShell,
   sandboxedShellVerdict,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
@@ -208,7 +221,7 @@ import {
 // to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
-import { USER_INPUT_QUIET_MS, getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
+import { USER_INPUT_QUIET_MS, getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
 import { SHELL_INTEGRATION_NONCE_FILE } from "../shell-integration.js";
 
 /**
@@ -233,8 +246,12 @@ const emit: TerminalEmit = (event, payload, ownerWindowId) => {
 };
 
 beforeEach(() => {
+  // Fake wrapped PTYs exercise the supported backend on every CI host.
+  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   gateActive = true;
+  additionalProjectDirectories = [];
   shellContained = true;
+  sandboxGeneration = "0";
   emitted = [];
   emittedOwners = [];
   lastPty = null;
@@ -264,6 +281,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetTerminalsForTest();
   rmSync(homeParent, { recursive: true, force: true });
+  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
 });
 
 describe("pty-manager fail-closed", () => {
@@ -391,7 +409,7 @@ describe("pty-manager happy path (fs-contained)", () => {
   it("streams pty output to the emitter and buffers it for replay", async () => {
     await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("hello");
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:0000000a-1", chunk: "hello" } });
+    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: "hello" }) }));
   });
 
   it("forwards input + resize to the pty", async () => {
@@ -422,7 +440,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // no second pty spawn.
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     // ring replayed.
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:0000000a-1", chunk: "scrollback" } });
+    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: "scrollback" }) }));
   });
 
   it("shares an in-flight same-tab spawn instead of creating two PTYs", async () => {
@@ -482,7 +500,7 @@ describe("pty-manager lifecycle", () => {
     closing.emitExit(0);
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
-    expect(await next).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(await next).toMatchObject({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
     expect(ptySpawnMock).toHaveBeenCalledTimes(2);
     killTerminal("terminal:0000000a-1");
     lastPty?.emitExit(0);
@@ -570,6 +588,62 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
+  it("admits a user-approved additional project subtree and anchors only that validated cwd", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "packages", "app");
+    mkdirSync(cwd, { recursive: true });
+    additionalProjectDirectories = [project];
+    const canonical = canonicalizePathForMatch(cwd);
+    const result = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd });
+    expect(result).toMatchObject({ ok: true, session: { initialCwd: canonical } });
+    expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ cwd: canonical });
+    const options = wrapWorkerCommandMock.mock.calls[0]?.[1] as { filesystem: { allowWrite: string[] } };
+    expect(options.filesystem.allowWrite).toEqual([canonical, createdHomes[0]]);
+    expect(options.filesystem.allowWrite).not.toContain(project);
+    expect(options.filesystem.allowWrite).not.toContain(homedir());
+  });
+
+  it("rejects an unapproved outside directory and a sibling with the approved root's prefix", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    const sibling = project + "-sibling";
+    for (const directory of [project, outside, sibling]) mkdirSync(directory);
+    additionalProjectDirectories = [project];
+    for (const [index, cwd] of [outside, sibling].entries()) {
+      expect(await spawnTerminal({ tabId: `terminal:0000000a-${index + 1}`, cwd })).toMatchObject({ ok: false, reason: "bad-request" });
+    }
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlink escape from an approved project", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    mkdirSync(project);
+    mkdirSync(outside);
+    const link = join(project, "escape");
+    symlinkSync(outside, link, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [project];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: link })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a user-approved project alias before matching its real subtree", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "app");
+    mkdirSync(cwd, { recursive: true });
+    const alias = join(homeParent, "project-alias");
+    symlinkSync(project, alias, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [alias];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd })).toMatchObject({ ok: true, session: { initialCwd: canonicalizePathForMatch(cwd) } });
+  });
+
+  it("never anchors an Agent jail at the whole user HOME", async () => {
+    additionalProjectDirectories = [homedir()];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: homedir() })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a relative (non-absolute) cwd", async () => {
     const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: "relative/path" });
     expect(res.ok).toBe(false);
@@ -596,7 +670,8 @@ describe("pty-manager window ownership (two windows)", () => {
   });
 
   it("addresses every output and exit to the owning window only", async () => {
-    await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    const original = await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    if (!original.ok) throw new Error("expected terminal");
     const first = lastPty!;
     await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 });
     const second = lastPty!;
@@ -610,7 +685,17 @@ describe("pty-manager window ownership (two windows)", () => {
       ["data", "terminal:0000000b-1", 2],
       ["exit", "terminal:0000000a-1", 1],
     ]);
-    // An exited shell no longer holds its id.
+    // Logical ownership survives shell exit until the trusted tab closes.
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(false);
+    expect(getWindowTerminalBlockTracker(original.session, 1)?.hasExited()).toBe(true);
+    expect(getWindowTerminalBlockTracker(original.session, 2)).toBeUndefined();
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 2 })).toMatchObject({ ok: false, reason: "bad-request" });
+    const replacement = await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    if (!replacement.ok) throw new Error("expected replacement terminal");
+    expect(replacement.session.terminalSessionId).not.toBe(original.session.terminalSessionId);
+    expect(getWindowTerminalBlockTracker(original.session, 1)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(replacement.session, 1)).toBeDefined();
+    killTerminal("terminal:0000000a-1");
     expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(true);
   });
 });
@@ -639,7 +724,7 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
     // Not attached to the dying shell: it waits for it.
     expect(settled).toBe(false);
     old.emitExit(129);
-    expect(await restored).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(await restored).toMatchObject({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
     expect(ptySpawnMock).toHaveBeenCalledTimes(3);
     expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
     expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(false);
@@ -650,7 +735,7 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
     expect(killTerminalsOwnedBy(1)).toBe(1);
     const restored = await spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 3 });
     expect((await starting).ok).toBe(false);
-    expect(restored).toEqual({ ok: true, tabId: "terminal:0000000a-2", replayed: false });
+    expect(restored).toMatchObject({ ok: true, tabId: "terminal:0000000a-2", replayed: false });
     expect(terminalOwnedBy("terminal:0000000a-2", 3)).toBe(true);
   });
 
@@ -904,6 +989,38 @@ describe("pty-manager typing an approved agent command", () => {
     };
     return { pty, mark, prompt, shell };
   }
+
+  it("aborts between paste and Enter without sending cancellation input to another command", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    const abort = new AbortController();
+    const respond = pty.respond;
+    pty.respond = (data) => {
+      respond?.(data);
+      if (data.startsWith("\u001b[200~")) abort.abort();
+    };
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w", abort.signal)).resolves.toMatchObject({ ok: false, reason: "aborted" });
+    expect(pty.written).toEqual(["\u0003", PASTE("echo approved")]);
+    writeTerminal(TAB, "echo human\r");
+    await Promise.resolve();
+    expect(pty.written.at(-1)).toBe("echo human\r");
+  });
+
+  it("refuses a changed containment generation before any agent byte", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    sandboxGeneration = "1";
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(pty.written).toEqual([]);
+  });
+
+  it("rechecks containment after an awaited OS reading", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    readForegroundMock.mockImplementationOnce(async () => { shellContained = false; return foregroundReading; });
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(pty.written).toEqual([]);
+  });
 
   it("resets the line editor, checks the shell with the operating system, then pastes the line, and presses Enter once it shows", async () => {
     const { pty, mark, prompt } = await zshTerminal(3);
@@ -1174,7 +1291,7 @@ describe("pty-manager cancellation during terminal acquisition", () => {
     lastPty?.emitData("late output");
     expect(__terminalSessionCountForTest()).toBe(0);
     expect(getTerminalBlockTracker(TAB_ID)).toBeUndefined();
-    expect(emitted).toEqual([]);
+    expect(emitted).toMatchObject([]);
   }
 
   beforeEach(() => { needsOwnTtyGrant = true; });
@@ -1277,6 +1394,36 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     needsOwnTtyGrant = true;
   });
 
+  it("publishes initialization once for an in-flight remount and cancellation closes no tab-owned shell", async () => {
+    let entered!: () => void;
+    const deliveryEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let deliver!: () => void;
+    deliverMock.mockImplementationOnce(() => {
+      lastPty!.emitData("prefix");
+      entered();
+      return new Promise<void>((resolve) => { deliver = resolve; });
+    });
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await deliveryEntered;
+    expect(emitted).toEqual([]);
+    const remount = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    const abort = new AbortController();
+    const cancelledWait = ensureAgentTerminal(MAC_TAB, 1, abort.signal);
+    abort.abort(new Error("cancelled caller"));
+    await expect(cancelledWait).rejects.toThrow("cancelled caller");
+    expect(lastPty!.killed).toBe(false);
+    lastPty!.emitData("suffix");
+    expect(emitted).toEqual([]);
+    deliver();
+    const [first, second] = await Promise.all([starting, remount]);
+    if (!first.ok || !second.ok) throw new Error("expected terminal");
+    expect(second.session.terminalSessionId).toBe(first.session.terminalSessionId);
+    expect(second.replayed).toBe(true);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ event: "data", payload: { lane: "agent", terminalSessionId: first.session.terminalSessionId, chunk: "prefixsuffix" } });
+    expect(lastPty!.written).toEqual([]);
+  });
+
   it("spawns the trampoline first, wraps with that pty's own slave path, then hands it the wrapped shell", async () => {
     const res = await spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
     expect(res.ok).toBe(true);
@@ -1342,7 +1489,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(emitted.some((e) => e.event === "exit")).toBe(false);
 
     // Not "still-closing": the restore got a fresh shell for its own window.
-    expect(await restored).toEqual({ ok: true, tabId: MAC_TAB, replayed: false });
+    expect(await restored).toMatchObject({ ok: true, tabId: MAC_TAB, replayed: false });
     expect(ptySpawnMock).toHaveBeenCalledTimes(2);
     expect(__terminalSessionCountForTest()).toBe(1);
     expect(terminalOwnedBy(MAC_TAB, 3)).toBe(true);
@@ -1597,5 +1744,71 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
       ok: false,
       reason: "cwd-unverified",
     });
+  });
+});
+
+
+describe("manual host and isolated agent lanes", () => {
+  const tabId = "terminal:ab12cd34-1";
+  it("reports the native Windows Agent backend unavailable even with an attested sandbox", async () => {
+    const previous = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      expect(await spawnTerminal({ tabId, ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "not-shell-contained" });
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(process, "platform", { value: previous, configurable: true }); }
+  });
+
+  it("opens Manual with real HOME while sandbox is disabled, without installing integration", async () => {
+    gateActive = false;
+    shellContained = false;
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const result = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8, cwd: tmpdir() });
+      expect(result).toMatchObject({ ok: true, session: { lane: "manual", substrate: "host", initialCwd: realpathSync(tmpdir()), currentCwd: null, shellIntegration: false } });
+      expect(createdHomes).toEqual([]);
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(ptySpawnMock.mock.calls[0]?.[0]).toBe(process.execPath);
+      expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ env: { HOME: process.env.HOME ?? "" } });
+      expect(await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "not-shell-contained" });
+      if (!result.ok) throw new Error("expected manual terminal");
+      expect(await typeAgentTerminalCommand(result.session, 8, "echo no", "/workspace")).toMatchObject({ ok: false, reason: "no-terminal" });
+      expect(lastPty!.written).toEqual([]);
+      expect(writeLane(result.session, "echo user\r")).toEqual({ ok: true });
+      expect(lastPty!.written).toEqual(["echo user\r"]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("reserves ownership despite manual interpreter failure and permits its contained companion", async () => {
+    vi.stubEnv("SHELL", "/missing/interactive-shell");
+    const failed = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+    expect(failed.ok).toBe(false);
+    expect(terminalTabOwnerWindow(tabId)).toBe(8);
+    expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 9 })).toMatchObject({ ok: false, reason: "bad-request" });
+    vi.stubEnv("SHELL", "/bin/bash");
+    try {
+      const agent = await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 });
+      expect(agent).toMatchObject({ ok: true, session: { lane: "agent", substrate: "asrt", sandboxGeneration: "0" } });
+      const abort = new AbortController(); abort.abort();
+      await expect(ensureAgentTerminal("terminal:abcdabcd-2", 8, abort.signal)).rejects.toThrow();
+      await expect(ensureAgentTerminal("terminal:abcdabcd-2", 8)).rejects.toThrow("no terminal tab");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("gives both lanes different identities, rejects stale input and closes both PTYs", async () => {
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const manual = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+      const agent = await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 });
+      if (!manual.ok || !agent.ok) throw new Error("expected both lanes");
+      expect(agent.session.terminalSessionId).not.toBe(manual.session.terminalSessionId);
+      expect(writeLane({ ...manual.session, terminalSessionId: "retired" }, "bad")).toEqual({ ok: false, error: "stale-terminal-session" });
+      expect(resizeLane(agent.session, 100, 30)).toEqual({ ok: true });
+      expect(spawnedPtys[0]!.resized).toEqual([]);
+      expect(spawnedPtys[1]!.resized).toEqual([[100, 30]]);
+      killTerminal(tabId);
+      expect(spawnedPtys.every((pty) => pty.killed)).toBe(true);
+      expect(terminalTabOwnerWindow(tabId)).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
   });
 });

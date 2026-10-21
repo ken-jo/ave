@@ -60,9 +60,10 @@ export type ApprovalMemoryScope =
       /** The concrete target of this invocation, independent of origin memory. */
       readonly tabId?: string;
       readonly documentId?: number;
+      readonly controlGeneration?: number;
     }
   // Closing tabs the agent opened. A user-opened tab is never covered.
-  | { readonly kind: "browser-agent-tabs"; readonly tabId?: string; readonly documentId?: number }
+  | { readonly kind: "browser-agent-tabs"; readonly tabId?: string; readonly documentId?: number; readonly controlGeneration?: number }
   // One exact command typed into one of the user's terminals, in the
   // directory its shell reported. `tabId` is the concrete target of this
   // invocation (resolved before the card is shown, so switching terminals
@@ -75,6 +76,9 @@ export type ApprovalMemoryScope =
       readonly kind: "terminal-command";
       readonly commandSha256: string;
       readonly tabId: string;
+      readonly lane: "agent";
+      readonly terminalSessionId: string;
+      readonly sandboxGeneration: string;
       readonly cwd: string;
       readonly cwdForMatch: string;
     };

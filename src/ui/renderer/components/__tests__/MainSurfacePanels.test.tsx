@@ -22,6 +22,8 @@ import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.j
 import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
+import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
+import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import { BrowserTabRegistry, type BrowserGuest } from "../../../../main/browser/browser-tab-registry.js";
 
@@ -42,7 +44,7 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 function terminalApi() {
   return {
-    spawn: vi.fn(async () => ({ ok: true })),
+    spawn: vi.fn(async (ref) => ({ ok: true, tabId: ref.tabId, replayed: false, session: terminalSessionFixture(ref.tabId, ref.lane) })),
     input: vi.fn(async () => undefined),
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
@@ -105,7 +107,7 @@ describe("useMainSurfaces", () => {
     act(() => { page = result.current.create("browser", "https://example.com/"); });
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} />
         <WebSurfaceLayer api={makeMockAveApi().api as never} />
       </TooltipProvider>,
     );
@@ -141,7 +143,7 @@ describe("SurfacePane", () => {
     tabs.guestAttached(next, 1);
     const pendingAction = record.actions.signal;
     const stop = vi.fn(async (id: string) => ({ ok: tabs.stop(1, id) }));
-    const api = { ...makeMockAveApi().api, browserTabs: { stop, bindTab: vi.fn(), onTabOp: () => () => {}, onControl: () => () => {} } };
+    const api = { ...makeMockAveApi().api, browserTabs: { stop, bindTab: vi.fn(), getState: async () => ({ revision: 0, tabs: [] }), onTabOp: () => () => {}, onControl: () => () => {} } };
     const navigate = vi.fn(() => {
       next.url = "https://a.example/user-chosen";
       tabs.navigationStarted(next.id, next.url);
@@ -153,7 +155,7 @@ describe("SurfacePane", () => {
     setWebSurfaceElement(tabId, element);
     const unregister = registerBrowserTabHost(api as never, { sessionId: () => null, hasTab: () => false, selectTab: () => {}, closeTab: () => {} });
     try {
-      render(<TooltipProvider><SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} onCwd={() => {}} /></TooltipProvider>);
+      render(<TooltipProvider><SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} /></TooltipProvider>);
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
       await act(async () => {
         if (action === "address") {
@@ -180,7 +182,7 @@ describe("SurfacePane", () => {
     const terminal = terminalApi();
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("pane-header").textContent).toMatch(/ 2$/);
@@ -192,7 +194,7 @@ describe("SurfacePane", () => {
     const onNavigate = vi.fn();
     render(
       <TooltipProvider>
-        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
@@ -215,6 +217,9 @@ describe("SurfacePane", () => {
       browserTabs: {
         bindTab: vi.fn(async () => ({ ok: true as const })),
         stop,
+        pause: stop,
+        resume: vi.fn(async () => ({ ok: true as const })),
+        getState: vi.fn(async () => ({ revision: 0, tabs: [] })),
         onTabOp: vi.fn(() => () => undefined),
         onControl: vi.fn((handler: (state: BrowserTabControlState) => void) => {
           emitControl = handler;
@@ -228,7 +233,7 @@ describe("SurfacePane", () => {
       const page = { ...surface("browser"), url: "https://a.example/" };
       render(
         <TooltipProvider>
-          <SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
+          <SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} />
         </TooltipProvider>,
       );
       const address = screen.getByTestId("web-panel-address");
@@ -239,7 +244,7 @@ describe("SurfacePane", () => {
       expect(onNavigate).toHaveBeenLastCalledWith(page.tabId, "https://b.example/");
       expect(stop).toHaveBeenCalledWith(page.tabId);
 
-      act(() => emitControl({ agentControlledTabIds: [page.tabId] }));
+      act(() => emitControl(browserControlFixture([page.tabId])));
       expect(screen.getByTestId("web-panel")).toContainElement(screen.getByTestId("agent-browser-control-badge"));
       fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
       expect(stop).toHaveBeenLastCalledWith(page.tabId);

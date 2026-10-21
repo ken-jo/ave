@@ -56,6 +56,8 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     createAudioCaptureSurface: unavailable,
     createFloatingDockSurface: unavailable,
     pickFolders: unavailable,
+    pickBrowserUploadFiles: unavailable,
+    browserGuestContentOrigin: unavailable,
     prepareRelease: () => ({}),
     beforeShutdown: () => {},
     ...overrides,

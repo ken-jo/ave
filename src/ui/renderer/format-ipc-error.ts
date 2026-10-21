@@ -50,6 +50,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Browser tabs (agent browser tools) ──
   "bad-request": "formatIpcError.invalidRequest",
   "no-such-tab": "formatIpcError.notFound",
+  "not-resumable": "formatIpcError.notResumable",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
   "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",
   "tailnet-sharing-disabled": "formatIpcError.tailnetSharingDisabled",
@@ -217,6 +218,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "not-found": "formatIpcError.notFound",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
+  "stale-terminal-session": "formatIpcError.staleTerminalSession",
   "no-such-request": "formatIpcError.noSuchRequest",
   "not-registered": "formatIpcError.notRegistered",
   "already-resolved": "formatIpcError.alreadyResolved",

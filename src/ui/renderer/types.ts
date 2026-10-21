@@ -11,10 +11,6 @@ import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js"
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
-  BrowserTabBindRequest,
-  BrowserTabBindResult,
-  BrowserTabControlState,
-  BrowserTabOpRequest,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
@@ -128,7 +124,6 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
-import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -589,12 +584,8 @@ export type AveApi = {
    * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
    * and main's tab-op / agent-control events. Optional for test fixtures.
    */
-  browserTabs?: {
-    bindTab: (request: BrowserTabBindRequest) => Promise<BrowserTabBindResult>;
-    stop: (tabId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    onTabOp: (handler: (request: BrowserTabOpRequest) => void) => () => void;
-    onControl: (handler: (state: BrowserTabControlState) => void) => () => void;
-  };
+  browserTabs?: import("../../shared/browser-surface.js").BrowserTabsApi;
+  browserWorkspace?: import("../../shared/browser-workspace.js").BrowserWorkspaceApi;
   /** Report the browser/terminal tab the user is looking at (a hint for agent tools). */
   setActiveSurface?: (surface: ActiveWorkspaceSurface | null) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
@@ -604,33 +595,7 @@ export type AveApi = {
    * Optional so test fixtures casting a partial object to AveApi keep compiling
    * — production preload always defines it.
    */
-  terminal?: {
-    spawn: (payload: { tabId: string; cwd?: string; cols?: number; rows?: number }) => Promise<
-      | { ok: true; tabId: string; replayed: boolean }
-      | { ok: false; reason: string; message: string }
-    >;
-    input: (tabId: string, data: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    resize: (
-      tabId: string,
-      cols: number,
-      rows: number,
-    ) => Promise<{ ok: true } | { ok: false; error: string }>;
-    kill: (tabId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    onData: (handler: (payload: { tabId: string; chunk: string }) => void) => () => void;
-    onExit: (
-      handler: (payload: { tabId: string; exitCode: number; signal?: number }) => void,
-    ) => () => void;
-    /** Command-block summaries of one tab, newest first (no output). */
-    listBlocks: (tabId: string) => Promise<
-      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
-      | { ok: false; error: string }
-    >;
-    /** One command block with its plain-text output. */
-    getBlock: (tabId: string, blockId: number) => Promise<
-      | { ok: true; block: TerminalBlock }
-      | { ok: false; error: string }
-    >;
-  };
+  terminal?: import("../../shared/terminal-session.js").TerminalApi;
   /**
    * Side chat (workspace rail) — a second, independently-streaming chat session
    * driven by a dedicated ConversationLoop in main. `onStream` / `onFallback`

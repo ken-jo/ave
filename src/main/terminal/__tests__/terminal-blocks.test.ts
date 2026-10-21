@@ -1,3 +1,4 @@
+import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 /**
  * Command blocks parsed from a terminal's output stream: OSC 133 boundaries,
  * the Enter-split fallback, chunk splits, text normalization and the bounds.
@@ -388,14 +389,14 @@ describe("terminal block registry", () => {
     __resetTerminalBlocksForTest();
     const first = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     const second = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", first, 1);
-    registerTerminalBlockTracker("terminal:2", second, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), first, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:2"), second, 1);
     expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1", "terminal:2"]);
     const replacement = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", replacement, 1);
-    expect(getTerminalBlockTracker("terminal:1")).toBe(replacement);
-    unregisterTerminalBlockTracker("terminal:1");
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), replacement, 1);
+    expect(getTerminalBlockTracker(terminalSessionFixture("terminal:1"))).toBe(replacement);
+    unregisterTerminalBlockTracker(terminalSessionFixture("terminal:1"));
+    expect(getTerminalBlockTracker(terminalSessionFixture("terminal:1"))).toBeUndefined();
     __resetTerminalBlocksForTest();
     expect(listTerminalBlockTabs(1)).toEqual([]);
   });
@@ -403,14 +404,14 @@ describe("terminal block registry", () => {
   it("scopes listing and lookup to the window that owns the terminal", () => {
     __resetTerminalBlocksForTest();
     const mine = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", mine, 1);
-    registerTerminalBlockTracker("terminal:2", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), 2);
-    registerTerminalBlockTracker("terminal:3", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), null);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), mine, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:2"), new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), 2);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:3"), new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), null);
     expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
     expect(listTerminalBlockTabs(2).map((entry) => entry.tabId)).toEqual(["terminal:2"]);
-    expect(getWindowTerminalBlockTracker("terminal:1", 1)).toBe(mine);
-    expect(getWindowTerminalBlockTracker("terminal:1", 2)).toBeUndefined();
-    expect(getWindowTerminalBlockTracker("terminal:3", 1)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:1"), 1)).toBe(mine);
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:1"), 2)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:3"), 1)).toBeUndefined();
     __resetTerminalBlocksForTest();
   });
 });

@@ -15,11 +15,10 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.on("before-input-event", (_event, input) => {
     if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
   });
-  contents.on("before-mouse-event", (_event, mouse) => {
-    if (isUserActionInputType(mouse.type)) browserTabRegistry.userInput(guestId, mouse);
-  });
   contents.on("input-event", (_event, input) => {
-    if (/^(?:touch|gesture)|^pointerDown$/.test(input.type)) browserTabRegistry.userInput(guestId, input);
+    // Observe each native mouse receipt once, instead of also consuming its
+    // earlier normalized copy as a second intervention.
+    if (/^(?:touch|gesture)|^pointerDown$|^mouse(?:Down|Up|Wheel)$/.test(input.type)) browserTabRegistry.userInput(guestId, input);
   });
   contents.debugger.on("message", (_event, method) => {
     if (method === "DOM.documentUpdated") browserTabRegistry.documentChanged(guestId);

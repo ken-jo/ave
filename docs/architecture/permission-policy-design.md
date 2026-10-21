@@ -548,12 +548,134 @@ credential files. The actual environment remains owned by
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
 
+## Shared Browser Control And Effects
+
+Browser sandboxing and context isolation apply in every control mode. Agent
+origin consent and site capability consent are separate from that baseline and
+from each other. Origin approval is not a complete browser network firewall.
+The [architecture](architecture.md#browser-and-terminal-workspace) owns state,
+tab lifetimes, and presentation; this section owns effect authorization.
+
+The host resolves the actual session actor and direct parent from trusted tool
+context. Window discovery does not authorize another conversation's owned tab.
+Owned-tab access allows the owner, the owner's direct parent, or a caller whose
+direct parent is that owner. The relation spans one parent/child step in either
+direction, never a grandchild, sibling, or unrelated session. A current lease
+still belongs exclusively to its exact actor.
+Agent mutation needs a valid scoped control lease and live `agent-active` mode.
+Recognized human input or Stop persistently pauses mutation until explicit trusted-chrome
+Resume. Page observation may continue under its ordinary policy. Resume changes
+the control generation; an earlier approval must fail even if tab and origin
+look unchanged. Effects recheck window, actor, lease, origin, document, target
+reference, and control generation across asynchronous boundaries.
+
+Mouse attribution is bounded dispatch/receipt correlation because native mouse
+receipts expose no injected-versus-human bit. The host arms exact guest,
+button, coordinates, click count, down/up phase, and order once per receipt;
+unmatched or expired input revokes the sequence and pauses mutation. A matching
+human click during the armed interval cannot be distinguished. This is not an
+absolute human-input provenance guarantee. Marked wheel events authorize only
+their expected derived scroll sequence; keyboard debugger-source checks remain.
+Stop provides an explicit takeover path independent of mouse correlation.
+
+Ordinary pointer/range drag requires observed native down and up. HTML5 text
+drag does not substitute a generic release acknowledgement for a missing raw
+receipt: it requires a browser-originated `dragIntercepted` event correlated to
+the observed source press, exact current guest/document/lease, and validated
+source/target references. Only the captured immutable bounded text payload is
+used for enter/over/drop. Interception grants no file-upload authority.
+
+The internal protocol surface is a fixed `Input.setInterceptDrags`,
+`Input.cancelDragging`, and `Input.dispatchDragEvent` path, not a model-facing
+dispatcher. Accepted browser payloads are limited to at most 16 items and 64 KiB
+of UTF-8 text and metadata, using `text/plain`, `text/html`, or `text/uri-list`
+items; files, file URLs, and absolute-host-path payloads are refused. Optional
+metadata and operation masks are validated rather than copied as authority.
+Source cancellation and confirmed interception disable precede destination
+enter/over/drop. A failed pre-drop teardown sends no drop and detaches/quarantines
+an uncertain debugger session. Cancellation after destination entry sends a
+bounded cancellation to the original session; it never retargets another guest.
+Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
+the error must warn against automatic repetition. Cleanup cannot make that
+uncertainty a retry-safe failure or a proven success.
+
+Before keyboard effects, host-owned focus must resolve the same visible active
+embedded tab through its stored renderer ID and preserve the exact guest,
+document, generation, and lease across awaits. Trusted renderer focus is only a
+request; native guest focus and `focusedFrame === mainFrame` must be observed.
+Popups require native selection plus native focus. Missing, stale, hidden, or
+wrong-frame focus fails rather than sending input elsewhere.
+
+Acquiring a lease keeps the already-approved control generation stable. A
+page-input action can finish through navigation only after a confirmed final
+input effect and a typed document transition; no following input reaches the
+replacement document. A navigation request may follow document transitions only
+while its original caller, tab, and lease remain valid. Generic aborts,
+takeover, caller cancellation, lease loss, or destruction remain failures rather
+than page-load success.
+
+Typed hover, drag, native selection, targeted scroll, and upload retain the
+same document/frame/recipient and sensitive-field guards as existing actions.
+Unsupported or ambiguous controls fail explicitly. Native child-window discovery
+does not grant the popup its opener's approval. Popups require their own current
+origin approval and retain child-window isolation and owner-window checks.
+Embedded stop/pause/Resume APIs accept renderer slot IDs; popup pause/Resume
+APIs accept main-issued popup handles. The host validates kind and owning
+window, with no alias between those target namespaces.
+
+`browser_upload({tabId?, ref})` has no model- or renderer-supplied host path.
+It always requires explicit allow-once, including on an agent-created tab, then
+a trusted native file picker naming the destination. Composer attachment
+approval does not grant a browser upload. Cancellation consumes or revokes that
+upload lease and sends no files.
+
+The host binds an upload lease to window, session, tab, origin, document,
+element reference, and control generation. It validates file type, regular-file
+identity, sensitive-path policy, count, and size; stages bounded private readonly
+byte copies; and rechecks the destination after every await. Pathname checks
+alone do not prove immutable bytes. Staging outlives the tool result and stays bound to the
+selected input/document. Replacement, navigation, guest destruction, and shutdown
+release that selection. Native validation must separately verify browser read
+behavior across those boundaries; tool completion alone is not a release trigger.
+A process-wide storage ceiling includes active staging. Cleanup removes only
+the current process's verified owned staging. Unknown crash leftovers are
+neither adopted nor automatically deleted. Tool output contains nonsecret names,
+counts, sizes, and status, never host paths or a reusable upload capability.
+
+Bookmarks, history, find, zoom, previews, download status, and site decisions
+are trusted browser-chrome operations, not new agent data-export authority.
+Camera, microphone, geolocation, and notification checks require the live
+requesting origin, owned guest, and verified current main frame; iframe origins
+and redirects do not inherit unrelated grants. Fullscreen capability remains
+`false` until safe exit UI exists; a stored allow cannot override this capability
+gate. Unknown permissions deny. Download Save consent and rate limits remain
+in force.
+
 ## Commands Typed Into A Workspace Terminal
 
+Each workspace terminal has separate **Manual · host** and **Agent · isolated**
+PTY lanes. Manual uses the user's real HOME/profile and is available independently
+of the confined backend. Agent uses a disposable HOME, authenticated shell
+integration, and active filesystem/process confinement. None of the integration
+startup files described below are written into Manual's real HOME. Missing
+shell integration leaves Manual's current directory and command exit status
+unknown. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
+explains lane selection and visible behavior.
+
+Agent spawn resolves its initial write-jail directory through host-owned
+authorized workspace projects, including user-approved external project roots.
+The candidate and admitted roots use canonical segment-aligned containment;
+paths resolving outside those roots and renderer-supplied authority are refused.
+This admission check is separate from sandbox access enforcement and is not
+by itself proof against subsequent path changes. The user HOME itself is
+never a valid Agent jail anchor, even if it appears as an authorized project.
+Manual's host cwd validation remains separate from this Agent confinement gate.
+
 `terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
-command into a workspace terminal the user can see and presses Enter. It is a
-builtin in the `shell` category and takes the same lane as `bash`; there is no
-separate classifier:
+command into the target tab's Agent companion and presses Enter. It cannot type
+into Manual. It remains a builtin in the `shell` category and uses the same
+policy classifier as `bash`; the terminal lane is an execution identity, not a
+separate permission category. The checks in this section apply to Agent:
 
 - The command is the permission manager's bash rule subject, in the directory
   the target terminal's shell last reported. `Bash(...)` deny, ask and allow
@@ -566,19 +688,18 @@ separate classifier:
   Unlike a `bash` `cwd`, the terminal's own directory is not refused for being
   outside them — the user may have moved the shell anywhere its sandbox
   allows — so only the operands are judged.
-- A remembered decision covers the exact command in that terminal and that
-  directory, and only for the app session (`terminal-command` scope). The
-  terminal is part of the key because each terminal's jail was fixed when its
-  shell spawned, so the same command in another terminal may run under a
-  different sandbox. A bare `terminal_run` allow
+- A remembered decision covers the exact command and canonical directory in
+  the sealed tab, `lane: "agent"`, `terminalSessionId`, and host containment
+  identity, only for the app session (`terminal-command` scope). A restarted
+  companion is a new identity even when the tab ID is unchanged. Each Agent
+  jail is fixed when its shell spawns. A bare `terminal_run` allow
   pattern does not cover every command, because the tool keys policy on its
   command as `bash` does.
-- The reviewer sees the terminal's own substrate: the active ASRT capability
-  while the sandbox still contains shells (a terminal can only be spawned under
-  such a sandbox and keeps its wrap for life), otherwise `none`. That is the
-  sandbox as it is now; the terminal's jail (its write paths, deny floors and
-  egress allow-list) was fixed when its shell spawned, so later changes to
-  allowed directories or the allow-list do not reach a running terminal.
+- The reviewer sees the Agent companion's active containment. Execution
+  requires filesystem and process confinement for that exact incarnation;
+  an unavailable or changed capability fails closed. Its write paths, deny
+  floors, and egress allow-list were fixed at spawn, so later configuration
+  changes do not reach that running companion.
 
 The target terminal is resolved once, before any decision, and sealed into the
 approval scope: an explicit `tabId`, then the terminal the conversation's pane
@@ -586,10 +707,24 @@ chat is docked beside (a sub-agent uses its hosting conversation's), then, for
 a conversation bound to no pane, the window's active terminal. A chat docked
 beside a page has no terminal of its own and fails without a `tabId`, and a
 bound terminal that is gone fails the call. With none of them the call fails;
-it never chooses a terminal itself. Execute types into
-the sealed terminal and refuses when that terminal's shell has moved to another
-directory since approval. A pane chat reads the history of, or ends its chat
-with, only a pane tab its own window holds, named by a well-formed tab id.
+it never chooses a terminal itself. The host ensures that tab's Agent companion,
+then seals its lane, session incarnation, and containment before approval.
+Execute types only into that sealed companion and refuses when its shell has
+moved to another directory since approval. A pane chat reads the history of,
+or ends its chat with, only a pane tab its own window holds, named by a
+well-formed tab id.
+
+`terminal_read` inventories both lanes; a targeted read and a continuation
+identify the exact lane, session, and block. Input, resize, output, and exit
+also bind the host-issued session identity. An old message or delayed abort
+cannot operate on a replacement session or another command. A wait timeout can
+return a still-running command; cancellation of a waiter is not cleanup proof.
+Unmounting a pane keeps both lanes alive; closing its tab terminates both.
+
+If Agent confinement cannot be established, the call fails without a host or
+other-tab fallback while Manual remains usable. The current Windows interactive
+backend cannot attest this Agent contract and reports it unavailable; unrelated
+sandbox capabilities do not authorize interactive agent typing.
 
 The directory the shell reports is text on the terminal's output stream, so
 it is checked against the operating system before the rules, the approval
@@ -601,9 +736,9 @@ front of it nor a nested shell of the same name passes. That process's working
 directory, symlinks resolved, must equal the reported one. On macOS the
 foreground group comes from `ps`, and the working directory comes from
 `lsof -d cwd`. Node cannot call `proc_pidinfo` without a native addon, and
-`lsof` is the stock unprivileged reader of that call. Other platforms get no
-reading, and the call is refused. The comparison directory in the approval
-scope is the verified one.
+`lsof` is the stock unprivileged reader of that call. Linux verification follows
+the inner-PTY checks below. An unsupported backend refuses the call. The
+comparison directory in the approval scope is the verified one.
 
 On macOS every wrapper before the shell (the pty trampoline, `env`,
 `sandbox-exec`, `bash -c`) execs in place, so the pty's process is the shell.
@@ -615,7 +750,8 @@ util-linux `script` opens inside the sandbox
 `su --pty` does for the same problem: Ctrl-C, job control and readline
 behave as on any terminal, and a shell on the outer pty (where Ctrl-C killed
 bubblewrap and with it the whole terminal) is never started; a host without
-util-linux `script` gets no terminal, with the reason. The check reads `/proc`:
+util-linux `script` gets no Agent companion, with the reason; Manual remains
+available. The check reads `/proc`:
 - the shell is found by walking down from the pty's process along the one
   chain the wrap builds (`bwrap`, `bwrap`, `bash` with the runtime's `socat`
   bridges beside it, `apply-seccomp` twice, `script`, then the shell, by

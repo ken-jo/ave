@@ -50,7 +50,7 @@ import { sendToWebContents } from "../safe-send.js";
 import { mainWindowForContents, setSideChatOwnerContents } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { parseActiveSurface } from "./browser.js";
-import { terminalTabOwnerWindow } from "../../main/terminal/terminal-blocks.js";
+import { terminalTabOwnerWindow } from "../../main/terminal/pty-manager.js";
 import { parseTabId } from "../../shared/tab-id.js";
 import { createLogger } from "../../lib/logger.js";
 import { createLegacyChatStreamEventSink } from "../../api/platform-conversation-legacy-adapter.js";

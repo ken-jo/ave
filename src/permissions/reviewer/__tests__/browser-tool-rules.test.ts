@@ -22,6 +22,11 @@ function verdictFor(toolName: string, category: ToolCategory, input: Record<stri
 describe("browser tool rule verdicts", () => {
   it.each([
     [BROWSER_TOOL.click, "write" as const, { tabId: "tab-1", ref: "e3" }],
+    [BROWSER_TOOL.hover, "write" as const, { tabId: "tab-1", ref: "e3" }],
+    [BROWSER_TOOL.drag, "write" as const, { tabId: "tab-1", sourceRef: "e3", targetRef: "e4" }],
+    [BROWSER_TOOL.select, "write" as const, { tabId: "tab-1", ref: "e3", value: "a" }],
+    [BROWSER_TOOL.scroll, "write" as const, { tabId: "tab-1", ref: "e3", direction: "down", pixels: 200 }],
+    [BROWSER_TOOL.upload, "write" as const, { tabId: "tab-1", ref: "e3" }],
     [BROWSER_TOOL.type, "write" as const, { tabId: "tab-1", ref: "e3", text: "hello" }],
     [BROWSER_TOOL.pressKey, "write" as const, { tabId: "tab-1", key: "Enter" }],
     [BROWSER_TOOL.tabClose, "write" as const, { tabId: "tab-1" }],
