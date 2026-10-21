@@ -39,7 +39,11 @@ describe("browser workspace panel", () => {
     await act(async () => { await Promise.resolve(); });
     fireEvent.change(screen.getByLabelText("browserWorkspace.find"), { target: { value: "needle" } });
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.find" }));
-    expect(api.find).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, text: "needle", forward: true, findNext: false });
+    expect(api.find).toHaveBeenNthCalledWith(1, { tabId: "browser:one", documentGeneration: 4, text: "needle", forward: true, findNext: true });
+    fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.previous" }));
+    expect(api.find).toHaveBeenNthCalledWith(2, { tabId: "browser:one", documentGeneration: 4, text: "needle", forward: false, findNext: false });
+    fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.next" }));
+    expect(api.find).toHaveBeenNthCalledWith(3, { tabId: "browser:one", documentGeneration: 4, text: "needle", forward: true, findNext: false });
     fireEvent.change(screen.getByLabelText("browserWorkspace.zoom"), { target: { value: "1.5" } });
     expect(api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.5 });
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
