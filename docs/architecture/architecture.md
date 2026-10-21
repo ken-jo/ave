@@ -810,13 +810,21 @@ it. Document and control generations bind actions and approvals, so a stale
 approval does not survive pause followed by Resume. Renderers subscribe before
 their initial state fetch and ignore older revisions.
 
-Native mouse receipts do not expose an injected-versus-human source bit. Drag
-input therefore uses host-armed one-shot correlation of the exact live guest,
+Native mouse receipts do not expose an injected-versus-human source bit. Ordinary
+pointer/range drag uses host-armed one-shot correlation of the exact live guest,
 button, coordinates, click count, down/up phase, and order. Each expectation
 expires after one second within a maximum five-second sequence, with one
 mouse/wheel watch per owning window. A mismatch pauses mutation. Wheel gestures
 must follow a marked native wheel event and the expected begin/update/end
 sequence. Keyboard input retains its debugger-source flags.
+
+HTML5 text drag has a separate guarded path because a native renderer may finish
+the drag without a raw mouse-up receipt. A generic input acknowledgement is not
+proof that release or drop was delivered. The host instead correlates a
+browser-originated `dragIntercepted` event with the observed source press and
+the same live guest, document, lease, and endpoints. It captures one bounded
+text-only payload and reuses that immutable payload for guarded enter/over/drop.
+Ordinary pointer/range drag still requires native down and up receipts.
 
 This is bounded correlation, not perfect provenance: a human click at the same
 expected coordinates/button/phase during the armed interval is indistinguishable
@@ -870,9 +878,21 @@ key operations plus hover, drag, native single-select, targeted scroll, and
 picker-only upload. Schemas and execution both validate operands. Page effects
 recheck the live document, target reference, recipient, and control generation.
 There is no model-facing arbitrary script or generic protocol dispatcher.
-Full-page capture has pixel/byte bounds and fails clearly when exceeded; a crop
-is not reported as a full-page image. Selection verifies the final native value
-and rejects unsupported controls.
+HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
+`Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
+only bounded approved text MIME data is accepted, with no files or host-path
+payloads. Model inputs remain source/target references, never arbitrary protocol
+methods or drag data. The source drag is cancelled and interception is confirmed
+disabled before destination enter/over/drop. A failed pre-drop teardown sends no
+destination drop; an uncertain session is detached and quarantined. Cancellation
+after entering the destination cancels its remaining drag state on the original
+session. A dispatched drop with a lost acknowledgement is outcome-unknown and
+must not be repeated automatically. Cleanup never retargets a replacement guest.
+Viewport screenshots retain pixel/byte bounds. Full-page capture is unavailable:
+the embedded renderer can return a correctly sized image with repeated viewport
+content, and popup full-page output has not been independently proved. Requests
+fail explicitly before capture rather than reporting such an image as complete.
+Selection verifies the final native value and rejects unsupported controls.
 
 The host distinguishes a document transition from cancellation. A page-input
 action can finish through navigation only after a confirmed final input effect

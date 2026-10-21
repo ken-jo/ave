@@ -578,6 +578,27 @@ absolute human-input provenance guarantee. Marked wheel events authorize only
 their expected derived scroll sequence; keyboard debugger-source checks remain.
 Stop provides an explicit takeover path independent of mouse correlation.
 
+Ordinary pointer/range drag requires observed native down and up. HTML5 text
+drag does not substitute a generic release acknowledgement for a missing raw
+receipt: it requires a browser-originated `dragIntercepted` event correlated to
+the observed source press, exact current guest/document/lease, and validated
+source/target references. Only the captured immutable bounded text payload is
+used for enter/over/drop. Interception grants no file-upload authority.
+
+The internal protocol surface is a fixed `Input.setInterceptDrags`,
+`Input.cancelDragging`, and `Input.dispatchDragEvent` path, not a model-facing
+dispatcher. Accepted browser payloads are limited to at most 16 items and 64 KiB
+of UTF-8 text and metadata, using `text/plain`, `text/html`, or `text/uri-list`
+items; files, file URLs, and absolute-host-path payloads are refused. Optional
+metadata and operation masks are validated rather than copied as authority.
+Source cancellation and confirmed interception disable precede destination
+enter/over/drop. A failed pre-drop teardown sends no drop and detaches/quarantines
+an uncertain debugger session. Cancellation after destination entry sends a
+bounded cancellation to the original session; it never retargets another guest.
+Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
+the error must warn against automatic repetition. Cleanup cannot make that
+uncertainty a retry-safe failure or a proven success.
+
 Before keyboard effects, host-owned focus must resolve the same visible active
 embedded tab through its stored renderer ID and preserve the exact guest,
 document, generation, and lease across awaits. Trusted renderer focus is only a

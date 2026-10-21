@@ -76,8 +76,9 @@ Additional typed tools provide hover, drag between references, native single
 selection, and scroll on a referenced target. A snapshot supplies element
 references for the agent to use. References belong to the current document;
 a stale or unsupported target fails explicitly. Native selection
-verifies the final requested value. Full-page screenshots have pixel/byte limits;
-an oversized page fails instead of silently returning a cropped full-page claim.
+verifies the final requested value. Screenshots capture the viewport with
+pixel/byte limits. Full-page capture is unavailable because complete page pixels
+have not been proved reliable; requesting it fails before capture.
 
 | Tool | Operands |
 | --- | --- |
@@ -86,9 +87,21 @@ an oversized page fails instead of silently returning a cropped full-page claim.
 | `browser_select` | `ref`, `value`; native single-select only |
 | `browser_scroll` | `ref`, `direction` (`up`, `down`, `left`, `right`), `pixels` |
 | `browser_upload` | `ref`; opens the approved native picker |
-| `browser_screenshot` | Optional `fullPage` |
+| `browser_screenshot` | Viewport only; omit `fullPage` or use `false` |
 
 Each accepts an optional `tabId` from `browser_tabs`. Unknown fields are rejected.
+
+Ordinary pointer/range drag requires native press and release receipts. HTML5
+drag uses the browser's own intercepted, bounded text payload for guarded
+enter/over/drop; a generic mouse-release acknowledgement does not prove a drop.
+This path accepts no files or host paths, does not grant upload permission, and
+is cancelled if its page or control changes. It has the same simultaneous-click
+attribution limit described above. It exposes no arbitrary script or protocol
+command to the agent.
+
+The source drag is cancelled and interception is disabled before the destination
+receives the drop. If a dispatched drop loses its acknowledgement, inspect the
+page before trying again: the effect may already have happened.
 
 For upload, the agent names the current file-input reference with
 `browser_upload({tabId?, ref})`. You explicitly allow that one upload and choose
