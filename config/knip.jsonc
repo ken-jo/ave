@@ -37,6 +37,8 @@
         "scripts/smoke-live-app.mjs",
         // Loaded by the installer packager through build.beforePack.
         "scripts/electron-before-pack.cjs",
+        // Run by electron-before-pack.cjs through a path (Windows builds).
+        "scripts/fetch-mxc.mjs",
         "scripts/hooks/run-local-checks.mjs",
         // Launched by the release builder after schema generation.
         "scripts/sync-plugin-host-protocol-mirror.mjs",

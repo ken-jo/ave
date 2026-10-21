@@ -4,7 +4,9 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
-const PROCESS_TREE_KILL_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.processTreeKillMs;
+const PROCESS_TREE_KILL_TIMEOUT_MS = process.platform === "win32"
+  ? TOOL_TIMEOUT_POLICY.processTreeKillWindowsMs
+  : TOOL_TIMEOUT_POLICY.processTreeKillMs;
 const DETACHED_PROCESS_GROUP_POLL_MS = TOOL_TIMEOUT_POLICY.processGroupPollMs;
 const PROCESS_GROUP_RETENTION_WARNING_MS = TOOL_TIMEOUT_POLICY.processGroupRetentionWarningMs;
 

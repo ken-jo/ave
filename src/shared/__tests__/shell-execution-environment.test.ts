@@ -63,4 +63,22 @@ describe("shell execution environment", () => {
     expect(projected).not.toContain("private-test-value");
     expect(projected).toContain(t("shellExecution.currentUser"));
   });
+
+  it("tells the model Bash is unavailable when shells run in Windows MXC containers, and only then", () => {
+    const mxc = buildHostShellExecutionPlan({
+      platform: "win32",
+      requestedSandbox: true,
+      shellSubstrate: "mxc",
+      activeCapability: {
+        reason: "Fixture MXC",
+        kind: "asrt",
+        confidence: "verified",
+        platform: "win32",
+        confines: { filesystem: true, process: true, network: true },
+      },
+    });
+    expect(shellExecutionEnvironmentPrompt(mxc, true)).toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(plan(true), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(plan(false), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
+  });
 });

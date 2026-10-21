@@ -336,6 +336,15 @@ export interface TrustedSandboxSettings {
    */
   readonly windows?: {
     readonly proxyPortRange?: readonly [number, number];
+    /**
+     * Run only the proxy on Windows: srt-win's account, WFP fence and session
+     * ACLs are neither required nor touched, and every srt-win wrap refuses
+     * (the carried ASRT patch, part 6). Set by boot only where Microsoft
+     * Execution Containers carry the agent shells and srt-win is not ready
+     * (`mxc-windows.ts`); plugin processes then have no confinement substrate
+     * and {@link isPluginWorkerConfinementActive} reports false.
+     */
+    readonly externalConfinement?: boolean;
   };
   /**
    * The REAL Electron `app.getPath("userData")` for this process, threaded in
@@ -537,13 +546,12 @@ async function openEgressListener(
     const hint = /invocation listeners are held/u.test(message) ? " Restart Ave to release them." : "";
     throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
   }
-  loadedSandboxManagerForRelease = SandboxManager;
 }
 
 /**
  * Close every open connection the proxy let through to `host:port` for these
  * invocations (a revoked grant's tunnels). Returns how many were closed; 0
- * before any listener was opened (nothing can be open then).
+ * before initialization (nothing can be open then).
  */
 export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
   if (tokens.length === 0) return 0;
@@ -560,7 +568,7 @@ export function closeAllEgressConnections(): number {
   return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
 }
 
-/** Set once a listener has been opened, so a release can close it synchronously. */
+/** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 
 // A released token's listener refuses every further connection from then on.
@@ -611,6 +619,11 @@ onEgressInvocationReleased((token, { processGroup }) => {
  * floor, weakening flags, etc. are preserved). Undefined before the first init.
  */
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
+
+/** The shared loopback range that confined extension processes can reach. */
+export function getWindowsProxyPortRange(): readonly [number, number] {
+  return _baseTrustedSettings?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+}
 
 /**
  * Paths granted on Windows outside the session config, by
@@ -1057,6 +1070,8 @@ async function loadSandboxManager() {
  * only on a successful `initialize`; stays `false` after {@link resetAsrtSandbox}.
  */
 let active = false;
+/** Set with `active` when boot initialized ASRT as the Windows proxy only. */
+let windowsExternalConfinement = false;
 
 /**
  * Whether the ASRT runtime is initialized in this process. ASRT activates when
@@ -1086,7 +1101,7 @@ export function isShellSandboxActive(): boolean {
  * shell sandbox setting never decides this.
  */
 export function isPluginWorkerConfinementActive(): boolean {
-  return active && isPluginWorkerConfinementRequestedAtBoot();
+  return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
 }
 
 /**
@@ -1264,6 +1279,15 @@ function getProtectedReadDenyPaths(
   customDenies = _baseTrustedSettings?.denyRead,
 ): readonly string[] {
   return [...getDefaultSensitiveDenyPaths(userDataDir), ...(customDenies ?? [])];
+}
+
+/**
+ * The protected read-deny floor, for a confinement layer that ranks its own
+ * lists (Windows MXC, `mxc-windows.ts` `rankMxcFilesystem`): a grant beneath
+ * one of these is dropped there, as ASRT drops it on every platform.
+ */
+export function getProtectedReadDenyFloor(): readonly string[] {
+  return getProtectedReadDenyPaths();
 }
 
 /**
@@ -1486,8 +1510,8 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
-          // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
-          // path that does not exist is harmless to list).
+          // it. On win32 srt-win would create it on the current drive, so
+          // windowsDenyTargets drops it at the ASRT boundary.
           return "/" + entry.segments.join("/");
         default: {
           // Fail closed: an unrecognised anchor must not silently push
@@ -1735,9 +1759,14 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // config and the WFP rule never desync. Inert on mac/linux — ASRT ignores the
   // `windows` section off Windows, but we only emit it on win32 to keep the
   // config minimal and the non-Windows config shape unchanged.
-  const windows: WindowsConfig | undefined =
+  // Part 6 of the carried ASRT patch reads `externalConfinement`; the
+  // package's own WindowsConfig type does not declare it.
+  const windows: (WindowsConfig & { externalConfinement?: "embedder" }) | undefined =
     process.platform === "win32"
       ? {
+          ...(trustedSettings.windows?.externalConfinement === true
+            ? { externalConfinement: "embedder" as const }
+            : {}),
           proxyPortRange: [
             ...(trustedSettings.windows?.proxyPortRange ??
               DEFAULT_WINDOWS_PROXY_PORT_RANGE),
@@ -1966,6 +1995,7 @@ async function discardFailedAsrtInitialization(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
 ): Promise<void> {
   active = false;
+  loadedSandboxManagerForRelease = undefined;
   _baseTrustedSettings = undefined;
   _workerUnixSocketDirs.clear();
   try {
@@ -2031,8 +2061,8 @@ export async function initializeAsrtSandbox(
   // Installed before the proxy starts, so no connection is routed without
   // it; reset() (including a failed initialization's) clears it.
   SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
-  await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
+    await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // Linux's ASRT dependency check only proves executables are installed. Run
     // the configured wrapper once before publishing the adapter as active so a
     // host that blocks user namespaces/seccomp cannot appear "verified".
@@ -2041,6 +2071,9 @@ export async function initializeAsrtSandbox(
     await discardFailedAsrtInitialization(SandboxManager);
     throw error;
   }
+  windowsExternalConfinement =
+    process.platform === "win32" && trustedSettings.windows?.externalConfinement === true;
+  loadedSandboxManagerForRelease = SandboxManager;
   active = true;
 }
 
@@ -2839,7 +2872,9 @@ export async function subscribeAsrtViolations(
 export async function resetAsrtSandbox(): Promise<void> {
   const SandboxManager = await loadSandboxManager();
   await SandboxManager.reset();
+  loadedSandboxManagerForRelease = undefined;
   active = false;
+  windowsExternalConfinement = false;
   // worker-confinement PR D-1: drop the remembered base settings + live worker
   // UDS dirs so a fresh init starts from a clean slate (no stale socket allow).
   _baseTrustedSettings = undefined;

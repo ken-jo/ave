@@ -18,7 +18,7 @@ import type {
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve as pathResolve, win32 as win32Path } from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
@@ -58,6 +58,8 @@ import {
   getDefaultSensitiveWriteDenyPaths,
 } from "../permissions/asrt-sandbox.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
+import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
 import {
@@ -1561,6 +1563,17 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         metadata: { sandboxed: false, isolation: "none" },
       };
     }
+    if (!disposableExecution && hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc") {
+      // Git Bash (MSYS2) cannot start inside an MXC container: its runtime is
+      // denied the named-object directory it creates at startup (measured,
+      // 0xC0000022, in every session). The PowerShell tool runs contained;
+      // an explicit host request still runs Bash after approval.
+      return {
+        output: MXC_BASH_UNAVAILABLE_MESSAGE,
+        isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      };
+    }
     if (hostShellPlan.mode === "asrt") {
       // The executor binds before approval. Direct tool callers bind after the
       // same path check; an existing binding never consults ambient state again.
@@ -2830,6 +2843,16 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           : {}),
         allowedDirectories: [resolvedCwd, ...ctx.extraAllowedDirectories],
       });
+      if (hostShellPlan.substrate === "mxc") {
+        return await spawnPowerShellInMxc(
+          input.command,
+          resolvedCwd,
+          writePaths,
+          input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
+          toolOutputProgressFromMetadata(ctx.metadata),
+          typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+        );
+      }
       return await spawnPowerShellWithSandbox(
         input.command,
         resolvedCwd,
@@ -3308,6 +3331,177 @@ async function spawnPowerShellWithSandbox(
           output: err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
             : `PowerShell spawn failed: ${err.message}`,
+          isError: true,
+          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+        });
+      })();
+    });
+  });
+}
+
+/**
+ * Execute a PowerShell command in its own Microsoft Execution Containers
+ * container (Windows hosts whose OS offers MXC's BaseContainer tier; see
+ * `permissions/mxc-windows.ts`).
+ *
+ * The container runs System32 Windows PowerShell 5.1 with the command
+ * `-EncodedCommand`-encoded. Its filesystem lists are the same per-command
+ * policy {@link spawnPowerShellWithSandbox} hands ASRT, ranked for MXC. Its
+ * network reaches only this invocation's proxy listener, which stamps the
+ * invocation's identity on every request it forwards to the ASRT proxy, so a
+ * refused host is recorded under this call's token exactly as on macOS and
+ * Linux. `wxc-exec.exe` relays stdout, stderr and the exit code; killing it on
+ * timeout or abort ends the container and every process in it.
+ *
+ * @internal — called only for a plan whose substrate is `mxc`.
+ */
+async function spawnPowerShellInMxc(
+  command: string,
+  cwd: string,
+  writePaths: readonly string[],
+  timeoutSeconds: number,
+  signal?: AbortSignal,
+  outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
+  toolUseId?: string,
+): Promise<ToolExecutionResult> {
+  signal?.throwIfAborted();
+  let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
+  try {
+    sandboxHome = createSandboxProcessHome();
+  } catch (err) {
+    return {
+      output: `PowerShell spawn failed: could not create isolated HOME: ${(err as Error).message}`,
+      isError: true,
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+    };
+  }
+  const systemRoot = process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows";
+  const sandboxWritePaths = [...writePaths, sandboxHome.path];
+  const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], hostHome, sandboxHome.path);
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
+    signal ? { abortSignal: signal } : {},
+  );
+  let launch: MxcShellLaunch;
+  try {
+    launch = await prepareMxcShellLaunch({
+      egressToken: egress.token,
+      commandLine: powerShellMxcCommandLine(systemRoot, command),
+      cwd,
+      filesystem: {
+        allowWrite: sandboxWritePaths,
+        allowRead,
+        denyRead,
+        denyWrite: getDefaultSensitiveWriteDenyPaths(),
+        floorPierces,
+      },
+      env: buildSafeChildEnv({ ...sandboxHome.env }),
+      timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
+      exists: existsSync,
+    });
+  } catch (err) {
+    egress.release();
+    sandboxHome.cleanup();
+    return {
+      output: `PowerShell spawn failed: ${(err as Error).message}`,
+      isError: true,
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+    };
+  }
+  const [cmd, ...args] = launch.argv;
+  if (signal?.aborted || cmd === undefined) {
+    void launch.release();
+    sandboxHome.cleanup();
+    egress.release();
+    return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
+  }
+
+  return await new Promise<ToolExecutionResult>((resolveResult) => {
+    let child: PipedChild;
+    try {
+      assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
+      child = spawn(cmd, args, {
+        // The launcher runs from its own (per-machine, admin-only) directory, so
+        // nothing in the workspace sits beside it; the container's working
+        // directory travels in the request.
+        cwd: win32Path.dirname(cmd),
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        windowsHide: true,
+        // The launcher's own environment: the container's is in the request.
+        env: buildSafeChildEnv({}),
+      });
+    } catch (err) {
+      void launch.release();
+      sandboxHome.cleanup();
+      egress.release();
+      resolveResult({
+        output: `PowerShell spawn failed: ${(err as Error).message}`,
+        isError: true,
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
+      });
+      return;
+    }
+    trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
+
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
+    child.stdout.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
+
+    let settled = false;
+    let lifecycleCleaned = false;
+    // After wxc-exec exits the container is gone, so the listener can close:
+    // nothing is left that could reach its port.
+    const cleanupAfterTermination = (): Promise<void> => {
+      if (lifecycleCleaned) return Promise.resolve();
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return Promise.resolve();
+      lifecycleCleaned = true;
+      sandboxHome.cleanup();
+      return launch.release().finally(() => egress.release());
+    };
+    const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
+
+    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      lifetime.dispose();
+      if (settled) {
+        await cleanupAfterTermination();
+        return;
+      }
+      settled = true;
+      const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      // Read the proxy's refusals under this call's token before releasing it.
+      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+        lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
+      )));
+      await cleanupAfterTermination();
+      resolveResult({
+        output: lifetime.timedOut
+          ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
+          : output,
+        isError: lifetime.aborted || lifetime.timedOut || code !== 0,
+        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true },
+      });
+    };
+
+    void lifetime.stopped.then(() => finish(child.exitCode));
+    child.once("close", (code, signal) => { void finish(code, signal); });
+    child.on("error", (err) => {
+      void (async () => {
+        // A spawn that fails (no pid) may never emit "close": release the
+        // listener, the egress token and the sandbox HOME here. A running
+        // child keeps its timeout and abort watch, and "close" releases its
+        // resources (cleanupAfterTermination's guard waits for the exit).
+        if (child.pid === undefined) {
+          lifetime.dispose();
+          await cleanupAfterTermination();
+        }
+        if (settled) return;
+        settled = true;
+        const artifactMetadata = await outputCollector.finish(true);
+        resolveResult({
+          output: `PowerShell spawn failed: ${err.message}`,
           isError: true,
           metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
         });

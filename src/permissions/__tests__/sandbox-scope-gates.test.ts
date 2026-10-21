@@ -131,6 +131,9 @@ describe("each spawn path reads only its own scope's gate", () => {
     const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
     const body = plan.slice(0, plan.indexOf("\n}\n"));
     expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
-    expect(body).toContain("activeCapability: detectShellSandboxCapability()");
+    // MXC's per-command capability (Windows) or else the shell-scoped one;
+    // never the process-wide or worker capability.
+    expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
+    expect(body).toContain("const mxc = detectMxcShellCapability();");
   });
 });

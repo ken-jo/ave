@@ -208,6 +208,26 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(readInstalled("dist/index.d.ts")).toMatch(/export type \{ SandboxAskCallback, SandboxAskContext, SandboxAskNameContext, SandboxAskResolvedContext,/u);
   });
 
+  it("lets a Windows embedder run the proxy without srt-win, and then refuses srt-win wraps", () => {
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    const steps = functionBody(manager, /\nasync function initializeSteps\(/u);
+    // The external-confinement branch comes first and the srt-win block is its else.
+    expect(steps).toMatch(
+      /if \(getPlatform\(\) === 'windows' &&\s+runtimeConfig\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?\}\s+else if \(getPlatform\(\) === 'windows'\) \{\s+\/\/ Resolve once/u,
+    );
+    // initialize() checks dependencies before those steps; that check must not
+    // demand srt-win either, or the proxy never starts where it is needed.
+    const deps = functionBody(manager, /\nfunction checkDependenciesCommon\(/u);
+    expect(deps).toMatch(
+      /else if \(platform === 'windows' &&\s+config\?\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?return \{ done: \{ errors, warnings \} \};\s+\}\s+else if \(platform === 'windows'\) \{\s+let srtWin;/u,
+    );
+    const argv = functionBody(manager, /\nasync function wrapWithSandboxArgv\(/u);
+    const refusal = argv.search(/config\?\.windows\?\.externalConfinement === 'embedder'\) \{\s+\/\/ Ave patch[^\n]*\n[^\n]*\n\s+throw new Error\('wrapWithSandboxArgv\(\) is unavailable/u);
+    expect(refusal, "wrapWithSandboxArgv does not refuse under external confinement").toBeGreaterThanOrEqual(0);
+    // Before any srt-win work in the Windows branch.
+    expect(refusal).toBeLessThan(argv.indexOf("waitForNetworkInitialization()"));
+  });
+
   it("types the callback so one-parameter callers still fit and two-parameter callers see the key", async () => {
     const params = { host: "example.com", port: 443 };
     await expect(oneParameter(params)).resolves.toBe(true);

@@ -8,7 +8,7 @@ import {
   wrapCommandWithSandboxLinux,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
-// Patch part 6: selected public-name replacement races preserve foreign entries.
+// Patch part 7: selected public-name replacement races preserve foreign entries.
 // Replacements follow real syscalls; publication failures precede rename.
 // The patch preamble documents the remaining path-syscall windows.
 // These cases only plan a wrap (bwrapPath is /usr/bin/true); nothing is executed.
