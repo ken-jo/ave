@@ -144,12 +144,6 @@ function sessionInfo(session: TerminalSession): TerminalSessionInfo {
   return { ...session.info, currentCwd: cwd, cwdSource: cwd === null ? "unavailable" : "shell-marker", shellIntegration: integrated };
 }
 
-export function getTerminalSessionInfo(ref: TerminalSessionRef, ownerWindowId: number | null): TerminalSessionInfo | undefined {
-  const session = sessions.get(terminalLaneKey(ref));
-  return session && !session.exited && !session.closing && session.ownerWindowId === ownerWindowId && sameTerminalSession(session.info, ref)
-    ? sessionInfo(session) : undefined;
-}
-
 function agentSession(ref: TerminalSessionRef, ownerWindowId: number): TerminalSession | undefined {
   if (ref.lane !== "agent" || process.platform === "win32" || !isAsrtSandboxActive() || !isActiveSandboxShellContained()) return undefined;
   const session = sessions.get(terminalLaneKey(ref));

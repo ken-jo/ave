@@ -9,9 +9,8 @@ import type { SavedSurface } from "../../../shared/main-layout.js";
  * to that pane's tab store when its conversation mounts, which can be later.
  * A restored terminal learns, when its view first spawns a shell, that it is
  * a NEW shell in the saved directory, and says so. This module holds what
- * those later steps take. It also collects the facts a save needs that no
- * store owns: a terminal's reported directory, and when something worth saving
- * changed.
+ * those later steps take. It also retains saved terminal directories for
+ * subsequent saves and records when something worth saving changed.
  */
 
 const pendingSideTabs = new Map<string, SavedSurface[]>();
@@ -50,13 +49,6 @@ export function takeRestoredTerminal(tabId: string): { cwd: string | null } | nu
   const cwd = restoredTerminals.get(tabId) ?? null;
   restoredTerminals.delete(tabId);
   return { cwd };
-}
-
-/** A terminal's shell reported its working directory. */
-export function noteTerminalCwd(tabId: string, cwd: string): void {
-  if (terminalCwds.get(tabId) === cwd) return;
-  terminalCwds.set(tabId, cwd);
-  emitMainLayoutChange();
 }
 
 export function terminalCwd(tabId: string): string | null {
