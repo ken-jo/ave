@@ -14,6 +14,9 @@ import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/mai
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
+import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
+import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
+import { t } from "../../src/i18n/index.js";
 
 // The terminal suites below give the app a terminal surface, which mounts
 // xterm; jsdom has no canvas, so xterm is the one thing stood in for.
@@ -349,25 +352,26 @@ describe("main-area terminal and web panels", () => {
     expect(terminalTab().querySelector('[data-testid="chat-side-panel-tab-terminal-attention"]')).toBeNull();
   });
 
-  it("shows a main terminal's directory in its header and reopens a closed one there", async () => {
+  it("keeps Manual's current directory unknown and does not reuse a heuristic command as a reopen directory", async () => {
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
     const terminalApi = (api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn>; spawn: ReturnType<typeof vi.fn> } }).terminal;
-    terminalApi.listBlocks.mockResolvedValue({
+    terminalApi.listBlocks.mockImplementation(async (ref: TerminalSessionRef) => ({
       ok: true,
-      integrated: true,
-      blocks: [{ id: 1, command: "cd app", cwd: "/work/repo/app", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 0, truncated: false }],
-    });
+      session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId),
+      integrated: false,
+      blocks: [{ id: 1, command: "cd /work/repo/app", cwd: null, exitCode: null, startedAt: 1, endedAt: 2, status: "done", source: "heuristic", outputChars: 0, truncated: false }],
+    }));
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
-    const meta = await waitFor(() => {
-      const el = container.querySelector('[data-testid="pane-header-meta"]');
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    expect(meta.textContent).toBe("app");
-    expect(meta.getAttribute("title")).toBe("/work/repo/app");
-    // A new shell starts where every new shell does.
+    const manual = terminalSessionFixture(shownSurfaces(container)[0]!.tabId!, "manual");
+    await waitFor(() => expect(terminalApi.listBlocks).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", terminalSessionId: manual.terminalSessionId })));
+    expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
+    expect(container.textContent).toContain(t("ptyTerminal.manualEnvironment"));
+    expect(container.textContent).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
+    // The launch directory is not evidence of a current directory to save.
+    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual" });
     expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
+    const spawnsBeforeClose = terminalApi.spawn.mock.calls.length;
 
     const close = container.querySelector('[data-testid="surface-pane"]')!
       .closest('[data-testid="pane"]')!
@@ -379,7 +383,10 @@ describe("main-area terminal and web panels", () => {
       fireEvent.keyDown(window, { key: "T", ctrlKey: true, shiftKey: true });
     });
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
-    await waitFor(() => expect(terminalApi.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/work/repo/app" })));
+    await waitFor(() => expect(terminalApi.spawn.mock.calls.length).toBeGreaterThan(spawnsBeforeClose));
+    expect(terminalApi.spawn.mock.calls.at(-1)![0]).toMatchObject({ lane: "manual" });
+    expect(terminalApi.spawn.mock.calls.at(-1)![0]).not.toHaveProperty("cwd");
+    expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
   });
 
   it("opens a terminal or web pane's own chat beside it, bound to that pane's tab", async () => {
@@ -580,11 +587,16 @@ describe("main-area terminal and web panels", () => {
   it("attaches a main terminal's block to the composer last typed in — the side chat, here", async () => {
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true });
     const terminalApi = (api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn>; getBlock: ReturnType<typeof vi.fn> } }).terminal;
-    const block = { id: 1, command: "npm test", cwd: "/work", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 3, truncated: false };
-    terminalApi.listBlocks.mockResolvedValue({ ok: true, integrated: true, blocks: [block] });
-    terminalApi.getBlock.mockResolvedValue({ ok: true, block: { ...block, output: "ok\n" } });
+    const block = { id: 1, command: "npm test", cwd: null, exitCode: null, startedAt: 1, endedAt: 2, status: "done", source: "heuristic", outputChars: 3, truncated: false };
+    terminalApi.listBlocks.mockImplementation(async (ref: TerminalSessionRef) => ({
+      ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), integrated: false, blocks: [block],
+    }));
+    terminalApi.getBlock.mockImplementation(async (ref: TerminalSessionRef) => ({
+      ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), block: { ...block, output: "ok\n" },
+    }));
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const terminalTabId = shownSurfaces(container)[0]!.tabId!;
     const tiles = await splitIntoTwoTiles(container);
     const chatTile = tiles[1]!.element;
     await act(async () => { fireEvent.click(chatTile.querySelector('[data-testid="pane-panel-toggle"]')!); });
@@ -606,19 +618,31 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.click(attach); });
     await waitFor(() => expect(sideInput.value).not.toBe(""));
     expect(mainInput.value).toBe("");
+    expect(terminalApi.getBlock).toHaveBeenCalledWith(expect.objectContaining({ tabId: terminalTabId, lane: "manual", terminalSessionId: `${terminalTabId}/manual` }), 1);
+    expect(sideInput.value).toContain("npm test");
   });
 
   it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {
-    const first = await renderApp({ hasApiKey: true, terminal: true });
-    const firstTerminal = (first.api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn> } }).terminal;
-    firstTerminal.listBlocks.mockResolvedValue({
-      ok: true,
-      integrated: true,
-      blocks: [{ id: 1, command: "cd app", cwd: "/work/repo/app", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 0, truncated: false }],
+    const startingDirectory = "/work/repo/app";
+    const initialLayout = {
+      version: 1,
+      tree: { kind: "leaf", chatGroupId: "main" },
+      focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null } },
+      panelOpenIds: [],
+      sideTabs: {},
+    };
+    // A saved starting directory is known input; Manual output supplies no observed cwd.
+    const first = await renderApp({
+      hasApiKey: true,
+      terminal: true,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
     });
-    await clickSidebarNavRow("features", "sidebar-terminal");
+    const firstTerminal = (first.api as unknown as { terminal: { spawn: ReturnType<typeof vi.fn> } }).terminal;
     await waitFor(() => expect(shownSurfaces(first.container)).toHaveLength(1));
     const mainTerminal = shownSurfaces(first.container)[0]!.tabId!;
+    expect(mainTerminal).toBe(initialLayout.surfaces.main.tabId);
+    await waitFor(() => expect(firstTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: mainTerminal, lane: "manual", cwd: startingDirectory })));
     await waitFor(() => expect(first.container.querySelector('[data-testid="pane-header-meta"]')?.textContent).toBe("app"));
     const tiles = await splitIntoTwoTiles(first.container);
     const sideTerminal = await openSideTerminalIn(tiles[1]!.element);
@@ -627,12 +651,13 @@ describe("main-area terminal and web panels", () => {
       const calls = vi.mocked(first.api.updateSettings).mock.calls
         .map(([patch]) => (patch as { system?: { mainLayout?: Record<string, unknown> } }).system?.mainLayout)
         .filter((each) => each !== undefined);
-      const last = calls.at(-1) as { surfaces: Record<string, { tabId: string; cwd: string | null }>; sideTabs: Record<string, Array<{ tabId: string }>> } | undefined;
+      const last = calls.at(-1) as { surfaces: Record<string, { tabId: string; cwd: string | null }>; sideTabs: Record<string, Array<{ tabId: string; cwd: string | null }>> } | undefined;
       expect(Object.values(last?.surfaces ?? {}).map((each) => each.tabId)).toEqual([mainTerminal]);
       expect(Object.values(last?.sideTabs ?? {}).flat().map((each) => each.tabId)).toEqual([sideTerminal]);
       return last!;
     }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
-    expect(Object.values(saved.surfaces)[0]!.cwd).toBe("/work/repo/app");
+    expect(Object.values(saved.surfaces)[0]!.cwd).toBe(startingDirectory);
+    expect(Object.values(saved.sideTabs).flat()[0]!.cwd).toBeNull();
     const persisted = await first.api.getSettings();
     first.unmount();
     resetMainLayoutRestoreForTest();
@@ -644,8 +669,11 @@ describe("main-area terminal and web panels", () => {
     expect(second.container.querySelectorAll('[data-testid^="pane-cell:"]:not([data-hidden="true"])')).toHaveLength(2);
     await waitFor(() => expect(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"]`)).not.toBeNull());
     // A new shell, in the saved directory, saying it is one.
-    await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: mainTerminal, cwd: "/work/repo/app" })));
-    expect(xtermWrites.join("")).toContain("[restored: new shell in /work/repo/app]");
+    await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: mainTerminal, lane: "manual", cwd: startingDirectory })));
+    expect(xtermWrites.join("")).toContain(t("ptyTerminal.restored"));
+    await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: sideTerminal, lane: "manual" })));
+    const sideSpawn = secondTerminal.spawn.mock.calls.find(([payload]) => (payload as { tabId: string }).tabId === sideTerminal)![0];
+    expect(sideSpawn).not.toHaveProperty("cwd");
     // A terminal opened after the restore does not take a restored id.
     await clickSidebarNavRow("features", "sidebar-terminal");
     const ids = new Set([mainTerminal, sideTerminal]);
