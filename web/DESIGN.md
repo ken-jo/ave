@@ -79,36 +79,32 @@ shows it.
     site: no illustrations, stock images, third-party logos or mock-ups. The
     key of each picture is in `lib/media.json`; copy can only name a key that
     exists (`lib/content.ts`).
-16. **How they were made.** The packaged app ran with an isolated `HOME`,
-    `AVE_HOME` and Chromium profile under `/tmp`, `NODE_ENV=production`,
-    `--lang=en-US` and a mock keychain. The model was a local scripted
-    OpenAI-compatible stub with a fake key, answering a fixed scenario per
-    prompt, over a neutral sample project (`trail-notes`: a small Node CLI and
-    a static preview site). Each scene was driven and captured over the Chrome
-    DevTools Protocol, once in the light theme and once with the Tokyo Night
-    theme package installed for dark. The main app shots are 2880×1800 (2×);
-    older shots with web pages inside are 1440×900, because guest pages
-    mis-size under emulated device scale. `browser-live`, `browser-live-nav`
-    and `terminal-live` (2026-10-19, app at main 62f897f6d) are 2× with web
-    pages inside: Electron ran with `--force-device-scale-factor=2` and no
-    emulated scale, the window content set to 1440×900. They show the
-    browser or terminal in the main area with the side chat beside it,
-    driven by the scripted model through the real tools (`browser_snapshot`,
-    `browser_navigate`, `terminal_read` and the agent's own shell tool). The
-    agent cannot type into the terminal panel, and none of the captures
-    pretends it does; `terminal-live` is to be replaced once that changes.
-    Every capture's chat was checked against the scripted model's log of
-    the real tool results (2026-10-19). `terminal-ask` and `terminal-live`
-    are kept with a caveat and are to be retaken: their scripted line about
-    the failing test follows a `terminal_read` call made without a block id,
-    which returns the blocks' commands and exit codes but not their output
-    (the failure is on screen in the terminal, and `terminal-live` confirms
-    it with its own command); `terminal-main` and `browser-side` show the
-    same `terminal-ask` conversation and carry the same caveat. The
-    transcript capture that showed no changed lines was removed (retake it
-    with the work group expanded), and so was the work-mode capture whose
-    planning-notes answer said two questions block the release, which the
-    notes it read do not say.
+16. **How they were made.** The real app runs with an isolated neutral
+    temporary `HOME`, `AVE_HOME` and browser profile, production mode,
+    English locale and a mock keychain. A local scripted model with a fake
+    key answers a fixed scenario over `trail-notes`, a sample Node CLI
+    and local preview site. This demonstrates real tool execution and UI
+    with a scripted conversation. Each scene is captured through the
+    DevTools Protocol in the light theme and the Tokyo Night theme package.
+    `browser-live`, `browser-live-nav` and `terminal-live` were captured
+    from app main 135a26642 on 2026-10-21 at 2880×1800 (2×).
+    `browser-side`, `browser-done`, `terminal-side`, `terminal-main`,
+    `terminal-ask` and `web-main` use the same build and retain their existing
+    1440×900 (1×) dimensions by reducing the 2× source before encoding.
+    The app uses `--force-device-scale-factor=2`, no emulated scale,
+    and a 1440×900 content area so embedded pages size correctly.
+    The main browser and terminal panes each have their own docked chat.
+    Browser chat uses real `browser_snapshot` and `browser_navigate`
+    results. Terminal chat reads the failed run with `terminal_read`
+    using `limit` so the result includes output, requests `terminal_run`
+    approval, then runs that command in the same visible shell. The rerun
+    still shows five passing tests and one failure; a real source-file read
+    grounds the diagnosis. The approval picture precedes execution, and
+    the final picture follows the command block and source result.
+    The scripted model checks each outcome against the preceding real tool
+    results and aborts on a failed tool or unsupported statement. The
+    screenshot driver refuses captures after an abort. No personal
+    profiles or names appear, and visible paths use the neutral capture home.
 17. **Formats.** Each capture ships as AVIF (quality 62) and WebP (quality 80)
     at full size, plus a half-width 256-colour PNG fallback, for light and
     dark: `public/media/<key>-<light|dark>.<avif|webp|png>`. The hero loop is

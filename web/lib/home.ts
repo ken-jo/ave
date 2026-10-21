@@ -75,9 +75,9 @@ const ko: HomeCopy = {
     body: "에이전트는 대화 안에서만 일하지 않습니다. 작업 패널과 메인 영역의 실제 도구를 함께 씁니다.",
     cards: [
       {
-        title: "에이전트가 여는 브라우저 탭",
-        body: "에이전트가 연 탭에는 ‘에이전트가 이 탭을 제어하고 있습니다’ 표시와 중지 버튼이 붙고, 클릭과 입력은 실행 전에 묻습니다.",
-        pic: { k: "browser-done", alt: "에이전트가 연 브라우저 탭에 trail-notes 미리보기의 Ridge Loop 페이지가 열려 있고 대화에 점검 결과가 적힌 화면" },
+        title: "페이지에 붙인 채팅",
+        body: "브라우저 창 안의 채팅에서 페이지를 읽고 이동을 요청합니다. 그 창이 채팅의 대상이 되고, 도구 실행은 권한 검사를 거칩니다.",
+        pic: { k: "browser-done", alt: "Ridge Loop 상세 페이지와 그 브라우저 창에 붙인 채팅. 페이지를 읽고 이동한 실제 도구 결과와 고도 단위가 빠졌다는 점검 결과" },
         w: 4,
       },
       {
@@ -228,9 +228,9 @@ const en: HomeCopy = {
     body: "Agents don’t only talk. They use the same tools you see in the work panel and the main area.",
     cards: [
       {
-        title: "Browser tabs the agent opens",
-        body: "A tab the agent opened carries “Agent is controlling this tab” and a Stop button, and its clicks and typing ask before they run.",
-        pic: { k: "browser-done", alt: "A browser tab the agent opened shows the Ridge Loop page of the trail-notes preview, with the agent’s findings in the conversation" },
+        title: "Chat beside the page",
+        body: "Read and navigate a page from the browser pane’s own chat. That pane is the chat’s target, and tool execution goes through the permission check.",
+        pic: { k: "browser-done", alt: "The Ridge Loop detail page with the browser pane’s own chat, showing real snapshot and navigation results and the finding that the elevation has no unit" },
         w: 4,
       },
       {

@@ -130,13 +130,13 @@ const ko: Pages = {
   terminal: {
     meta: {
       title: "터미널",
-      description: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌립니다. 사이드 패널과 메인 영역을 오가고, 에이전트는 명령 블록을 읽기만 합니다.",
+      description: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌립니다. 사이드 패널과 메인 영역을 오가고, 에이전트는 결과를 읽거나 권한 검사를 거쳐 같은 터미널에 명령을 실행합니다.",
     },
     hero: {
       eyebrow: "터미널",
       title: "실제 셸, 샌드박스 안에서",
-      lead: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌리는 PTY입니다. 사이드 패널에서 열어 메인 영역으로 옮길 수 있고, 에이전트는 내 명령의 결과를 읽어서 이어서 일합니다.",
-      pic: { k: "terminal-live", alt: "메인 영역의 터미널에 git log와 실패한 npm test 결과가 있고, 옆 사이드 채팅이 terminal read로 터미널을 읽은 뒤 자기 셸 도구로 명령 두 개를 실행해 실패한 테스트를 짚는 화면" },
+      lead: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌리는 PTY입니다. 사이드 패널에서 열어 메인 영역으로 옮길 수 있습니다. 터미널에 붙인 채팅에서 에이전트가 실행 결과를 읽고, 승인받은 다음 명령을 같은 셸에 실행합니다.",
+      pic: { k: "terminal-live", alt: "메인 영역의 터미널과 그 창에 붙인 채팅. 에이전트가 terminal_read로 실패한 테스트를 읽고, terminal_run 승인을 받아 같은 터미널에서 다시 실행한 뒤 원인을 설명하는 화면" },
     },
     first: {
       eyebrow: "명령 블록",
@@ -152,13 +152,13 @@ const ko: Pages = {
     },
     grid: {
       eyebrow: "에이전트와 함께",
-      title: "에이전트는 읽고, 실행은 자기 도구로",
-      body: "에이전트의 terminal_read 도구는 터미널 탭 목록과 명령 블록을 읽기만 합니다. 터미널에 입력하거나 명령을 실행하지는 못하고, 읽은 출력은 신뢰할 수 없는 데이터로 표시됩니다.",
+      title: "결과를 읽고, 다음 명령은 승인받아서",
+      body: "terminal_read는 명령 블록과 출력을 읽고, terminal_run은 권한 검사를 거쳐 한 줄 명령을 같은 터미널에 실행합니다. 승인 카드의 대상 터미널과 현재 작업 폴더가 고정되며, 셸이 실행 중이거나 아직 제출하지 않은 입력이 있으면 명령을 보내지 않습니다. 읽은 출력은 신뢰할 수 없는 데이터로 표시됩니다.",
       cards: [
         {
-          title: "실패한 실행을 읽고 원인을 짚기",
-          body: "마지막 npm test 블록을 읽고 어느 테스트가 왜 실패했는지, 어떻게 고칠지 답합니다.",
-          pic: { k: "terminal-ask", alt: "대화에서 에이전트가 터미널의 마지막 테스트 실행을 읽고 json round-trips 실패 원인을 설명한 화면" },
+          title: "같은 터미널에서 다시 실행",
+          body: "실패한 npm test 출력을 읽고, 같은 터미널에서 테스트를 다시 실행할 명령을 승인 카드로 보여 줍니다.",
+          pic: { k: "terminal-ask", alt: "터미널에 붙인 채팅이 실패한 테스트 출력을 읽은 뒤 같은 터미널에서 실행할 명령을 승인 카드로 보여 주는 화면" },
           w: 4,
         },
         {
@@ -199,7 +199,7 @@ const ko: Pages = {
     faqs: [
       { q: "터미널이 열리지 않아요.", a: "터미널은 OS 샌드박스가 켜져 있어야 돕니다. 설정 → 권한에서 OS 도구 샌드박스를 켜고 앱을 다시 시작하세요. 샌드박스가 셸을 담을 수 없는 환경이면 터미널은 시작하지 않습니다." },
       { q: "터미널을 메인 영역으로 옮기면 셸이 다시 시작되나요?", a: "아니요. ‘메인 영역으로 이동’이나 끌어 놓기로 옮겨도 셸과 출력이 그대로 이어집니다. 터미널은 한 번에 한 곳에만 보이고, 메인 영역의 패널을 닫으면 셸도 끝납니다." },
-      { q: "에이전트가 제 터미널에 명령을 입력하나요?", a: "아니요. terminal_read는 탭 목록과 명령 블록을 읽기만 합니다. 에이전트가 명령을 실행할 때는 자기 셸 도구로 따로 실행하고, 그 명령은 권한 검사를 거칩니다." },
+      { q: "에이전트가 제 터미널에 명령을 입력하나요?", a: "네. terminal_run은 권한 검사를 통과한 한 줄 명령을 지정된 터미널에서 실행합니다. 승인 카드에 표시된 터미널과 현재 작업 폴더가 실행 때도 같아야 하며, 셸이 실행 중이거나 아직 제출하지 않은 입력이 있으면 거부됩니다. terminal_read는 출력 읽기만 담당합니다." },
       { q: "오래 걸리는 명령이 끝나면 알려 주나요?", a: "셸이 알림 이스케이프(OSC 9 또는 OSC 777)를 보내면 그 패널에 표시가 붙고, 창이 앞에 있지 않을 때는 운영체제 알림이 뜹니다." },
       { q: "닫은 패널을 다시 열 수 있나요?", a: "⌘⇧T는 같은 종류의 새 패널을 같은 위치에 엽니다. 닫힌 셸 프로세스가 되살아나지는 않습니다." },
     ],
@@ -575,13 +575,13 @@ const en: Pages = {
   terminal: {
     meta: {
       title: "Terminal",
-      description: "Ave’s terminal runs a real shell inside the OS sandbox. It moves between the side panel and the main area, and agents only read its command blocks.",
+      description: "Ave’s terminal runs a real shell inside the OS sandbox. It moves between the side panel and the main area; agents read its output or run a command there through the permission check.",
     },
     hero: {
       eyebrow: "Terminal",
       title: "A real shell, inside the sandbox",
-      lead: "Ave’s terminal is a PTY running a real shell inside the operating-system sandbox. Open it in the side panel, move it to the main area, and let the agent read what your commands returned.",
-      pic: { k: "terminal-live", alt: "The terminal in the main area shows git log and a failing npm test run; the side chat beside it read the terminal with terminal read, ran two commands with its own shell tool, and names the failing test" },
+      lead: "Ave’s terminal is a PTY running a real shell inside the operating-system sandbox. Open it in the side panel and move it to the main area. In the terminal’s own chat, the agent reads your output and runs an approved next command in the same shell.",
+      pic: { k: "terminal-live", alt: "The main-area terminal with its own docked chat. The agent reads the failing test with terminal_read, runs it again in the same terminal after terminal_run approval, and explains the cause" },
     },
     first: {
       eyebrow: "Command blocks",
@@ -597,13 +597,13 @@ const en: Pages = {
     },
     grid: {
       eyebrow: "With the agent",
-      title: "The agent reads; it runs commands with its own tools",
-      body: "The agent’s terminal_read tool only lists terminal tabs and reads their command blocks. It cannot type into a terminal or run a command there, and what it reads is marked as untrusted data.",
+      title: "Read the output. Approve the next command.",
+      body: "terminal_read lists tabs and reads command blocks and output; terminal_run sends one line through the permission check into the same terminal. The approval card fixes the terminal and its working directory. Ave refuses the command while the shell is busy or you have typed input without submitting it. Output reaches the agent marked as untrusted data.",
       cards: [
         {
-          title: "Reading a failed run",
-          body: "It reads the last npm test block and answers which test failed, why, and how to fix it.",
-          pic: { k: "terminal-ask", alt: "In the conversation, the agent reads the terminal’s last test run and explains why json round-trips failed" },
+          title: "Run it again in the same terminal",
+          body: "It reads the failed npm test output and shows an approval card for the command that will run the test again in the same terminal.",
+          pic: { k: "terminal-ask", alt: "The terminal’s docked chat reads the failed test output and shows an approval card for a command in that same terminal" },
           w: 4,
         },
         {
@@ -644,7 +644,7 @@ const en: Pages = {
     faqs: [
       { q: "The terminal won’t open.", a: "The terminal needs the OS sandbox. Turn on OS Tool Sandbox in Settings → Permissions and restart Ave. Where the sandbox cannot contain a shell, the terminal does not start." },
       { q: "Does moving a terminal to the main area restart the shell?", a: "No. Move to main area, or dragging the tab, keeps the shell and its output. A terminal shows in one place at a time, and closing its main-area pane ends the shell." },
-      { q: "Does the agent type into my terminal?", a: "No. terminal_read only lists tabs and reads command blocks. When the agent runs a command, it uses its own shell tool, and that command goes through the permission check." },
+      { q: "Does the agent type into my terminal?", a: "Yes. terminal_run sends one line into the selected terminal through the permission check. The terminal and its current working directory must still match the approval card at execution time. Ave refuses the command while the shell is busy or you have typed input without submitting it. terminal_read only reads output." },
       { q: "Can it tell me when a long command finishes?", a: "When the shell sends a notification escape (OSC 9 or OSC 777), the pane is marked, and if the Ave window isn’t focused the system shows a notification." },
       { q: "Can I reopen a closed panel?", a: "⌘⇧T opens a new panel of the same kind at the same address. A closed shell process is not revived." },
     ],
