@@ -25,6 +25,9 @@ jobs:
     # fork pull request always gets the hosted label. Private repo only: unset
     # AVE_LINUX_RUNNER before the repo goes public.
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,9 +63,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       # Cache the built node_modules (Electron dist + electron-rebuilt native
       # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
       # ABI-correct binaries without re-downloading Electron or recompiling
@@ -507,6 +510,9 @@ jobs:
     # fork pull request always gets the hosted label. Private repo only: unset
     # AVE_LINUX_RUNNER before the repo goes public.
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -573,9 +579,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
