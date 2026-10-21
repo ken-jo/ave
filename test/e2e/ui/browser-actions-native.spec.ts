@@ -95,6 +95,7 @@ test("@cdp pointer drag delivers HTML5 drag payload", async ({}, testInfo) => {
     expect(result.ok, resultMessage(result)).toBe(true);
     await expect.poll(async () => (await read(app)).oracle.dropped).toBe("fixture-drag-payload");
     expect((await read(app)).oracle.dragStarted).toBeGreaterThan(0);
+    expect((await read(app)).oracle.dropCount).toBe(1);
   } finally { await close(app); }
 });
 

@@ -836,9 +836,13 @@ function adapterFixture(options: {
   const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
+    detach: vi.fn(() => { attached = false; }),
     isAttached: () => attached,
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
       const result = await cdp.send(method, params);
+      if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
+        registry.userInput(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
+      }
       // The native echo of a pointer move: the page point and its screen point.
       if (echo.on && method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
         const x = params.x as number;
@@ -853,6 +857,7 @@ function adapterFixture(options: {
       return result;
     },
   });
+  cdp.events.on("message", (method: string, params: Record<string, unknown>) => debuggerEvents.emit("message", {}, method, params));
   const mainFrame = { framesInSubtree: [] };
   let url = "https://a.example/form";
   const touches: string[] = [];
@@ -1157,7 +1162,7 @@ describe("typed page actions", () => {
     await expect(drag(target(cdp), start, end, refs)).rejects.toMatchObject({ code: "drag-unavailable" });
     cdp.hit.backendNodeId = 11;
     const value = target(cdp);
-    value.mouseDrag = async (run) => run();
+    value.mouseDrag = async (run) => run({ intercepted: () => undefined });
     const send = cdp.send.bind(cdp);
     vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
       const result = await send(method, params);
@@ -1327,4 +1332,85 @@ it("sends no selection keys when native focus proof is unavailable", async () =>
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
   await expect(actions.select(live, ref, "b")).rejects.toMatchObject({ code: "no-focus" });
   expect(cdp.inputs()).toEqual([]);
+});
+
+describe("native intercepted drag lifetime", () => {
+  let nextGuestId = 600;
+  async function fixture(options: { payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean; stopAfterDrop?: boolean; stop?: "caller" | "human" | "navigation" } = {}) {
+    const fixture = adapterFixture({ guestId: nextGuestId++ });
+    const { cdp, guest, registry, actions, approve, tab, navigate } = fixture;
+    cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
+    cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
+    cdp.attributes.set(11, { draggable: "true" });
+    cdp.hit.backendNodeId = 11;
+    const live = await approve("browser_drag");
+    const caller = new AbortController();
+    const actionLive = { ...live, signal: AbortSignal.any([live.signal, caller.signal]), callerSignal: caller.signal };
+    const shot = await actions.snapshot(actionLive, {});
+    const refs = [...shot.text.matchAll(/\[ref=(e\d+)\]/g)].map((match) => match[1]!);
+    const data = options.payload ?? { items: [{ mimeType: "text/plain", data: "native fixture payload" }], dragOperationsMask: 1 };
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "Input.setInterceptDrags" && params?.enabled === false && options.disableFails) throw new Error("disable failed");
+      const result = await send(method, params);
+      if (method === "Input.setInterceptDrags" && params?.enabled === true && options.beforePress) cdp.events.emit("message", "Input.dragIntercepted", { data });
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") cdp.hit.backendNodeId = 12;
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1) {
+        if (!options.noEvent) cdp.events.emit("message", "Input.dragIntercepted", { data });
+        if (options.stop === "caller") caller.abort(new Error("caller stopped"));
+        if (options.stop === "human") registry.userInput(guest.id, { type: "mouseDown", x: 999, y: 999, button: "left", clickCount: 1 });
+        if (options.stop === "navigation") navigate("https://a.example/new-document");
+      }
+      if (method === "Input.dispatchDragEvent" && params?.type === "drop" && options.stopAfterDrop) {
+        registry.userInput(guest.id, { type: "mouseDown", x: 999, y: 999, button: "left", clickCount: 1 });
+      }
+      return result;
+    });
+    return { ...fixture, tab, run: () => actions.drag(actionLive, refs[0]!, refs[1]!), drops: () => cdp.calls.filter((call) => call.method === "Input.dispatchDragEvent" && call.params?.type === "drop") };
+  }
+
+  it("ends source interception before enter/over/drop and releases the payload listener", async () => {
+    const f = await fixture();
+    await f.run();
+    const effects = f.cdp.calls.filter((call) => call.method.startsWith("Input."));
+    const disable = effects.findIndex((call) => call.method === "Input.setInterceptDrags" && call.params?.enabled === false);
+    const enter = effects.findIndex((call) => call.method === "Input.dispatchDragEvent");
+    expect(effects.slice(0, disable).some((call) => call.method === "Input.cancelDragging")).toBe(true);
+    expect(disable).toBeLessThan(enter);
+    expect(f.drops()).toHaveLength(1);
+    expect(f.cdp.events.listenerCount("message")).toBe(1); // only fixture protocol forwarding remains
+  });
+
+  it.each([
+    { noEvent: true, code: "drag-not-intercepted" },
+    { payload: { items: [], dragOperationsMask: 1 }, code: "invalid-drag-data" },
+    { payload: { items: [{ mimeType: "text/plain", data: "x" }], files: ["/private/secret"], dragOperationsMask: 1 }, code: "invalid-drag-data" },
+    { beforePress: true, code: "invalid-drag-source" },
+    { stop: "caller" as const, code: "cancelled" },
+    { stop: "human" as const, code: "cancelled" },
+    { stop: "navigation" as const, code: "document-changed" },
+  ])("refuses an unproven or cancelled source before any destination drop ($code)", async (options) => {
+    const f = await fixture(options);
+    await expect(f.run()).rejects.toMatchObject({ code: options.code });
+    expect(f.drops()).toHaveLength(0);
+    expect(f.cdp.calls).toContainEqual({ method: "Input.setInterceptDrags", params: { enabled: false } });
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+  });
+
+  it("detaches and quarantines a session whose pre-drop disable never succeeds", async () => {
+    const f = await fixture({ disableFails: true });
+    await expect(f.run()).rejects.toThrow("disable failed");
+    expect(f.drops()).toHaveLength(0);
+    expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
+    expect(f.guest.debugger.isAttached()).toBe(false);
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    f.guest.emit("destroyed"); // release this fixture window's quarantine
+  });
+
+  it("keeps human cancellation priority and names the acknowledged drop as committed", async () => {
+    const f = await fixture({ stopAfterDrop: true });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("do not repeat") });
+    expect(f.drops()).toHaveLength(1);
+    expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+  });
 });

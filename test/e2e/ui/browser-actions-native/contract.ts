@@ -4,6 +4,7 @@ export interface NativeOracle {
   readonly hover: number;
   readonly dragStarted: number;
   readonly dropped: string;
+  readonly dropCount: number;
   readonly humanClicks: number;
   readonly selected: string;
   readonly slider: string;

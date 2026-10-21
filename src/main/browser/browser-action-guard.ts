@@ -1,5 +1,8 @@
 import { BrowserDocumentChangedError } from "./browser-tab-registry.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+
+export interface NativeDragReceipt { intercepted(): BrowserDragData | undefined }
 
 export interface CdpSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -7,7 +10,7 @@ export interface CdpSession {
 }
 
 export class BrowserActionError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string, readonly effectCommitted = false) {
     super(message);
     this.name = "BrowserActionError";
   }
@@ -28,7 +31,7 @@ export interface ActionTarget {
   wheelInput<T>(run: () => Promise<T>): Promise<T>;
   releaseFocus(): void;
   focusPage(): Promise<void>;
-  mouseDrag?<T>(run: () => Promise<T>): Promise<T>;
+  mouseDrag?<T>(run: (receipt: NativeDragReceipt) => Promise<T>): Promise<T>;
   navigationOutcome?(): boolean;
   onDestroyed?(listener: () => void): () => void;
   readonly signal: AbortSignal;
@@ -138,7 +141,15 @@ export async function withGuardedAction(
             const current = await frameTree({ ...target.cdp, send: read });
             if (current.frame.id !== frameId || current.frame.loaderId !== loaderId
               || browserOrigin(current.frame.url) !== origin) changed();
-            if (method === "Input.dispatchMouseEvent" || method === "Input.dispatchTouchEvent") {
+            if (method === "Input.setInterceptDrags" && (!params || Object.keys(params).length !== 1 || typeof params.enabled !== "boolean")) wrongTarget();
+            if (method === "Input.cancelDragging" && params && Object.keys(params).length !== 0) wrongTarget();
+            if (method === "Input.dispatchDragEvent") {
+              if (!params || !["dragEnter", "dragOver", "drop"].includes(String(params.type))
+                || Object.keys(params).some((key) => !["type", "x", "y", "data"].includes(key))
+                || !Number.isInteger(params.x) || !Number.isInteger(params.y)) wrongTarget();
+              browserDragData(params.data, origin);
+            }
+            if (method === "Input.dispatchMouseEvent" || method === "Input.dispatchTouchEvent" || method === "Input.dispatchDragEvent") {
               if (inputNode === undefined) wrongTarget();
               if (method === "Input.dispatchTouchEvent" && (params?.type === "touchStart" || params?.type === "touchMove")) {
                 const point = (params.touchPoints as { x: number; y: number }[] | undefined)?.[0];
@@ -200,7 +211,14 @@ export async function withGuardedAction(
     // document change is its outcome. No following step reaches that new page.
     const completedNavigation = completedInput && err instanceof BrowserActionError && err.code === "document-changed"
       && (!target.signal.aborted || (target.signal.reason instanceof BrowserDocumentChangedError && target.navigationOutcome?.() === true));
-    if (!completedNavigation) { throwIfAborted(target.signal); throw err; }
+    if (!completedNavigation) {
+      if (err instanceof BrowserActionError && err.effectCommitted) {
+        const code = target.signal.aborted
+          ? target.signal.reason instanceof BrowserDocumentChangedError ? "document-changed" : "cancelled" : err.code;
+        throw new BrowserActionError(code, err.message, true);
+      }
+      throwIfAborted(target.signal); throw err;
+    }
   } finally {
     stop();
   }

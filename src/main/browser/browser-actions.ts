@@ -22,6 +22,7 @@ import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-t
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
   browserRefs,
@@ -519,22 +520,41 @@ export async function drag(target: ActionTarget, sourceRef: string, targetRef: s
     target.expectNode(source);
     const start = await centerOf(target.cdp, source);
     const end = await visibleCenter(target.cdp, destination);
-    await target.injectInput(() => withPageFocus(target, () => target.mouseDrag!(async () => {
-      let open = false;
-      try {
+    const sourceAttributes = await attributesOf(target.cdp, source);
+    const expectsHtmlDrag = sourceAttributes.draggable === "true" || ["link", "img", "image"].includes(refs.get(sourceRef)?.role ?? "");
+    await target.injectInput(() => target.mouseDrag!(async (receipt) => {
+      const data = await withPageFocus(target, async () => {
+        await target.cdp.send("Input.setInterceptDrags", { enabled: true });
         await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...start });
-        open = true;
         await target.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...start, button: "left", buttons: 1, clickCount: 1 });
         target.expectNode(destination);
         await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...end, button: "left", buttons: 1 });
-        await target.finishWithInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }));
-        open = false;
-      } finally {
-        // Only a still-approved document may receive a closing release. If it
-        // cannot, the adapter refuses further window gestures until navigation.
-        if (open) await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }).catch(() => undefined);
+        const captured = expectsHtmlDrag
+          ? await pollUntil(target.signal, 1_000, () => Promise.resolve(receipt.intercepted())) : receipt.intercepted();
+        if (expectsHtmlDrag && !captured) throw new BrowserActionError("drag-not-intercepted", "the page did not provide a native drag payload; no drop was sent");
+        // Interception and its source drag end BEFORE the destination can
+        // receive a drop. A failed teardown is therefore safe to retry.
+        if (captured) await target.cdp.send("Input.cancelDragging");
+        else {
+          // Keep interception armed through ordinary release: a late native
+          // HTML5 drag must be captured, never delivered as an unchecked drop.
+          await target.finishWithInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }));
+          if (receipt.intercepted()) throw new BrowserActionError("drag-not-intercepted", "the native drag payload arrived too late; no destination drop was sent");
+        }
+        await target.cdp.send("Input.setInterceptDrags", { enabled: false });
+        return captured;
+      });
+      if (data) {
+        if (await resolveRef(target, sourceRef, refs) !== source || await resolveRef(target, targetRef, refs) !== destination) {
+          throw new BrowserActionError("stale-ref", "the drag endpoints changed; no drop was sent");
+        }
+        target.expectNode(destination);
+        const point = await visibleCenter(target.cdp, destination);
+        await target.cdp.send("Input.dispatchDragEvent", { type: "dragEnter", ...point, data });
+        await target.cdp.send("Input.dispatchDragEvent", { type: "dragOver", ...point, data });
+        await target.finishWithInput(() => target.cdp.send("Input.dispatchDragEvent", { type: "drop", ...point, data }));
       }
-    })));
+    }));
   });
 }
 
@@ -1028,12 +1048,27 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   let touchEnded = false;
   let touchMoved = false;
   let mouseOpen = false;
+  let nativeDrag: {
+    enabled: boolean; disabled: boolean; cancelled: boolean; dropped: boolean; awaitingPayload: boolean;
+    data?: BrowserDragData; error?: unknown;
+    delivery(): { pressed: boolean; released: boolean; elsewhere: number };
+    stop(): void;
+  } | undefined;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
+      if (method === "Input.setInterceptDrags") {
+        if (!nativeDrag || typeof params?.enabled !== "boolean") throw new BrowserActionError("drag-unavailable", "no native drag sequence owns interception");
+        if (params.enabled) { nativeDrag.enabled = true; nativeDrag.disabled = false; }
+      }
+      if (method === "Input.cancelDragging" && !nativeDrag) throw new BrowserActionError("drag-unavailable", "no native drag sequence owns cancellation");
+      if (method === "Input.dispatchDragEvent" && (!nativeDrag?.data || params?.data !== nativeDrag.data
+        || nativeDrag.enabled || !nativeDrag.disabled || !nativeDrag.cancelled || nativeDrag.error || nativeDrag.delivery().elsewhere !== 0)) {
+        throw new BrowserActionError("drag-unavailable", "the native source drag has not been safely released; no drop was sent");
+      }
       params = touch.placed(method, params);
       const echo = touch.watch(method, params);
       const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
@@ -1044,11 +1079,17 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
       }
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1 && nativeDrag) nativeDrag.awaitingPayload = true;
       try {
         const sent = session.send(method, params);
         const result = pressDeadline !== null
           ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
           : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
+        if (method === "Input.cancelDragging" && nativeDrag) { nativeDrag.cancelled = true; mouseOpen = false; }
+        if (method === "Input.setInterceptDrags" && params?.enabled === false && nativeDrag) {
+          nativeDrag.enabled = false; nativeDrag.disabled = true; nativeDrag.stop();
+        }
+        if (method === "Input.dispatchDragEvent" && params?.type === "drop" && nativeDrag) nativeDrag.dropped = true;
         if (phase === "touchEnd" || phase === "touchCancel") {
           touchOpen = false;
           touchEnded = phase === "touchEnd";
@@ -1151,22 +1192,65 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       return aloneInWindow(host.windowId, live.signal, async () => {
         refuseIfWedged(host.windowId);
         const watch = attribution.watchMouse(guest.id);
+        const state: NonNullable<typeof nativeDrag> = { enabled: false, disabled: false, cancelled: false, dropped: false, awaitingPayload: false,
+          delivery: () => watch.delivery(), stop: () => {} };
+        nativeDrag = state;
+        state.stop = session.onEvent((method, params) => {
+          if (method !== "Input.dragIntercepted") return;
+          try {
+            assertCurrent(false);
+            const delivery = watch.delivery();
+            if (!state.enabled || !state.awaitingPayload || state.data || !mouseOpen || !delivery.pressed || delivery.elsewhere !== 0) {
+              throw new BrowserActionError("invalid-drag-source", "the intercepted payload did not follow the observed source press; no drop was sent");
+            }
+            state.data = browserDragData(params.data, approval!.origin);
+          } catch (error) { state.error = error; }
+        });
         pressDeadline = Date.now() + PRESS_MAX_MS;
         try {
-          const value = await run();
+          const value = await run({ intercepted: () => {
+            assertCurrent(false);
+            if (state.error) throw state.error;
+            return state.data;
+          } });
           const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, pressDeadline);
           let delivery = watch.delivery();
-          while (!(delivery.pressed && delivery.released) && Date.now() < until) {
+          while (!(delivery.pressed && (state.dropped || delivery.released)) && Date.now() < until) {
             await sleep(TAP_POLL_MS, live.signal);
             throwIfAborted(live.signal);
             delivery = watch.delivery();
           }
-          if (!delivery.pressed || !delivery.released || delivery.elsewhere > 0) throw new BrowserActionError("input-not-delivered", "the drag did not reach only the intended page");
+          if (state.error) throw state.error;
+          if (!delivery.pressed || !(state.data ? state.dropped && state.cancelled && state.disabled : delivery.released)
+            || delivery.elsewhere > 0) throw new BrowserActionError("input-not-delivered", "the drag did not reach only the intended page");
           return value;
+        } catch (error) {
+          if (state.dropped) throw new BrowserActionError(error instanceof BrowserActionError ? error.code : "drag-effect-committed",
+            "the destination acknowledged the drop before this action stopped; do not repeat it automatically", true);
+          throw error;
         } finally {
           pressDeadline = null;
-          watch.stop();
-          if (mouseOpen) markWedged(host.windowId, guest, new Promise(() => {}));
+          state.stop();
+          try {
+            // Cleanup uses the original session even after document/user
+            // cancellation. Neither command can create a destination effect.
+            if (mouseOpen || state.enabled) {
+              let clean = true;
+              if (!state.dropped) await within(session.send("Input.cancelDragging"), INPUT_DISPATCH_MAX_MS).then(() => { mouseOpen = false; }, () => { clean = false; });
+              if (state.enabled) await within(session.send("Input.setInterceptDrags", { enabled: false }), INPUT_DISPATCH_MAX_MS).then(() => { state.enabled = false; }, () => { clean = false; });
+              if (!clean) {
+                // A debugger whose interception state cannot be proved is
+                // detached and quarantined before another action can use it.
+                attached.delete(guest);
+                try { guest.debugger.detach(); } catch { /* guest destruction also ends its session */ }
+                markWedged(host.windowId, guest, new Promise(() => {}));
+              }
+            }
+          } finally {
+            nativeDrag = undefined;
+            watch.stop();
+            if (mouseOpen) markWedged(host.windowId, guest, new Promise(() => {}));
+          }
         }
       });
     },

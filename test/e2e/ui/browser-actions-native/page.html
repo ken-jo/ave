@@ -42,13 +42,13 @@
 </div>
 <div id="bottom">Full-page bottom marker</div>
 <script>
-  window.nativeState = { hover: 0, dragStarted: 0, dropped: '', humanClicks: 0, selected: 'a', slider: '0', upload: null, uploadResponse: null };
+  window.nativeState = { hover: 0, dragStarted: 0, dropped: '', dropCount: 0, humanClicks: 0, selected: 'a', slider: '0', upload: null, uploadResponse: null };
   const byId = id => document.getElementById(id);
   byId('hover').addEventListener('mousemove', () => { window.nativeState.hover++; });
   byId('human').addEventListener('click', () => { window.nativeState.humanClicks++; });
   byId('drag').addEventListener('dragstart', event => { window.nativeState.dragStarted++; event.dataTransfer.setData('text/plain', 'fixture-drag-payload'); });
   byId('drop').addEventListener('dragover', event => { event.preventDefault(); });
-  byId('drop').addEventListener('drop', event => { event.preventDefault(); window.nativeState.dropped = event.dataTransfer.getData('text/plain'); });
+  byId('drop').addEventListener('drop', event => { event.preventDefault(); window.nativeState.dropCount++; window.nativeState.dropped = event.dataTransfer.getData('text/plain'); });
   byId('choice').addEventListener('change', () => { window.nativeState.selected = byId('choice').value; });
   byId('navigate-choice').addEventListener('change', () => { if (byId('navigate-choice').value === 'b') location.assign('/navigated-select'); });
   byId('slider').addEventListener('input', () => { window.nativeState.slider = byId('slider').value; });

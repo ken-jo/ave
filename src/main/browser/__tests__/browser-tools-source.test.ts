@@ -37,6 +37,10 @@ const ALLOWED_CDP_METHODS = new Set([
   "Input.dispatchTouchEvent",
   "Input.dispatchKeyEvent",
   "Input.insertText",
+  "Input.setInterceptDrags",
+  "Input.dragIntercepted",
+  "Input.dispatchDragEvent",
+  "Input.cancelDragging",
   "Page.enable",
   "Page.captureScreenshot",
   "Page.getFrameTree",
@@ -97,7 +101,7 @@ describe("browser tool CDP surface", () => {
     expect(source).toContain("const sent = session.send(method, params);");
   });
 
-  it("sends past the action guard only the touch cancel that closes a press", () => {
+  it("limits unguarded input to noninteractive sequence teardown", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
     const start = source.indexOf("async function targetFor(");
     const body = source.slice(start, source.indexOf("\n}\n", start));
@@ -105,6 +109,8 @@ describe("browser tool CDP surface", () => {
     // this one, which presses nothing: it only ends the window's open sequence.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
+      'session.send("Input.cancelDragging")',
+      'session.send("Input.setInterceptDrags", { enabled: false })',
     ]);
   });
 });
