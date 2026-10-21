@@ -42,31 +42,49 @@ async function close(app: ElectronApplication) {
   await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.close()).catch(() => {});
   await app.close().catch(() => {});
 }
+async function openRegisteredPopup(app: ElectronApplication): Promise<WorkspaceNativeState> {
+  await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.openPopup());
+  await expect.poll(async () => {
+    const state = await read(app);
+    return { kind: state.popup?.kind, nativeEvents: state.nativeEvents };
+  }).toMatchObject({ kind: "popup" });
+  return read(app);
+}
+async function nativePopupPage(app: ElectronApplication) {
+  await expect.poll(() => app.windows().some((page) => page.url().endsWith("/popup"))).toBe(true);
+  const popup = app.windows().find((page) => page.url().endsWith("/popup"));
+  if (!popup) throw new Error("Native popup page disappeared");
+  return popup;
+}
 
-test("native popup retains hardened scope, focus receipt, human pause and explicit resume", async ({}, testInfo) => {
+test("CDP native popup preserves registration, hardening, opener, session and close lifecycle", async ({}, testInfo) => {
   const app = await launch(testInfo);
   try {
-    // Fixture-page activation creates the real native child. Human takeover
-    // below still uses an actual pointer event in that native child window.
-    await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.openPopup());
-    await expect.poll(async () => {
-      const state = await read(app);
-      return { kind: state.popup?.kind, nativeEvents: state.nativeEvents };
-    }).toMatchObject({ kind: "popup" });
-    const registered = await read(app);
+    // Page activation creates an actual child; no foreground receipt is required.
+    const registered = await openRegisteredPopup(app);
     expect(registered.popup).toMatchObject({ openerTabId: registered.mainHandle, windowId: registered.ownerWindowId, sameSession: true, sandbox: true, contextIsolation: true, nodeIntegration: false });
+    const popup = await nativePopupPage(app);
+    await popup.close();
+    await expect.poll(async () => (await read(app)).popup).toBeNull();
+    expect((await read(app)).mainHandle).toBe(registered.mainHandle);
+  } finally { await close(app); }
+});
+
+test("foreground native popup verifies focus, human pause, trusted title and explicit resume", async ({}, testInfo) => {
+  const app = await launch(testInfo);
+  try {
+    const registered = await openRegisteredPopup(app);
     const selected = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.selectPopup());
     expect(selected).toMatchObject({ ok: true, tabId: registered.popup!.handle });
     expect((await read(app)).popup).toMatchObject({ windowFocused: true, guestFocused: true });
     await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.holdPopup());
-    const popup = app.windows().find((page) => page.url().endsWith("/popup"));
-    expect(popup).toBeDefined();
-    await popup!.locator("#human").click();
+    const popup = await nativePopupPage(app);
+    await popup.locator("#human").click();
     await expect.poll(async () => (await read(app)).popup?.mode).toBe("human-paused");
     const paused = (await read(app)).popup!;
     expect(paused.nativeTitle).toMatch(/^Ave · /);
     expect(paused.nativeTitle).toMatch(/Paused|human-paused/);
-    await popup!.evaluate(() => { document.title = "Page attempted title"; });
+    await popup.evaluate(() => { document.title = "Page attempted title"; });
     await expect.poll(async () => (await read(app)).popup?.title).toBe("Page attempted title");
     expect((await read(app)).popup!.nativeTitle).toMatch(/^Ave · /);
     expect(await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.resumePopup())).toBe(true);
