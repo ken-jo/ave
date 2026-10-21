@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import * as resolver from "../../lib/shell-resolver.js";
@@ -96,7 +96,7 @@ describe.skipIf(process.platform === "win32")("prepared shell facts and resource
     const prepared = preparedShellCommand(handle);
     expect(prepared.homePath).toBeDefined();
     expect(prepared.environment.HOME).toBe(prepared.homePath);
-    expect(prepared.environment.TMPDIR).toBe(join(prepared.homePath!, "tmp"));
+    expect(dirname(prepared.environment.TMPDIR!)).toBe(prepared.homePath);
     expect(statSync(prepared.environment.TMPDIR!).mode & 0o777).toBe(0o700);
     const childEnv = preparedSandboxEnvironment(handle, { ...process.env, TMPDIR: "/late-wrapper-temp", HTTPS_PROXY: "http://proxy.invalid:1234", SSL_CERT_FILE: "/late-certificate.pem" });
     const result = spawnSync(prepared.shell.cmd, prepared.shell.shellArgs(preparedSandboxBootstrap(handle)), { cwd, env: childEnv, timeout: 3000 });
