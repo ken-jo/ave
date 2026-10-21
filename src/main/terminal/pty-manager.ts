@@ -730,7 +730,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     const session: TerminalSession = {
       info: { tabId, lane: "manual", terminalSessionId: randomBytes(16).toString("hex"), substrate: "host", initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false },
       pty, ownerWindowId: options.ownerWindowId ?? null,
-      blocks: new TerminalBlockTracker({ nonce: randomBytes(16).toString("hex") }),
+      blocks: new TerminalBlockTracker({ nonce: randomBytes(16).toString("hex"), marksPromptEnd: false }),
       shellName: basename(launch.command), innerPty: false,
       resizeForward: { running: false, again: false }, ring: [], ringBytes: 0,
       disposeData: () => {}, disposeExit: () => {},

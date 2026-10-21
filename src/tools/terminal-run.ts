@@ -71,7 +71,7 @@ const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 
 /**
- * Type a command into a terminal (pty-manager `typeTerminalCommand`): reset
+ * Type a command into a terminal (pty-manager `typeAgentTerminalCommand`): reset
  * the line editor, check the shell against the operating system, paste the
  * line, and press Enter once the edit line shows exactly that line.
  */
@@ -85,11 +85,11 @@ export type TypeTerminalCommand = (
 
 /**
  * Check a terminal's shell against the operating system (pty-manager
- * `verifyTerminalShell`): its own process holds the terminal, and its real
+ * `verifyAgentTerminalShell`): its own process holds the terminal, and its real
  * directory is the one its markers reported.
  */
 type VerifyTerminalShell = (
-  tabId: string,
+  ref: TerminalSessionRef,
   ownerWindowId: number,
   reportedCwd: string,
 ) => Promise<{ ok: true; cwd: string } | { ok: false; reason: string; message: string }>;
