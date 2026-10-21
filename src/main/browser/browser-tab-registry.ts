@@ -62,10 +62,45 @@ export interface MouseDeliveryReport {
   elsewhere: number;
 }
 
-interface MouseWatchState {
+export interface WheelDeliveryReport {
+  started: boolean;
+  ended: boolean;
+  elsewhere: number;
+}
+
+export interface BrowserMouseExpectation {
+  readonly type: "mouseDown" | "mouseUp";
+  readonly x: number;
+  readonly y: number;
+  readonly button: "left";
+  readonly clickCount: 1;
+}
+
+interface NativeBrowserInput {
+  readonly type: string;
+  readonly _modifiers?: number;
+  readonly x?: number;
+  readonly y?: number;
+  readonly button?: string;
+  readonly clickCount?: number;
+}
+
+interface PointerWatchState {
   readonly guestId: number;
-  readonly windowId: number | undefined;
+  readonly windowId: number;
+  readonly deadline: number;
+  invalid: boolean;
+}
+
+interface MouseWatchState extends PointerWatchState {
   readonly report: MouseDeliveryReport;
+  expected: { input: BrowserMouseExpectation; deadline: number } | null;
+}
+
+interface WheelWatchState extends PointerWatchState {
+  readonly report: WheelDeliveryReport;
+  markers: number;
+  phase: "waiting" | "marked" | "begun" | "updated" | "ended";
 }
 
 interface TouchWatchState {
@@ -158,6 +193,8 @@ const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 const DEBUGGER_INPUT_MODIFIER = 1 << 23;
 const DERIVED_TAP_MODIFIERS = 1 << 25;
+const POINTER_SEQUENCE_MAX_MS = 5_000;
+const MOUSE_RECEIPT_MAX_MS = 1_000;
 
 /**
  * Whether a tap gesture's modifiers fit one derived from an injected touch.
@@ -195,6 +232,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
   private readonly touchWatches = new Set<TouchWatchState>();
   private readonly mouseWatches = new Set<MouseWatchState>();
+  private readonly wheelWatches = new Set<WheelWatchState>();
   private link: BrowserTabRendererLink | null = null;
   private nextHandle = 1;
   private nextRequest = 1;
@@ -418,13 +456,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    * The user gave a guest keyboard or mouse input. In an agent-controlled tab
    * this cancels the pending tool actions; input the tools inject is ignored.
    */
-  userInput(guestId: number, input?: { type: string; _modifiers?: number }): void {
+  userInput(guestId: number, input?: NativeBrowserInput): void {
     const modifiers = input?._modifiers ?? 0;
     if (input) this.recordTouch(guestId, input.type, modifiers);
-    if (input && this.recordMouse(guestId, input.type, modifiers)) return;
-    if (input?.type === "mouseUp") return;
+    const mouseWatched = [...this.mouseWatches].some((watch) => watch.guestId === guestId && !watch.invalid);
+    if (input && this.recordMouse(guestId, input, modifiers)) return;
+    if (input && this.recordWheel(guestId, input.type, modifiers)) return;
+    if (input?.type === "mouseUp" && !mouseWatched) return;
     // Native provenance marks the raw injected touch and key events.
-    if (input && input.type !== "mouseDown" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
+    if (input && input.type !== "mouseDown" && input.type !== "mouseWheel" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
       if (input.type === "touchStart") this.injectedTouches.set(guestId, { pressed: true, down: false, shown: false });
       if (input.type === "touchEnd") {
         const touch = this.injectedTouches.get(guestId);
@@ -451,6 +491,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
     }
     this.injectedTouches.delete(guestId);
+    for (const watch of this.mouseWatches) {
+      if (watch.guestId === guestId) { watch.invalid = true; watch.expected = null; }
+    }
+    for (const watch of this.wheelWatches) if (watch.guestId === guestId) watch.invalid = true;
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       this.pauseRecord(tab, false);
@@ -482,36 +526,101 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     };
   }
 
-  /** Attribute one native injected press/release, independently of touch gestures. */
+  /** Watch one bounded press/release; each receipt requires a separately armed dispatch. */
   watchMouse(guestId: number): { delivery(): MouseDeliveryReport; stop(): void } {
+    const windowId = this.pointerWatchWindow(guestId);
     const state: MouseWatchState = {
-      guestId, windowId: this.attached.get(guestId)?.windowId,
-      report: { pressed: false, released: false, elsewhere: 0 },
+      guestId, windowId, deadline: Date.now() + POINTER_SEQUENCE_MAX_MS, invalid: false,
+      report: { pressed: false, released: false, elsewhere: 0 }, expected: null,
     };
     this.mouseWatches.add(state);
     return { delivery: () => ({ ...state.report }), stop: () => { this.mouseWatches.delete(state); } };
   }
 
-  private recordMouse(guestId: number, type: string, modifiers: number): boolean {
-    if ((modifiers & DEBUGGER_INPUT_MODIFIER) === 0 || (type !== "mouseDown" && type !== "mouseUp")) return false;
+  /** The native mouse payload omits source marks; correlate only an exact one-shot dispatch. */
+  armMouse(guestId: number, input: BrowserMouseExpectation): void {
+    const watch = [...this.mouseWatches].find((candidate) => candidate.guestId === guestId && !candidate.invalid);
+    const now = Date.now();
+    if (!watch || now >= watch.deadline || watch.expected !== null) throw new Error("no available native mouse dispatch expectation");
+    if ((input.type !== "mouseDown" && input.type !== "mouseUp") || input.button !== "left" || input.clickCount !== 1
+      || !Number.isFinite(input.x) || !Number.isFinite(input.y)
+      || Math.abs(input.x) > 1_000_000 || Math.abs(input.y) > 1_000_000
+      || (input.type === "mouseDown" ? watch.report.pressed : !watch.report.pressed || watch.report.released)) {
+      throw new Error("invalid native mouse dispatch sequence");
+    }
+    watch.expected = { input: { ...input }, deadline: Math.min(watch.deadline, now + MOUSE_RECEIPT_MAX_MS) };
+  }
+
+  watchWheel(guestId: number): { delivery(): WheelDeliveryReport; stop(): void } {
+    const windowId = this.pointerWatchWindow(guestId);
+    const state: WheelWatchState = {
+      guestId, windowId, deadline: Date.now() + POINTER_SEQUENCE_MAX_MS, invalid: false,
+      report: { started: false, ended: false, elsewhere: 0 }, markers: 0, phase: "waiting",
+    };
+    this.wheelWatches.add(state);
+    return { delivery: () => ({ ...state.report }), stop: () => { this.wheelWatches.delete(state); } };
+  }
+
+  private pointerWatchWindow(guestId: number): number {
+    const entry = this.attached.get(guestId);
+    if (!entry || entry.guest.isDestroyed()) throw new Error("no live native pointer recipient");
+    const now = Date.now();
+    for (const watch of [...this.mouseWatches, ...this.wheelWatches]) {
+      if (now >= watch.deadline) {
+        watch.invalid = true;
+        if ("expected" in watch) this.mouseWatches.delete(watch);
+        else this.wheelWatches.delete(watch);
+      } else if (watch.windowId === entry.windowId) throw new Error("another native pointer sequence is active in this window");
+    }
+    return entry.windowId;
+  }
+
+  private recordMouse(guestId: number, input: NativeBrowserInput, modifiers: number): boolean {
+    if (input.type !== "mouseDown" && input.type !== "mouseUp") return false;
     const windowId = this.attached.get(guestId)?.windowId;
-    let attributed = false;
     for (const watch of this.mouseWatches) {
-      if (watch.windowId === undefined || watch.windowId !== windowId) continue;
+      if (watch.windowId !== windowId || watch.invalid || Date.now() >= watch.deadline) continue;
       if (guestId !== watch.guestId) {
-        if (type === "mouseDown") watch.report.elsewhere++;
+        if (input.type === "mouseDown") watch.report.elsewhere++;
         continue;
       }
-      if (type === "mouseDown" && !watch.report.pressed) {
-        watch.report.pressed = true;
-        attributed = true;
+      const expected = watch.expected;
+      if (!expected || Date.now() >= expected.deadline || (modifiers & ~DEBUGGER_INPUT_MODIFIER) !== 0
+        || input.type !== expected.input.type || input.x !== expected.input.x || input.y !== expected.input.y
+        || input.button !== expected.input.button || input.clickCount !== expected.input.clickCount) return false;
+      watch.expected = null;
+      if (input.type === "mouseDown") watch.report.pressed = true;
+      else watch.report.released = true;
+      return true;
+    }
+    return false;
+  }
+
+  private recordWheel(guestId: number, type: string, modifiers: number): boolean {
+    const windowId = this.attached.get(guestId)?.windowId;
+    for (const watch of this.wheelWatches) {
+      if (watch.windowId !== windowId || watch.invalid || Date.now() >= watch.deadline) continue;
+      if (guestId !== watch.guestId) {
+        if (type === "mouseWheel") watch.report.elsewhere++;
+        continue;
       }
-      if (type === "mouseUp" && watch.report.pressed && !watch.report.released) {
-        watch.report.released = true;
-        attributed = true;
+      if (type === "mouseWheel" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0
+        && ((watch.markers === 0 && watch.phase === "waiting") || (watch.markers === 1 && watch.phase === "updated"))) {
+        watch.markers++;
+        if (watch.phase === "waiting") watch.phase = "marked";
+        watch.report.started = true;
+        return true;
+      }
+      if (modifiers !== 0) continue;
+      if (type === "gestureScrollBegin" && watch.phase === "marked") { watch.phase = "begun"; return true; }
+      if (type === "gestureScrollUpdate" && watch.phase === "begun") { watch.phase = "updated"; return true; }
+      if (type === "gestureScrollEnd" && watch.phase === "updated") {
+        watch.phase = "ended";
+        watch.report.ended = true;
+        return true;
       }
     }
-    return attributed;
+    return false;
   }
 
   private recordTouch(guestId: number, type: string, modifiers: number): void {
@@ -962,6 +1071,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.injectedTouches.clear();
     this.touchWatches.clear();
     this.mouseWatches.clear();
+    this.wheelWatches.clear();
     this.link = null;
     this.nextHandle = 1;
     this.nextRequest = 1;

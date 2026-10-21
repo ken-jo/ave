@@ -18,18 +18,24 @@ function guest() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("native browser guest tracking", () => {
-  it("forwards press provenance and release delivery while ignoring passive movement", () => {
+  it("forwards raw mouse receipts once with original coordinates while ignoring their normalized copies", () => {
     const contents = guest();
     trackBrowserGuest(contents as unknown as WebContents, 3);
     expect(registry.guestAttached).toHaveBeenCalledWith(contents, 3);
     const input = { type: "keyDown", _modifiers: 1 << 23 };
     contents.emit("before-input-event", {}, input);
     contents.emit("before-mouse-event", {}, { type: "mouseMove", _modifiers: 0 });
-    const released = { type: "mouseUp", _modifiers: 1 << 23 };
+    const pressed = { type: "mouseDown", x: 93, y: 197, button: "left", clickCount: 1 };
+    contents.emit("before-mouse-event", {}, pressed);
+    contents.emit("input-event", {}, pressed);
+    const released = { ...pressed, type: "mouseUp" };
     contents.emit("before-mouse-event", {}, released);
+    contents.emit("input-event", {}, released);
+    const wheel = { type: "mouseWheel", _modifiers: 1 << 23 };
+    contents.emit("input-event", {}, wheel);
     const touch = { type: "touchStart", _modifiers: 1 << 23 };
     contents.emit("input-event", {}, touch);
-    expect(registry.userInput.mock.calls).toEqual([[71, input], [71, released], [71, touch]]);
+    expect(registry.userInput.mock.calls).toEqual([[71, input], [71, pressed], [71, released], [71, wheel], [71, touch]]);
   });
 
   it("invalidates only new main documents and observes native destruction once", () => {

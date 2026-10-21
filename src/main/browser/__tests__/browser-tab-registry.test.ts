@@ -902,7 +902,7 @@ describe("strict browser chrome contracts", () => {
 });
 
 describe("native injected mouse attribution", () => {
-  it("requires a marked bounded press/release and rejects any other same-window recipient", () => {
+  it("matches only armed exact raw press/release and reports another same-window recipient", () => {
     const { registry } = setup();
     for (const [guestId, windowId] of [[71, 1], [72, 1], [73, 2]]) {
       registry.guestAttached(new FakeGuest(guestId!), windowId!);
@@ -910,28 +910,122 @@ describe("native injected mouse attribution", () => {
     }
     const signal = registry.liveTab("tab-1")!.actions.signal;
     const watch = registry.watchMouse(71);
-    registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
-    registry.userInput(71, { type: "mouseUp", _modifiers: 1 << 23 });
+    registry.armMouse(71, { type: "mouseDown", x: 93, y: 197, button: "left", clickCount: 1 });
+    registry.userInput(71, { type: "mouseDown", x: 93, y: 197, button: "left", clickCount: 1 });
+    registry.armMouse(71, { type: "mouseUp", x: 203, y: 197, button: "left", clickCount: 1 });
+    registry.userInput(71, { type: "mouseUp", x: 203, y: 197, button: "left", clickCount: 1 });
     expect(signal.aborted).toBe(false);
-    registry.userInput(72, { type: "mouseDown", _modifiers: 1 << 23 });
-    registry.userInput(73, { type: "mouseDown", _modifiers: 1 << 23 });
+    registry.userInput(72, { type: "mouseDown", x: 93, y: 197, button: "left", clickCount: 1 });
+    registry.userInput(73, { type: "mouseDown", x: 93, y: 197, button: "left", clickCount: 1 });
     expect(watch.delivery()).toEqual({ pressed: true, released: true, elsewhere: 1 });
     watch.stop();
     registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
     expect(signal.aborted).toBe(true);
   });
 
-  it("never hides unmarked human input during a marked drag", () => {
+  it("never hides an extra human press during an armed drag", () => {
     const { registry } = setup();
     registry.guestAttached(new FakeGuest(71), 1);
     registry.bindTab(1, { tabId: "page", webContentsId: 71 });
     const tab = registry.liveTab("tab-1")!;
     registry.acquireControl(tab, ACTOR);
     const watch = registry.watchMouse(71);
-    registry.userInput(71, { type: "mouseDown", _modifiers: 1 << 23 });
-    registry.userInput(71, { type: "mouseDown", _modifiers: 0 });
+    registry.armMouse(71, { type: "mouseDown", x: 10, y: 20, button: "left", clickCount: 1 });
+    registry.userInput(71, { type: "mouseDown", x: 10, y: 20, button: "left", clickCount: 1 });
+    registry.userInput(71, { type: "mouseDown", x: 10, y: 20, button: "left", clickCount: 1 });
     expect(tab.controlMode).toBe("human-paused");
     expect(tab.actions.signal.aborted).toBe(true);
+    watch.stop();
+  });
+
+  it.each(["position", "button", "click-count", "order", "modifier", "unarmed", "expired"])("rejects %s mouse receipts and revokes further expectations", (kind) => {
+    vi.useFakeTimers();
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(71), 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = registry.liveTab("tab-1")!;
+    registry.acquireControl(tab, ACTOR);
+    const watch = registry.watchMouse(71);
+    const expected = { type: "mouseDown" as const, x: 10, y: 20, button: "left" as const, clickCount: 1 as const };
+    if (kind !== "unarmed") registry.armMouse(71, expected);
+    if (kind === "expired") vi.advanceTimersByTime(1_001);
+    registry.userInput(71, {
+      ...expected, ...(kind === "position" ? { x: 11 } : {}), ...(kind === "button" ? { button: "right" } : {}),
+      ...(kind === "click-count" ? { clickCount: 2 } : {}), ...(kind === "order" ? { type: "mouseUp" } : {}),
+      ...(kind === "modifier" ? { _modifiers: 2 } : {}),
+    });
+    expect(tab.controlMode).toBe("human-paused");
+    expect(watch.delivery().pressed).toBe(false);
+    expect(() => registry.armMouse(71, expected)).toThrow("no available");
+    watch.stop();
+  });
+
+  it("allows only one bounded native pointer watch per window and enforces press order", () => {
+    const { registry } = setup();
+    for (const [guestId, windowId] of [[71, 1], [72, 1], [73, 2]]) registry.guestAttached(new FakeGuest(guestId!), windowId!);
+    const watch = registry.watchMouse(71);
+    expect(() => registry.watchMouse(72)).toThrow("active in this window");
+    expect(() => registry.watchWheel(72)).toThrow("active in this window");
+    const otherWindow = registry.watchWheel(73);
+    expect(() => registry.armMouse(71, { type: "mouseUp", x: 10, y: 20, button: "left", clickCount: 1 })).toThrow("invalid native mouse dispatch sequence");
+    watch.stop(); otherWindow.stop();
+    expect(() => registry.watchMouse(404)).toThrow("no live native pointer recipient");
+  });
+});
+
+describe("native injected wheel attribution", () => {
+  function page() {
+    const state = setup();
+    state.registry.guestAttached(new FakeGuest(71), 1);
+    state.registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    const tab = state.registry.liveTab("tab-1")!;
+    state.registry.acquireControl(tab, ACTOR);
+    return { ...state, tab };
+  }
+  const MARK = 1 << 23;
+
+  it("matches the observed marked wheel, derived begin/update, second marked wheel and derived end", () => {
+    const { registry, tab } = page();
+    const watch = registry.watchWheel(71);
+    for (const [type, modifiers] of [
+      ["mouseWheel", MARK], ["gestureScrollBegin", 0], ["gestureScrollUpdate", 0], ["mouseWheel", MARK], ["gestureScrollEnd", 0],
+    ] as const) registry.userInput(71, { type, _modifiers: modifiers });
+    expect(watch.delivery()).toEqual({ started: true, ended: true, elsewhere: 0 });
+    expect(tab.actions.signal.aborted).toBe(false);
+    watch.stop();
+    registry.userInput(71, { type: "gestureScrollEnd", _modifiers: 0 });
+    expect(tab.controlMode).toBe("human-paused");
+  });
+
+  it.each(["no-source", "out-of-order", "extra-update", "human-wheel", "key", "modified-gesture", "expired"])("never attributes %s to an injected wheel", (kind) => {
+    vi.useFakeTimers();
+    const { registry, tab } = page();
+    const watch = registry.watchWheel(71);
+    if (kind !== "no-source") registry.userInput(71, { type: "mouseWheel", _modifiers: MARK });
+    if (kind === "expired") vi.advanceTimersByTime(5_001);
+    if (kind === "extra-update") {
+      registry.userInput(71, { type: "gestureScrollBegin", _modifiers: 0 });
+      registry.userInput(71, { type: "gestureScrollUpdate", _modifiers: 0 });
+    }
+    const type = kind === "human-wheel" ? "mouseWheel" : kind === "key" ? "keyDown"
+      : kind === "out-of-order" || kind === "extra-update" ? "gestureScrollUpdate" : "gestureScrollBegin";
+    registry.userInput(71, { type, _modifiers: kind === "modified-gesture" ? 2 : 0 });
+    expect(tab.controlMode).toBe("human-paused");
+    registry.userInput(71, { type: "gestureScrollEnd", _modifiers: 0 });
+    expect(watch.delivery().ended).toBe(false);
+    watch.stop();
+  });
+
+  it("reports wheel input delivered to another guest in the same window", () => {
+    const { registry } = page();
+    registry.guestAttached(new FakeGuest(72), 1);
+    registry.bindTab(1, { tabId: "other", webContentsId: 72 });
+    registry.guestAttached(new FakeGuest(73), 2);
+    registry.bindTab(2, { tabId: "elsewhere", webContentsId: 73 });
+    const watch = registry.watchWheel(71);
+    registry.userInput(72, { type: "mouseWheel", _modifiers: MARK });
+    registry.userInput(73, { type: "mouseWheel", _modifiers: MARK });
+    expect(watch.delivery()).toEqual({ started: false, ended: false, elsewhere: 1 });
     watch.stop();
   });
 });
