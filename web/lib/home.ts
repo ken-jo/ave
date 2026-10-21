@@ -10,6 +10,8 @@ import type { Locale } from "./i18n";
 export interface HomeCopy {
   meta: { title: string; description: string };
   hero: { eyebrow: string; title: string; sub: string; download: string; docs: string; note: string; pic: Picture };
+  /** The feature tour: its heading, plus the label its stage picture carries. The steps come from each feature page's hero (lib/features.ts). */
+  tour: { eyebrow: string; title: string; body: string; label: string };
   work: { eyebrow: string; title: string; body: string; points: Point[]; pic: Picture };
   surfaces: BentoBlock;
   models: {
@@ -21,7 +23,7 @@ export interface HomeCopy {
   };
   safety: BentoBlock;
   safetyFacts: { title: string; body: string }[];
-  plugins: { eyebrow: string; title: string; body: string; kinds: { name: string; body: string }[]; pic: Picture; cap: string };
+  plugins: { eyebrow: string; title: string; body: string; kinds: { name: string; body: string }[]; cap: string };
   changes: { eyebrow: string; title: string; body: string };
   get: { eyebrow: string; title: string; body: string; cta: string };
   footer: { tagline: string; copy: string; menu: string; skip: string };
@@ -45,6 +47,12 @@ const ko: HomeCopy = {
       alt: "Ave 작업 모드. 프로젝트 trail-notes에서 에이전트가 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화",
     },
   },
+  tour: {
+    eyebrow: "기능",
+    title: "다섯 가지로 살펴보는 Ave",
+    body: "브라우저, 터미널, 모델, 플러그인, 보안. 각 기능을 실제 앱 화면과 함께 봅니다.",
+    label: "현재 단계의 앱 화면",
+  },
   work: {
     eyebrow: "작업 화면",
     title: "대화 넷을 나란히, 각자 따로 굴러갑니다",
@@ -57,8 +65,8 @@ const ko: HomeCopy = {
       ["작업 패널.", "파일, 미리보기, 브라우저, 터미널, 서브에이전트, 사이드 채팅이 칸 옆 카드 하나에 모입니다."],
     ],
     pic: {
-      k: "app-tiles",
-      alt: "작업 모드에서 세 칸에 각각 다른 대화가 열려 있고, 오른쪽 아래 칸에 다음 릴리스 버전을 묻는 질문 카드가 떠 있는 화면",
+      k: "app-subagents",
+      alt: "작업 모드에서 세 칸에 각각 다른 대화가 열려 있는 화면. 왼쪽은 --json 플래그를 넣고 테스트 6개가 통과한 대화, 오른쪽 위는 서브에이전트 탭에 두 리뷰가 완료로 표시된 대화, 오른쪽 아래는 1.2.0 릴리스 체크리스트",
     },
   },
   surfaces: {
@@ -67,9 +75,9 @@ const ko: HomeCopy = {
     body: "에이전트는 대화 안에서만 일하지 않습니다. 작업 패널과 메인 영역의 실제 도구를 함께 씁니다.",
     cards: [
       {
-        title: "에이전트가 여는 브라우저 탭",
-        body: "에이전트가 연 탭에는 ‘에이전트가 이 탭을 제어하고 있습니다’ 표시와 중지 버튼이 붙고, 클릭과 입력은 실행 전에 묻습니다.",
-        pic: { k: "browser-done", alt: "에이전트가 연 브라우저 탭에 trail-notes 미리보기의 Ridge Loop 페이지가 열려 있고 대화에 점검 결과가 적힌 화면" },
+        title: "페이지에 붙인 채팅",
+        body: "브라우저 창 안의 채팅에서 페이지를 읽고 이동을 요청합니다. 그 창이 채팅의 대상이 되고, 도구 실행은 권한 검사를 거칩니다.",
+        pic: { k: "browser-done", alt: "Ridge Loop 상세 페이지와 그 브라우저 창에 붙인 채팅. 페이지를 읽고 이동한 실제 도구 결과와 고도 단위가 빠졌다는 점검 결과" },
         w: 4,
       },
       {
@@ -91,12 +99,6 @@ const ko: HomeCopy = {
         pic: { k: "app-subagents", alt: "서브에이전트 탭에 ‘Parser edge cases’와 ‘Test coverage’ 두 서브에이전트가 완료로 표시된 화면" },
         w: 3,
       },
-      {
-        title: "바뀐 내용을 그 자리에서",
-        body: "파일을 고치면 대화에 변경 부분이 줄 단위로 남습니다. 무엇이 어떻게 바뀌었는지 따로 찾지 않아도 됩니다.",
-        pic: { k: "transcript-diff", alt: "대화 기록에 src/export.js 편집 내용이 추가 4줄, 삭제 2줄로 표시되고 테스트 결과가 이어지는 화면" },
-        w: 6,
-      },
     ],
   },
   models: {
@@ -106,7 +108,7 @@ const ko: HomeCopy = {
     ways: [
       { tag: "API 키", title: "제공자 키로", body: "OpenAI, Claude, Gemini, OpenRouter를 키로 연결합니다. 다른 제공자는 마켓플레이스 패키지로 추가합니다." },
       { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", body: "로컬이나 사내에서 띄운 OpenAI 호환 서버를 주소만으로 붙입니다. 모델 목록은 서버에서 받아 옵니다." },
-      { tag: "구독", title: "이미 쓰는 요금제로", body: "ChatGPT 요금제는 격리된 로컬 Codex 런타임으로, Claude 구독은 내가 고른 공식 claude CLI로 로그인합니다. 구독 자격 증명은 API 키가 되지 않습니다." },
+      { tag: "구독", title: "이미 쓰는 요금제로", body: "ChatGPT 요금제는 격리된 로컬 Codex 런타임으로, Claude 구독은 Ave가 자동으로 찾은 공식 claude CLI로 로그인합니다. 구독 자격 증명은 API 키가 되지 않습니다." },
     ],
     pic: { k: "model-chooser", alt: "입력창의 모델 선택 팝오버. local-model이 선택돼 있고 아래에 추론 수준 None, Low, Medium, High 슬라이더가 있는 화면" },
   },
@@ -159,8 +161,7 @@ const ko: HomeCopy = {
       { name: "메시징 연결", body: "원격 대화 창구" },
       { name: "로컬 폴더", body: "개발 중인 패키지" },
     ],
-    pic: { k: "install-review", alt: "Nord 테마 패키지의 설치 검토 창. 출처 폴더, 내용 해시, 호환 버전, 설치할 버전 1.0.1이 보이는 화면" },
-    cap: "설치하기 전에 출처, 내용 해시, 호환 버전을 검토합니다.",
+    cap: "공식 마켓플레이스 카탈로그에 실제로 있는 패키지를 종류마다 하나씩, 설치 검토 창에 나오는 항목(출처, 커밋, 호환, 버전)으로 보여 줍니다. 글꼴, 메시징 연결, 로컬 폴더는 공식 카탈로그에 패키지가 없습니다.",
   },
   changes: {
     eyebrow: "변경 기록",
@@ -199,6 +200,12 @@ const en: HomeCopy = {
       alt: "Ave in work mode: in the trail-notes project, the agent added a --json flag to the export command and reports that all six tests pass",
     },
   },
+  tour: {
+    eyebrow: "Features",
+    title: "Ave in five parts",
+    body: "The browser, the terminal, models, plugins and security, each shown on the real app.",
+    label: "The app screen for the current step",
+  },
   work: {
     eyebrow: "Workbench",
     title: "Four conversations side by side, each on its own loop",
@@ -211,8 +218,8 @@ const en: HomeCopy = {
       ["The work panel.", "Files, Preview, Browser, Terminal, Sub-agents and Side chat share one card beside the tile."],
     ],
     pic: {
-      k: "app-tiles",
-      alt: "Work mode with three tiles, each holding a different conversation; the lower right tile shows a question card asking which version the next release should be",
+      k: "app-subagents",
+      alt: "Work mode with three tiles, each holding a different conversation: the --json change with six passing tests on the left, a parser review with its two finished sub-agents at the top right, and a release checklist for 1.2.0 below it",
     },
   },
   surfaces: {
@@ -221,9 +228,9 @@ const en: HomeCopy = {
     body: "Agents don’t only talk. They use the same tools you see in the work panel and the main area.",
     cards: [
       {
-        title: "Browser tabs the agent opens",
-        body: "A tab the agent opened carries “Agent is controlling this tab” and a Stop button, and its clicks and typing ask before they run.",
-        pic: { k: "browser-done", alt: "A browser tab the agent opened shows the Ridge Loop page of the trail-notes preview, with the agent’s findings in the conversation" },
+        title: "Chat beside the page",
+        body: "Read and navigate a page from the browser pane’s own chat. That pane is the chat’s target, and tool execution goes through the permission check.",
+        pic: { k: "browser-done", alt: "The Ridge Loop detail page with the browser pane’s own chat, showing real snapshot and navigation results and the finding that the elevation has no unit" },
         w: 4,
       },
       {
@@ -245,12 +252,6 @@ const en: HomeCopy = {
         pic: { k: "app-subagents", alt: "The Sub-agents tab listing two finished sub-agents, Parser edge cases and Test coverage" },
         w: 3,
       },
-      {
-        title: "Changes shown where they happen",
-        body: "When the agent edits a file, the transcript keeps the changed lines, so you see what changed without going looking for it.",
-        pic: { k: "transcript-diff", alt: "The transcript showing an edit to src/export.js with four lines added and two removed, followed by the test run" },
-        w: 6,
-      },
     ],
   },
   models: {
@@ -260,7 +261,7 @@ const en: HomeCopy = {
     ways: [
       { tag: "API key", title: "With a provider key", body: "Connect OpenAI, Claude, Gemini or OpenRouter with a key. Other providers are added as marketplace packages." },
       { tag: "Your own server", title: "An OpenAI-compatible endpoint", body: "Point Ave at an OpenAI-compatible server you run, locally or in your company. The model list comes from the server." },
-      { tag: "Subscription", title: "A plan you already have", body: "Sign in to a ChatGPT plan through an isolated local Codex runtime, or to a Claude subscription through the official claude CLI you select. Subscription credentials never become API keys." },
+      { tag: "Subscription", title: "A plan you already have", body: "Sign in to a ChatGPT plan through an isolated local Codex runtime, or to a Claude subscription through the official claude CLI Ave discovers automatically. Subscription credentials never become API keys." },
     ],
     pic: { k: "model-chooser", alt: "The composer’s model chooser with local-model selected and a reasoning slider set from None to High" },
   },
@@ -313,13 +314,12 @@ const en: HomeCopy = {
       { name: "Messaging", body: "Remote chat connections" },
       { name: "Local folders", body: "Packages you are building" },
     ],
-    pic: { k: "install-review", alt: "The install review for the Nord theme package showing its source folder, contents hash, compatibility and version 1.0.1" },
-    cap: "Before installing, review the source, the contents hash and the compatible version.",
+    cap: "One real package of each kind from the official marketplace’s catalog, with what the install review shows: source, commit, compatibility and version. Fonts, messaging connections and local folders have no package in the official catalog.",
   },
   changes: {
     eyebrow: "Changelog",
     title: "The latest release",
-    body: "Every version’s changes, as written in the repository’s CHANGELOG.md.",
+    body: "Every version’s changes, from the repository’s CHANGELOG.md.",
   },
   get: {
     eyebrow: "Download",

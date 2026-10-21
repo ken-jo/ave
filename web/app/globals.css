@@ -319,4 +319,117 @@
   .nf-more { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
   .foot-brand .logo { margin: 0; }
   .sec-gap { margin-top: clamp(28px, 3.5vw, 48px); }
+
+  /* ── Feature tour (components/tour.tsx) ─────────────────────────────────
+     Default, and the whole section without script, on narrow screens and
+     with reduced motion: a plain stack of steps, each with its captures. */
+  .tour-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: clamp(40px, 6vw, 72px); }
+  .tour-step { display: grid; gap: 1.25rem; }
+  .tour-text { display: grid; gap: 0.75rem; max-width: 640px; align-content: start; }
+  .tour-text > * { margin: 0; }
+  .tour-num { color: var(--muted); }
+  .tour-title { font-size: clamp(1.3rem, 1.1rem + 0.8vw, 1.75rem); line-height: 1.25; transition: color 280ms var(--ease); }
+  .tour-points { gap: 0.55rem; }
+  .tour-points li { font-size: 0.95rem; line-height: 1.5; }
+  .tour-still { display: grid; }
+  .tour-still-detail { justify-self: end; width: min(62%, 420px); margin-top: -9%; position: relative; }
+  .tour-stage { display: none; }
+
+  /* Pinned: the query is PINNED in components/motion.tsx; keep the two equal.
+     The steps stay in normal flow (each one viewport tall, so the tour is
+     exactly as long as its steps) and the stage sticks beside them. */
+  @media (min-width: 1024px) and (prefers-reduced-motion: no-preference) and (scripting: enabled) {
+    .tour { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(32px, 4vw, 64px); }
+    .tour-steps { gap: 0; }
+    .tour-step { min-height: calc(100vh - var(--header)); align-content: center; }
+    .tour-still { display: none; }
+    /* The current step is marked by colour, not by fading: every step stays at
+       full opacity, so even the dimmed text keeps the --muted contrast. */
+    .tour[data-live] .tour-step:not([aria-current="step"]) .tour-title,
+    .tour[data-live] .tour-step:not([aria-current="step"]) .points b { color: var(--muted); }
+    .tour[data-live] .tour-step:not([aria-current="step"]) .points li::before { background: var(--line-strong); box-shadow: none; }
+    .tour-stage { display: grid; position: sticky; top: var(--header); height: calc(100vh - var(--header)); margin: 0; align-content: center; gap: 1.5rem; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+    .tour-scene { position: relative; padding-bottom: 7%; }
+    .tour-frame { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r); overflow: hidden; border: 1px solid var(--line-strong); background: var(--raised); box-shadow: var(--shadow); will-change: transform; }
+    .tour-detail { position: absolute; right: -2%; bottom: 0; width: 46%; aspect-ratio: 16 / 10; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--line-strong); background: var(--band); box-shadow: var(--shadow); will-change: transform; }
+    .tour-layer { position: absolute; inset: 0; display: grid; place-items: center; }
+    .tour-layer picture { display: contents; }
+    .tour-layer img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+    .tour-layer.crop { padding: 6%; background: var(--band); }
+    .tour-layer.crop img { object-fit: contain; object-position: center; }
+    .tour-index { position: relative; display: grid; grid-template-columns: 2px auto; gap: 0.9rem; font-family: var(--font-code); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
+    .tour-track { position: relative; background: var(--line-strong); border-radius: 2px; overflow: hidden; }
+    .tour-rail { position: absolute; inset: 0; background: var(--accent-ink); transform-origin: top; }
+    .tour-index ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.9rem; }
+    .tour-index li { color: var(--muted); transition: color 280ms var(--ease); }
+    .tour-index li[data-on] { color: var(--ink); font-weight: 600; }
+  }
+
+  /* ── Package stack (components/pkg-stack.tsx) ───────────────────────────
+     Default, and without script, on narrow screens and with reduced motion:
+     a grid of package cards. */
+  .pkgs { display: grid; gap: clamp(24px, 3vw, 40px); }
+  .kind-btn { all: unset; box-sizing: border-box; display: grid; gap: 0.35rem; align-content: start; width: 100%; height: 100%; cursor: pointer; }
+  .kind:has(.kind-btn) { padding: 0; }
+  .kind-btn { padding: 14px; border-radius: 12px; }
+  .kind-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .kind { transition: border-color 200ms var(--ease), background-color 200ms var(--ease); }
+  .kind[data-on] { border-color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 18%, var(--raised)); }
+  .pkg-stack-fig { margin: 0; display: grid; gap: 0.75rem; }
+  .pkg-stack-fig figcaption { font-size: 0.875rem; color: var(--muted); }
+  .pkg-stack { display: grid; gap: 14px; }
+  @media (min-width: 700px) { .pkg-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .pkg { background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 18px 20px; display: grid; gap: 0.55rem; align-content: start; box-shadow: var(--shadow); }
+  .pkg > * { margin: 0; }
+  .pkg-kind { font-family: var(--font-code); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent-ink); }
+  .pkg-desc { color: var(--muted); font-size: 0.9rem; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .pkg dl { margin: 0.25rem 0 0; display: grid; gap: 0.35rem; font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 0.6rem; }
+  .pkg dl > div { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 0.75rem; }
+  .pkg dt { color: var(--muted); }
+  .pkg dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; }
+  .pkg dd code { font-size: 0.8rem; }
+
+  /* Stacked: the same PINNED query. Cards overlap in one place; the script poses them. */
+  @media (min-width: 1024px) and (prefers-reduced-motion: no-preference) and (scripting: enabled) {
+    .pkgs[data-live] .pkg-stack { display: grid; grid-template-columns: minmax(0, 560px); justify-content: center; padding-block: 96px 56px; }
+    .pkgs[data-live] .pkg { grid-area: 1 / 1; transform-origin: 50% 100%; will-change: transform; }
+    .pkgs[data-live] .pkg:not([data-front]) { box-shadow: 0 1px 2px rgba(13, 16, 14, 0.06); }
+    .pkgs[data-live] .pkg:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .pkgs[data-live] .pkg-stack-fig figcaption { text-align: center; }
+  }
+
+  /* ── Providers and the catalog (components/catalog.tsx) ─────────────── */
+  .prov-groups { display: grid; gap: clamp(24px, 3vw, 40px); }
+  @media (min-width: 900px) { .prov-groups { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); } }
+  .prov-group h3 { margin: 0 0 0.75rem; }
+  .prov-count { font-family: var(--font-code); font-size: 0.8rem; color: var(--muted); font-weight: 400; margin-left: 0.35rem; }
+  .prov-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+  @media (min-width: 900px) { .prov-group + .prov-group .prov-list { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; } }
+  .prov-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; padding: 0.55rem 0; border-bottom: 1px solid var(--line); font-size: 0.925rem; min-width: 0; }
+  .prov-list code { font-size: 0.78rem; color: var(--muted); background: none; border: 0; padding: 0; overflow-wrap: anywhere; }
+  .prov-tags { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; margin-left: auto; }
+  .prov-tags span { font-family: var(--font-code); font-size: 0.7rem; color: var(--accent-ink); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0.05rem 0.45rem; white-space: nowrap; }
+  .cat-meta { margin: -0.5rem 0 1.25rem; font-family: var(--font-code); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+  .cat-kinds { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (min-width: 760px) { .cat-kinds { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .cat-kind { border: 1px solid var(--line); border-radius: 12px; background: var(--raised); padding: 14px; display: grid; gap: 0.3rem; align-content: start; min-width: 0; }
+  .cat-kind > * { margin: 0; }
+  .cat-count { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .cat-names { font-size: 0.82rem; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+  .cl-body code { overflow-wrap: anywhere; }
+  .cl-body ul.cl-items { list-style: disc; padding-left: 1.15rem; gap: 0.9rem; }
+  .cl-items > li > strong { display: block; color: var(--ink); }
+  .cl-items > li::marker { color: var(--accent-ink); }
+  .cl-items ul { list-style: circle; gap: 0.3rem; margin-top: 0.35rem; }
+
+  /* Print: everything shows, in its static form, whatever the screen was doing. */
+  @media print {
+    main * { opacity: 1 !important; transform: none !important; }
+    .tour-stage { display: none !important; }
+    .tour-still { display: grid !important; }
+    .tour { display: block !important; }
+    .tour-step { min-height: 0 !important; }
+    .pkgs[data-live] .pkg { grid-area: auto !important; }
+    .pkgs[data-live] .pkg-stack { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; padding-top: 0 !important; }
+  }
 }

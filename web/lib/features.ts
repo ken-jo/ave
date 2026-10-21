@@ -1,4 +1,4 @@
-import type { BentoBlock, Faq, Picture, SplitBlock } from "./content";
+import type { BentoBlock, Faq, Picture, Point, SplitBlock } from "./content";
 import type { Locale } from "./i18n";
 import type { Feature } from "./nav";
 
@@ -19,6 +19,25 @@ export interface FeaturePage {
   facts?: { title: string; items: { title: string; body: string }[] };
   /** Models only: the three ways to connect. */
   ways?: { title: string; body: string; items: { tag: string; title: string; points: string[] }[] };
+  /** Models only: every provider in the app's provider list (lib/providers.ts). */
+  providers?: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    builtIn: string;
+    packages: string;
+    tags: { gateway: string; noKey: string; pkg: (v: string) => string; notListed: string };
+  };
+  /** Plugins only: what the official marketplace's catalog holds (lib/marketplace.ts). */
+  catalog?: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    meta: (total: number, commit: string) => string;
+    kinds: Record<string, string>;
+    more: (n: number) => string;
+    points: Point[];
+  };
   faqTitle: string;
   faqs: Faq[];
   next: { doc: string; feature: string; download: string };
@@ -36,7 +55,7 @@ const ko: Pages = {
       eyebrow: "브라우저",
       title: "에이전트가 웹 페이지를 열고, 읽고, 확인합니다",
       lead: "에이전트는 작업 패널의 브라우저에서 자기 탭을 열고 페이지를 읽은 뒤 링크를 누르고 양식에 입력합니다. 누르고 입력하는 동작은 실행 전에 묻고, 내가 연 탭에서는 그런 동작을 매번 따로 묻습니다.",
-      pic: { k: "browser-agent", alt: "에이전트가 연 탭에 trail-notes 미리보기가 열려 있고, 아래 독에 browser_click 승인 창이 떠 있는 화면" },
+      pic: { k: "browser-live-nav", alt: "메인 영역의 브라우저가 Ridge Loop 상세 페이지로 이동해 있고, 옆 사이드 채팅에 browser snapshot과 browser navigate 단계, 그리고 페이지의 고도 값에 단위가 없다는 답이 보이는 화면" },
     },
     first: {
       eyebrow: "에이전트의 도구",
@@ -49,7 +68,7 @@ const ko: Pages = {
         ["browser_wait", "는 글자가 나타날 때까지, 또는 최대 30초까지 기다립니다."],
         ["browser_tabs, browser_tab_new, browser_tab_close", "로 대화가 열린 창의 탭을 보고 열고 닫습니다. 내가 연 탭도 여기에 포함됩니다. 루틴과 헤드리스 실행에는 브라우저가 없습니다."],
       ],
-      pic: { k: "browser-done", alt: "에이전트가 Ridge Loop 상세 페이지를 열어 확인한 뒤, 목록에 4개 트레일이 있고 고도 단위가 빠졌다고 보고한 화면" },
+      pic: { k: "browser-live", alt: "메인 영역의 브라우저에 트레일 목록 페이지가 열려 있고, 사이드 채팅이 browser snapshot으로 목록을 읽은 뒤 browser_navigate 승인을 요청하는 화면" },
     },
     grid: {
       eyebrow: "안전 장치",
@@ -111,13 +130,13 @@ const ko: Pages = {
   terminal: {
     meta: {
       title: "터미널",
-      description: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌립니다. 사이드 패널과 메인 영역을 오가고, 에이전트는 명령 블록을 읽기만 합니다.",
+      description: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌립니다. 사이드 패널과 메인 영역을 오가고, 에이전트는 결과를 읽거나 권한 검사를 거쳐 같은 터미널에 명령을 실행합니다.",
     },
     hero: {
       eyebrow: "터미널",
       title: "실제 셸, 샌드박스 안에서",
-      lead: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌리는 PTY입니다. 사이드 패널에서 열어 메인 영역으로 옮길 수 있고, 에이전트는 내 명령의 결과를 읽어서 이어서 일합니다.",
-      pic: { k: "terminal-main", alt: "메인 영역에 대화와 터미널이 나란히 있고, 터미널에 git log와 npm test 결과가 보이는 화면" },
+      lead: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌리는 PTY입니다. 사이드 패널에서 열어 메인 영역으로 옮길 수 있습니다. 터미널에 붙인 채팅에서 에이전트가 실행 결과를 읽고, 승인받은 다음 명령을 같은 셸에 실행합니다.",
+      pic: { k: "terminal-live", alt: "메인 영역의 터미널과 그 창에 붙인 채팅. 에이전트가 terminal_read로 실패한 테스트를 읽고, terminal_run 승인을 받아 같은 터미널에서 다시 실행한 뒤 원인을 설명하는 화면" },
     },
     first: {
       eyebrow: "명령 블록",
@@ -133,13 +152,13 @@ const ko: Pages = {
     },
     grid: {
       eyebrow: "에이전트와 함께",
-      title: "에이전트는 읽고, 실행은 자기 도구로",
-      body: "에이전트의 terminal_read 도구는 터미널 탭 목록과 명령 블록을 읽기만 합니다. 터미널에 입력하거나 명령을 실행하지는 못하고, 읽은 출력은 신뢰할 수 없는 데이터로 표시됩니다.",
+      title: "결과를 읽고, 다음 명령은 승인받아서",
+      body: "terminal_read는 명령 블록과 출력을 읽고, terminal_run은 권한 검사를 거쳐 한 줄 명령을 같은 터미널에 실행합니다. 승인 카드의 대상 터미널과 현재 작업 폴더가 고정되며, 셸이 실행 중이거나 아직 제출하지 않은 입력이 있으면 명령을 보내지 않습니다. 읽은 출력은 신뢰할 수 없는 데이터로 표시됩니다.",
       cards: [
         {
-          title: "실패한 실행을 읽고 원인을 짚기",
-          body: "마지막 npm test 블록을 읽고 어느 테스트가 왜 실패했는지, 어떻게 고칠지 답합니다.",
-          pic: { k: "terminal-ask", alt: "대화에서 에이전트가 터미널의 마지막 테스트 실행을 읽고 json round-trips 실패 원인을 설명한 화면" },
+          title: "같은 터미널에서 다시 실행",
+          body: "실패한 npm test 출력을 읽고, 같은 터미널에서 테스트를 다시 실행할 명령을 승인 카드로 보여 줍니다.",
+          pic: { k: "terminal-ask", alt: "터미널에 붙인 채팅이 실패한 테스트 출력을 읽은 뒤 같은 터미널에서 실행할 명령을 승인 카드로 보여 주는 화면" },
           w: 4,
         },
         {
@@ -180,7 +199,7 @@ const ko: Pages = {
     faqs: [
       { q: "터미널이 열리지 않아요.", a: "터미널은 OS 샌드박스가 켜져 있어야 돕니다. 설정 → 권한에서 OS 도구 샌드박스를 켜고 앱을 다시 시작하세요. 샌드박스가 셸을 담을 수 없는 환경이면 터미널은 시작하지 않습니다." },
       { q: "터미널을 메인 영역으로 옮기면 셸이 다시 시작되나요?", a: "아니요. ‘메인 영역으로 이동’이나 끌어 놓기로 옮겨도 셸과 출력이 그대로 이어집니다. 터미널은 한 번에 한 곳에만 보이고, 메인 영역의 패널을 닫으면 셸도 끝납니다." },
-      { q: "에이전트가 제 터미널에 명령을 입력하나요?", a: "아니요. terminal_read는 탭 목록과 명령 블록을 읽기만 합니다. 에이전트가 명령을 실행할 때는 자기 셸 도구로 따로 실행하고, 그 명령은 권한 검사를 거칩니다." },
+      { q: "에이전트가 제 터미널에 명령을 입력하나요?", a: "네. terminal_run은 권한 검사를 통과한 한 줄 명령을 지정된 터미널에서 실행합니다. 승인 카드에 표시된 터미널과 현재 작업 폴더가 실행 때도 같아야 하며, 셸이 실행 중이거나 아직 제출하지 않은 입력이 있으면 거부됩니다. terminal_read는 출력 읽기만 담당합니다." },
       { q: "오래 걸리는 명령이 끝나면 알려 주나요?", a: "셸이 알림 이스케이프(OSC 9 또는 OSC 777)를 보내면 그 패널에 표시가 붙고, 창이 앞에 있지 않을 때는 운영체제 알림이 뜹니다." },
       { q: "닫은 패널을 다시 열 수 있나요?", a: "⌘⇧T는 같은 종류의 새 패널을 같은 위치에 엽니다. 닫힌 셸 프로세스가 되살아나지는 않습니다." },
     ],
@@ -207,7 +226,7 @@ const ko: Pages = {
       items: [
         { tag: "API 키", title: "제공자 키로", points: ["기본 제공: OpenAI, Claude, Gemini, OpenRouter", "그 밖의 제공자는 마켓플레이스의 제공자 패키지로", "OpenAI는 API 키 채팅으로도 연결"] },
         { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", points: ["로컬이나 사내 서버를 주소로 연결", "모델 목록은 엔드포인트에서 동기화", "이미지 입력 지원 여부를 직접 지정 가능"] },
-        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
+        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
       ],
     },
     first: {
@@ -235,7 +254,7 @@ const ko: Pages = {
         {
           title: "칸마다 따로 도는 대화",
           body: "칸마다 자기 대화 루프가 있어서, 여러 대화가 동시에 답을 받습니다.",
-          pic: { k: "app-tiles", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
+          pic: { k: "app-subagents", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
           w: 3,
         },
         {
@@ -259,9 +278,17 @@ const ko: Pages = {
       pic: { k: "app-conversation", alt: "작업 모드에서 local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
       flip: true,
     },
+    providers: {
+      eyebrow: "제공자",
+      title: "앱이 아는 제공자 전부",
+      body: "앱의 제공자 목록에서 빌드할 때 그대로 읽어 옵니다. 다섯은 앱에 들어 있고, 나머지는 공식 마켓플레이스의 제공자 패키지로 추가한 뒤 설정 → 모델에서 연결합니다.",
+      builtIn: "앱에 포함",
+      packages: "제공자 패키지로 추가",
+      tags: { gateway: "게이트웨이", noKey: "키 없이 연결", pkg: (v) => `패키지 ${v}`, notListed: "공식 카탈로그에 없음" },
+    },
     faqTitle: "자주 묻는 질문",
     faqs: [
-      { q: "Claude 구독으로 연결하면 무엇이 달라지나요?", a: "Ave는 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행하고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 제공됩니다. 이 경로는 모델 선택과 이미지 첨부가 없습니다." },
+      { q: "Claude 구독으로 연결하면 무엇이 달라지나요?", a: "Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행하고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 제공됩니다. 이 경로는 모델 선택과 이미지 첨부가 없습니다." },
       { q: "직접 띄운 모델 서버도 쓸 수 있나요?", a: "OpenAI 호환 엔드포인트라면 주소로 연결합니다. 모델 목록은 서버에서 받아 오고, 이미지 입력 지원 여부는 직접 정할 수 있습니다." },
       { q: "모델 정보는 어디서 오나요?", a: "컨텍스트 창과 출력 한도는 models.dev의 공개 카탈로그를 하루에 많아야 한 번 받아 씁니다. 계정, 키, 대화는 보내지 않고, 설정 → 모델 → 모델 카탈로그에서 끌 수 있습니다." },
       { q: "목록에 없는 제공자는요?", a: "마켓플레이스의 제공자 패키지로 추가합니다. 설정의 모델 탭에 ‘마켓플레이스에서 제공자 더 보기’ 버튼이 있습니다." },
@@ -335,6 +362,20 @@ const ko: Pages = {
         { title: "두 가지 실행 방식", body: "entry는 JavaScript 모듈, process는 표준 입출력의 JSON-RPC로 호스트와 대화하는 아무 언어의 프로그램입니다. process는 OS 샌드박스가 켜져 있어야 돌고 Windows에서는 지원하지 않습니다." },
         { title: "나눠서 내보내기", body: "게시자는 특정 버전을 회수하거나 설치본의 일부에 먼저 내보낼 수 있고, 사용자는 canaryOptIn 설정으로 카나리 버전을 받을 수 있습니다." },
         { title: "알림은 종류별로", body: "플러그인이 선언한 알림 종류는 설치할 때 플러그인이 정한 기본값으로 켜지거나 꺼지고, 종류마다 따로 끌 수 있습니다. 쿨다운과 빈도 제한을 지켜 카드나 OS 알림으로 옵니다. 플러그인이 제안한 대화는 수락해야 시작합니다." },
+      ],
+    },
+    catalog: {
+      eyebrow: "공식 마켓플레이스",
+      title: "공식 카탈로그에 있는 것",
+      body: "공식 마켓플레이스는 git 저장소 ken-jo/agent-marketplace이고, 그 안의 marketplace.json이 모든 패키지를 나열합니다. 아래 숫자와 이름은 그 파일을 기록한 커밋에서 그대로 읽었습니다.",
+      meta: (total, commit) => `패키지 ${total}개 · 카탈로그 커밋 ${commit}`,
+      kinds: { plugin: "플러그인", "agent-plugin": "에이전트 플러그인", mcp: "MCP 서버", skill: "스킬", agent: "에이전트", theme: "테마", language: "언어", provider: "모델 제공자" },
+      more: (n) => `외 ${n}개`,
+      points: [
+        ["커밋에 고정.", "카탈로그의 버전마다 설치할 git 커밋이 적혀 있고, 설치는 그 커밋에 묶입니다."],
+        ["코드는 릴리스 압축 파일로.", "플러그인 버전은 릴리스 압축 파일과 그 SHA-256을 적어 둬서, 카탈로그가 설치할 바이트를 정확히 고정합니다."],
+        ["필요한 버전을 선언.", "버전마다 필요한 가장 낮은 Ave 버전을 적고, 더 새 Ave가 필요한 버전은 설치하지 않습니다."],
+        ["네트워크도 선언.", "플러그인은 접속할 수 있는 주소를 적어 두고(최대 16개), 카탈로그가 그 목록을 함께 싣습니다."],
       ],
     },
     faqTitle: "자주 묻는 질문",
@@ -459,7 +500,7 @@ const en: Pages = {
       eyebrow: "Browser",
       title: "Agents open web pages, read them and check them",
       lead: "In the work panel’s browser, the agent opens its own tab, reads the page, then follows links and fills in forms. Clicking and typing ask before they run, and in tabs you opened those actions ask every time.",
-      pic: { k: "browser-agent", alt: "A tab the agent opened shows the trail-notes preview while an approval card for browser_click waits in the dock below" },
+      pic: { k: "browser-live-nav", alt: "The browser in the main area has moved to the Ridge Loop detail page; the side chat beside it shows the browser snapshot and browser navigate steps and reports that the page’s elevation has no unit" },
     },
     first: {
       eyebrow: "The agent’s tools",
@@ -472,7 +513,7 @@ const en: Pages = {
         ["browser_wait", " waits for text to appear, or for up to 30 seconds."],
         ["browser_tabs, browser_tab_new, browser_tab_close", " list, open and close tabs in the window where the conversation is open, your own tabs included. Routines and headless runs get no browser."],
       ],
-      pic: { k: "browser-done", alt: "After opening the Ridge Loop detail page, the agent reports four trails on the list and a missing elevation unit" },
+      pic: { k: "browser-live", alt: "The browser in the main area shows the trail list; the side chat has read it with browser snapshot and asks for approval to run browser_navigate" },
     },
     grid: {
       eyebrow: "Safeguards",
@@ -534,13 +575,13 @@ const en: Pages = {
   terminal: {
     meta: {
       title: "Terminal",
-      description: "Ave’s terminal runs a real shell inside the OS sandbox. It moves between the side panel and the main area, and agents only read its command blocks.",
+      description: "Ave’s terminal runs a real shell inside the OS sandbox. It moves between the side panel and the main area; agents read its output or run a command there through the permission check.",
     },
     hero: {
       eyebrow: "Terminal",
       title: "A real shell, inside the sandbox",
-      lead: "Ave’s terminal is a PTY running a real shell inside the operating-system sandbox. Open it in the side panel, move it to the main area, and let the agent read what your commands returned.",
-      pic: { k: "terminal-main", alt: "The main area with a conversation beside a terminal showing git log and npm test output" },
+      lead: "Ave’s terminal is a PTY running a real shell inside the operating-system sandbox. Open it in the side panel and move it to the main area. In the terminal’s own chat, the agent reads your output and runs an approved next command in the same shell.",
+      pic: { k: "terminal-live", alt: "The main-area terminal with its own docked chat. The agent reads the failing test with terminal_read, runs it again in the same terminal after terminal_run approval, and explains the cause" },
     },
     first: {
       eyebrow: "Command blocks",
@@ -556,13 +597,13 @@ const en: Pages = {
     },
     grid: {
       eyebrow: "With the agent",
-      title: "The agent reads; it runs commands with its own tools",
-      body: "The agent’s terminal_read tool only lists terminal tabs and reads their command blocks. It cannot type into a terminal or run a command there, and what it reads is marked as untrusted data.",
+      title: "Read the output. Approve the next command.",
+      body: "terminal_read lists tabs and reads command blocks and output; terminal_run sends one line through the permission check into the same terminal. The approval card fixes the terminal and its working directory. Ave refuses the command while the shell is busy or you have typed input without submitting it. Output reaches the agent marked as untrusted data.",
       cards: [
         {
-          title: "Reading a failed run",
-          body: "It reads the last npm test block and answers which test failed, why, and how to fix it.",
-          pic: { k: "terminal-ask", alt: "In the conversation, the agent reads the terminal’s last test run and explains why json round-trips failed" },
+          title: "Run it again in the same terminal",
+          body: "It reads the failed npm test output and shows an approval card for the command that will run the test again in the same terminal.",
+          pic: { k: "terminal-ask", alt: "The terminal’s docked chat reads the failed test output and shows an approval card for a command in that same terminal" },
           w: 4,
         },
         {
@@ -603,7 +644,7 @@ const en: Pages = {
     faqs: [
       { q: "The terminal won’t open.", a: "The terminal needs the OS sandbox. Turn on OS Tool Sandbox in Settings → Permissions and restart Ave. Where the sandbox cannot contain a shell, the terminal does not start." },
       { q: "Does moving a terminal to the main area restart the shell?", a: "No. Move to main area, or dragging the tab, keeps the shell and its output. A terminal shows in one place at a time, and closing its main-area pane ends the shell." },
-      { q: "Does the agent type into my terminal?", a: "No. terminal_read only lists tabs and reads command blocks. When the agent runs a command, it uses its own shell tool, and that command goes through the permission check." },
+      { q: "Does the agent type into my terminal?", a: "Yes. terminal_run sends one line into the selected terminal through the permission check. The terminal and its current working directory must still match the approval card at execution time. Ave refuses the command while the shell is busy or you have typed input without submitting it. terminal_read only reads output." },
       { q: "Can it tell me when a long command finishes?", a: "When the shell sends a notification escape (OSC 9 or OSC 777), the pane is marked, and if the Ave window isn’t focused the system shows a notification." },
       { q: "Can I reopen a closed panel?", a: "⌘⇧T opens a new panel of the same kind at the same address. A closed shell process is not revived." },
     ],
@@ -630,7 +671,7 @@ const en: Pages = {
       items: [
         { tag: "API key", title: "With a provider key", points: ["Built in: OpenAI, Claude, Gemini, OpenRouter", "Other providers as marketplace provider packages", "OpenAI also through API-key chat"] },
         { tag: "Your own server", title: "An OpenAI-compatible endpoint", points: ["A local or company server, by address", "The model list syncs from the endpoint", "Declare image input support yourself if needed"] },
-        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI you select, with an app-owned config folder", "Subscription credentials never become API keys"] },
+        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI Ave discovers automatically, with an app-owned config folder", "Subscription credentials never become API keys"] },
       ],
     },
     first: {
@@ -658,7 +699,7 @@ const en: Pages = {
         {
           title: "Each tile on its own loop",
           body: "Every tile runs its own conversation loop, so several conversations get answers at once.",
-          pic: { k: "app-tiles", alt: "Work mode with three tiles, each holding a different conversation" },
+          pic: { k: "app-subagents", alt: "Work mode with three tiles, each holding a different conversation" },
           w: 3,
         },
         {
@@ -682,9 +723,17 @@ const en: Pages = {
       pic: { k: "app-conversation", alt: "Work mode where local-model added a --json flag to the export command and reports that all six tests pass" },
       flip: true,
     },
+    providers: {
+      eyebrow: "Providers",
+      title: "Every provider the app knows",
+      body: "Read at build time from the app’s own provider list. Five ship in the app; the rest are added as provider packages from the official marketplace and then connected in Settings → Model.",
+      builtIn: "Built in",
+      packages: "Added as a provider package",
+      tags: { gateway: "Gateway", noKey: "No key needed", pkg: (v) => `package ${v}`, notListed: "not in the official catalog" },
+    },
     faqTitle: "Questions",
     faqs: [
-      { q: "What changes when I connect a Claude subscription?", a: "Ave launches the official claude CLI you select with an app-owned config folder, and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments." },
+      { q: "What changes when I connect a Claude subscription?", a: "Ave launches the official claude CLI Ave discovers automatically with an app-owned config folder, and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments." },
       { q: "Can I use a model server I run myself?", a: "If it is an OpenAI-compatible endpoint, connect it by address. The model list comes from the server, and you can declare whether it accepts images." },
       { q: "Where does model information come from?", a: "Context windows and output limits come from the public models.dev catalog, fetched at most once a day. No account, key or conversation is sent, and you can turn it off in Settings → Model → Model catalog." },
       { q: "What about a provider that isn’t listed?", a: "Add it as a provider package from a marketplace. The Model tab has a More providers in Marketplace button." },
@@ -758,6 +807,20 @@ const en: Pages = {
         { title: "Two ways to run", body: "An entry plugin is a JavaScript module; a process plugin is a program in any language that talks to the host over JSON-RPC on standard input and output. Process plugins need the OS sandbox and are not supported on Windows." },
         { title: "Staged releases", body: "Publishers can yank a version or roll it out to a share of installs first, and you can opt into canary versions with the canaryOptIn setting." },
         { title: "Alerts by kind", body: "Each alert kind a plugin declares starts on or off at install as the plugin chooses, and you can switch each kind off. Alerts keep to cooldowns and rate limits, as cards or system notifications. A conversation a plugin suggests starts only when you accept it." },
+      ],
+    },
+    catalog: {
+      eyebrow: "Official marketplace",
+      title: "What the official catalog holds",
+      body: "The official marketplace is the git repository ken-jo/agent-marketplace, and its marketplace.json lists every package. The counts and names below are read from that file at a recorded commit.",
+      meta: (total, commit) => `${total} packages · catalog commit ${commit}`,
+      kinds: { plugin: "Plugins", "agent-plugin": "Agent plugins", mcp: "MCP servers", skill: "Skills", agent: "Agents", theme: "Themes", language: "Languages", provider: "Model providers" },
+      more: (n) => `and ${n} more`,
+      points: [
+        ["Pinned to commits.", "Every catalog version names the git commit it installs from, and the install is bound to that commit."],
+        ["Code ships as a release archive.", "A plugin version names its release archive and that archive’s SHA-256, so the catalog pins the exact bytes."],
+        ["Compatibility is declared.", "Each version states the oldest Ave it needs; a version that needs a newer Ave is not installed."],
+        ["So is network access.", "A plugin lists the hosts it may reach (sixteen at most), and the catalog carries that list."],
       ],
     },
     faqTitle: "Questions",

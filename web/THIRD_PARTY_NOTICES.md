@@ -9,6 +9,9 @@ loads the following third-party work.
 | --- | --- | --- | --- |
 | next | 15.5.24 | MIT | Framework and static export |
 | react, react-dom | 18.3.1 | MIT | Rendering |
+| motion, framer-motion, motion-dom | 14.3.0 | MIT | Home page scroll-linked and entrance animation |
+| motion-utils | 14.1.1 | MIT | Shipped inside motion |
+| tslib | 2.8.1 | 0BSD | Helpers shipped inside motion |
 | tailwindcss, @tailwindcss/postcss | 4.3.3 | MIT | CSS build (build time) |
 
 The list is the runtime dependency closure of `web/package.json`'s

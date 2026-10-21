@@ -55,7 +55,7 @@ describe("agent-plugin manifest branches", () => {
   });
 
   it("refuses the renamed extension key by name on its own and beside the current one, never reading it as an alias", () => {
-    const renamed = "plugin.json extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
+    const renamed = "plugin.json extensions.xyz.retiredname-namespace was renamed to extensions.ai.agent-connector.ave; update the manifest";
     const legacyOnly = JSON.stringify({ ...MARKET, extensions: { "xyz.retiredname-namespace": { displayName: "Writer" } } });
     const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, "xyz.retiredname-namespace": { displayName: "Writer" } } });
     for (const bytes of [legacyOnly, both]) {

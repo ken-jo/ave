@@ -11,9 +11,9 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 /**
  * Where Ave publishes its JSON Schemas: every schema `$id` the host owns is
  * this origin plus its path under `web/public/schemas/`, and the Ave site
- * serves the file at that URL. Protocols 1 and 2 were published under the
- * Ave site's origin and keep that `$id` byte for byte (RETIRED_COPIES); the
- * Ave site serves those files at the same paths.
+ * serves the file at that URL. Protocols 1 and 2 retain their historical
+ * `$id` in frozen migrated copies (RETIRED_COPIES); the Ave site serves
+ * those files at the same paths.
  */
 const AVE_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
 const PUBLIC_SCHEMAS = "web/public/schemas";
@@ -91,13 +91,17 @@ export function syncPublishedSchemas(root) {
  * host no longer serves, so they left mirror.json, but their URLs were
  * published and plugins built against them still cite the `$id`. They stay in
  * the public tree as frozen historical documents: never recorded as copies,
- * never changed, each checked against the sha256 it was published with.
+ * never changed, each checked against its retained migrated baseline sha256.
+ * These pins freeze the files retained by the web migration, rather than
+ * attesting to the bytes distributed before the repository history rewrite.
+ * Protocol 1 and 2/v0.12.0 also match their rewritten release tags; 2/v0.13.0
+ * retains the migration's description-only removal of an obsolete path name.
  */
 const RETIRED_COPIES = new Map([
-  ["1/protocol.schema.json", "aca9dfea7b1dc90a5ae49023c90aebb9d06384524254e80d172b0d19e098555e"],
-  ["1/v0.11.0/protocol.schema.json", "aca9dfea7b1dc90a5ae49023c90aebb9d06384524254e80d172b0d19e098555e"],
-  ["2/v0.12.0/protocol.schema.json", "c83bafc4724042725f27484b296c4ac6e42e9954a0e2400e4caf5acecea99ae0"],
-  ["2/v0.13.0/protocol.schema.json", "e334f1d9f7aeab3fb5cfc167e4a455d30289c1bc6e01f96aef7fbcd617bbc277"],
+  ["1/protocol.schema.json", "8076f8643e28ae9ea638c7411167e6d4d828c1eaa880a62b5fca734509d3a08c"],
+  ["1/v0.11.0/protocol.schema.json", "8076f8643e28ae9ea638c7411167e6d4d828c1eaa880a62b5fca734509d3a08c"],
+  ["2/v0.12.0/protocol.schema.json", "a34c42fada633e29ded85e29f2d9906025c89782cc6d6bd6aa9e7d5c51c96675"],
+  ["2/v0.13.0/protocol.schema.json", "297c58a5f8734ff47a67aabfdaae13f254b23260b7d82ccff72f9366df5a9a55"],
 ]);
 
 function fail(message) {
@@ -238,7 +242,7 @@ export function checkProtocolMirror(root) {
     if (expected.has(path)) continue;
     const retired = RETIRED_COPIES.get(path);
     if (!retired) fail(`unrecorded copy ${path}`);
-    if (digest(readFileSync(join(mirrorRoot, path))) !== retired) fail(`retired ${path} differs from its published sha256`);
+    if (digest(readFileSync(join(mirrorRoot, path))) !== retired) fail(`retired ${path} differs from its frozen migrated baseline sha256`);
   }
   for (const path of expected) if (!found.has(path)) fail(`missing copy ${path}`);
   return `${manifest.copies.length} copies, ${Object.keys(manifest.aliases).length} aliases, ${candidates} candidate`;

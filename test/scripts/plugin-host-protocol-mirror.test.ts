@@ -154,13 +154,13 @@ describe("host protocol web mirror", () => {
     );
   });
 
-  it("keeps a retired protocol's published schema only byte-identical", () => {
+  it("keeps a retired protocol's frozen historical schema only byte-identical", () => {
     const { root, base } = fixture();
     const published = readFileSync(join(mirrorBase, "1/v0.11.0/protocol.schema.json"));
     put(root, `${base}/1/v0.11.0/protocol.schema.json`, published.toString("utf8"));
     expect(checkProtocolMirror(root)).toContain("3 copies");
     put(root, `${base}/1/v0.11.0/protocol.schema.json`, `${published.toString("utf8")} `);
-    expect(() => checkProtocolMirror(root)).toThrow("retired 1/v0.11.0/protocol.schema.json differs from its published sha256");
+    expect(() => checkProtocolMirror(root)).toThrow("retired 1/v0.11.0/protocol.schema.json differs from its frozen migrated baseline sha256");
   });
 });
 

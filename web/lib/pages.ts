@@ -116,8 +116,8 @@ const en: PagesCopy = {
   },
   changelog: {
     title: "Changelog",
-    lead: "What changed in each version, taken as written from the repository’s CHANGELOG.md. The newest version is at the top.",
-    note: "The release notes are written in Korean and shown here as written. Ave starts at 0.14.0; earlier versions belong to its predecessor app.",
+    lead: "What changed in each version, from the repository’s CHANGELOG.md, as a headline and short points per change. The newest version is at the top.",
+    note: "Ave starts at 0.14.0; earlier versions belong to its predecessor app.",
     versions: "Versions",
   },
   notFound: {

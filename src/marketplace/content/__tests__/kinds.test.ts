@@ -66,7 +66,7 @@ describe("content file rules (design §5.4)", () => {
 
   it("names the renamed agent-plugin package folder instead of treating it as an unknown directory", () => {
     expect(contentFileProblem("agent-plugin", "xyz.retiredname-namespace/prompts/draft.md"))
-      .toBe("ai.agent-connector.ave/ was renamed to ai.agent-connector.ave/; move ai.agent-connector.ave/prompts/draft.md there");
+      .toBe("xyz.retiredname-namespace/ was renamed to ai.agent-connector.ave/; move xyz.retiredname-namespace/prompts/draft.md there");
   });
 
   it("allows each kind's layout and nothing else", () => {

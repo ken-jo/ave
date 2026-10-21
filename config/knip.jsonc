@@ -87,6 +87,8 @@
       ]
     },
     "web": {
+      // Manual catalog refresh command documented in web/DESIGN.md; no module imports it.
+      "entry": ["scripts/marketplace-snapshot.mjs"],
       // The nested web workspace owns a separate lockfile/install. Root Knip
       // still analyzes its sources and dependency declarations without
       // requiring web/node_modules to exist in desktop-app workflows.

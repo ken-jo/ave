@@ -2,6 +2,7 @@ import { featurePage } from "@/lib/features";
 import type { Locale } from "@/lib/i18n";
 import { doc, FEATURE_DOC, nextAfter, page, PATHS, type Feature, type NavLink } from "@/lib/nav";
 import { Bento, Facts, Faqs, NextSteps, Split } from "./blocks";
+import { CatalogSection, ProviderList } from "./catalog";
 import { Footer, Header } from "./chrome";
 import { Frame, PreloadShot } from "./media";
 
@@ -59,6 +60,14 @@ export function FeatureView({ locale, feature }: { locale: Locale; feature: Feat
           </section>
         ) : null}
 
+        {c.providers ? (
+          <section className="sec" aria-labelledby="providers">
+            <div className="wrap">
+              <ProviderList locale={locale} copy={c.providers} />
+            </div>
+          </section>
+        ) : null}
+
         <section className={c.ways ? "sec" : "sec band"} aria-labelledby="first">
           <div className="wrap">
             <Split id="first" block={c.first} />
@@ -70,6 +79,14 @@ export function FeatureView({ locale, feature }: { locale: Locale; feature: Feat
             <Bento id="grid" block={c.grid} />
           </div>
         </section>
+
+        {c.catalog ? (
+          <section className="sec band" aria-labelledby="catalog">
+            <div className="wrap">
+              <CatalogSection copy={c.catalog} />
+            </div>
+          </section>
+        ) : null}
 
         {c.facts ? (
           <section className="sec" aria-labelledby="facts">

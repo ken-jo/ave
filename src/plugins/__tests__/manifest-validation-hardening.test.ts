@@ -419,7 +419,7 @@ describe("runtime manifest validation of a process entry", () => {
     const path = join(dir, "plugin.json");
     await writeFile(path, JSON.stringify({ ...document, extensions: extensions(document.extensions["ai.agent-connector.ave"]) }), "utf-8");
     await expect(parsePluginJson(path, await buildManifestValidator())).rejects.toThrow(
-      `Invalid plugin manifest 'process-kit' at 'extensions["xyz.retiredname-namespace"]' (${path}): extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
+      `Invalid plugin manifest 'process-kit' at 'extensions["xyz.retiredname-namespace"]' (${path}): extensions.xyz.retiredname-namespace was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
     );
   });
 
