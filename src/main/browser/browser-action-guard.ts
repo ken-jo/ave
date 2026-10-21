@@ -2,7 +2,7 @@ import { BrowserDocumentChangedError } from "./browser-tab-registry.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 
-export interface NativeDragReceipt { intercepted(): BrowserDragData | undefined }
+interface NativeDragReceipt { intercepted(): BrowserDragData | undefined }
 
 export interface CdpSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;

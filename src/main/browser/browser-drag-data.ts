@@ -9,7 +9,7 @@ export interface BrowserDragData {
   readonly dragOperationsMask: number;
 }
 
-export class BrowserDragDataError extends Error {
+class BrowserDragDataError extends Error {
   readonly code = "invalid-drag-data";
 }
 

@@ -1,7 +1,7 @@
 import type { NativeImage, WebContents } from "electron";
 import { BROWSER_WORKSPACE_LIMITS, type BrowserPreview, type BrowserWorkspaceTarget } from "../../shared/browser-workspace.js";
 
-export interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage">; readonly documentGeneration: number }
+interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage">; readonly documentGeneration: number }
 export interface BrowserWorkspacePreviewDeps {
   liveTab(windowId: number, tabId: string): BrowserPreviewTarget | null;
   isWindowVisible(windowId: number): boolean;
