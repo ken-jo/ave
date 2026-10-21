@@ -1,3 +1,4 @@
+import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /**
  * terminal_run takes the shell lane of the one permission pipeline: the
  * command it types is the rule subject of the same `Bash(...)` rules and
@@ -51,7 +52,7 @@ async function run(
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${terminalCwd};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
   if (options.busy) tracker.recordOutput(`sleep 60\r\n${mark("C;cmdline_url=sleep%2060")}`);
-  registerTerminalBlockTracker(TAB, tracker, WINDOW);
+  registerTerminalBlockTracker(terminalSessionFixture(TAB), tracker, WINDOW);
 
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode(options.mode ?? "default");
@@ -71,6 +72,7 @@ async function run(
     liveOriginSessionId: () => undefined,
     activeTerminalTabId: () => TAB,
     boundSurface: () => undefined,
+    ensureAgentTerminal: async (tabId) => terminalSessionFixture(tabId),
     typeCommand,
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
     auditMismatch: () => {},

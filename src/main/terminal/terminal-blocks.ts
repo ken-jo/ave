@@ -40,6 +40,8 @@ import type {
   TerminalBlockSummary,
 } from "../../shared/terminal-blocks.js";
 
+import { terminalLaneKey, sameTerminalSession, type TerminalRef, type TerminalSessionRef, type TerminalSessionInfo } from "../../shared/terminal-session.js";
+
 /** Completed blocks kept per terminal; older ones are dropped first. */
 const MAX_BLOCKS_PER_TERMINAL = 100;
 /** Output characters kept from the start of a block. */
@@ -782,60 +784,39 @@ function summarize(block: TerminalBlock): TerminalBlockSummary {
   return summary;
 }
 
-// ─── Registry: one tracker per terminal tab ─────────────────────────────────
-
+// Each lane/incarnation owns independent block IDs, state and output.
 interface RegisteredTracker {
   tracker: TerminalBlockTracker;
-  /**
-   * The app window whose renderer spawned the terminal (Electron
-   * BrowserWindow id), or null when it could not be told. terminal_read
-   * shows a session only the terminals of the window that hosts it.
-   */
+  session: TerminalSessionInfo;
   ownerWindowId: number | null;
 }
-
 const trackers = new Map<string, RegisteredTracker>();
 
-/** Install the tracker for a newly spawned PTY, replacing any previous one. */
-export function registerTerminalBlockTracker(
-  tabId: string,
-  tracker: TerminalBlockTracker,
-  ownerWindowId: number | null,
-): void {
-  trackers.set(tabId, { tracker, ownerWindowId });
+export function registerTerminalBlockTracker(session: TerminalSessionInfo, tracker: TerminalBlockTracker, ownerWindowId: number | null): void {
+  trackers.set(terminalLaneKey(session), { tracker, session, ownerWindowId });
 }
-
-/** Drop a tab's blocks (tab closed). */
-export function unregisterTerminalBlockTracker(tabId: string): void {
-  trackers.delete(tabId);
+export function unregisterTerminalBlockTracker(ref: TerminalRef): void {
+  trackers.delete(terminalLaneKey(ref));
 }
-
-export function getTerminalBlockTracker(tabId: string): TerminalBlockTracker | undefined {
-  return trackers.get(tabId)?.tracker;
+export function getTerminalBlockTracker(ref: TerminalSessionRef): TerminalBlockTracker | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && sameTerminalSession(entry.session, ref) ? entry.tracker : undefined;
 }
-
-/** One window's tracker for `tabId`, or undefined when the tab is another window's. */
-export function getWindowTerminalBlockTracker(tabId: string, windowId: number): TerminalBlockTracker | undefined {
-  const entry = trackers.get(tabId);
-  return entry && entry.ownerWindowId === windowId ? entry.tracker : undefined;
+export function getWindowTerminalBlockTracker(ref: TerminalSessionRef, windowId: number): TerminalBlockTracker | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && entry.ownerWindowId === windowId && sameTerminalSession(entry.session, ref) ? entry.tracker : undefined;
 }
-
-/**
- * The window a terminal tab belongs to: its id, null when the terminal was
- * spawned without one, undefined when no terminal has that tab id.
- */
-export function terminalTabOwnerWindow(tabId: string): number | null | undefined {
-  return trackers.get(tabId)?.ownerWindowId;
+function trackerInfo(entry: RegisteredTracker): TerminalSessionInfo {
+  const integrated = entry.session.lane === "agent" && entry.tracker.isIntegrated();
+  const currentCwd = integrated ? entry.tracker.currentCwd() : null;
+  return { ...entry.session, shellIntegration: integrated, currentCwd, cwdSource: currentCwd === null ? "unavailable" : "shell-marker" };
 }
-
-/** The terminal tabs of one window that have a tracker, in creation order. */
-export function listTerminalBlockTabs(windowId: number): Array<{ tabId: string; tracker: TerminalBlockTracker }> {
-  return [...trackers.entries()]
-    .filter(([, entry]) => entry.ownerWindowId === windowId)
-    .map(([tabId, entry]) => ({ tabId, tracker: entry.tracker }));
+export function getWindowTerminalBlockSession(ref: TerminalSessionRef, windowId: number): TerminalSessionInfo | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && entry.ownerWindowId === windowId && sameTerminalSession(entry.session, ref) ? trackerInfo(entry) : undefined;
 }
-
-/** Test-only: clear the registry. */
-export function __resetTerminalBlocksForTest(): void {
-  trackers.clear();
+export function listTerminalBlockTabs(windowId: number): Array<{ tabId: string; session: TerminalSessionInfo; tracker: TerminalBlockTracker }> {
+  return [...trackers.values()].filter((entry) => entry.ownerWindowId === windowId)
+    .map((entry) => ({ tabId: entry.session.tabId, session: trackerInfo(entry), tracker: entry.tracker }));
 }
+export function __resetTerminalBlocksForTest(): void { trackers.clear(); }

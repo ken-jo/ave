@@ -1,41 +1,21 @@
-/**
- * PtyTerminalView — xterm.js frontend for the real interactive PTY terminal
- * (#1444). One instance per workspace terminal tab. The PTY itself lives in the
- * MAIN process (pty-manager.ts) inside the ASRT sandbox; this component only
- * renders output and forwards keystrokes/resize over the internal `terminal`
- * IPC surface.
- *
- * LIFECYCLE: `spawn` is idempotent per `tabId` — mounting (or re-mounting after
- * a ChatSidePanel unmount) replays the main-side scrollback rather than starting
- * a fresh shell, so the terminal state survives rail close / session switch. On
- * unmount we dispose the xterm instance + IPC subscriptions but DO NOT kill the
- * PTY (the tab-close path in the store owns kill).
- *
- * i18n: process/diagnostic lines (spawn failure, exit) are written into the
- * xterm BUFFER as terminal content — the same channel a real shell prints
- * "[Process completed]" on — not into localized app chrome. The block strip
- * above the terminal (TerminalBlocksBar) carries its own catalog keys.
- *
- * BLOCKS: the main process records each command as a block. This view only
- * tells the strip when to re-list: xterm's own parser reports every OSC 133
- * marker (so a marker split across output chunks is still seen once), and an
- * Enter keystroke covers shells that send no markers.
- */
-import { useCallback, useEffect, useRef, useState } from "react";
+/** One selected execution lane per tab. Unmount detaches the view; tab close owns both PTYs. */
+import { useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
-import { errorMessage } from "../../../shared/error-message.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
-import { noteTerminalCwd, takeRestoredTerminal } from "../preview/main-layout-restore.js";
+import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
+import { sameTerminalSession, type TerminalLane, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
+const PENDING_OUTPUT_BYTES = 256 * 1024;
+const selectedLanes = new Map<string, TerminalLane>();
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
 function diagnostic(text: string): string {
@@ -76,8 +56,6 @@ interface PtyTerminalViewProps {
    * remount replays the running shell, which is wherever it already is.
    */
   initialCwd?: string | null;
-  /** The working directory the shell last reported (its latest block's). */
-  onCwd?: (cwd: string) => void;
   /**
    * Whether the user is looking at this terminal when it is on screen: a
    * side panel's front tab is (default); a main pane is while it has focus,
@@ -112,10 +90,21 @@ export function PtyTerminalView({
       </div>
     );
   }
-  return <AttachedPtyTerminal {...props} />;
+  return <AttachedPtyTerminal key={props.tabId} {...props} />;
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, onCwd, attended = true }: PtyTerminalViewProps) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
+  const { t } = useTranslation();
+  const [lane, setLane] = useState<TerminalLane>(() => selectedLanes.get(tabId) ?? "manual");
+  const [session, setSession] = useState<TerminalSessionInfo | null>(null);
+  const selectLane = (next: TerminalLane): void => {
+    if (next === lane) return;
+    selectedLanes.delete(tabId);
+    selectedLanes.set(tabId, next);
+    if (selectedLanes.size > 16) selectedLanes.delete(selectedLanes.keys().next().value!);
+    setSession(null);
+    setLane(next);
+  };
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
@@ -138,6 +127,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
     if (!host || !terminalApi) return;
 
     let disposed = false;
+    let liveRef: TerminalSessionRef | null = null;
+    setSession(null);
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -177,7 +168,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
 
     // Forward keystrokes → PTY stdin.
     const inputSub = term.onData((data) => {
-      void terminalApi.input(tabId, data);
+      if (!liveRef) return;
+      void terminalApi.input(liveRef, data);
       if (data.includes("\r")) {
         if (enterTimer !== null) clearTimeout(enterTimer);
         enterTimer = setTimeout(() => {
@@ -187,50 +179,63 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
       }
     });
 
-    // Main → renderer output / exit.
-    const offData = terminalApi.onData((payload) => {
-      if (payload.tabId !== tabId) return;
-      term.write(payload.chunk);
-    });
-    const offExit = terminalApi.onExit((payload) => {
-      if (payload.tabId !== tabId) return;
-      term.write(diagnostic(`[process exited: code ${payload.exitCode}]`));
-      bumpBlocks();
-    });
+    // Replay precedes spawn's reply. Buffer by incarnation until the host confirms it.
+    let pending: Array<TerminalDataEvent | TerminalExitEvent> = [];
+    let pendingBytes = 0;
+    const renderEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
+      if ("chunk" in event) term.write(event.chunk);
+      else { term.write(diagnostic(t("ptyTerminal.exited", { code: event.exitCode }))); bumpBlocks(); }
+    };
+    const acceptEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
+      if (disposed || event.tabId !== tabId || event.lane !== lane) return;
+      if (liveRef) {
+        if (sameTerminalSession(liveRef, event)) renderEvent(event);
+        return;
+      }
+      const bytes = "chunk" in event ? new TextEncoder().encode(event.chunk).length : 0;
+      // Both a chunk and the whole waiting queue stay within the replay ring ceiling.
+      if (bytes > PENDING_OUTPUT_BYTES) return;
+      pending.push(event);
+      pendingBytes += bytes;
+      while (pendingBytes > PENDING_OUTPUT_BYTES || pending.length > 1024) {
+        const dropped = pending.shift();
+        if (dropped && "chunk" in dropped) pendingBytes -= new TextEncoder().encode(dropped.chunk).length;
+      }
+    };
+    const offData = terminalApi.onData(acceptEvent);
+    const offExit = terminalApi.onExit(acceptEvent);
 
-    // Spawn (or replay). Fail-closed reasons surface as a buffer diagnostic.
-    // A replay of the running shell's scrollback arrives before the spawn
-    // resolves; it is output already seen, so it must not ring attention again.
     setTerminalReplaying(tabId, true);
-    // A terminal restored from the saved layout gets a NEW shell in its saved
-    // directory: the old process ended with the app, and the buffer says so
-    // rather than letting an empty prompt pass for the old session.
     const restored = takeRestoredTerminal(tabId);
-    if (restored) term.write(diagnostic(`[restored: new shell${restored.cwd ? ` in ${restored.cwd}` : ""}]`));
+    if (restored) term.write(diagnostic(t("ptyTerminal.restored")));
     const startCwd = restored ? restored.cwd : initialCwdRef.current;
-    const spawnAt = (cwd: string | null) =>
-      terminalApi.spawn({ tabId, cols, rows, ...(cwd ? { cwd } : {}) });
-    void spawnAt(startCwd)
-      .then(async (res) => {
-        // The directory a closed terminal was in may be gone, or outside what
-        // the workspace allows; the new shell then starts where every new
-        // shell does, and says why.
-        if (!res.ok && startCwd && (res.reason === "bad-request" || res.reason === "spawn-failed") && !disposed) {
-          term.write(diagnostic(`[starting in the workspace root: ${res.message}]`));
-          return spawnAt(null);
-        }
-        return res;
-      })
-      .then((res) => {
-        if (disposed) return;
-        if (!res.ok) term.write(diagnostic(`[terminal unavailable] ${res.message}`));
-      })
-      .catch((err: unknown) => {
-        if (!disposed) {
-          term.write(diagnostic(`[terminal error] ${errorMessage(err)}`));
-        }
-      })
-      .finally(() => setTerminalReplaying(tabId, false));
+    const spawnAt = (targetLane: TerminalLane, cwd: string | null) =>
+      terminalApi.spawn({ tabId, lane: targetLane, cols, rows, ...(cwd ? { cwd } : {}) });
+    const start = async () => {
+      // Manual establishes trusted logical ownership even if its interpreter fails.
+      let manual = await spawnAt("manual", startCwd);
+      if (!manual.ok && restored && startCwd && !disposed && (manual.reason === "bad-request" || manual.reason === "spawn-failed")) {
+        term.write(diagnostic(t("ptyTerminal.restoredRoot")));
+        manual = await spawnAt("manual", null);
+      }
+      if (disposed) return;
+      const result = lane === "manual" ? manual : await spawnAt("agent", startCwd);
+      if (disposed) return;
+      if (!result.ok) {
+        pending = [];
+        term.write(diagnostic(t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : lane === "agent" ? "ptyTerminal.agentUnavailable" : "ptyTerminal.manualUnavailable")));
+        return;
+      }
+      liveRef = result.session;
+      setSession(result.session);
+      for (const event of pending) if (sameTerminalSession(result.session, event)) renderEvent(event);
+      pending = [];
+      pendingBytes = 0;
+      bumpBlocks();
+    };
+    void start().catch(() => {
+      if (!disposed) term.write(diagnostic(t("ptyTerminal.startFailed")));
+    }).finally(() => { if (!disposed) setTerminalReplaying(tabId, false); });
 
     // The user is looking at this terminal while its host has a box: a hidden
     // pane or a side panel set aside lays it out at zero size.
@@ -244,7 +249,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
     const resizeObserver = new ResizeObserver(() => {
       reportAttended();
       const dims = safeFit();
-      void terminalApi.resize(tabId, dims.cols, dims.rows);
+      if (liveRef) void terminalApi.resize(liveRef, dims.cols, dims.rows);
     });
     resizeObserver.observe(host);
 
@@ -262,15 +267,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is
       // torn down on tab close (closeWorkspaceTab → terminal.kill).
     };
-  }, [api, tabId]);
-
-  // Every reported directory is kept for the saved layout; the caller hears it too.
-  const onCwdRef = useRef(onCwd);
-  onCwdRef.current = onCwd;
-  const reportCwd = useCallback((cwd: string) => {
-    noteTerminalCwd(tabId, cwd);
-    onCwdRef.current?.(cwd);
-  }, [tabId]);
+  }, [api, tabId, lane]);
 
   // Focus moving to or from this terminal's pane.
   useEffect(() => {
@@ -291,14 +288,31 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
-      {api.terminal ? (
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1 text-xs">
+        <div role="group" aria-label={t("ptyTerminal.laneLabel")} className="flex gap-1">
+          {(["manual", "agent"] as const).map((choice) => (
+            <button key={choice} type="button" className="rounded px-2 py-1 aria-pressed:bg-accent" aria-pressed={lane === choice}
+              onClick={() => selectLane(choice)} data-testid={`terminal-lane-${choice}`}>
+              {t(choice === "manual" ? "ptyTerminal.manualLane" : "ptyTerminal.agentLane")}
+            </button>
+          ))}
+        </div>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={session?.currentCwd ?? session?.initialCwd}>
+          {session?.currentCwd ? t("ptyTerminal.currentCwd", { cwd: session.currentCwd }) : session ? t("ptyTerminal.initialCwd", { cwd: session.initialCwd }) : ""}
+        </span>
+      </div>
+      <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground">
+        {t(lane === "manual" ? "ptyTerminal.manualEnvironment" : "ptyTerminal.agentEnvironment")}
+      </p>
+      {api.terminal && session ? (
         <TerminalBlocksBar
           terminalApi={api.terminal}
-          tabId={tabId}
-          tabLabel={tabLabel}
+          key={`${session.lane}/${session.terminalSessionId}`}
+          session={session}
+          tabLabel={`${tabLabel} · ${lane} · ${session.terminalSessionId}`}
           revision={blockRevision}
           {...(onAttachText ? { onAttachText } : {})}
-          onCwd={reportCwd}
+          onSession={setSession}
         />
       ) : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />

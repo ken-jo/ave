@@ -7,13 +7,10 @@
  * those records, so "why did my build fail?" can be answered from what the
  * user's terminal actually printed.
  *
- *   {}                      → every terminal tab with its recent block summaries
- *                             (the one the user is looking at marked `active`)
- *   { tabId, limit? }       → the newest `limit` blocks of one tab, with output
- *   { tabId, blockId }      → one block with output
- *   { limit } / { blockId } → the same for the window's active terminal, when
- *                             the user is looking at one (a default, not an
- *                             authority: an explicit tabId always wins)
+ *   {} → inventory of both lanes with host-issued session identities.
+ *   { lane, terminalSessionId, tabId?, blockId?, limit? } → exact session read.
+ * A block ID belongs only to that lane and incarnation. Without tabId, the
+ * bound/active logical tab is resolved under the existing window ownership.
  *
  * Results are framed `<terminal-output trust="untrusted-terminal-data">`
  * (fence-sanitizer.ts): command text and output are whatever programs printed,
@@ -30,7 +27,8 @@
  * path (no standing allow), because terminal output can hold private data.
  */
 import { createDynamicTool, type Tool } from "./base.js";
-import { getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
+import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
+import { isTerminalLane, type TerminalSessionRef } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
@@ -129,6 +127,8 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     jsonSchema: {
       type: "object",
       properties: {
+        lane: { type: "string", enum: ["manual", "agent"], description: t("be_terminalRead.laneDescription") },
+        terminalSessionId: { type: "string", description: t("be_terminalRead.sessionDescription") },
         tabId: { type: "string", description: t("be_terminalRead.tabIdDescription") },
         blockId: { type: "integer", minimum: 1, description: t("be_terminalRead.blockIdDescription") },
         limit: {
@@ -141,7 +141,9 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       additionalProperties: false,
     },
     execute: async (rawInput, ctx) => {
-      const input = (rawInput ?? {}) as { tabId?: unknown; blockId?: unknown; limit?: unknown };
+      if (rawInput !== undefined && (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput))) return terminalToolFailure("terminal_read expects an object");
+      const input = (rawInput ?? {}) as { tabId?: unknown; lane?: unknown; terminalSessionId?: unknown; blockId?: unknown; limit?: unknown };
+      if (Object.keys(input).some((key) => !["tabId", "lane", "terminalSessionId", "blockId", "limit"].includes(key))) return terminalToolFailure("unknown terminal_read argument");
       if (input.tabId !== undefined && typeof input.tabId !== "string") {
         return terminalToolFailure("tabId must be a string");
       }
@@ -162,11 +164,10 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       const { windowId } = scope;
       const activeTabId = deps.defaultTerminalTabId?.(windowId, scope.hostSessionId);
 
-      if (input.tabId === undefined && input.blockId === undefined && input.limit === undefined) {
-        const terminals = listTerminalBlockTabs(windowId).map(({ tabId, tracker }) => ({
-          tabId,
+      if (Object.keys(input).length === 0) {
+        const terminals = listTerminalBlockTabs(windowId).map(({ tabId, session, tracker }) => ({
+          ...session,
           ...(tabId === activeTabId ? { active: true } : {}),
-          shellIntegration: tracker.isIntegrated(),
           exited: tracker.hasExited(),
           recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
         }));
@@ -176,6 +177,10 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         });
       }
 
+      if (!isTerminalLane(input.lane) || typeof input.terminalSessionId !== "string" || !input.terminalSessionId) {
+        return terminalToolFailure("targeted terminal_read requires lane and terminalSessionId; call terminal_read with no arguments to list sessions");
+      }
+
       // An explicit tabId wins; without one, blockId/limit read the terminal
       // the user is looking at, when there is one.
       const tabId = (input.tabId as string | undefined) ?? activeTabId;
@@ -183,19 +188,20 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
       }
       // A tab of another window answers exactly like a tab that does not exist.
-      const tracker = getWindowTerminalBlockTracker(tabId, windowId);
-      if (!tracker) {
+      const ref: TerminalSessionRef = { tabId, lane: input.lane, terminalSessionId: input.terminalSessionId };
+      const tracker = getWindowTerminalBlockTracker(ref, windowId);
+      const session = getWindowTerminalBlockSession(ref, windowId);
+      if (!tracker || !session) {
         return terminalToolFailure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
       }
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
         if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`);
-        return fenceTerminalData({ tabId, block: withOutputBudget([block])[0] });
+        return fenceTerminalData({ ...session, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
       return fenceTerminalData({
-        tabId,
-        shellIntegration: tracker.isIntegrated(),
+        ...session,
         blocks: withOutputBudget(tracker.recent(limit)),
       });
     },

@@ -1,3 +1,4 @@
+import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker } from "../../../__tests__/support/terminal-agent-fixture.js";
 /**
  * The workspace terminal under the REAL Linux sandbox (bubblewrap through the
  * sandbox runtime, util-linux script as the shell's pty relay, node-pty):
@@ -26,16 +27,11 @@ import {
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
   killTerminal,
-  resizeTerminal,
   sandboxedShellVerdict,
   setTerminalEmitter,
-  spawnTerminal,
-  typeTerminalCommand,
-  verifyTerminalShell,
-  writeTerminal,
 } from "../pty-manager.js";
 import { parseProcStat, readSandboxedShell } from "../shell-process.js";
-import { getTerminalBlockTracker, USER_INPUT_QUIET_MS, type TerminalBlockTracker } from "../terminal-blocks.js";
+import { USER_INPUT_QUIET_MS, type TerminalBlockTracker } from "../terminal-blocks.js";
 
 const OWNER = 1;
 let root: string;
