@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, type WebContents } from "electron";
+import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -66,11 +66,17 @@ function popupRecord() {
   return record;
 }
 
+function nativeWebPreferences(contents: WebContents): Readonly<WebPreferences> {
+  const native = contents as WebContents & { getLastWebPreferences?(): Readonly<WebPreferences> };
+  if (typeof native.getLastWebPreferences !== "function") throw new Error("Native popup preferences are unavailable");
+  return native.getLastWebPreferences();
+}
+
 function read(): WorkspaceNativeState {
   const view = browserTabRegistry.controlState(owner.id).tabs.find((tab) => tab.kind === "popup");
   const record = view && browserTabRegistry.liveTabInWindow(view.tabId, owner.id);
   const window = record?.guest && BrowserWindow.fromWebContents(record.guest);
-  const preferences = record?.guest?.getLastWebPreferences();
+  const preferences = record?.guest && nativeWebPreferences(record.guest);
   return {
     mainHandle, ownerWindowId: owner.id, mainVisible: owner.isVisible(), nativeEvents: nativeEvents.slice(-20),
     popup: record?.guest && window ? {
