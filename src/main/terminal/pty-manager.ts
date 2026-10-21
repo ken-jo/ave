@@ -1,6 +1,7 @@
 /** Separate host-user and confined-agent PTYs, owned by one logical tab. */
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
@@ -17,7 +18,9 @@ import {
 } from "../../permissions/asrt-sandbox.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
-import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
+import { isPathAllowed } from "../../permissions/allowed-directories.js";
+import { listAuthorizedWorkspaceProjects } from "../project-root-authorization.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
@@ -189,24 +192,30 @@ function resolveLoginShell(): string {
  * Default (no request): the workspace root — `process.cwd()`, anchored to
  * `~/.ave/workspace` at boot (ensureWorkspaceCwd) — NEVER `$HOME`, whose jail
  * would let the shell write shell-rc / login-agent persistence files. A
- * renderer-supplied cwd is a trust-sensitive input (it widens the write-jail),
- * so it is honored ONLY when it is absolute, canonicalizes cleanly, and stays
- * WITHIN the workspace root; anything else is REJECTED (No-Fallback: never
- * silently substitute an out-of-root cwd). Canonicalization uses the SAME helper
- * as {@link deriveSandboxWritePaths} so the validated path and the derived jail
- * see bit-identical strings.
+ * renderer-supplied cwd is admitted only beneath an authorized workspace
+ * project: the default workspace or a user-approved additional project root.
+ * The host's project resolver owns that set; renderer paths never add a grant.
+ * Canonicalization resolves symlink escapes before the segment-aligned check,
+ * using the same canonical form as the resulting sandbox write-jail. HOME
+ * itself remains an invalid jail anchor even if it is an authorized project.
  */
 function resolveTerminalCwd(
   requested: string | undefined,
 ): { ok: true; cwd: string } | { ok: false; message: string } {
-  const root = canonicalizePathForMatch(process.cwd());
-  if (requested === undefined) return { ok: true, cwd: root };
-  if (typeof requested !== "string" || !isAbsolute(requested)) {
+  const candidate = requested ?? process.cwd();
+  if (typeof candidate !== "string" || !isAbsolute(candidate)) {
     return { ok: false, message: "terminal cwd must be an absolute path" };
   }
-  const canonical = canonicalizePathForMatch(requested);
-  if (canonical !== root && !canonical.startsWith(`${root}/`)) {
-    return { ok: false, message: "terminal cwd must be within the workspace root" };
+  const canonical = canonicalizePathForMatch(candidate);
+  const forMatch = caseFoldForMatch(canonical);
+  if (forMatch === caseFoldForMatch(canonicalizePathForMatch(homedir()))) {
+    return { ok: false, message: "terminal cwd must not be the user home directory" };
+  }
+  const directories = listAuthorizedWorkspaceProjects().map((project) =>
+    caseFoldForMatch(canonicalizePathForMatch(project.projectRoot)),
+  );
+  if (!isPathAllowed(forMatch, { directories })) {
+    return { ok: false, message: "terminal cwd must be within an authorized workspace project" };
   }
   return { ok: true, cwd: canonical };
 }

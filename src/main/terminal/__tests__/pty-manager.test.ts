@@ -20,13 +20,14 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
 const nativePlatform = process.platform;
+let additionalProjectDirectories: string[] = [];
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
@@ -50,6 +51,17 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
     "/home/u/.config",
     "/home/u/Library/LaunchAgents",
   ],
+}));
+
+// The real project resolver consumes this host-owned permission-store fixture.
+vi.mock("../../../permissions/permission-settings-store.js", async () => ({
+  ...await vi.importActual<typeof import("../../../permissions/permission-settings-store.js")>("../../../permissions/permission-settings-store.js"),
+  readPermissionSettings: () => ({ permissions: { additionalDirectories: additionalProjectDirectories } }),
+}));
+vi.mock("../../../workload/runtime.js", () => ({
+  isWorkloadBrokerActive: () => false,
+  getActiveWorkloadBrokerProjection: () => undefined,
+  isActiveWorkloadBrokerCwd: () => false,
 }));
 
 // ─── macOS own-tty handoff — platform + fifo controllable per test ──
@@ -237,6 +249,7 @@ beforeEach(() => {
   // Fake wrapped PTYs exercise the supported backend on every CI host.
   if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   gateActive = true;
+  additionalProjectDirectories = [];
   shellContained = true;
   sandboxGeneration = "0";
   emitted = [];
@@ -572,6 +585,62 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad-request");
     // No PTY spawned for a rejected cwd.
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("admits a user-approved additional project subtree and anchors only that validated cwd", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "packages", "app");
+    mkdirSync(cwd, { recursive: true });
+    additionalProjectDirectories = [project];
+    const canonical = canonicalizePathForMatch(cwd);
+    const result = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd });
+    expect(result).toMatchObject({ ok: true, session: { initialCwd: canonical } });
+    expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ cwd: canonical });
+    const options = wrapWorkerCommandMock.mock.calls[0]?.[1] as { filesystem: { allowWrite: string[] } };
+    expect(options.filesystem.allowWrite).toEqual([canonical, createdHomes[0]]);
+    expect(options.filesystem.allowWrite).not.toContain(project);
+    expect(options.filesystem.allowWrite).not.toContain(homedir());
+  });
+
+  it("rejects an unapproved outside directory and a sibling with the approved root's prefix", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    const sibling = project + "-sibling";
+    for (const directory of [project, outside, sibling]) mkdirSync(directory);
+    additionalProjectDirectories = [project];
+    for (const [index, cwd] of [outside, sibling].entries()) {
+      expect(await spawnTerminal({ tabId: `terminal:0000000a-${index + 1}`, cwd })).toMatchObject({ ok: false, reason: "bad-request" });
+    }
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlink escape from an approved project", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    mkdirSync(project);
+    mkdirSync(outside);
+    const link = join(project, "escape");
+    symlinkSync(outside, link, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [project];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: link })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a user-approved project alias before matching its real subtree", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "app");
+    mkdirSync(cwd, { recursive: true });
+    const alias = join(homeParent, "project-alias");
+    symlinkSync(project, alias, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [alias];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd })).toMatchObject({ ok: true, session: { initialCwd: canonicalizePathForMatch(cwd) } });
+  });
+
+  it("never anchors an Agent jail at the whole user HOME", async () => {
+    additionalProjectDirectories = [homedir()];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: homedir() })).toMatchObject({ ok: false, reason: "bad-request" });
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 

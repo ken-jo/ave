@@ -51,8 +51,10 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(root, ".ave"));
   vi.stubEnv("CLAUDE_CODE_TMPDIR", process.env.CLAUDE_CODE_TMPDIR);
   vi.stubEnv("CLAUDE_TMPDIR", process.env.CLAUDE_TMPDIR);
-  // The terminal's default directory, and its write-jail, is the workspace root.
-  vi.spyOn(process, "cwd").mockReturnValue(root);
+  // Match the host contract: the workspace is below HOME, never HOME itself.
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  vi.spyOn(process, "cwd").mockReturnValue(workspace);
   exits = [];
   shown = new Map();
   setTerminalEmitter((event, payload) => {
