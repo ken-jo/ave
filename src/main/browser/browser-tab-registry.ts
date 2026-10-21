@@ -351,7 +351,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void {
     validateActor(actor);
     if (this.tabs.get(tab.handle) !== tab || !this.isLive(tab)) throw new Error("no such live browser tab");
-    if (tab.owner !== null && tab.owner.sessionId !== actor.sessionId && tab.owner.directParentSessionId !== actor.sessionId) {
+    if (tab.owner !== null && tab.owner.sessionId !== actor.sessionId
+      && tab.owner.directParentSessionId !== actor.sessionId && actor.directParentSessionId !== tab.owner.sessionId) {
       throw new Error("this browser tab belongs to another conversation");
     }
     if (tab.lease !== null && tab.lease.actor.sessionId !== actor.sessionId) {

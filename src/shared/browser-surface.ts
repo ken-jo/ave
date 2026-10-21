@@ -209,7 +209,8 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
       const actor = parseActor(item.lease.actor);
       if (actor === null || (item.lease.lifetime === "owned") !== (owner !== null)
         || item.mode === "human"
-        || (owner !== null && owner.sessionId !== actor.sessionId && owner.directParentSessionId !== actor.sessionId)) return null;
+        || (owner !== null && owner.sessionId !== actor.sessionId
+          && owner.directParentSessionId !== actor.sessionId && actor.directParentSessionId !== owner.sessionId)) return null;
       lease = { id: item.lease.id, actor, lifetime: item.lease.lifetime };
     }
     handles.add(item.tabId);

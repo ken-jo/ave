@@ -646,11 +646,14 @@ describe("scoped browser control", () => {
     expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
   });
 
-  it("permits only a creator and its actual direct parent, with nonrecursive child listing", async () => {
+  it("permits a creator and its actual direct parent or child, with nonrecursive child listing", async () => {
     const child = { sessionId: "child", directParentSessionId: "parent" };
     const { registry, tab } = await owned(child);
     expect(() => registry.assertActorAccess(tab, { sessionId: "parent" })).not.toThrow();
-    for (const actor of [ACTOR, { sessionId: "grandparent" }, { sessionId: "grandchild", directParentSessionId: "child" }]) {
+    expect(() => registry.assertActorAccess(tab, { sessionId: "child-of-child", directParentSessionId: "child" })).not.toThrow();
+    for (const actor of [ACTOR, { sessionId: "grandparent" },
+      { sessionId: "sibling", directParentSessionId: "parent" },
+      { sessionId: "grandchild", directParentSessionId: "child-of-child" }]) {
       expect(() => registry.assertActorAccess(tab, actor)).toThrow("another conversation");
     }
     expect(registry.listSessionTabs(1, { sessionId: "parent" }, false)).toEqual([]);
@@ -661,6 +664,28 @@ describe("scoped browser control", () => {
       .resolves.toEqual({ ok: false, error: "not-authorized" });
     await expect(registry.requestTabOp(2, { op: "select", tabId: tab.handle, actor: child }))
       .resolves.toEqual({ ok: false, error: "no-such-tab" });
+  });
+
+  it("lets a direct child act on its parent's bound tab while retaining actual caller identity", async () => {
+    const parent = { sessionId: "parent", directParentSessionId: "grandparent" };
+    const child = { sessionId: "child", directParentSessionId: "parent" };
+    const { registry, tab } = await owned(parent);
+    registry.bindConversationSurface(parent.sessionId, { windowId: 1, surface: { kind: "browser", tabId: "page" } });
+    expect(registry.defaultBrowserTab(1, child.directParentSessionId)).toEqual({ ok: true, handle: tab.handle });
+    const generation = tab.controlGeneration;
+    const lease = registry.acquireControl(tab, child);
+    expect(lease).toMatchObject({ actor: child, lifetime: "owned" });
+    expect(tab.owner).toEqual(parent);
+    expect(tab.controlGeneration).toBe(generation);
+    expect(parseBrowserTabControlState(registry.controlState(1))?.tabs[0]?.lease?.actor).toEqual(child);
+    registry.releaseControl(tab.handle, lease.id);
+    for (const actor of [
+      { sessionId: "grandchild", directParentSessionId: "child" },
+      { sessionId: "parent-sibling", directParentSessionId: "grandparent" },
+      { sessionId: "unrelated" },
+    ]) expect(() => registry.acquireControl(tab, actor)).toThrow("another conversation");
+    expect(tab.owner).toEqual(parent);
+    expect(tab.lease).toBeNull();
   });
 
   it("rejects concurrent leases and keeps caller identity copied across an await", async () => {
@@ -843,6 +868,9 @@ describe("strict browser chrome contracts", () => {
       { ...state, tabs: [{ ...tab, owner: { sessionId: "a", directParentSessionId: "a" } }] },
       { ...state, tabs: [{ ...tab, lease: { id: "l", actor: ACTOR, lifetime: "borrowed" } }] },
       { ...state, tabs: [{ ...tab, mode: "human", lease: { id: "l", actor: ACTOR, lifetime: "owned" } }] },
+      { ...state, tabs: [{ ...tab, lease: { id: "l", actor: { sessionId: "grandchild", directParentSessionId: "child" }, lifetime: "owned" } }] },
+      { ...state, tabs: [{ ...tab, owner: { sessionId: "child", directParentSessionId: "parent" },
+        lease: { id: "l", actor: { sessionId: "sibling", directParentSessionId: "parent" }, lifetime: "owned" } }] },
     ]) expect(parseBrowserTabControlState(candidate)).toBeNull();
   });
 });
