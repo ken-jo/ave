@@ -619,7 +619,13 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(sideInput.value).not.toBe(""));
     expect(mainInput.value).toBe("");
     expect(terminalApi.getBlock).toHaveBeenCalledWith(expect.objectContaining({ tabId: terminalTabId, lane: "manual", terminalSessionId: `${terminalTabId}/manual` }), 1);
-    expect(sideInput.value).toContain("npm test");
+    const chip = await waitFor(() => {
+      const el = sideDock.querySelector<HTMLButtonElement>('[data-testid="attachment-chip"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    await act(async () => { fireEvent.click(chip); });
+    await waitFor(() => expect(document.querySelector('[data-testid="overlay-paste-text"]')?.textContent).toContain("$ npm test\nok\n"));
   });
 
   it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {
