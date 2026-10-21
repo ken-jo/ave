@@ -54,10 +54,13 @@ An authorized explicit agent close can destroy an owned tab. When the agent
 borrows one of your tabs, its close request releases the association and reports
 that the tab was retained. Your browser-chrome close always closes the real tab.
 
-Conversation-scoped `browser_tabs` can include direct child agents' tabs. That
-relation is the actual direct parent, not every descendant sharing a window.
-Listing a tab does not grant control. Native popups are tracked within the
-owning window, may have no ordinary tab card, and keep their own origin approval
+Conversation-scoped `browser_tabs` can include the caller's direct child agents'
+tabs. That relation is the actual direct parent, not every descendant sharing a window.
+Listing a tab does not grant control. An owned tab can be accessed by its creator,
+the creator's direct parent, or the creator's direct child, subject to the
+current exclusive lease. A sibling, grandchild, or unrelated conversation cannot
+inherit that access. Native popups are tracked within the owning window, may
+have no ordinary tab card, and keep their own origin approval
 and child-window isolation. Closing the owning window releases its resources.
 
 ## Page actions and file uploads
@@ -89,9 +92,11 @@ Cancelling the picker sends no files. The host also cancels stale destinations
 after navigation, takeover, or another document change. Results report nonsecret
 file names, counts, sizes, and status; they do not reveal host paths.
 
-The host stages bounded file bytes for the browser's read lifetime and releases
-them on replacement, navigation, guest destruction, or shutdown. The
-[upload policy](../architecture/permission-policy-design.md#shared-browser-control-and-effects)
+The host retains bounded private readonly copies after the upload tool returns,
+bound to the selected input/document. Replacement, navigation, guest destruction,
+or shutdown release that selection; native validation must still check browser
+read behavior across those boundaries. Unknown files left after a crash are not
+automatically adopted or deleted. The [upload policy](../architecture/permission-policy-design.md#shared-browser-control-and-effects)
 owns file checks, immutable staging, lease identity, and storage limits.
 
 ## Ordinary browser controls
@@ -101,10 +106,12 @@ find in page, zoom, site capability decisions, download status, and tab-card
 previews. Bookmarks and history accept validated HTTP(S) URLs without embedded
 credentials. Local download metadata is not automatically exposed to the agent.
 
-Camera, microphone, geolocation, notifications, and fullscreen follow explicit
-site decisions and trusted prompts. Unknown capabilities are denied; iframe
-origins and redirects do not inherit unrelated grants. Downloads still ask for
-a location in the native Save dialog, keep prompt-rate limits, and never open a
+Camera, microphone, geolocation, and notifications follow explicit site
+decisions or trusted prompts for a verified current main-frame request.
+Fullscreen is unavailable until safe exit UI exists; a saved allow cannot
+enable it. Unknown capabilities are denied; iframe origins and redirects do not
+inherit unrelated grants. Downloads still ask for a location in the native Save
+dialog, keep prompt-rate limits, and never open a
 saved file automatically.
 
 Only visible cards in a visible window request previews. Hiding or unmounting

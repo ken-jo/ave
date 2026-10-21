@@ -558,6 +558,10 @@ tab lifetimes, and presentation; this section owns effect authorization.
 
 The host resolves the actual session actor and direct parent from trusted tool
 context. Window discovery does not authorize another conversation's owned tab.
+Owned-tab access allows the owner, the owner's direct parent, or a caller whose
+direct parent is that owner. The relation spans one parent/child step in either
+direction, never a grandchild, sibling, or unrelated session. A current lease
+still belongs exclusively to its exact actor.
 Agent mutation needs a valid scoped control lease and live `agent-active` mode.
 Human input or Stop persistently pauses mutation until explicit trusted-chrome
 Resume. Page observation may continue under its ordinary policy. Resume changes
@@ -565,11 +569,22 @@ the control generation; an earlier approval must fail even if tab and origin
 look unchanged. Effects recheck window, actor, lease, origin, document, target
 reference, and control generation across asynchronous boundaries.
 
+Acquiring a lease keeps the already-approved control generation stable. A
+page-input action can finish through navigation only after a confirmed final
+input effect and a typed document transition; no following input reaches the
+replacement document. A navigation request may follow document transitions only
+while its original caller, tab, and lease remain valid. Generic aborts,
+takeover, caller cancellation, lease loss, or destruction remain failures rather
+than page-load success.
+
 Typed hover, drag, native selection, targeted scroll, and upload retain the
 same document/frame/recipient and sensitive-field guards as existing actions.
 Unsupported or ambiguous controls fail explicitly. Native child-window discovery
 does not grant the popup its opener's approval. Popups require their own current
 origin approval and retain child-window isolation and owner-window checks.
+Embedded stop/pause/Resume APIs accept renderer slot IDs; popup pause/Resume
+APIs accept main-issued popup handles. The host validates kind and owning
+window, with no alias between those target namespaces.
 
 `browser_upload({tabId?, ref})` has no model- or renderer-supplied host path.
 It always requires explicit allow-once, including on an agent-created tab, then
@@ -579,19 +594,25 @@ upload lease and sends no files.
 
 The host binds an upload lease to window, session, tab, origin, document,
 element reference, and control generation. It validates file type, regular-file
-identity, sensitive-path policy, count, and size; stages bounded immutable bytes;
-and rechecks the destination after every await. Pathname checks alone do not
-prove immutable bytes. The browser reads the staged copy for its actual read
-lifetime; replacement, navigation, guest destruction, and shutdown release it.
+identity, sensitive-path policy, count, and size; stages bounded private readonly
+byte copies; and rechecks the destination after every await. Pathname checks
+alone do not prove immutable bytes. Staging outlives the tool result and stays bound to the
+selected input/document. Replacement, navigation, guest destruction, and shutdown
+release that selection. Native validation must separately verify browser read
+behavior across those boundaries; tool completion alone is not a release trigger.
 A process-wide storage ceiling includes active staging. Cleanup removes only
-proven abandoned task-owned staging. Tool output contains nonsecret names,
+the current process's verified owned staging. Unknown crash leftovers are
+neither adopted nor automatically deleted. Tool output contains nonsecret names,
 counts, sizes, and status, never host paths or a reusable upload capability.
 
 Bookmarks, history, find, zoom, previews, download status, and site decisions
 are trusted browser-chrome operations, not new agent data-export authority.
-Site checks use the live requesting origin and owned guest; iframe origins and
-redirects do not inherit unrelated grants. Unknown permissions deny. Download
-Save consent and rate limits remain in force.
+Camera, microphone, geolocation, and notification checks require the live
+requesting origin, owned guest, and verified current main frame; iframe origins
+and redirects do not inherit unrelated grants. Fullscreen capability remains
+`false` until safe exit UI exists; a stored allow cannot override this capability
+gate. Unknown permissions deny. Download Save consent and rate limits remain
+in force.
 
 ## Commands Typed Into A Workspace Terminal
 

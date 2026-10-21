@@ -814,13 +814,17 @@ Creator identity is durable and distinct from the current control lease. A
 lease identifies the actual conversation actor, its direct parent when present,
 and an `owned` or `borrowed` lifetime. Window-wide tab discovery grants no
 authority over another conversation's tabs. Conversation-scoped `browser_tabs`
-can include direct children; aggregation uses the stored direct-parent relation,
-not a recursive hosting-window ancestor. Release revokes only the matching
+can include the caller's direct children; aggregation uses the stored
+direct-parent relation, not a recursive hosting-window ancestor. An owned tab authorizes its creator,
+the creator's direct parent, or a direct child whose trusted parent is the
+creator. This relation is symmetric across one parent/child step; a grandchild,
+sibling, or unrelated session cannot inherit that authority. An existing lease
+still excludes a different caller. Release revokes only the matching
 lease, so a late cleanup cannot release a newer controller.
 
 Agent-created tabs open in the background by default and remain for human
 handoff after a turn. An explicit agent close destroys only a creator-owned tab
-within the authorized owner/direct-parent relationship. Closing a borrowed tab
+within that authorized one-step relationship. Closing a borrowed tab
 through the tool releases its association and reports that the page was retained.
 User chrome close destroys the actual tab; window/app shutdown releases its
 resources.
@@ -830,6 +834,12 @@ callback. They keep the owning window, guarded session, opener relationship,
 and sandbox; they can have a tool handle without a renderer tab slot. Popups
 start with user permission provenance. Discovery or focus does not inherit the
 opener's origin approval or remove sensitive-field restrictions.
+
+Tool `tabId` values are main-issued handles, while embedded chrome identifies
+slots with `rendererTabId`. `BrowserTabsApi.stop`, `pause`, and `resume` accept
+only embedded renderer IDs. Native popup `pausePopup` and `resumePopup` accept
+only main-issued popup handles. These namespaces are not interchangeable, and
+the browser workspace library/find/zoom/preview API targets embedded slots only.
 
 ### Typed page actions and browser chrome
 
@@ -842,6 +852,15 @@ Full-page capture has pixel/byte bounds and fails clearly when exceeded; a crop
 is not reported as a full-page image. Selection verifies the final native value
 and rejects unsupported controls.
 
+The host distinguishes a document transition from cancellation. A page-input
+action can finish through navigation only after a confirmed final input effect
+and a typed document-change result. No following input reaches the replacement
+document. A navigation request can follow document transitions only while its
+original caller, tab, and lease remain valid. Takeover, lease loss, caller
+cancellation, or destruction cannot become navigation success. Lease acquisition
+keeps the approval generation stable; pause, Resume, and document changes
+advance it.
+
 The host-owned browser workspace API uses renderer tab IDs and derives window
 ownership from the sender. It provides bookmarks, bounded history, find, zoom,
 site decisions, download status, and tab-card previews. Persistent bookmarks,
@@ -851,10 +870,12 @@ history are not disclosed by browser tools merely because the UI lists them.
 Downloads retain native Save consent and prompt-rate limits, with no auto-open.
 
 Site capability checks bind the current requesting origin and owned guest.
-`clipboard-sanitized-write` retains its safe baseline; camera, microphone,
-geolocation, notifications, and fullscreen follow explicit site decisions and
-trusted prompts. Iframes and redirects cannot borrow unrelated origin grants;
-unknown permissions deny.
+`clipboard-sanitized-write` retains its safe baseline for a known guest. Camera,
+microphone, geolocation, and notifications require a verified current main-frame
+request and explicit site decisions or trusted prompts. Iframes and redirects
+cannot borrow unrelated origin grants; unknown permissions deny. Fullscreen
+capability is `false` until safe exit UI exists, so even a stored allow decision
+cannot enable it.
 
 Preview work is scheduled only for connected, intersecting cards in a visible
 app window. Each window has one capture owner and at most one in-flight capture,
