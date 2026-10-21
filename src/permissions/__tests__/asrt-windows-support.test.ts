@@ -684,7 +684,7 @@ describe("asrt-windows-support adapter", () => {
       expect(restored).toMatchObject({ applicable: true, userState: "ready", wfpState: "installed", ready: true });
       expect(restored.helperError).toBeUndefined();
       expect(checkWindowsSandboxStatusAsyncMock).toHaveBeenCalledExactlyOnceWith({
-        srtWin: { exe: helperPath, prependArgs: ["srt-win"] },
+        srtWin: { exe: helperPath, prependArgs: ["--srt-win"] },
       });
 
       unlinkSync(helperPath);
