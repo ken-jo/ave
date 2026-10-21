@@ -101,31 +101,33 @@ export function observeBrowserWorkspaceDownload(contents: WebContents, item: Dow
 }
 
 function focusPopup(window: BrowserWindow): Promise<boolean> {
-  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve(false);
+  if (window.isDestroyed()) return Promise.resolve(false);
+  const contents = window.webContents;
+  if (contents.isDestroyed()) return Promise.resolve(false);
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settle = (focused: boolean) => {
       if (timer !== undefined) clearTimeout(timer);
       window.removeListener("focus", inspect);
       window.removeListener("closed", closed);
-      window.webContents.removeListener("focus", inspect);
-      window.webContents.removeListener("destroyed", closed);
+      contents.removeListener("focus", inspect);
+      contents.removeListener("destroyed", closed);
       resolve(focused);
     };
     const inspect = () => {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed() && window.isFocused() && window.webContents.isFocused()) settle(true);
+      if (!window.isDestroyed() && !contents.isDestroyed() && window.isFocused() && contents.isFocused()) settle(true);
     };
     const closed = () => settle(false);
     window.on("focus", inspect);
     window.once("closed", closed);
-    window.webContents.on("focus", inspect);
-    window.webContents.once("destroyed", closed);
+    contents.on("focus", inspect);
+    contents.once("destroyed", closed);
     timer = setTimeout(() => settle(false), FOCUS_TIMEOUT_MS);
     try {
       if (window.isMinimized()) window.restore();
       window.show();
       window.focus();
-      window.webContents.focus();
+      contents.focus();
       inspect();
     } catch (error) {
       settle(false);
@@ -150,10 +152,11 @@ export function refreshBrowserPopupControl(windowId: number, state: BrowserTabCo
 
 /** The caller must first verify the native child's session and owning main window. */
 export function registerBrowserWorkspacePopup(openerGuestId: number, child: BrowserWindow, owner: BrowserWindow): string | null {
-  if (child.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner
-    || child.webContents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) return null;
-  trackBrowserGuest(child.webContents, owner.id);
-  const handle = browserTabRegistry.registerPopup(openerGuestId, child.webContents, {
+  if (child.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner) return null;
+  const contents = child.webContents;
+  if (contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) return null;
+  trackBrowserGuest(contents, owner.id);
+  const handle = browserTabRegistry.registerPopup(openerGuestId, contents, {
     select: () => focusPopup(child), close: () => { if (!child.isDestroyed()) child.close(); },
   });
   if (handle === null) return null;
@@ -166,14 +169,14 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
   const contextMenu = (event: { preventDefault(): void }, params: { x: number; y: number }) => {
     event.preventDefault();
     const tab = browserTabRegistry.liveTabInWindow(handle, owner.id);
-    if (!tab || tab.guest !== child.webContents || child.isDestroyed()) return;
+    if (child.isDestroyed() || !tab || tab.guest !== contents) return;
     const paused = tab.controlMode === "human-paused";
     const menu = Menu.buildFromTemplate([{
       label: t(paused ? "agentBrowser.resume" : "agentBrowser.stop"),
       enabled: paused || tab.controlMode === "agent-active",
       click: () => {
         const current = browserTabRegistry.liveTabInWindow(handle, owner.id);
-        if (!current || current.guest !== child.webContents || child.isDestroyed()) return;
+        if (child.isDestroyed() || !current || current.guest !== contents) return;
         if (paused) browserTabRegistry.resumePopup(owner.id, handle);
         else browserTabRegistry.pausePopup(owner.id, handle);
         refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));
@@ -183,13 +186,13 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
   };
   const dispose = () => {
     child.removeListener("page-title-updated", titleChanged);
-    child.webContents.removeListener("context-menu", contextMenu);
+    contents.removeListener("context-menu", contextMenu);
     child.removeListener("closed", dispose);
     popups.delete(handle);
   };
-  popups.set(handle, { window: child, owner, title: nativeTitle(child.webContents.getTitle()), dispose });
+  popups.set(handle, { window: child, owner, title: nativeTitle(contents.getTitle()), dispose });
   child.on("page-title-updated", titleChanged);
-  child.webContents.on("context-menu", contextMenu);
+  contents.on("context-menu", contextMenu);
   child.once("closed", dispose);
   refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));
   return handle;

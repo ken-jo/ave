@@ -2,8 +2,8 @@ import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences 
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
-import { browserTabRegistry } from "../../../../src/main/browser/browser-tab-registry.js";
+import { getMainWindows, registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
+import { browserTabRegistry, type BrowserTabOpOutcome } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
 import { disposeBrowserWorkspaceService, getBrowserWorkspaceService, refreshBrowserPopupControl } from "../../../../src/main/browser/browser-workspace-desktop.js";
 import { attachSideBrowserWebview, configureSideBrowserWebviewAttach, installSideBrowserPartitionPolicy } from "../../../../src/main/side-browser-webview.js";
@@ -21,6 +21,14 @@ let mainHandle = "";
 let requestId = "";
 const nativeEvents: Record<string, unknown>[] = [];
 
+function fatal(error: unknown): void {
+  console.error("[workspace-native:fatal]", error instanceof Error ? error.stack : error);
+  console.error("[workspace-native:events]", JSON.stringify(nativeEvents));
+  app.exit(1);
+}
+process.on("uncaughtException", fatal);
+process.on("unhandledRejection", fatal);
+
 export interface WorkspaceNativeState {
   readonly mainHandle: string;
   readonly ownerWindowId: number;
@@ -37,6 +45,7 @@ export interface WorkspaceNativeFixture {
   readonly ready: true;
   read(): WorkspaceNativeState;
   openPopup(): Promise<void>;
+  closePopup(): Promise<BrowserTabOpOutcome>;
   selectPopup(): Promise<unknown>;
   holdPopup(): WorkspaceNativeState;
   resumePopup(): boolean;
@@ -51,7 +60,7 @@ const server = createServer((request, response) => {
   if (request.url === "/host") {
     response.end(`<!doctype html><meta charset="utf-8"><title>Browser workspace fixture</title>
       <style>body{margin:0;background:#e9eef2;font:16px sans-serif}header{padding:20px}webview{position:absolute;left:70px;top:70px;width:760px;height:530px;border:2px solid #315}</style>
-      <header>Trusted workspace fixture</header><webview src="about:blank" partition="${AVE_SIDE_BROWSER_PARTITION}"></webview>`);
+      <header>Trusted workspace fixture</header><webview src="about:blank" partition="${AVE_SIDE_BROWSER_PARTITION}" allowpopups></webview>`);
   } else if (request.url === "/popup") {
     response.end('<!doctype html><meta charset="utf-8"><title>Workspace popup</title><style>body{font:22px sans-serif;background:#e2f6eb;padding:28px}button{padding:24px}</style><h1>Native popup</h1><button id="human">Human action</button>');
   } else {
@@ -158,7 +167,12 @@ void app.whenReady().then(async () => {
   owner.webContents.once("did-attach-webview", (_event, contents) => {
     guest = contents;
     guest.prependListener("did-create-window", (child: BrowserWindow) => {
-      nativeEvents.push({ type: "native-child-created", sameSession: child.webContents.session === guest.session });
+      const childWindowId = child.id;
+      const childGuestId = child.webContents.id;
+      nativeEvents.push({ type: "native-child-created", ownerWindowId: owner.id, openerGuestId: guest.id, childWindowId, childGuestId, sameSession: child.webContents.session === guest.session });
+      child.on("close", () => nativeEvents.push({ type: "native-child-close", childWindowId, childGuestId }));
+      child.once("closed", () => nativeEvents.push({ type: "native-child-closed", childWindowId, childGuestId }));
+      child.webContents.once("destroyed", () => nativeEvents.push({ type: "native-child-guest-destroyed", childWindowId, childGuestId }));
     });
     guest.on("input-event", (_event, input) => { if (input.type === "mouseDown" || input.type === "mouseUp") nativeEvents.push({ ...input }); });
     attachSideBrowserWebview(guest, owner);
@@ -187,6 +201,18 @@ void app.whenReady().then(async () => {
   const fixture: WorkspaceNativeFixture = {
     ready: true, read, find, preview, hiddenPreviewRace,
     openPopup: () => guest.executeJavaScript('document.getElementById("popup").click()', true),
+    closePopup: () => {
+      if (owner.isDestroyed() || !getMainWindows().includes(owner)) throw new Error("Popup owner is not a registered main window");
+      const popup = popupRecord();
+      if (popup.windowId !== owner.id || popup.guest === null || BrowserWindow.fromWebContents(popup.guest)?.getParentWindow() !== owner) {
+        throw new Error("Native popup does not belong to this owner");
+      }
+      nativeEvents.push({ type: "native-close-request", ownerWindowId: owner.id, mainGuestId: guest.id, popupHandle: popup.handle, popupGuestId: popup.guest.id });
+      return browserTabRegistry.requestTabOp(owner.id, { op: "close", tabId: popup.handle }).then((result) => {
+        nativeEvents.push({ type: "native-close-completed", ...result });
+        return result;
+      });
+    },
     selectPopup: () => browserTabRegistry.requestTabOp(owner.id, { op: "select", tabId: popupRecord().handle }),
     holdPopup: () => { browserTabRegistry.acquireControl(popupRecord(), actor); return read(); },
     resumePopup: () => browserTabRegistry.resumePopup(owner.id, popupRecord().handle),

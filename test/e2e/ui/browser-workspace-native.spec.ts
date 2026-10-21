@@ -63,10 +63,10 @@ test("CDP native popup preserves registration, hardening, opener, session and cl
     // Page activation creates an actual child; no foreground receipt is required.
     const registered = await openRegisteredPopup(app);
     expect(registered.popup).toMatchObject({ openerTabId: registered.mainHandle, windowId: registered.ownerWindowId, sameSession: true, sandbox: true, contextIsolation: true, nodeIntegration: false });
-    const popup = await nativePopupPage(app);
-    await popup.close();
-    await expect.poll(async () => (await read(app)).popup).toBeNull();
-    expect((await read(app)).mainHandle).toBe(registered.mainHandle);
+    const closed = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.closePopup());
+    expect(closed).toEqual({ ok: true, tabId: registered.popup!.handle });
+    const afterClose = await read(app);
+    expect(afterClose).toMatchObject({ popup: null, mainHandle: registered.mainHandle, mainVisible: true });
   } finally { await close(app); }
 });
 

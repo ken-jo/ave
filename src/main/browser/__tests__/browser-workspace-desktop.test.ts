@@ -48,7 +48,11 @@ class Window extends EventEmitter {
   minimized = false;
   focused = false;
   readonly setTitle = vi.fn();
-  constructor(readonly id: number, readonly webContents: Guest) { super(); }
+  constructor(readonly id: number, private readonly contents: Guest) { super(); }
+  get webContents(): Guest {
+    if (this.destroyed) throw new Error("Object has been destroyed");
+    return this.contents;
+  }
   isDestroyed() { return this.destroyed; }
   isVisible() { return this.visible; }
   isMinimized() { return this.minimized; }
@@ -56,7 +60,7 @@ class Window extends EventEmitter {
   restore() { this.minimized = false; }
   show() { this.visible = true; }
   focus() { this.focused = true; this.emit("focus"); }
-  close() { this.webContents.destroyed = true; this.webContents.emit("destroyed"); this.destroyed = true; this.emit("closed"); }
+  close() { this.contents.destroyed = true; this.contents.emit("destroyed"); this.destroyed = true; this.emit("closed"); }
 }
 const asGuest = (guest: Guest) => guest as unknown as WebContents;
 const asWindow = (window: Window) => window as unknown as BrowserWindow;
@@ -174,9 +178,40 @@ describe("native popup desktop controls", () => {
     native.template[0]!.click!();
     expect(tab.controlMode).toBe("agent-active");
     expect(native.popup).toHaveBeenCalledWith({ window: popup, x: 3, y: 4 });
+    const popupGuest = popup.webContents;
     popup.close();
     expect(popup.listenerCount("page-title-updated")).toBe(0);
-    expect(popup.webContents.listenerCount("context-menu")).toBe(0);
+    expect(popupGuest.listenerCount("context-menu")).toBe(0);
+  });
+
+  it("completes registered native close without reading a destroyed window's guest getter", async () => {
+    const window = owner();
+    const opener = await ownedPage(window);
+    const popupGuest = new Guest(72);
+    const popup = new Window(2, popupGuest);
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    await expect(browserTabRegistry.requestTabOp(window.id, { op: "close", tabId: handle })).resolves.toEqual({ ok: true, tabId: handle });
+    expect(() => popup.webContents).toThrow("Object has been destroyed");
+    expect(browserTabRegistry.liveTab(handle)).toBeUndefined();
+    expect(popupGuest.listenerCount("context-menu")).toBe(0);
+    expect(popup.listenerCount("page-title-updated")).toBe(0);
+    expect(window.isDestroyed()).toBe(false);
+    expect(() => disposeBrowserWorkspaceService()).not.toThrow();
+  });
+
+  it("rejects pending focus and removes its listeners when the native window is already destroyed", async () => {
+    const window = owner();
+    const opener = await ownedPage(window);
+    const popupGuest = new Guest(72);
+    popupGuest.focus = () => undefined;
+    const popup = new Window(2, popupGuest);
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    const selected = browserTabRegistry.requestTabOp(window.id, { op: "select", tabId: handle });
+    popup.destroyed = true;
+    expect(() => popup.emit("closed")).not.toThrow();
+    await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });
+    expect(popupGuest.listenerCount("focus")).toBe(0);
+    expect(popupGuest.listenerCount("destroyed")).toBe(1);
   });
 
   it("fails native selection when window focus does not reach the popup's own guest", async () => {
