@@ -104,7 +104,7 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { dl: [
             ["ChatGPT 요금제", "격리된 로컬 Codex 런타임을 통해 로그인합니다."],
-            ["Claude 구독", "내가 고른 공식 claude CLI를 Ave가 실행합니다. 앱 전용 설정 폴더를 쓰고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 쓰입니다. 이 경로에서는 모델 선택과 이미지 첨부가 없습니다."],
+            ["Claude 구독", "Ave가 자동으로 찾은 공식 claude CLI를 실행합니다. 앱 전용 설정 폴더를 쓰고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 쓰입니다. 이 경로에서는 모델 선택과 이미지 첨부가 없습니다."],
           ] },
           { p: "구독 자격 증명은 API 키가 되지 않고, 경로 사이에서 몰래 다른 경로로 넘어가지 않습니다." },
         ],
@@ -559,7 +559,7 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { dl: [
             ["ChatGPT plan", "Sign in through an isolated local Codex runtime."],
-            ["Claude subscription", "Ave launches the official claude CLI you select. It uses an app-owned config folder and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments."],
+            ["Claude subscription", "Ave launches the official claude CLI Ave discovers automatically. It uses an app-owned config folder and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments."],
           ] },
           { p: "Subscription credentials never become API keys, and there is no silent fallback from one route to another." },
         ],

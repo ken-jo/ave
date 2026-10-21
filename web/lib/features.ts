@@ -226,7 +226,7 @@ const ko: Pages = {
       items: [
         { tag: "API 키", title: "제공자 키로", points: ["기본 제공: OpenAI, Claude, Gemini, OpenRouter", "그 밖의 제공자는 마켓플레이스의 제공자 패키지로", "OpenAI는 API 키 채팅으로도 연결"] },
         { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", points: ["로컬이나 사내 서버를 주소로 연결", "모델 목록은 엔드포인트에서 동기화", "이미지 입력 지원 여부를 직접 지정 가능"] },
-        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
+        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
       ],
     },
     first: {
@@ -288,7 +288,7 @@ const ko: Pages = {
     },
     faqTitle: "자주 묻는 질문",
     faqs: [
-      { q: "Claude 구독으로 연결하면 무엇이 달라지나요?", a: "Ave는 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행하고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 제공됩니다. 이 경로는 모델 선택과 이미지 첨부가 없습니다." },
+      { q: "Claude 구독으로 연결하면 무엇이 달라지나요?", a: "Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행하고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 제공됩니다. 이 경로는 모델 선택과 이미지 첨부가 없습니다." },
       { q: "직접 띄운 모델 서버도 쓸 수 있나요?", a: "OpenAI 호환 엔드포인트라면 주소로 연결합니다. 모델 목록은 서버에서 받아 오고, 이미지 입력 지원 여부는 직접 정할 수 있습니다." },
       { q: "모델 정보는 어디서 오나요?", a: "컨텍스트 창과 출력 한도는 models.dev의 공개 카탈로그를 하루에 많아야 한 번 받아 씁니다. 계정, 키, 대화는 보내지 않고, 설정 → 모델 → 모델 카탈로그에서 끌 수 있습니다." },
       { q: "목록에 없는 제공자는요?", a: "마켓플레이스의 제공자 패키지로 추가합니다. 설정의 모델 탭에 ‘마켓플레이스에서 제공자 더 보기’ 버튼이 있습니다." },
@@ -671,7 +671,7 @@ const en: Pages = {
       items: [
         { tag: "API key", title: "With a provider key", points: ["Built in: OpenAI, Claude, Gemini, OpenRouter", "Other providers as marketplace provider packages", "OpenAI also through API-key chat"] },
         { tag: "Your own server", title: "An OpenAI-compatible endpoint", points: ["A local or company server, by address", "The model list syncs from the endpoint", "Declare image input support yourself if needed"] },
-        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI you select, with an app-owned config folder", "Subscription credentials never become API keys"] },
+        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI Ave discovers automatically, with an app-owned config folder", "Subscription credentials never become API keys"] },
       ],
     },
     first: {
@@ -733,7 +733,7 @@ const en: Pages = {
     },
     faqTitle: "Questions",
     faqs: [
-      { q: "What changes when I connect a Claude subscription?", a: "Ave launches the official claude CLI you select with an app-owned config folder, and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments." },
+      { q: "What changes when I connect a Claude subscription?", a: "Ave launches the official claude CLI Ave discovers automatically with an app-owned config folder, and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments." },
       { q: "Can I use a model server I run myself?", a: "If it is an OpenAI-compatible endpoint, connect it by address. The model list comes from the server, and you can declare whether it accepts images." },
       { q: "Where does model information come from?", a: "Context windows and output limits come from the public models.dev catalog, fetched at most once a day. No account, key or conversation is sent, and you can turn it off in Settings → Model → Model catalog." },
       { q: "What about a provider that isn’t listed?", a: "Add it as a provider package from a marketplace. The Model tab has a More providers in Marketplace button." },
