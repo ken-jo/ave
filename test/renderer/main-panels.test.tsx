@@ -619,13 +619,16 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(sideInput.value).not.toBe(""));
     expect(mainInput.value).toBe("");
     expect(terminalApi.getBlock).toHaveBeenCalledWith(expect.objectContaining({ tabId: terminalTabId, lane: "manual", terminalSessionId: `${terminalTabId}/manual` }), 1);
-    const chip = await waitFor(() => {
-      const el = sideDock.querySelector<HTMLButtonElement>('[data-testid="attachment-chip"]');
-      expect(el).not.toBeNull();
-      return el!;
+    expect(sideDock.querySelector('[data-testid="attachment-chip"]')).not.toBeNull();
+    const sideChat = (api as unknown as { sideChat: { send: ReturnType<typeof vi.fn> } }).sideChat;
+    await act(async () => {
+      fireEvent.click(sideDock.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
     });
-    await act(async () => { fireEvent.click(chip); });
-    await waitFor(() => expect(document.querySelector('[data-testid="overlay-paste-text"]')?.textContent).toContain("$ npm test\nok\n"));
+    await waitFor(() => expect(sideChat.send).toHaveBeenCalledTimes(1));
+    const sentText = sideChat.send.mock.calls[0]![0];
+    expect(sentText).toContain("$ npm test\nok\n");
+    expect(sentText).toContain(`${terminalTabId}/manual`);
+    expect(api.chatSend).not.toHaveBeenCalled();
   });
 
   it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {
