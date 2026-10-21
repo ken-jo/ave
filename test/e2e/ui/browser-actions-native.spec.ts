@@ -127,18 +127,14 @@ test("@cdp targeted wheel scrolls the nested container", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("@cdp full-page capture includes the complete tall guest extent", async ({}, testInfo) => {
+test("@cdp full-page capture reports unavailable before unsafe clipping", async ({}, testInfo) => {
   const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "screenshot");
-    expect(result.ok, resultMessage(result)).toBe(true);
-    const image = result.value as { data: string; bytes: number; dimensions: { width: number; height: number }; bottomPixelRGB: number[] };
-    expect(image.dimensions.height).toBeGreaterThan(result.oracle.viewport.height * 2);
-    expect(Math.abs(image.dimensions.width / result.oracle.content.width - image.dimensions.height / result.oracle.content.height)).toBeLessThan(0.02);
-    expect(image.bottomPixelRGB).toEqual([0, 166, 90]);
-    const screenshot = testInfo.outputPath("native-full-page.png");
-    await fs.writeFile(screenshot, Buffer.from(image.data, "base64"));
-    await testInfo.attach("native-full-page", { path: screenshot, contentType: "image/png" });
+    expect(result.ok, resultMessage(result)).toBe(false);
+    expect(result.error?.code).toBe("screenshot-unavailable");
+    expect(result.value).toBeUndefined();
+    expect(result.oracle.content.height).toBeGreaterThan(result.oracle.viewport.height * 2);
   } finally { await close(app); }
 });
 

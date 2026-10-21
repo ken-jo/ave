@@ -1,6 +1,6 @@
 // i18n fragment. Source: src/tools/browser-tools.ts.
 export const en = {
-  "be_browserTools.fullPageDescription": "Capture the entire page within host pixel and byte limits; over-limit pages fail without cropping.",
+  "be_browserTools.fullPageDescription": "Only viewport capture is available. Full-page capture is unavailable; omit this field or use false.",
   "be_browserTools.hoverDescription": "Hover over an element ref from browser_snapshot.",
   "be_browserTools.dragDescription": "Drag from sourceRef to targetRef with the native pointer. Both endpoints must be visible in the same document.",
   "be_browserTools.selectDescription": "Select an enabled option by value in a native single SELECT. Custom, multiple and ambiguous controls are refused.",
@@ -34,7 +34,7 @@ export const en = {
 };
 
 export const ko: Record<keyof typeof en, string> = {
-  "be_browserTools.fullPageDescription": "호스트 픽셀·바이트 제한 안에서 전체 페이지를 캡처합니다. 제한을 넘으면 자르지 않고 실패합니다.",
+  "be_browserTools.fullPageDescription": "현재 보이는 영역만 캡처할 수 있습니다. 전체 페이지 캡처는 지원하지 않습니다. 이 필드는 생략하거나 false로 지정하세요.",
   "be_browserTools.hoverDescription": "browser_snapshot의 요소 ref 위로 포인터를 옮깁니다.",
   "be_browserTools.dragDescription": "네이티브 포인터로 sourceRef에서 targetRef로 드래그합니다. 두 끝점이 같은 문서의 화면에 보여야 합니다.",
   "be_browserTools.selectDescription": "네이티브 단일 SELECT에서 value로 활성 옵션을 선택합니다. 사용자 정의·다중·모호한 컨트롤은 거부합니다.",

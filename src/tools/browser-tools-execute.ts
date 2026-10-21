@@ -333,6 +333,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
       if (input.fullPage !== undefined && typeof input.fullPage !== "boolean") return failure("fullPage must be a boolean");
+      if (input.fullPage === true) return failure("screenshot-unavailable: full page capture is unavailable; use a viewport screenshot");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);

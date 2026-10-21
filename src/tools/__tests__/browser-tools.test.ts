@@ -648,6 +648,19 @@ describe("browser tools", () => {
     expect(page.calls).toEqual([]);
   });
 
+  it("does not offer full-page capture and refuses it without invoking capture", async () => {
+    const { run, page, userTab, browserTools } = harness();
+    const user = userTab("https://a.example/");
+    const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.screenshot)!.toJsonSchema();
+    expect(schema).toMatchObject({ properties: { fullPage: { enum: [false] } } });
+    const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("screenshot-unavailable");
+    expect(page.calls).toEqual([]);
+    expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).isError).toBe(false);
+    expect(page.calls.map((call) => call.action)).toEqual(["screenshot"]);
+  });
+
   it("lists actual conversation ownership without granting access to unrelated creators", async () => {
     const { run, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");

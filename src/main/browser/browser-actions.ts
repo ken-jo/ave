@@ -131,20 +131,8 @@ export async function screenshot(
   options: { fullPage?: boolean } = {},
 ): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
   throwIfAborted(target.signal);
+  if (options.fullPage) throw new BrowserActionError("screenshot-unavailable", "full page capture is unavailable for this browser surface; use a viewport screenshot");
   const params: Record<string, unknown> = { format: "png" };
-  let fullSize: { width: number; height: number } | undefined;
-  if (options.fullPage) {
-    const layout = await target.cdp.send("Page.getLayoutMetrics") as { cssContentSize?: { x: number; y: number; width: number; height: number } };
-    throwIfAborted(target.signal);
-    const size = layout.cssContentSize;
-    if (!size || ![size.x, size.y, size.width, size.height].every(Number.isFinite) || size.x < 0 || size.y < 0
-      || size.width <= 0 || size.height <= 0 || size.width > 16384 || size.height > 32768 || size.width * size.height > 32_000_000) {
-      throw new BrowserActionError("screenshot-limit", "the full page exceeds the capture limit; use a viewport screenshot instead");
-    }
-    fullSize = size;
-    params.clip = { ...size, scale: 1 };
-    params.captureBeyondViewport = true;
-  }
   const timedOut = Symbol("timed-out");
   let timer: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
@@ -169,7 +157,6 @@ export async function screenshot(
   if (header.length < 24 || header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
   const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
   if (width < 1 || height < 1 || width * height > 32_000_000) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  if (fullSize && Math.abs(width / fullSize.width - height / fullSize.height) > 0.02) throw new BrowserActionError("screenshot-incomplete", "the browser did not capture the full page extent");
   return { data: result.data, mimeType: "image/png", bytes };
 }
 
@@ -1049,8 +1036,9 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   let touchMoved = false;
   let mouseOpen = false;
   let nativeDrag: {
-    enabled: boolean; disabled: boolean; cancelled: boolean; dropped: boolean; awaitingPayload: boolean;
+    enabled: boolean; disabled: boolean; cancelled: boolean; dropped: boolean; dropSent: boolean; awaitingPayload: boolean;
     data?: BrowserDragData; error?: unknown;
+    destination?: { x: number; y: number; data: BrowserDragData };
     delivery(): { pressed: boolean; released: boolean; elsewhere: number };
     stop(): void;
   } | undefined;
@@ -1081,6 +1069,10 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
       if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1 && nativeDrag) nativeDrag.awaitingPayload = true;
       try {
+        if (method === "Input.dispatchDragEvent" && params?.type === "dragEnter" && nativeDrag?.data) {
+          nativeDrag.destination = { x: params.x as number, y: params.y as number, data: nativeDrag.data };
+        }
+        if (method === "Input.dispatchDragEvent" && params?.type === "drop" && nativeDrag) nativeDrag.dropSent = true;
         const sent = session.send(method, params);
         const result = pressDeadline !== null
           ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
@@ -1192,7 +1184,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       return aloneInWindow(host.windowId, live.signal, async () => {
         refuseIfWedged(host.windowId);
         const watch = attribution.watchMouse(guest.id);
-        const state: NonNullable<typeof nativeDrag> = { enabled: false, disabled: false, cancelled: false, dropped: false, awaitingPayload: false,
+        const state: NonNullable<typeof nativeDrag> = { enabled: false, disabled: false, cancelled: false, dropped: false, dropSent: false, awaitingPayload: false,
           delivery: () => watch.delivery(), stop: () => {} };
         nativeDrag = state;
         state.stop = session.onEvent((method, params) => {
@@ -1225,28 +1217,38 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             || delivery.elsewhere > 0) throw new BrowserActionError("input-not-delivered", "the drag did not reach only the intended page");
           return value;
         } catch (error) {
-          if (state.dropped) throw new BrowserActionError(error instanceof BrowserActionError ? error.code : "drag-effect-committed",
-            "the destination acknowledged the drop before this action stopped; do not repeat it automatically", true);
+          if (state.dropSent) throw new BrowserActionError(state.dropped && error instanceof BrowserActionError ? error.code : "drag-outcome-unknown",
+            state.dropped ? "the destination acknowledged the drop before this action stopped; do not repeat it automatically"
+              : "the destination drop was sent but its outcome is unknown; do not repeat it automatically", true);
           throw error;
         } finally {
           pressDeadline = null;
           state.stop();
           try {
+            let clean = true;
+            // Only the private, same-action entered target may be cancelled.
+            // After drop dispatch, acknowledgement loss is never retry-safe.
+            if (state.destination && !state.dropSent) {
+              const destination = state.destination;
+              await within(session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination }), INPUT_DISPATCH_MAX_MS)
+                .catch(() => { clean = false; });
+            }
             // Cleanup uses the original session even after document/user
             // cancellation. Neither command can create a destination effect.
             if (mouseOpen || state.enabled) {
-              let clean = true;
               if (!state.dropped) await within(session.send("Input.cancelDragging"), INPUT_DISPATCH_MAX_MS).then(() => { mouseOpen = false; }, () => { clean = false; });
               if (state.enabled) await within(session.send("Input.setInterceptDrags", { enabled: false }), INPUT_DISPATCH_MAX_MS).then(() => { state.enabled = false; }, () => { clean = false; });
-              if (!clean) {
-                // A debugger whose interception state cannot be proved is
-                // detached and quarantined before another action can use it.
-                attached.delete(guest);
-                try { guest.debugger.detach(); } catch { /* guest destruction also ends its session */ }
-                markWedged(host.windowId, guest, new Promise(() => {}));
-              }
+            }
+            if (!clean || (state.dropSent && !state.dropped)) {
+              // An unproved cleanup or drop outcome cannot own later input.
+              attached.delete(guest);
+              try { guest.debugger.detach(); } catch { /* guest destruction also ends its session */ }
+              markWedged(host.windowId, guest, new Promise(() => {}));
             }
           } finally {
+            state.data = undefined;
+            state.destination = undefined;
+            state.error = undefined;
             nativeDrag = undefined;
             watch.stop();
             if (mouseOpen) markWedged(host.windowId, guest, new Promise(() => {}));

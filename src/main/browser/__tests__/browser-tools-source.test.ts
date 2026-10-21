@@ -109,6 +109,7 @@ describe("browser tool CDP surface", () => {
     // this one, which presses nothing: it only ends the window's open sequence.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
+      'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',
       'session.send("Input.cancelDragging")',
       'session.send("Input.setInterceptDrags", { enabled: false })',
     ]);

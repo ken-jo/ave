@@ -1173,16 +1173,11 @@ describe("typed page actions", () => {
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params?.type)).toEqual(["mouseMoved", "mousePressed", "mouseMoved", "mouseReleased"]);
   });
 
-  it("bounds whole-page dimensions before capture and never crops over-limit pages", async () => {
+  it("refuses unavailable full-page capture before sending any protocol request", async () => {
     const cdp = new FakeCdp();
-    const send = cdp.send.bind(cdp);
-    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "Page.getLayoutMetrics"
-      ? { cssContentSize: { x: 0, y: 0, width: 1000, height: 4000 } }
-      : method === "Page.captureScreenshot" ? { data: (() => { const header = Buffer.alloc(24); Buffer.from("89504e470d0a1a0a", "hex").copy(header); header.writeUInt32BE(1000, 16); header.writeUInt32BE(4000, 20); return header.toString("base64"); })() } : send(method, params));
-    expect((await screenshot(target(cdp), 100, { fullPage: true })).bytes).toBe(24);
-    expect(cdp.send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 1000, height: 4000, scale: 1 }, captureBeyondViewport: true });
-    vi.mocked(cdp.send).mockImplementation(async () => ({ cssContentSize: { x: 0, y: 0, width: 1000, height: 40000 } }));
-    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-limit" });
+    vi.spyOn(cdp, "send");
+    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
+    expect(cdp.send).not.toHaveBeenCalled();
   });
 
   it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
@@ -1336,7 +1331,11 @@ it("sends no selection keys when native focus proof is unavailable", async () =>
 
 describe("native intercepted drag lifetime", () => {
   let nextGuestId = 600;
-  async function fixture(options: { payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean; stopAfterDrop?: boolean; stop?: "caller" | "human" | "navigation" } = {}) {
+  async function fixture(options: {
+    payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean;
+    stopAfterDrop?: boolean; loseDropAck?: boolean; stopAfterEnter?: boolean; targetCancelFails?: boolean;
+    stop?: "caller" | "human" | "navigation";
+  } = {}) {
     const fixture = adapterFixture({ guestId: nextGuestId++ });
     const { cdp, guest, registry, actions, approve, tab, navigate } = fixture;
     cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
@@ -1352,6 +1351,7 @@ describe("native intercepted drag lifetime", () => {
     const send = cdp.send.bind(cdp);
     vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
       if (method === "Input.setInterceptDrags" && params?.enabled === false && options.disableFails) throw new Error("disable failed");
+      if (method === "Input.dispatchDragEvent" && params?.type === "dragCancel" && options.targetCancelFails) throw new Error("target cancel failed");
       const result = await send(method, params);
       if (method === "Input.setInterceptDrags" && params?.enabled === true && options.beforePress) cdp.events.emit("message", "Input.dragIntercepted", { data });
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") cdp.hit.backendNodeId = 12;
@@ -1364,6 +1364,11 @@ describe("native intercepted drag lifetime", () => {
       if (method === "Input.dispatchDragEvent" && params?.type === "drop" && options.stopAfterDrop) {
         registry.userInput(guest.id, { type: "mouseDown", x: 999, y: 999, button: "left", clickCount: 1 });
       }
+      if (method === "Input.dispatchDragEvent" && params?.type === "drop" && options.loseDropAck) {
+        caller.abort(new Error("caller stopped after destination effect"));
+        return new Promise(() => {});
+      }
+      if (method === "Input.dispatchDragEvent" && params?.type === "dragEnter" && options.stopAfterEnter) caller.abort(new Error("caller stopped after target entry"));
       return result;
     });
     return { ...fixture, tab, run: () => actions.drag(actionLive, refs[0]!, refs[1]!), drops: () => cdp.calls.filter((call) => call.method === "Input.dispatchDragEvent" && call.params?.type === "drop") };
@@ -1412,5 +1417,27 @@ describe("native intercepted drag lifetime", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("do not repeat") });
     expect(f.drops()).toHaveLength(1);
     expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+  });
+
+  it("reports unknown committed effect and quarantines when the drop acknowledgement is lost", async () => {
+    const f = await fixture({ loseDropAck: true });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("outcome is unknown; do not repeat") });
+    expect(f.drops()).toHaveLength(1);
+    expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
+    expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    f.guest.emit("destroyed");
+  });
+
+  it.each([false, true])("cancels only the entered destination before drop; quarantines failed cleanup (%s)", async (targetCancelFails) => {
+    const f = await fixture({ stopAfterEnter: true, targetCancelFails });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled" });
+    expect(f.drops()).toHaveLength(0);
+    const attempts = vi.mocked(f.cdp.send).mock.calls.filter(([method, params]) => method === "Input.dispatchDragEvent" && params?.type === "dragCancel");
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.[1]).toMatchObject({ x: 20, y: 15, data: { items: [{ mimeType: "text/plain", data: "native fixture payload" }] } });
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    expect(f.guest.debugger.detach).toHaveBeenCalledTimes(targetCancelFails ? 1 : 0);
+    f.guest.emit("destroyed");
   });
 });
