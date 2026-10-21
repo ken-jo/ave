@@ -1,5 +1,6 @@
 import { app, BrowserWindow, nativeImage, type WebContents } from "electron";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { createBrowserPageActions } from "../../../../src/main/browser/browser-actions.js";
@@ -10,10 +11,15 @@ import { browserOrigin } from "../../../../src/shared/browser-tools.js";
 import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { NativeAction, NativeActionResult, NativeBrowserFixture, NativeOracle } from "./contract.js";
 
-const fixtureDir = process.env.AVE_NATIVE_FIXTURE_DIR;
-const runtimeDir = process.env.AVE_NATIVE_FIXTURE_RUNTIME;
-const preload = process.env.AVE_NATIVE_FIXTURE_PRELOAD;
-if (!fixtureDir || !runtimeDir || !preload) throw new Error("Native fixture paths are required");
+function fixturePath(key: string): string {
+  const path = process.env[key];
+  if (!path) throw new Error("Native fixture paths are required");
+  return path;
+}
+
+const fixtureDir = fixturePath("AVE_NATIVE_FIXTURE_DIR");
+const runtimeDir = fixturePath("AVE_NATIVE_FIXTURE_RUNTIME");
+const preload = fixturePath("AVE_NATIVE_FIXTURE_PRELOAD");
 if (process.platform === "darwin") app.setActivationPolicy("regular");
 const actor = { sessionId: "native-fixture-conversation" };
 const rendererTabId = "native-fixture-browser";
@@ -24,6 +30,23 @@ let tabId = "";
 let win: BrowserWindow;
 let requestId = "";
 const nativeEvents: { event: string; type: string; modifiers: number; raw: Record<string, unknown> }[] = [];
+type NativeInputEventName = "before-input-event" | "before-mouse-event" | "input-event";
+interface NativeInputObservation { readonly type: string; readonly _modifiers?: number }
+
+function isNativeInputObservation(input: unknown): input is NativeInputObservation {
+  return input !== null && typeof input === "object" && "type" in input && typeof input.type === "string"
+    && (!("_modifiers" in input) || input._modifiers === undefined || typeof input._modifiers === "number");
+}
+
+function recordNativeInput(event: NativeInputEventName, input: unknown): void {
+  if (!isNativeInputObservation(input)) throw new Error("Native fixture received an invalid input observation");
+  const raw: Record<string, unknown> = {};
+  for (const key of Object.getOwnPropertyNames(input)) {
+    const value: unknown = Reflect.get(input, key);
+    if (value === null || ["string", "number", "boolean"].includes(typeof value) || Array.isArray(value)) raw[key] = value;
+  }
+  nativeEvents.push({ event, type: input.type, modifiers: input._modifiers ?? 0, raw });
+}
 const server = createServer(async (request, response) => {
   if (request.url === "/host") {
     response.setHeader("content-type", "text/html");
@@ -149,7 +172,11 @@ async function run(action: NativeAction): Promise<NativeActionResult> {
 }
 
 void app.whenReady().then(async () => {
-if (process.platform === "darwin") await app.dock.show();
+if (process.platform === "darwin") {
+  const dock = app.dock;
+  if (!dock) throw new Error("Native fixture dock is unavailable");
+  await dock.show();
+}
 await fs.mkdir(runtimeDir, { recursive: true });
 await fs.writeFile(join(runtimeDir, "selected.txt"), originalBytes);
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -176,7 +203,9 @@ win.webContents.once("did-attach-webview", (_event, contents) => {
   guest = contents;
   trackBrowserGuest(guest, win.id);
   for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
-    guest.on(event, (_event, input) => { const fields = input as unknown as { type: string; _modifiers?: number }; const raw = Object.fromEntries(Object.getOwnPropertyNames(input).map((key) => [key, (input as unknown as Record<string, unknown>)[key]]).filter(([, value]) => value === null || ["string", "number", "boolean"].includes(typeof value) || Array.isArray(value))); nativeEvents.push({ event, type: fields.type, modifiers: fields._modifiers ?? 0, raw }); });
+    // Native mouse observations precede their typed overload. Subscribe through
+    // the inherited event emitter and validate the actual payload at runtime.
+    EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
   }
   const bind = () => {
     const result = browserTabRegistry.bindTab(win.id, { tabId: rendererTabId, webContentsId: guest.id, requestId });
