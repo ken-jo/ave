@@ -1340,6 +1340,46 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
+  it("keeps MXC and policy sections usable when the helper is missing, and restores setup actions on a fresh status", async () => {
+    const sandboxWindowsStatus = vi.fn().mockResolvedValueOnce({
+      applicable: true, userState: null, wfpState: null, ready: false,
+      helperError: "srt-win-not-found", instructions: "",
+    }).mockResolvedValueOnce({
+      applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "",
+    });
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus });
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
+        shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveAttribute("data-error-code", "srt-win-not-found");
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveTextContent(t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
+      .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions"))
+      .toHaveTextContent(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+    expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
+    expect(document.querySelector('[data-settings-section="permissions-network"]')).toBeInTheDocument();
+    expect(screen.queryByText(t("permissionsTab.errorLoadFailed"))).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+    expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+
+    cleanup();
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.queryByTestId("os-sandbox-windows-helper-unavailable")).toBeNull();
+    expect(screen.getByTestId("os-sandbox-windows-consent")).toBeInTheDocument();
+    expect(screen.getByTestId("os-sandbox-windows-install")).toBeInTheDocument();
+  });
+
   it("says the container check is still running instead of claiming MXC or a failure", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({

@@ -21,6 +21,11 @@ let askDeferredEntry: ((entry: unknown) => void) | null = null;
 const recordApprovalMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 const resolveProxyMock = vi.hoisted(() => vi.fn(async (_url: string) => "DIRECT"));
+const readWindowsStatusMock = vi.hoisted(() => vi.fn());
+vi.mock("../../../permissions/asrt-windows-support.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../permissions/asrt-windows-support.js")>();
+  return { ...actual, readAsrtWindowsStatus: readWindowsStatusMock };
+});
 vi.mock("electron", () => ({
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
@@ -233,9 +238,24 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
 beforeEach(() => {
   handlers.clear();
   recordApprovalMock.mockClear();
+  readWindowsStatusMock.mockReset();
 });
 
 describe("permissions IPC handlers", () => {
+  it("returns a typed Windows helper diagnostic unchanged and propagates internal status errors", async () => {
+    await setup();
+    const diagnostic = {
+      applicable: true, userState: null, wfpState: null, ready: false,
+      helperError: "srt-win-not-found", instructions: "",
+    };
+    readWindowsStatusMock.mockResolvedValueOnce(diagnostic);
+    await expect(invoke(PERMISSIONS.sandboxWindowsStatus)).resolves.toEqual(diagnostic);
+
+    const error = new Error("status invariant failed");
+    readWindowsStatusMock.mockRejectedValueOnce(error);
+    await expect(invoke(PERMISSIONS.sandboxWindowsStatus)).rejects.toBe(error);
+  });
+
   it("setMode persists internal durable mode changes with audit but no approval prompt", async () => {
     const { deps, permissionManager } = await setup({ approvalChoice: "allow-once" });
 

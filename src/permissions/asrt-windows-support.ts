@@ -135,11 +135,11 @@ function resolveAsrtPackageRoot(): string {
  * descriptor built from the srt-win path SoT
  * ({@link getVendoredSrtWinExePath} in asrt-sandbox.ts).
  */
-async function loadSrtWin(): Promise<{
+async function loadSrtWin(runtime?: typeof import("@anthropic-ai/sandbox-runtime")): Promise<{
   mod: typeof import("@anthropic-ai/sandbox-runtime");
   srtWin: SrtWinSpawn;
 }> {
-  const mod = await import("@anthropic-ai/sandbox-runtime");
+  const mod = runtime ?? await import("@anthropic-ai/sandbox-runtime");
   const srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
   return { mod, srtWin };
 }
@@ -380,7 +380,25 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     };
   }
 
-  const { mod, srtWin } = await loadSrtWin();
+  const mod = await import("@anthropic-ai/sandbox-runtime");
+  let srtWin: SrtWinSpawn;
+  try {
+    ({ srtWin } = await loadSrtWin(mod));
+  } catch (error) {
+    if (!(error instanceof mod.WindowsSandboxError) || error.code !== "srt_win_not_found") {
+      throw error;
+    }
+    // Missing external helper/configuration is expected in proxy-only mode.
+    // Its absence says nothing about provisioned user/WFP state or MXC shells.
+    return {
+      applicable: true,
+      userState: null,
+      wfpState: null,
+      ready: false,
+      helperError: "srt-win-not-found",
+      instructions: mod.windowsInstallInstructions(undefined),
+    };
+  }
   // ASRT 0.0.80: ONE `srt-win status` spawn returns BOTH the sandbox-user and
   // WFP state (checkWindowsSandboxStatusAsync), non-blocking — replaces the two
   // separate synchronous user + wfp probes.

@@ -446,6 +446,22 @@ export function readMessageCatalogEntries(text, relativePath) {
   return readMessageCatalogModule(text, relativePath)?.entries ?? null;
 }
 
+/** Read each catalog in one snapshot; a failed session invalidates the whole batch. */
+export function readMessageCatalogEntriesBatch(texts) {
+  const paths = [...texts.keys()];
+  const refused = () => new Map(paths.map((path) => [path, null]));
+  const readableTexts = new Map([...texts].filter(([, text]) =>
+    typeof text === "string" && !/[\u2028\u2029]/u.test(text)));
+  try {
+    return withParsedSourceTexts(readableTexts, (sources) => new Map(paths.map((path) => [
+      path,
+      readParsedMessageCatalogModule(sources.get(path), path)?.entries ?? null,
+    ])));
+  } catch {
+    return refused();
+  }
+}
+
 /**
  * Preserve each locale's property order and the source ranges of its values.
  * Only the shipped declarations, type-only seed scaffolding and static string
@@ -461,6 +477,10 @@ function readMessageCatalogModule(text, relativePath) {
   } catch {
     return null;
   }
+  return readParsedMessageCatalogModule(source, relativePath);
+}
+
+function readParsedMessageCatalogModule(source, relativePath) {
   if (!source) return null;
   const fragment = relativePath === undefined
     ? source.statements.filter(ast.isVariableStatement).length === 2

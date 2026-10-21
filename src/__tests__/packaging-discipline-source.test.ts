@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { resolveShell } from "../lib/shell-resolver.js";
 import { readRepoFile } from "./test-helpers.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
@@ -12,6 +13,14 @@ import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 const requireFromRepo = (path: string): unknown => createRequire(import.meta.url)(`../../${path}`);
 
 const root = process.cwd();
+
+function workflowBash(): string {
+  const shell = resolveShell("bash");
+  if (process.platform === "win32" && shell.windowsFlavor !== "msys") {
+    throw new Error("Workflow shell checks require native Bash on Windows");
+  }
+  return shell.cmd;
+}
 
 /** True when `marker` appears in `command` as a whole name rather than as the
  *  prefix or suffix of a longer one. `bun run test` runs the suite;
@@ -213,6 +222,70 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("skip_code_sign:");
     expect(workflow).toContain("publish-release:");
     expectPinnedAction(workflow, "softprops/action-gh-release");
+  });
+
+  it("selects only a disposable hosted Windows runner when explicitly requested", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const parsed = parseYaml(workflow) as {
+      on: { workflow_dispatch: { inputs: { installer_scope: { default: string; options: string[] } } } };
+    };
+    expect(parsed.on.workflow_dispatch.inputs.installer_scope).toMatchObject({
+      default: "all",
+      options: ["all", "windows-disposable"],
+    });
+    const jobs = workflowJobs(workflow);
+    const profile = jobs.get("release-profile");
+    if (profile === undefined) throw new Error("missing release-profile job");
+    const selectTargets = jobRunCommands(profile).find((command) => command.includes("const include ="));
+    if (selectTargets === undefined) throw new Error("missing target selection command");
+    const runners = {
+      AVE_MACOS_RUNNER: '["self-hosted","macOS","ARM64","ave-release-mac"]',
+      AVE_LINUX_RUNNER: '["self-hosted","Linux","ARM64","ave-release"]',
+      AVE_WINDOWS_RUNNER: '["self-hosted","Windows","X64","ave-release"]',
+    };
+    for (const [scope, expected] of [
+      ["all", [
+        { name: "macOS installer", os: JSON.parse(runners.AVE_MACOS_RUNNER), target: "mac" },
+        { name: "Linux installer", os: JSON.parse(runners.AVE_LINUX_RUNNER), target: "linux" },
+        { name: "Windows installer", os: JSON.parse(runners.AVE_WINDOWS_RUNNER), target: "win" },
+      ]],
+      ["windows-disposable", [{ name: "Windows disposable installer", os: "windows-2025", target: "win" }]],
+    ] as const) {
+      const result = spawnSync(workflowBash(), ["-euo", "pipefail", "-c", selectTargets], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, ...runners, INSTALLER_SCOPE: scope, GITHUB_OUTPUT: "/dev/null" },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout.trim().replace(/^matrix=/u, ""))).toEqual({ include: expected });
+    }
+    const invalid = spawnSync(workflowBash(), ["-euo", "pipefail", "-c", selectTargets], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, ...runners, INSTALLER_SCOPE: "unknown", GITHUB_OUTPUT: "/dev/null" },
+    });
+    expect(invalid.status).not.toBe(0);
+    expect(invalid.stderr).toContain("Unsupported installer scope");
+    expect(jobs.get("installers")).toContain("matrix: ${{ fromJSON(needs.release-profile.outputs.installer_matrix) }}");
+    expect(profile).toContain("installer_matrix: ${{ steps.targets.outputs.matrix }}");
+  });
+
+  it("keeps disposable Windows validation unsigned and outside release publication", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const installers = jobs.get("installers");
+    if (installers === undefined) throw new Error("missing installers job");
+    expect(installers).toContain("if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'");
+    const build = jobRunCommands(installers).find((command) => command.includes('args=("--${{ matrix.target }}")'));
+    if (build === undefined) throw new Error("missing installer build command");
+    expect(build.split("elif")[0]).toContain('if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then');
+    expect(build.split("elif")[0]).toContain('args+=("--skip-code-sign" "--publish" "never")');
+    expect(build.split("elif")[0]).toContain('echo "skip_sign=true" >> "$GITHUB_OUTPUT"');
+    for (const id of ["publish-release", "publish-r2"]) {
+      expect(jobs.get(id)).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
+    }
+    expect(jobs.get("publish-contract")).toContain("inputs.installer_scope != 'windows-disposable'");
+    expect(installers).toContain("&& (matrix.target != 'win' || runner.environment == 'github-hosted')");
+    expect(installers).toContain("AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}");
   });
 
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
@@ -527,7 +600,7 @@ describe("installer smoke and packaging discipline", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
     const contract = jobs.get("publish-contract");
     if (contract === undefined) throw new Error("build-installers.yml has no publish-contract job");
-    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true'\)$/mu);
+    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true' && inputs\.installer_scope != 'windows-disposable'\)$/mu);
     expect(contract).toContain("if: github.event_name == 'push'");
     expect(contract).toContain('if [ "$REF_PROTECTED" != "true" ]; then');
     expect(contract).toContain('if [ "$tag_object_type" != "tag" ]');
@@ -602,7 +675,7 @@ describe("installer smoke and packaging discipline", () => {
       const clean = Object.fromEntries(
         Object.entries(process.env).filter(([key]) => !/^AVE_[A-Z]+_RUNNER$/u.test(key)),
       );
-      return spawnSync("bash", [".github/scripts/require-runner-vars.sh", ...args], {
+      return spawnSync(workflowBash(), [".github/scripts/require-runner-vars.sh", ...args], {
         cwd: root,
         encoding: "utf8",
         env: { ...clean, ...env },
@@ -673,14 +746,9 @@ describe("installer smoke and packaging discipline", () => {
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
 
-    // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
-    // carries its own runner, with no hosted fallback; the Linux entry
-    // cross-builds x64 on the ARM64 self-hosted runners.
-    expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
-      "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
-    ]);
+    // Default runner selection is executed above; this job consumes that
+    // selected matrix and uses each entry's runner without a hosted fallback.
+    expect(installers).toContain("matrix: ${{ fromJSON(needs.release-profile.outputs.installer_matrix) }}");
     expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
 
     // Every step runs in one shell that exists on all three hosts.

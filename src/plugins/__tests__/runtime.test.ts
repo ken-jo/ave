@@ -4828,21 +4828,27 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       ...(await f.preparedInput()),
       durableCommit: async () => { entered(); await held; return "committed"; },
     }).then(() => undefined, (error: unknown) => error);
-    await atCommit;
-    const deadline = new AbortController();
-    const report = await f.runtime.stopAll({ signal: deadline.signal });
-    // Released by shutdown itself, while its durable commit is still held.
-    expect(report).toEqual({ unfinished: [] });
-    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
-    expect(f.incarnations.map((incarnation) => incarnation.isActive())).toEqual([false, false]);
-    release();
-    const refused = await update;
-    expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
-    expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "plugin-runtime-shutdown" });
-    expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent);
-    // Released once: the activation's own cleanup found it already released.
-    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
-    expect(f.incarnations[1]!.isActive()).toBe(false);
+    try {
+      await atCommit;
+      const deadline = new AbortController();
+      const report = await f.runtime.stopAll({ signal: deadline.signal });
+      // Released by shutdown itself, while its durable commit is still held.
+      expect(report).toEqual({ unfinished: [] });
+      expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+      expect(f.incarnations.map((incarnation) => incarnation.isActive())).toEqual([false, false]);
+      release();
+      const refused = await update;
+      expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
+      expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "plugin-runtime-shutdown" });
+      expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent);
+      // Released once: the activation's own cleanup found it already released.
+      expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+      expect(f.incarnations[1]!.isActive()).toBe(false);
+    } finally {
+      // An assertion failure must not leave the shared lifecycle lock held.
+      release();
+      await update;
+    }
   });
 
   it.each(["host integration", "panel delegate"] as const)("a %s keeps its generation until its callback settles, though shutdown rejected its caller", async (route) => {
@@ -5048,11 +5054,16 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     bindNativeBundleLifecycle(f);
     await f.runtime.addPlugin(ID);
     const { update, release } = await heldUpdateWithFailingCleanup(f);
-    await f.runtime.stopAll({ signal: new AbortController().signal });
-    release();
-    const refused = await update;
-    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
-    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+    try {
+      await f.runtime.stopAll({ signal: new AbortController().signal });
+      release();
+      const refused = await update;
+      expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+      expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+    } finally {
+      release();
+      await update;
+    }
   });
 
   it("keeps the durable-commit marker when a withheld candidate's lifecycle cleanup fails", async () => {
@@ -5069,12 +5080,17 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       ...(await f.preparedInput()),
       durableCommit: async () => { entered(); await held; return "committed"; },
     }).then(() => undefined, (error: unknown) => error);
-    await atCommit;
-    await f.runtime.stopAll({ signal: new AbortController().signal });
-    release();
-    const refused = await update;
-    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
-    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+    try {
+      await atCommit;
+      await f.runtime.stopAll({ signal: new AbortController().signal });
+      release();
+      const refused = await update;
+      expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+      expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+    } finally {
+      release();
+      await update;
+    }
   });
 
   it("names a generation whose retirement phase failed at shutdown as unfinished", async () => {
@@ -5144,29 +5160,36 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       return prepareMcp(...args);
     };
     const incumbent = lifecycle.getActive(ID)!.generationId;
+    let releaseLease: () => void = () => undefined;
+    let lease: Promise<unknown> | undefined;
     const update = f.runtime.activatePreparedArtifact(await f.preparedInput()).then(() => undefined, () => undefined);
-    await inPrepare;
-    const candidate = lifecycle.getActive(ID)!.generationId;
-    expect(candidate).not.toBe(incumbent);
-    // A lease on the candidate, so its MCP publication (quiesce) waits to drain.
-    let releaseLease!: () => void;
-    const leaseHeld = new Promise<void>((resolve) => { releaseLease = resolve; });
-    let leased!: () => void;
-    const inLease = new Promise<void>((resolve) => { leased = resolve; });
-    const lease = internals.coordinator.runPostCommitWithGeneration(ID, candidate, async () => { leased(); await leaseHeld; });
-    await inLease;
-    releasePrepare();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const deadline = new AbortController();
-    const stopping = f.runtime.stopAll({ signal: deadline.signal });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    deadline.abort();
-    await stopping;
-    releaseLease();
-    await lease;
-    await update;
-    await lifecycle.waitForRetirements().catch(() => undefined);
-    expect(faults.mock.calls.filter((call) => call[2] === "mcp-publication")).toEqual([]);
+    try {
+      await inPrepare;
+      const candidate = lifecycle.getActive(ID)!.generationId;
+      expect(candidate).not.toBe(incumbent);
+      // A lease on the candidate, so its MCP publication (quiesce) waits to drain.
+      const leaseHeld = new Promise<void>((resolve) => { releaseLease = resolve; });
+      let leased!: () => void;
+      const inLease = new Promise<void>((resolve) => { leased = resolve; });
+      lease = internals.coordinator.runPostCommitWithGeneration(ID, candidate, async () => { leased(); await leaseHeld; });
+      await inLease;
+      releasePrepare();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const deadline = new AbortController();
+      const stopping = f.runtime.stopAll({ signal: deadline.signal });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      deadline.abort();
+      await stopping;
+      releaseLease();
+      await lease;
+      await update;
+      await lifecycle.waitForRetirements().catch(() => undefined);
+      expect(faults.mock.calls.filter((call) => call[2] === "mcp-publication")).toEqual([]);
+    } finally {
+      releasePrepare();
+      releaseLease();
+      await Promise.allSettled([update, lease]);
+    }
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {

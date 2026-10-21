@@ -3,6 +3,14 @@ name: Build Installers
 on:
   workflow_dispatch:
     inputs:
+      installer_scope:
+        description: Build all platforms or validate only on a disposable hosted Windows runner
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - windows-disposable
       skip_code_sign:
         description: Build unsigned internal installers
         required: false
@@ -39,6 +47,8 @@ jobs:
   # never controls secret injection; public tag secrets are fixed in workflow.
   release-profile:
     name: Verify immutable unsigned release profile
+    outputs:
+      installer_matrix: ${{ steps.targets.outputs.matrix }}
     # Every job takes its runner from a repo variable: AVE_LINUX_RUNNER,
     # AVE_MACOS_RUNNER, AVE_WINDOWS_RUNNER (a JSON label array, e.g.
     # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
@@ -63,6 +73,30 @@ jobs:
           AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
           AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
         run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER AVE_MACOS_RUNNER AVE_WINDOWS_RUNNER
+      - name: Select installer targets
+        id: targets
+        shell: bash
+        env:
+          INSTALLER_SCOPE: ${{ inputs.installer_scope || 'all' }}
+          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
+          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
+          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE' | tee -a "$GITHUB_OUTPUT"
+          const scope = process.env.INSTALLER_SCOPE;
+          if (scope !== "all" && scope !== "windows-disposable") {
+            throw new Error("Unsupported installer scope");
+          }
+          const include = scope === "windows-disposable"
+            ? [{ name: "Windows disposable installer", os: "windows-2025", target: "win" }]
+            : [
+              { name: "macOS installer", os: JSON.parse(process.env.AVE_MACOS_RUNNER), target: "mac" },
+              { name: "Linux installer", os: JSON.parse(process.env.AVE_LINUX_RUNNER), target: "linux" },
+              { name: "Windows installer", os: JSON.parse(process.env.AVE_WINDOWS_RUNNER), target: "win" },
+            ];
+          console.log(`matrix=${JSON.stringify({ include })}`);
+          NODE
       - name: Verify exact source head
         shell: bash
         env:
@@ -110,7 +144,7 @@ jobs:
   installers:
     name: ${{ matrix.name }}
     needs: release-profile
-    if: github.event_name == 'push' || inputs.contract_probe != 'true'
+    if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'
     # Matrix builds only produce workflow artifacts. The atomic publisher owns
     # the sole contents:write permission in its separate job.
     permissions:
@@ -129,17 +163,7 @@ jobs:
       # node_modules, node-pty compiled with x86_64-linux-gnu-gcc) and the arch
       # audit below refuses any non-x64 binary. On an x64 runner the same
       # command is a native build.
-      matrix:
-        include:
-          - name: macOS installer
-            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}
-            target: mac
-          - name: Linux installer
-            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
-            target: linux
-          - name: Windows installer
-            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}
-            target: win
+      matrix: ${{ fromJSON(needs.release-profile.outputs.installer_matrix) }}
     runs-on: ${{ matrix.os }}
     # One shell on every OS. On Windows `bash` is the Git for Windows shell,
     # which a self-hosted Windows runner must have on PATH (checkout needs Git
@@ -267,7 +291,10 @@ jobs:
         run: |
           set -euo pipefail
           args=("--${{ matrix.target }}")
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then
+            args+=("--skip-code-sign" "--publish" "never")
+            echo "skip_sign=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
             # Public tags are currently unsigned by deliberate policy. This is
             # event-fixed, not inferred from secrets or tagged source output.
             args+=("--skip-code-sign")
@@ -292,14 +319,9 @@ jobs:
             # Linux installers ship x64 whatever the runner's arch.
             args+=("--arch" "x64")
           fi
-          # NO `--publish` here. The matrix runs three jobs in parallel and
-          # if each told electron-builder to publish directly to the same
-          # GitHub Release draft, the GitHub API contention produced partial
-          # uploads (some assets land, others don't) — observed in v0.2.1 +
-          # v0.2.2 release cycles. Instead each job uploads its build output
-          # as a workflow artifact, and a single `publish-release` job (below,
-          # `needs: installers`) assembles every platform's artifacts and
-          # uploads them atomically.
+          # Matrix jobs only upload workflow artifacts. Disposable validation
+          # explicitly uses publish=never; other builds use that script default.
+          # The separate publisher assembles all platforms for tag releases.
           node scripts/build-installers.mjs "${args[@]}"
       # Hard gate: every ELF and every .node in linux-unpacked, the AppImage
       # runtime, and the extracted deb and rpm payloads (plus their declared
@@ -648,7 +670,7 @@ jobs:
   publish-contract:
     name: Publish the signed contract bundle
     needs: release-profile
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true' && inputs.installer_scope != 'windows-disposable')
     runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     environment: release
     # id-token: write is the keyless signing identity; no other job has it.

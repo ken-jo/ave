@@ -35,12 +35,13 @@ export interface SandboxConfinement {
  * `ready` is the single boolean the UI gates on: ASRT's dedicated
  * `srt-sandbox` user is provisioned (`userState === "ready"`) AND the WFP
  * filter set is installed (`wfpState === "installed"`). Until both hold, the
- * sandbox cannot confine filesystem/network access and boot keeps
- * `isAsrtSandboxActive()` false.
+ * helper cannot confine extension filesystem/network access. Windows shell
+ * commands may independently use MXC while the runtime provides their proxy.
  *
  * `applicable` is false on every non-win32 platform — the renderer renders the
  * macOS/Linux capability copy instead of the Windows consent flow. The state
- * fields are `null` there (no Windows backend to query).
+ * fields are `null` there (no Windows backend to query), and when a missing
+ * helper prevents observing the Windows provisioned state.
  *
  * `instructions` is the VERBATIM ASRT `windowsInstallInstructions(...)` text.
  * Empty string when not applicable.
@@ -48,9 +49,9 @@ export interface SandboxConfinement {
 export interface SandboxWindowsStatusInfo {
   /** True only on win32. Non-win32 → false, with null state fields. */
   applicable: boolean;
-  /** `absent` | `incomplete` | `ready`, or null off-win32. */
+  /** `absent` | `incomplete` | `ready`, or null when not observed. */
   userState: "absent" | "incomplete" | "ready" | null;
-  /** `absent` | `installed` | `cannot-read`, or null off-win32. */
+  /** `absent` | `installed` | `cannot-read`, or null when not observed. */
   wfpState: "absent" | "installed" | "cannot-read" | null;
   /**
    * True when the sandbox user is ready and WFP is either directly observed as
@@ -58,6 +59,8 @@ export interface SandboxWindowsStatusInfo {
    * Always false off-win32.
    */
   ready: boolean;
+  /** Expected helper resolution failure; never a readiness or provisioning claim. */
+  helperError?: "srt-win-not-found";
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }
