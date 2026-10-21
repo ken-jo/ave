@@ -475,7 +475,7 @@ export function PermissionsTab({
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
       // On win32 with either setting already ON, surface the consent/setup
       // state on tab entry so the panel persists across navigations until
-      // ready: both scopes need the same one-time srt-win provisioning.
+      // ready. Extension provisioning is separate from MXC shell readiness.
       if (sandboxRes.platform === "win32" && (osSandboxOn || workerConfinementOn)) {
         const status = await window.ave.permission.sandboxWindowsStatus();
         if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
@@ -1483,7 +1483,16 @@ export function PermissionsTab({
             </p>
           ) : null}
           {(sandboxEnabled || workerConfinementEnabled) && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.userState !== "absent" ||
+            windowsStatus.helperError ? (
+              <p
+                data-testid="os-sandbox-windows-helper-unavailable"
+                data-error-code={windowsStatus.helperError}
+                role="status"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+              </p>
+            ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
               // Install partially ran or status cannot be fully read. Show the
               // localized setup guidance and keep the explicit retry action
