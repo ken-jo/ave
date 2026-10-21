@@ -555,7 +555,10 @@ export async function scroll(target: ActionTarget, ref: string, direction: "up" 
     const point = await centerOf(target.cdp, id);
     const deltaX = direction === "left" ? -pixels : direction === "right" ? pixels : 0;
     const deltaY = direction === "up" ? -pixels : direction === "down" ? pixels : 0;
-    await target.injectInput(() => target.pointerInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX, deltaY })));
+    await target.injectInput(() => target.wheelInput(async () => {
+      await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+      await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX, deltaY });
+    }));
   });
 }
 
@@ -607,15 +610,18 @@ export async function select(target: ActionTarget, ref: string, value: string, r
     const index = enabled.findIndex((option) => option.value === value);
     if (index < 0) throw new BrowserActionError("bad-select", "the requested enabled option is not present");
     const desired = enabled[index]!;
-    const point = await centerOf(target.cdp, id);
+    await centerOf(target.cdp, id);
     await target.injectInput(() => withPageFocus(target, async () => {
-      await pressForFocus(target, point.x, point.y);
+      await target.focusPage();
       await target.cdp.send("DOM.focus", { backendNodeId: id });
+      if (!(await pollUntil(target.signal, FOCUS_MAX_MS, async () => (await pageHasFocus(target.cdp)) || undefined))) {
+        throw new BrowserActionError("no-focus", "the page did not take keyboard focus; nothing was selected");
+      }
       // No activating input is marked complete: a navigation during any key
       // must remain a failure rather than being accepted as final selection.
-      await dispatchKey(target.cdp, "Escape");
       await dispatchKey(target.cdp, "Home");
       for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
+      await dispatchKey(target.cdp, "Enter");
       const current = await readOptions();
       if (JSON.stringify(current) !== JSON.stringify(options)) throw new BrowserActionError("select-changed", "the options changed while selecting; take a new snapshot");
       const tree = await fullTree(target.cdp);
@@ -761,9 +767,12 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
+  focusGuest(guestId: number): Promise<void>;
   documentChanged(guestId: number): void;
   /** Record the touch input every guest of `guestId`'s window reports until `stop`. */
   watchTouches(guestId: number): TouchWatch;
+  armMouse(guestId: number, input: { type: "mouseDown" | "mouseUp"; x: number; y: number; button: "left"; clickCount: 1 }): void;
+  watchWheel(guestId: number): { delivery(): { started: boolean; ended: boolean; elsewhere: number }; stop(): void };
   watchMouse(guestId: number): { delivery(): { pressed: boolean; released: boolean; elsewhere: number }; stop(): void };
 }
 
@@ -939,15 +948,16 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
      * Before a pointer move is sent: listen for its native echo. `settle`,
      * after the send, learns the page's offset in its window from it.
      */
-    watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void> } | null {
+    watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void>; stop(): void } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
       // Each pointer move measures afresh: an echo that never comes must
       // leave no earlier offset behind for the press that follows.
       offset = null;
       const point = { x: params.x, y: params.y };
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
+      let timer: ReturnType<typeof setTimeout>;
       const echo = new Promise<PointerEcho | null>((resolve) => {
-        const timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
+        timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
         onInput = (_event, input) => {
           if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
           if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
@@ -956,15 +966,19 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
         };
         guest.on("input-event", onInput as never);
       });
+      const stop = () => {
+        clearTimeout(timer);
+        guest.removeListener("input-event", onInput as never);
+      };
       return {
+        stop,
         settle: async () => {
           try {
             const seen = await echo;
             const host = hostContentOrigin(guest);
-            if (seen && host) offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
-          } finally {
-            guest.removeListener("input-event", onInput as never);
-          }
+            if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
+            offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+          } finally { stop(); }
         },
       };
     },
@@ -1024,23 +1038,28 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       const echo = touch.watch(method, params);
       const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
-      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
       if (phase === "touchStart") touchOpen = true;
       if (phase === "touchMove") touchMoved = true;
-      const sent = session.send(method, params);
-      const result = pressDeadline !== null
-        ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
-        : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
-      if (phase === "touchEnd" || phase === "touchCancel") {
-        touchOpen = false;
-        touchEnded = phase === "touchEnd";
+      if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
+        attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
       }
-      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
-      await echo?.settle();
-      // The action guard owns input completion: its last input may navigate.
-      if (method.startsWith("Input.")) assertGuest();
-      else assertCurrent(false);
-      return result;
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
+      try {
+        const sent = session.send(method, params);
+        const result = pressDeadline !== null
+          ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
+          : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
+        if (phase === "touchEnd" || phase === "touchCancel") {
+          touchOpen = false;
+          touchEnded = phase === "touchEnd";
+        }
+        if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
+        await echo?.settle();
+        // The action guard owns input completion: its last input may navigate.
+        if (method.startsWith("Input.")) assertGuest();
+        else assertCurrent(false);
+        return result;
+      } finally { echo?.stop(); }
     },
   };
   return {
@@ -1103,6 +1122,28 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         try { return await run(); } finally { pressDeadline = null; }
       });
     },
+    wheelInput: async (run) => {
+      const host = hostContentOrigin(guest);
+      if (!host) throw new BrowserActionError("no-pointer-position", "the page has no live input window");
+      refuseIfWedged(host.windowId);
+      return aloneInWindow(host.windowId, live.signal, async () => {
+        refuseIfWedged(host.windowId);
+        const watch = attribution.watchWheel(guest.id);
+        pressDeadline = Date.now() + PRESS_MAX_MS;
+        try {
+          const value = await run();
+          const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, pressDeadline);
+          let delivery = watch.delivery();
+          while (!(delivery.started && delivery.ended) && Date.now() < until) {
+            await sleep(TAP_POLL_MS, live.signal);
+            throwIfAborted(live.signal);
+            delivery = watch.delivery();
+          }
+          if (!delivery.started || !delivery.ended || delivery.elsewhere > 0) throw new BrowserActionError("input-not-delivered", "the scroll did not reach only the intended page");
+          return value;
+        } finally { pressDeadline = null; watch.stop(); }
+      });
+    },
     mouseDrag: async (run) => {
       const host = hostContentOrigin(guest);
       if (!host) throw new BrowserActionError("no-pointer-position", "the page has no live input window");
@@ -1130,6 +1171,16 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       });
     },
     releaseFocus: () => attribution.releaseFocus(guest.id),
+    focusPage: async () => {
+      assertCurrent(false);
+      try { await attribution.focusGuest(guest.id); }
+      catch { assertCurrent(false); throw new BrowserActionError("no-focus", "the approved page did not take native keyboard focus"); }
+      assertCurrent(false);
+      const focused = await pollUntil(live.signal, FOCUS_MAX_MS, async () => {
+        assertCurrent(false); return guest.focusedFrame === guest.mainFrame ? true : undefined;
+      });
+      if (!focused) throw new BrowserActionError("no-focus", "the approved main frame did not take native keyboard focus");
+    },
     onDestroyed: (listener) => { guest.once("destroyed", listener); return () => { guest.removeListener("destroyed", listener); }; },
     signal: live.signal,
     documentId: () => live.tab.documentId,

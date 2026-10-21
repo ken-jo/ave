@@ -64,6 +64,7 @@ class FakeCdp implements CdpSession {
   dropTexts = 0;
   private focusedNode: number | undefined;
   private pressed = false;
+  focusPage(): void { this.pressed = true; this.checksSincePress = 0; }
   loseFocus(): void {
     this.pressed = false;
     this.checksSincePress = 0;
@@ -129,6 +130,8 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
     title: () => "Fixture",
     cdp,
     pointerInput: async (run) => run(),
+    wheelInput: async (run) => run(),
+    focusPage: async () => { cdp.focusPage(); },
     injectInput: async (inject) => {
       injected.push(cdp.calls.length);
       return inject();
@@ -1272,4 +1275,56 @@ describe("approved navigation lifetime", () => {
     await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).rejects.toMatchObject({ code: "cancelled" });
     expect(value.stop).toHaveBeenCalled();
   });
+});
+
+it("fails hover when the native pointer move is not reported", async () => {
+  const { cdp, actions, approve, echo } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Hover", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_hover");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  echo.on = false;
+  await expect(actions.hover(live, ref)).rejects.toMatchObject({ code: "no-pointer-position" });
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+});
+
+it("fails scroll when the intended guest reports no native wheel sequence", async () => {
+  const { cdp, actions, approve } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Scroll", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_scroll");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  await expect(actions.scroll(live, ref, "down", 200)).rejects.toMatchObject({ code: "input-not-delivered" });
+});
+
+it("releases the native pointer observer when dispatch fails", async () => {
+  const { cdp, actions, approve, guest } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Hover", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_hover");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  const before = guest.listenerCount("input-event");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "Input.dispatchMouseEvent") throw new Error("Native dispatch refused");
+    return send(method, params);
+  });
+  await expect(actions.hover(live, ref)).rejects.toThrow("Native dispatch refused");
+  expect(guest.listenerCount("input-event")).toBe(before);
+});
+
+it("sends no selection keys when native focus proof is unavailable", async () => {
+  const { cdp, actions, approve } = adapterFixture();
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11,
+      children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
+    return send(method, params);
+  });
+  const live = await approve("browser_select");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  await expect(actions.select(live, ref, "b")).rejects.toMatchObject({ code: "no-focus" });
+  expect(cdp.inputs()).toEqual([]);
 });
