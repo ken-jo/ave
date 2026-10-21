@@ -10,7 +10,7 @@ import {
 } from "../asrt-sandbox.js";
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
-import { EgressGrantStore } from "../egress-grants.js";
+import { EgressGrantStore, egressGrantScopesFor } from "../egress-grants.js";
 import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
@@ -199,7 +199,7 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
     await initialize(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: proxy.port, resolvesNames: true }] }),
       async (request, context) => {
         if (context?.attributionKey !== TOKEN_A || request.host !== DESTINATION.host || request.port !== DESTINATION.port) return false;
-        const scope = await grants.matchingScope(subject, DESTINATION);
+        const scope = await grants.matchingScope(subject, DESTINATION, egressGrantScopesFor("kernel-channel", subject.origin));
         if (!scope) return false;
         if (context.phase === "resolved") grants.noteUse(scope, subject, DESTINATION);
         return true;
