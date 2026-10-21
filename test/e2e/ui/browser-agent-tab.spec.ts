@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
@@ -20,11 +21,16 @@ test("keeps a requested blank tab mounted through its first navigation", async (
   const url = `http://127.0.0.1:${address.port}/`;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   try {
+    // The real app boots unchanged; this unrelated OS registration side effect
+    // stays outside the browser fixture and cannot redirect the owner's links.
+    const registrationGuard = test.info().outputPath("preserve-protocol.cjs");
+    writeFileSync(registrationGuard, 'const { app } = require("electron"); app.setAsDefaultProtocolClient = () => false;\n');
     ctx = await launchSeededElectron({
       settings: buildLlmSettings(),
       historyRows: [{ role: "user", content: "Browser tab fixture", createdAt: Date.now() }],
       sessionTitle: "Browser tab fixture",
       launchArgs: ["--remote-debugging-port=9245", "--disable-gpu"],
+      launchEnv: { NODE_OPTIONS: `--require=${JSON.stringify(registrationGuard)}` },
     });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.app.evaluate(({ BrowserWindow }, channel) => {
