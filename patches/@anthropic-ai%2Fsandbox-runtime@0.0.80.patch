@@ -129,8 +129,9 @@ the installed package.
    session ACL setup; wrapWithSandboxArgv() refuses an unprovisioned wrap.
 
 7. Owned mount points (Ave): absent deny-path mount points are created
-   during planning and only what this process created is ever deleted. A
-   file is opened with 'wx' and its bigint device/inode read with fstat. A
+   during planning. Cleanup selects entries matching a recorded owned
+   identity, subject to the pathname-syscall limits below. A file is opened
+   with 'wx' and its bigint device/inode read with fstat. A
    directory is made under a private random name beside the target, its
    identity read with fstat on an O_DIRECTORY|O_NOFOLLOW descriptor, then
    renamed onto a reservation made at the target with an exclusive mkdir
