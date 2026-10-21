@@ -706,7 +706,8 @@ describe("asrt-windows-support adapter", () => {
     const resolver = vi.spyOn(mod, "resolveSrtWin");
     checkWindowsSandboxStatusAsyncMock.mockReset();
     try {
-      resolver.mockImplementationOnce(() => resolveSrtWin({}));
+      // Exercise malformed configuration from an untyped runtime caller.
+      resolver.mockImplementationOnce(() => Reflect.apply(resolveSrtWin, undefined, [{}]));
       expect(await readAsrtWindowsStatus()).toMatchObject({ ready: false, helperError: "srt-win-not-found" });
       expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
 
