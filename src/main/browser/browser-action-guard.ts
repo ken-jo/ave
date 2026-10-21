@@ -1,3 +1,4 @@
+import { BrowserDocumentChangedError } from "./browser-tab-registry.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 
 export interface CdpSession {
@@ -23,7 +24,11 @@ export interface ActionTarget {
    * sequence in the page's window, and fail unless it reached this page.
    */
   press<T>(run: () => Promise<T>): Promise<T>;
+  pointerInput<T>(run: () => Promise<T>): Promise<T>;
   releaseFocus(): void;
+  mouseDrag?<T>(run: () => Promise<T>): Promise<T>;
+  navigationOutcome?(): boolean;
+  onDestroyed?(listener: () => void): () => void;
   readonly signal: AbortSignal;
   /** Host frame metadata also includes children outside the protocol target. */
   iframeOrigins?(): readonly string[];
@@ -47,7 +52,7 @@ interface DomNode {
 export function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     const reason = signal.reason instanceof Error ? signal.reason.message.slice(0, 200) : "cancelled";
-    throw new BrowserActionError("cancelled", `nothing more was done: ${reason}`);
+    throw new BrowserActionError(signal.reason instanceof BrowserDocumentChangedError ? "document-changed" : "cancelled", `nothing more was done: ${reason}`);
   }
 }
 
@@ -111,6 +116,7 @@ export async function withGuardedAction(
     assertCurrent();
     const guarded: Parameters<typeof work>[0] = {
       ...target,
+      assertCurrent,
       expectNode: (id) => { inputNode = id; },
       // A navigation after this dispatch is a completed effect. Unwind the
       // sequence without sending releases, verification or submit to a new page.
@@ -124,14 +130,15 @@ export async function withGuardedAction(
           assertCurrent();
           const input = method.startsWith("Input.");
           const keyboard = method === "Input.dispatchKeyEvent" || method === "Input.insertText";
-          const effect = input || method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded";
+          const upload = method === "DOM.setFileInputFiles";
+          const effect = input || upload || method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded";
           if (effect) {
             const current = await frameTree({ ...target.cdp, send: read });
             if (current.frame.id !== frameId || current.frame.loaderId !== loaderId
               || browserOrigin(current.frame.url) !== origin) changed();
             if (method === "Input.dispatchMouseEvent" || method === "Input.dispatchTouchEvent") {
               if (inputNode === undefined) wrongTarget();
-              if (method === "Input.dispatchTouchEvent" && params?.type === "touchStart") {
+              if (method === "Input.dispatchTouchEvent" && (params?.type === "touchStart" || params?.type === "touchMove")) {
                 const point = (params.touchPoints as { x: number; y: number }[] | undefined)?.[0];
                 if (!point || !Number.isInteger(point.x) || !Number.isInteger(point.y)) wrongTarget();
                 touchPoint = { x: point.x, y: point.y };
@@ -155,6 +162,19 @@ export async function withGuardedAction(
               const subtree = await read("DOM.describeNode", { backendNodeId: inputNode, depth: -1, pierce: true }) as { node?: DomNode };
               if (!containsNode(subtree.node, point.backendNodeId)) wrongTarget();
             }
+            if (upload) {
+              if (inputNode === undefined || params?.backendNodeId !== inputNode || !Array.isArray(params.files)
+                || params.files.length === 0 || !params.files.every((path) => typeof path === "string")
+                || Object.keys(params).some((key) => key !== "backendNodeId" && key !== "files")) wrongTarget();
+              const document = await read("DOM.getDocument", { depth: -1, pierce: true }) as { root?: DomNode };
+              if (!containsNode(document.root, inputNode)) wrongTarget();
+              const described = await read("DOM.describeNode", { backendNodeId: inputNode }) as { node?: DomNode & { attributes?: string[] } };
+              const attributes = described.node?.attributes ?? [];
+              const typeIndex = attributes.findIndex((attribute, index) => index % 2 === 0 && attribute.toLowerCase() === "type");
+              if (described.node?.nodeName?.toUpperCase() !== "INPUT" || typeIndex < 0 || attributes[typeIndex + 1]?.toLowerCase() !== "file"
+                || attributes.some((attribute, index) => index % 2 === 0 && attribute.toLowerCase() === "disabled")
+                || (params.files.length > 1 && !attributes.some((attribute, index) => index % 2 === 0 && attribute.toLowerCase() === "multiple"))) wrongTarget();
+            }
             if (keyboard && inputNode !== undefined) {
               const tree = await read("Accessibility.getPartialAXTree", { backendNodeId: inputNode, fetchRelatives: false }) as {
                 nodes?: { backendDOMNodeId?: number; properties?: { name: string; value?: { value?: unknown } }[] }[];
@@ -176,8 +196,9 @@ export async function withGuardedAction(
   } catch (err) {
     // Once an activating input has reached the approved document, a later
     // document change is its outcome. No following step reaches that new page.
-    throwIfAborted(target.signal);
-    if (!completedInput || !(err instanceof BrowserActionError) || err.code !== "document-changed") throw err;
+    const completedNavigation = completedInput && err instanceof BrowserActionError && err.code === "document-changed"
+      && (!target.signal.aborted || (target.signal.reason instanceof BrowserDocumentChangedError && target.navigationOutcome?.() === true));
+    if (!completedNavigation) { throwIfAborted(target.signal); throw err; }
   } finally {
     stop();
   }

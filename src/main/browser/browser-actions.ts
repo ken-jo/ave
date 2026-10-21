@@ -6,7 +6,7 @@
  * this sits in the main process's initial bundle.
  *
  * WHAT IS NOT HERE, ON PURPOSE. No script evaluation, no cookies or storage,
- * no network bodies, no downloads, no file uploads: every CDP method used is
+ * no network bodies, no downloads, only picker-approved file uploads: every CDP method used is
  * an Accessibility, DOM, Input or Page call. `browser-tools-source.test.ts`
  * holds these modules to that list. An agent click is not a user gesture
  * either: a download it triggers still goes through the side browser's native
@@ -16,10 +16,11 @@
  * or one-time-code field is refused; the user types those. The page decides
  * how its fields are labelled, so this is defense in depth, not a boundary.
  */
+import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
-import type { BrowserPageActions } from "../../tools/browser-tools.js";
+import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
-import type { TouchDeliveryReport } from "./browser-tab-registry.js";
+import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -91,6 +92,15 @@ export async function snapshot(
   throwIfAborted(target.signal);
   const nodes = await fullTree(target.cdp);
   throwIfAborted(target.signal);
+  const nativeSelectOptions = new Map<number, { value: string; label: string; disabled: boolean }[]>();
+  for (const node of nodes.filter((entry) => entry.role?.value === "combobox" && entry.backendDOMNodeId !== undefined).slice(0, 12)) {
+    const described = await target.cdp.send("DOM.describeNode", { backendNodeId: node.backendDOMNodeId, depth: -1 }) as { node?: SelectNode };
+    throwIfAborted(target.signal);
+    if (described.node?.nodeName === "SELECT") {
+      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value: value.slice(0, 1000), label: label.slice(0, 200), disabled }))); }
+      catch (err) { if (!(err instanceof BrowserActionError) || !["not-native-select", "ambiguous-select"].includes(err.code)) throw err; }
+    }
+  }
   const frames = await frameTree(target.cdp);
   throwIfAborted(target.signal);
   const iframeOrigins: string[] = [];
@@ -103,7 +113,7 @@ export async function snapshot(
   visitFrames(frames);
   const url = target.url();
   return { url, title: target.title(), ...refs.render(target.tabId, url, nodes, {
-    ...options, iframeOrigins: target.iframeOrigins?.() ?? iframeOrigins, loaderId: frames.frame.loaderId, documentId: target.documentId?.(),
+    ...options, nativeSelectOptions, iframeOrigins: target.iframeOrigins?.() ?? iframeOrigins, loaderId: frames.frame.loaderId, documentId: target.documentId?.(),
   }) };
 }
 
@@ -117,12 +127,27 @@ const SCREENSHOT_MAX_MS = 10_000;
 export async function screenshot(
   target: ActionTarget,
   maxMs = SCREENSHOT_MAX_MS,
+  options: { fullPage?: boolean } = {},
 ): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
   throwIfAborted(target.signal);
+  const params: Record<string, unknown> = { format: "png" };
+  let fullSize: { width: number; height: number } | undefined;
+  if (options.fullPage) {
+    const layout = await target.cdp.send("Page.getLayoutMetrics") as { cssContentSize?: { x: number; y: number; width: number; height: number } };
+    throwIfAborted(target.signal);
+    const size = layout.cssContentSize;
+    if (!size || ![size.x, size.y, size.width, size.height].every(Number.isFinite) || size.x < 0 || size.y < 0
+      || size.width <= 0 || size.height <= 0 || size.width > 16384 || size.height > 32768 || size.width * size.height > 32_000_000) {
+      throw new BrowserActionError("screenshot-limit", "the full page exceeds the capture limit; use a viewport screenshot instead");
+    }
+    fullSize = size;
+    params.clip = { ...size, scale: 1 };
+    params.captureBeyondViewport = true;
+  }
   const timedOut = Symbol("timed-out");
   let timer: ReturnType<typeof setTimeout> | undefined;
   const result = await Promise.race([
-    target.cdp.send("Page.captureScreenshot", { format: "png" }) as Promise<{ data?: string }>,
+    target.cdp.send("Page.captureScreenshot", params) as Promise<{ data?: string }>,
     new Promise<typeof timedOut>((resolve) => {
       timer = setTimeout(() => resolve(timedOut), maxMs);
     }),
@@ -137,7 +162,14 @@ export async function screenshot(
   if (typeof result.data !== "string" || result.data.length === 0) {
     throw new BrowserActionError("screenshot-failed", "the tab returned no image; it may be hidden or still loading");
   }
-  return { data: result.data, mimeType: "image/png", bytes: Math.floor(result.data.length * 3 / 4) };
+  const bytes = Buffer.byteLength(result.data, "base64");
+  if (bytes > 10 * 1024 * 1024) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit; use a smaller viewport");
+  const header = Buffer.from(result.data.slice(0, 32), "base64");
+  if (header.length < 24 || header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
+  const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
+  if (width < 1 || height < 1 || width * height > 32_000_000) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
+  if (fullSize && Math.abs(width / fullSize.width - height / fullSize.height) > 0.02) throw new BrowserActionError("screenshot-incomplete", "the browser did not capture the full page extent");
+  return { data: result.data, mimeType: "image/png", bytes };
 }
 
 const WAIT_POLL_MS = 250;
@@ -226,12 +258,7 @@ async function nodeRoleAndName(cdp: CdpSession, backendNodeId: number): Promise<
 
 async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: number; y: number }> {
   await cdp.send("DOM.scrollIntoViewIfNeeded", { backendNodeId });
-  const result = await cdp.send("DOM.getContentQuads", { backendNodeId }) as { quads?: number[][] };
-  const quad = result.quads?.find((candidate) => candidate.length === 8);
-  if (!quad) throw new BrowserActionError("not-visible", "the element has no visible box to click");
-  const xs = [quad[0]!, quad[2]!, quad[4]!, quad[6]!];
-  const ys = [quad[1]!, quad[3]!, quad[5]!, quad[7]!];
-  return { x: Math.round(xs.reduce((a, b) => a + b, 0) / 4), y: Math.round(ys.reduce((a, b) => a + b, 0) / 4) };
+  return visibleCenter(cdp, backendNodeId);
 }
 
 export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
@@ -320,11 +347,9 @@ export function sensitiveFieldReason(attributes: Readonly<Record<string, string>
 }
 
 async function attributesOf(cdp: CdpSession, backendNodeId: number): Promise<Record<string, string>> {
-  const result = await cdp.send("DOM.describeNode", { backendNodeId }) as { node?: { attributes?: string[] } };
-  const list = result.node?.attributes ?? [];
-  const out: Record<string, string> = {};
-  for (let index = 0; index + 1 < list.length; index += 2) out[list[index]!.toLowerCase()] = list[index + 1]!;
-  return out;
+  const result = await cdp.send("DOM.describeNode", { backendNodeId }) as { node?: SelectNode };
+  if (!result.node) throw new BrowserActionError("stale-ref", "the field is no longer available; take a new snapshot");
+  return nodeAttributes(result.node);
 }
 
 export async function type(
@@ -475,6 +500,175 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
   });
 }
 
+/** Move over one live, main-document ref. */
+export async function hover(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
+  return withGuardedAction(target, async (target) => {
+    const id = await resolveRef(target, ref, refs);
+    target.expectNode(id);
+    const point = await centerOf(target.cdp, id);
+    await target.injectInput(() => target.pointerInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point })));
+  });
+}
+
+/** Drag between visible endpoints, serialized with all other window gestures. */
+export async function drag(target: ActionTarget, sourceRef: string, targetRef: string, refs: BrowserRefTable = browserRefs): Promise<void> {
+  return withGuardedAction(target, async (target) => {
+    if (!target.mouseDrag) throw new BrowserActionError("drag-unavailable", "native pointer delivery cannot be verified for this tab");
+    const source = await resolveRef(target, sourceRef, refs);
+    const destination = await resolveRef(target, targetRef, refs);
+    target.expectNode(source);
+    const start = await centerOf(target.cdp, source);
+    const end = await visibleCenter(target.cdp, destination);
+    await target.injectInput(() => withPageFocus(target, () => target.mouseDrag!(async () => {
+      let open = false;
+      try {
+        await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...start });
+        open = true;
+        await target.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...start, button: "left", buttons: 1, clickCount: 1 });
+        target.expectNode(destination);
+        await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...end, button: "left", buttons: 1 });
+        await target.finishWithInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }));
+        open = false;
+      } finally {
+        // Only a still-approved document may receive a closing release. If it
+        // cannot, the adapter refuses further window gestures until navigation.
+        if (open) await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }).catch(() => undefined);
+      }
+    })));
+  });
+}
+
+async function visibleCenter(cdp: CdpSession, backendNodeId: number): Promise<{ x: number; y: number }> {
+  const result = await cdp.send("DOM.getContentQuads", { backendNodeId }) as { quads?: number[][] };
+  const quad = result.quads?.find((candidate) => candidate.length === 8 && candidate.every(Number.isFinite));
+  if (!quad) throw new BrowserActionError("not-visible", "the element has no visible box");
+  return { x: Math.round((quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4), y: Math.round((quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4) };
+}
+
+export async function scroll(target: ActionTarget, ref: string, direction: "up" | "down" | "left" | "right", pixels: number, refs: BrowserRefTable = browserRefs): Promise<void> {
+  if (!Number.isInteger(pixels) || pixels < 1 || pixels > 2000 || !["up", "down", "left", "right"].includes(direction)) {
+    throw new BrowserActionError("bad-scroll", "scroll needs a direction and 1 to 2000 pixels");
+  }
+  return withGuardedAction(target, async (target) => {
+    const id = await resolveRef(target, ref, refs);
+    target.expectNode(id);
+    const point = await centerOf(target.cdp, id);
+    const deltaX = direction === "left" ? -pixels : direction === "right" ? pixels : 0;
+    const deltaY = direction === "up" ? -pixels : direction === "down" ? pixels : 0;
+    await target.injectInput(() => target.pointerInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX, deltaY })));
+  });
+}
+
+interface SelectNode {
+  backendNodeId?: number;
+  nodeName?: string;
+  nodeValue?: string;
+  attributes?: string[];
+  children?: SelectNode[];
+}
+
+function nodeAttributes(node: SelectNode): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (let index = 0; index + 1 < (node.attributes?.length ?? 0); index += 2) values[node.attributes![index]!.toLowerCase()] = node.attributes![index + 1]!;
+  return values;
+}
+
+function nativeOptions(node: SelectNode | undefined): { id: number; value: string; label: string; disabled: boolean }[] {
+  if (!node || node.nodeName !== "SELECT" || "multiple" in nodeAttributes(node) || "disabled" in nodeAttributes(node)) {
+    throw new BrowserActionError("not-native-select", "only an enabled native single select is supported");
+  }
+  const options: ReturnType<typeof nativeOptions> = [];
+  const textOf = (entry: SelectNode): string => entry.nodeName === "#text" ? entry.nodeValue ?? "" : (entry.children ?? []).map(textOf).join("");
+  const visit = (entry: SelectNode, disabled: boolean): void => {
+    const attributes = nodeAttributes(entry);
+    disabled ||= "disabled" in attributes;
+    if (entry.nodeName === "OPTION") {
+      if (!entry.backendNodeId) throw new BrowserActionError("bad-select", "the select has an unreadable option");
+      const label = collapse(attributes.label ?? textOf(entry));
+      options.push({ id: entry.backendNodeId, value: attributes.value ?? collapse(textOf(entry)), label, disabled });
+    } else for (const child of entry.children ?? []) visit(child, disabled);
+  };
+  for (const child of node.children ?? []) visit(child, false);
+  if (options.length === 0 || options.length > 200 || new Set(options.map((option) => option.value)).size !== options.length
+    || new Set(options.map((option) => option.label)).size !== options.length) {
+    throw new BrowserActionError("ambiguous-select", "the native select options are empty, ambiguous or exceed the limit");
+  }
+  return options;
+}
+
+/** Keyboard-only selection with a final live option/value and AX check. */
+export async function select(target: ActionTarget, ref: string, value: string, refs: BrowserRefTable = browserRefs): Promise<void> {
+  return withGuardedAction(target, async (target) => {
+    const id = await resolveRef(target, ref, refs);
+    target.expectNode(id);
+    const readOptions = async () => nativeOptions((await target.cdp.send("DOM.describeNode", { backendNodeId: id, depth: -1 }) as { node?: SelectNode }).node);
+    const options = await readOptions();
+    const enabled = options.filter((option) => !option.disabled);
+    const index = enabled.findIndex((option) => option.value === value);
+    if (index < 0) throw new BrowserActionError("bad-select", "the requested enabled option is not present");
+    const desired = enabled[index]!;
+    const point = await centerOf(target.cdp, id);
+    await target.injectInput(() => withPageFocus(target, async () => {
+      await pressForFocus(target, point.x, point.y);
+      await target.cdp.send("DOM.focus", { backendNodeId: id });
+      // No activating input is marked complete: a navigation during any key
+      // must remain a failure rather than being accepted as final selection.
+      await dispatchKey(target.cdp, "Escape");
+      await dispatchKey(target.cdp, "Home");
+      for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
+      const current = await readOptions();
+      if (JSON.stringify(current) !== JSON.stringify(options)) throw new BrowserActionError("select-changed", "the options changed while selecting; take a new snapshot");
+      const tree = await fullTree(target.cdp);
+      const option = tree.find((node) => node.backendDOMNodeId === desired.id);
+      const selected = option?.properties?.some((property) => property.name === "selected" && property.value.value === true);
+      const currentValue = await fieldValue(target.cdp, id);
+      if (!selected || currentValue !== desired.label) throw new BrowserActionError("select-unverified", "the requested option did not become the final selected value");
+    }));
+  });
+}
+
+const retainedUploads = new Map<string, BrowserUploadSelection>();
+
+export async function upload(
+  target: ActionTarget,
+  ref: string,
+  options: BrowserUploadPickerRequest & { pickFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null> },
+  refs: BrowserRefTable = browserRefs,
+): Promise<BrowserUploadResult> {
+  let result: BrowserUploadResult = { status: "cancelled", files: [], count: 0, bytes: 0 };
+  await withGuardedAction(target, async (target) => {
+    const id = await resolveRef(target, ref, refs);
+    target.expectNode(id);
+    const described = await target.cdp.send("DOM.describeNode", { backendNodeId: id }) as { node?: SelectNode };
+    const attributes = described.node ? nodeAttributes(described.node) : {};
+    if (described.node?.nodeName !== "INPUT" || attributes.type?.toLowerCase() !== "file" || "disabled" in attributes) {
+      throw new BrowserActionError("not-file-input", "upload requires an enabled native file input");
+    }
+    const selection = await stageBrowserUpload(options, options.pickFiles, () => target.assertCurrent?.(false));
+    if (!selection) return;
+    const key = `${target.tabId}:${ref}`;
+    let retained = false;
+    try {
+      if (!("multiple" in attributes) && selection.result.count !== 1) throw new BrowserActionError("single-file-input", "this input accepts only one file; choose again");
+      if (await resolveRef(target, ref, refs) !== id) throw new BrowserActionError("stale-ref", "the upload input changed after file selection");
+      await selection.dispatch(options, async (paths) => { await target.cdp.send("DOM.setFileInputFiles", { backendNodeId: id, files: [...paths] }); });
+      selection.retainUntil((revoke) => {
+        const stopDocument = target.cdp.onEvent((method) => {
+          if (method === "Page.frameNavigated" || method === "Page.frameDetached" || method === "DOM.documentUpdated") revoke();
+        });
+        const stopDestroyed = target.onDestroyed?.(revoke);
+        return () => { stopDocument(); stopDestroyed?.(); if (retainedUploads.get(key) === selection) retainedUploads.delete(key); };
+      });
+      const previous = retainedUploads.get(key);
+      retainedUploads.set(key, selection);
+      retained = true;
+      await previous?.release();
+      result = selection.result;
+    } finally { if (!retained) await selection.release(); }
+  });
+  return result;
+}
+
 // ── navigate ──────────────────────────────────────────────────────────────
 
 /** What navigation needs of a guest. Production passes Electron `WebContents`. */
@@ -570,6 +764,7 @@ interface InputAttribution {
   documentChanged(guestId: number): void;
   /** Record the touch input every guest of `guestId`'s window reports until `stop`. */
   watchTouches(guestId: number): TouchWatch;
+  watchMouse(guestId: number): { delivery(): { pressed: boolean; released: boolean; elsewhere: number }; stop(): void };
 }
 
 interface TouchWatch {
@@ -788,11 +983,7 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
 }
 
 /** One live registry tab and the signal that cancels its action. */
-interface LiveTab {
-  readonly tab: { readonly handle: string; readonly guest: WebContents | null; readonly documentId: number };
-  readonly signal: AbortSignal;
-  readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
-}
+type LiveTab = BrowserActionTab<WebContents>;
 
 async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
   const guest = live.tab.guest;
@@ -804,8 +995,10 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   };
   const assertCurrent = (keyboard: boolean) => {
     assertGuest();
+    if (input && (!live.leaseId || live.tab.lease?.id !== live.leaseId)) throw new BrowserActionError("control-revoked", "the browser control lease changed; nothing more was done");
+    if (input && live.tab.controlMode === "human-paused") throw new BrowserActionError("control-paused", "browser control is paused; ask the user to resume this tab");
     if ((input || approval) && (!approval || approval.tabId !== live.tab.handle || approval.origin !== browserOrigin(guest.getURL())
-      || approval.documentId !== live.tab.documentId)) {
+      || approval.documentId !== live.tab.documentId || approval.controlGeneration !== live.tab.controlGeneration)) {
       throw new BrowserActionError("document-changed", "this tab or document is no longer the approved target; nothing more was done");
     }
     if (keyboard && guest.focusedFrame !== guest.mainFrame) {
@@ -819,6 +1012,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   // A touch start went out and its sequence is not ended yet.
   let touchOpen = false;
   let touchEnded = false;
+  let touchMoved = false;
+  let mouseOpen = false;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
   const cdp: CdpSession = {
@@ -829,15 +1024,18 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       const echo = touch.watch(method, params);
       const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
       if (phase === "touchStart") touchOpen = true;
+      if (phase === "touchMove") touchMoved = true;
       const sent = session.send(method, params);
       const result = pressDeadline !== null
-        ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.signal)
+        ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.callerSignal)
         : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
       if (phase === "touchEnd" || phase === "touchCancel") {
         touchOpen = false;
         touchEnded = phase === "touchEnd";
       }
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
       await echo?.settle();
       // The action guard owns input completion: its last input may navigate.
       if (method.startsWith("Input.")) assertGuest();
@@ -860,6 +1058,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       return aloneInWindow(host.windowId, live.signal, async () => {
         refuseIfWedged(host.windowId);
         touchEnded = false;
+        touchMoved = false;
         const deadline = Date.now() + PRESS_MAX_MS;
         pressDeadline = deadline;
         const watch = attribution.watchTouches(guest.id);
@@ -876,7 +1075,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             }
             throw err;
           }
-          await confirmDelivery(watch, live.signal, true, deadline);
+          await confirmDelivery(watch, live.signal, !touchMoved, deadline);
           return result;
         } finally {
           pressDeadline = null;
@@ -894,14 +1093,89 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
       });
     },
+    pointerInput: async (run) => {
+      const host = hostContentOrigin(guest);
+      if (!host) throw new BrowserActionError("no-pointer-position", "the page has no live input window");
+      refuseIfWedged(host.windowId);
+      return aloneInWindow(host.windowId, live.signal, async () => {
+        refuseIfWedged(host.windowId);
+        pressDeadline = Date.now() + PRESS_MAX_MS;
+        try { return await run(); } finally { pressDeadline = null; }
+      });
+    },
+    mouseDrag: async (run) => {
+      const host = hostContentOrigin(guest);
+      if (!host) throw new BrowserActionError("no-pointer-position", "the page has no live input window");
+      refuseIfWedged(host.windowId);
+      return aloneInWindow(host.windowId, live.signal, async () => {
+        refuseIfWedged(host.windowId);
+        const watch = attribution.watchMouse(guest.id);
+        pressDeadline = Date.now() + PRESS_MAX_MS;
+        try {
+          const value = await run();
+          const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, pressDeadline);
+          let delivery = watch.delivery();
+          while (!(delivery.pressed && delivery.released) && Date.now() < until) {
+            await sleep(TAP_POLL_MS, live.signal);
+            throwIfAborted(live.signal);
+            delivery = watch.delivery();
+          }
+          if (!delivery.pressed || !delivery.released || delivery.elsewhere > 0) throw new BrowserActionError("input-not-delivered", "the drag did not reach only the intended page");
+          return value;
+        } finally {
+          pressDeadline = null;
+          watch.stop();
+          if (mouseOpen) markWedged(host.windowId, guest, new Promise(() => {}));
+        }
+      });
+    },
     releaseFocus: () => attribution.releaseFocus(guest.id),
+    onDestroyed: (listener) => { guest.once("destroyed", listener); return () => { guest.removeListener("destroyed", listener); }; },
     signal: live.signal,
     documentId: () => live.tab.documentId,
+    navigationOutcome: () => !live.callerSignal?.aborted && live.tab.controlMode !== "human-paused" && live.tab.guest === guest && !guest.isDestroyed() && live.tab.lease?.id === live.leaseId,
     iframeOrigins: () => guest.mainFrame.framesInSubtree
       .filter((frame) => frame !== guest.mainFrame)
       .map((frame) => browserOrigin(frame.url) ?? "opaque origin"),
     assertCurrent,
   };
+}
+
+/** The approved load may change documents; caller and control cancellation still stop it. */
+function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: AbortSignal; stop(): void } {
+  throwIfAborted(live.signal);
+  const controller = new AbortController();
+  let stopped = false;
+  let unwatch = () => {};
+  const valid = () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused"
+    && live.leaseId !== undefined && live.tab.lease?.id === live.leaseId;
+  if (!valid() || (live.approval && (live.approval.tabId !== live.tab.handle || live.approval.documentId !== live.tab.documentId
+    || live.approval.controlGeneration !== live.tab.controlGeneration))) {
+    throw new BrowserActionError("document-changed", "the navigation target or control lease changed before loading");
+  }
+  const cancelCaller = () => controller.abort(live.callerSignal?.reason ?? new Error("navigation cancelled"));
+  const destroyed = () => controller.abort(new Error("the browser tab was closed"));
+  const watch = (signal: AbortSignal) => {
+    if (stopped || controller.signal.aborted) return;
+    unwatch();
+    const changed = () => {
+      if (signal.reason instanceof BrowserDocumentChangedError && !live.callerSignal?.aborted && valid()) {
+        // The registry installs the new document controller after aborting the
+        // previous one. Observe that controller at the next microtask boundary.
+        queueMicrotask(() => { if (!stopped) { if (valid()) watch(live.tab.actions.signal); else destroyed(); } });
+      } else controller.abort(signal.reason);
+    };
+    signal.addEventListener("abort", changed, { once: true });
+    unwatch = () => { signal.removeEventListener("abort", changed); };
+    if (signal.aborted) changed();
+  };
+  live.callerSignal?.addEventListener("abort", cancelCaller, { once: true });
+  if (live.callerSignal?.aborted) cancelCaller();
+  guest.once("destroyed", destroyed);
+  watch(live.signal);
+  return { signal: controller.signal, stop: () => {
+    stopped = true; unwatch(); live.callerSignal?.removeEventListener("abort", cancelCaller); guest.removeListener("destroyed", destroyed);
+  } };
 }
 
 /**
@@ -923,7 +1197,15 @@ export function createBrowserPageActions(
     },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution, hostContentOrigin), options),
-    screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution, hostContentOrigin)),
+    screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
+    hover: async (live, ref) => hover(await targetFor(live, attribution, hostContentOrigin, true), ref),
+    drag: async (live, sourceRef, targetRef) => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef),
+    select: async (live, ref, value) => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value),
+    scroll: async (live, ref, direction, pixels) => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels),
+    upload: async (live, ref, options) => {
+      if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
+      return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
+    },
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution, hostContentOrigin), options),
     click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
@@ -934,7 +1216,9 @@ export function createBrowserPageActions(
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-      return navigate(guest as unknown as NavigableGuest, url, approvedOrigin, live.signal, originOf);
+      const lifecycle = navigationLifecycle(live, guest);
+      try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf); }
+      finally { lifecycle.stop(); }
     },
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;

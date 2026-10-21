@@ -99,6 +99,8 @@ export interface RefTarget {
   readonly name: string;
 }
 
+export interface BrowserSelectOption { readonly value: string; readonly label: string; readonly disabled: boolean }
+
 interface TabRefState {
   pageUrl: string;
   loaderId?: string;
@@ -167,7 +169,7 @@ export class BrowserRefTable {
     tabId: string,
     pageUrl: string,
     nodes: readonly AXNode[],
-    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number } = {},
+    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number; nativeSelectOptions?: ReadonlyMap<number, readonly BrowserSelectOption[]> } = {},
   ): { text: string; truncated: boolean; refCount: number; delta: boolean } {
     const state = this.tabState(tabId, pageKey(pageUrl), options.loaderId, options.documentId);
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
@@ -190,7 +192,7 @@ export class BrowserRefTable {
         if (!interactive || acts) {
           const ref = acts ? this.refFor(state, tabId, node, role, name) : undefined;
           if (ref) seenRefs.add(ref);
-          lines.push(formatLine(interactive ? 0 : depth, role, name, node, ref));
+          lines.push(formatLine(interactive ? 0 : depth, role, name, node, ref, node.backendDOMNodeId === undefined ? undefined : options.nativeSelectOptions?.get(node.backendDOMNodeId)));
           childDepth = interactive ? depth : depth + 1;
         }
       }
@@ -244,7 +246,7 @@ export class BrowserRefTable {
   }
 }
 
-function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined): string {
+function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined, options?: readonly BrowserSelectOption[]): string {
   const parts = [`${"  ".repeat(depth)}- ${role}`];
   if (name) parts.push(quote(name));
   for (const property of node.properties ?? []) {
@@ -254,6 +256,7 @@ function formatLine(depth: number, role: string, name: string, node: AXNode, ref
     parts.push(value === true || value === "true" ? `[${property.name}]` : `[${property.name}=${String(value)}]`);
   }
   if (ref) parts.push(`[ref=${ref}]`);
+  if (options) parts.push(`options=${JSON.stringify(options)}`);
   const value = text(node.value);
   return value && value !== name ? `${parts.join(" ")}: ${quote(value)}` : parts.join(" ");
 }

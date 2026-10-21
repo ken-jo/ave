@@ -10,6 +10,11 @@ import { tmpdir } from "node:os";
 import {
   BrowserActionError,
   click,
+  hover,
+  upload,
+  drag,
+  scroll,
+  select,
   createBrowserPageActions,
   navigate,
   pressKey,
@@ -22,6 +27,7 @@ import {
   type CdpSession,
   type NavigableGuest,
 } from "../browser-actions.js";
+import { withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
@@ -122,6 +128,7 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
     url: () => url,
     title: () => "Fixture",
     cdp,
+    pointerInput: async (run) => run(),
     injectInput: async (inject) => {
       injected.push(cdp.calls.length);
       return inject();
@@ -861,6 +868,7 @@ function adapterFixture(options: {
   const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
     tabs: registry,
+    pickUploadFiles: async () => null,
     windowIdForHostedSession: () => 1,
     liveOriginSessionId: () => undefined,
     loadActions: async () => actions as unknown as import("../../../tools/browser-tools.js").BrowserPageActions<typeof guest>,
@@ -870,8 +878,8 @@ function adapterFixture(options: {
     const scope = await tool(name).approvalMemoryScope!({ tabId: tab.handle }, { cwd: tmpdir(), sessionId: "conversation" });
     if (scope?.kind !== "browser-origin" || scope.documentId === undefined) throw new Error("Missing page approval");
     return {
-      tab, signal: tab.actions.signal,
-      approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId },
+      tab, signal: tab.actions.signal, leaseId: tab.lease?.id ?? registry.acquireControl(tab, { sessionId: "conversation" }).id,
+      approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId, controlGeneration: scope.controlGeneration },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
   return { cdp, guest, registry, router, tab, actions, approve, tool, echo, navigate: (next: string) => {
@@ -899,11 +907,11 @@ it("refuses a real document replacement between approval and the first dispatch"
 });
 
 it.each(["https://a.example/next", "https://b.example/next"])("reports navigation completed by the approved link to %s", async (destination) => {
-  const { cdp, tab, actions, approve, navigate, tool } = adapterFixture();
+  const { cdp, tab, actions, approve, navigate, tool, registry } = adapterFixture();
   tab.opener = "agent";
   tab.agentOrigin = "https://a.example:443";
   cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
-  await actions.snapshot({ tab, signal: tab.actions.signal } as unknown as Parameters<typeof actions.snapshot>[0], {});
+  await actions.snapshot({ tab, signal: new AbortController().signal } as unknown as Parameters<typeof actions.snapshot>[0], {});
   const live = await approve("browser_click");
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
@@ -914,6 +922,7 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
     if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") navigate(destination);
     return result;
   });
+  registry.releaseControl(tab.handle, tab.lease!.id);
   const result = await tool("browser_click").execute({ tabId: tab.handle, ref }, {
     cwd: tmpdir(), extraAllowedDirectories: [],
     metadata: { sessionId: "conversation", approvalMemoryScope: {
@@ -1118,4 +1127,149 @@ it.each(["Enter", "Space"])("finishes after navigation on %s without releasing i
   });
   await expect(actions.pressKey(live, key)).resolves.toBeUndefined();
   expect(cdp.inputs()).toEqual(["Input.dispatchKeyEvent"]);
+});
+
+describe("typed page actions", () => {
+  async function fixture() {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    return { cdp, refs, start: "e1", end: "e2" };
+  }
+
+  it("hovers and scrolls at the exact ref and refuses iframe recipients", async () => {
+    const { cdp, refs, start } = await fixture();
+    await hover(target(cdp), start, refs);
+    await scroll(target(cdp), start, "down", 700, refs);
+    expect(cdp.calls).toContainEqual({ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: 20, y: 15, deltaX: 0, deltaY: 700 } });
+    cdp.hit.frameId = "child";
+    const before = cdp.inputs().length;
+    await expect(hover(target(cdp), start, refs)).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.inputs().length).toBe(before);
+  });
+
+  it("drags only after native delivery verification is available", async () => {
+    const { cdp, refs, start, end } = await fixture();
+    await expect(drag(target(cdp), start, end, refs)).rejects.toMatchObject({ code: "drag-unavailable" });
+    cdp.hit.backendNodeId = 11;
+    const value = target(cdp);
+    value.mouseDrag = async (run) => run();
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      const result = await send(method, params);
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") cdp.hit.backendNodeId = 12;
+      return result;
+    });
+    await drag(value, start, end, refs);
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params?.type)).toEqual(["mouseMoved", "mousePressed", "mouseMoved", "mouseReleased"]);
+  });
+
+  it("bounds whole-page dimensions before capture and never crops over-limit pages", async () => {
+    const cdp = new FakeCdp();
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "Page.getLayoutMetrics"
+      ? { cssContentSize: { x: 0, y: 0, width: 1000, height: 4000 } }
+      : method === "Page.captureScreenshot" ? { data: (() => { const header = Buffer.alloc(24); Buffer.from("89504e470d0a1a0a", "hex").copy(header); header.writeUInt32BE(1000, 16); header.writeUInt32BE(4000, 20); return header.toString("base64"); })() } : send(method, params));
+    expect((await screenshot(target(cdp), 100, { fullPage: true })).bytes).toBe(24);
+    expect(cdp.send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 1000, height: 4000, scale: 1 }, captureBeyondViewport: true });
+    vi.mocked(cdp.send).mockImplementation(async () => ({ cssContentSize: { x: 0, y: 0, width: 1000, height: 40000 } }));
+    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-limit" });
+  });
+
+  it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("select", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "not-native-select" });
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11, children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
+      const result = await send(method, params);
+      if (method === "Input.dispatchKeyEvent" && params?.key === "Home") cdp.events.emit("message", "Page.frameNavigated", {});
+      return result;
+    });
+    await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "document-changed" });
+  });
+});
+
+describe("file-input effect guard", () => {
+  it("refuses a custom upload control before invoking the native picker", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("button", "button", "Choose", { backendDOMNodeId: 11 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    const picker = vi.fn(async () => null);
+    await expect(upload(target(cdp), "e1", { windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443", documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal, pickFiles: picker }, refs)).rejects.toMatchObject({ code: "not-file-input" });
+    expect(picker).not.toHaveBeenCalled();
+  });
+
+  it("classifies file assignment as an effect and denies child-frame nodes", async () => {
+    const cdp = new FakeCdp();
+    cdp.attributes.set(11, { type: "file" });
+    cdp.nodes = page([ax("file", "button", "File", { backendDOMNodeId: 11 })]);
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+      ? { root: { nodeName: "#document", children: [{ nodeName: "IFRAME", backendNodeId: 50, children: [{ nodeName: "INPUT", backendNodeId: 11 }] }] } }
+      : send(method, params));
+    await expect(withGuardedAction(target(cdp), async (guarded) => {
+      guarded.expectNode(11);
+      await guarded.cdp.send("DOM.setFileInputFiles", { backendNodeId: 11, files: ["/private/staging/selected.txt"] });
+    })).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toEqual([]);
+  });
+
+  it("checks file-input type and exact operands at the final dispatch boundary", async () => {
+    const cdp = new FakeCdp();
+    cdp.attributes.set(11, { type: "file" });
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+      ? { root: { nodeName: "#document", children: [{ nodeName: "INPUT", backendNodeId: 11 }] } }
+      : send(method, params));
+    const assign = (extra: Record<string, unknown> = {}) => withGuardedAction(target(cdp), async (guarded) => {
+      guarded.expectNode(11);
+      await guarded.cdp.send("DOM.setFileInputFiles", { backendNodeId: 11, files: ["/private/staging/selected.txt"], ...extra });
+    });
+    await assign();
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toHaveLength(1);
+    await expect(assign({ objectId: "other" })).rejects.toMatchObject({ code: "wrong-input-target" });
+    cdp.attributes.set(11, { type: "text" });
+    await expect(assign()).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toHaveLength(1);
+  });
+});
+
+describe("approved navigation lifetime", () => {
+  async function fixture() {
+    const value = adapterFixture();
+    await value.actions.prepare({ tab: value.tab, signal: new AbortController().signal } as Parameters<typeof value.actions.prepare>[0]);
+    const lease = value.registry.acquireControl(value.tab, { sessionId: "conversation" });
+    const caller = new AbortController();
+    const live = {
+      tab: value.tab, signal: AbortSignal.any([value.tab.actions.signal, caller.signal]), callerSignal: caller.signal, leaseId: lease.id,
+      approval: { tabId: value.tab.handle, origin: "https://a.example:443", documentId: value.tab.documentId, controlGeneration: value.tab.controlGeneration },
+    } as unknown as Parameters<typeof value.actions.navigate>[0];
+    const stop = vi.fn();
+    Object.assign(value.guest, { stop });
+    return { ...value, live, caller, stop };
+  }
+
+  it("allows the approved load's own document transition without cancelling it", async () => {
+    const value = await fixture();
+    Object.assign(value.guest, { loadURL: async (url: string) => { value.navigate(url); await Promise.resolve(); } });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next" });
+    expect(value.stop).not.toHaveBeenCalled();
+  });
+
+  it.each(["caller", "human"] as const)("keeps %s cancellation ahead of an in-flight document transition", async (source) => {
+    const value = await fixture();
+    Object.assign(value.guest, { loadURL: async (url: string) => {
+      value.navigate(url);
+      if (source === "caller") value.caller.abort(); else value.registry.pause(1, "user");
+      await Promise.resolve();
+    } });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).rejects.toMatchObject({ code: "cancelled" });
+    expect(value.stop).toHaveBeenCalled();
+  });
 });
