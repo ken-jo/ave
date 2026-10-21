@@ -11,6 +11,7 @@ const ACTOR = { sessionId: "conversation" };
 
 class FakeGuest implements BrowserGuest {
   destroyed = false;
+  focused = false;
   constructor(readonly id: number, public url = "https://a.example/", public title = "A") {}
   isDestroyed(): boolean {
     return this.destroyed;
@@ -21,6 +22,7 @@ class FakeGuest implements BrowserGuest {
   getTitle(): string {
     return this.title;
   }
+  isFocused(): boolean { return this.focused; }
 }
 
 function setup() {
@@ -33,6 +35,7 @@ function setup() {
       return true;
     },
     sendControl: (windowId, state) => control.push({ windowId, state }),
+    isWindowVisible: () => true,
   });
   return { registry, ops, control };
 }
@@ -779,6 +782,58 @@ describe("scoped browser control", () => {
     expect(registry.liveRendererTab(1, "page")).toBeNull();
     expect(registry.listTabs(2)).toHaveLength(1);
   });
+
+  it("focuses only the bound active renderer slot and waits for actual guest focus", async () => {
+    vi.useFakeTimers();
+    const { registry, tab, guest, ops } = await owned();
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
+    registry.acquireControl(tab, ACTOR);
+    const focused = registry.focusGuest(71);
+    const settled = vi.fn(); void focused.then(settled);
+    expect(ops.at(-1)?.request).toMatchObject({ op: "focus", tabId: "page" });
+    await vi.advanceTimersByTimeAsync(40);
+    expect(settled).not.toHaveBeenCalled();
+    guest.focused = true;
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(focused).resolves.toBeUndefined();
+    await expect(registry.focusGuest(404)).rejects.toThrow("no live browser focus target");
+  });
+
+  it("rejects hidden, inactive or uncontrolled focus targets before sending a renderer request", async () => {
+    const { registry, tab, ops } = await owned();
+    const count = ops.length;
+    await expect(registry.focusGuest(71)).rejects.toThrow("requires active control");
+    registry.acquireControl(tab, ACTOR);
+    await expect(registry.focusGuest(71)).rejects.toThrow("not the active visible surface");
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
+    registry.setRendererLink({ sendTabOp: () => true, sendControl: () => undefined, isWindowVisible: () => false });
+    await expect(registry.focusGuest(71)).rejects.toThrow("hidden or unavailable");
+    expect(ops).toHaveLength(count);
+  });
+
+  it("rejects missing native focus proof rather than reporting a renderer send as success", async () => {
+    const registry = new BrowserTabRegistry<BrowserGuest>();
+    registry.guestAttached({ id: 71, getURL: () => "https://site.example/", getTitle: () => "Site", isDestroyed: () => false }, 1);
+    registry.bindTab(1, { tabId: "page", webContentsId: 71 });
+    await expect(registry.focusGuest(71)).rejects.toThrow("native browser focus proof is unavailable");
+  });
+
+  it("bounds native focus waiting and preserves cancellation priority over late focus", async () => {
+    vi.useFakeTimers();
+    const { registry, tab, guest } = await owned();
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
+    const first = registry.acquireControl(tab, ACTOR);
+    const timeout = registry.focusGuest(71).catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(timeout).resolves.toContain("timed out");
+    registry.releaseControl(tab.handle, first.id);
+    const second = registry.acquireControl(tab, ACTOR);
+    const pending = registry.focusGuest(71).catch((error: Error) => error.message);
+    registry.releaseControl(tab.handle, second.id);
+    guest.focused = true;
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).resolves.toContain("released");
+  });
 });
 
 describe("native popup lifecycle", () => {
@@ -870,6 +925,15 @@ describe("native popup lifecycle", () => {
     expect(registry.listSessionTabs(1, ACTOR, false).map((tab) => tab.tabId)).toContain(handle);
     expect(registry.bindTab(1, { tabId: "stolen", webContentsId: 72 })).toEqual({ ok: false, error: "guest-not-hosted" });
   });
+
+  it("focuses a leased popup only after its native selection and actual guest focus proof", async () => {
+    const { registry, handle, native, guest } = popup();
+    registry.acquireControl(registry.liveTab(handle)!, ACTOR);
+    native.select.mockImplementation(() => { guest.focused = true; return true; });
+    await expect(registry.focusGuest(guest.id)).resolves.toBeUndefined();
+    expect(native.select).toHaveBeenCalledOnce();
+    expect(registry.activeBrowserTab(1)).toBe(handle);
+  });
 });
 
 describe("strict browser chrome contracts", () => {
@@ -878,6 +942,10 @@ describe("strict browser chrome contracts", () => {
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, sessionId: 7 })).toBeNull();
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false }))
       .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "page" }))
+      .toEqual({ requestId: "r", op: "focus", tabId: "page" });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "" })).toBeNull();
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "page", webContentsId: 71 })).toBeNull();
   });
 
   it("rejects mixed-version state, extra fields, duplicate handles, impossible leases and malformed actors", () => {

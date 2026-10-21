@@ -115,6 +115,8 @@ export interface BrowserGuest {
   isDestroyed(): boolean;
   getURL(): string;
   getTitle(): string;
+  /** Native focus capability; operations that require it reject when unavailable. */
+  isFocused?(): boolean;
 }
 
 /** A document transition invalidated the old page; it grants no further input authority. */
@@ -155,6 +157,8 @@ export interface BrowserTabView extends BrowserTabControlView {
 export interface BrowserTabRendererLink {
   sendTabOp(windowId: number, request: BrowserTabOpRequest): boolean;
   sendControl(windowId: number, state: BrowserTabControlState): void;
+  /** Native window visibility proof, required before any explicit focus request. */
+  isWindowVisible?(windowId: number): boolean;
 }
 
 /** The tab a conversation's browser tools act on when none is named — or why there is none. */
@@ -195,6 +199,8 @@ const DEBUGGER_INPUT_MODIFIER = 1 << 23;
 const DERIVED_TAP_MODIFIERS = 1 << 25;
 const POINTER_SEQUENCE_MAX_MS = 5_000;
 const MOUSE_RECEIPT_MAX_MS = 1_000;
+const FOCUS_RECEIPT_MAX_MS = 1_000;
+const FOCUS_RECEIPT_POLL_MS = 20;
 
 /**
  * Whether a tap gesture's modifiers fit one derived from an injected touch.
@@ -654,6 +660,56 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         tabId: tab.rendererTabId,
       });
       return;
+    }
+  }
+
+  /** Focus only the actual leased guest, through trusted chrome or its native popup. */
+  async focusGuest(guestId: number): Promise<void> {
+    const tab = [...this.tabs.values()].find((candidate) => candidate.guest?.id === guestId && this.isLive(candidate));
+    if (!tab || !tab.guest) throw new Error("no live browser focus target");
+    const guest = tab.guest;
+    if (typeof guest.isFocused !== "function") throw new Error("native browser focus proof is unavailable");
+    const isFocused = guest.isFocused.bind(guest);
+    const leaseId = tab.lease?.id;
+    if (leaseId === undefined || tab.controlMode === "human-paused") throw new Error("browser focus requires active control");
+    const signal = tab.actions.signal;
+    const documentId = tab.documentId;
+    const generation = tab.controlGeneration;
+    const assertCurrent = () => {
+      if (signal.aborted) throw signal.reason;
+      if (this.tabs.get(tab.handle) !== tab || tab.guest !== guest || guest.isDestroyed()
+        || tab.lease?.id !== leaseId || tab.documentId !== documentId || tab.controlGeneration !== generation) {
+        throw new Error("the browser focus target changed");
+      }
+      if (this.link?.isWindowVisible?.(tab.windowId) !== true) throw new Error("browser input window is hidden or unavailable");
+      if (tab.targetKind === "embedded" && this.activeBrowserTab(tab.windowId) !== tab.handle) {
+        throw new Error("the browser focus target is not the active visible surface");
+      }
+    };
+    assertCurrent();
+    if (tab.targetKind === "popup") {
+      const native = this.nativeTabs.get(tab.handle);
+      if (!native) throw new Error("native browser focus is unavailable");
+      const focused = await new Promise<boolean>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("native browser focus timed out")), FOCUS_RECEIPT_MAX_MS);
+        try {
+          void Promise.resolve(native.select()).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+        } catch (error) { clearTimeout(timer); reject(error); }
+      });
+      assertCurrent();
+      if (!focused || !isFocused()) throw new Error("native browser focus was not observed");
+      this.activePopup.set(tab.windowId, tab.handle);
+      return;
+    }
+    if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
+      requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
+    })) throw new Error("no browser renderer can focus this guest");
+    const deadline = Date.now() + FOCUS_RECEIPT_MAX_MS;
+    for (;;) {
+      assertCurrent();
+      if (isFocused()) return;
+      if (Date.now() >= deadline) throw new Error("native browser focus timed out");
+      await new Promise<void>((resolve) => setTimeout(resolve, FOCUS_RECEIPT_POLL_MS));
     }
   }
 
