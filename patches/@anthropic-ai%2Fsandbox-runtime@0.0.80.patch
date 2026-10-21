@@ -126,7 +126,14 @@ the installed package.
    renamed onto a reservation made at the target with an exclusive mkdir
    (an entry anyone else creates there first wins with EEXIST and is not
    claimed; a reservation replaced by a non-empty directory or non-directory
-   fails the wrap closed). Cleanup, and removal of the private empty mount
+   fails the wrap closed). The measured descriptors stay open until their
+   ownership records retire, preventing inode-number reuse from aliasing a
+   replacement. Concurrent cleanup deferral and cached-source retries retain
+   them. Ordinary planning failures use batch cleanup, including deferral;
+   staged publication failures close their descriptor. If force runs during
+   async planning, records created afterward wait for a later cleanup or
+   process exit, even if that planning call then fails.
+   Cleanup, and removal of the private empty mount
    source, move a matching entry to a private random name, check the
    identity and emptiness again there, and delete only that name. An entry
    found not to be ours (or ours but not empty) is put back without
@@ -463,7 +470,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e71748877ce8f84 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..8716b8be4cc200000ed939d6017863d2733f51f5 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -480,7 +487,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
                  return MountPointKind.Directory;
              }
          }
-@@ -502,16 +502,167 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+@@ -502,28 +502,217 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
      }
      return [...new Set(denyPaths)];
  }
@@ -493,21 +500,42 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 +// found absent during planning is not evidence that we created its later entry.
 +const bwrapMountPoints = new Map();
 +function createOwnedMountPoint(dest, kind, entry = dest) {
++    registerExitCleanupHandler();
 +    let identity;
 +    if (kind === MountPointKind.File) {
 +        const fd = fs.openSync(entry, 'wx', 0o444);
 +        try {
-+            identity = fs.fstatSync(fd, { bigint: true });
++            const stat = fs.fstatSync(fd, { bigint: true });
++            identity = { dev: stat.dev, ino: stat.ino, kind, fd };
 +        }
-+        finally {
++        catch (error) {
 +            fs.closeSync(fd);
++            throw error;
 +        }
 +    }
 +    else {
 +        identity = publishOwnedDirectory(entry);
 +    }
-+    bwrapMountPoints.set(dest, { dev: identity.dev, ino: identity.ino, kind });
-+    registerExitCleanupHandler();
++    let registered = false;
++    try {
++        const previous = bwrapMountPoints.get(dest);
++        bwrapMountPoints.set(dest, identity);
++        registered = true;
++        if (previous !== undefined)
++            releaseMountPointIdentity(previous);
++    }
++    finally {
++        if (!registered)
++            releaseMountPointIdentity(identity);
++    }
++}
++/** Retire an owning descriptor once, before its number can be reused. */
++function releaseMountPointIdentity(identity) {
++    const fd = identity.fd;
++    if (!Number.isInteger(fd) || fd < 0)
++        throw new Error('Sandbox mount ownership descriptor is not active');
++    identity.fd = undefined;
++    fs.closeSync(fd);
 +}
 +function sameMountPointIdentity(stat, identity) {
 +    return stat.dev === identity.dev && stat.ino === identity.ino;
@@ -517,14 +545,16 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 +function privateSiblingOf(entry, purpose) {
 +    return path.join(path.dirname(entry), `.${path.basename(entry)}.ave-${purpose}-${randomBytes(16).toString('hex')}`);
 +}
-+/** The identity of the directory at `entry`, read from a descriptor. */
++/** Keep the measured directory open until its ownership record is retired. */
 +function directoryIdentity(entry) {
 +    const fd = fs.openSync(entry, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
 +    try {
-+        return fs.fstatSync(fd, { bigint: true });
++        const stat = fs.fstatSync(fd, { bigint: true });
++        return { dev: stat.dev, ino: stat.ino, kind: MountPointKind.Directory, fd };
 +    }
-+    finally {
++    catch (error) {
 +        fs.closeSync(fd);
++        throw error;
 +    }
 +}
 +/**
@@ -562,10 +592,13 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 +    if (identity === undefined)
 +        return;
 +    try {
-+        removeOwnedEntry(staged, { dev: identity.dev, ino: identity.ino, kind: MountPointKind.Directory });
++        removeOwnedEntry(staged, identity);
 +    }
 +    catch (error) {
 +        logForDebugging(`[Sandbox Linux] Left a staged mount point directory behind: ${staged} (${error.code ?? error})`);
++    }
++    finally {
++        releaseMountPointIdentity(identity);
 +    }
 +}
 +function isOwnedEmptyKind(stat, kind) {
@@ -650,10 +683,22 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
  // generateFilesystemArgs pins it read-only inside every sandbox that uses it.
  let emptyMountSourceDir;
 +let emptyMountSourceIdentity;
++/** Transfer the cached descriptor to the caller that will retire it. */
++function takeEmptyMountSourceIdentity() {
++    const identity = emptyMountSourceIdentity;
++    if (identity === undefined)
++        throw new Error('Sandbox empty mount source identity is missing');
++    emptyMountSourceDir = undefined;
++    emptyMountSourceIdentity = undefined;
++    return identity;
++}
  function ensureEmptyMountSourceDir() {
      if (emptyMountSourceDir !== undefined) {
++        if (emptyMountSourceIdentity === undefined)
++            throw new Error('Sandbox empty mount source identity is missing');
          // Revalidated, not trusted: the path is under the system temp dir, which
-@@ -520,10 +671,12 @@ function ensureEmptyMountSourceDir() {
+         // sandboxed commands commonly can write, and bwrap resolves a bind source
+         // on the HOST, so a directory swapped for a symlink between two wraps
          // would publish whatever it points at. Anything that is not our own
          // private empty directory is left where it is: it is not ours to delete.
          try {
@@ -662,24 +707,34 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 -                stat.uid === process.getuid?.() &&
 -                (stat.mode & 0o077) === 0 &&
 +            const stat = fs.lstatSync(emptyMountSourceDir, { bigint: true });
-+            if (emptyMountSourceIdentity !== undefined &&
-+                sameMountPointIdentity(stat, emptyMountSourceIdentity) &&
++            if (sameMountPointIdentity(stat, emptyMountSourceIdentity) &&
 +                stat.isDirectory() &&
 +                stat.uid === BigInt(process.getuid?.() ?? -1) &&
 +                (stat.mode & 0o077n) === 0n &&
                  fs.readdirSync(emptyMountSourceDir).length === 0) {
                  return emptyMountSourceDir;
              }
-@@ -538,6 +691,8 @@ function ensureEmptyMountSourceDir() {
+@@ -532,12 +721,17 @@ function ensureEmptyMountSourceDir() {
+             // Gone, or no longer inspectable: make a new one below.
+         }
+         logForDebugging(`[Sandbox Linux] Not reusing the empty-directory mount source, it is gone or no longer our own empty directory: ${emptyMountSourceDir}`);
++        releaseMountPointIdentity(takeEmptyMountSourceIdentity());
+     }
+-    emptyMountSourceDir = fs.mkdtempSync(path.join(tmpdir(), 'claude-empty-'));
++    registerExitCleanupHandler();
++    const source = fs.mkdtempSync(path.join(tmpdir(), 'claude-empty-'));
+     // mkdtemp asks for 0700 but the umask applies, so under `umask 0200` the
      // directory lands on 0500. Set the mode here rather than let the check
      // above reject the directory this call has just made.
-     fs.chmodSync(emptyMountSourceDir, 0o700);
-+    const identity = directoryIdentity(emptyMountSourceDir);
-+    emptyMountSourceIdentity = { dev: identity.dev, ino: identity.ino, kind: MountPointKind.Directory };
+-    fs.chmodSync(emptyMountSourceDir, 0o700);
++    fs.chmodSync(source, 0o700);
++    const identity = directoryIdentity(source);
++    emptyMountSourceDir = source;
++    emptyMountSourceIdentity = identity;
      return emptyMountSourceDir;
  }
  export const CAP_SETFCAP = 31;
-@@ -894,11 +1049,12 @@ function registerExitCleanupHandler() {
+@@ -894,11 +1088,14 @@ function registerExitCleanupHandler() {
      exitHandlerRegistered = true;
  }
  /**
@@ -689,14 +744,16 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 - * When protecting non-existent deny paths, bwrap creates empty files on the
 - * host filesystem as mount points for --ro-bind. These files persist after
 - * bwrap exits. This function removes them.
-+ * Exclusive creation records each mount point's device/inode identity before
-+ * execution. Cleanup moves a matching entry to a private name, checks the
++ * Exclusive creation records each mount point's device/inode identity and
++ * keeps its descriptor open until the record is retired, preventing inode
++ * number reuse from aliasing a replacement. Cleanup moves a matching entry
++ * to a private name, checks the
 + * identity again there and deletes only that; a replacement is put back
 + * without overwriting (see removeOwnedEntry), never deleted.
   *
   * This should be called after each sandboxed command completes to prevent
   * ghost dotfiles (e.g. .bashrc, .gitconfig) from appearing in the working
-@@ -911,8 +1067,8 @@ function registerExitCleanupHandler() {
+@@ -911,8 +1108,8 @@ function registerExitCleanupHandler() {
   * is unhashed, so path lookup no longer finds the mount) and the deny rule
   * stops applying inside that sandbox.
   *
@@ -707,15 +764,15 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
   *
   * Also closes the `--args` profiles the wraps of this batch opened.
   */
-@@ -932,24 +1088,13 @@ export function cleanupBwrapMountPoints(opts) {
+@@ -930,58 +1127,67 @@ export function cleanupBwrapMountPoints(opts) {
+         activeSandboxCount = 0;
+         forcedCleanups++;
      }
-     // Deepest first: a sandbox wrapped while another's directory mount point is
-     // there gets its own inside it, and a directory goes only when it is empty.
+-    // Deepest first: a sandbox wrapped while another's directory mount point is
+-    // there gets its own inside it, and a directory goes only when it is empty.
 -    const deepestFirst = [...bwrapMountPoints].sort((a, b) => b.length - a.length);
 -    for (const mountPoint of deepestFirst) {
-+    const deepestFirst = [...bwrapMountPoints].sort(([a], [b]) => b.length - a.length);
-+    for (const [mountPoint, identity] of deepestFirst) {
-         try {
+-        try {
 -            // Only remove if it's still the empty file/directory bwrap created.
 -            // If something else has written real content, leave it alone.
 -            const stat = fs.statSync(mountPoint);
@@ -730,58 +787,96 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
 -                if (entries.length === 0) {
 -                    fs.rmdirSync(mountPoint);
 -                    logForDebugging(`[Sandbox Linux] Cleaned up bwrap mount point (dir): ${mountPoint}`);
--                }
-+            // Never follow links or claim a replacement, even an empty one; a
-+            // directory goes only while still empty.
-+            if (removeOwnedEntry(mountPoint, identity) === 'removed') {
-+                logForDebugging(`[Sandbox Linux] Cleaned up bwrap mount point (${identity.kind === MountPointKind.File ? 'file' : 'dir'}): ${mountPoint}`);
++    const retired = [];
++    try {
++        // Deepest first: a sandbox wrapped while another's directory mount point is
++        // there gets its own inside it, and a directory goes only when it is empty.
++        const deepestFirst = [...bwrapMountPoints].sort(([a], [b]) => b.length - a.length);
++        for (const [mountPoint, identity] of deepestFirst) {
++            if (bwrapMountPoints.get(mountPoint) !== identity)
++                continue;
++            bwrapMountPoints.delete(mountPoint);
++            retired.push(identity);
++            try {
++                // Never follow links or claim a replacement, even an empty one; a
++                // directory goes only while still empty.
++                if (removeOwnedEntry(mountPoint, identity) === 'removed') {
++                    logForDebugging(`[Sandbox Linux] Cleaned up bwrap mount point (${identity.kind === MountPointKind.File ? 'file' : 'dir'}): ${mountPoint}`);
+                 }
              }
++            catch {
++                // Ignore path cleanup errors; the ownership record is retired.
++            }
          }
-         catch {
-@@ -959,24 +1104,31 @@ export function cleanupBwrapMountPoints(opts) {
-     bwrapMountPoints.clear();
-     if (emptyMountSourceDir !== undefined) {
-         try {
+-        catch {
+-            // Ignore cleanup errors — the file may have already been removed
+-        }
+-    }
+-    bwrapMountPoints.clear();
+-    if (emptyMountSourceDir !== undefined) {
+-        try {
 -            // rmdirSync, not a recursive remove: it neither follows a symlink nor
 -            // descends, so a path that is no longer our empty directory is left
 -            // exactly as found.
 -            fs.rmdirSync(emptyMountSourceDir);
 -            logForDebugging(`[Sandbox Linux] Cleaned up the empty-directory mount source: ${emptyMountSourceDir}`);
 -            emptyMountSourceDir = undefined;
-+            // Not a recursive remove: it neither follows a symlink nor descends,
-+            // and what is checked and deleted is the entry moved to a private
-+            // name, so a path that is no longer our empty directory is left as found.
-+            const outcome = emptyMountSourceIdentity === undefined
-+                ? 'foreign'
-+                : removeOwnedEntry(emptyMountSourceDir, emptyMountSourceIdentity);
-+            if (outcome === 'kept') {
-+                logForDebugging(`[Sandbox Linux] Left the empty-directory mount source behind, something has written into it: ${emptyMountSourceDir}`);
-+            }
-+            else {
-+                if (outcome === 'removed')
-+                    logForDebugging(`[Sandbox Linux] Cleaned up the empty-directory mount source: ${emptyMountSourceDir}`);
-+                emptyMountSourceDir = undefined;
-+                emptyMountSourceIdentity = undefined;
-+            }
-         }
-         catch (err) {
-             const code = err.code;
+-        }
+-        catch (err) {
+-            const code = err.code;
 -            if (code === 'ENOTEMPTY') {
--                logForDebugging(`[Sandbox Linux] Left the empty-directory mount source behind, something has written into it: ${emptyMountSourceDir}`);
--            }
++        if (emptyMountSourceDir !== undefined) {
++            if (emptyMountSourceIdentity === undefined)
++                throw new Error('Sandbox empty mount source identity is missing');
++            let outcome;
++            try {
++                // Not recursive: a replacement is left as found.
++                outcome = removeOwnedEntry(emptyMountSourceDir, emptyMountSourceIdentity);
++            }
++            catch (err) {
++                // Busy, inaccessible or non-empty sources remain ours to retry,
++                // with the descriptor still pinning their recorded identity.
++                if (err.code === 'ENOENT' || err.code === 'ENOTDIR')
++                    outcome = 'gone';
++            }
++            if (outcome === 'kept') {
+                 logForDebugging(`[Sandbox Linux] Left the empty-directory mount source behind, something has written into it: ${emptyMountSourceDir}`);
+             }
 -            // Forget the path only when there is nothing left to remove. ENOTEMPTY,
 -            // EACCES and EBUSY (a forced cleanup while a live sandbox still pins the
-+            // Forget the path only when there is nothing left to remove. EACCES
-+            // and EBUSY (a forced cleanup while a live sandbox still pins the
-             // source) leave it ours to try again; the revalidation on next use
-             // decides whether it can be reused.
-             if (code === 'ENOENT' || code === 'ENOTDIR') {
-                 emptyMountSourceDir = undefined;
-+                emptyMountSourceIdentity = undefined;
+-            // source) leave it ours to try again; the revalidation on next use
+-            // decides whether it can be reused.
+-            if (code === 'ENOENT' || code === 'ENOTDIR') {
+-                emptyMountSourceDir = undefined;
++            else if (outcome !== undefined) {
++                const source = emptyMountSourceDir;
++                retired.push(takeEmptyMountSourceIdentity());
++                if (outcome === 'removed')
++                    logForDebugging(`[Sandbox Linux] Cleaned up the empty-directory mount source: ${source}`);
              }
          }
      }
-@@ -2322,12 +2474,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+-    for (const argsFd of [...bwrapArgsFds]) {
+-        closeBwrapArgsProfile(argsFd);
++    finally {
++        const failures = [];
++        for (const identity of retired) {
++            try {
++                releaseMountPointIdentity(identity);
++            }
++            catch (error) {
++                failures.push(error);
++            }
++        }
++        for (const argsFd of [...bwrapArgsFds]) {
++            closeBwrapArgsProfile(argsFd);
++        }
++        if (failures.length > 0)
++            throw new AggregateError(failures, 'Failed to close sandbox mount ownership descriptors');
+     }
+ }
+ function isExecutable(p) {
+@@ -2322,12 +2528,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
                  unmakeableDenyDests.add(dest);
              }
              else {
@@ -805,7 +900,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
              }
              return { dest, kind };
          };
-@@ -2851,7 +3008,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2851,7 +3062,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
   * inheritable sets.
   */
  export async function wrapCommandWithSandboxLinux(params) {
@@ -814,7 +909,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..39bb6a7e5ff3bfeaf7b2898e8e717488
      // bubblewrap takes no patterns, so every path here is a name. The literal
      // lists are folded into the lists they belong to, once, so that nothing
      // below can read a list and miss them; a pattern in `allowOnly` that is no
-@@ -3029,6 +3186,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+@@ -3029,6 +3240,18 @@ export async function wrapCommandWithSandboxLinux(params) {
          };
          // Always bind /dev
          bwrapArgs.push('--dev', '/dev');

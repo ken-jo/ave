@@ -80,11 +80,17 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(create).toContain("fs.openSync(entry, 'wx', 0o444)");
     expect(create).toContain("fs.fstatSync(fd, { bigint: true })");
     expect(create).toContain("identity = publishOwnedDirectory(entry)");
-    expect(create).toContain("bwrapMountPoints.set(dest, { dev: identity.dev, ino: identity.ino, kind })");
+    expect(create).toContain("identity = { dev: stat.dev, ino: stat.ino, kind, fd }");
+    expect(create).toContain("bwrapMountPoints.set(dest, identity)");
     // Directories: identity from a descriptor on a private name, then moved
     // onto an exclusive reservation.
     expect(functionBody(linux, /\nfunction directoryIdentity\(/u))
       .toContain("fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW");
+    expect(functionBody(linux, /\nfunction directoryIdentity\(/u))
+      .toContain("kind: MountPointKind.Directory, fd");
+    const retire = functionBody(linux, /\nfunction releaseMountPointIdentity\(/u);
+    expect(retire).toContain("identity.fd = undefined");
+    expect(retire).toContain("fs.closeSync(fd)");
     const publish = functionBody(linux, /\nfunction publishOwnedDirectory\(/u);
     expect(publish).toContain("identity = directoryIdentity(staged)");
     expect(publish).toContain("fs.mkdirSync(entry, { mode: 0o700 })");
