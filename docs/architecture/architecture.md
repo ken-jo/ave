@@ -1556,9 +1556,12 @@ answers an egress ask; an answer from any other surface leaves it pending. Conve
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
-row. Where the identity is
-only the proxy username (Windows srt-win, `egressIdentityStrength() ===
-"shared"`), grants stop at This conversation (a terminal: This tab).
+row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
+at This conversation (a terminal: This tab). Persistent grants remain stored
+when the channel becomes shared, but cannot authorize it; they apply again
+when the channel is strong. Grant lookup filters eligible scopes before
+selecting the narrowest match.
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket
@@ -1653,9 +1656,10 @@ in its directory.
   and when its process timeout fires or `wxc-exec.exe` is killed, every process
   in the container ends with it. Shell egress identity is therefore
   `kernel-channel`; extension identity stays `shared`.
-  `maxEgressGrantScope` (`kernel-channel` → `always`, `shared` →
-  `conversation`) is the interface the egress ask (PR 4) is to use; nothing
-  calls it yet, and no surface claims a grant cap.
+  `egressGrantScopesFor` applies `maxEgressGrantScope` (`kernel-channel` →
+  `always`, `shared` → `conversation`) to both approval choices and grant
+  reuse. Origin and destination class further limit the scopes; terminal
+  tabs and extensions keep their own policy.
 - **DNS is not confined.** Name resolution goes through the host's DNS client
   service, outside the container's WFP filter: inside a container
   `example.com` resolved and an unknown name came back NXDOMAIN (measured), so

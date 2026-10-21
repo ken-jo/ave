@@ -404,6 +404,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
+        const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
         const key = holdKey(token, destination, strength);
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
@@ -413,10 +414,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           }
         }
         for (;;) {
-          const matched = await deps.grants.matchingScope(subject, grantDestination);
-          // A persistent grant never covers a local or private destination (none
-          // is offered for one; this also holds for a hand-edited file).
-          const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
+          const granted = await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
           if (granted !== undefined) {
             if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
             return { owner, decision: pass(allow("grant", granted)) };

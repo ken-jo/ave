@@ -16,12 +16,16 @@ import {
   EGRESS_DENY_REASONS,
   type EgressApprovalRequest,
   type EgressApprovalAnswer,
+  type EgressAskDeps,
 } from "../egress-ask.js";
 import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
-import { egressIdentityStrength } from "../egress-identity.js";
+import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
+
+const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
 const SHELL_TOKEN = "5".repeat(32);
 const WORKER_TOKEN = "6".repeat(32);
@@ -77,9 +81,9 @@ let askEnabled: boolean;
 let requesterPresent: boolean;
 const signals = new Map<string, AbortSignal>();
 
-function rawCallback() {
+function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () => strength) {
   return createEgressAskCallback({
-    identityStrength: () => strength,
+    identityStrength,
     ownerOf: (token) => owners.get(token),
     abortSignalOf: (token) => signals.get(token),
     workerAllowedDomains: (pluginId) => (pluginId === "fixture_plugin" ? ["api.fixture.example", "*.cdn.example:443"] : []),
@@ -210,6 +214,98 @@ describe("egress ask callback — attribution", () => {
     expect(await ask({ host: "example.com", port: undefined }, listener(SHELL_TOKEN)))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
     expect(asked).toEqual([]);
+  });
+});
+
+describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identity changes", (platform) => {
+  let originalPlatform: NodeJS.Platform;
+
+  beforeEach(() => {
+    originalPlatform = process.platform;
+    setProcessPlatform(platform);
+    noteAsrtUnixSocketPolicy(false);
+  });
+
+  afterEach(() => {
+    noteAsrtUnixSocketPolicy(false);
+    setProcessPlatform(originalPlatform);
+  });
+
+  it.each(["workspace", "always"] as const)("rechecks a persisted %s grant against the current identity", async (scope) => {
+    const destination = { host: "github.com", port: 443 };
+    const strongAsk = bothPhases(rawCallback(egressIdentityStrength));
+    answer = async () => ({ allow: true, scope });
+    expect(await strongAsk(destination, listener(SHELL_TOKEN))).toBe(true);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "prompt", scope });
+    const persisted = await grants.listPersistent();
+
+    // Reload the real store as on restart, with another live shell invocation.
+    grants = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
+    owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId: "session-2" } });
+    const handleProxyAsk = bothPhases(rawCallback(egressIdentityStrength));
+    noteAsrtUnixSocketPolicy(platform === "darwin");
+    const weak = { ...listener(OTHER_SHELL_TOKEN), identity: platform === "win32" ? "username" as const : "listener" as const };
+    askEnabled = false;
+    const beforeDisabled = asked.length;
+    expect(await handleProxyAsk(destination, weak)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    expect(asked).toHaveLength(beforeDisabled);
+    askEnabled = true;
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await handleProxyAsk(destination, weak)).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked.at(-1)?.scopes).toEqual(["once", "conversation"]);
+    expect(audit.at(-1)).toMatchObject({ decision: "deny", basis: "prompt", scope: null });
+
+    // The stored grant remains usable when the channel is strong again.
+    noteAsrtUnixSocketPolicy(false);
+    const beforeStrong = asked.length;
+    expect(await handleProxyAsk(destination, listener(OTHER_SHELL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(beforeStrong);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope });
+    expect(await grants.listPersistent()).toEqual(persisted);
+
+    // A narrower grant still covers this conversation on the shared channel.
+    noteAsrtUnixSocketPolicy(platform === "darwin");
+    answer = async () => ({ allow: true, scope: "conversation" });
+    expect(await handleProxyAsk(destination, weak)).toBe(true);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "prompt", scope: "conversation" });
+    const beforeReuse = asked.length;
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await handleProxyAsk(destination, weak)).toBe(true);
+    expect(asked).toHaveLength(beforeReuse);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "conversation" });
+    expect(await handleProxyAsk(destination, { ...weak, attributionKey: SHELL_TOKEN }))
+      .toEqual({ allow: false, reason: "denied by the user" });
+  });
+
+  it("preserves tab ownership and the terminal origin when a persistent grant cannot be reused", async () => {
+    const destination = { host: "github.com", port: 443 };
+    const terminalSubject = {
+      token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const,
+    };
+    await grants.grant("always", ["once", "tab", "always"], terminalSubject, destination);
+    const handleProxyAsk = bothPhases(rawCallback(egressIdentityStrength));
+    noteAsrtUnixSocketPolicy(platform === "darwin");
+    answer = async () => ({ allow: true, scope: "tab" });
+    expect(await handleProxyAsk(destination, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked.at(-1)?.scopes).toEqual(["once", "tab"]);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "prompt", scope: "tab" });
+    const beforeReuse = asked.length;
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await handleProxyAsk(destination, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(beforeReuse);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "tab" });
+    expect(await handleProxyAsk(destination, listener(OTHER_TERMINAL_TOKEN)))
+      .toEqual({ allow: false, reason: "denied by the user" });
+
+    noteAsrtUnixSocketPolicy(false);
+    expect(await handleProxyAsk(destination, listener(SHELL_TOKEN)))
+      .toEqual({ allow: false, reason: "denied by the user" });
+    if (platform === "darwin") {
+      const beforeStrong = asked.length;
+      expect(await handleProxyAsk(destination, listener(OTHER_TERMINAL_TOKEN))).toBe(true);
+      expect(asked).toHaveLength(beforeStrong);
+      expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "always" });
+    }
   });
 });
 
@@ -796,7 +892,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(await callback()({ host: "meta.example", port: 80 }, listener(SHELL_TOKEN, ["169.254.169.254"])))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(asked.map((request) => request.destination.host)).toEqual(["nas.example", "nas.example", "meta.example"]);
-    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "meta.example", port: 80 }))
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "meta.example", port: 80 }, matchingScopes))
       .toBeUndefined();
   });
 
@@ -805,7 +901,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN, ["140.82.112.3"]))).toBe(true);
     expect(asked).toHaveLength(1);
     expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "workspace"]]);
-    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }))
+    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
       .toBe("workspace");
   });
 
@@ -814,7 +910,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     const raw = rawCallback();
     expect(await raw({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
     expect(audit).toEqual([]);
-    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }))
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
       .toBeUndefined();
   });
 
@@ -865,7 +961,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     // Each connection had its own banner: "once" is not held for the next.
     expect(asked).toHaveLength(2);
     expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "once"], ["allow", "prompt", "once"]]);
-    expect(await grants.matchingScope({ token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const }, { host: "github.com", port: 443 }))
+    expect(await grants.matchingScope({ token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const }, { host: "github.com", port: 443 }, matchingScopes))
       .toBeUndefined();
   });
 

@@ -22,8 +22,10 @@ import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
+import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 
 const ALL = ["once", "conversation", "workspace", "always"] as const;
+const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 const subject = { token: "1".repeat(32), sessionId: "session-1", tabId: undefined, workspaceRoot: "", origin: "shell" as const };
 const github = { host: "github.com", port: 443 };
 
@@ -44,6 +46,28 @@ afterEach(() => {
 });
 
 describe("EgressGrantStore", () => {
+  it("filters eligible scopes before choosing a stored grant", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("once", ALL, subject, github);
+    await store.grant("conversation", ALL, subject, github);
+    await store.grant("always", ALL, subject, github);
+    expect(await store.matchingScope(subject, github, ["conversation", "always"])).toBe("conversation");
+    expect(await store.matchingScope(subject, github, ["always"])).toBe("always");
+    expect(await store.matchingScope(subject, github, [])).toBeUndefined();
+  });
+
+  it("uses an eligible always grant when the matching workspace grant is ineligible", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("workspace", ALL, subject, github);
+    await store.grant("always", ALL, subject, github);
+    const saved = readFileSync(file, "utf8");
+    const reloaded = new EgressGrantStore(file);
+
+    expect(await reloaded.matchingScope(subject, github, ["always"])).toBe("always");
+    expect(await reloaded.matchingScope(subject, github, ALL)).toBe("workspace");
+    expect(readFileSync(file, "utf8")).toBe(saved);
+  });
+
   it.each(["once", "conversation", "tab"] as const)("keeps %s grants separate for every approved network class", async (scope) => {
     const store = new EgressGrantStore(file);
     const owner = scope === "tab"
@@ -52,9 +76,9 @@ describe("EgressGrantStore", () => {
     const networks = ["public", "local", "unverified"] as const;
     for (const network of networks) {
       const destination = { ...github, network };
-      expect(await store.matchingScope(owner, destination)).toBeUndefined();
+      expect(await store.matchingScope(owner, destination, matchingScopes)).toBeUndefined();
       await store.grant(scope, [scope], owner, destination);
-      expect(await store.matchingScope(owner, destination)).toBe(scope);
+      expect(await store.matchingScope(owner, destination, matchingScopes)).toBe(scope);
     }
     if (scope !== "once") {
       const listed = scope === "tab" ? store.listTab() : store.listConversation();
@@ -62,9 +86,9 @@ describe("EgressGrantStore", () => {
       for (const grant of listed) store.noteUse(scope, owner, grant);
       const target = listed.find(grant => grant.network === "local")!;
       expect(await store.revoke(target)).toEqual({ removed: true, tokens: [owner.token] });
-      expect(await store.matchingScope(owner, { ...github, network: "local" })).toBeUndefined();
-      expect(await store.matchingScope(owner, { ...github, network: "public" })).toBe(scope);
-      expect(await store.matchingScope(owner, { ...github, network: "unverified" })).toBe(scope);
+      expect(await store.matchingScope(owner, { ...github, network: "local" }, matchingScopes)).toBeUndefined();
+      expect(await store.matchingScope(owner, { ...github, network: "public" }, matchingScopes)).toBe(scope);
+      expect(await store.matchingScope(owner, { ...github, network: "unverified" }, matchingScopes)).toBe(scope);
     }
   });
 
@@ -76,17 +100,17 @@ describe("EgressGrantStore", () => {
     const store = new EgressGrantStore(file);
     const owner = { ...subject, origin };
     expect(await store.listPersistent()).toEqual([{ ...legacy, network: "public" }]);
-    expect(await store.matchingScope(owner, github)).toBe(scope);
+    expect(await store.matchingScope(owner, github, matchingScopes)).toBe(scope);
     for (const network of ["local", "unverified"] as const) {
-      expect(await store.matchingScope(owner, { ...github, network })).toBeUndefined();
+      expect(await store.matchingScope(owner, { ...github, network }, matchingScopes)).toBeUndefined();
     }
-    expect(await store.matchingScope({ ...owner, origin: origin === "shell" ? "terminal" : "shell" }, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...owner, origin: origin === "shell" ? "terminal" : "shell" }, github, matchingScopes)).toBeUndefined();
     expect((await store.revoke({ ...legacy, network: "public" })).removed).toBe(true);
   });
 
   it.each([null, "reserved", "unknown", 1])("refuses an explicit invalid stored class %s", async (network) => {
     writeFileSync(file, JSON.stringify({ version: 1, grants: [{ scope: "always", origin: "shell", ...github, network, grantedAt: "2026-10-19T00:00:00Z" }] }));
-    await expect(new EgressGrantStore(file).matchingScope(subject, github)).rejects.toThrow(/invalid network class/u);
+    await expect(new EgressGrantStore(file).matchingScope(subject, github, matchingScopes)).rejects.toThrow(/invalid network class/u);
     await expect(new EgressGrantStore(file).grant("once", ALL, subject, { ...github, network } as never)).rejects.toThrow(/invalid network class/u);
   });
 
@@ -100,7 +124,7 @@ describe("EgressGrantStore", () => {
     const store = new EgressGrantStore(file);
     expect(await store.listPersistent()).toEqual([recorded]);
     for (const judged of ["public", "local", "unverified"] as const) {
-      expect(await store.matchingScope(subject, { ...github, network: judged })).toBe(network === "public" && judged === "public" ? "always" : undefined);
+      expect(await store.matchingScope(subject, { ...github, network: judged }, matchingScopes)).toBe(network === "public" && judged === "public" ? "always" : undefined);
     }
     expect(await store.revoke(recorded)).toEqual({ removed: true, tokens: [] });
   });
@@ -108,14 +132,14 @@ describe("EgressGrantStore", () => {
   it("records each scope where it belongs and matches only that subject", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("once", ALL, subject, github);
-    expect(await store.matchingScope(subject, github)).toBe("once");
-    expect(await store.matchingScope({ ...subject, token: "2".repeat(32) }, github)).toBeUndefined();
-    expect(await store.matchingScope(subject, { host: "github.com", port: 22 })).toBeUndefined();
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBe("once");
+    expect(await store.matchingScope({ ...subject, token: "2".repeat(32) }, github, matchingScopes)).toBeUndefined();
+    expect(await store.matchingScope(subject, { host: "github.com", port: 22 }, matchingScopes)).toBeUndefined();
 
     await store.grant("conversation", ALL, subject, { host: "registry.npmjs.org", port: 443 });
-    expect(await store.matchingScope({ ...subject, token: "3".repeat(32) }, { host: "registry.npmjs.org", port: 443 }))
+    expect(await store.matchingScope({ ...subject, token: "3".repeat(32) }, { host: "registry.npmjs.org", port: 443 }, matchingScopes))
       .toBe("conversation");
-    expect(await store.matchingScope({ ...subject, token: "3".repeat(32), sessionId: "session-2" }, { host: "registry.npmjs.org", port: 443 }))
+    expect(await store.matchingScope({ ...subject, token: "3".repeat(32), sessionId: "session-2" }, { host: "registry.npmjs.org", port: 443 }, matchingScopes))
       .toBeUndefined();
 
     await store.grant("workspace", ALL, subject, { host: "pypi.org", port: 443 }, new Date("2026-10-19T01:02:03.000Z"));
@@ -128,9 +152,9 @@ describe("EgressGrantStore", () => {
       ],
     });
     const elsewhere = { token: "4".repeat(32), sessionId: undefined, tabId: undefined, workspaceRoot: join(dir, "other"), origin: "shell" as const };
-    expect(await store.matchingScope(elsewhere, { host: "pypi.org", port: 443 })).toBeUndefined();
-    expect(await store.matchingScope(elsewhere, { host: "example.com", port: 443 })).toBe("always");
-    expect(await store.matchingScope({ ...elsewhere, workspaceRoot: `${subject.workspaceRoot}/` }, { host: "pypi.org", port: 443 }))
+    expect(await store.matchingScope(elsewhere, { host: "pypi.org", port: 443 }, matchingScopes)).toBeUndefined();
+    expect(await store.matchingScope(elsewhere, { host: "example.com", port: 443 }, matchingScopes)).toBe("always");
+    expect(await store.matchingScope({ ...elsewhere, workspaceRoot: `${subject.workspaceRoot}/` }, { host: "pypi.org", port: 443 }, matchingScopes))
       .toBe("workspace");
   });
 
@@ -138,7 +162,7 @@ describe("EgressGrantStore", () => {
     const store = new EgressGrantStore(file);
     await store.grant("once", ALL, subject, github);
     store.releaseToken(subject.token);
-    expect(await store.matchingScope(subject, github)).toBeUndefined();
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBeUndefined();
   });
 
   it("refuses a scope that was not offered or that the subject cannot hold, and a non-canonical destination", async () => {
@@ -162,10 +186,10 @@ describe("EgressGrantStore", () => {
       .toBe(false);
     expect((await store.revoke({ scope: "workspace", origin: "shell", host: "github.com", port: 443, workspaceRoot })).removed)
       .toBe(true);
-    expect(await store.matchingScope(subject, github)).toBe("always");
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBe("always");
     expect((await store.revoke({ scope: "always", origin: "terminal", host: "github.com", port: 443 })).removed).toBe(false);
     expect((await store.revoke({ scope: "always", origin: "shell", host: "github.com", port: 443 })).removed).toBe(true);
-    expect(await store.matchingScope(subject, github)).toBeUndefined();
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBeUndefined();
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, grants: [] });
   });
 
@@ -187,7 +211,7 @@ describe("EgressGrantStore", () => {
   ])("refuses a grant file with %s instead of reading it as empty", async (_label, content, problem) => {
     writeFileSync(file, content);
     const store = new EgressGrantStore(file);
-    const read = store.matchingScope(subject, github);
+    const read = store.matchingScope(subject, github, matchingScopes);
     await expect(read).rejects.toBeInstanceOf(EgressGrantFileError);
     await expect(store.listPersistent()).rejects.toThrow(problem);
     // A write never replaces a file it could not read.
@@ -206,7 +230,7 @@ describe("conversation grants and what a revoke closes", () => {
     expect((await store.revoke({ scope: "conversation", sessionId: "session-2", host: "github.com", port: 443 })).removed).toBe(false);
     expect((await store.revoke({ scope: "conversation", sessionId: "session-1", host: "github.com", port: 443 })).removed).toBe(true);
     expect(store.listConversation()).toEqual([]);
-    expect(await store.matchingScope({ ...subject, token: "9".repeat(32) }, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...subject, token: "9".repeat(32) }, github, matchingScopes)).toBeUndefined();
   });
 
   it("hands back the live calls a revoked grant let through, and forgets released ones", async () => {
@@ -234,9 +258,9 @@ describe("terminal tab grants (design F)", () => {
   it("records This tab for that tab only, never for a conversation, and lists it", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("tab", TERMINAL_LADDER, tabSubject, github, new Date("2026-10-20T01:00:00.000Z"));
-    expect(await store.matchingScope({ ...tabSubject, token: "6".repeat(32) }, github)).toBe("tab");
-    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-2" }, github)).toBeUndefined();
-    expect(await store.matchingScope(subject, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...tabSubject, token: "6".repeat(32) }, github, matchingScopes)).toBe("tab");
+    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-2" }, github, matchingScopes)).toBeUndefined();
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBeUndefined();
     expect(store.listTab()).toEqual([
       { scope: "tab", tabId: TAB, host: "github.com", port: 443, network: "public", grantedAt: "2026-10-20T01:00:00.000Z" },
     ]);
@@ -258,7 +282,7 @@ describe("terminal tab grants (design F)", () => {
     store.noteUse("tab", tabSubject, github);
     expect((await store.revoke({ scope: "tab", tabId: TAB, host: "pypi.org", port: 443 })).removed).toBe(true);
     expect(store.releaseTab(TAB).map((grant) => grant.host)).toEqual(["github.com"]);
-    expect(await store.matchingScope(tabSubject, github)).toBeUndefined();
+    expect(await store.matchingScope(tabSubject, github, matchingScopes)).toBeUndefined();
     expect(store.listTab().map((grant) => grant.tabId)).toEqual(["terminal:0a1b2c3d-2"]);
     // The released tab's uses went with it: a later revoke names no live shell.
     expect((await store.revoke({ scope: "tab", tabId: TAB, host: "github.com", port: 443 }))).toEqual({ removed: false, tokens: [] });
@@ -276,20 +300,20 @@ describe("terminal tab grants (design F)", () => {
     await expect(store.grant("once", TERMINAL_LADDER, tabSubject, github)).rejects.toThrow(/Allow once is not held/u);
     await expect(store.grant("workspace", [...TERMINAL_LADDER, "workspace"], { ...tabSubject, workspaceRoot: "/work/project" }, github))
       .rejects.toThrow(/only a shell call can hold a workspace grant/u);
-    expect(await store.matchingScope(tabSubject, github)).toBeUndefined();
+    expect(await store.matchingScope(tabSubject, github, matchingScopes)).toBeUndefined();
   });
 
   it("keeps an Always grant to its origin: a terminal's never covers a shell call, nor the reverse", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("always", TERMINAL_LADDER, tabSubject, github, new Date("2026-10-20T02:00:00.000Z"));
-    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-9", token: "7".repeat(32) }, github)).toBe("always");
-    expect(await store.matchingScope(subject, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-9", token: "7".repeat(32) }, github, matchingScopes)).toBe("always");
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBeUndefined();
     await store.grant("always", ALL, subject, { host: "pypi.org", port: 443 }, new Date("2026-10-20T02:00:01.000Z"));
-    expect(await store.matchingScope(subject, { host: "pypi.org", port: 443 })).toBe("always");
-    expect(await store.matchingScope(tabSubject, { host: "pypi.org", port: 443 })).toBeUndefined();
+    expect(await store.matchingScope(subject, { host: "pypi.org", port: 443 }, matchingScopes)).toBe("always");
+    expect(await store.matchingScope(tabSubject, { host: "pypi.org", port: 443 }, matchingScopes)).toBeUndefined();
     // A shell workspace grant on the very directory terminals are anchored to does not reach a terminal either.
     await store.grant("workspace", ALL, { ...subject, workspaceRoot: "/work/project" }, { host: "crates.io", port: 443 });
-    expect(await store.matchingScope({ ...tabSubject, workspaceRoot: "/work/project" }, { host: "crates.io", port: 443 })).toBeUndefined();
+    expect(await store.matchingScope({ ...tabSubject, workspaceRoot: "/work/project" }, { host: "crates.io", port: 443 }, matchingScopes)).toBeUndefined();
     expect(await store.listPersistent()).toEqual([
       { scope: "always", origin: "terminal", host: "github.com", port: 443, network: "public", grantedAt: "2026-10-20T02:00:00.000Z" },
       { scope: "always", origin: "shell", host: "pypi.org", port: 443, network: "public", grantedAt: "2026-10-20T02:00:01.000Z" },
@@ -298,19 +322,19 @@ describe("terminal tab grants (design F)", () => {
     // Both origins may hold an Always grant for one destination; revoking one leaves the other.
     await store.grant("always", ALL, subject, github);
     expect((await store.revoke({ scope: "always", origin: "terminal", host: "github.com", port: 443 })).removed).toBe(true);
-    expect(await store.matchingScope(subject, github)).toBe("always");
-    expect(await store.matchingScope(tabSubject, github)).toBeUndefined();
+    expect(await store.matchingScope(subject, github, matchingScopes)).toBe("always");
+    expect(await store.matchingScope(tabSubject, github, matchingScopes)).toBeUndefined();
   });
 
   it("keeps This tab to its own tab: another tab, a respawned shell's new tab id and a shell call do not use it", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("tab", TERMINAL_LADDER, tabSubject, github);
-    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-2", token: "8".repeat(32) }, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-2", token: "8".repeat(32) }, github, matchingScopes)).toBeUndefined();
     // A shell call carries no tab id, even inside the same conversation window.
-    expect(await store.matchingScope({ ...subject, token: "9".repeat(32) }, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...subject, token: "9".repeat(32) }, github, matchingScopes)).toBeUndefined();
     // The tab's shell exited: its grants go with it, and the respawned shell asks again.
     store.releaseTab(TAB);
-    expect(await store.matchingScope({ ...tabSubject, token: "a".repeat(32) }, github)).toBeUndefined();
+    expect(await store.matchingScope({ ...tabSubject, token: "a".repeat(32) }, github, matchingScopes)).toBeUndefined();
   });
 
   // Directory symlink creation may require a privilege the host does not grant.
@@ -321,7 +345,7 @@ describe("terminal tab grants (design F)", () => {
     symlinkSync(real, link, "dir");
     const store = new EgressGrantStore(file);
     await store.grant("workspace", ALL, { ...subject, workspaceRoot: link }, github);
-    expect(await store.matchingScope({ ...subject, workspaceRoot: real }, github)).toBe("workspace");
+    expect(await store.matchingScope({ ...subject, workspaceRoot: real }, github, matchingScopes)).toBe("workspace");
     expect((await store.listPersistent())[0]).toMatchObject({ workspaceRoot: canonicalizePathForMatch(real) });
   });
 

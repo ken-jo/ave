@@ -324,18 +324,23 @@ export class EgressGrantStore {
   constructor(private readonly filePath: string = defaultEgressGrantFilePath()) {}
 
   /**
-   * The scope of a grant that covers this destination for this subject, or
-   * undefined. Throws EgressGrantFileError when the persistent file is not
-   * valid, so the caller can deny with that reason instead of guessing.
+   * The narrowest eligible grant covering this destination for this subject,
+   * or undefined. The caller limits scopes by current identity, origin and
+   * network class. Throws EgressGrantFileError when the persistent file is
+   * invalid, so the caller can deny with that reason instead of guessing.
    */
-  async matchingScope(subject: EgressGrantSubject, destination: EgressGrantDestination): Promise<EgressGrantScope | undefined> {
+  async matchingScope(
+    subject: EgressGrantSubject,
+    destination: EgressGrantDestination,
+    eligibleScopes: readonly EgressGrantScope[],
+  ): Promise<EgressGrantScope | undefined> {
     const key = destinationKey(destination);
-    if (this.once.get(subject.token)?.has(key)) return "once";
-    if (subject.sessionId !== undefined && this.conversation.get(subject.sessionId)?.has(key)) return "conversation";
-    if (subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
+    if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
+    if (eligibleScopes.includes("conversation") && subject.sessionId !== undefined && this.conversation.get(subject.sessionId)?.has(key)) return "conversation";
+    if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
     // Persistent grants of the subject's own origin only.
     const persistent = (await this.loadPersistent()).filter((grant) =>
-      grant.origin === subject.origin && destinationKey(grant) === key
+      eligibleScopes.includes(grant.scope) && grant.origin === subject.origin && destinationKey(grant) === key
       && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const workspaceRoot = subject.workspaceRoot === undefined ? undefined : canonicalWorkspaceRoot(subject.workspaceRoot);
     if (workspaceRoot !== undefined && persistent.some((g) => g.scope === "workspace" && g.workspaceRoot === workspaceRoot)) return "workspace";
