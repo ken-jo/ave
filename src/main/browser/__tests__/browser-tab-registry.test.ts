@@ -902,14 +902,14 @@ describe("native popup lifecycle", () => {
     const { registry } = setup();
     registry.guestAttached(new FakeGuest(71), 1);
     registry.bindTab(1, { tabId: "page", webContentsId: 71 });
-    let confirm!: (focused: boolean) => void;
-    const focused = new Promise<boolean>((resolve) => { confirm = resolve; });
+    let resolveNativeFocus!: (focused: boolean) => void;
+    const focused = new Promise<boolean>((resolve) => { resolveNativeFocus = resolve; });
     const handle = registry.registerPopup(71, new FakeGuest(72), { select: () => focused, close() {} })!;
     const abort = new AbortController();
     const selecting = registry.requestTabOp(1, { op: "select", tabId: handle, actor: ACTOR }, { signal: abort.signal });
     expect(registry.activeBrowserTab(1)).toBeUndefined();
     abort.abort();
-    confirm(true);
+    resolveNativeFocus(true);
     await expect(selecting).resolves.toEqual({ ok: false, error: "aborted" });
     await Promise.resolve();
     expect(registry.activeBrowserTab(1)).toBeUndefined();
