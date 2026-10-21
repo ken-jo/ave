@@ -91,7 +91,15 @@ async function approvalMemoryFor(
   const memoryScope = scope.kind === "browser-origin"
     ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
     : scope.kind === "browser-agent-tabs" ? { kind: scope.kind }
-      : scope.kind === "terminal-command" ? { kind: scope.kind, commandSha256: scope.commandSha256, tabId: scope.tabId, cwd: scope.cwd }
+      : scope.kind === "terminal-command" ? {
+        kind: scope.kind,
+        commandSha256: scope.commandSha256,
+        tabId: scope.tabId,
+        lane: scope.lane,
+        terminalSessionId: scope.terminalSessionId,
+        sandboxGeneration: scope.sandboxGeneration,
+        cwd: scope.cwd,
+      }
         : scope;
   return Object.freeze({
     kind: "key",
