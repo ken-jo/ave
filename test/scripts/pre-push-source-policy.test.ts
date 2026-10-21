@@ -20,6 +20,7 @@ import {
   isMessageCatalogPath,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
+  readMessageCatalogEntriesBatch,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
@@ -435,16 +436,63 @@ describe("pre-push message catalog selection", () => {
   });
 
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
+    const paths = catalogFiles();
+    const barrel = `${MESSAGES}/generated/index.ts`;
+    const texts = new Map([...paths, barrel].map((path) =>
+      [path, readFileSync(resolve(root, path), "utf8")]));
+    const catalogs = readMessageCatalogEntriesBatch(texts);
     const keys = new Set<string>();
-    for (const path of catalogFiles()) {
-      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"), path);
+    for (const path of paths) {
+      const entries = catalogs.get(path);
       expect(entries, path).not.toBeNull();
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
-    // The barrels carry no keys; the barrel check proves they match the fragments.
-    expect(readMessageCatalogEntries(readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8"))).toBeNull();
+    // Barrels must not contribute keys to the catalog snapshot.
+    expect(catalogs.get(barrel)).toBeNull();
+    expect(readMessageCatalogEntries(texts.get(barrel)!)).toBeNull();
   }, 30_000);
+
+  it("keeps batch catalog results equal to individual reads with mixed valid and refused modules", () => {
+    const texts = new Map<string, string | null>([
+      [`${MESSAGES}/en.ts`, 'export const en = { "seed.title": "Seed" } as const;'],
+      [`${MESSAGES}/generated/panel.ts`, 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/generated/dynamic.ts`, 'export const en = { "panel.title": label("Panel") } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/generated/broken.ts`, 'export const en = { "panel.title": "unterminated };'],
+      [`${MESSAGES}/generated/separator.ts`, 'export const en = { "panel.title": "Panel\u2028title" } as const;'],
+      [`${MESSAGES}/generated/absent.ts`, null],
+      [`${MESSAGES}/generated/index.ts`, 'export { en } from "./panel.js";'],
+    ]);
+    const catalogs = readMessageCatalogEntriesBatch(texts);
+    expect([...catalogs.keys()]).toEqual([...texts.keys()]);
+    for (const [path, text] of texts) {
+      expect(catalogs.get(path), path).toEqual(readMessageCatalogEntries(text, path));
+    }
+    expect(catalogs.get(`${MESSAGES}/en.ts`)).toEqual(new Map([["seed.title", { en: "Seed" }]]));
+    expect(catalogs.get(`${MESSAGES}/generated/panel.ts`)).toEqual(new Map([["panel.title", { en: "Panel", ko: "패널" }]]));
+    for (const name of ["dynamic", "broken", "separator", "absent", "index"]) {
+      expect(catalogs.get(`${MESSAGES}/generated/${name}.ts`), name).toBeNull();
+    }
+    expect(readMessageCatalogEntries(texts.get(`${MESSAGES}/generated/index.ts`)!)).toBeNull();
+  });
+
+  it("refuses a colliding batch without retaining catalog state for the next snapshot", () => {
+    const path = `${MESSAGES}/generated/panel.ts`;
+    const alias = `${MESSAGES}/generated/./panel.ts`;
+    const text = 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };';
+    expect(readMessageCatalogEntriesBatch(new Map([[path, text], [alias, text]]))).toEqual(new Map([
+      [path, null],
+      [alias, null],
+    ]));
+    expect(readMessageCatalogEntriesBatch(new Map([[path, text]])).get(path)).toEqual(new Map([
+      ["panel.title", { en: "Panel", ko: "패널" }],
+    ]));
+    const restored = text.replaceAll("Panel", "Restored");
+    expect(readMessageCatalogEntriesBatch(new Map([[path, restored]])).get(path)).toEqual(new Map([
+      ["panel.title", { en: "Restored", ko: "패널" }],
+    ]));
+    expect(readMessageCatalogEntriesBatch(new Map())).toEqual(new Map());
+  });
 
   it("refuses catalog shapes whose keys it cannot read", () => {
     expect(readMessageCatalogEntries('export const en = { "a.b": "x" + "y", "a.c": `z` } as const;')).toEqual(

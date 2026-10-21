@@ -14,6 +14,9 @@ export function selectTriggeredLockSuites(changedPaths: readonly string[]): { su
 export const MESSAGE_CATALOG_CHECK_SCRIPTS: readonly string[];
 export function isMessageCatalogPath(relativePath: string): boolean;
 export function readMessageCatalogEntries(text: string | null, relativePath?: string): Map<string, Record<string, string>> | null;
+export function readMessageCatalogEntriesBatch(
+  texts: ReadonlyMap<string, string | null>,
+): Map<string, Map<string, Record<string, string>> | null>;
 export function selectMessageCatalogChecks<T extends PrePushChange & { baseSha: string; localSha: string }>(
   entries: T[],
   sources: {
