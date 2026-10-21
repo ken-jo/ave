@@ -34,7 +34,7 @@ function resultMessage(result: NativeActionResult): string {
 }
 
 async function run(app: ElectronApplication, action: NativeAction): Promise<NativeActionResult> {
-  return app.evaluate(async (_electron, name) =>
+  return app.evaluate(async (_main, name) =>
     (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.run(name), action);
 }
 
