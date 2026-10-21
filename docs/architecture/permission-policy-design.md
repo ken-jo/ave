@@ -563,11 +563,27 @@ direct parent is that owner. The relation spans one parent/child step in either
 direction, never a grandchild, sibling, or unrelated session. A current lease
 still belongs exclusively to its exact actor.
 Agent mutation needs a valid scoped control lease and live `agent-active` mode.
-Human input or Stop persistently pauses mutation until explicit trusted-chrome
+Recognized human input or Stop persistently pauses mutation until explicit trusted-chrome
 Resume. Page observation may continue under its ordinary policy. Resume changes
 the control generation; an earlier approval must fail even if tab and origin
 look unchanged. Effects recheck window, actor, lease, origin, document, target
 reference, and control generation across asynchronous boundaries.
+
+Mouse attribution is bounded dispatch/receipt correlation because native mouse
+receipts expose no injected-versus-human bit. The host arms exact guest,
+button, coordinates, click count, down/up phase, and order once per receipt;
+unmatched or expired input revokes the sequence and pauses mutation. A matching
+human click during the armed interval cannot be distinguished. This is not an
+absolute human-input provenance guarantee. Marked wheel events authorize only
+their expected derived scroll sequence; keyboard debugger-source checks remain.
+Stop provides an explicit takeover path independent of mouse correlation.
+
+Before keyboard effects, host-owned focus must resolve the same visible active
+embedded tab through its stored renderer ID and preserve the exact guest,
+document, generation, and lease across awaits. Trusted renderer focus is only a
+request; native guest focus and `focusedFrame === mainFrame` must be observed.
+Popups require native selection plus native focus. Missing, stale, hidden, or
+wrong-frame focus fails rather than sending input elsewhere.
 
 Acquiring a lease keeps the already-approved control generation stable. A
 page-input action can finish through navigation only after a confirmed final
@@ -624,6 +640,15 @@ startup files described below are written into Manual's real HOME. Missing
 shell integration leaves Manual's current directory and command exit status
 unknown. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
 explains lane selection and visible behavior.
+
+Agent spawn resolves its initial write-jail directory through host-owned
+authorized workspace projects, including user-approved external project roots.
+The candidate and admitted roots use canonical segment-aligned containment;
+paths resolving outside those roots and renderer-supplied authority are refused.
+This admission check is separate from sandbox access enforcement and is not
+by itself proof against subsequent path changes. The user HOME itself is
+never a valid Agent jail anchor, even if it appears as an authorized project.
+Manual's host cwd validation remains separate from this Agent confinement gate.
 
 `terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
 command into the target tab's Agent companion and presses Enter. It cannot type

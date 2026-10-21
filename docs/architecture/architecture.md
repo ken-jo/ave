@@ -774,8 +774,8 @@ the page alive.
 
 The browser tools and `terminal_read` called without a tab id act on the bound
 tab, and sub-agents inherit it through their hosting session; a bound tab that
-is gone, or of the other kind, is an error, never another tab. A press on a
-page is touch input, which the window routes through its one touch sequence
+is gone, or of the other kind, is an error, never another tab. A click uses
+touch input, which the window routes through its one touch sequence
 even when sent through the page's own protocol session; so each press runs
 alone in its window, a started press always ends, and a press counts only when
 its own page reports it and no other page of the window took a touch. A conversation
@@ -802,13 +802,27 @@ the browser sandbox. Origin approval authorizes an operation on a page, not a
 complete network firewall for that page.
 
 The registry publishes revisioned state with `human`, `agent-active`, and
-`human-paused` modes. Human page input, Stop, and user navigation invalidate
+`human-paused` modes. Recognized human page input, Stop, and user navigation invalidate
 pending agent effects and persistently pause mutation. Read-only observation
 still follows normal policy. Only explicit Resume in trusted browser chrome
 can restore eligible control; a tool, navigation, or a later turn cannot resume
 it. Document and control generations bind actions and approvals, so a stale
 approval does not survive pause followed by Resume. Renderers subscribe before
 their initial state fetch and ignore older revisions.
+
+Native mouse receipts do not expose an injected-versus-human source bit. Drag
+input therefore uses host-armed one-shot correlation of the exact live guest,
+button, coordinates, click count, down/up phase, and order. Each expectation
+expires after one second within a maximum five-second sequence, with one
+mouse/wheel watch per owning window. A mismatch pauses mutation. Wheel gestures
+must follow a marked native wheel event and the expected begin/update/end
+sequence. Keyboard input retains its debugger-source flags.
+
+This is bounded correlation, not perfect provenance: a human click at the same
+expected coordinates/button/phase during the armed interval is indistinguishable
+through the native API. Extra or mismatched observable input still interrupts,
+but the host cannot promise that every simultaneous human click wins. Stop and
+trusted-chrome navigation remain explicit takeover controls.
 
 Creator identity is durable and distinct from the current control lease. A
 lease identifies the actual conversation actor, its direct parent when present,
@@ -840,6 +854,14 @@ slots with `rendererTabId`. `BrowserTabsApi.stop`, `pause`, and `resume` accept
 only embedded renderer IDs. Native popup `pausePopup` and `resumePopup` accept
 only main-issued popup handles. These namespaces are not interchangeable, and
 the browser workspace library/find/zoom/preview API targets embedded slots only.
+
+Focusing an embedded page uses a main-owned `focus` operation addressed only by its stored
+renderer ID. It requires a visible owning window, that window's active embedded
+tab, and unchanged guest, document, control generation, and lease across awaits.
+Trusted renderer chrome focuses only the connected visible webview. Completion
+requires actual native guest focus; keyboard actions independently require
+`focusedFrame === mainFrame`. A renderer acknowledgement alone is insufficient.
+Popups require their registered native focus callback and observed native focus.
 
 ### Typed page actions and browser chrome
 
@@ -878,10 +900,13 @@ capability is `false` until safe exit UI exists, so even a stored allow decision
 cannot enable it.
 
 Preview work is scheduled only for connected, intersecting cards in a visible
-app window. Each window has one capture owner and at most one in-flight capture,
-a bounded tab/document cache, throttling, and reduced image size. Hidden or
-unmounted panels stop scheduling; late results after hide, navigation, or close
-are discarded. Preview never claims the live surface slot, focuses or navigates
+app window. Main owns at most one in-flight capture per window, throttling,
+invalidation epochs, and reduced image size; it retains no preview image cache.
+`BrowserPreviewScheduler` in the renderer owns the tab/document cache, capped
+at 16 entries with reuse for less than ten seconds. Only a completion whose
+original card is still eligible enters that cache. Hidden or unmounted panels
+stop scheduling; late results after hide, unmount, navigation, or close are
+neither displayed nor cached. Preview never claims the live surface slot, focuses or navigates
 a tab, or retains a closed guest. Hidden/visible capture counts and actual guest
 behavior require runtime validation; this contract is not a measured resource
 improvement.
@@ -901,6 +926,14 @@ than inferred from the initial directory or terminal output.
 
 **Agent · isolated** is a distinct companion PTY with a disposable HOME,
 authenticated shell integration, and active filesystem/process confinement.
+Its initial write-jail directory may be within the default workspace or a
+user-approved additional project, as resolved by the host's project authority.
+Canonical, segment-aligned containment rejects paths resolving outside those
+projects at admission; a renderer cwd does not add a grant. This path check is
+separate from the sandbox's actual access enforcement and does not alone prove
+safety against later path changes. The whole user HOME remains an invalid jail anchor even
+when selected as a project. These Agent restrictions do not redefine Manual's
+ordinary host cwd behavior.
 `terminal_run` always targets this lane. Approval seals its session incarnation,
 directory, exact command, and containment identity; execution rechecks them
 before typing. No agent bytes, cancellation, or output can redirect to Manual

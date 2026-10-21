@@ -36,8 +36,8 @@ over another conversation's owned tabs.
    and port. Permission for the current origin does not approve a different
    popup origin, grant camera access, or create a complete
    browser network firewall.
-3. Take over by interacting with the page, navigating from browser chrome, or
-   pressing Stop. Agent mutation stops persistently. Read-only observation can
+3. Take over by navigating from browser chrome, pressing Stop, or page input
+   recognized as human intervention. Agent mutation stops persistently. Read-only observation can
    continue under normal policy.
 4. Press Resume in trusted browser chrome when you want the agent to continue.
    The tool or a later turn cannot resume for you. An action approved before
@@ -45,6 +45,12 @@ over another conversation's owned tabs.
 
 The browser sandbox and context isolation remain enabled in all three states.
 Mode changes transfer agent authority; they do not change that browser baseline.
+
+Native mouse events have one attribution limit: a human click that exactly
+matches an armed agent click's position, button, and phase at the same time
+cannot be distinguished. Other observed input mismatches interrupt the agent.
+Use Stop in browser chrome for an explicit takeover independent of this
+mouse-event ambiguity.
 
 ## Know which tabs remain
 
@@ -116,7 +122,9 @@ saved file automatically.
 
 Only visible cards in a visible window request previews. Hiding or unmounting
 the panel stops new scheduling. Late results after hide, navigation, or close
-are discarded. Captures are throttled and bounded per window; previews do not
+are discarded without entering a cache. The renderer alone caches completed
+previews whose cards remain eligible; main retains capture limits and invalidation
+state, not preview images. Captures are throttled and bounded per window; previews do not
 focus, navigate, or remount a tab. Capture counts and native guest behavior need
 runtime evidence before claiming a resource-use improvement.
 
@@ -135,6 +143,11 @@ differ between lanes. Without shell integration, Manual reports current
 directory and command exit status as unknown. It does not pretend that the
 initial directory is still current. Agent startup files do not modify your real
 HOME, and agent output does not switch focus away from Manual.
+
+Agent can start within the default workspace or an additional project you have
+approved. The host resolves project authority and checks canonical containment;
+typing a path does not grant access. The entire user HOME cannot become the
+Agent write-jail anchor. Manual continues to use ordinary host cwd behavior.
 
 `terminal_run` always uses the target tab's Agent companion. Its approval binds
 the exact command, directory, lane, session incarnation, and containment. A
