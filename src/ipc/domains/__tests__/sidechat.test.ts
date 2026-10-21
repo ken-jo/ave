@@ -53,7 +53,10 @@ vi.mock("../../../main/app-state.js", async (importOriginal) => {
 import { registerSideChatHandlers } from "../sidechat.js";
 import { setSideChatOwnerContents } from "../../../main/app-state.js";
 import { browserTabRegistry } from "../../../main/browser/browser-tab-registry.js";
-import { TerminalBlockTracker, registerTerminalBlockTracker, unregisterTerminalBlockTracker } from "../../../main/terminal/terminal-blocks.js";
+const terminalOwners = new Map<string, number>();
+vi.mock("../../../main/terminal/pty-manager.js", () => ({
+  terminalTabOwnerWindow: (tabId: string) => terminalOwners.get(tabId),
+}));
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 
@@ -957,13 +960,13 @@ describe("pane chats are their own conversations", () => {
     const read = handlers.get(CHANNELS.sidechat.paneHistory)!;
     const end = handlers.get(CHANNELS.sidechat.endPaneChat)!;
     // Window 7 asks; window 8's terminal is PANE_B's.
-    registerTerminalBlockTracker(PANE_B.tabId, new TerminalBlockTracker({ nonce: "0123456789abcdef", marksPromptEnd: true }), 8);
+    terminalOwners.set(PANE_B.tabId, 8);
     try {
       expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toEqual({ ok: false, error: "invalid-surface" });
       await expect(end(ev("file:///index.html"), { tabId: PANE_B.tabId, reason: "closed" })).resolves.toEqual({ ok: false, error: "invalid-surface" });
       expect(store.loadSession).not.toHaveBeenCalled();
     } finally {
-      unregisterTerminalBlockTracker(PANE_B.tabId);
+      terminalOwners.delete(PANE_B.tabId);
     }
     // A page pane window 8 holds.
     browserTabRegistry.bindConversationSurface("55555555-5555-4555-8555-555555555555", { windowId: 8, surface: PANE_A });

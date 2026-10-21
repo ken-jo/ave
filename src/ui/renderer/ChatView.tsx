@@ -540,9 +540,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
     hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
-    openAgentTab: (url, requestId) => {
+    openAgentTab: (url, requestId, active) => {
       const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
-      if (store.openAgentBrowserTab(url, requestId) !== null) openPanel(true);
+      if (store.openAgentBrowserTab(url, requestId, active) !== null && active) openPanel(true);
     },
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);

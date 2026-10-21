@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import type { AveApi } from "../../../src/ui/renderer/types.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test("keeps a requested blank tab mounted through its first navigation", async () => {
@@ -11,7 +12,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     requests++;
     if (request.url === "/") pageRequests++;
     response.setHeader("content-type", "text/html");
-    response.end('<title>Approved page</title><button>Ready</button>');
+    response.end('<title>Approved page</title><button>Ready</button><p>Ready again</p>');
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -29,7 +30,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     await ctx.app.evaluate(({ BrowserWindow }, channel) => {
       const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Main window unavailable");
-      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank" });
+      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank", active: true });
     }, CHANNELS.browser.tabOp);
     const view = ctx.page.getByTestId("chat-side-panel-browser-webview");
     await expect(view).toHaveAttribute("src", "about:blank");
@@ -44,6 +45,30 @@ test("keeps a requested blank tab mounted through its first navigation", async (
       await guest.loadURL(target.url);
     }, { id: guestId, url });
     await expect(ctx.page.getByTestId("chat-side-panel-url-viewer")).toContainText(url);
+    expect(await view.evaluate((element) => (element as unknown as { getWebContentsId(): number }).getWebContentsId())).toBe(guestId);
+    // The shipping preload/IPC/native guest must agree with the visible chrome.
+    await ctx.page.getByTestId("browser-workspace-toggle").click();
+    const workspace = ctx.page.getByTestId("browser-workspace-panel");
+    await expect(workspace).toBeVisible();
+    await workspace.getByRole("button", { name: /^(Bookmark|북마크)$/ }).click();
+    await expect.poll(() => ctx!.page.evaluate(async () => {
+      const state = await (window.ave as unknown as AveApi).browserWorkspace!.getState();
+      return state.ok ? state.value.bookmarks.map((entry) => entry.url) : [];
+    })).toContain(url);
+    await workspace.getByRole("combobox", { name: /^(Zoom|확대)$/ }).selectOption("1.25");
+    await expect.poll(() => ctx!.app.evaluate(({ webContents }, id) => webContents.fromId(id)?.getZoomFactor(), guestId)).toBe(1.25);
+    await workspace.getByRole("textbox", { name: /^(Find|찾기)$/ }).fill("Ready");
+    await workspace.getByRole("button", { name: /^(Find|찾기)$/ }).click();
+    await expect(workspace.getByRole("alert")).toHaveCount(0);
+    await workspace.getByRole("button", { name: /^(Library|라이브러리)$/ }).click();
+    await expect(workspace.locator("img")).toHaveCount(1, { timeout: 15_000 });
+    await ctx.page.getByTestId("browser-workspace-toggle").click();
+    await expect(workspace).toHaveCount(0);
+    // Opening the normal host lane retains the browser's actual guest instance.
+    await ctx.page.getByTestId("chat-side-panel-add-tab").click();
+    await ctx.page.getByTestId("chat-side-panel-launcher-menu-terminal").click();
+    await expect(ctx.page.getByTestId("terminal-lane-manual")).toHaveAttribute("aria-pressed", "true");
+    await expect(ctx.page.getByTestId("chat-side-panel-pty-terminal").locator(".xterm")).toBeVisible();
     expect(await view.evaluate((element) => (element as unknown as { getWebContentsId(): number }).getWebContentsId())).toBe(guestId);
     const screenshot = test.info().outputPath("browser-agent-tab.png");
     await ctx.page.screenshot({ path: screenshot });

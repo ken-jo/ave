@@ -38,6 +38,7 @@ import {
 } from "./app-state.js";
 import { errorMessage } from "../shared/error-message.js";
 import { interruptRunningTurnsForExit } from "../engine/turn/turn-journal.js";
+import { disposeBrowserUploads } from "./browser/browser-upload.js";
 
 /**
  * How long a quit waits for running turns to record themselves as interrupted.
@@ -194,6 +195,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
       () => bootMcpDisconnect?.(),
       () => bootPluginShutdown?.stopRuntime(signal),
       () => stopSubscriptionRuntimes(),
+      () => disposeBrowserUploads(),
       () => forceKillAllTerminalsForShutdown(),
       () => forceKillAndDrainManagedChildProcesses(reason),
       () => host?.close(),
@@ -261,6 +263,8 @@ export async function runAppShutdownCleanup(options: {
           "shutdown: interrupted running turns",
         );
       }
+      if (signal.aborted) return;
+      await disposeBrowserUploads();
       if (signal.aborted) return;
       // Stop the opt-in local API server EARLY — it's fast (destroys idle
       // sockets + ends live SSE streams) and blanks its on-disk discovery file

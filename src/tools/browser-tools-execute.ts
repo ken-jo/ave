@@ -479,10 +479,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const authorized = authorizedApprovalMemoryScope(ctx);
-      if ((target.resolved.opener === "agent" || authorized?.kind === "browser-agent-tabs")
-        && (authorized?.kind !== "browser-agent-tabs" || target.resolved.opener !== "agent"
-          || authorized.tabId !== target.resolved.tab.handle || !Number.isSafeInteger(authorized.documentId)
-          || authorized.documentId !== target.resolved.tab.documentId)) {
+      const correctKind = target.resolved.opener === "agent"
+        ? authorized?.kind === "browser-agent-tabs"
+        : authorized?.kind === "browser-origin" && authorized.tabOpener === target.resolved.opener && authorized.origin === target.resolved.origin;
+      if (!correctKind || (authorized?.kind !== "browser-agent-tabs" && authorized?.kind !== "browser-origin")
+        || authorized.tabId !== target.resolved.tab.handle || authorized.documentId !== target.resolved.tab.documentId
+        || authorized.controlGeneration !== target.resolved.tab.controlGeneration) {
         return failure("the tab changed or the user took it over since approval; nothing was done. Call again to ask.");
       }
       const outcome = await deps.tabs.requestTabOp(target.windowId, { op: "close", tabId: target.resolved.tab.handle, actor: actorOf(ctx, deps) }, signalOptions(ctx));

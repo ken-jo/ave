@@ -2118,7 +2118,6 @@ export function App() {
           chatRuntime={paneChatRuntime}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          onCwd={mainSurfaces.setCwd}
           // A main terminal has no conversation beside it: its blocks go to
           // the composer the user last typed in.
           onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}

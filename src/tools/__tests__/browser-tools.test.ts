@@ -626,7 +626,9 @@ describe("browser tools", () => {
       expect(browserHeader(result.output)).toMatchObject({ status: "selected", files: [{ name: "chosen.txt", bytes: 12 }] });
     }
     expect(cards).toHaveLength(2);
-    expect(cards.every((card) => card.allowedChoices.join(",") === "allow-once,deny-once")).toBe(true);
+    expect(cards.map((card) => card.allowedChoices)).toEqual([
+      ["allow-once", "deny-once"], ["allow-once", "deny-once"],
+    ]);
     expect((await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1", path: "/tmp/secret" })).isError).toBe(true);
     expect(page.calls.filter((call) => call.action === "upload")).toHaveLength(2);
     const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.upload)!.toJsonSchema();
@@ -698,5 +700,29 @@ describe("browser tools", () => {
     expect(tabs.liveTab(user.handle)).toBeDefined();
     expect(cards.length).toBe(cardsAfterFirst + 1);
     expect(cards.at(-1)!.allowedChoices).toEqual(["allow-once", "deny-once"]);
+  });
+
+  it.each(["agent", "user"] as const)("rejects a stale %s tab close after pause and resume during approval", async (kind) => {
+    let changed = false;
+    let rendererId = "";
+    const h = harness({ mode: "default", onCard: () => {
+      if (changed) return;
+      changed = true;
+      expect(h.tabs.pause(1, rendererId)).toBe(true);
+      expect(h.tabs.resume(1, rendererId)).toBe(true);
+    } });
+    const tab = kind === "agent" ? await h.agentTab("https://a.example/") : h.userTab("https://a.example/");
+    rendererId = `renderer-${tab.guest.id}`;
+    if (kind === "user") {
+      // A borrowed tab has a resumable controller while retaining user lifetime.
+      h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
+    }
+    const before = h.ops.length;
+    const result = await h.run(BROWSER_TOOL.tabClose, { tabId: tab.handle });
+    expect(changed).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("since approval");
+    expect(h.ops.slice(before)).toEqual([]);
+    expect(h.tabs.liveTab(tab.handle)).toBeDefined();
   });
 });

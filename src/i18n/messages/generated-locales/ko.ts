@@ -76,6 +76,7 @@ import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
 import { ko as ko_be_windowTitlebarShell } from "../generated/be_windowTitlebarShell.js";
 import { ko as ko_bootstrapStatusPill } from "../generated/bootstrapStatusPill.js";
 import { ko as ko_bottomActionRow } from "../generated/bottomActionRow.js";
+import { ko as ko_browserWorkspace } from "../generated/browserWorkspace.js";
 import { ko as ko_chatPreviewRail } from "../generated/chatPreviewRail.js";
 import { ko as ko_chatTab } from "../generated/chatTab.js";
 import { ko as ko_chatView } from "../generated/chatView.js";
@@ -262,6 +263,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_windowTitlebarShell,
   ...ko_bootstrapStatusPill,
   ...ko_bottomActionRow,
+  ...ko_browserWorkspace,
   ...ko_chatPreviewRail,
   ...ko_chatTab,
   ...ko_chatView,

@@ -775,9 +775,27 @@ export const CHANNELS = {
   // main). Wire types: shared/browser-surface.ts.
   browser: {
     bindTab: "ave:browser:bind-tab", // invoke renderer→main  tab id ↔ guest webContents id
-    stop: "ave:browser:stop", // invoke renderer→main  badge stop: cancel and release an agent tab
+    stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
+    pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
+    resume: "ave:browser:resume", // invoke renderer→main  explicit new agent control generation
+    pausePopup: "ave:browser:pause-popup", // invoke renderer→main  main-issued native popup handle
+    resumePopup: "ave:browser:resume-popup", // invoke renderer→main  main-issued native popup handle
+    getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
     tabOp: "ave:browser:tab-op", // event  main→renderer  new / select / close a tab
     control: "ave:browser:control", // event  main→renderer  which tabs the agent controls
+  },
+  // Host-renderer-only browser chrome. Remote pages and plugin frames cannot
+  // read the library, choose site capabilities, or capture a guest preview.
+  browserWorkspace: {
+    getState: "ave:browser-workspace:get-state",
+    setBookmark: "ave:browser-workspace:set-bookmark",
+    clearHistory: "ave:browser-workspace:clear-history",
+    setSitePermission: "ave:browser-workspace:set-site-permission",
+    find: "ave:browser-workspace:find",
+    stopFind: "ave:browser-workspace:stop-find",
+    zoom: "ave:browser-workspace:zoom",
+    preview: "ave:browser-workspace:preview",
+    changed: "ave:browser-workspace:changed",
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────
   // INTERNAL. The renderer reports which browser/terminal tab the user is

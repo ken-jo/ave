@@ -32,7 +32,7 @@ function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalR
     approvalMemory: {
       kind: "key",
       key: "terminal_run:command",
-      scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/workspace/project/app", cwdForMatch: "/workspace/project/app" },
+      scope: { kind: "terminal-command", lane: "agent", terminalSessionId: "fixture-agent", sandboxGeneration: "0", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/workspace/project/app", cwdForMatch: "/workspace/project/app" },
     },
     ...overrides,
   };
@@ -116,7 +116,7 @@ describe("ToolApprovalContent terminal_run card", () => {
       <ToolApprovalContent
         conversationLabel="conversation"
         open
-        request={{ ...request, approvalMemory: { ...memory, scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/tmp/Work/app", cwdForMatch: "/private/tmp/work/app" } } }}
+        request={{ ...request, approvalMemory: { ...memory, scope: { kind: "terminal-command", lane: "agent", terminalSessionId: "fixture-agent", sandboxGeneration: "0", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/tmp/Work/app", cwdForMatch: "/private/tmp/work/app" } } }}
         onDecide={vi.fn()}
       />,
     );

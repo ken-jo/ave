@@ -5,6 +5,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AveApi } from "../../types.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
+import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -39,6 +40,9 @@ function makeApi() {
     browserTabs: {
       bindTab: vi.fn(async () => ({ ok: true as const })),
       stop: vi.fn(async () => ({ ok: true as const })),
+      pause: vi.fn(async () => ({ ok: true as const })),
+      resume: vi.fn(async () => ({ ok: true as const })),
+      getState: vi.fn(async () => ({ revision: 0, tabs: [] })),
       onTabOp: vi.fn(() => () => undefined),
       onControl: vi.fn((handler: (state: BrowserTabControlState) => void) => {
         controlHandler = handler;
@@ -109,7 +113,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank");
+      tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank", true);
     });
     expect(tabId).not.toBeNull();
     const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
@@ -138,7 +142,7 @@ describe("ChatSidePanel agent browser", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
     act(() => {
-      store!.openAgentBrowserTab("about:blank", "browser-op-observed");
+      store!.openAgentBrowserTab("about:blank", "browser-op-observed", true);
     });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
@@ -156,7 +160,7 @@ describe("ChatSidePanel agent browser", () => {
   it("tracks only main-frame in-page URL changes without reloading the bootstrap guest", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-in-page"));
+    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-in-page", true));
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/page" })));
@@ -172,7 +176,7 @@ describe("ChatSidePanel agent browser", () => {
   it("discards a previously observed URL when the bootstrap guest reattaches", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-reattach"));
+    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-reattach", true));
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     const openExternal = within(viewer).getByRole("button");
@@ -217,7 +221,7 @@ describe("ChatSidePanel agent browser", () => {
 
     let agentTabId: string | null = null;
     act(() => {
-      agentTabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-1");
+      agentTabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-1", true);
     });
     act(() => {
       store!.openPinned({ source: "browser", url: "https://b.example/" });
@@ -231,7 +235,7 @@ describe("ChatSidePanel agent browser", () => {
     expect(hosts[1]).not.toHaveAttribute("aria-hidden");
     expect(screen.getAllByTestId("chat-side-panel-browser-webview")).toHaveLength(2);
 
-    act(() => emitControl({ agentControlledTabIds: [agentTabId!] }));
+    act(() => emitControl(browserControlFixture([agentTabId!])));
     const badge = screen.getByTestId("agent-browser-control-badge");
     expect(hosts[0]).toContainElement(badge);
     // The tab row says so too, on the agent's tab only.
@@ -239,7 +243,16 @@ describe("ChatSidePanel agent browser", () => {
     expect(marks).toHaveLength(1);
     expect(marks[0]!.closest("[data-tab-id]")).toHaveAttribute("data-tab-id", agentTabId);
     fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
-    expect(api.browserTabs!.stop).toHaveBeenCalledWith(agentTabId);
+    expect(api.browserTabs!.pause).toHaveBeenCalledWith(agentTabId);
+    // A successful RPC alone does not alter control; only main's newer snapshot does.
+    await act(async () => {});
+    expect(screen.queryByTestId("agent-browser-control-resume")).toBeNull();
+    act(() => emitControl(browserControlFixture([agentTabId!], "human-paused", 2)));
+    expect(screen.queryByTestId("chat-side-panel-tab-agent-controlled")).toBeNull();
+    fireEvent.click(screen.getByTestId("agent-browser-control-resume"));
+    expect(api.browserTabs!.resume).toHaveBeenCalledWith(agentTabId);
+    act(() => emitControl(browserControlFixture([agentTabId!], "agent-active", 1)));
+    expect(screen.getByTestId("agent-browser-control-resume")).toBeInTheDocument();
     unregister();
   });
 
@@ -248,7 +261,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-2");
+      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-2", true);
     });
     await waitFor(() => expect(api.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId }));
   });
@@ -263,7 +276,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3");
+      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3", true);
     });
     const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
     webview.getWebContentsId = () => 42;
@@ -281,7 +294,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = "unset";
     act(() => {
-      tabId = store!.openAgentBrowserTab("javascript:alert(1)", "browser-op-3");
+      tabId = store!.openAgentBrowserTab("javascript:alert(1)", "browser-op-3", true);
     });
     expect(tabId).toBeNull();
     expect(screen.queryAllByTestId("chat-side-panel-browser-tab-host")).toHaveLength(0);

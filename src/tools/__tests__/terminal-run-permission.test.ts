@@ -108,7 +108,10 @@ describe("terminal_run permission", () => {
       toolName: "terminal_run",
       toolCategory: "shell",
       args: { command: "npm test", waitSeconds: 0 },
-      approvalMemory: { kind: "key", scope: { kind: "terminal-command", tabId: TAB, cwd: terminalCwd } },
+      approvalMemory: { kind: "key", scope: {
+        kind: "terminal-command", tabId: TAB, cwd: terminalCwd,
+        lane: "agent", terminalSessionId: `${TAB}/agent`, sandboxGeneration: "0",
+      } },
     });
     expect(denied.typed).toEqual([]);
     expect(denied.result.is_error).toBe(true);

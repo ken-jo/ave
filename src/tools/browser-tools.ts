@@ -384,9 +384,12 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       requiresPerActionApproval: notAgentTab,
       approvalMemoryScope: (raw, ctx) => {
         const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
-        return resolved?.opener === "agent"
-          ? { kind: "browser-agent-tabs", tabId: resolved.tab.handle, documentId: resolved.tab.documentId }
-          : undefined;
+        if (!resolved) return undefined;
+        const identity = { tabId: resolved.tab.handle, documentId: resolved.tab.documentId, controlGeneration: resolved.tab.controlGeneration };
+        return resolved.opener === "agent"
+          ? { kind: "browser-agent-tabs", ...identity }
+          : resolved.origin === null ? undefined
+            : { kind: "browser-origin", origin: resolved.origin, tabOpener: resolved.opener, ...identity };
       },
       jsonSchema: object({ tabId: tabIdProperty }, ["tabId"]),
       execute: execute(BROWSER_TOOL.tabClose),

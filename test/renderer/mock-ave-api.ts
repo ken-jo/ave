@@ -18,6 +18,10 @@ import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../src/shared/sub
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../src/shared/subagent-transcript.js";
 import type { SessionSummary } from "../../src/ui/renderer/hooks/use-sessions.js";
 import type { SessionFamily, SessionListKindFilter } from "../../src/shared/session-lookup.js";
+import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
+import { browserControlFixture } from "../../src/__tests__/support/browser-control-fixture.js";
+import type { TerminalDataEvent, TerminalRef, TerminalSessionRef } from "../../src/shared/terminal-session.js";
+import type { BrowserTabControlState } from "../../src/shared/browser-surface.js";
 
 export type MockAveApi = Record<string, Mock>;
 
@@ -216,22 +220,22 @@ export const DEFAULT_APP_INFO = {
  * `emitTerminalData` below.
  */
 function makeTerminalDouble() {
-  const dataListeners = new Set<(payload: { tabId: string; chunk: string }) => void>();
+  const dataListeners = new Set<(payload: TerminalDataEvent) => void>();
   return {
-    spawn: vi.fn(async ({ tabId }: { tabId: string }) => ({ ok: true, tabId, replayed: false })),
+    spawn: vi.fn(async ({ tabId, lane }: TerminalRef) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane) })),
     input: vi.fn(async () => ({ ok: true })),
     resize: vi.fn(async () => ({ ok: true })),
     kill: vi.fn(async () => ({ ok: true })),
-    onData: vi.fn((listener: (payload: { tabId: string; chunk: string }) => void) => {
+    onData: vi.fn((listener: (payload: TerminalDataEvent) => void) => {
       dataListeners.add(listener);
       return () => { dataListeners.delete(listener); };
     }),
     onExit: vi.fn(() => () => {}),
-    listBlocks: vi.fn(async () => ({ ok: true, blocks: [], integrated: false })),
-    getBlock: vi.fn(async () => ({ ok: false, message: "no block" })),
+    listBlocks: vi.fn(async (ref: TerminalSessionRef) => ({ ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), blocks: [], integrated: false })),
+    getBlock: vi.fn(async () => ({ ok: false, error: "no-block" })),
     /** Not part of the surface: what the main process's PTY output would do. */
     emitTerminalData: (tabId: string, chunk: string) => {
-      for (const listener of [...dataListeners]) listener({ tabId, chunk });
+      for (const listener of [...dataListeners]) listener({ ...terminalSessionFixture(tabId, "manual"), chunk });
     },
   };
 }
@@ -239,15 +243,21 @@ function makeTerminalDouble() {
 /** The agent browser surface: main's tab operations and control state reach the app through these. */
 function makeBrowserTabsDouble() {
   const opListeners = new Set<(request: unknown) => void>();
-  const controlListeners = new Set<(state: { agentControlledTabIds: string[] }) => void>();
+  const controlListeners = new Set<(state: BrowserTabControlState) => void>();
+  let state: BrowserTabControlState = { revision: 0, tabs: [] };
   return {
     bindTab: vi.fn(async () => ({ ok: true as const })),
     stop: vi.fn(async () => ({ ok: true as const })),
+    pause: vi.fn(async () => ({ ok: true as const })),
+    resume: vi.fn(async () => ({ ok: true as const })),
+    pausePopup: vi.fn(async () => ({ ok: true as const })),
+    resumePopup: vi.fn(async () => ({ ok: true as const })),
+    getState: vi.fn(async () => state),
     onTabOp: vi.fn((listener: (request: unknown) => void) => {
       opListeners.add(listener);
       return () => { opListeners.delete(listener); };
     }),
-    onControl: vi.fn((listener: (state: { agentControlledTabIds: string[] }) => void) => {
+    onControl: vi.fn((listener: (state: BrowserTabControlState) => void) => {
       controlListeners.add(listener);
       return () => { controlListeners.delete(listener); };
     }),
@@ -257,7 +267,8 @@ function makeBrowserTabsDouble() {
     },
     /** Not part of the surface: an `ave:browser:control` from main. */
     emitBrowserControl: (agentControlledTabIds: string[]) => {
-      for (const listener of [...controlListeners]) listener({ agentControlledTabIds });
+      state = browserControlFixture(agentControlledTabIds, "agent-active", state.revision + 1);
+      for (const listener of [...controlListeners]) listener(state);
     },
   };
 }
