@@ -5,9 +5,12 @@
  * own scope's gate, so turning one setting on never confines the other kind of
  * process.
  */
+import { EventEmitter } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 import {
   initializeAsrtSandbox,
@@ -22,21 +25,49 @@ import {
   setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 
+const ORIGINAL_PLATFORM = process.platform;
+const probeMocks = vi.hoisted(() => ({
+  wrapWithSandboxArgv: vi.fn(),
+  spawn: vi.fn(),
+}));
+
 // Gate state only: these tests do not claim OS confinement.
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   setParentProxyRouter: () => undefined,
   initialize: async () => undefined,
+  wrapWithSandboxArgv: probeMocks.wrapWithSandboxArgv,
   updateConfig: () => undefined,
   reset: async () => undefined,
   cleanupAfterCommand: () => undefined,
 } }));
 
+vi.mock("node:child_process", () => ({ spawn: probeMocks.spawn }));
+
 afterEach(async () => {
-  if (isAsrtSandboxActive()) await resetAsrtSandbox();
-  __resetSandboxRequestedAtBootForTest();
+  try {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  } finally {
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    vi.clearAllMocks();
+  }
 });
 
 describe("scoped sandbox gates", () => {
+  beforeEach(() => {
+    setProcessPlatform("linux");
+    probeMocks.wrapWithSandboxArgv.mockResolvedValue({
+      argv: ["/sandbox/probe", "true"],
+      env: {},
+    });
+    probeMocks.spawn.mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+      // Match the asynchronous close after the adapter registers its listeners.
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    });
+  });
+
   it.each([
     { shell: false, workers: false },
     { shell: true, workers: false },
@@ -50,6 +81,12 @@ describe("scoped sandbox gates", () => {
     expect(isAsrtSandboxActive()).toBe(true);
     expect(isShellSandboxActive()).toBe(shell);
     expect(isPluginWorkerConfinementActive()).toBe(workers);
+    expect(probeMocks.wrapWithSandboxArgv).toHaveBeenCalledExactlyOnceWith(
+      "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
+    );
+    expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
+      "/sandbox/probe", ["true"], expect.objectContaining({ shell: false }),
+    );
   });
 
   it("neither scope is active while ASRT is not initialized, whatever was requested", () => {
