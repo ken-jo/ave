@@ -31,7 +31,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  * layouts (the feature tour, the package stack) switch on. Kept equal to the
  * media query in app/globals.css.
  */
-export const PINNED = "(min-width: 1024px) and (prefers-reduced-motion: no-preference) and (scripting: enabled)";
+const PINNED = "(min-width: 1024px) and (prefers-reduced-motion: no-preference) and (scripting: enabled)";
 
 /** Whether PINNED matches now (false on the server and before hydration), following changes. */
 export function usePinned(): boolean {

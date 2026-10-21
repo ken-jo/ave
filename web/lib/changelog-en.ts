@@ -11,7 +11,7 @@ import { inline, type Inline, type Release } from "./changelog";
  * fails the build, so the English page cannot fall behind or drift.
  */
 
-export interface EnItem {
+interface EnItem {
   title: string;
   points: string[];
 }

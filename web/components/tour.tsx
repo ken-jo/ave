@@ -82,7 +82,7 @@ function layerFrames(n: number, i: number): { input: number[]; output: number[] 
 }
 
 /** The step a progress value falls in; a boundary is the middle of the cross-fade, so text and picture switch together. */
-export function stepAt(progress: number, n: number): number {
+function stepAt(progress: number, n: number): number {
   return Math.min(n - 1, Math.max(0, Math.floor(progress * n)));
 }
 
