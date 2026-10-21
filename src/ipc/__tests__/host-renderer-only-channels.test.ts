@@ -37,6 +37,15 @@ const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 
+const { searchWorkspaceFiles } = vi.hoisted(() => ({
+  searchWorkspaceFiles: vi.fn(async () => ({ matches: [], truncated: false })),
+}));
+
+vi.mock("../domains/workspace-file-search.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../domains/workspace-file-search.js")>()),
+  searchWorkspaceFiles,
+}));
+
 vi.mock("electron", () => {
   const noopWindow = {
     id: 1,
@@ -92,9 +101,9 @@ const auditLogger = {
 };
 
 /**
- * Enough shape for each `register*Handlers` to finish wiring. Handlers are
- * never driven past their guard here, so the bodies behind these stubs do not
- * have to be faithful — only present enough that registration completes.
+ * Enough shape for each `register*Handlers` to finish wiring. The host sender
+ * reaches handler bodies, so their dependencies stay inert. Workspace search
+ * returns the deterministic result above to keep this sender matrix scoped.
  */
 function makeDeps(): never {
   return {
@@ -327,11 +336,18 @@ describe("host-renderer-only IPC channels", () => {
   it.each(HOST_ONLY_CHANNELS)("%s %s refuses a plugin shell frame", async (_domain, channel, args) => {
     await invoke(channel, pluginShellFrameEvent(), args);
     expect(guardRowsFor(channel).length).toBeGreaterThan(0);
+    if (channel === CHANNELS.workspace.searchFiles) {
+      expect(searchWorkspaceFiles).not.toHaveBeenCalled();
+    }
   });
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
     await invoke(channel, hostFrameEvent(), args);
     expect(guardRowsFor(channel)).toEqual([]);
+    if (channel === CHANNELS.workspace.searchFiles) {
+      expect(searchWorkspaceFiles).toHaveBeenCalledTimes(1);
+      expect(searchWorkspaceFiles).toHaveBeenCalledWith(expect.objectContaining({ query: "src" }));
+    }
   });
 });
 
