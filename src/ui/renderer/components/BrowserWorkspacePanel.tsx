@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { BROWSER_SITE_DECISIONS, BROWSER_SITE_PERMISSIONS, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, type BrowserWorkspaceApi, type BrowserWorkspaceResult } from "../../../shared/browser-workspace.js";
+import { useRef, useState } from "react";
+import { BROWSER_SITE_DECISIONS, BROWSER_SITE_PERMISSIONS, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, type BrowserFindRequest, type BrowserWorkspaceApi, type BrowserWorkspaceResult } from "../../../shared/browser-workspace.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useBrowserWorkspace, type BrowserWorkspaceTabsClient } from "../hooks/use-browser-workspace.js";
 import { BrowserWorkspaceCard } from "./BrowserWorkspaceCard.js";
@@ -18,25 +18,34 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const [operationFailed, setOperationFailed] = useState(false);
+  const searchIdentity = useRef<Pick<BrowserFindRequest, "tabId" | "documentGeneration" | "text"> | null>(null);
   const active = state?.tabs.find((tab) => tab.tabId === activeTabId);
   const url = browserWorkspaceUrl(active?.url);
   const origin = url ? new URL(url).origin : null;
   const target = active ? { tabId: active.tabId, documentGeneration: active.documentGeneration } : null;
   const bookmarked = state?.bookmarks.some((entry) => entry.url === url) ?? false;
-  const run = async (operation: Promise<BrowserWorkspaceResult<unknown>>) => {
-    try { const result = await operation; setOperationFailed(!result.ok); } catch { setOperationFailed(true); }
+  const run = async (operation: Promise<BrowserWorkspaceResult<unknown>>): Promise<boolean> => {
+    try { const result = await operation; setOperationFailed(!result.ok); return result.ok; } catch { setOperationFailed(true); return false; }
+  };
+  const findText = async (forward: boolean, forceNew: boolean) => {
+    if (!target || !text.trim()) return;
+    const identity = { ...target, text };
+    const previous = searchIdentity.current;
+    const findNext = forceNew || !previous || previous.tabId !== identity.tabId || previous.documentGeneration !== identity.documentGeneration || previous.text !== identity.text;
+    searchIdentity.current = identity;
+    if (!await run(api.find({ ...identity, forward, findNext })) && searchIdentity.current === identity) searchIdentity.current = null;
   };
   if (!visible) return null;
   return <section aria-label={t("browserWorkspace.title")} className="shrink-0 border-b text-xs" data-testid="browser-workspace-panel">
     <div className="flex flex-wrap items-center gap-1 p-1">
       <button type="button" className="rounded border px-2 py-1" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("browserWorkspace.library")}</button>
       <button type="button" className="rounded border px-2 py-1" disabled={!url || !active} aria-pressed={bookmarked} onClick={() => { if (url && active) void run(api.setBookmark({ url, title: active.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), bookmarked: !bookmarked })); }}>{t(bookmarked ? "browserWorkspace.removeBookmark" : "browserWorkspace.bookmark")}</button>
-      <form className="flex min-w-0 items-center gap-1" onSubmit={(event) => { event.preventDefault(); if (target && text.trim()) void run(api.find({ ...target, text, forward: true, findNext: true })); }}>
+      <form className="flex min-w-0 items-center gap-1" onSubmit={(event) => { event.preventDefault(); void findText(true, true); }}>
         <input aria-label={t("browserWorkspace.find")} className="w-28 min-w-0 rounded border bg-transparent px-1 py-1" maxLength={BROWSER_WORKSPACE_LIMITS.findLength} value={text} onChange={(event) => setText(event.target.value)} />
         <button type="submit" className="rounded border px-1 py-1" disabled={!target || !text.trim()}>{t("browserWorkspace.find")}</button>
-        <button type="button" className="rounded border px-1 py-1" disabled={!target || !text.trim()} onClick={() => { if (target) void run(api.find({ ...target, text, forward: false, findNext: false })); }}>{t("browserWorkspace.previous")}</button>
-        <button type="button" className="rounded border px-1 py-1" disabled={!target || !text.trim()} onClick={() => { if (target) void run(api.find({ ...target, text, forward: true, findNext: false })); }}>{t("browserWorkspace.next")}</button>
-        <button type="button" className="rounded border px-1 py-1" disabled={!target} onClick={() => { if (target) void run(api.stopFind(target)); setText(""); }}>{t("browserWorkspace.stopFind")}</button>
+        <button type="button" className="rounded border px-1 py-1" disabled={!target || !text.trim()} onClick={() => void findText(false, false)}>{t("browserWorkspace.previous")}</button>
+        <button type="button" className="rounded border px-1 py-1" disabled={!target || !text.trim()} onClick={() => void findText(true, false)}>{t("browserWorkspace.next")}</button>
+        <button type="button" className="rounded border px-1 py-1" disabled={!target} onClick={() => { searchIdentity.current = null; if (target) void run(api.stopFind(target)); setText(""); }}>{t("browserWorkspace.stopFind")}</button>
       </form>
       <label className="flex items-center gap-1">{t("browserWorkspace.zoom")}<select aria-label={t("browserWorkspace.zoom")} className="rounded border bg-background px-1 py-1" disabled={!target} value={active?.zoomFactor ?? 1} onChange={(event) => { if (target) void run(api.zoom({ ...target, factor: Number(event.target.value) })); }}>
         {[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3].map((factor) => <option key={factor} value={factor}>{Math.round(factor * 100)}%</option>)}
