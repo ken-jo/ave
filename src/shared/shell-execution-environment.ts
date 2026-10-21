@@ -2,7 +2,7 @@ import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-
 import { t } from "../i18n/runtime.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
-  "platform" | "mode" | "capability" | "requiresExplicitUserApproval" | "fallbackReason">;
+  "platform" | "mode" | "substrate" | "capability" | "requiresExplicitUserApproval" | "fallbackReason">;
 
 /** Public descriptions of the selected child, never the host's environment values. */
 export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
@@ -35,6 +35,9 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     ...shellExecutionEnvironmentLines(plan),
     confinement,
     t("shellExecution.defaultRoute"),
+    // Windows MXC containers: Git Bash cannot start there, so the model must
+    // not plan around Bash (the tool refuses it with the same guidance).
+    ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
     interactive ? t("shellExecution.hostRequest") : t("shellExecution.noInteractiveApproval"),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",

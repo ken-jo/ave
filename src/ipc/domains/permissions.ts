@@ -78,6 +78,7 @@ import {
   detectShellSandboxCapability,
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  getWindowsSandboxSubstrate,
   isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
@@ -306,7 +307,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         : platform === "linux"
           ? "ASRT (bwrap) confines filesystem, process, and network egress when enabled"
           : platform === "win32"
-            ? "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install"
+            ? "Agent shell commands run each in its own Microsoft Execution Containers container where Windows offers it (filesystem, process and network confined; no admin install). ASRT (srt-win) confines plugin processes' filesystem access and network egress against the host after a one-time admin install; every confined plugin runs as one shared sandbox account, so plugins are not isolated from each other"
             : "OS sandbox is fail-closed on this platform; tools run unconfined";
     // Per scope: ASRT is one runtime, but each scope is confined only when it
     // was requested at boot, so a worker-only boot must not show shells as
@@ -362,6 +363,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // the classified causes.
       boot: boot === null ? null : sandboxBootOutcomeView(boot),
       shell,
+      // Windows: which substrate carries shells and extensions this boot and
+      // how strongly their egress is attributed (proxy-egress PR 9).
+      windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });

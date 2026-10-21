@@ -107,7 +107,7 @@ export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promis
 
 export interface EgressAskDeps {
   /** The identity strength of this kind of process on this host (`egressIdentityStrength`). */
-  readonly identityStrength: (kind: "shell" | "extension") => EgressIdentityStrength;
+  readonly identityStrength: (kind: "shell" | "extension", context?: Parameters<SandboxAskCallback>[1]) => EgressIdentityStrength;
   /** The live owner of a token (`egressInvocationOwner`). */
   readonly ownerOf: (token: string) => EgressInvocationOwner | undefined;
   /** The abort signal the token was opened with (`egressInvocationAbortSignal`). */
@@ -212,7 +212,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
    */
   const heldAnswers = new Map<string, HeldAnswer[]>();
   let heldCount = 0;
-  const holdKey = (token: string, destination: EgressDestination): string => `${token}\n${destination.host}\n${destination.port}`;
+  const holdKey = (token: string, destination: EgressDestination, strength: EgressIdentityStrength): string =>
+    `${token}\n${destination.host}\n${destination.port}\n${strength}`;
   const holdAnswer = (key: string, answer: HeldAnswer): void => {
     // Bounded: past the cap the oldest held answers are dropped, and their
     // connections are asked again in the resolved phase (never allowed).
@@ -240,14 +241,15 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
+    strength: EgressIdentityStrength,
   ): Promise<AskAnswer | typeof ASK_AGAIN> => {
     // One card (or banner) per (invocation, destination, class): a client that
     // opens several connections to one host while it is up waits on the same
     // answer. A terminal tab's shell is one invocation, so this coalesces per tab.
-    const key = `${token}\n${destination.host}\n${destination.port}\n${network}`;
+    const key = `${token}\n${destination.host}\n${destination.port}\n${network}\n${strength}`;
     let pending = pendingAsks.get(key);
     if (pending === undefined) {
-      const entry = { answer: startAsk(token, owner, destination, network).finally(() => pendingAsks.delete(key)), onceTaken: false };
+      const entry = { answer: startAsk(token, owner, destination, network, strength).finally(() => pendingAsks.delete(key)), onceTaken: false };
       pendingAsks.set(key, entry);
       pending = entry;
     }
@@ -267,14 +269,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
+    strength: EgressIdentityStrength,
   ): Promise<AskAnswer> => {
     const requester = deps.requester();
     if (requester === undefined) return { allow: false, decision: deny("prompt", EGRESS_DENY_REASONS.noSurface) };
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
-    // Terminals are confined through the same per-invocation listener as
-    // shell tool calls, so their identity is as strong.
-    const scopes = egressScopesForNetwork(egressGrantScopesFor(deps.identityStrength("shell"), origin), network).filter((scope) =>
+    const scopes = egressScopesForNetwork(egressGrantScopesFor(strength, origin), network).filter((scope) =>
       scope === "conversation" ? subject.sessionId !== undefined
       : scope === "tab" ? subject.tabId !== undefined
       : scope === "workspace" ? subject.workspaceRoot !== undefined
@@ -349,7 +350,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     // Where this kind of process has its own listener only the listener
     // vouches for who connected; a key that came from the proxy username
     // alone may have been read off another process, so it names nobody.
-    if (deps.identityStrength(owner.kind === "worker" ? "extension" : "shell") === "kernel-channel"
+    const strength = deps.identityStrength(owner.kind === "worker" ? "extension" : "shell", owner.kind === "terminal" ? undefined : context);
+    if (strength === "kernel-channel"
       && context?.identity !== "listener") {
       return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
     }
@@ -402,7 +404,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
-        const key = holdKey(token, destination);
+        const key = holdKey(token, destination, strength);
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
@@ -424,7 +426,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
             return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
           }
-          const answer = await ask(token, owner, destination, network);
+          const answer = await ask(token, owner, destination, network, strength);
           if (answer === ASK_AGAIN) continue;
           if (!answer.allow) return { owner, decision: answer.decision };
           if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes) };

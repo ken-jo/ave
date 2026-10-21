@@ -1,5 +1,6 @@
 const { execFileSync } = require("node:child_process");
 const { join } = require("node:path");
+const { pathToFileURL } = require("node:url");
 module.exports = async function beforePack(context) {
   if (context.electronPlatformName !== "win32") return;
   if (process.platform !== "win32") throw new Error("Windows job launcher requires a native Windows build");
@@ -10,4 +11,9 @@ module.exports = async function beforePack(context) {
     execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
       join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch, "-Helper", helper], { stdio: "inherit" });
   }
+  // Microsoft Execution Containers' launcher for agent shell commands,
+  // hash-pinned; any mismatch rejects and fails the build.
+  const { stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
+  const staged = await stageMxcLauncher({ arch, projectRoot: context.packager.projectDir });
+  console.log(`fetch-mxc: ${staged} verified against src/permissions/mxc-launcher-pins.json`);
 };

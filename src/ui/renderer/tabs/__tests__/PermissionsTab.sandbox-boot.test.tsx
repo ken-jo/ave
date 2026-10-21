@@ -143,6 +143,21 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     );
   });
 
+  it("tells a Windows start failure apart from a missing install, without the raw cause", async () => {
+    installApi({
+      action: "degrade",
+      reason: "degrade-windows-init-failed",
+      onSignal: "default-settings",
+      causes: ["init-failed"],
+    });
+    await renderTab();
+
+    const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
+    expect(detail).toHaveTextContent("시작 점검은 통과");
+    expect(detail).not.toHaveTextContent("진단에 실패");
+    expect(document.body.textContent).not.toContain("S-1-5-21");
+  });
+
   it("reports an abort the same way — the user is equally unprotected either way", async () => {
     installApi({
       action: "abort",
