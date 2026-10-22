@@ -917,9 +917,6 @@ export function buildInternalApiSurface() {
         settings: serializePermissionJudgeSettingsPatch(patch),
         intent: ipcUserKeyboardIntent(),
       }),
-    /** Check whether a reviewer provider has its required API key stored. */
-    reviewerProviderHasKey: async (provider: string) =>
-      ipcRenderer.invoke(PERMISSIONS.reviewerProviderHasKey, provider),
     /** Permission policy — `/permission audit show` — fetch recent permission audit entries. */
     auditShow: async (last: number) =>
       ipcRenderer.invoke(PERMISSIONS.auditShow, { last }),

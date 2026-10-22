@@ -1386,6 +1386,9 @@ The model picker offers configured providers and their model options using the
 same source as chat selection. `permissions.judge.model` selects the permission
 reviewer model with the chat model chooser; stored `null` (unset) resolves at
 each reviewer re-wire to the active chat model, so the reviewer follows chat.
+The `permissions.reviewer` block no longer stores a provider or model: the
+`provider`/`model` keys older builds wrote are dropped on load and leave the
+file on the next save, and a reviewer patch that names them is rejected.
 A builtin stage without `model` follows the permission reviewer model. An
 explicit `<provider>/<model>` selection uses that exact model; an unavailable
 selection fails rather than switching providers or models, and an unavailable

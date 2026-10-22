@@ -30,7 +30,8 @@ function reviewer(permissionManager: PermissionManager) {
   return wireReviewerAgent({
     permissionManager,
     networkFetch: unusedNetworkFetch,
-    readSettings: () => ({ ...defaults, mode: "llm", provider: "openai", model: "current-reviewer" }),
+    readSettings: () => ({ ...defaults, mode: "llm" }),
+    readActiveLlm: () => ({ provider: "openai", model: "current-reviewer" }),
     streamProviderFor: () => provider,
     verdictCachePath: join(directory, "verdicts.jsonl"),
     deferredQueuePath: join(directory, "deferred.jsonl"),

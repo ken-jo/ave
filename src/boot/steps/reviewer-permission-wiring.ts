@@ -14,7 +14,6 @@ import { broadcastPermissionConfigChangedFromHost } from "../permission-config-b
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import { createProvider, secretKeyFor } from "../../engine/llm/provider-factory.js";
 import { selectProviderRuntimeFetch } from "../../engine/llm/marketplace-provider-fetch.js";
-import { reviewerVendorFor } from "../../permissions/reviewer/reviewer-vendor-map.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import {
   getLlmVendorSettings,
@@ -81,9 +80,8 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     // API selection cannot answer an approval through another host key.
     if (llmSettings.retiredProvider) return null;
 
-    // Reviewer legacy provider names still resolve through the shared map.
-    // Active-LLM following passes canonical LLMVendor names directly.
-    const llmVendor = reviewerVendorFor(vendor) ?? (isLLMVendor(vendor) ? vendor : null);
+    // The reviewer identity (chat or selected model) names a canonical LLMVendor.
+    const llmVendor = isLLMVendor(vendor) ? vendor : null;
     if (!llmVendor) return null;
     const block = getLlmVendorSettings(llmSettings.vendors, llmVendor);
     const hasMarketplaceProviderPresetSelection =
@@ -269,17 +267,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         : reviewerStreamProviderFor,
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       resolveParentSessionAdjudicationTarget,
-      // Key inheritance — Foundry reads llm.apiKey.azure-foundry,
-      // GCP playground reads llm.apiKey.gemini. Both use the same secret
-      // store as the chat LLM providers so no new UI is required.
-      getSecret: (key) => settingsService.get("llm").retiredProvider ? null : settingsService.getSecret(key),
-      // Foundry endpoint is a plain (non-secret) setting: the same
-      // llm.vendors.azure-foundry.baseUrl field used by the chat provider.
-      getFoundryEndpoint: () =>
-        getLlmVendorSettings(
-          settingsService.get("llm").vendors,
-          "azure-foundry",
-        ).baseUrl ?? null,
       onDeferredPendingChange: (summary) => {
         sendToWindow(getMainWindow(), PERMISSIONS.deferredPending, summary, log);
       },

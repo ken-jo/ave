@@ -27,8 +27,6 @@ function reviewerSettings(
 ) {
   return {
     mode: "llm" as const,
-    provider: "openai" as const,
-    model: "gpt-4o-mini",
     fallbackOnError: "deny" as const,
     interactive: { autoApprove: "low" as const },
     parentAdjudication,
@@ -62,7 +60,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
         }
         return { ok: true as const, verb: "adjudication" as const, settings: reviewerSettings() };
       }),
-      reviewerProviderHasKey: vi.fn(async () => true),
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
         enabled: false,

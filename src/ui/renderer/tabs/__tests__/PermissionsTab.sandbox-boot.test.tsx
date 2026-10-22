@@ -49,15 +49,12 @@ function installApi(boot: unknown, sandboxOn = true) {
         verb: "show" as const,
         settings: {
           mode: "rule" as const,
-          provider: "openai" as const,
-          model: "gpt-4o-mini",
           fallbackOnError: "deny" as const,
           parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
           interactive: { autoApprove: "low" as const },
         },
         reviewerDegradedToRule: false,
       })),
-      reviewerProviderHasKey: vi.fn(async () => true),
       // win32 so the platform half is realistic; the notice must not depend on it.
       sandboxCapability: vi.fn(async () => ({
         platform: "win32" as NodeJS.Platform,

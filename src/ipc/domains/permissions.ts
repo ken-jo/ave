@@ -39,8 +39,6 @@ import type {
   PermissionRulesCommand,
 } from "../../permissions/permission-slash.js";
 import {
-  REVIEWER_PROVIDERS_SET,
-  type ReviewerProvider,
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
@@ -49,7 +47,6 @@ import {
   listApprovals,
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
-import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
@@ -633,51 +630,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ── Reviewer provider key-presence check ─────────────────────────────────
-  // Used by the renderer settings UI to determine which reviewer providers
-  // are activatable (key-driven dynamic activation). Read-only, but gated
-  // to prevent a foreign frame from probing which LLM API keys are present.
-  //
-  // Returns UNAUTHORIZED_FRAME (sibling handler parity) instead of
-  // bare `false` on validateSender failure. Bare `false` is indistinguishable
-  // from "key not present", masking the security rejection from the caller.
-  //
-  // MEDIUM: input allowlist — only the five known reviewer provider strings
-  // are accepted; anything else short-circuits before touching the secret store.
-  // Minor: REVIEWER_PROVIDERS_SET imported from permission-settings-store (single SOT).
-  ipcMain.handle(PERMISSIONS.reviewerProviderHasKey, async (e, provider: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.reviewerProviderHasKey, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    // MEDIUM: reject unknown provider names before touching the secret store.
-    if (typeof provider !== "string" || !REVIEWER_PROVIDERS_SET.has(provider as ReviewerProvider)) {
-      return false;
-    }
-    const { reviewerProviderKeyPresent } = await import(
-      "../../permissions/reviewer/provider-adapters.js"
-    );
-    return reviewerProviderKeyPresent(
-      provider,
-      (key) => deps.settingsService.getSecret(key),
-      // Foundry endpoint lives in the plain settings (not encrypted).
-      () =>
-        getLlmVendorSettings(
-          deps.settingsService.get("llm").vendors,
-          "azure-foundry",
-        ).baseUrl ?? null,
-    );
-  });
-
   // ── Permission policy — deferred queue surface ────────────────────────────
   // Returns DLP-redacted tool inputs + verdicts.
   //
-  // Host-renderer only. This and the five channels around it are READ-ONLY but
+  // Host-renderer only. This and the four channels around it are READ-ONLY but
   // not low-risk, and read-only is what previously earned them the base
   // validator — which admits plugin UI shells by design. Reading the approval
   // queue tells a plugin what the user is about to be asked to approve, which
   // is reconnaissance for timing a request against it, not a read. Same for
-  // the audit log, the hook trust state, and which providers hold a key.
+  // the audit log and the hook trust state.
   //
   // This comment used to say the channel was "gated to prevent a compromised
   // foreign frame from harvesting them" while using the validator that does

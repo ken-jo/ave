@@ -426,7 +426,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:judge-get",
         "ave:permissions:judge-set",
         "ave:permissions:reviewer-dispatch",
-        "ave:permissions:reviewer-provider-has-key",
         "ave:permissions:sandbox-capability",
         "ave:permissions:sandbox-windows-install",
         "ave:permissions:sandbox-windows-status",

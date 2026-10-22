@@ -389,7 +389,7 @@ const TRUSTED_NETWORK_HOSTS: ReadonlySet<string> = new Set([
  * which Microsoft controls. A dangling-CNAME attack would require an
  * attacker to claim the exact Azure resource in the user's subscription —
  * not feasible without the user's subscription credentials. See also
- * {@link validateFoundryEndpoint} in provider-adapters.ts.
+ * {@link validateFoundryEndpoint} in foundry-endpoint.ts.
  */
 export const TRUSTED_NETWORK_HOST_SUFFIXES: readonly string[] = [
   ".services.ai.azure.com",

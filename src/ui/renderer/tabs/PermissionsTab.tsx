@@ -60,8 +60,6 @@ import { errorMessage } from "../../../shared/error-message.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
   // Placeholder for the pre-load render only — the persisted block arrives with

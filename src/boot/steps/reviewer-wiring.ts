@@ -2,9 +2,9 @@
  * Reviewer agent boot wiring.
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5,
- * §11 v2.1 binding decisions plus active-LLM following: persisted
- * `permissions.reviewer.provider/model` are legacy fields, while runtime
- * `mode="llm"` uses the active chat provider/model when boot supplies it.
+ * §11 v2.1 binding decisions plus active-LLM following: `mode="llm"` runs
+ * on `permissions.judge.model` when the user picked one, and otherwise on the
+ * active chat provider/model.
  * `fallbackOnError ∈ {deny, rule}` with fail-closed default.
  *
  * This step wires the {@link RiskClassifier}, cache, and deferred queue into
@@ -43,10 +43,6 @@ import {
   type RiskClassifier,
   type ReviewerSettings,
 } from "../../permissions/reviewer/risk-classifier.js";
-import {
-  createFoundryProvider,
-  createGcpPlaygroundProvider,
-} from "../../permissions/reviewer/provider-adapters.js";
 import {
   LlmApprovalSentenceSelector,
   UnavailableApprovalSentenceSelector,
@@ -141,12 +137,9 @@ export class LlmReviewerProviderAdapter implements LlmReviewerProvider {
  * Returning `null` indicates the vendor is not configured; the caller
  * then fails the boot step (atomic cutover, no silent fallback).
  *
- * Key inheritance: `foundry` reads `llm.apiKey.azure-foundry` via
- * `getSecret` and the endpoint via `getFoundryEndpoint` (plain setting,
- * not a secret). `gcp-playground` reads `llm.apiKey.gemini` via `getSecret`.
- * This eliminates separate reviewer secret storage — users who have chat
- * working with Azure AI Foundry or Google Gemini get the reviewer provider
- * automatically.
+ * The reviewer runs on the identity {@link WireReviewerDeps.readActiveLlm}
+ * returns — the chat model, or the model picked in Settings — so it shares
+ * the chat providers' keys and needs no reviewer-specific secret.
  */
 export interface WireReviewerDeps {
   permissionManager: PermissionManager;
@@ -158,11 +151,10 @@ export interface WireReviewerDeps {
    */
   readSettings?: () => ReviewerSettingsBlock;
   /**
-   * Active chat LLM identity. When supplied, reviewer mode="llm" follows this
-   * provider/model instead of the legacy permissions.reviewer provider/model
-   * fields, so the permission reviewer stays on the same vendor/model as chat.
+   * The identity the reviewer runs on: the active chat model, or the
+   * permission reviewer model the user picked in Settings.
    */
-  readActiveLlm?: () => ActiveReviewerLlmIdentity;
+  readActiveLlm: () => ActiveReviewerLlmIdentity;
   /**
    * Present when the user picked the reviewer model in Settings; absent means
    * "unset", and the reviewer follows {@link readActiveLlm}'s chat model. The
@@ -172,27 +164,11 @@ export interface WireReviewerDeps {
    */
   selectedModel?: { label: string; available: boolean };
   /**
-   * Provider factory for `mode: "llm"` stream-based host providers. Legacy
-   * reviewer names (`openai | anthropic | google`) and active LLM vendor names
-   * (`claude | openai | gemini | azure-foundry | vertex-ai`) can
-   * reach this callback.
+   * Provider factory for `mode: "llm"` stream-based host providers, keyed by
+   * the identity's provider (an LLM vendor or a subscription runtime).
    * Returning `null` means "vendor not configured" — wiring fails closed.
-   * Not called for `foundry` or `gcp-playground` (direct HTTP adapters).
    */
   streamProviderFor?: (vendor: string) => LLMProvider | null;
-  /**
-   * Secret accessor for Foundry and GCP playground providers.
-   * Required when `settings.reviewer.provider` is `"foundry"` or
-   * `"gcp-playground"`. Reads `llm.apiKey.azure-foundry` (Foundry) or
-   * `llm.apiKey.gemini` (GCP). Override in tests to supply fake secrets.
-   */
-  getSecret?: (key: string) => string | null;
-  /**
-   * Endpoint accessor for the Foundry provider. Reads the plain
-   * (non-secret) `llm.vendors.azure-foundry.baseUrl` setting. Required
-   * when `settings.reviewer.provider` is `"foundry"`. Override in tests.
-   */
-  getFoundryEndpoint?: () => string | null;
   /** Test override for the cache file path. */
   verdictCachePath?: string;
   /** Test override for the deferred queue file path. */
@@ -279,8 +255,9 @@ export interface ActiveReviewerLlmIdentity {
   vertexLocation?: string;
 }
 
-type EffectiveReviewerSettings = Omit<ReviewerSettingsBlock, "provider"> & {
+type EffectiveReviewerSettings = ReviewerSettingsBlock & {
   provider: string;
+  model: string;
   marketplaceProviderPresetId?: string;
   baseUrl?: string;
   vertexProject?: string;
@@ -379,8 +356,8 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       // Discriminate the two failure classes resolveReviewerAdapter can
       // throw: only ReviewerProviderUnconfiguredError (user has not
       // configured the provider/API key — the external boundary) degrades.
-      // A contract violation (boot caller forgot getSecret /
-      // streamProviderFor — a plain Error) is a caller bug and must crash
+      // A contract violation (boot caller forgot streamProviderFor — a
+      // plain Error) is a caller bug and must crash
       // boot loudly, never silently degrade.
       if (!(err instanceof ReviewerProviderUnconfiguredError)) throw err;
       if (deps.selectedModel) {
@@ -457,12 +434,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       marketplaceProviderPresetId: effectiveSettings.marketplaceProviderPresetId ?? null,
       vertexProject: effectiveSettings.vertexProject ?? null,
       vertexLocation: effectiveSettings.vertexLocation ?? null,
-      // Legacy Foundry endpoint key retained for existing cache-scope tests.
-      endpoint:
-        effectiveSettings.provider === "foundry" ||
-        effectiveSettings.provider === "azure-foundry"
-          ? (effectiveSettings.baseUrl ?? deps.getFoundryEndpoint?.() ?? null)
-          : null,
     },
   });
   // Issue #690 — push the interactive auto-approve policy onto the
@@ -502,13 +473,16 @@ function defaultReadSettings(): ReviewerSettingsBlock {
   return readPermissionSettings().permissions.reviewer;
 }
 
+/**
+ * The reviewer block plus the identity it runs on. Resolved in every mode: the
+ * judge's builtin stage and the cache scope name this identity even when the
+ * reviewer itself wired a rule classifier.
+ */
 function resolveEffectiveSettings(
   settings: ReviewerSettingsBlock,
   deps: WireReviewerDeps,
 ): EffectiveReviewerSettings {
-  if (settings.mode !== "llm") return settings;
-  const active = deps.readActiveLlm?.();
-  if (!active) return settings;
+  const active = deps.readActiveLlm();
   return {
     ...settings,
     provider: active.provider,
@@ -526,7 +500,7 @@ function resolveEffectiveSettings(
  * Thrown by {@link resolveReviewerAdapter} ONLY when the user has not (yet)
  * configured the LLM provider/API key — the *external configuration state*
  * the degrade-to-rule boundary in {@link wireReviewerAgent} is allowed to
- * catch. Contract violations (boot caller forgot to supply `getSecret` /
+ * catch. Contract violations (boot caller forgot to supply
  * `streamProviderFor`) deliberately throw a plain Error instead, so they
  * propagate as loud boot failures and are never silently degraded.
  */
@@ -538,64 +512,18 @@ export class ReviewerProviderUnconfiguredError extends Error {
 }
 
 /**
- * Resolve a concrete {@link LlmReviewerProvider} adapter for the configured
- * provider name. Two distinct failure classes:
+ * Resolve a concrete {@link LlmReviewerProvider} adapter for the reviewer's
+ * provider through the host's streaming LLMProvider. Two failure classes:
  *   - {@link ReviewerProviderUnconfiguredError} — the user has not configured
  *     the provider/API key (external boundary; wiring degrades to rule).
  *   - plain Error — the boot caller violated the wiring contract (missing
- *     `getSecret` / `streamProviderFor` dependency); atomic cutover, no
- *     silent fallback per CLAUDE.md No-Fallback — this must crash boot.
- *
- * `foundry` and `gcp-playground` use direct HTTP adapters keyed from
- * the encrypted secret store via `deps.getSecret`. Other provider strings
- * use the host's streaming LLMProvider via `deps.streamProviderFor`.
+ *     `streamProviderFor`); atomic cutover, no silent fallback per
+ *     CLAUDE.md No-Fallback — this must crash boot.
  */
 function resolveReviewerAdapter(
   provider: string,
   deps: WireReviewerDeps,
 ): LlmReviewerProvider {
-  if (provider === "foundry") {
-    if (!deps.getSecret) {
-      throw new Error(
-        `Permission reviewer wiring: provider='foundry' requires getSecret to be supplied. ` +
-        `Boot caller must provide a secret accessor (atomic cutover — no silent fallback).`,
-      );
-    }
-    const adapter = createFoundryProvider(
-      deps.getSecret,
-      deps.getFoundryEndpoint ?? (() => null),
-      deps.networkFetch,
-    );
-    if (!adapter) {
-      throw new ReviewerProviderUnconfiguredError(
-        `Permission reviewer wiring: provider='foundry' — API key or endpoint not configured. ` +
-        `Set the Azure AI Foundry API key ('llm.apiKey.azure-foundry') and endpoint ` +
-        `('llm.vendors.azure-foundry.baseUrl') via the chat LLM provider settings, ` +
-        `or change the reviewer provider.`,
-      );
-    }
-    return adapter;
-  }
-
-  if (provider === "gcp-playground") {
-    if (!deps.getSecret) {
-      throw new Error(
-        `Permission reviewer wiring: provider='gcp-playground' requires getSecret to be supplied. ` +
-        `Boot caller must provide a secret accessor (atomic cutover — no silent fallback).`,
-      );
-    }
-    const adapter = createGcpPlaygroundProvider(deps.getSecret, deps.networkFetch);
-    if (!adapter) {
-      throw new ReviewerProviderUnconfiguredError(
-        `Permission reviewer wiring: provider='gcp-playground' — API key not configured. ` +
-        `Set the Google Gemini API key ('llm.apiKey.gemini') via the chat LLM provider ` +
-        `settings, or change the reviewer provider.`,
-      );
-    }
-    return adapter;
-  }
-
-  // openai | anthropic | google — use host streaming LLMProvider
   if (!deps.streamProviderFor) {
     throw new Error(
       `Permission reviewer wiring: settings.reviewer.mode='llm' but no streamProviderFor supplied. ` +
@@ -605,7 +533,7 @@ function resolveReviewerAdapter(
   const upstream = deps.streamProviderFor(provider);
   if (!upstream) {
     throw new ReviewerProviderUnconfiguredError(
-      `Permission reviewer wiring: settings.reviewer.provider='${provider}' is not configured. ` +
+      `Permission reviewer wiring: reviewer provider '${provider}' is not configured. ` +
       `Add an API key for ${provider} or change reviewer mode.`,
     );
   }

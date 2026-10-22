@@ -558,8 +558,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         verb: "show",
         settings: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
         },

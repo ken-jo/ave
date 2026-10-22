@@ -886,7 +886,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: "baseUrl must be a string" };
       }
       const { validateFoundryEndpoint } = await import(
-        "../../permissions/reviewer/provider-adapters.js"
+        "../../permissions/reviewer/foundry-endpoint.js"
       );
       try {
         validateFoundryEndpoint(foundryVendorPatch.baseUrl);

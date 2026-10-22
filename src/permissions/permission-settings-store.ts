@@ -72,15 +72,6 @@ const log = createLogger("permission-settings");
  *   headless mutation must be manually approved.
  */
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
-/** Canonical list of all supported reviewer providers — single SOT. */
-export const REVIEWER_PROVIDERS = [
-  "openai",
-  "anthropic",
-  "google",
-  "foundry",
-  "gcp-playground",
-] as const;
-export type ReviewerProvider = (typeof REVIEWER_PROVIDERS)[number];
 export type ReviewerFallbackOnError = "deny" | "rule";
 
 /**
@@ -202,16 +193,15 @@ export interface ReviewerParentAdjudicationBlock {
 }
 
 /**
- * Permission policy P3 — `permissions.reviewer` block. Provider/model remain
- * persisted for legacy command compatibility; runtime LLM reviewer wiring now
- * follows the active chat LLM provider/model when available.
- * Defaults: provider="openai", model="gpt-4o-mini",
- * fallbackOnError="deny", interactive.autoApprove="medium".
+ * Permission policy P3 — `permissions.reviewer` block. The reviewer's model is
+ * not stored here: it is `permissions.judge.model` (unset follows the active
+ * chat model). Files written by older builds may still carry
+ * `provider`/`model` keys; the read normalizer drops them and the next save
+ * writes the block without them.
+ * Defaults: fallbackOnError="deny", interactive.autoApprove="medium".
  */
 export interface ReviewerSettingsBlock {
   mode: ReviewerMode;
-  provider: ReviewerProvider;
-  model: string;
   fallbackOnError: ReviewerFallbackOnError;
   interactive: ReviewerInteractiveBlock;
   /** Tier-2 policy for sub-agent asks a parent agent may decide. */
@@ -343,8 +333,6 @@ const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
   // so the #664 fresh-install flood does not reappear under the degraded rule
   // classifier.
   mode: "llm",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "medium" },
   // Tier 2 mirrors the interactive threshold: the parent may decide exactly
@@ -403,8 +391,6 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
   "llm",
   "strict",
 ]);
-/** Exported so IPC handlers can validate provider names against a single SOT. */
-export const REVIEWER_PROVIDERS_SET: ReadonlySet<ReviewerProvider> = new Set(REVIEWER_PROVIDERS);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
 function defaultPath(): string {
@@ -746,15 +732,6 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.mode === "string" && REVIEWER_MODES.has(obj.mode as ReviewerMode)
       ? (obj.mode as ReviewerMode)
       : DEFAULT_REVIEWER.mode;
-  const provider =
-    typeof obj.provider === "string" &&
-    REVIEWER_PROVIDERS_SET.has(obj.provider as ReviewerProvider)
-      ? (obj.provider as ReviewerProvider)
-      : DEFAULT_REVIEWER.provider;
-  const model =
-    typeof obj.model === "string" && obj.model.length > 0
-      ? obj.model
-      : DEFAULT_REVIEWER.model;
   const fallbackOnError =
     typeof obj.fallbackOnError === "string" &&
     REVIEWER_FALLBACKS.has(obj.fallbackOnError as ReviewerFallbackOnError)
@@ -766,10 +743,10 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
       ? obj.disabledMigratedAt
       : undefined;
+  // Only the known keys are carried, so the retired `provider`/`model` keys an
+  // older build wrote are dropped here and leave the file on the next save.
   return {
     mode,
-    provider,
-    model,
     fallbackOnError,
     interactive,
     parentAdjudication,
@@ -945,24 +922,31 @@ export async function writePermissionSettings(
  * (no silent default-substitution at write time, only at read time
  * for hand-edited files).
  */
+const REVIEWER_BLOCK_KEYS: ReadonlySet<string> = new Set([
+  "mode",
+  "fallbackOnError",
+  "interactive",
+  "parentAdjudication",
+  "disabledMigratedAt",
+] satisfies ReadonlyArray<keyof ReviewerSettingsBlock>);
+
 function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBlock {
   if (!REVIEWER_MODES.has(patch.mode)) {
     throw new Error(
       `permissions.reviewer.mode invalid: '${patch.mode}'. Allowed: ${[...REVIEWER_MODES].join("|")}`,
     );
   }
-  if (!REVIEWER_PROVIDERS_SET.has(patch.provider)) {
+  const unknownKeys = Object.keys(patch).filter((key) => !REVIEWER_BLOCK_KEYS.has(key));
+  if (unknownKeys.length > 0) {
     throw new Error(
-      `permissions.reviewer.provider invalid: '${patch.provider}'. Allowed: ${REVIEWER_PROVIDERS.join("|")}`,
+      `permissions.reviewer has unsupported keys: ${unknownKeys.join(", ")}. ` +
+      `The reviewer model is set with permissions.judge.model.`,
     );
   }
   if (!REVIEWER_FALLBACKS.has(patch.fallbackOnError)) {
     throw new Error(
       `permissions.reviewer.fallbackOnError invalid: '${patch.fallbackOnError}'. Allowed: ${[...REVIEWER_FALLBACKS].join("|")}`,
     );
-  }
-  if (typeof patch.model !== "string" || patch.model.length === 0) {
-    throw new Error("permissions.reviewer.model must be a non-empty string");
   }
   if (
     !patch.interactive ||

@@ -427,14 +427,7 @@ export function parsePermissionReviewerCommand(
         "missing subcommand — usage: /permission reviewer <show|mode|fallback|interactive|adjudication> [value]",
     };
   }
-  const rawVerb = args[0];
-  if (rawVerb === "provider" || rawVerb === "model") {
-    return {
-      ok: false,
-      error: "reviewer provider/model follows the active LLM settings; change provider/model in Intelligence settings",
-    };
-  }
-  const verb = rawVerb as PermissionReviewerVerb;
+  const verb = args[0] as PermissionReviewerVerb;
   if (
     verb !== "mode" &&
     verb !== "fallback" &&
@@ -489,13 +482,6 @@ export async function dispatchPermissionReviewerCommand(
   cmd: PermissionReviewerCommand,
   pathOverride?: string,
 ): Promise<PermissionReviewerResult> {
-  const legacyVerb = (cmd as { verb: string }).verb;
-  if (legacyVerb === "provider" || legacyVerb === "model") {
-    return {
-      ok: false,
-      error: "reviewer provider/model follows the active LLM settings; change provider/model in Intelligence settings",
-    };
-  }
   if (cmd.verb === "show") {
     const current = readPermissionSettings(pathOverride);
     return { ok: true, verb: "show", settings: current.permissions.reviewer };
@@ -571,7 +557,7 @@ export async function dispatchPermissionReviewerCommand(
       return { ok: false, error: (err as Error).message };
     }
   }
-  return { ok: false, error: `unknown reviewer command '${legacyVerb}'` };
+  return { ok: false, error: `unknown reviewer command '${(cmd as { verb: string }).verb}'` };
 }
 
 export async function dispatchPermissionReviewerCommandWithRewire(

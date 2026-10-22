@@ -88,8 +88,6 @@ function installApi(
             verb: "show" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -102,8 +100,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -116,8 +112,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -130,8 +124,6 @@ function installApi(
             verb: "fallback" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "rule" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -144,8 +136,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: rawArgs === "interactive medium" ? "medium" as const : "low" as const },
@@ -158,22 +148,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
-        }
-        if (rawArgs === "model gpt-5.5-mini") {
-          return {
-            ok: true as const,
-            verb: "model" as const,
-            settings: {
-              mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-5.5-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -182,8 +156,6 @@ function installApi(
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
-      /** C3 — key-driven dynamic activation: return true for openai by default. */
-      reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
@@ -506,8 +478,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -520,8 +490,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "mode" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -776,8 +744,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -805,8 +771,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -1261,14 +1225,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
           },
         })),
-        reviewerProviderHasKey: vi.fn(async () => false),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -1909,8 +1870,6 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
           verb: "show",
           settings: {
             mode: "disabled",
-            provider: "openai",
-            model: "gpt-4o-mini",
             fallbackOnError: "deny",
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" },
