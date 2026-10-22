@@ -64,8 +64,9 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     await expect(page.getByTestId("chat-side-panel-tab-strip")).toBeVisible();
     await expect(page.locator('[data-testid="chat-side-panel-tab-strip"] [data-tab-id="terminal:abc12345-2"] [role="tab"]')).toHaveAttribute("aria-selected", "true");
     await page.getByTestId("sidebar-surface-browser:abc12345-1").click();
-    await expect(page.getByTestId("chat-side-panel-browser-tab-host")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-browser-tab-host")).toHaveAttribute("data-tab-id", "browser:abc12345-1");
+    await expect(page.locator('[data-testid="chat-side-panel-tab-strip"] [data-tab-id="browser:abc12345-1"] [role="tab"]')).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
+    await expect(page.getByTestId("chat-side-panel-browser-webview")).toHaveAttribute("src", url);
     const icon = page.getByTestId("sidebar-surface-browser:abc12345-1").locator("img");
     await expect(icon).toHaveAttribute("src", /^data:image\/png;base64,/);
     await expect.poll(() => icon.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
