@@ -233,7 +233,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
       // calls are silently allowed; HIGH still surfaces.
       expect(r.settings.mode).toBe("llm");
       expect(r.settings.provider).toBe("openai");
-      expect(r.settings.model).toBe("gpt-6-luna");
+      expect(r.settings.model).toBe("gpt-4o-mini");
       expect(r.settings.fallbackOnError).toBe("deny");
       expect(r.settings.interactive.autoApprove).toBe("medium");
     }
@@ -267,7 +267,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     const settings = readPermissionSettings(path);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("active LLM settings");
-    expect(settings.permissions.reviewer.model).toBe("gpt-6-luna");
+    expect(settings.permissions.reviewer.model).toBe("gpt-4o-mini");
   });
 
   it("fallback rule persists when explicitly selected", async () => {
@@ -387,7 +387,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
       // silently allows LOW/MEDIUM foreground calls.
       mode: "llm",
       provider: "openai",
-      model: "gpt-6-luna",
+      model: "gpt-4o-mini",
       fallbackOnError: "deny",
       interactive: { autoApprove: "medium" },
       parentAdjudication: {
@@ -417,7 +417,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
     expect(settings.permissions.reviewer.mode).toBe("llm");
     expect(settings.permissions.reviewer.provider).toBe("openai");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
-    expect(settings.permissions.reviewer.model).toBe("gpt-6-luna");
+    expect(settings.permissions.reviewer.model).toBe("gpt-4o-mini");
   });
 
   it("valid reviewer block round-trips (absent interactive → default medium)", () => {

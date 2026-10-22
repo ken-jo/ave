@@ -45,7 +45,7 @@ import {
   PARENT_ADJUDICATION_TIMEOUT_MS_MAX,
   PARENT_ADJUDICATION_TIMEOUT_MS_MIN,
 } from "../../../shared/parent-adjudication-bounds.js";
-import { DEFAULT_PERMISSION_REVIEWER_MODEL, PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
+import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
@@ -60,7 +60,7 @@ import { errorMessage } from "../../../shared/error-message.js";
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
   provider: "openai",
-  model: DEFAULT_PERMISSION_REVIEWER_MODEL,
+  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
   // Placeholder for the pre-load render only — the persisted block arrives with

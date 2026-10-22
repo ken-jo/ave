@@ -1,10 +1,5 @@
 export const PERMISSION_REVIEWER_FRAMEWORK_VERSION = "permission-reviewer-framework/v2";
 
-/**
- * Default for a reviewer without a saved model selection.
- */
-export const DEFAULT_PERMISSION_REVIEWER_MODEL = "gpt-6-luna";
-
 export const PERMISSION_REVIEWER_OUTPUT_CONTRACT =
   `{ "level": "low" | "medium" | "high", "reason": <80 chars or less> }`;
 
