@@ -352,9 +352,22 @@ export interface McpResourceTemplateSummary {
   variables: string[];
 }
 
+export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "error";
+
+export interface McpAuthenticationResult {
+  connected: boolean;
+  errorCode?: "mcp-auth-required" | "mcp-auth-failed";
+}
+
+export interface McpConfigMutationResult extends McpAuthenticationResult {
+  warning?: string;
+}
+
 export interface McpServerState {
   id: string;
   status: "disconnected" | "connecting" | "connected" | "error";
+  /** Host-owned authorization state. Credentials never cross this boundary. */
+  authStatus?: McpAuthStatus;
   connectedAt?: string;
   lastError?: string;
   registeredTools: string[];
