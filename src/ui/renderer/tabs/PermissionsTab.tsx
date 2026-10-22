@@ -118,6 +118,16 @@ const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
   "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
 };
 
+/**
+ * Boot degraded because the bundled Windows helper is missing or failed its
+ * integrity check. An env opt-in leaves the toggles off, so the helper status
+ * and notice key on this as well as on the toggles, agreeing with the banner.
+ */
+function bootReportsWindowsHelperFailure(boot: SandboxCapabilityInfo["boot"] | undefined): boolean {
+  return (boot?.action === "degrade" || boot?.action === "abort") &&
+    boot.causes.some((cause) => cause === "windows-sandbox-missing" || cause === "windows-sandbox-integrity-failed");
+}
+
 function windowsStateLabel(labels: Record<string, () => string>, value: unknown): string {
   return typeof value === "string" && Object.hasOwn(labels, value)
     ? labels[value]()
@@ -478,7 +488,8 @@ export function PermissionsTab({
       // On win32 with either setting already ON, surface the consent/setup
       // state on tab entry so the panel persists across navigations until
       // ready. Extension provisioning is separate from MXC shell readiness.
-      if (sandboxRes.platform === "win32" && (osSandboxOn || workerConfinementOn)) {
+      if (sandboxRes.platform === "win32" &&
+        (osSandboxOn || workerConfinementOn || bootReportsWindowsHelperFailure(sandboxRes.boot))) {
         const status = await window.ave.permission.sandboxWindowsStatus();
         if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
         setWindowsStatus(status);
@@ -1001,6 +1012,8 @@ export function PermissionsTab({
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  const windowsHelperRequested =
+    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
   // Windows: which substrate carries shells and extensions this session.
   // Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
@@ -1488,7 +1501,7 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {(sandboxEnabled || workerConfinementEnabled) && windowsStatus?.applicable && !windowsStatus.ready ? (
+          {windowsHelperRequested && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.helperError ? (
               <p
                 data-testid="os-sandbox-windows-helper-unavailable"
