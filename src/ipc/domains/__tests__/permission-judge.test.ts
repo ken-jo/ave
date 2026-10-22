@@ -48,10 +48,10 @@ describe("judge settings host boundary", () => {
     expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
   });
 
-  it("keeps chain rejection metadata on the host side of the snapshot", async () => {
+  it("reports a rejected stored chain so the renderer does not present it as off", async () => {
     writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { chain: [{ provider: "external" }], mode: "active" } } }));
     const result = await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent());
-    expect(result).toMatchObject({ ok: true, settings: { chain: [], mode: "active" } });
+    expect(result).toMatchObject({ ok: true, settings: { chain: [], mode: "active" }, storedChainRejected: true });
     expect(result).not.toHaveProperty("chainRejected");
     expect(result).not.toHaveProperty("migrated");
   });
@@ -66,7 +66,7 @@ describe("judge settings host boundary", () => {
     });
     writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
     expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
-      ok: true, settings: { model: null }, reviewerModelUnavailable: true,
+      ok: true, settings: { model: { vendor: "claude", model: "removed-model" } }, reviewerModelUnavailable: true,
     });
   });
 

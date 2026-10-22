@@ -1603,8 +1603,9 @@ export type AvePermissionApi = {
     rawArgs: string,
   ) => Promise<PermissionReviewerDispatchResult>;
   judgeGet: () => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeReadResult>;
+  /** Only the changed fields: unchanged stored values (even rejected ones) stay as stored. */
   judgeSet: (
-    settings: import("../../shared/permission-judge-settings.js").PermissionJudgeSettings,
+    patch: Partial<import("../../shared/permission-judge-settings.js").PermissionJudgeSettings>,
   ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /**
    * Permission policy C3 — check whether an API key (or GCP service account)

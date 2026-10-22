@@ -343,6 +343,8 @@ export interface NormalizedJudgeSettings {
    * the chat model or any other model for the user's choice.
    */
   modelRejected?: true;
+  /** A rejected reviewer model that is still a well-formed `<provider>/<model>`, for display. */
+  rejectedModel?: JudgeModelRef;
 }
 
 /**
@@ -384,11 +386,14 @@ export function normalizeJudgeSettings(
     }
   }
   let modelRejected = false;
+  let rejectedModel: JudgeModelRef | undefined;
   if (obj.model !== undefined && obj.model !== null) {
     const { value, error } = parseJudgeModel(obj.model, catalog);
     if (error || !value) {
       issues.push(`${error ?? "model invalid"}; permission reviewer unavailable`);
       modelRejected = true;
+      const wellFormed = parseJudgeModel(obj.model, { optionsFor: () => [String(obj.model).slice(String(obj.model).indexOf("/") + 1)] });
+      if (wellFormed.value) rejectedModel = wellFormed.value;
     } else {
       settings.model = value;
     }
@@ -433,6 +438,7 @@ export function normalizeJudgeSettings(
     settings, issues, migrated,
     ...(chainRejected ? { chainRejected: true as const } : {}),
     ...(modelRejected ? { modelRejected: true as const } : {}),
+    ...(rejectedModel ? { rejectedModel } : {}),
   };
 }
 

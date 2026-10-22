@@ -19,10 +19,15 @@ export class JudgeCircuitBreaker {
 
   constructor(private limits: JudgeBreakerSettings) {}
 
+  /**
+   * Apply new limits to every session's existing counts, both ways: lowered
+   * limits can open a breaker, raised limits close one whose counts are now
+   * under them. The counts themselves are kept.
+   */
   setLimits(limits: JudgeBreakerSettings): void {
     this.limits = { ...limits };
     for (const counters of this.sessions.values()) {
-      if (counters.consecutive >= limits.consecutive || counters.total >= limits.total) counters.open = true;
+      counters.open = counters.consecutive >= limits.consecutive || counters.total >= limits.total;
     }
   }
 

@@ -3,7 +3,12 @@ import { Button } from "../../../../components/ui/button.js";
 import { Input } from "../../../../components/ui/input.js";
 import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
-import { MAX_PERMISSION_JUDGE_STAGES, type PermissionJudgeSettings, type PermissionJudgeSnapshot } from "../../../../shared/permission-judge-settings.js";
+import {
+  MAX_PERMISSION_JUDGE_STAGES,
+  serializePermissionJudgeSettingsPatch,
+  type PermissionJudgeSettings,
+  type PermissionJudgeSnapshot,
+} from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
 import { getVendorOption } from "../../constants.js";
 import {
@@ -175,7 +180,14 @@ export function PermissionJudgeContent() {
           },
         } : stage),
       };
-      const result = await window.ave.permission.judgeSet(settingsToSave);
+      // Send only what changed. A stored value the host rejected (an
+      // unavailable model, a rejected chain) stays as stored unless edited.
+      const saved = snapshot?.settings;
+      const wire = (settings: Partial<PermissionJudgeSettings>) => JSON.stringify(serializePermissionJudgeSettingsPatch(settings));
+      const patch = Object.fromEntries((Object.keys(settingsToSave) as Array<keyof PermissionJudgeSettings>)
+        .filter((key) => !saved || wire({ [key]: settingsToSave[key] }) !== wire({ [key]: saved[key] }))
+        .map((key) => [key, settingsToSave[key]])) as Partial<PermissionJudgeSettings>;
+      const result = await window.ave.permission.judgeSet(patch);
       if (!result.ok) {
         setError(result.error === "invalid-judge-settings" ? "invalid"
           : result.error === "user-keyboard-required" ? "keyboard"
@@ -207,6 +219,11 @@ export function PermissionJudgeContent() {
       {errorText && <p role={error === "read" ? "status" : "alert"} className="text-sm text-destructive">{errorText}</p>}
       {error === "read" && <Button type="button" variant="outline" onClick={reload}>{t("permissionJudge.retry")}</Button>}
       {!draft && !error && <p role="status" className="text-sm text-muted-foreground">{t("permissionJudge.loading")}</p>}
+      {snapshot?.storedChainRejected === true && (
+        <p role="alert" data-testid="permission-judge-chain-rejected" className="text-sm text-destructive">
+          {t("permissionJudge.storedChainRejected")}
+        </p>
+      )}
       {snapshot && snapshot.issues.length > 0 && (
         <p role="status" className="text-sm text-warning">{t("permissionJudge.warnings", { count: snapshot.issues.length })}</p>
       )}

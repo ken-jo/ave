@@ -36,6 +36,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "permissionJudge.followChatModel": "채팅 모델 따르기",
   "permissionJudge.followChatModelNamed": "채팅 모델 따르기 · {model}",
   "permissionJudge.modelUnavailableFacts": "사용할 수 없음",
+  "permissionJudge.storedChainRejected": "저장된 판정 체인을 적용할 수 없어 판정 자동화 대신 직접 확인을 요청합니다. 다른 설정을 저장해도 그대로 유지되며, 체인을 바꾸거나 끄면 해제됩니다.",
   "permissionJudge.reviewerModelUnavailable": "선택한 검토 모델을 사용할 수 없습니다. 사용 가능한 모델을 고르거나 채팅 모델 따르기로 바꿀 때까지 자동 검토 대신 직접 확인을 요청합니다.",
   "permissionJudge.executable": "실행 파일 절대 경로",
   "permissionJudge.arguments": "인수 · 줄마다 하나씩, 빈 줄 제외",

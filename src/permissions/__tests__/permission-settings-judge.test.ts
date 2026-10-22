@@ -61,10 +61,25 @@ describe("judge settings persistence", () => {
     const { path } = fixture();
     writeFileSync(path, JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
     expect(readJudgeSettings(path)).toMatchObject({ modelRejected: true, settings: { model: null } });
-    await expect(setJudgeSettingsPersist({ mode: "active" }, path)).rejects.toThrow(/not offered/);
-    expect(JSON.parse(readFileSync(path, "utf8")).permissions.judge.model).toBe("claude/removed-model");
-    await setJudgeSettingsPersist({ model: null, mode: "active" }, path);
+    await setJudgeSettingsPersist({ mode: "active" }, path);
+    const saved = JSON.parse(readFileSync(path, "utf8")).permissions.judge;
+    expect(saved).toMatchObject({ model: "claude/removed-model", mode: "active" });
+    expect(readJudgeSettings(path)).toMatchObject({ modelRejected: true });
+    await setJudgeSettingsPersist({ model: null }, path);
     expect(readJudgeSettings(path)).not.toHaveProperty("modelRejected");
+  });
+
+  it("keeps a rejected chain through a save that does not replace it, never turning it off", async () => {
+    const { path } = fixture();
+    const rejected = [{ provider: "external" }];
+    writeFileSync(path, JSON.stringify({ permissions: { judge: { chain: rejected, mode: "active" } } }));
+    expect(readJudgeSettings(path)).toMatchObject({ chainRejected: true });
+    await setJudgeSettingsPersist({ categories: { network: true } }, path);
+    const saved = JSON.parse(readFileSync(path, "utf8")).permissions.judge;
+    expect(saved).toMatchObject({ chain: rejected, mode: "active", categories: { network: true } });
+    expect(readJudgeSettings(path)).toMatchObject({ chainRejected: true });
+    await setJudgeSettingsPersist({ chain: [] }, path);
+    expect(readJudgeSettings(path)).not.toHaveProperty("chainRejected");
   });
 
   it("rejects invalid updates without altering bytes", async () => {

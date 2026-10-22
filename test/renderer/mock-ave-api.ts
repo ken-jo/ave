@@ -101,6 +101,7 @@ export function mockJudgeGet(overrides: {
     modelOptions: overrides.modelOptions ?? [],
     chatModel: overrides.chatModel ?? null,
     reviewerModelUnavailable: overrides.reviewerModelUnavailable ?? false,
+    storedChainRejected: false,
   }));
 }
 

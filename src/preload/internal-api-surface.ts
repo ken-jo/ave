@@ -23,7 +23,7 @@ import type {
 } from "../main/onboarding-proposal-store.js";
 import { parseEnvForcedSettingsPaths } from "../shared/env-backed-settings.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
-import { serializePermissionJudgeSettings, type PermissionJudgeSettings } from "../shared/permission-judge-settings.js";
+import { serializePermissionJudgeSettingsPatch, type PermissionJudgeSettings } from "../shared/permission-judge-settings.js";
 import { mcpApiSurface } from "./mcp-api-surface.js";
 import { buildTelegramConnectionApiSurface } from "./telegram-connection-api-surface.js";
 import { buildTailnetObserverApiSurface } from "./tailnet-observer-api-surface.js";
@@ -911,9 +911,10 @@ export function buildInternalApiSurface() {
     reviewerDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.reviewerDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),
     judgeGet: async () => ipcRenderer.invoke(PERMISSIONS.judgeGet),
-    judgeSet: async (settings: PermissionJudgeSettings) =>
+    /** Sends only the fields present in `patch`; unchanged stored values stay as stored. */
+    judgeSet: async (patch: Partial<PermissionJudgeSettings>) =>
       ipcRenderer.invoke(PERMISSIONS.judgeSet, {
-        settings: serializePermissionJudgeSettings(settings),
+        settings: serializePermissionJudgeSettingsPatch(patch),
         intent: ipcUserKeyboardIntent(),
       }),
     /** Check whether a reviewer provider has its required API key stored. */

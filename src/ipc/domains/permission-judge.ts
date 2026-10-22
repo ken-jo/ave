@@ -34,10 +34,13 @@ function snapshot(deps: IpcDeps): PermissionJudgeSnapshot {
         }))) continue;
     for (const model of catalog.optionsFor(vendor)) modelOptions.push({ vendor, model });
   }
-  const { settings, issues, modelRejected } = readJudgeSettings(undefined, catalog);
+  const { settings: normalized, issues, modelRejected, rejectedModel, chainRejected } = readJudgeSettings(undefined, catalog);
+  // A stored but unavailable model stays visible as the selection, never as "follow chat".
+  const settings = rejectedModel ? { ...normalized, model: rejectedModel } : normalized;
   const selected = settings.model;
   return {
     settings, issues, modelOptions,
+    storedChainRejected: chainRejected === true,
     chatModel: activeChatModelLabel(llm),
     reviewerModelUnavailable: modelRejected === true || (selected !== null &&
       !modelOptions.some((option) => option.vendor === selected.vendor && option.model === selected.model)),

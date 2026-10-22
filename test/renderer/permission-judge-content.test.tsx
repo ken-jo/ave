@@ -25,10 +25,12 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
     modelOptions: [{ vendor: "openai-compatible", model: "team/reviewer" }],
     chatModel: "openai/chat-model",
     reviewerModelUnavailable: false,
+    storedChainRejected: false,
     ...overrides,
   };
   const judgeGet = vi.fn(async () => ({ ok: true as const, ...snapshot }));
-  const judgeSet = vi.fn(async (value: PermissionJudgeSettings): Promise<PermissionJudgeWriteResult> => ({ ok: true, ...snapshot, settings: value }));
+  // The host merges the patch into the stored settings and answers with the whole result.
+  const judgeSet = vi.fn(async (patch: Partial<PermissionJudgeSettings>): Promise<PermissionJudgeWriteResult> => ({ ok: true, ...snapshot, settings: { ...snapshot.settings, ...patch } }));
   let listener: (() => void) | undefined;
   const onConfigChanged = vi.fn((callback: () => void) => { listener = callback; return () => { listener = undefined; }; });
   const previous = window.ave;
@@ -69,11 +71,39 @@ describe("approval judge settings", () => {
       await pickModel(screen.getByLabelText("Judge model"), /team\/reviewer/);
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await screen.findByText("Judge settings saved.");
-      expect(view.judgeSet).toHaveBeenCalledWith(expect.objectContaining({
-        mode: "shadow",
-        model: null,
+      // Only changed fields are sent: the stored mode is already shadow and the
+      // unchanged reviewer model is left as stored.
+      expect(view.judgeSet).toHaveBeenCalledWith({
         chain: [{ id: "stage-1", provider: "builtin-llm", model: { vendor: "openai-compatible", model: "team/reviewer" } }],
-      }));
+      });
+    } finally { view.restore(); }
+  });
+
+  it("keeps an unavailable stored reviewer model visible and out of an unrelated save", async () => {
+    const value = settings();
+    value.model = { vendor: "claude", model: "removed-model" };
+    value.chain = [{ id: "review", provider: "builtin-llm" }];
+    const view = mount({ settings: value, reviewerModelUnavailable: true });
+    try {
+      await screen.findByTestId("permission-reviewer-model-unavailable");
+      expect(screen.getByLabelText("Permission reviewer model")).toHaveTextContent("removed-model");
+      fireEvent.click(screen.getByLabelText("Network"));
+      fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
+      await screen.findByText("Judge settings saved.");
+      expect(view.judgeSet).toHaveBeenCalledWith({ categories: { shell: true, write: true, network: true } });
+    } finally { view.restore(); }
+  });
+
+  it("warns about a rejected stored chain and never sends it as off when saving other fields", async () => {
+    const value = settings();
+    value.mode = "active";
+    const view = mount({ settings: value, storedChainRejected: true });
+    try {
+      await screen.findByTestId("permission-judge-chain-rejected");
+      await pickModel(screen.getByLabelText("Permission reviewer model"), /team\/reviewer/);
+      fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
+      await screen.findByText("Judge settings saved.");
+      expect(view.judgeSet).toHaveBeenCalledWith({ model: { vendor: "openai-compatible", model: "team/reviewer" } });
     } finally { view.restore(); }
   });
 
@@ -99,10 +129,12 @@ describe("approval judge settings", () => {
   });
 
   it("limits the chain to four stages and turns off by saving an empty chain", async () => {
-    const view = mount();
+    const stored = settings();
+    stored.chain = [{ id: "review", provider: "builtin-llm" }];
+    const view = mount({ settings: stored });
     try {
       await screen.findByLabelText("Judge mode");
-      for (let count = 0; count < 4; count++) fireEvent.click(screen.getByRole("button", { name: "Add judge stage" }));
+      for (let count = 0; count < 3; count++) fireEvent.click(screen.getByRole("button", { name: "Add judge stage" }));
       expect(screen.getByRole("button", { name: "Add judge stage" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Remove stage 2" }));
       expect(screen.getByRole("button", { name: "Add judge stage" })).toBeEnabled();
@@ -110,7 +142,7 @@ describe("approval judge settings", () => {
       expect(screen.queryByLabelText("Judge model")).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await screen.findByText("Judge settings saved.");
-      expect(view.judgeSet).toHaveBeenCalledWith(expect.objectContaining({ chain: [], mode: "shadow" }));
+      expect(view.judgeSet).toHaveBeenCalledWith({ chain: [] });
     } finally { view.restore(); }
   });
 
@@ -133,7 +165,7 @@ describe("approval judge settings", () => {
       await screen.findByLabelText("Judge mode");
       const current = settings();
       current.chain = [{ id: "saved-review", provider: "builtin-llm" }];
-      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false });
+      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false, storedChainRejected: false });
       await act(async () => { view.notify(); });
       await waitFor(() => expect(screen.getByLabelText("Stage identifier")).toHaveValue("saved-review"));
       fireEvent.change(screen.getByLabelText("Stage identifier"), { target: { value: "unsaved-review" } });
@@ -142,7 +174,7 @@ describe("approval judge settings", () => {
       expect(view.judgeGet).toHaveBeenCalledTimes(reads);
       expect(screen.getByLabelText("Stage identifier")).toHaveValue("unsaved-review");
       await screen.findByText("Judge settings changed in another window. Reload to replace your unsaved edits with the saved settings.");
-      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false });
+      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false, storedChainRejected: false });
       fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
       await waitFor(() => expect(screen.getByLabelText("Stage identifier")).toHaveValue("saved-review"));
     } finally { view.restore(); }

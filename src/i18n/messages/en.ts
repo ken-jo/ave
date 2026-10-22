@@ -41,6 +41,7 @@ export const en = {
   "permissionJudge.followChatModel": "Follow chat model",
   "permissionJudge.followChatModelNamed": "Follow chat model · {model}",
   "permissionJudge.modelUnavailableFacts": "Unavailable",
+  "permissionJudge.storedChainRejected": "The saved judge chain could not be accepted, so judge automation asks you instead. Saving other settings keeps it; replace or turn off the chain to clear this.",
   "permissionJudge.reviewerModelUnavailable": "The selected reviewer model is unavailable. Automatic review asks you instead until you pick an available model or follow the chat model.",
   "permissionJudge.executable": "Absolute executable path",
   "permissionJudge.arguments": "Arguments · one per line, blank lines ignored",

@@ -7,8 +7,8 @@
  * catalog needs the model-list endpoint resolver from the LLM engine. Folding
  * the two together pulled the provider stack into every importer of the store.
  */
-import { isOpenAICompatibleVendor, llmRouteModel, LLM_VENDOR_DEFAULTS, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
-import type { LlmModelListCache } from "../../shared/llm-model-list.js";
+import { llmRouteModel, LLM_VENDOR_DEFAULTS, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { chatRouteModelOptions, type LlmModelListCache } from "../../shared/llm-model-list.js";
 import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
 import { resolveModelRetirement } from "../../shared/context-budget.js";
 import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -49,15 +49,17 @@ export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeMod
         return scope === (presetId ?? "") && isDefaultModelListEndpoint(vendors, vendor, entry.endpoint);
       });
       const listing = listings.sort((a, b) => (Date.parse(b[1].fetchedAt) || 0) - (Date.parse(a[1].fetchedAt) || 0))[0]?.[1];
-      const synced = seeded ? undefined : listing?.models;
-      const hasSynced = Boolean(synced?.length);
-      const handshakeOnly = !hasSynced && (isOpenAICompatibleVendor(vendor) || vendor === "openai") && !seeded;
-      const options = [...new Set<string>(hasSynced ? synced : handshakeOnly ? [] : preset?.modelOptions ?? LLM_VENDOR_MODEL_OPTIONS[vendor])];
-      const defaultModel = preset?.defaultModel ?? LLM_VENDOR_DEFAULTS[vendor].model;
-      if (!handshakeOnly && defaultModel.trim() && !options.includes(defaultModel.trim())) options.unshift(defaultModel.trim());
-      const saved = llmRouteModel({ model: block?.model ?? "", presetModels: block?.presetModels }, presetId).trim();
-      if (saved && !options.includes(saved)) options.unshift(saved);
-      return options.filter((model) => resolveModelRetirement({ vendor, model, baseUrl, listing }) === undefined);
+      // The chat chooser's own derivation, fed with this route's inputs.
+      return chatRouteModelOptions({
+        vendorId: vendor,
+        selectedModel: llmRouteModel({ model: block?.model ?? "", presetModels: block?.presetModels }, presetId),
+        ...(seeded || !listing?.models ? {} : { syncedOptions: listing.models }),
+        seed: preset
+          ? { modelOptions: preset.modelOptions, defaultModel: preset.defaultModel }
+          : { modelOptions: LLM_VENDOR_MODEL_OPTIONS[vendor], defaultModel: LLM_VENDOR_DEFAULTS[vendor].model },
+        ...(preset?.modelDiscoveryPolicy ? { modelDiscoveryPolicy: preset.modelDiscoveryPolicy } : {}),
+        isRetired: (model) => resolveModelRetirement({ vendor, model, baseUrl, listing }) !== undefined,
+      });
     },
   };
 }

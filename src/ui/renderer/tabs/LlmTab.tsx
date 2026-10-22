@@ -38,7 +38,6 @@ import {
   type LLMVendor,
   type LlmModelRetirementReason,
   isOpenAICompatiblePresetVendor,
-  isOpenAICompatibleVendor,
   isSelfHostedTrustedNetworkVendor,
   llmRouteModel,
   llmImageInputKey,
@@ -48,7 +47,10 @@ import {
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   cachedModelListEntry,
+  chatRouteModelOptions,
   llmModelListCacheKey,
+  STANDARD_CATALOGUE_ENDPOINT_VENDORS,
+  usesEndpointModelCatalogue,
   type LlmModelListCache,
   type LlmModelListCacheEntry,
   type LlmModelListEntry,
@@ -614,18 +616,6 @@ function providerOptionsForPresets(
   return presets.map(providerOptionFromPreset);
 }
 
-/**
- * Vendors whose model-list endpoint is fixed and known, so their catalogue is
- * always fetchable without the user supplying a base URL.
- *
- * This is the renderer's half of `STANDARD_MODEL_LIST_BASE_URLS` in
- * `engine/llm/model-list.ts`: main resolves the URL, this decides that asking
- * is worthwhile. Kept as one set so the two questions the tab asks about these
- * vendors — "sync it?" and "may a static seed stand in?" — cannot disagree.
- */
-const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
-  "openai",
-]);
 
 /**
  * Whether this provider has a model list worth asking its endpoint for.
@@ -649,30 +639,6 @@ function shouldSyncModelList(
   if (!usesEndpointModelCatalogue(vendorId)) return false;
   if (baseUrl?.trim()) return true;
   return STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
-}
-
-/**
- * The openai-compatible provider family (built-in vendor + marketplace
- * presets). For these, the model catalog is endpoint-defined, so the dropdown
- * must be populated ONLY by a live /models handshake — never a hardcoded
- * seed — unless the provider's discovery policy opts into a static/seeded list.
- */
-function isOpenAICompatibleFamilyVendor(vendorId: string): boolean {
-  return isLLMVendor(vendorId) && isOpenAICompatibleVendor(vendorId);
-}
-
-/**
- * Whether this vendor's catalogue is the endpoint's word rather than ours.
- *
- * Two kinds qualify: the openai-compatible family, whose catalogue is defined
- * by whatever endpoint it points at, and the vendors with a fixed, known
- * `/models` endpoint. For both, a bundled list of model ids is a guess about
- * someone else's inventory, so it must never stand in for the answer — a
- * failed handshake has to READ as a failed handshake, not as a short catalogue.
- */
-function usesEndpointModelCatalogue(vendorId: string): boolean {
-  return isOpenAICompatibleFamilyVendor(vendorId)
-    || STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
 }
 
 /**
@@ -709,40 +675,16 @@ function modelOptionsFor(
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
   isRetired: (model: string) => boolean = () => false,
 ): string[] {
-  const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
-  // Handshake-only: for every provider whose catalogue is the endpoint's word
-  // (see `usesEndpointModelCatalogue`) and whose discovery policy is not seeded
-  // (static/manual), never fall back to the static `info.modelOptions` seed or
-  // the seeded default model. The list stays empty until a live /models fetch
-  // succeeds; only the user's persisted selection is surfaced so an
-  // already-configured provider still shows its saved model.
-  const handshakeOnly =
-    !hasSynced &&
-    usesEndpointModelCatalogue(vendorId) &&
-    !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
-
-  const options = hasSynced
-    ? [...(syncedOptions ?? [])]
-    : handshakeOnly
-      ? []
-      : [...info.modelOptions];
-
-  if (!handshakeOnly) {
-    const defaultModel = info.defaultModel.trim();
-    if (defaultModel && !options.includes(defaultModel)) {
-      options.unshift(defaultModel);
-    }
-  }
-
-  const currentModel = selectedModel.trim();
-  if (currentModel && !options.includes(currentModel)) {
-    options.unshift(currentModel);
-  }
-
-  // A retired model is not a choice, the saved one included: a saved
-  // selection pointing at one shows as unresolved instead (design
-  // `model-capability-catalog.md` §6.1).
-  return options.filter((option) => !isRetired(option));
+  // The one derivation the chat chooser and the permission reviewer's model
+  // catalog share (`chatRouteModelOptions`).
+  return chatRouteModelOptions({
+    vendorId,
+    selectedModel,
+    ...(syncedOptions ? { syncedOptions } : {}),
+    seed: info,
+    ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
+    isRetired,
+  });
 }
 
 /**

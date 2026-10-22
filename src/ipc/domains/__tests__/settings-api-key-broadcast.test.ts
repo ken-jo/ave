@@ -9,6 +9,9 @@
  *   - ave:settings:marketplace:delete-api-key
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -407,6 +410,45 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     expect(rewire).toHaveBeenCalledOnce();
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["rewires", "claude/claude-sonnet-4-6", 1],
+    ["does not rewire", null, 0],
+  ] as const)("%s when a selected reviewer model's own provider route changes (reviewer model %s)", async (_label, reviewerModel, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "reviewer-route-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: reviewerModel } } }));
+    try {
+      const rewire = vi.fn();
+      const llm = (claudeBaseUrl: string) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" }, claude: { model: "claude-sonnet-4-6", baseUrl: claudeBaseUrl } },
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? "https://claude-a.example" : "https://claude-b.example");
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      await invoke("ave:settings:update", { llm: { vendors: { claude: { baseUrl: "https://claude-b.example" } } } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("calls rewireReviewerAgent when the active LLM model changes", async () => {

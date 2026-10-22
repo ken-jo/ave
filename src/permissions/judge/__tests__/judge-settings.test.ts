@@ -299,6 +299,18 @@ describe("external stage env", () => {
 });
 
 describe("JudgeCircuitBreaker", () => {
+  it("re-evaluates existing counts when the limits change, closing under raised limits", () => {
+    const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
+    for (let i = 0; i < 3; i++) b.record("s", "deny");
+    expect(b.isOpen("s")).toBe(true);
+    b.setLimits({ consecutive: 3, total: 20 });
+    expect(b.isOpen("s")).toBe(true);
+    b.setLimits({ consecutive: 5, total: 20 });
+    expect(b.snapshot("s")).toEqual({ consecutive: 3, total: 3, open: false });
+    b.setLimits({ consecutive: 5, total: 3 });
+    expect(b.isOpen("s")).toBe(true);
+  });
+
   it("trips on N consecutive denials; allow resets the streak, ask does not count", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
     b.record("s", "deny");

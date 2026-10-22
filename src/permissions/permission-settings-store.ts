@@ -38,6 +38,7 @@ import {
 } from "../shared/parent-adjudication-bounds.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
 import {
   JudgeSettingsError,
   normalizeJudgeSettings,
@@ -987,7 +988,7 @@ export async function setReviewerSettingsPersist(
   return readPermissionSettings(pathOverride).permissions.reviewer;
 }
 
-export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected" | "modelRejected"> & {
+export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected" | "modelRejected" | "rejectedModel"> & {
   /** An existing settings document could not be safely interpreted. */
   unreadable?: true;
 };
@@ -1010,6 +1011,25 @@ export function readJudgeSettings(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeJudgeSettings(undefined, catalog);
     log.warn("Judge settings could not be read: %s", (error as Error).message);
     return { ...normalizeJudgeSettings(undefined, catalog), issues: ["Judge settings file could not be read"], unreadable: true };
+  }
+}
+
+/**
+ * The provider named by the stored reviewer model (`permissions.judge.model`),
+ * read without the model catalog: a change to that provider's route must
+ * re-wire the reviewer even when the model is not (or no longer) offered.
+ * `null` when unset, absent, unreadable or not a known provider.
+ */
+export function readJudgeReviewerVendor(pathOverride?: string): LLMVendor | null {
+  try {
+    const judge = (readSettingsDocument(pathOverride ?? defaultPath()).permissions as Record<string, unknown> | undefined)?.judge;
+    const model = judge && typeof judge === "object" ? (judge as Record<string, unknown>).model : undefined;
+    if (typeof model !== "string") return null;
+    const vendor = model.slice(0, model.indexOf("/"));
+    return isLLMVendor(vendor) ? vendor : null;
+  } catch {
+    // Unreadable settings re-wire through their own fault path; here they name no provider.
+    return null;
   }
 }
 
@@ -1064,11 +1084,10 @@ export async function setJudgeSettingsPersist(
     const permissions = judgePermissionsForUpdate(document);
     const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
     const permissionsPresent = Object.hasOwn(document, "permissions");
+    const stored = (permissions.judge && typeof permissions.judge === "object" && !Array.isArray(permissions.judge)
+      ? permissions.judge : {}) as Record<string, unknown>;
     const normalized = normalizeJudgeSettings(permissions.judge, catalog);
     const current = serializeJudgeSettings(normalized.settings);
-    // An unavailable stored reviewer model is kept as written unless this
-    // patch replaces it, so a save never silently turns it into "follow chat".
-    if (normalized.modelRejected === true) current.model = (permissions.judge as Record<string, unknown>).model;
     if (update.provider !== undefined || update.external !== undefined) delete current.chain;
     const merged = { ...current, ...update };
     for (const key of ["categories", "breaker"] as const) {
@@ -1076,8 +1095,23 @@ export async function setJudgeSettingsPersist(
         merged[key] = { ...(current[key] as Record<string, unknown>), ...(update[key] as Record<string, unknown>) };
       }
     }
+    // Only the patched fields are validated against their normalized
+    // neighbours. A stored value the host rejected (an unavailable reviewer
+    // model, a chain it could not accept) and that this patch does not replace
+    // is written back exactly as stored, so saving another field never turns it
+    // into "follow chat" or "off": it keeps failing closed until replaced.
+    const keepModel = normalized.modelRejected === true && !Object.hasOwn(update, "model");
+    const keepChain = normalized.chainRejected === true &&
+      !["chain", "provider", "external"].some((key) => Object.hasOwn(update, key));
     const settings = validateJudgeSettings(merged, catalog);
     const applied = serializeJudgeSettings(settings);
+    if (keepModel) applied.model = stored.model;
+    if (keepChain) {
+      delete applied.chain;
+      for (const key of ["chain", "provider", "external"] as const) {
+        if (Object.hasOwn(stored, key)) applied[key] = stored[key];
+      }
+    }
     const appliedIdentity = JSON.stringify(applied);
     persistJudgeSubtree(filePath, document, permissions, { present: true, value: applied }, true);
     receipt = {

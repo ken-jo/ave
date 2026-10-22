@@ -576,9 +576,60 @@ describe("configured judge dispatch lanes", () => {
     const subject = makeSubject();
     const normalized = normalizeJudgeSettings({ chain: [scriptedStage()] });
     expect(normalized.settings.mode).toBe("shadow");
-    external(subject, { decision: "allow", rationale: "allowed in shadow" }, normalized.settings);
+    const provider = external(subject, { decision: "allow", rationale: "allowed in shadow" }, normalized.settings);
+    // Shadow opens no route of its own: an ordinary ask stays the user's.
     expect(await checkAndDispatch(subject)).toMatchObject({ decision: "ask" });
-    expect(judgeRecords(subject.audit)[0]).toMatchObject({ mode: "shadow", applied: false });
+    expect(provider.requests).toHaveLength(0);
+    expect(judgeRecords(subject.audit)).toHaveLength(0);
+  });
+
+  it("does not let a shadow chain open the reviewer when auto-approve is off", async () => {
+    const reviewer = llm("low");
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setMode("auto");
+    subject.manager.setInteractiveAutoApprove("off");
+    const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
+    const result = await checkAndDispatch(subject, { ruleSubject: { kind: "shell", dialect: "bash", command: "echo hello", cwd: subject.root } });
+    expect(result).toMatchObject({ decision: "ask" });
+    expect(result.reviewer).toBeUndefined();
+    expect(reviewer.calls()).toBe(0);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("keeps the headless explicit-approval denial in allow mode under a shadow chain", async () => {
+    const reviewer = llm("low");
+    const command = "echo 'unterminated";
+    const context = { headless: true, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: "/" } };
+    const baseline = makeSubject(reviewer.classifier);
+    baseline.manager.setMode("allow");
+    const before = await checkAndDispatch(baseline, { ...context, ruleSubject: { ...context.ruleSubject, cwd: baseline.root } });
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setMode("allow");
+    const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
+    const after = await checkAndDispatch(subject, { ...context, ruleSubject: { ...context.ruleSubject, cwd: subject.root } });
+    expect(before.decision).not.toBe("allow");
+    expect(after).toMatchObject({ decision: before.decision, reason: before.reason });
+    expect(provider.requests).toHaveLength(0);
+    expect(reviewer.calls()).toBe(0);
+  });
+
+  it.each(["default", "allow"] as const)("adds no reviewer call or deferred entry to %s foreground layer-6 asks under shadow", async (mode) => {
+    const reviewer = llm("low");
+    const baseline = makeSubject(reviewer.classifier);
+    const subject = makeSubject(reviewer.classifier);
+    baseline.manager.setMode(mode);
+    subject.manager.setMode(mode);
+    const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
+    for (const command of ["echo hello", "echo 'unterminated", "rm -rf build"]) {
+      const shell = (root: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: root } });
+      const before = await checkAndDispatch(baseline, shell(baseline.root));
+      const after = await checkAndDispatch(subject, shell(subject.root));
+      expect({ decision: after.decision, layer: after.layer, reviewer: after.reviewer })
+        .toEqual({ decision: before.decision, layer: before.layer, reviewer: before.reviewer });
+    }
+    expect(reviewer.calls()).toBe(0);
+    expect(provider.requests).toHaveLength(0);
+    expect(subject.queue.size()).toBe(0);
   });
 
   it("retains the existing automatic reviewer decision during shadow evaluation", async () => {
@@ -789,6 +840,22 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
       ? { decision: "deny", reviewer: { outcome: "unavailable" } }
       : { decision: "ask", forceModal: true, reviewer: { outcome: "unavailable" } });
     expect(result.reviewer?.verdict?.reason).toBe("Selected permission reviewer model claude/retired is unavailable");
+    expect(reviewer.calls()).toBe(0);
+  });
+
+  it("still runs a builtin stage whose own model override is available", async () => {
+    const reviewer = llm("low");
+    const stageModel = llm("low");
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setReviewer({
+      classifier: reviewer.classifier, cache: subject.cache, deferredQueue: subject.queue,
+      unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
+    });
+    wire(subject, [builtin(subject, stageModel.classifier, {
+      provider: "builtin-llm", id: "override", model: { vendor: "openai-compatible", model: "stage-model" },
+    })]);
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
+    expect(stageModel.calls()).toBe(1);
     expect(reviewer.calls()).toBe(0);
   });
 

@@ -660,8 +660,17 @@ export class PermissionManager {
           (this.judgeDeps?.settingsUnreadable || settings.categories[category]))));
   }
 
+  /**
+   * Open the reviewer route for an undecided call the configured chain may
+   * decide. Only an `active` chain (or settings that could not be read, which
+   * fail closed through the chain's unavailable fallback) opens a route.
+   * A `shadow` chain never opens one: it observes only the calls the existing
+   * reviewer lanes already route, so it cannot change any decision.
+   */
   private routeJudge(result: PermissionCheckResult, category: ToolCategory, context: PermissionCheckContext, trust: TrustLevel): PermissionCheckResult {
+    if (result.reviewer !== undefined) return result;
     if (trust === "low" || result.decision !== "ask" || result.layer < 3 || result.forceModal === true || !this.hasJudge(category)) return result;
+    if (this.judgeDeps?.settings.mode !== "active" && this.judgeDeps?.settingsUnreadable !== true) return result;
     return { ...result, reviewer: { route: context.headless === true ? "headless" : "foreground-auto" } };
   }
 
@@ -1862,7 +1871,9 @@ export class PermissionManager {
       issuedApprovalBases.add(basis);
       return basis;
     };
-    if (this.reviewerUnavailableReason !== undefined) {
+    // A judge stage with its own available model supplies its classifier; only
+    // the reviewer's own (unavailable) model is refused here.
+    if (this.reviewerUnavailableReason !== undefined && options?.tracingClassifier === undefined) {
       return {
         verdict: { level: "high", reason: this.reviewerUnavailableReason },
         cacheReason: "miss-not-found",
