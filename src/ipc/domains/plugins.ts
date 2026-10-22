@@ -1030,6 +1030,23 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.kill, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.killSwitch(serverId);
   });
+  ipcMain.handle(CHANNELS.mcp.authenticate, async (e, serverId: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e);
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
+    if (!isUsableMcpServerId(serverId)) {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
+    try {
+      const result = await deps.mcpManager.authenticate(serverId);
+      return result.connected
+        ? { connected: true }
+        : { connected: false, errorCode: result.errorCode === "mcp-auth-required" ? "mcp-auth-required" : "mcp-auth-failed" };
+    } catch {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
+  });
   ipcMain.handle(CHANNELS.mcp.configGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configGet, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getConfigs();
