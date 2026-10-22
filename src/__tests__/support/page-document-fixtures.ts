@@ -1,4 +1,5 @@
 import { createZipFixture } from "./zip-fixtures.js";
+import { deflateSync } from "node:zlib";
 
 /** Complete two-slide package with relationship order different from filenames. */
 export function presentationFixture(slideText = "First &amp; safe"): Buffer {
@@ -14,17 +15,24 @@ export function presentationFixture(slideText = "First &amp; safe"): Buffer {
 }
 
 /** Small PDF with real cross-reference offsets, vector marks and page text. */
-export function pdfFixture(): Buffer {
-  const pageStream = (text: string) => `0 0 1 rg 10 10 50 25 re f BT /F1 14 Tf 10 70 Td (${text}) Tj ET`;
-  const stream = (text: string) => `<< /Length ${Buffer.byteLength(text)} >>\nstream\n${text}\nendstream`;
+export function pdfFixture(imageDimensions?: { width: number; height: number }): Buffer {
+  const imageResources = imageDimensions ? " /XObject << /Im1 8 0 R >>" : "";
+  const pageStream = (text: string) => `0 0 1 rg 10 10 50 25 re f ${imageDimensions ? "q 50 0 0 25 70 10 cm /Im1 Do Q " : ""}BT /F1 14 Tf 10 70 Td (${text}) Tj ET`;
+  const stream = (text: string, dictionary = "") => `<< /Length ${Buffer.byteLength(text)} ${dictionary} >>\nstream\n${text}\nendstream`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >>${imageResources} >> /Contents 6 0 R >>`,
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 5 0 R >>${imageResources} >> /Contents 7 0 R >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     stream(pageStream("First PDF page")), stream(pageStream("Second PDF page")),
   ];
+  if (imageDimensions) {
+    const { width, height } = imageDimensions;
+    const pixels = Buffer.alloc(width * height);
+    objects.push(stream(`${deflateSync(pixels).toString("hex")}>`,
+      `/Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode]`));
+  }
   let result = "%PDF-1.7\n";
   const offsets = [0];
   for (const [index, object] of objects.entries()) {

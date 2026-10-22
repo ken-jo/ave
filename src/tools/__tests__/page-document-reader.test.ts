@@ -98,6 +98,16 @@ describe("page document previews", () => {
     await expect(parsePageDocument(pdfFixture(), "pptx", 0)).rejects.toMatchObject({ code: "corrupt-document" });
   });
 
+  it("refuses excessive image resources instead of silently omitting them", async () => {
+    const withinBudget = await parsePageDocument(pdfFixture({ width: 16, height: 16 }), "pdf", 0);
+    expect(withinBudget.page.paragraphs).toEqual(["First PDF page"]);
+    expect(readPageDocumentResponse(withinBudget)).toBe(withinBudget);
+    const width = 2000;
+    const height = Math.floor(PAGE_PREVIEW_LIMITS.maxPixels / width) + 1;
+    await expect(parsePageDocument(pdfFixture({ width, height }), "pdf", 0))
+      .rejects.toMatchObject({ code: "corrupt-document" });
+  });
+
   it("rejects external, duplicate and traversing slide relationships", async () => {
     for (const replacement of ['Target="https://example.test/slide.xml" TargetMode="External"', 'Target="../slides/slide2.xml"']) {
       const zip = new AdmZip(presentationFixture());
