@@ -83,12 +83,17 @@ async function load(): Promise<Turn[]> {
 }
 
 async function save(turns: Turn[], retained?: Turn): Promise<void> {
-  // Prune oldest whole turns. A surviving boundary always retains its full suffix.
-  while (turns.length > CODE_CHECKPOINT_POLICY.maxTurns
-    || turns.some((turn) => turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns)
-    || Buffer.byteLength(JSON.stringify(turns, null, 2) + "\n") > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
-    if (turns[0] === retained) throw new Error("Code checkpoint storage limit exceeded");
-    turns.shift();
+  // A session limit prunes only that session; shared quotas prune globally.
+  // Removing only session prefixes keeps surviving restore ranges complete.
+  for (;;) {
+    const overfull = turns.find((turn) =>
+      turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns,
+    );
+    if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns
+      && Buffer.byteLength(JSON.stringify(turns, null, 2) + "\n") <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
+    const oldest = overfull ? turns.findIndex((turn) => turn.sessionId === overfull.sessionId) : 0;
+    if (turns[oldest] === retained) throw new Error("Code checkpoint storage limit exceeded");
+    turns.splice(oldest, 1);
   }
   await verifyNamespace();
   await namespace.writeJson(FILE_NAME, turns);

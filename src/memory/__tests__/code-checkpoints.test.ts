@@ -184,6 +184,17 @@ describe("native file-tool code checkpoints", () => {
     if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
+  it("does not evict another conversation when only a session turn limit is exceeded", async () => {
+    await turn("quiet-conversation", async () => {});
+    const busySessionId = randomUUID();
+    for (let i = 0; i <= CODE_CHECKPOINT_POLICY.maxSessionTurns; i++) {
+      await withCodeCheckpoint({ sessionId: busySessionId, messageId: "busy-" + i }, async () => {});
+    }
+    expect(await restoreCodeCheckpoint(sessionId, "quiet-conversation")).toEqual({ ok: true });
+    expect(await restoreCodeCheckpoint(busySessionId, "busy-0")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+    expect(await restoreCodeCheckpoint(busySessionId, "busy-1")).toEqual({ ok: true });
+  });
+
   it("refuses oversized images before the mutation happens", async () => {
     const mutate = vi.fn(async () => {});
     await expect(turn("large", () => checkpointFileMutation([{ path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) }], mutate))).rejects.toThrow("limit");
