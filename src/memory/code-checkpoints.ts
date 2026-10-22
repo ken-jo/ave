@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, open, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
@@ -273,9 +273,9 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
           staged.set(path, temporary);
           try {
             await handle.writeFile(Buffer.from(change.before, "base64"));
+            await handle.chmod(change.mode);
             await handle.sync();
           } finally { await handle.close(); }
-          await chmod(temporary, change.mode);
         }
         // Recheck all files after staging, before the first destructive operation.
         for (const [path, change] of plan) {
