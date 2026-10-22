@@ -747,9 +747,9 @@ interface AuditModeChange extends AuditCommon {
 /permission reviewer interactive off|low
 ```
 
-Reviewer provider/model 은 지능 설정의 active LLM provider/model 을 따른다.
-`permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 이며
-사용자-facing slash/API surface 가 아니다.
+Reviewer 모델은 권한 설정의 `permissions.judge.model` 이며, 비워 두면(unset)
+지능 설정의 active chat provider/model 을 따른다. 이전 버전이 쓴
+`permissions.reviewer.provider/model` 키는 로드 시 버려지고 다음 저장 때 파일에서 사라진다.
 
 **Trust origin gate (security C2):**
 - Slash dispatch 는 `trustOrigin === "user-keyboard"` 인 입력만 처리
@@ -975,8 +975,8 @@ Phase 2 executor 작업 중 사용자가 결정한 4 항목 — spec 에 binding
 
 | 항목 | 결정 | 함의 |
 |---|---|---|
-| Layer 5 provider/model | **active chat LLM provider/model 추종** + vendor-neutral abstraction | `LlmRiskClassifier` 는 thin adapter 를 유지하되 runtime provider/model 은 `settings.llm.provider` 와 active vendor block 의 `model`, `baseUrl`, Vertex project/location 을 따른다. 기존 `permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 로 남기지만 사용자-facing SOT 가 아니다. |
-| Layer 5 provider/model surface | **지능 설정에서만 변경** | `/permission reviewer provider|model` 및 reviewer-local UI controls 는 제거한다. Runtime, UI, slash 출력은 active Intelligence LLM 을 SOT 로 표시해야 한다. |
+| Layer 5 provider/model | **active chat LLM provider/model 추종** + vendor-neutral abstraction | `LlmRiskClassifier` 는 thin adapter 를 유지하되 runtime provider/model 은 `settings.llm.provider` 와 active vendor block 의 `model`, `baseUrl`, Vertex project/location 을 따른다. 기존 사용자가 권한 설정에서 고른 `permissions.judge.model` 이 있으면 그것을 쓴다. 이전 `permissions.reviewer.provider/model` 키는 제거됐다(로드 시 버림). |
+| Layer 5 provider/model surface | **권한 설정의 검토 모델 선택기** | `/permission reviewer provider|model` 은 없다. 권한 설정의 검토 모델 선택기(`permissions.judge.model`)가 자동 승인 검토자와 judge 기본 단계를 함께 정하고, 비워 두면 active Intelligence LLM 을 따른다. |
 | Layer 6 hook v1 ship | **빈 디렉토리** | `~/.config/ave/hooks/` 만 mkdir. 기본 hook 없음. 사용자가 적극적으로 추가하기 전까지 attack surface 0. Sample hook 의 ergonomic value < security 이라는 trade-off |
 | Layer 5 cache invalidation | **Selective by `invalidationKey`** | `invalidationKey = hash(allowedDirectories, scope)` 의 매치만 cache hit. settings 변경 시 매치 안 되는 entry 만 무효, 동일 context 의 cache 보존. cold-start hit-rate 보존. 가정: verdict 의 settings-dependent input 은 (allowedDirectories, scope) 뿐 (Phase 4 hook chain 결과가 verdict 영향 시 hook hash 도 invalidationKey 에 포함 필요) |
 | arch.md §6.3 rewrite | **In-place rewrite** | 기존 §6.3 의 3-layer model 자리에 10-layer 으로 직접 덮어쓰기. 외부 link / anchor (`#permissions`) 호환 유지. Phase 5 deliverable |

@@ -989,6 +989,7 @@ export async function authorizeToolInvocation(
         hostShellExecutionPlan,
         abortSignal,
         auditInput,
+        sessionId,
       );
       if (abortSignal?.aborted) {
         return withHostShellExecutionPlan(
@@ -1366,6 +1367,7 @@ export async function authorizeToolInvocation(
           hostShellExecutionPlan,
           abortSignal,
           auditInput,
+          sessionId,
         );
         if (abortSignal?.aborted) {
           return withHostShellExecutionPlan(

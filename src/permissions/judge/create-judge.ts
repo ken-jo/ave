@@ -17,12 +17,14 @@ export interface CreateJudgeDeps {
   /** The reviewer's LLM classifier (current reviewer model), when the reviewer runs in `llm` mode. */
   reviewerClassifier: TracingRiskClassifier | null;
   /** The model the reviewer classifier resolved to (the active chat model); recorded in the audit. */
-  reviewerModel: JudgeModelRef | null;
+  reviewerModel: JudgeModelRef | string | null;
   /**
    * A classifier on a user-selected model, built through the same provider
    * wiring as the chat model picker. Null when that provider is not configured.
    */
   classifierForModel: (model: JudgeModelRef) => TracingRiskClassifier | null;
+  /** Non-secret transport identity for a selected model's verdict cache. */
+  cacheScopeForModel?: (model: JudgeModelRef) => Record<string, unknown>;
   autoApprove: () => ReviewerInteractiveAutoApprove;
   fetch: JudgeFetch;
 }
@@ -34,7 +36,12 @@ function createStage(stage: JudgeStageSettings, deps: CreateJudgeDeps): JudgeCha
       const model = stage.model ?? deps.reviewerModel;
       return {
         settings: stage,
-        judge: classifier ? new BuiltinLlmJudge(classifier, deps.autoApprove, model ? formatJudgeModel(model) : undefined) : null,
+        judge: classifier ? new BuiltinLlmJudge(
+          classifier,
+          deps.autoApprove,
+          typeof model === "string" ? model : model ? formatJudgeModel(model) : undefined,
+          stage.model ? deps.cacheScopeForModel?.(stage.model) : undefined,
+        ) : null,
       };
     }
     case "external":

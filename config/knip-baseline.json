@@ -459,11 +459,6 @@
     },
     {
       "type": "exports",
-      "file": "src/permissions/permission-settings-store.ts",
-      "name": "REVIEWER_PROVIDERS"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/capabilities.ts",
       "name": "EVENT_NAMESPACE_CAPABILITY"
     },
@@ -2416,11 +2411,6 @@
       "type": "types",
       "file": "src/ui/renderer/types.ts",
       "name": "PermissionReviewerFallbackOnError"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
-      "name": "PermissionReviewerProvider"
     },
     {
       "type": "types",

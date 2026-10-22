@@ -23,6 +23,8 @@ import type { ToolSource, ToolCategory } from "../types.js";
 import type {
   PermissionManager,
   PermissionCheckResult,
+  ReviewerDispatchResult,
+  ReviewerLane,
 } from "../../permissions/permission-manager.js";
 import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
@@ -37,6 +39,31 @@ import type {
 } from "../executor.js";
 import { emitPermissionReview, summarizeInputForDeferred } from "./display-mask.js";
 import { errorMessage } from "../../shared/error-message.js";
+
+function resolveDispatchedJudge(
+  reviewer: ReviewerDispatchResult,
+  lane: ReviewerLane,
+): PermissionCheckResult | null {
+  const outcome = reviewer.judge;
+  if (!outcome) return null;
+  // Shadow preserves the pre-existing automatic lane; ordinary asks still
+  // reach the person while their configured chain only records its opinion.
+  if (reviewer.judgeBaselineAllowed === true) return null;
+  if (!outcome.judged) {
+    return {
+      decision: lane === "headless" ? "deny" : "ask",
+      reason: `Judge automation paused: ${outcome.skip}`,
+      layer: 5,
+      forceModal: true,
+    };
+  }
+  return {
+    decision: outcome.applied ? outcome.decision : lane === "headless" ? "deny" : "ask",
+    reason: outcome.applied ? outcome.rationale : "Judge shadow review requires user approval",
+    layer: 5,
+    ...(outcome.fallback ? { forceModal: true } : {}),
+  };
+}
 
 export async function dispatchReviewerForHeadless(
   permissionManager: PermissionManager | undefined,
@@ -155,13 +182,16 @@ export async function dispatchReviewerForHeadless(
   // The review-status telemetry is derived from the resolved decision so the
   // auto-approve disclosure and the audit decision share one source.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const resolved = autoDecisionOutcome
-    ? permissionManager.resolveReviewerDecision(reviewer.verdict, "headless")
+  const judged = resolveDispatchedJudge(reviewer, "headless");
+  const resolved = judged ?? (autoDecisionOutcome
+    ? reviewer.builtinDecision === undefined
+      ? permissionManager.resolveReviewerDecision(reviewer.verdict, "headless")
+      : permissionManager.resolveReviewerDecision(reviewer.verdict, "headless", reviewer.builtinDecision)
     : {
         decision: "deny" as const,
         reason: `headless reviewer ${reviewer.outcome} — execution blocked`,
         layer: 5,
-      };
+      });
   const decision: PermissionCheckResult = {
     ...resolved,
     reviewer: { route: "headless", verdict: reviewer.verdict, outcome: reviewer.outcome },
@@ -182,7 +212,7 @@ export async function dispatchReviewerForHeadless(
     return {
       allowed: false,
       message:
-        t("be_executor.permHoldReviewer", { toolName, source, reason: reviewer.verdict.reason }) +
+        t("be_executor.permHoldReviewer", { toolName, source, reason: judged ? decision.reason : reviewer.verdict.reason }) +
         (reviewer.deferredId ? ` (deferredId=${reviewer.deferredId})` : ""),
       permissionResult: {
         ...decision,
@@ -216,6 +246,7 @@ export async function dispatchReviewerForInteractiveAuto(
   hostShellExecutionPlan?: HostShellExecutionPlan,
   abortSignal?: AbortSignal,
   auditInput?: Record<string, unknown>,
+  sessionId?: string,
 ): Promise<PermissionCheckResult | null> {
   if (context.headless === true) return null;
   // PermissionManager's resolved route marker is the sole eligibility SOT.
@@ -236,6 +267,7 @@ export async function dispatchReviewerForInteractiveAuto(
     reviewer = await mgr.dispatchReviewer(
       toolName,
       {
+        ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
         pathFields,
@@ -308,14 +340,17 @@ export async function dispatchReviewerForInteractiveAuto(
   // Verdicts through the configured inclusive threshold allow; higher verdicts
   // ask the user. HIGH still requires explicit approval with justification.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const resolved = autoDecisionOutcome
-    ? mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto")
+  const judged = resolveDispatchedJudge(reviewer, "foreground-auto");
+  const resolved = judged ?? (autoDecisionOutcome
+    ? reviewer.builtinDecision === undefined
+      ? mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto")
+      : mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto", reviewer.builtinDecision)
     : {
         decision: "ask" as const,
         reason: `foreground reviewer ${reviewer.outcome} — explicit approval required`,
         layer: 5,
         forceModal: true,
-      };
+      });
   const decision: PermissionCheckResult = {
     ...resolved,
     reviewer: { route: "foreground-auto", verdict: reviewer.verdict, outcome: reviewer.outcome, approvalBasis: reviewer.approvalBasis },
@@ -333,7 +368,7 @@ export async function dispatchReviewerForInteractiveAuto(
     source,
     ...meta,
     verdictLevel: reviewer.verdict.level,
-    reason: failedWithoutApprovalSurface
+    reason: judged || failedWithoutApprovalSurface
       ? decision.reason
       : reviewer.verdict.reason,
     ...(approvalPurpose ? { approvalPurpose } : {}),

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +64,7 @@ function installApi(
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
+      judgeGet: mockJudgeGet(),
       listRules: vi.fn(async () => []),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
@@ -87,8 +88,6 @@ function installApi(
             verb: "show" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -101,8 +100,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -115,8 +112,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -129,8 +124,6 @@ function installApi(
             verb: "fallback" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "rule" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -143,8 +136,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: rawArgs === "interactive medium" ? "medium" as const : "low" as const },
@@ -157,22 +148,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
-        }
-        if (rawArgs === "model gpt-5.5-mini") {
-          return {
-            ok: true as const,
-            verb: "model" as const,
-            settings: {
-              mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-5.5-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -181,8 +156,6 @@ function installApi(
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
-      /** C3 — key-driven dynamic activation: return true for openai by default. */
-      reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
@@ -505,8 +478,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -519,8 +490,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "mode" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -680,8 +649,12 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
   });
 
-  it("does not expose legacy reviewer provider/model controls", async () => {
+  it("offers the reviewer model through the chat model chooser, not legacy provider/model controls", async () => {
     const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
 
     await act(async () => {
       render(<PermissionsTab />);
@@ -690,14 +663,75 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    // Unset is a stored choice that names what it follows: the chat model.
+    expect(picker).toHaveTextContent(t("permissionJudge.followChatModelNamed", { model: "openai/chat-model" }));
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-model-input")).toBeNull();
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith(
       expect.stringMatching(/^(provider|model)\b/),
     );
+  });
+
+  it("saves a picked reviewer model, and unset again, through the judge settings", async () => {
+    const api = installApi([[]]);
+    const judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
+    const judgeSet = vi.fn(async (settings: { model: unknown }) => ({
+      ...(await judgeGet()), settings: { ...(await judgeGet()).settings, model: settings.model },
+    }));
+    Object.assign(api.permission, { judgeGet, judgeSet });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    const pick = async (label: RegExp) => {
+      fireEvent.keyDown(picker, { key: "ArrowDown" });
+      const option = await waitFor(() => {
+        const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+          .find((row) => label.test(row.textContent ?? ""));
+        if (!found) throw new Error("chooser not open yet");
+        return found;
+      });
+      option.focus();
+      fireEvent.keyDown(option, { key: "Enter" });
+    };
+    const save = async () => {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") }));
+      });
+    };
+
+    await pick(/claude-reviewer/);
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: { vendor: "claude", model: "claude-reviewer" },
+    }));
+
+    await pick(new RegExp(t("permissionJudge.followChatModel")));
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({ model: null }));
+  });
+
+  it("says so when the selected reviewer model is unavailable", async () => {
+    const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      model: { vendor: "claude", model: "retired-reviewer" },
+      reviewerModelUnavailable: true,
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(await screen.findByTestId("permission-reviewer-model-unavailable"))
+      .toHaveTextContent(t("permissionJudge.reviewerModelUnavailable"));
+    expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
   it("renders the off/low/medium threshold control when the stored mode is auto", async () => {
@@ -710,8 +744,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -739,8 +771,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -1195,14 +1225,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
           },
         })),
-        reviewerProviderHasKey: vi.fn(async () => false),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -1843,8 +1870,6 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
           verb: "show",
           settings: {
             mode: "disabled",
-            provider: "openai",
-            model: "gpt-4o-mini",
             fallbackOnError: "deny",
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" },

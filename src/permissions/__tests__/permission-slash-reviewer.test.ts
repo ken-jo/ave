@@ -53,19 +53,15 @@ describe("parsePermissionReviewerCommand", () => {
     });
   });
 
-  it("rejects reviewer-local provider changes", () => {
-    expect(parsePermissionReviewerCommand("provider openai")).toEqual({
-      ok: false,
-      error: expect.stringContaining("active LLM settings"),
-    });
-  });
-
-  it("rejects reviewer-local model changes", () => {
-    expect(parsePermissionReviewerCommand("model gpt-4o-mini")).toEqual({
-      ok: false,
-      error: expect.stringContaining("active LLM settings"),
-    });
-  });
+  it.each(["provider openai", "model gpt-4o-mini"])(
+    "has no reviewer provider/model subcommand: %s",
+    (raw) => {
+      expect(parsePermissionReviewerCommand(raw)).toEqual({
+        ok: false,
+        error: expect.stringMatching(/^unknown subcommand/),
+      });
+    },
+  );
 
   it("parses 'fallback deny'", () => {
     expect(parsePermissionReviewerCommand("fallback deny")).toEqual({
@@ -232,8 +228,8 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
       // interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground
       // calls are silently allowed; HIGH still surfaces.
       expect(r.settings.mode).toBe("llm");
-      expect(r.settings.provider).toBe("openai");
-      expect(r.settings.model).toBe("gpt-4o-mini");
+      expect(r.settings).not.toHaveProperty("provider");
+      expect(r.settings).not.toHaveProperty("model");
       expect(r.settings.fallbackOnError).toBe("deny");
       expect(r.settings.interactive.autoApprove).toBe("medium");
     }
@@ -246,28 +242,41 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     expect(settings.permissions.reviewer.mode).toBe("rule");
   });
 
-  it("provider changes are rejected and leave legacy settings untouched", async () => {
+  it("loads an older file's reviewer provider/model cleanly and drops them on the next save", async () => {
     const path = tmpSettingsPath();
-    const result = await dispatchPermissionReviewerCommand(
-      { verb: "provider", value: "anthropic" } as never,
+    writeFileSync(
       path,
+      JSON.stringify({
+        permissions: {
+          reviewer: {
+            mode: "llm",
+            provider: "anthropic",
+            model: "claude-haiku-4-5",
+            fallbackOnError: "rule",
+            interactive: { autoApprove: "low" },
+          },
+        },
+      }),
     );
-    const settings = readPermissionSettings(path);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("active LLM settings");
-    expect(settings.permissions.reviewer.provider).toBe("openai");
+    const loaded = readPermissionSettings(path).permissions.reviewer;
+    expect(loaded).toMatchObject({ mode: "llm", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(loaded).not.toHaveProperty("provider");
+    expect(loaded).not.toHaveProperty("model");
+
+    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    expect(result.ok).toBe(true);
+    const saved = JSON.parse(readFileSync(path, "utf-8")).permissions.reviewer;
+    expect(saved).toMatchObject({ mode: "rule", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(saved).not.toHaveProperty("provider");
+    expect(saved).not.toHaveProperty("model");
   });
 
-  it("model changes are rejected and leave legacy settings untouched", async () => {
+  it("rejects a reviewer patch that names the removed provider/model keys", async () => {
     const path = tmpSettingsPath();
-    const result = await dispatchPermissionReviewerCommand(
-      { verb: "model", value: "claude-haiku-4-5" } as never,
-      path,
-    );
-    const settings = readPermissionSettings(path);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("active LLM settings");
-    expect(settings.permissions.reviewer.model).toBe("gpt-4o-mini");
+    await expect(
+      setReviewerSettingsPersist({ mode: "rule", provider: "openai" } as never, path),
+    ).rejects.toThrow(/unsupported keys: provider.*permissions\.judge\.model/);
+    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
   });
 
   it("fallback rule persists when explicitly selected", async () => {
@@ -318,14 +327,13 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     if (!r.ok) expect(r.error).toMatch(/invalid mode/);
   });
 
-  it("invalid provider subcommand returns the active-LLM guidance", async () => {
+  it("a provider verb reaching dispatch is an unknown reviewer command", async () => {
     const path = tmpSettingsPath();
     const r = await dispatchPermissionReviewerCommand(
       { verb: "provider", value: "ollama" } as never,
       path,
     );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/active LLM settings/);
+    expect(r).toEqual({ ok: false, error: "unknown reviewer command 'provider'" });
   });
 
   it("invalid fallback returns ok:false", async () => {
@@ -338,11 +346,10 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     if (!r.ok) expect(r.error).toMatch(/invalid fallback/);
   });
 
-  it("empty model subcommand returns the active-LLM guidance", async () => {
+  it("a model verb reaching dispatch is an unknown reviewer command", async () => {
     const path = tmpSettingsPath();
     const r = await dispatchPermissionReviewerCommand({ verb: "model", value: "" } as never, path);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/active LLM settings/);
+    expect(r).toEqual({ ok: false, error: "unknown reviewer command 'model'" });
   });
 
   it("setReviewerSettingsPersist preserves additionalDirectories", async () => {
@@ -386,8 +393,6 @@ describe("normalizePermissionSettings — reviewer block", () => {
       // at boot when no provider is configured). interactive.autoApprove "medium"
       // silently allows LOW/MEDIUM foreground calls.
       mode: "llm",
-      provider: "openai",
-      model: "gpt-4o-mini",
       fallbackOnError: "deny",
       interactive: { autoApprove: "medium" },
       parentAdjudication: {
@@ -415,9 +420,9 @@ describe("normalizePermissionSettings — reviewer block", () => {
     // Unknown enum values fall back to the new "llm" default (external
     // boundary: hand-edited settings file with bad values).
     expect(settings.permissions.reviewer.mode).toBe("llm");
-    expect(settings.permissions.reviewer.provider).toBe("openai");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
-    expect(settings.permissions.reviewer.model).toBe("gpt-4o-mini");
+    expect(settings.permissions.reviewer).not.toHaveProperty("provider");
+    expect(settings.permissions.reviewer).not.toHaveProperty("model");
   });
 
   it("valid reviewer block round-trips (absent interactive → default medium)", () => {
@@ -431,10 +436,9 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
+    // The retired provider/model keys are dropped on load.
     expect(settings.permissions.reviewer).toEqual({
       mode: "llm",
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
       fallbackOnError: "deny",
       // Only absent fields take the new default; explicit fields above are kept.
       interactive: { autoApprove: "medium" },
@@ -476,8 +480,6 @@ describe("settings file persistence — reviewer block format", () => {
         additionalDirectories: ["/Users/example/work"],
         reviewer: {
           mode: "llm",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "rule",
         },
       },
@@ -487,7 +489,7 @@ describe("settings file persistence — reviewer block format", () => {
     const parsed = JSON.parse(raw);
     expect(parsed.permissions.additionalDirectories).toEqual(["/Users/example/work"]);
     expect(parsed.permissions.reviewer.mode).toBe("llm");
-    expect(parsed.permissions.reviewer.provider).toBe("openai");
+    expect(parsed.permissions.reviewer).not.toHaveProperty("provider");
   });
 
   it("hand-edited bad enum is normalized on read but bad write rejected", async () => {

@@ -72,7 +72,9 @@ Existing rule files are retained unchanged. Rules previously keyed to home or an
 3. Apply hard-deny rules: denied sensitive-path operations, invalid manifests,
    sandbox limits, explicit deny policies, and unsafe origin combinations.
 4. Resolve policy mode.
-5. If reviewer mode is active, request a reviewer verdict for eligible calls.
+5. Apply mandatory per-call gates, user ask/allow rules and saved grants, then
+   the mode matrix. An eligible call still undecided may enter the configured
+   judge chain; existing auto-review uses the builtin judge adapter.
 6. Route to user approval, inline allow, deferred queue, or deny.
 7. Execute only after the decision is resolved.
 8. Write audit data for allow, ask, deny, deferred, reviewer unavailable, and
@@ -1088,7 +1090,7 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 
 | Mode | Behavior |
 | --- | --- |
-| Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. |
+| Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
 | Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. An ordinary shell reason still asks without an applicable allow rule or saved grant. |
@@ -1342,6 +1344,116 @@ records `cleanup_completed` and `broker_stopped`, and then removes remaining
 Compose resources. These receipts validate lifecycle ownership; they do not
 claim a benchmark score or task correctness.
 
+## Automated Judge Chain
+
+[`PermissionJudge`](../../src/permissions/judge/judge-contract.ts) is the shared
+automated-decision seam. The existing auto-review dispatch remains the source of
+truth for builtin risk classification, caching, approval provenance and failure
+outcomes. The `builtin-llm` adapter maps those outcomes without changing legacy
+auto-mode decisions, including its eligible host-built-in `meta` lane. Absent
+judge settings or a valid empty `permissions.judge.chain` turn only the configured
+chain off; legacy auto-review remains intact.
+
+The [judge settings contract](../design/permissions-always-allow-and-judge.md#p2-judge-slot)
+defines the persisted ordered chain, transports and model syntax. A configured
+chain defaults to `shadow`: stages run and are audited, but their results do not
+replace the existing permission result or create deferred entries. An existing
+auto-review allow therefore remains an allow; an undecided foreground request
+still goes to the user, including when the breaker is already open. Shadow
+creates no judge-induced deferred entries and does not change breaker counters.
+Selecting `active` applies the chain result to eligible calls. Shell and write
+categories default on; network defaults off.
+
+The host dispatches only after earlier permission layers leave a request
+undecided. Explicit deny, ask and allow rules, mandatory per-call floors, saved
+grants and mode decisions keep their authority. Strict mode, capability grants
+and remote-controller requests never enter the chain. Existing trust-based
+requirements for explicit approval cannot be lowered by a judge.
+
+Stages execute in configured order. A final `allow` or `deny` ends the chain;
+`ask`, insufficient confidence or a stage failure advances to the next stage.
+When an external stage has `escalateBelow`, missing confidence also escalates.
+Builtin stages report risk rather than confidence and reject that threshold.
+The last ambiguous stage asks the user. A builtin foreground `ask` also advances
+to the next stage, while builtin headless MEDIUM/HIGH becomes a final `deny`.
+An exhausted chain deadline or failed last stage uses the failure path, never an
+allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
+[shared contract](../../src/permissions/judge/judge-contract.ts) and
+[engine](../../src/permissions/judge/judge-engine.ts) own complete fields/defaults,
+request/verdict types and chain semantics respectively.
+
+The model picker offers configured providers and their model options using the
+same source as chat selection. `permissions.judge.model` selects the permission
+reviewer model with the chat model chooser; stored `null` (unset) resolves at
+each reviewer re-wire to the active chat model, so the reviewer follows chat.
+The `permissions.reviewer` block no longer stores a provider or model: the
+`provider`/`model` keys older builds wrote are dropped on load and leave the
+file on the next save, and a reviewer patch that names them is rejected.
+A builtin stage without `model` follows the permission reviewer model. An
+explicit `<provider>/<model>` selection uses that exact model; an unavailable
+selection fails rather than switching providers or models, and an unavailable
+reviewer model fails each review as `unavailable` rather than degrading to rule. Settings read issues are visible. A rejected chain retains typed
+`chainRejected` metadata and uses the existing unavailable fallback, without
+becoming explicit off or an implicit builtin provider. With normalized active
+mode it asks with forced approval in the foreground and denies plus defers
+headless. Shadow rejection only records the observation and preserves the
+authoritative auto/headless baseline without a judge-induced queue entry.
+Warnings for non-chain fields keep their normalizer defaults and do not block an
+otherwise valid chain.
+
+A fatal settings-file read, JSON parse, root-object or permissions-structure
+failure leaves no trustworthy mode. The host carries `settingsUnreadable` and
+conservatively applies the existing unavailable fallback to judgeable categories:
+forced foreground approval or headless deny plus defer, without legacy/provider
+fallback. Persisted mode and normalizer defaults remain unchanged. A missing file
+or block is valid off; a parsed rejected shadow chain keeps the baseline above.
+
+Invalid writes fail before changing the file, and valid writes preserve unrelated
+settings. If runtime refresh fails, the write receipt restores the original raw
+judge subtree, including absence, only if it still equals the just-written
+subtree. This compare-and-swap preserves a later manual change and reports the
+conflict instead of overwriting it. The [settings store](../../src/permissions/permission-settings-store.ts)
+owns persistence and rollback.
+
+The `permissions.judge` subtree is a user-only write floor. The Settings UI and
+manual user edits may change it; agent settings tools, rules, saved approvals
+and judge decisions cannot. The dedicated settings transport retains the normal
+renderer sender guards. Configuration-path protections apply independently to
+file and shell writes.
+
+The host supplies user messages and the normalized invocation with cwd, project
+root, effective sandbox state, rule verdict and policy. No tool results enter
+the request. External transport and audit use the canonical DLP-redacted
+projection. External commands use absolute executable argv without a shell and
+a minimal environment allow-list; URLs use HTTPS or loopback HTTP. Diagnostics
+are bounded, redacted and audited rather than treated as decisions.
+
+An active foreground `deny` blocks execution; `ask` requests approval. An
+unavailable or failed final stage asks through the forced approval surface.
+In headless execution, an active non-allow denies the current invocation and
+appends to the existing `DeferredQueue`. An open breaker asks in the active
+foreground lane or denies and defers in the active headless lane; shadow keeps
+the pre-judge path. Caller cancellation is terminal, and internal
+contract or active-audit failures propagate.
+
+The circuit breaker counts final judge denials across the whole chain: by
+default 3 consecutive or 20 total denials pause automation. An `allow` resets the
+consecutive count; `ask`, timeouts and other failures neither increment nor reset
+it. Intermediate verdicts do not count, and shadow does not change counters.
+An open breaker remains open until the conversation ends; there is no Settings
+reset control. The host resolves a child session to its root conversation before
+judge dispatch, so parent and subagents share breaker and judge audit identity.
+Settings rewiring retains the counter. Deferred entries keep the requesting
+session's identity to route later approval correctly.
+
+The existing audit writer records each stage's provider/version, resolved model,
+verdict and latency alongside the root session, argument hash, redacted request,
+final decision, rationale and fallback. Active decisions require a successful
+write to the HMAC-protected permission audit. Shadow records use the shadow
+channel. A judge may suggest a rule but cannot persist it. Hooks may redact or
+short-circuit to ask/deny before judging and may only retain or downgrade the
+result afterward.
+
 ## Reviewer Failure
 
 Reviewer input separates host-computed policy facts from OS isolation. The host
@@ -1428,3 +1540,9 @@ The permission scenario board and unit tests under `src/permissions/__tests__`
 encode the expected behavior for default, strict, auto-review, reviewer
 failures, invalid plugin manifests, MCP tools, overlay prompt imports, and
 headless deferred queue behavior.
+
+Judge coverage must include the real foreground and headless dispatch lanes,
+unchanged legacy auto-mode tests, chain escalation, settings/model validation,
+the settings write floor, root-session breaker sharing and deferred routing.
+Module or mocked-classifier tests alone do not prove dispatch parity, Settings
+interaction or live-provider behavior; those require their own observed checks.

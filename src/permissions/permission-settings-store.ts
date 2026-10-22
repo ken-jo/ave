@@ -38,6 +38,16 @@ import {
 } from "../shared/parent-adjudication-bounds.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
+import {
+  JudgeSettingsError,
+  normalizeJudgeSettings,
+  serializeJudgeSettings,
+  validateJudgeSettings,
+  type JudgeModelCatalog,
+  type JudgeSettings,
+  type NormalizedJudgeSettings,
+} from "./judge/judge-settings.js";
 
 const log = createLogger("permission-settings");
 
@@ -62,15 +72,6 @@ const log = createLogger("permission-settings");
  *   headless mutation must be manually approved.
  */
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
-/** Canonical list of all supported reviewer providers — single SOT. */
-export const REVIEWER_PROVIDERS = [
-  "openai",
-  "anthropic",
-  "google",
-  "foundry",
-  "gcp-playground",
-] as const;
-export type ReviewerProvider = (typeof REVIEWER_PROVIDERS)[number];
 export type ReviewerFallbackOnError = "deny" | "rule";
 
 /**
@@ -192,16 +193,15 @@ export interface ReviewerParentAdjudicationBlock {
 }
 
 /**
- * Permission policy P3 — `permissions.reviewer` block. Provider/model remain
- * persisted for legacy command compatibility; runtime LLM reviewer wiring now
- * follows the active chat LLM provider/model when available.
- * Defaults: provider="openai", model="gpt-4o-mini",
- * fallbackOnError="deny", interactive.autoApprove="medium".
+ * Permission policy P3 — `permissions.reviewer` block. The reviewer's model is
+ * not stored here: it is `permissions.judge.model` (unset follows the active
+ * chat model). Files written by older builds may still carry
+ * `provider`/`model` keys; the read normalizer drops them and the next save
+ * writes the block without them.
+ * Defaults: fallbackOnError="deny", interactive.autoApprove="medium".
  */
 export interface ReviewerSettingsBlock {
   mode: ReviewerMode;
-  provider: ReviewerProvider;
-  model: string;
   fallbackOnError: ReviewerFallbackOnError;
   interactive: ReviewerInteractiveBlock;
   /** Tier-2 policy for sub-agent asks a parent agent may decide. */
@@ -333,8 +333,6 @@ const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
   // so the #664 fresh-install flood does not reappear under the degraded rule
   // classifier.
   mode: "llm",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "medium" },
   // Tier 2 mirrors the interactive threshold: the parent may decide exactly
@@ -393,8 +391,6 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
   "llm",
   "strict",
 ]);
-/** Exported so IPC handlers can validate provider names against a single SOT. */
-export const REVIEWER_PROVIDERS_SET: ReadonlySet<ReviewerProvider> = new Set(REVIEWER_PROVIDERS);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
 function defaultPath(): string {
@@ -469,9 +465,9 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
  * array, a bare number) IS damage — every reader below indexes the result as a
  * record — so it is rejected here rather than in each of them.
  */
-function readSettingsDocument(filePath: string): Record<string, unknown> {
+function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   const raw = readFileSync(filePath, "utf-8");
-  if (raw.trim().length === 0) return {};
+  if (allowEmpty && raw.trim().length === 0) return {};
   const parsed = JSON.parse(raw) as unknown;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("settings root is not a JSON object");
@@ -736,15 +732,6 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.mode === "string" && REVIEWER_MODES.has(obj.mode as ReviewerMode)
       ? (obj.mode as ReviewerMode)
       : DEFAULT_REVIEWER.mode;
-  const provider =
-    typeof obj.provider === "string" &&
-    REVIEWER_PROVIDERS_SET.has(obj.provider as ReviewerProvider)
-      ? (obj.provider as ReviewerProvider)
-      : DEFAULT_REVIEWER.provider;
-  const model =
-    typeof obj.model === "string" && obj.model.length > 0
-      ? obj.model
-      : DEFAULT_REVIEWER.model;
   const fallbackOnError =
     typeof obj.fallbackOnError === "string" &&
     REVIEWER_FALLBACKS.has(obj.fallbackOnError as ReviewerFallbackOnError)
@@ -756,10 +743,10 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
       ? obj.disabledMigratedAt
       : undefined;
+  // Only the known keys are carried, so the retired `provider`/`model` keys an
+  // older build wrote are dropped here and leave the file on the next save.
   return {
     mode,
-    provider,
-    model,
     fallbackOnError,
     interactive,
     parentAdjudication,
@@ -935,24 +922,31 @@ export async function writePermissionSettings(
  * (no silent default-substitution at write time, only at read time
  * for hand-edited files).
  */
+const REVIEWER_BLOCK_KEYS: ReadonlySet<string> = new Set([
+  "mode",
+  "fallbackOnError",
+  "interactive",
+  "parentAdjudication",
+  "disabledMigratedAt",
+] satisfies ReadonlyArray<keyof ReviewerSettingsBlock>);
+
 function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBlock {
   if (!REVIEWER_MODES.has(patch.mode)) {
     throw new Error(
       `permissions.reviewer.mode invalid: '${patch.mode}'. Allowed: ${[...REVIEWER_MODES].join("|")}`,
     );
   }
-  if (!REVIEWER_PROVIDERS_SET.has(patch.provider)) {
+  const unknownKeys = Object.keys(patch).filter((key) => !REVIEWER_BLOCK_KEYS.has(key));
+  if (unknownKeys.length > 0) {
     throw new Error(
-      `permissions.reviewer.provider invalid: '${patch.provider}'. Allowed: ${REVIEWER_PROVIDERS.join("|")}`,
+      `permissions.reviewer has unsupported keys: ${unknownKeys.join(", ")}. ` +
+      `The reviewer model is set with permissions.judge.model.`,
     );
   }
   if (!REVIEWER_FALLBACKS.has(patch.fallbackOnError)) {
     throw new Error(
       `permissions.reviewer.fallbackOnError invalid: '${patch.fallbackOnError}'. Allowed: ${[...REVIEWER_FALLBACKS].join("|")}`,
     );
-  }
-  if (typeof patch.model !== "string" || patch.model.length === 0) {
-    throw new Error("permissions.reviewer.model must be a non-empty string");
   }
   if (
     !patch.interactive ||
@@ -976,6 +970,150 @@ export async function setReviewerSettingsPersist(
 ): Promise<ReviewerSettingsBlock> {
   await writePermissionSettings({ reviewer: patch }, pathOverride);
   return readPermissionSettings(pathOverride).permissions.reviewer;
+}
+
+export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected" | "modelRejected" | "rejectedModel"> & {
+  /** An existing settings document could not be safely interpreted. */
+  unreadable?: true;
+};
+
+/** Read the user-owned judge block without concealing malformed file content. */
+export function readJudgeSettings(
+  pathOverride?: string,
+  catalog?: JudgeModelCatalog,
+): JudgeSettingsReadResult {
+  const filePath = pathOverride ?? defaultPath();
+  try {
+    const document = readSettingsDocument(filePath, false);
+    const permissions = document.permissions;
+    if (permissions !== undefined &&
+        (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) {
+      return { ...normalizeJudgeSettings(undefined, catalog), issues: ["permissions must be an object"], unreadable: true };
+    }
+    return normalizeJudgeSettings((permissions as Record<string, unknown> | undefined)?.judge, catalog);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeJudgeSettings(undefined, catalog);
+    log.warn("Judge settings could not be read: %s", (error as Error).message);
+    return { ...normalizeJudgeSettings(undefined, catalog), issues: ["Judge settings file could not be read"], unreadable: true };
+  }
+}
+
+/**
+ * The provider named by the stored reviewer model (`permissions.judge.model`),
+ * read without the model catalog: a change to that provider's route must
+ * re-wire the reviewer even when the model is not (or no longer) offered.
+ * `null` when unset, absent, unreadable or not a known provider.
+ */
+export function readJudgeReviewerVendor(pathOverride?: string): LLMVendor | null {
+  try {
+    const judge = (readSettingsDocument(pathOverride ?? defaultPath()).permissions as Record<string, unknown> | undefined)?.judge;
+    const model = judge && typeof judge === "object" ? (judge as Record<string, unknown>).model : undefined;
+    if (typeof model !== "string") return null;
+    const vendor = model.slice(0, model.indexOf("/"));
+    return isLLMVendor(vendor) ? vendor : null;
+  } catch {
+    // Unreadable settings re-wire through their own fault path; here they name no provider.
+    return null;
+  }
+}
+
+export interface JudgeSettingsWriteReceipt {
+  settings: JudgeSettings;
+  /** Restore the exact prior subtree, including rejected configuration or absence. */
+  rollback(): Promise<void>;
+}
+
+function judgePermissionsForUpdate(document: Record<string, unknown>): Record<string, unknown> {
+  if (document.permissions !== undefined &&
+      (!document.permissions || typeof document.permissions !== "object" || Array.isArray(document.permissions))) {
+    throw new JudgeSettingsError("permissions must be an object");
+  }
+  return (document.permissions ?? {}) as Record<string, unknown>;
+}
+
+function persistJudgeSubtree(
+  filePath: string,
+  document: Record<string, unknown>,
+  permissions: Record<string, unknown>,
+  subtree: { present: boolean; value?: unknown },
+  keepPermissionsContainer: boolean,
+): void {
+  const nextPermissions = { ...permissions };
+  if (subtree.present) nextPermissions.judge = subtree.value;
+  else delete nextPermissions.judge;
+  const nextDocument = { ...document };
+  if (keepPermissionsContainer || Object.keys(nextPermissions).length > 0) nextDocument.permissions = nextPermissions;
+  else delete nextDocument.permissions;
+  writeUtf8FileAtomicSync(filePath, JSON.stringify(nextDocument, null, 2), 0o600);
+}
+
+/** Atomically merge a user patch and retain its exact host-owned rollback state. */
+export async function setJudgeSettingsPersist(
+  patch: unknown,
+  pathOverride?: string,
+  catalog?: JudgeModelCatalog,
+): Promise<JudgeSettingsWriteReceipt> {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    throw new JudgeSettingsError("permissions.judge patch must be an object");
+  }
+  const update = patch as Record<string, unknown>;
+  const allowed = new Set(["model", "chain", "provider", "external", "mode", "categories", "timeoutMs", "chainDeadlineMs", "breaker"]);
+  if (Object.keys(update).some((key) => !allowed.has(key))) {
+    throw new JudgeSettingsError("permissions.judge patch contains unknown fields");
+  }
+  const filePath = pathOverride ?? defaultPath();
+  let receipt: JudgeSettingsWriteReceipt | undefined;
+  await withFileLock(filePath, async () => {
+    const document = readSettingsObjectForUpdate(filePath);
+    const permissions = judgePermissionsForUpdate(document);
+    const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
+    const permissionsPresent = Object.hasOwn(document, "permissions");
+    const stored = (permissions.judge && typeof permissions.judge === "object" && !Array.isArray(permissions.judge)
+      ? permissions.judge : {}) as Record<string, unknown>;
+    const normalized = normalizeJudgeSettings(permissions.judge, catalog);
+    const current = serializeJudgeSettings(normalized.settings);
+    if (update.provider !== undefined || update.external !== undefined) delete current.chain;
+    const merged = { ...current, ...update };
+    for (const key of ["categories", "breaker"] as const) {
+      if (update[key] && typeof update[key] === "object" && !Array.isArray(update[key])) {
+        merged[key] = { ...(current[key] as Record<string, unknown>), ...(update[key] as Record<string, unknown>) };
+      }
+    }
+    // Only the patched fields are validated against their normalized
+    // neighbours. A stored value the host rejected (an unavailable reviewer
+    // model, a chain it could not accept) and that this patch does not replace
+    // is written back exactly as stored, so saving another field never turns it
+    // into "follow chat" or "off": it keeps failing closed until replaced.
+    const keepModel = normalized.modelRejected === true && !Object.hasOwn(update, "model");
+    const keepChain = normalized.chainRejected === true &&
+      !["chain", "provider", "external"].some((key) => Object.hasOwn(update, key));
+    const settings = validateJudgeSettings(merged, catalog);
+    const applied = serializeJudgeSettings(settings);
+    if (keepModel) applied.model = stored.model;
+    if (keepChain) {
+      delete applied.chain;
+      for (const key of ["chain", "provider", "external"] as const) {
+        if (Object.hasOwn(stored, key)) applied[key] = stored[key];
+      }
+    }
+    const appliedIdentity = JSON.stringify(applied);
+    persistJudgeSubtree(filePath, document, permissions, { present: true, value: applied }, true);
+    receipt = {
+      settings,
+      async rollback() {
+        await withFileLock(filePath, async () => {
+          const latest = readSettingsObjectForUpdate(filePath);
+          const latestPermissions = judgePermissionsForUpdate(latest);
+          if (!Object.hasOwn(latestPermissions, "judge") || JSON.stringify(latestPermissions.judge) !== appliedIdentity) {
+            throw new Error("Judge settings changed before rollback");
+          }
+          persistJudgeSubtree(filePath, latest, latestPermissions, previous, permissionsPresent);
+        });
+      },
+    };
+  });
+  if (!receipt) throw new Error("Judge settings were not persisted");
+  return receipt;
 }
 
 /**

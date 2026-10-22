@@ -47,6 +47,7 @@ import {
 } from "../../../shared/parent-adjudication-bounds.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
+import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -59,8 +60,6 @@ import { errorMessage } from "../../../shared/error-message.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
   // Placeholder for the pre-load render only — the persisted block arrives with
@@ -1127,6 +1126,8 @@ export function PermissionsTab({
             </div>
           </div>
         </SettingsSection>
+
+        <PermissionJudgeContent />
 
         {/* ── Section A: Permission Policy Preset ── */}
         <SettingsSection

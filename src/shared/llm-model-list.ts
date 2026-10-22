@@ -1,4 +1,5 @@
-import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
+import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
+import { isLLMVendor, isOpenAICompatibleVendor } from "./llm-vendor-defaults.js";
 
 export type LlmModelListRequest = {
   vendor: string;
@@ -153,3 +154,66 @@ export type LlmModelListResult =
       endpoint?: string;
       status?: number;
     };
+
+/**
+ * Vendors with a fixed, known `/models` endpoint. Together with the
+ * openai-compatible family these are the vendors whose catalogue is the
+ * endpoint's word rather than a bundled guess.
+ */
+export const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
+  "openai",
+]);
+
+/**
+ * Whether this vendor's catalogue is the endpoint's word rather than ours.
+ *
+ * Two kinds qualify: the openai-compatible family, whose catalogue is defined
+ * by whatever endpoint it points at, and the vendors with a fixed, known
+ * `/models` endpoint. For both, a bundled list of model ids is a guess about
+ * someone else's inventory, so it must never stand in for the answer — a
+ * failed handshake has to READ as a failed handshake, not as a short catalogue.
+ */
+export function usesEndpointModelCatalogue(vendorId: string): boolean {
+  return (isLLMVendor(vendorId) && isOpenAICompatibleVendor(vendorId))
+    || STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
+}
+
+/**
+ * The model ids a chat route offers: THE derivation behind both the chat model
+ * chooser (Settings > LLM) and the permission reviewer's model catalog, so the
+ * two can never disagree about what a provider offers.
+ *
+ * A synced `/models` listing wins. Without one, a vendor whose catalogue is the
+ * endpoint's word offers nothing until the handshake answers (unless its
+ * discovery policy is seeded); any other vendor offers its bundled seed and
+ * default. The saved selection is always kept so a configured route never
+ * shows blank, and retired models — the saved one included — are dropped.
+ */
+export function chatRouteModelOptions(params: {
+  vendorId: string;
+  selectedModel: string;
+  syncedOptions?: readonly string[];
+  seed: { modelOptions: readonly string[]; defaultModel: string };
+  modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
+  isRetired?: (model: string) => boolean;
+}): string[] {
+  const { vendorId, selectedModel, syncedOptions, seed, modelDiscoveryPolicy } = params;
+  const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
+  const handshakeOnly =
+    !hasSynced &&
+    usesEndpointModelCatalogue(vendorId) &&
+    !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
+  const options = hasSynced
+    ? [...(syncedOptions ?? [])]
+    : handshakeOnly
+      ? []
+      : [...seed.modelOptions];
+  if (!handshakeOnly) {
+    const defaultModel = seed.defaultModel.trim();
+    if (defaultModel && !options.includes(defaultModel)) options.unshift(defaultModel);
+  }
+  const currentModel = selectedModel.trim();
+  if (currentModel && !options.includes(currentModel)) options.unshift(currentModel);
+  const isRetired = params.isRetired ?? (() => false);
+  return [...new Set(options)].filter((option) => !isRetired(option));
+}

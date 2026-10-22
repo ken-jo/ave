@@ -78,6 +78,7 @@ import {
   type SubscriptionRuntimeService,
 } from "../../main/subscription-runtime-service.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { readJudgeReviewerVendor } from "../../permissions/permission-settings-store.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 
 let subscriptionRuntimeStatusRevision = 0;
@@ -316,10 +317,30 @@ function shortcutStartupSignature(
   });
 }
 
+/**
+ * What the permission reviewer runs on, for re-wire detection: the active chat
+ * route, plus the route of a reviewer model the user selected on another
+ * provider (`permissions.judge.model`), whose endpoint or catalogue can change
+ * without the chat route changing.
+ */
 function activeLlmIdentity(llm: LLMSettings): string {
   const provider = llm.provider;
   const block = llm.vendors?.[provider];
+  const reviewerVendor = readJudgeReviewerVendor();
+  const reviewerBlock = reviewerVendor && reviewerVendor !== provider ? llm.vendors?.[reviewerVendor] : undefined;
   return JSON.stringify({
+    ...(reviewerVendor && reviewerVendor !== provider ? {
+      reviewerRoute: {
+        vendor: reviewerVendor,
+        model: reviewerBlock?.model ?? null,
+        baseUrl: reviewerBlock?.baseUrl ?? null,
+        vertexProject: reviewerBlock?.vertexProject ?? null,
+        vertexLocation: reviewerBlock?.vertexLocation ?? null,
+        modelLists: Object.values(llm.modelListCache ?? {})
+          .filter((entry) => entry.vendor === reviewerVendor)
+          .map((entry) => [entry.endpoint, entry.credentialScope ?? null, entry.fetchedAt]),
+      },
+    } : {}),
     provider,
     retiredProvider: llm.retiredProvider ?? null,
     marketplaceProviderPresetId:
@@ -865,7 +886,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: "baseUrl must be a string" };
       }
       const { validateFoundryEndpoint } = await import(
-        "../../permissions/reviewer/provider-adapters.js"
+        "../../permissions/reviewer/foundry-endpoint.js"
       );
       try {
         validateFoundryEndpoint(foundryVendorPatch.baseUrl);

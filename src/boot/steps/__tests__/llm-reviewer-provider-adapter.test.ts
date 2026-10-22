@@ -1,9 +1,8 @@
 /**
  * Unit tests for `LlmReviewerProviderAdapter` (#767).
  *
- * The adapter is the only execution path for `openai` / `anthropic` /
- * `google` / `foundry` / `gcp-playground` reviewer providers — it
- * collapses an LLM provider's `streamTurn` async iterator into the
+ * The adapter is the only execution path for the reviewer's LLM provider
+ * (the chat model or the picked reviewer model) — it collapses an LLM provider's `streamTurn` async iterator into the
  * one-shot `complete()` shape that the reviewer pipeline expects.
  *
  * Without unit coverage, any change to the stream-event handling (e.g.

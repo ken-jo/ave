@@ -157,6 +157,9 @@ vi.mock("../conversation.js", () => ({
       // Boot pushes the Layer 1 read fence in from the settings file on every
       // reviewer re-wire, so a stub that omits it fails the whole bootstrap.
       setBlockReadsOutsideWorkingDirectories: vi.fn(),
+      // Each re-wire attaches the configured judge chain and its shared breaker.
+      getJudgeBreaker: vi.fn(() => ({})),
+      setJudge: vi.fn(),
     };
   }),
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
@@ -591,11 +594,16 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     computeDynamicEndpointHosts: vi.fn(() => []),
   };
 });
-vi.mock("../../permissions/permission-settings-store.js", () => ({
-  readPermissionSettings: vi.fn(() => ({
-    permissions: { additionalDirectories: [] },
-  })),
-}));
+vi.mock("../../permissions/permission-settings-store.js", async () => {
+  // No judge block on disk: the store's own absent-file result (judge off).
+  const { normalizeJudgeSettings } = await import("../../permissions/judge/judge-settings.js");
+  return {
+    readPermissionSettings: vi.fn(() => ({
+      permissions: { additionalDirectories: [] },
+    })),
+    readJudgeSettings: vi.fn(() => normalizeJudgeSettings(undefined)),
+  };
+});
 vi.mock("../../permissions/user-approval-store.js", () => ({
   migrateCanonicalization: vi.fn(async () => {}),
 }));
