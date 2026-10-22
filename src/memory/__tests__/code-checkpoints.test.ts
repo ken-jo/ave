@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath } from "node:fs/promises";
@@ -40,6 +41,18 @@ describe("native file-tool code checkpoints", () => {
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
     expect((await readFile(file)).equals(original)).toBe(true);
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
+  });
+
+  it("refuses a mutation when an external write lands during checkpoint admission", async () => {
+    await writeFile(file, "original");
+    const mutate = vi.fn(() => writeFile(file, "agent"));
+    await expect(turn("admission-race", () => checkpointFileMutation([{
+      path: file,
+      // Interleave a real filesystem write after the before-image was read.
+      get content() { writeFileSync(file, "external"); return "agent"; },
+    }], mutate))).rejects.toThrow("File changed before checkpointed mutation");
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await readFile(file, "utf8")).toBe("external");
   });
 
   it("keeps restored baselines guarded against later external edits", async () => {

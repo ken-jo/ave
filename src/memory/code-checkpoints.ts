@@ -194,6 +194,15 @@ export async function checkpointFileMutation<T>(
     turn.changes.push(...changes);
     // Write ahead: a crash cannot leave a successful edit without its before-image.
     await save(turns, turn);
+    for (const change of changes) {
+      const beforeHash = hash(change.before === null ? null : Buffer.from(change.before, "base64"));
+      const current = await snapshot(change.path).catch(() => undefined);
+      if (!current || hash(current.bytes) !== beforeHash) {
+        turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
+        await save(turns, turn);
+        throw new Error("File changed before checkpointed mutation");
+      }
+    }
     const removeUnchanged = async () => {
       // Failed no-op operations do not claim an edit. Partial effects remain guarded
       // by their intended after-hash, never by arbitrary bytes read after execution.
