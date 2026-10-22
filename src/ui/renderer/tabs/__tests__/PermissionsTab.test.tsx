@@ -1417,6 +1417,61 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   });
 
   it.each([
+    ["en", "icacls-failed"], ["ko", "icacls-failed"],
+    ["en", "read-back-failed"], ["ko", "read-back-failed"],
+    ["en", "not-protected"], ["ko", "not-protected"],
+    ["en", "extra-principals"], ["ko", "extra-principals"],
+  ] as const)("names the private directory and reason in %s for %s without elevated setup", async (locale, category) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const path = String.raw`D:\private-state\secrets`;
+      const { ave } = installApiWithWindows({
+        sandboxWindowsStatus: vi.fn().mockResolvedValue({
+          applicable: true, userState: null, wfpState: null, ready: false,
+          homePrivacyError: { path, category, extraPrincipals: [{ sid: "S-1-1-0", account: "Everyone" }, { sid: "S-1-5-21-100-200-300-9999" }] }, instructions: "",
+        }),
+      });
+      await act(async () => { render(<PermissionsTab />); });
+      const notice = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+      expect(notice).toHaveAttribute("role", "alert");
+      expect(notice).toHaveTextContent(path);
+      expect(notice).toHaveTextContent("AVE_HOME");
+      expect(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeInTheDocument();
+      if (category === "extra-principals") {
+        expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
+        expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
+        expect(notice).toHaveTextContent(t("permissionsTab.homePrivacyExtraPrincipals", { principals: "S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999" }));
+      } else {
+        expect(notice).toHaveTextContent(category === "icacls-failed" ? t("permissionsTab.homePrivacyIcaclsFailed") : category === "read-back-failed" ? t("permissionsTab.homePrivacyReadBackFailed") : t("permissionsTab.homePrivacyNotProtected"));
+      }
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+      expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("requests a session approval once and reads the main-owned OFF status again after a reload", async () => {
+    const status = { applicable: true, userState: null, wfpState: null, ready: false, instructions: "",
+      homePrivacyError: { path: "D:/private-state/secrets", category: "read-back-failed", approvedForSession: false } };
+    const readStatus = vi.fn(async () => structuredClone(status));
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: readStatus });
+    const approve = vi.fn(async () => { status.homePrivacyError.approvedForSession = true; return { ok: true }; });
+    Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+    cleanup();
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
+  });
+
+  it.each([
     ["srt-win-not-found", "windows-sandbox-missing"],
     ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
   ] as const)("shows %s from a boot opt-in while the toggles are off", async (helperError, cause) => {

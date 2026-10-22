@@ -31,6 +31,7 @@ import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -451,6 +452,7 @@ async function resolveSpawnLine(
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
 }> {
+  assertExtensionStartAllowed();
   if (!isPluginWorkerConfinementActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }

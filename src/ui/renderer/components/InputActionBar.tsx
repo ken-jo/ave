@@ -590,6 +590,7 @@ function PermissionQuickPicker({
 }
 
 const SANDBOX_CAUSE_KEYS: Record<ShellSandboxUnavailableCause, string> = {
+  "ave-home-privacy-failed": "permissionsTab.homePrivacyBootFailed",
   "missing-bwrap": "inputActionBar.sandboxCauseMissingBwrap",
   "missing-socat": "inputActionBar.sandboxCauseMissingSocat",
   "missing-ripgrep": "inputActionBar.sandboxCauseMissingRipgrep",

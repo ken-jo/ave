@@ -23,6 +23,8 @@
  */
 
 /** What the sandbox confines, by platform. `network` is false where egress is not contained. */
+import type { AveHomePrincipal, AveHomePrivacyFailureCategory } from "./ave-home.js";
+
 export interface SandboxConfinement {
   filesystem: boolean;
   process: boolean;
@@ -61,6 +63,13 @@ export interface SandboxWindowsStatusInfo {
   ready: boolean;
   /** Expected helper resolution failure; never a readiness or provisioning claim. */
   helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
+  /** Confinement is refused until this private directory verifies at restart. */
+  homePrivacyError?: {
+    approvedForSession?: boolean;
+    path: string;
+    category: AveHomePrivacyFailureCategory;
+    extraPrincipals?: AveHomePrincipal[];
+  };
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }
@@ -114,6 +123,7 @@ export type SandboxGateAction = "skip" | "activate" | "degrade" | "abort";
 
 /** Stable machine reason for the branch the boot gate took. */
 export type SandboxGateReason =
+  | "degrade-ave-home-privacy-failed"
   | "gate-off"
   | "deps-present"
   /** Windows: srt-win not installed, ASRT runs as the proxy for agent shells in MXC containers. */
@@ -147,6 +157,7 @@ export type SandboxGateReason =
  * - `init-failed`: ASRT failed to start for any other reason.
  */
 export type SandboxStartFailureCause =
+  | "ave-home-privacy-failed"
   | "missing-bwrap"
   | "missing-socat"
   | "missing-ripgrep"
@@ -408,6 +419,7 @@ export interface SandboxRuntimeCapabilityInfo {
 
 /** Capability snapshot returned to the renderer for the settings toggle. */
 export interface SandboxCapabilityInfo {
+  homePrivacyError?: SandboxWindowsStatusInfo["homePrivacyError"];
   platform: NodeJS.Platform;
   /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env
    *  escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */

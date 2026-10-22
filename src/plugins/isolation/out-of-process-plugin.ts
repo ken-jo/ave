@@ -53,6 +53,7 @@ import { createSandboxProcessHome } from "../../permissions/sandbox-process-home
 import {
   cleanupAsrtSandboxAfterCommand,
   isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   outermostContainingRoots,
   pluginGrantPathsBeyondOwnRoots,
   protectedReadDenyCovering,
@@ -912,6 +913,7 @@ function windowsLoopbackLaunchLine(
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
+  assertExtensionStartAllowed();
   spec.assertStillValid?.();
   // Decided before anything is created, so a refused line leaves nothing behind.
   const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
@@ -1311,6 +1313,7 @@ export function createOutOfProcessPluginFactory(
   const pluginId = spec.manifest.id;
 
   return async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
+    assertExtensionStartAllowed();
     // Refused before anything is spawned. `runtime/index.ts` refuses the same
     // manifest at every load path; this is the spawn path's own copy of the
     // rule, so a factory reached any other way cannot start a child that would

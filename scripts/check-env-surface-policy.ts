@@ -57,6 +57,9 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 const INTERNAL: readonly string[] = [
   // The host supplies inspected filesystem paths to its access-rule query child.
   "AVE_EXECUTABLE_ACL_PATHS",
+  // The host hands the AVE_HOME paths to check to its DACL read-back
+  // PowerShell child as JSON, so no path is spliced into -Command (ave-home.ts).
+  "AVE_DACL_PATHS",
   "AVE_HOOK_EVENT",
   "AVE_HOOK_SESSION",
   // Both halves of the subscription tool bridge. The host binds an ephemeral

@@ -69,6 +69,7 @@ import {
   checkAsrtDependencies,
 } from "../asrt-sandbox.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
@@ -85,6 +86,8 @@ import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+
+useVerifiedAveHomePrivacy();
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;

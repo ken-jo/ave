@@ -81,6 +81,7 @@ import {
   terminateChildBestEffort,
 } from "./windows-acl-grant-holder.js";
 import {
+  assertExtensionStartAllowed,
   isPluginWorkerConfinementActive,
   cleanupAsrtSandboxAfterCommand,
   registerWorkerUnixSocketDir,
@@ -269,6 +270,7 @@ function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> 
  *   under srt-win.
  */
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
+  assertExtensionStartAllowed();
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   const args = [...(spec.args ?? [])];

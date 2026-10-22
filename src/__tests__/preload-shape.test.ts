@@ -172,6 +172,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "permission": [
             "addRule",
+            "approveExtensionsWithoutIsolation",
             "auditShow",
             "auditVerify",
             "deferredList",
@@ -544,6 +545,7 @@ describe("preload contextBridge world shape lock", () => {
           "pauseSessionGoal": "function",
           "permission": [
             "addRule",
+            "approveExtensionsWithoutIsolation",
             "auditShow",
             "auditVerify",
             "deferredList",

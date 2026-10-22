@@ -10,7 +10,7 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -1101,13 +1101,22 @@ export function isShellSandboxActive(): boolean {
 }
 
 /**
- * Extension spawn gate (plugin workers, out-of-process plugin children, plugin
- * script hooks, external MCP stdio servers): ASRT is active AND plugin-worker
+ * Extension confinement status: ASRT is active AND plugin-worker
  * confinement (`features.pluginWorkerConfinement`) was requested at boot. The
  * shell sandbox setting never decides this.
  */
 export function isPluginWorkerConfinementActive(): boolean {
+  if (getAveHomePrivacyFailure() !== undefined) return false;
   return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+}
+
+/** Refuse extension starts until private storage or session approval is established. */
+export function assertExtensionStartAllowed(): void {
+  // Intentionally gated by the boot request: a user who turned isolation off is not asked.
+  if (process.platform === "win32" && isPluginWorkerConfinementRequestedAtBoot()) {
+    if (areExtensionsWithoutIsolationApproved()) return;
+    assertAveHomePrivacyForConfinement();
+  }
 }
 
 /**
@@ -2030,6 +2039,9 @@ export async function initializeAsrtSandbox(
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
 ): Promise<void> {
+  if (trustedSettings.windows?.externalConfinement !== true) {
+    assertAveHomePrivacyForConfinement();
+  }
   // Idempotency guard. The boot gate must decide exactly once;
   // a double-initialize means two boot paths raced or a runtime channel tried
   // to re-seal the sandbox with a different config. Fail loud rather than
@@ -2423,6 +2435,7 @@ async function wrapLongLivedCommand(
   options: AttributedWrapOptions,
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
+  assertAveHomePrivacyForConfinement();
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
@@ -2716,6 +2729,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
 }): Promise<WindowsWorkerFilesystemGrant> {
+  assertAveHomePrivacyForConfinement();
   if (!active || _baseTrustedSettings === undefined) {
     throw new Error(
       "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",

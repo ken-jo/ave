@@ -496,7 +496,8 @@ export function PermissionsTab({
       // state on tab entry so the panel persists across navigations until
       // ready. Extension provisioning is separate from MXC shell readiness.
       if (sandboxRes.platform === "win32" &&
-        (osSandboxOn || workerConfinementOn || bootReportsWindowsHelperFailure(sandboxRes.boot))) {
+        (osSandboxOn || workerConfinementOn || sandboxRes.homePrivacyError ||
+          bootReportsWindowsHelperFailure(sandboxRes.boot))) {
         const status = await window.ave.permission.sandboxWindowsStatus();
         if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
         setWindowsStatus(status);
@@ -858,6 +859,24 @@ export function PermissionsTab({
   };
   const handleSandboxToggle = () => toggleConfinementScope("shell");
   const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
+  const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
+  const handlePrivacyApproval = async () => {
+    if (privacyApprovalBusy) return;
+    setPrivacyApprovalBusy(true);
+    try {
+      const result = await window.ave.permission.approveExtensionsWithoutIsolation();
+      if (!result.ok) {
+        showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+        return;
+      }
+      setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+    } catch (error) {
+      showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+      console.warn("[ave] extension isolation session approval failed:", errorMessage(error));
+    } finally {
+      setPrivacyApprovalBusy(false);
+    }
+  };
 
   // The ONLY user-consented privilege-escalation trigger. The OS sandbox is
   // normally provisioned at app-install time (NSIS customInstall), so this is
@@ -1508,8 +1527,38 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {windowsHelperRequested && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.helperError ? (
+          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
+            windowsStatus.homePrivacyError ? (
+              <div
+                data-testid="os-sandbox-windows-home-privacy-error"
+                role="alert"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                  path: windowsStatus.homePrivacyError.path,
+                  reason: {
+                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
+                    "system-root-missing": t("permissionsTab.homePrivacySystemRootMissing"),
+                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
+                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
+                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+                    }),
+                  }[windowsStatus.homePrivacyError.category],
+                })}
+                {windowsStatus.homePrivacyError.approvedForSession ? (
+                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
+                ) : (
+                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
+                    onClick={() => void handlePrivacyApproval()}>
+                    {t("permissionsTab.homePrivacyApproveForSession")}
+                  </Button>
+                )}
+              </div>
+            ) : windowsStatus.helperError ? (
               <p
                 data-testid="os-sandbox-windows-helper-unavailable"
                 data-error-code={windowsStatus.helperError}

@@ -122,9 +122,12 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   };
 }
 
-/** Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows. */
+/**
+ * Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows.
+ * Retries ride out the brief EBUSY a just-exited git child can leave on the work dir.
+ */
 export async function removeFixtureRepo(repo: FixtureRepo): Promise<void> {
-  await rm(repo.work, { recursive: true, force: true });
+  await rm(repo.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
 function authorized(req: IncomingMessage, token: string | undefined): boolean {

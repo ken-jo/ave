@@ -83,6 +83,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     typeof import("../../permissions/asrt-sandbox.js")
   >("../../permissions/asrt-sandbox.js");
   return {
+    assertExtensionStartAllowed: actual.assertExtensionStartAllowed,
     isAsrtSandboxActive: () => gateActive,
     isPluginWorkerConfinementActive: () => gateActive,
     wrapWorkerCommand: (command: string, options?: unknown) =>

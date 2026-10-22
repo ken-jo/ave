@@ -124,6 +124,9 @@ import type {
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError } from "../out-of-process-plugin.js";
+import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -983,6 +986,31 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
 }
 
 describe("construct negotiates the host protocol", () => {
+  it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
+    const roots = spawnableRoots();
+    const originalPlatform = process.platform;
+    spawnConfinedChild.mockReset();
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: roots.context.pluginRoot!, category: "read-back-failed", reason: "fixture" });
+    const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST,
+      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") } });
+    try {
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("Settings > Permissions");
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+      approveExtensionsWithoutIsolation();
+      spawnConfinedChild.mockRejectedValueOnce(new Error("fixture spawn reached"));
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("fixture spawn reached");
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+    } finally {
+      _resetAveHomePrivacyForTest();
+      __resetSandboxRequestedAtBootForTest();
+      setProcessPlatform(originalPlatform);
+      spawnConfinedChild.mockReset();
+      roots.remove();
+    }
+  });
+
   it("refuses an undeclared protocol before spawning a child", async () => {
     const roots = spawnableRoots();
     spawnConfinedChild.mockClear();

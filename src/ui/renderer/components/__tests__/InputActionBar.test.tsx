@@ -929,6 +929,7 @@ describe("permission card sandbox checkbox", () => {
     [["missing-socat"], "socat이 없거나 실행할 수 없음"],
     [["missing-bwrap", "missing-socat"], "bubblewrap(bwrap)이 없거나 실행할 수 없음, socat이 없거나 실행할 수 없음"],
     [["init-failed"], "샌드박스 시작 실패"],
+    [["ave-home-privacy-failed"], "AVE_HOME 비공개 보호를 확인할 수 없어 격리가 꺼져 있음"],
     [["linux-runtime-probe-failed"], "bubblewrap을 실행할 수 없음 (시작 점검 실패)"],
     [["windows-setup-incomplete"], "Windows 샌드박스 설정(srt-win)이 완료되지 않음"],
     [["windows-shell-not-contained"], "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)"],

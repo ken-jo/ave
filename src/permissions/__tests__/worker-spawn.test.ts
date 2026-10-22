@@ -107,6 +107,7 @@ const grantWindowsWorkerFilesystemAccessMock = vi.fn<
   }),
 );
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  assertExtensionStartAllowed: (await importOriginal<typeof import("../asrt-sandbox.js")>()).assertExtensionStartAllowed,
   // The real launcher and naming; the directory itself is not created.
   sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
   ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
