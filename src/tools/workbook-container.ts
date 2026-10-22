@@ -18,6 +18,13 @@ const PACKAGE_PARTS = new Set([
   "[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels",
   "mimetype", "META-INF/manifest.xml", "content.xml",
 ]);
+const XML_PART_NAME = /\.(?:xml|rels)$/i;
+// The decoder reads these relationship targets as XML whatever their part name.
+const XML_TARGET_RELATIONSHIP_TYPES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+  "http://purl.oclc.org/ooxml/officeDocument/relationships/comments",
+  "http://schemas.microsoft.com/office/2017/10/relationships/threadedComment",
+]);
 
 interface XmlTag {
   name: string;
@@ -154,6 +161,8 @@ function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<str
       const path = tag.attributes.get("partname");
       const type = tag.attributes.get("contenttype");
       if (!path || !type || contentTypes.has(path)) refuse("Invalid or duplicate content type declaration");
+      // Only XML-named parts are scanned, so an XML part may not hide behind another name.
+      if (/[+/]xml$/i.test(type) && !XML_PART_NAME.test(path)) refuse("XML package part has a non-XML name");
       if (type.includes(".main") && /spreadsheetml|ms-excel/.test(type)
         && (path !== "/xl/workbook.xml" || type !== WORKBOOK_CONTENT_TYPE)) {
         refuse("Package declares an unsupported workbook family");
@@ -296,6 +305,15 @@ export function prepareWorkbookContainer(
   const parts = new Map<string, Buffer>();
   const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
+    // Every XML part the decoder may read, not just the validated package
+    // parts, must expose the same plain tag stream to it.
+    if (!XML_PART_NAME.test(name)) return;
+    const relationships = /\.rels$/i.test(name);
+    scanXml(data, (tag) => {
+      if (relationships && !tag.closing && tag.localName === "Relationship"
+        && XML_TARGET_RELATIONSHIP_TYPES.has(tag.attributes.get("type") ?? "")
+        && !XML_PART_NAME.test(tag.attributes.get("target") ?? "")) refuse("XML relationship targets a non-XML part");
+    });
   });
   if (!verdict.ok) {
     if (verdict.reason === "encrypted") throw new TableDocumentError("encrypted", verdict.detail);

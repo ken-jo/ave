@@ -9,10 +9,10 @@ import { prepareWorkbookContainer } from "../workbook-container.js";
 
 const MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
 
-function workbook(bookType: XLSX.BookType): Buffer {
+function workbook(bookType: XLSX.BookType, bookSST = false): Buffer {
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["name", "value"], ["item", 2]]), "Data");
-  return XLSX.write(book, { type: "buffer", bookType }) as Buffer;
+  return XLSX.write(book, { type: "buffer", bookType, bookSST }) as Buffer;
 }
 
 function odsContent(tables: string): Buffer {
@@ -146,6 +146,34 @@ describe("workbook container validation", () => {
     const checked = prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS);
     expect(XLSX.utils.sheet_to_json(XLSX.read(checked, { type: "buffer" }).Sheets.Data!, { header: 1 }))
       .toEqual([["name", "value"], ["item", 2]]);
+  });
+
+  it.each(["xl/sharedStrings.xml", "xl/worksheets/sheet1.xml", "docProps/app.xml"])(
+    "refuses XML declarations in decoder-read part %s",
+    (part) => {
+      const archive = new AdmZip(workbook("xlsx", true));
+      expect(prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS)).toBeInstanceOf(Buffer);
+      const xml = archive.readAsText(part);
+      archive.updateFile(part, Buffer.from(xml.replace("?>", '?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>')));
+      expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
+    },
+  );
+
+  it("refuses XML parts that a non-XML name would keep from the scan", () => {
+    const archive = new AdmZip(workbook("xlsx", true));
+    const strings = archive.getEntry("xl/sharedStrings.xml")!.getData();
+    archive.deleteFile("xl/sharedStrings.xml");
+    archive.addFile("xl/sharedStrings.dat", strings);
+    const types = archive.readAsText("[Content_Types].xml");
+    archive.updateFile("[Content_Types].xml", Buffer.from(types.replace("/xl/sharedStrings.xml", "/xl/sharedStrings.dat")));
+    expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
+
+    const comments = new AdmZip(workbook("xlsx"));
+    comments.addFile("xl/comments1.dat", Buffer.from("<comments/>"));
+    comments.addFile("xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.dat"/></Relationships>',
+    ));
+    expect(refusal(comments.toBuffer(), "xlsx").code).toBe("corrupt-document");
   });
 
   it("refuses archive wrappers and nested members", () => {
