@@ -12,7 +12,7 @@ import {
   type UserApprovalVerdict,
 } from "../../../shared/permissions-events.js";
 import { refusedShellPrefix } from "../../../permissions/rules/shell-prefix-values.js";
-import { parseRuleSpecifier, formatRuleSpecifier } from "../../../permissions/rules/rule-specifier.js";
+import { parseRuleSpecifier, formatRuleSpecifier, normalizeRuleSpecifierInput } from "../../../permissions/rules/rule-specifier.js";
 import { Input } from "../../../components/ui/input.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -830,7 +830,7 @@ export function ToolApprovalContent({
   const shellRule = request?.shellRule;
   const parsedShellPattern = useMemo(() => {
     try {
-      const parsed = parseRuleSpecifier(shellPattern.trim());
+      const parsed = parseRuleSpecifier(normalizeRuleSpecifierInput(shellPattern));
       return parsed.kind === "bash" ? parsed : null;
     } catch {
       return null;
@@ -1557,6 +1557,11 @@ export function ToolApprovalContent({
                   value={shellPattern} onChange={(event) => setShellPattern(event.target.value)}
                   disabled={recordingDecision || interactionLocked} placeholder="Bash(git status *)" />
                 {shellPattern && !canonicalShellPattern ? <p role="alert" className="text-[11px] text-destructive">{tHook("toolApprovalDialog.shellRuleInvalid")}</p> : null}
+                {canonicalShellPattern && canonicalShellPattern !== shellPattern ? (
+                  <p data-testid="approval-shell-rule-preview" className="break-all font-mono text-[10px] text-muted-foreground">
+                    {tHook("toolApprovalDialog.shellRulePreview", { pattern: canonicalShellPattern })}
+                  </p>
+                ) : null}
                 <NativeSelect aria-label={tHook("toolApprovalDialog.shellRuleScope")} data-testid="approval-shell-rule-scope"
                   value={shellScope} onChange={(event) => setShellScope(event.target.value as "project" | "user")}
                   disabled={recordingDecision || interactionLocked}>

@@ -31,7 +31,8 @@ describe("shell approval rule controls", () => {
     render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
     expect(screen.getByTestId("approval-shell-rule-pattern")).toHaveValue("Bash(git status *)");
     expect(screen.getByTestId("approval-shell-rule-scope")).toHaveValue("project");
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: "Bash(git status)" } });
+    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: "Bash( git status )" } });
+    expect(screen.getByTestId("approval-shell-rule-preview")).toHaveTextContent(t("toolApprovalDialog.shellRulePreview", { pattern: "Bash(git status)" }));
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     expect(onDecide).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledTimes(1);
@@ -40,12 +41,37 @@ describe("shell approval rule controls", () => {
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
   });
 
-  it("rejects an edited rule the shared parser refuses instead of normalizing it", () => {
+  it.each([
+    { name: "tabs", typed: "Bash(\tgit\tstatus\t*)", saved: "Bash(git status *)" },
+    { name: "internal runs of spaces", typed: "  Bash(git   status    *)  ", saved: "Bash(git status *)" },
+    { name: "mixed tabs and spaces", typed: "Bash( \t git \t status )", saved: "Bash(git status)" },
+  ])("normalizes $name before saving and previews the saved rule", async ({ typed, saved }) => {
+    const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
+    vi.stubGlobal("ave", { userApproval: { record } });
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
+    expect(screen.getByTestId("approval-shell-rule-preview")).toHaveTextContent(t("toolApprovalDialog.shellRulePreview", { pattern: saved }));
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { pattern: saved, scope: "project" } }));
+  });
+
+  it("shows no preview for an already canonical rule", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
+  });
+
+  it.each([
+    { name: "empty after trimming", typed: "Bash( \t )" },
+    { name: "still invalid after normalization", typed: "Bash( git | status )" },
+  ])("keeps a rule that is $name flagged invalid", ({ typed }) => {
     const record = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: "Bash( git status )" } });
+    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
     expect(screen.getAllByText(t("toolApprovalDialog.shellRuleInvalid")).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.getByTestId("approval-deny-always")).toBeDisabled();
     expect(record).not.toHaveBeenCalled();

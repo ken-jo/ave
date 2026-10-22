@@ -4,7 +4,7 @@
  */
 import { ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
-import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
+import { isRuleSpecifier, normalizeRuleSpecifierInput } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
@@ -1163,12 +1163,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
       const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
       try {
-        if (typeof command !== "string" || !shellRuleCoversCommand(rule.pattern, decision, command, context.projectCwd)) {
+        // Same normalization as the dock preview; the store itself stays strict.
+        const pattern = normalizeRuleSpecifierInput(rule.pattern);
+        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
           return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
         }
         const pm = conversationLoop.permissionManager;
         if (!pm) return { ok: false, error: "no-permission-manager" };
-        await pm.addRulePersist({ pattern: rule.pattern, action: decision }, rule.scope === "project"
+        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
           ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
         auditLogger.log({
           timestamp: new Date().toISOString(),

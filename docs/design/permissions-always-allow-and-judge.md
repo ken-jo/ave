@@ -90,13 +90,13 @@ does not prove that the command or task contents are read-only.
 - "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. Identity, repository discovery, the home boundary, and retained legacy rules follow [Project Rule Scope](../architecture/permission-policy-design.md#project-rule-scope). The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
 - "Everywhere" writes the user-global scope, which is Store A (`<ave home>/permissions.json`) extended in place.
 - Deny-always uses the same files.
-- New shell session approvals use the conversation session id, in memory. Existing browser and terminal exact approvals retain their app-session lifetime.
+- New shell session approvals are held in memory under the root conversation: the conversation and every sub-agent spawned from it, at any depth, share them, and separate root conversations never do. The root is resolved through the sub-agent runner's live origin chain, the same walk that scopes a sub-agent's window. Existing browser and terminal exact approvals retain their app-session lifetime.
 
 **7. Existing Store B entries** (exact tuples) keep matching unchanged and are never converted to prefixes.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
-- Allow for session records an exact Store B approval under the conversation id. It does not write a rule file or authorize another conversation. Existing entries keep their original identities.
+- Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Existing entries keep their original identities.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes.
-- The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
+- An edited rule is normalized by one shared function before it is checked: outer and inner whitespace is trimmed and runs of spaces or tabs in a `Bash(...)` body collapse to one space. The dock previews the normalized rule, and the host save path applies the same function; the rule store's parser stays strict for every other writer. The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
 - A corrupt Store A, Store B or project file fails clearly with a visible error.
 - Corrupt files are never silently dropped and never overwritten.
 

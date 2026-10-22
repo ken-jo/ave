@@ -9,6 +9,7 @@ import {
   isRuleSpecifier,
   matchesMcpTool,
   matchesWebFetchHost,
+  normalizeRuleSpecifierInput,
   parseRuleSpecifier,
   RuleSpecifierError,
 } from "../rules/rule-specifier.js";
@@ -88,6 +89,34 @@ describe("rule specifier grammar", () => {
     if (mcp.kind !== "mcp") throw new Error();
     expect(matchesMcpTool(mcp, "github", "create_issue")).toBe(true);
     expect(matchesMcpTool(mcp, "github", "delete_repo")).toBe(false);
+  });
+});
+
+describe("hand-edited rule normalization (dock preview and host save)", () => {
+  it.each([
+    ["Bash( git status )", "Bash(git status)"],
+    ["Bash(\tgit\tstatus\t*)", "Bash(git status *)"],
+    ["Bash(git   status    *)", "Bash(git status *)"],
+    ["  Bash( \t npm  run   test * )  ", "Bash(npm run test *)"],
+  ])("normalizes %j to the formatter's canonical spelling", (typed, canonical) => {
+    expect(normalizeRuleSpecifierInput(typed)).toBe(canonical);
+    expect(canonicalRuleSpecifier(normalizeRuleSpecifierInput(typed))).toBe(canonical);
+  });
+
+  it("leaves a rule empty after trimming invalid", () => {
+    expect(normalizeRuleSpecifierInput("Bash( \t )")).toBe("Bash()");
+    expect(() => parseRuleSpecifier(normalizeRuleSpecifierInput("Bash( \t )"))).toThrow(RuleSpecifierError);
+  });
+
+  it("does not repair anything except Bash whitespace", () => {
+    expect(normalizeRuleSpecifierInput("Bash(git\nstatus)")).toBe("Bash(git\nstatus)");
+    expect(() => parseRuleSpecifier(normalizeRuleSpecifierInput("Bash(git\nstatus)"))).toThrow(RuleSpecifierError);
+    expect(normalizeRuleSpecifierInput(" WebFetch(domain: example.com) ")).toBe("WebFetch(domain: example.com)");
+  });
+
+  it("keeps the store parser strict for text that bypasses normalization", () => {
+    expect(() => parseRuleSpecifier("Bash( git status )")).toThrow(/single spaces/);
+    expect(() => parseRuleSpecifier("Bash(git\tstatus)")).toThrow(/single spaces/);
   });
 });
 

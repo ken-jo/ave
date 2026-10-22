@@ -161,6 +161,21 @@ export function canonicalRuleSpecifier(text: string): string {
 }
 
 /**
+ * Tidies hand-edited rule text before it is parsed: trims the outside and, in
+ * a `Bash(...)` body, trims the inside and collapses runs of spaces and tabs
+ * to one space. The approval dock preview and the host save path both call
+ * this, so what the user sees is what is saved. It never makes invalid input
+ * valid in any other way, and {@link parseRuleSpecifier} stays strict, so the
+ * rule store still rejects non-canonical text written by any other path.
+ */
+export function normalizeRuleSpecifierInput(text: string): string {
+  const trimmed = text.trim();
+  const bash = /^Bash\((.*)\)$/s.exec(trimmed);
+  if (!bash) return trimmed;
+  return `Bash(${bash[1]!.replace(/[ \t]+/g, " ").replace(/^ | $/g, "")})`;
+}
+
+/**
  * Rule kinds the decision path enforces today. P1a wires only `bash`; the other
  * kinds parse (so the language is stable) but are rejected on write and on
  * load until their matchers are wired (P1c), so a stored rule can never be a

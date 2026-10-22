@@ -1714,6 +1714,21 @@ describe("command rules recorded from live approvals", () => {
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["Bash( git status * )", "Bash(git status *)"],
+    ["Bash(git\tstatus   *)", "Bash(git status *)"],
+  ])("saves a hand-spaced rule %s in the canonical form the dock previewed", async (pattern, saved) => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: saved, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+  });
+
+  it("refuses a rule that is empty after normalization", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern: "Bash( \t )" } })).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  });
+
   it("refuses allow persistence for floors even when the renderer submits a valid rule", async () => {
     const { deps } = await setup({ shellRule: { ...shellRule, persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "git status" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
