@@ -78,7 +78,7 @@ describe("scoped permission rules", () => {
       expect(evaluate(edit("alias/new.ts"), [allow("Edit(src/**)")])).toMatchObject({ floor: expect.any(String) });
       expect(evaluate(edit("src/alias/new.ts"), [allow("Edit(alias/**)")]).decision).toBeUndefined();
     }
-    await manager.addRulePersist(allow("Edit(src/**)"));
+    await manager.addRulePersist(allow("Edit(src/**)"), { kind: "user" });
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = vi.fn();
@@ -87,7 +87,7 @@ describe("scoped permission rules", () => {
       const [output] = await runWithToolExecutionCwd(project, () => executor.executeAll([
         { id: "native-separator", name: "write_file", input: { path, content: "created" } },
       ], { sessionId: "native-separator", permissionContext: userPermissionContext() }));
-      expect(output?.is_error, output?.content).toBe(process.platform !== "win32");
+      expect(output?.is_error === true, output?.content).toBe(process.platform !== "win32");
       if (process.platform !== "win32") expect(output?.content).toBe("Cannot resolve write target");
       else expect(readFileSync(join(project, "src", "new.ts"), "utf8")).toBe("created");
     }
@@ -154,7 +154,7 @@ describe("scoped permission rules", () => {
     expect(matchesWebFetchHost(spec, "example.com:443")).toBe(false);
     expect(matchesWebFetchHost(spec, "example.com/path")).toBe(false);
     expect(evaluate(network("https://example.com:8443"), [allow("WebFetch(domain:example.com)")]).decision).toBe("allow");
-    await manager.addRulePersist(allow("WebFetch(domain:example.com)"));
+    await manager.addRulePersist(allow("WebFetch(domain:example.com)"), { kind: "user" });
     await manager.ensureProjectRulesLoaded(project);
     expect(manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: "curl https://example.com", cwd: project },
@@ -174,9 +174,9 @@ describe("scoped permission rules", () => {
   });
 
   it("preserves floors and strict mode over persisted and legacy allows", async () => {
-    await manager.addRulePersist(allow("Edit(**)"));
-    await manager.addRulePersist(allow("WebFetch(domain:example.com)"));
-    await manager.addRulePersist(allow("Mcp(catalog)"));
+    await manager.addRulePersist(allow("Edit(**)"), { kind: "user" });
+    await manager.addRulePersist(allow("WebFetch(domain:example.com)"), { kind: "user" });
+    await manager.addRulePersist(allow("Mcp(catalog)"), { kind: "user" });
     await manager.ensureProjectRulesLoaded(project);
     manager.setMode("allow");
     for (const subject of [edit(".env"), edit(join(directory, "ave-home", "permissions.json")), mcp("lookup", false),
@@ -189,7 +189,7 @@ describe("scoped permission rules", () => {
   });
 
   it("requires an explicit loaded project scope instead of falling back to global rules", async () => {
-    await manager.addRulePersist(allow("Edit(**)"));
+    await manager.addRulePersist(allow("Edit(**)"), { kind: "user" });
     const ruleSubject = edit("src/a.ts");
     expect(() => manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject })).toThrow("explicit project scope");
     expect(() => manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject, projectRulesCwd: project })).toThrow("not loaded before the decision");
@@ -199,7 +199,7 @@ describe("scoped permission rules", () => {
 
   it("keeps private-network approval separate from a public host allow", async () => {
     const subject: ScopedRuleSubject = { kind: "webfetch", url: "https://example.com", privateNetwork: true };
-    await manager.addRulePersist(allow("WebFetch(domain:example.com)"));
+    await manager.addRulePersist(allow("WebFetch(domain:example.com)"), { kind: "user" });
     await manager.ensureProjectRulesLoaded(project);
     expect(manager.checkScopedRules(subject, project)).toEqual({});
     expect(manager.checkDetailed("web_fetch", "builtin", "network", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "ask" });
@@ -216,7 +216,7 @@ describe("scoped permission rules", () => {
     for (const subject of [{ kind: "edit", cwd: join(project, "src"), paths: ["a.ts"] } as ScopedRuleSubject, network("https://example.com"), mcp()]) {
       expect(restarted.checkDetailed("operation", subject.kind === "mcp" ? "mcp" : "builtin", subject.kind === "edit" ? "write" : "network", null, { ruleSubject: subject, projectRulesCwd: join(project, "src") })).toMatchObject({ decision: "allow", layer: 3 });
     }
-    for (const pattern of patterns) await manager.addRulePersist({ pattern, action: "deny" });
+    for (const pattern of patterns) await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
     await restarted.loadRulesFromFile();
     expect(await restarted.checkNetworkRules("https://example.com", project)).toMatchObject({ decision: "deny" });
     const location = projectRulesLocation(directory, project);
@@ -271,7 +271,7 @@ describe("scoped permission rules", () => {
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "external-file", name: "write_file", input: { path: target, content: "created" } },
     ], { sessionId: "external-file", permissionContext: userPermissionContext() }));
-    expect(result?.is_error, result?.content).toBe(false);
+    expect(result?.is_error === true, result?.content).toBe(false);
     expect(readFileSync(target, "utf8")).toBe("created");
     expect(requestAndWait).not.toHaveBeenCalled();
     const sibling = join(external, "sibling.txt");
@@ -286,7 +286,8 @@ describe("scoped permission rules", () => {
   });
 
   it("does not turn a generic tool allow into an external Edit grant", async () => {
-    await manager.addRulePersist(allow("write_file"));
+    await manager.addAlwaysAllowedPersist("write_file");
+    await manager.loadRulesFromFile();
     await manager.ensureProjectRulesLoaded(project);
     const subject = edit(join(directory, "external.txt"));
     expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
@@ -304,7 +305,7 @@ describe("scoped permission rules", () => {
 
   it("refuses unresolved native write ancestors before granting an Edit rule", async () => {
     symlinkSync(join(directory, "absent"), join(project, "dangling"), "junction");
-    await manager.addRulePersist(allow("Edit(**)"));
+    await manager.addRulePersist(allow("Edit(**)"), { kind: "user" });
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
     const requestAndWait = vi.fn();
@@ -317,7 +318,7 @@ describe("scoped permission rules", () => {
   });
 
   it.each(["read-only", "destructive", "absent"] as const)("uses the registered MCP identity in execution: %s annotations", async (annotation) => {
-    await manager.addRulePersist(allow("Mcp(catalog:lookup)"));
+    await manager.addRulePersist(allow("Mcp(catalog:lookup)"), { kind: "user" });
     const callTool = vi.fn(async () => ({ text: "looked up" }));
     const tool = mcpToolToTool("catalog", "mcp_catalog_lookup", {
       name: "lookup", description: "Lookup", inputSchema: { type: "object", properties: {} },
@@ -330,7 +331,7 @@ describe("scoped permission rules", () => {
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "mcp-rule", name: tool.name, input: {} },
     ], { sessionId: "mcp-rule", permissionContext: userPermissionContext() }));
-    expect(result?.is_error, result?.content).toBe(annotation !== "read-only");
+    expect(result?.is_error === true, result?.content).toBe(annotation !== "read-only");
     expect(callTool).toHaveBeenCalledTimes(annotation === "read-only" ? 1 : 0);
     expect(requestAndWait).toHaveBeenCalledTimes(annotation === "read-only" ? 0 : 1);
   });
@@ -346,8 +347,8 @@ describe("scoped permission rules", () => {
         : new Response("arrived", { headers: { "content-type": "text/plain" } });
     }) as unknown as typeof fetch;
     if (action === "generic") manager.setMode("allow");
-    else await manager.addRulePersist(allow("WebFetch(domain:93.184.216.34:443)"));
-    if (action === "deny" || action === "ask" || action === "allow") await manager.addRulePersist({ pattern: "WebFetch(domain:93.184.216.35)", action });
+    else await manager.addRulePersist(allow("WebFetch(domain:93.184.216.34:443)"), { kind: "user" });
+    if (action === "deny" || action === "ask" || action === "allow") await manager.addRulePersist({ pattern: "WebFetch(domain:93.184.216.35)", action }, { kind: "user" });
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
     const requestAndWait = vi.fn();
@@ -358,7 +359,7 @@ describe("scoped permission rules", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
     const permitted = action === "allow" || action === "generic";
     expect(requests).toEqual(permitted ? [origin, redirected] : [origin]);
-    expect(result?.is_error, result?.content).toBe(!permitted);
+    expect(result?.is_error === true, result?.content).toBe(!permitted);
     if (!permitted) expect(result?.content).toContain("new permission decision");
   });
 
@@ -379,11 +380,11 @@ describe("scoped permission rules", () => {
     ], { sessionId: "request-floor", permissionContext: userPermissionContext() }));
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" ? 2 : 1);
-    expect(result?.is_error, result?.content).toBe(redirect === "other-origin");
+    expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin");
   });
 
   it.each(["none", "same-origin", "same-origin-sensitive", "other-origin"] as const)("honors an initial per-call approval and keeps redirect checks: %s", async (redirect) => {
-    await manager.addRulePersist({ pattern: "WebFetch(domain:93.184.216.34)", action: "ask" });
+    await manager.addRulePersist({ pattern: "WebFetch(domain:93.184.216.34)", action: "ask" }, { kind: "user" });
     let requests = 0;
     const nextUrl = redirect === "same-origin-sensitive"
       ? `https://93.184.216.34/next?token=${"sk-" + "a".repeat(50)}`
@@ -403,6 +404,6 @@ describe("scoped permission rules", () => {
     ], { sessionId: "ask-host", permissionContext: userPermissionContext() }));
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" ? 2 : 1);
-    expect(result?.is_error, result?.content).toBe(redirect === "other-origin" || redirect === "same-origin-sensitive");
+    expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin" || redirect === "same-origin-sensitive");
   });
 });
