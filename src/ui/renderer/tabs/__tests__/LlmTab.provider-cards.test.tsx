@@ -1017,13 +1017,6 @@ describe("LlmTab provider cards", () => {
     expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
   });
 
-  it("offers to replace, not set, a key the row already holds", async () => {
-    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", hasKey: true });
-    fireEvent.click(screen.getByTestId("llm-tab:connection:openai:toggle"));
-    expect(await screen.findByTestId("llm-tab:api-key-reveal")).toHaveTextContent(t("llmTab.replaceApiKey"));
-    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
-  });
-
   it("asks for no endpoint where the endpoint is fixed", async () => {
     const { unmount } = await renderTab(makeApi());
     fireEvent.click(screen.getByTestId("llm-tab:connection:openai:toggle"));
@@ -1113,7 +1106,6 @@ describe("LlmTab provider cards leave the chat route alone", () => {
 
     openMenu(screen.getByTestId("llm-tab:add-provider"));
     fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude"));
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), {
       target: { value: "sk-ant-new" },
     });
@@ -1143,7 +1135,6 @@ describe("LlmTab provider cards leave the chat route alone", () => {
 
     openMenu(screen.getByTestId("llm-tab:add-provider"));
     fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude"));
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-ant-new" } });
     await waitFor(() => expect(screen.getByTestId("llm-tab:save-providers")).toBeEnabled());
     fireEvent.click(screen.getByTestId("llm-tab:save-providers"));
@@ -1156,21 +1147,21 @@ describe("LlmTab provider cards leave the chat route alone", () => {
       .toHaveAttribute("aria-expanded", "true");
   });
 
-  it("puts a cancelled key field away along with what was typed into it", async () => {
+  it("puts a cancelled row away along with what was typed into it", async () => {
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     await renderTab(api, { vendor: "openai", model: "" });
 
     openMenu(screen.getByTestId("llm-tab:add-provider"));
     fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude"));
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-ant-new" } });
 
     fireEvent.click(screen.getByTestId("llm-tab:save-providers-cancel"));
 
-    // Cancelling is a decision: the field goes with what was typed into it,
-    // and asking for it again must not bring the abandoned key back.
-    expect(screen.queryByTestId("llm-api-key-input")).toBeNull();
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
+    expect(screen.getByTestId("llm-tab:connection:claude:toggle"))
+      .toHaveAttribute("aria-expanded", "false");
+    // Cancelling is a decision: reopening the row must not bring the abandoned
+    // key back with it.
+    fireEvent.click(screen.getByTestId("llm-tab:connection:claude:toggle"));
     expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
   });
 
@@ -1260,7 +1251,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
       await credentials.promise;
     });
     expect(screen.getByTestId("llm-tab:connection:claude")).toBeInTheDocument();
-    expect(screen.getByTestId("llm-tab:api-key-reveal")).toHaveTextContent(t("llmTab.setApiKey"));
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
     expect(screen.getByTestId("llm-tab:api-key-status"))
       .toHaveTextContent(t("llmTab.apiKeyNotSet"));
   });
@@ -2094,7 +2085,6 @@ describe("LlmTab rows that are not the active one", () => {
 
     openMenu(screen.getByTestId("llm-tab:add-provider"));
     fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude"));
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), {
       target: { value: "sk-ant-new" },
     });
@@ -2654,7 +2644,6 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
       fetchedAt: "2026-03-03T00:00:00.000Z",
     };
     fireEvent.click(screen.getByTestId("llm-tab:connection:openai-compatible:toggle"));
-    fireEvent.click(screen.getByTestId("llm-tab:api-key-reveal"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-fixed" } });
     await waitFor(() => expect(screen.getByTestId("llm-tab:save-providers")).toBeEnabled());
     fireEvent.click(screen.getByTestId("llm-tab:save-providers"));
@@ -3021,7 +3010,6 @@ describe("LlmTab OpenAI model catalogue", () => {
     fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
     expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
-    expect(screen.queryByTestId("llm-tab:api-key-reveal")).toBeNull();
     expect(screen.getByTestId("llm-tab:manual-section")).toHaveTextContent(/삭제|Delete|Remove/);
   });
 
