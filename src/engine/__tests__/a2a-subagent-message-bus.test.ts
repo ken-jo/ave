@@ -238,6 +238,38 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     }));
   });
 
+  it.each([
+    "abcdefab-cdef-4abc-8def-abcdefabcdef",
+    "aaaaaaaa-aaaa-4aaa-8aaa-010123456789",
+    "00000023-0161-4299-a234-abcdefabcdef",
+  ])("releases a discarded persisted entry with structural UUID diagnostics: %s", async (parentSessionId) => {
+    const childSessionId = `sub-abcdefab-${parentSessionId}`;
+    const entry = makeCanonicalMailboxEntry(parentSessionId, "report", parentSessionId);
+    entry.childSessionId = childSessionId;
+    entry.message.taskId = childSessionId;
+    const formatted = formatAgentMessage({
+      parentSessionId,
+      childSessionId,
+      childTitle: entry.childTitle,
+    }, entry.message);
+    entry.formattedText = formatted.text;
+    entry.approvalLabel = "forged approval label";
+    const releaseEphemeralChildAddress = vi.fn();
+    const resolveChildAddress = vi.fn(async () => null);
+    const fixture = createPersistedBusFixture(
+      [entry], resolveChildAddress, releaseEphemeralChildAddress,
+    );
+
+    await expect(fixture.bus.peekParentMailbox(parentSessionId)).resolves.toEqual([]);
+    expect(fixture.namespace.getStored()).toMatchObject({ entries: [] });
+    expect(resolveChildAddress).not.toHaveBeenCalled();
+    expect(releaseEphemeralChildAddress).toHaveBeenCalledExactlyOnceWith(
+      parentSessionId, childSessionId, entry.message.messageId,
+    );
+    await fixture.bus.peekParentMailbox(parentSessionId);
+    expect(releaseEphemeralChildAddress).toHaveBeenCalledTimes(1);
+  });
+
   it("drops and audits a persisted entry whose child belongs to another parent", async () => {
     const fixture = createPersistedBusFixture(
       [makeCanonicalMailboxEntry("message-cross-origin", "cross origin")],
@@ -1434,6 +1466,7 @@ function createPersistedBusFixture(
     parentSessionId: string,
     childSessionId: string,
   ) => Promise<ResolvedSubAgentAddress | null>,
+  releaseEphemeralChildAddress?: (parentSessionId: string, childSessionId: string, messageId: string) => void,
 ) {
   const namespace = createInMemoryNamespace();
   namespace.setStored({ version: 1, entries: persistedEntries });
@@ -1450,6 +1483,7 @@ function createPersistedBusFixture(
     } as never,
     auditLogger: { log: audit } as never,
     resolveChildAddress,
+    releaseEphemeralChildAddress,
   });
   return { audit, bus, mailbox, namespace };
 }

@@ -120,6 +120,13 @@ export interface AppServices {
    */
   sideChatConversationLoop?: ConversationLoop;
   /**
+   * The loops of the pane chats — a terminal or web pane's own chat is its own
+   * conversation, so each runs on its own ConversationLoop over the side-chat
+   * store, concurrently with the rail and with the other panes. Optional on the
+   * same terms as the rail loop above.
+   */
+  paneChatLoops?: PaneChatLoops;
+  /**
    * The side-chat store itself. The conversation list federates it beside the
    * main store, and a listing is a read of the STORE, not of the loop that
    * happens to hold one of its sessions. Optional on the same terms as the loop
@@ -375,4 +382,24 @@ export interface AppServices {
    * transport hands the 3xx back instead of chasing it.
    */
   singleHopNetworkFetch: HostFetchTransport;
+}
+
+/**
+ * The pane chats' loops, one per workspace tab in a window. A loop is made on
+ * a pane's first use and dropped when its pane closes or its window goes, so
+ * the count is bounded by the panes that are open; no cap is needed.
+ */
+export interface PaneChatLoops {
+  /** The loop of the pane chat for `tabId` in `windowId`, made on first use. */
+  resolve(windowId: number, tabId: string): ConversationLoop;
+  /** That loop when it exists; never makes one. */
+  get(windowId: number, tabId: string): ConversationLoop | undefined;
+  /** Stop that pane chat's turn and drop its loop; returns the loop dropped. */
+  release(windowId: number, tabId: string): ConversationLoop | undefined;
+  /** The pane chats of one window, with their tabs. */
+  inWindow(windowId: number): Array<{ tabId: string; loop: ConversationLoop }>;
+  /** The pane chat whose loop holds `sessionId`, if one does. */
+  holding(sessionId: string): { windowId: number; tabId: string; loop: ConversationLoop } | undefined;
+  /** Every pane chat loop (settings refresh, aborts, shutdown, live scopes). */
+  all(): ConversationLoop[];
 }

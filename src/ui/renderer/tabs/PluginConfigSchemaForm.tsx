@@ -11,6 +11,7 @@ import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-
 import type { PluginConfigSchemaPropertySummary, PluginConfigSchemaSummary } from "../types.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
+import { resolvePluginLocalizedText } from "../../../shared/plugin-localized-text.js";
 export type PluginConfigFormValues = Record<string, unknown>;
 
 export interface PluginConfigSchemaFormProps {
@@ -24,8 +25,12 @@ export interface PluginConfigSchemaFormProps {
   onSetSecret: (key: string, value: string) => Promise<void> | void;
 }
 
-function deriveLabel(key: string, prop: PluginConfigSchemaPropertySummary): string {
-  return prop.title?.trim() || key;
+function deriveLabel(key: string, prop: PluginConfigSchemaPropertySummary, locale: string): string {
+  return resolvePluginLocalizedText(prop, prop.locales, locale, ["title"]) ?? key;
+}
+
+function deriveDescription(prop: PluginConfigSchemaPropertySummary, locale: string): string | undefined {
+  return resolvePluginLocalizedText(prop, prop.locales, locale, ["description"]);
 }
 
 function coerceNumber(raw: string, prop: PluginConfigSchemaPropertySummary): number | undefined {
@@ -102,7 +107,7 @@ export function PluginConfigSchemaForm({
   onSave,
   onSetSecret,
 }: PluginConfigSchemaFormProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const properties = schema.properties ?? {};
   const propertyKeys = useMemo(() => Object.keys(properties), [properties]);
   const [draft, setDraft] = useState<PluginConfigFormValues>(() => ({ ...values }));
@@ -245,7 +250,8 @@ export function PluginConfigSchemaForm({
       )}
       {propertyKeys.map((key) => {
         const prop = properties[key];
-        const label = deriveLabel(key, prop);
+        const label = deriveLabel(key, prop, locale);
+        const description = deriveDescription(prop, locale);
         const isSecret = prop.type === "string" && prop.format === "secret";
         const fieldId = `pcfg:${pluginId}:${key}`;
         const value = draft[key];
@@ -257,8 +263,8 @@ export function PluginConfigSchemaForm({
               {required.has(key) && <span className="ml-1 text-destructive">*</span>}
               <span className="ml-2 font-mono text-[10px] text-muted-foreground">{key}</span>
             </Label>
-            {prop.description && (
-              <p className="text-[11px] text-muted-foreground">{prop.description}</p>
+            {description && (
+              <p className="text-[11px] text-muted-foreground">{description}</p>
             )}
             {isSecret ? (
               <>

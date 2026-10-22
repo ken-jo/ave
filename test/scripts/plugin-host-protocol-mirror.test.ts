@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,13 @@ import {
 
 const roots: string[] = [];
 const commit = "a".repeat(40);
+
+/**
+ * The fixture trees below are not git checkouts; these cases are about the
+ * manifest and copies, so they answer "no version is tagged". The tag rules
+ * have their own cases against an injected reader and a real repository.
+ */
+const untagged = { taggedSchema: () => null };
 
 function put(root: string, relative: string, bytes: string): void {
   const path = join(root, relative);
@@ -87,9 +95,9 @@ describe("host protocol web mirror", () => {
     const frozen = ["0.12.0", "0.12.1"].map((version) =>
       readFileSync(join(root, base, `2/v${version}/protocol.schema.json`)));
     put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.2", "revised"));
-    expect(() => checkProtocolMirror(root)).toThrow("differs from the current canonical schema");
-    syncProtocolMirror(root, commit);
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("differs from the current canonical schema");
+    syncProtocolMirror(root, commit, untagged);
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 1 candidate");
     ["0.12.0", "0.12.1"].forEach((version, index) =>
       expect(readFileSync(join(root, base, `2/v${version}/protocol.schema.json`)))
         .toEqual(frozen[index]));
@@ -98,7 +106,7 @@ describe("host protocol web mirror", () => {
   it.each(["0.12.0", "0.12.1"])("rejects a changed frozen %s copy", (version) => {
     const { root, base } = fixture();
     put(root, `${base}/2/v${version}/protocol.schema.json`, schema(version, "edited"));
-    expect(() => checkProtocolMirror(root)).toThrow("differs from recorded sha256");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("differs from recorded sha256");
   });
 
   it.each(["0.12.1", "0.12.2"])("rejects an alias to unpublished %s", (version) => {
@@ -107,7 +115,7 @@ describe("host protocol web mirror", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     manifest.aliases["2"] = `v${version}`;
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    expect(() => checkProtocolMirror(root)).toThrow("does not name a published copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("does not name a published copy");
   });
 
   it("promotes an alias only with the copy marked published", () => {
@@ -116,17 +124,17 @@ describe("host protocol web mirror", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     manifest.copies[2].publishedTag = "v0.12.2";
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    expect(() => checkProtocolMirror(root)).toThrow("alias must name the latest published copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("alias must name the latest published copy");
     manifest.aliases["2"] = "v0.12.2";
     writeFileSync(manifestPath, JSON.stringify(manifest));
     put(root, `${base}/2/protocol.schema.json`, schema("0.12.2", "candidate"));
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 0 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 0 candidate");
   });
 
   it("rejects a copy absent from the manifest", () => {
     const { root, base } = fixture();
     put(root, `${base}/2/v0.12.3/protocol.schema.json`, schema("0.12.3", "unknown"));
-    expect(() => checkProtocolMirror(root)).toThrow("unrecorded copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("unrecorded copy");
   });
 
   it("rejects a contribution added to a retired canonical protocol", () => {
@@ -144,23 +152,162 @@ describe("host protocol web mirror", () => {
       generatedFrom: commit, publishedTag: "v0.11.0" });
     manifest.aliases["1"] = "v0.11.0";
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    expect(checkProtocolMirror(root)).toContain("4 copies, 2 aliases, 1 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("4 copies, 2 aliases, 1 candidate");
     put(root, "schemas/plugin-host-protocol/1/protocol.schema.json", `${JSON.stringify({
       $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
       prompts: [],
     })}\n`);
-    expect(() => checkProtocolMirror(root)).toThrow(
+    expect(() => checkProtocolMirror(root, untagged)).toThrow(
       "frozen protocol 1/v0.11.0 canonical schema differs from published sha256",
     );
   });
 
   it("rejects a schema of a protocol the manifest does not record, published or not", () => {
     const { root, base } = fixture();
-    expect(checkProtocolMirror(root)).toContain("3 copies");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies");
     put(root, `${base}/1/v0.11.0/protocol.schema.json`, `${JSON.stringify({
       $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
     })}\n`);
-    expect(() => checkProtocolMirror(root)).toThrow("unrecorded copy 1/v0.11.0/protocol.schema.json");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("unrecorded copy 1/v0.11.0/protocol.schema.json");
+  });
+});
+
+describe("host protocol mirror: a tagged version's copy is frozen", () => {
+  // The case that slipped through: v0.14.0 was tagged, its copy stayed an
+  // unpublished candidate because package.json was still 0.14.0, and a later
+  // protocol change regenerated it — the check accepted bytes the tag's app
+  // rejects, under that app's schema URL.
+  const atTag = (tagged: Record<string, string>) =>
+    ({ taggedSchema: (_root: string, appVersion: string) =>
+      appVersion in tagged ? Buffer.from(tagged[appVersion]) : null });
+
+  it("refuses a candidate regenerated after its version was tagged", () => {
+    const { root } = fixture();
+    const shipped = schema("0.12.2", "candidate");
+    expect(checkProtocolMirror(root, atTag({ "0.12.2": shipped }))).toContain("1 candidate");
+
+    put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.2", "revised"));
+    expect(() => syncProtocolMirror(root, commit, atTag({ "0.12.2": shipped })))
+      .toThrow("differs from the schema tag v0.12.2 carries");
+    // Regenerated without the guard (an older script), the check still refuses it.
+    syncProtocolMirror(root, commit, atTag({}));
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.2": shipped })))
+      .toThrow("2/v0.12.2/protocol.schema.json differs from the schema tag v0.12.2 carries");
+  });
+
+  it("refuses an unpublished orphan copy that differs from its tag", () => {
+    const { root } = fixture();
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.1": schema("0.12.1", "what shipped") })))
+      .toThrow("2/v0.12.1/protocol.schema.json differs from the schema tag v0.12.1 carries");
+  });
+
+  it("refuses a copy whose tag does not carry the protocol at all", () => {
+    const { root } = fixture();
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.0": "" })))
+      .toThrow("differs from the schema tag v0.12.0 carries");
+  });
+
+  it("accepts every copy that matches its tag, and untagged versions", () => {
+    const { root } = fixture();
+    expect(checkProtocolMirror(root, atTag({
+      "0.12.0": schema("0.12.0", "published"),
+      "0.12.1": schema("0.12.1", "orphan"),
+    }))).toContain("3 copies, 1 aliases, 1 candidate");
+  });
+
+  it("reads the tags of this repository by default", () => {
+    // This checkout's own mirror passes against its real tags.
+    const repoRoot = resolve(import.meta.dirname, "../..");
+    expect(checkProtocolMirror(repoRoot)).toMatch(/copies/);
+  });
+});
+
+describe("host protocol mirror: tags read from a real git checkout", () => {
+  // Scrubbed of GIT_* so a hook's GIT_DIR cannot point these commands at the
+  // repository under test.
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", [
+    "-c", "user.name=Mirror Test", "-c", "user.email=mirror@example.invalid",
+    "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main",
+    ...args,
+  ], { cwd, env: gitEnv, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
+
+  /** The default fixture, committed, with `v0.12.2` (the candidate's version) tagged. */
+  function taggedRepo(tag: string | null = "v0.12.2") {
+    const { root, base } = fixture();
+    git(root, "init", "-q");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "release");
+    if (tag) git(root, "tag", tag);
+    return { root, base };
+  }
+
+  it("accepts the copy the tag carries, and refuses it once tampered", () => {
+    const { root, base } = taggedRepo();
+    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+
+    // Rewrite the tagged version's copy and its recorded sha256 consistently,
+    // the way a regenerating sync would: only the tag can tell.
+    const tampered = schema("0.12.2", "tampered");
+    put(root, `${base}/2/v0.12.2/protocol.schema.json`, tampered);
+    put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", tampered);
+    const manifest = readManifest(root);
+    manifest.copies[2].sha256 = createHash("sha256").update(tampered).digest("hex");
+    put(root, `${mirrorBase}/mirror.json`, JSON.stringify(manifest));
+    expect(() => checkProtocolMirror(root))
+      .toThrow("2/v0.12.2/protocol.schema.json differs from the schema tag v0.12.2 carries");
+    expect(() => syncProtocolMirror(root, commit))
+      .toThrow("differs from the schema tag v0.12.2 carries");
+  });
+
+  it("passes a version that is not tagged yet, as the release script's pre-tag sync needs", () => {
+    // v0.12.2 is tagged; the release script bumps to 0.12.3, regenerates, and
+    // syncs before 0.12.3 has a tag.
+    const { root } = taggedRepo();
+    put(root, "package.json", JSON.stringify({ version: "0.12.3" }));
+    put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.3", "next"));
+    syncProtocolMirror(root, commit);
+    expect(checkProtocolMirror(root)).toContain("4 copies, 1 aliases, 1 candidate");
+  });
+
+  it("refuses a checkout with no release tags", () => {
+    const { root } = taggedRepo(null);
+    expect(() => checkProtocolMirror(root)).toThrow("has no v* release tags");
+  });
+
+  it("refuses a shallow checkout", () => {
+    const { root } = taggedRepo();
+    const shallow = mkdtempSync(join(tmpdir(), "protocol-mirror-shallow-"));
+    roots.push(shallow);
+    git(shallow, "clone", "-q", "--depth", "1", `file://${root}`, ".");
+    expect(() => checkProtocolMirror(shallow)).toThrow("this checkout is shallow");
+  });
+
+  it("refuses a tree that is not a git checkout, even inside another repository", () => {
+    const { root } = fixture();
+    expect(() => checkProtocolMirror(root)).toThrow("is not a git checkout");
+
+    // The same tree as a plain subdirectory of a tagged repository: git would
+    // answer with the parent's tags, so it must still be refused.
+    const { root: parent } = taggedRepo();
+    const nested = join(parent, "vendor", "ave");
+    mkdirSync(nested, { recursive: true });
+    for (const relative of ["package.json", "schemas/plugin-host-protocol/2/protocol.schema.json"]) {
+      put(nested, relative, readFileSync(join(root, relative), "utf8"));
+    }
+    for (const version of ["0.12.0", "0.12.1", "0.12.2"]) {
+      const relative = `${mirrorBase}/2/v${version}/protocol.schema.json`;
+      put(nested, relative, readFileSync(join(root, relative), "utf8"));
+    }
+    put(nested, `${mirrorBase}/2/protocol.schema.json`, readMirror(root, "2/protocol.schema.json").toString("utf8"));
+    put(nested, `${mirrorBase}/mirror.json`, readMirror(root, "mirror.json").toString("utf8"));
+    expect(checkProtocolMirror(nested, untagged)).toContain("3 copies");
+    expect(() => checkProtocolMirror(nested)).toThrow(`${nested} is not a git checkout`);
+  });
+
+  it("names the local remedy in the refusal", () => {
+    const { root } = taggedRepo(null);
+    expect(() => checkProtocolMirror(root)).toThrow("git fetch --unshallow --tags");
   });
 });
 
@@ -178,9 +325,9 @@ describe("host protocol mirror alias", () => {
 
   it("names the newest published copy while a candidate is open", () => {
     const { root } = fixture(twoPublished, "0.14.0", "0.12.0");
-    expect(() => checkProtocolMirror(root)).toThrow("2 alias must name the latest published copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("2 alias must name the latest published copy");
     pointAlias(root, "0.13.0");
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 1 candidate");
   });
 
   it.each([
@@ -192,23 +339,23 @@ describe("host protocol mirror alias", () => {
       ["0.13.0", "orphan", null],
       ["0.14.0", "candidate", null],
     ], "0.14.0", "0.12.0");
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 1 candidate");
     pointAlias(root, target);
-    expect(() => checkProtocolMirror(root)).toThrow("2 alias does not name a published copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("2 alias does not name a published copy");
   });
 
   it("keeps the newer alias when an older copy is promoted second", () => {
     const { root } = fixture(unpublished, "0.14.0", null);
     const thirteen = readMirror(root, "2/v0.13.0/protocol.schema.json");
-    expect(publishProtocolMirror(root, "2/0.13.0")).toBe("2 alias names v0.13.0");
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
-    expect(publishProtocolMirror(root, "2/0.12.0")).toBe("2 alias names v0.13.0");
+    expect(publishProtocolMirror(root, "2/0.13.0", untagged)).toBe("2 alias names v0.13.0");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(publishProtocolMirror(root, "2/0.12.0", untagged)).toBe("2 alias names v0.13.0");
     const manifest = readManifest(root);
     expect(manifest.aliases).toEqual({ "2": "v0.13.0" });
     expect(manifest.copies.map((entry: { publishedTag: string | null }) => entry.publishedTag))
       .toEqual(["v0.12.0", "v0.13.0", null]);
     expect(readMirror(root, "2/protocol.schema.json")).toEqual(thirteen);
-    expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("3 copies, 1 aliases, 1 candidate");
   });
 
   it("moves the alias when a newer copy is promoted second", () => {
@@ -216,15 +363,15 @@ describe("host protocol mirror alias", () => {
       ["0.12.0", "twelve", null],
       ["0.13.0", "candidate", null],
     ], "0.13.0", null);
-    expect(publishProtocolMirror(root, "2/0.12.0")).toBe("2 alias names v0.12.0");
-    expect(checkProtocolMirror(root)).toContain("2 copies, 1 aliases, 1 candidate");
-    expect(publishProtocolMirror(root, "2/0.13.0")).toBe("2 alias names v0.13.0");
+    expect(publishProtocolMirror(root, "2/0.12.0", untagged)).toBe("2 alias names v0.12.0");
+    expect(checkProtocolMirror(root, untagged)).toContain("2 copies, 1 aliases, 1 candidate");
+    expect(publishProtocolMirror(root, "2/0.13.0", untagged)).toBe("2 alias names v0.13.0");
     expect(readManifest(root).aliases).toEqual({ "2": "v0.13.0" });
     expect(readMirror(root, "2/protocol.schema.json"))
       .toEqual(readMirror(root, "2/v0.13.0/protocol.schema.json"));
-    expect(checkProtocolMirror(root)).toContain("2 copies, 1 aliases, 0 candidate");
+    expect(checkProtocolMirror(root, untagged)).toContain("2 copies, 1 aliases, 0 candidate");
     pointAlias(root, "0.12.0");
-    expect(() => checkProtocolMirror(root)).toThrow("2 alias must name the latest published copy");
+    expect(() => checkProtocolMirror(root, untagged)).toThrow("2 alias must name the latest published copy");
   });
 
   it.each([
@@ -240,14 +387,14 @@ describe("host protocol mirror alias", () => {
       ["0.14.0", "candidate", null],
     ], "0.14.0", "0.12.0");
     const manifest = readMirror(root, "mirror.json");
-    expect(() => publishProtocolMirror(root, target)).toThrow(message);
+    expect(() => publishProtocolMirror(root, target, untagged)).toThrow(message);
     expect(readMirror(root, "mirror.json")).toEqual(manifest);
   });
 
   it("refuses to publish from a mirror that fails its check", () => {
     const { root, base } = fixture(unpublished, "0.14.0", null);
     put(root, `${base}/2/v0.13.0/protocol.schema.json`, schema("0.13.0", "edited"));
-    expect(() => publishProtocolMirror(root, "2/0.13.0")).toThrow("differs from recorded sha256");
+    expect(() => publishProtocolMirror(root, "2/0.13.0", untagged)).toThrow("differs from recorded sha256");
     expect(readManifest(root).copies[1].publishedTag).toBeNull();
   });
 });

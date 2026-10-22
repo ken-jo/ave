@@ -50,6 +50,8 @@ import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
 import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
+import { isHostExitAbort } from "./turn-journal.js";
+import { HOST_EXIT_INTERRUPTION } from "../../memory/session-turn-journal.js";
 import { GUIDE_JOINED_MAX_CHARS, mergeGuidanceApprovalReasonPrefixes } from "./guidance-limits.js";
 import { parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { t } from "../../i18n/index.js";
@@ -1066,6 +1068,26 @@ export async function queryLoop(
         warnUnstatedReasoningOnce({ identity: runtimeContextBudget.identity, vendor: llmSettings.provider, model }, reasoning);
         requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
       }
+      // Crash durability: the text this round has streamed so far is
+      // snapshotted (throttled) under the id its committed row will carry, so
+      // a process that dies mid-answer keeps all but the last interval of it.
+      // Carry text is captured now — it is what the committed or interrupted
+      // row will be prefixed with for this stream.
+      const roundJournal = self.activeTurnJournal;
+      // Barrier: every row the previous rounds appended is on disk before the
+      // next provider request goes out. Costs one lock + append + fdatasync
+      // per round (see the bench in session-turn-journal tests) against a
+      // network round trip, and makes "completed rounds survive" exact rather
+      // than "survive unless the death lands in the next few milliseconds".
+      if (roundJournal) await roundJournal.settled();
+      const carryTextAtStreamStart = continuationCarryText;
+      const carryThoughtAtStreamStart = continuationCarryThought;
+      let streamedText = "";
+      let streamedThought = "";
+      const renderPartial = () => ({
+        content: stripSuggestedReplies(carryTextAtStreamStart + streamedText),
+        thought: carryThoughtAtStreamStart + streamedThought,
+      });
       const stream = await collectActiveRuntimeRoundStream(
         {
           provider: turnProvider,
@@ -1077,8 +1099,20 @@ export async function queryLoop(
           abortSignal,
           continuationPrefill: continuationPrefillText !== undefined,
           promptCacheKey: effectiveSessionId,
-          onReasoningDelta: callbacks?.onReasoningDelta,
-          onTextDelta: callbacks?.onTextDelta,
+          onReasoningDelta: roundJournal
+            ? (text: string) => {
+                streamedThought += text;
+                roundJournal.notePartial(renderPartial);
+                callbacks?.onReasoningDelta?.(text);
+              }
+            : callbacks?.onReasoningDelta,
+          onTextDelta: roundJournal
+            ? (text: string) => {
+                streamedText += text;
+                roundJournal.notePartial(renderPartial);
+                callbacks?.onTextDelta?.(text);
+              }
+            : callbacks?.onTextDelta,
           onRequestStarted: () => { turnModelSettings = requestModelSettings; },
           ...(apiRound === undefined ? {} : {
             onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
@@ -1310,7 +1344,17 @@ export async function queryLoop(
         // state into the transcript the model replays. Continuation carry is
         // prepended so an aborted chain persists the full partial answer.
         const savedText = stripSuggestedReplies(continuationCarryText + (stream.text ?? ""));
-        self.history.append({ role: "assistant", content: savedText, meta: { interrupted: true } });
+        self.history.append({
+          role: "assistant",
+          content: savedText,
+          meta: {
+            interrupted: true,
+            ...(isHostExitAbort(abortSignal?.reason) ? { interruptedBy: HOST_EXIT_INTERRUPTION } : {}),
+            // The id the round's partial snapshot was filed under, so recovery
+            // never shows the snapshot beside this row.
+            ...(roundJournal ? { messageId: roundJournal.currentRoundRowId() } : {}),
+          },
+        });
         return withServingIdentity({ text: savedText, toolCalls: allToolCalls, usage: turnUsage, stopReason: "interrupted" });
       }
 
@@ -1462,6 +1506,9 @@ export async function queryLoop(
       // empty carries ⇒ original single-round content.
       const committedAssistantRow = self.history.append({
         role: "assistant",
+        // Same id as the round's partial snapshot: once this row is on disk
+        // the snapshot is superseded, never shown alongside it.
+        ...(roundJournal ? { meta: { messageId: roundJournal.currentRoundRowId() } } : {}),
         content: wasCapped ? `${mergedText}\n\n[capped at ${MAX_TOOL_CALLS_PER_ROUND} of ${pendingToolCalls.length} tool_use blocks]` : mergedText,
         ...(mergedThought && { thought: mergedThought }),
         ...(preserveThinkingBlocks && roundThinkingBlocks.length > 0 && { thinkingBlocks: roundThinkingBlocks }),
@@ -1474,6 +1521,10 @@ export async function queryLoop(
       // Continuation chain (if any) terminates HERE — merged message committed.
       continuationCarryText = "";
       continuationCarryThought = "";
+      // Barrier: the tool calls are on disk before any of them starts, so a
+      // process that dies while a tool runs leaves the call itself behind —
+      // reopened as "interrupted, result unknown", never silently dropped.
+      if (roundJournal && persistedToolCalls.length > 0) await roundJournal.settled();
 
       // §4.5.2 step 8 — REASONING_ACCUMULATE
       if (thoughtContent.length > 0) {
@@ -1897,7 +1948,45 @@ export async function queryLoop(
         round: roundIndex,
         toolNames: toolUsesForExecutor.map((tu) => tu.name),
       });
+      const appendedToolResultIds = new Set<string>();
+      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
+      const appendToolResult = (tr: ToolResult): void => {
+        if (appendedToolResultIds.has(tr.tool_use_id)) return;
+        const resultMeta = toolResultMeta(
+          tr,
+          toolMetaByUseId.get(tr.tool_use_id),
+          permissionReviewByUseId.get(tr.tool_use_id),
+        );
+        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
+        const directoryInstructions = directoryInstructionsForToolResult({
+          projectRoot: self.getSessionProjectContext().projectRoot,
+          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
+          toolInput: toolUse?.input,
+          isError: tr.is_error === true,
+          toolResultContent: tr.content,
+          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
+          attached: attachedDirectoryInstructions,
+          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
+        });
+        const meta = directoryInstructions
+          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
+          : resultMeta;
+        self.history.appendToolResult({
+          role: "tool_result",
+          toolUseId: tr.tool_use_id,
+          toolName: toolUse?.name,
+          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
+          ...(tr.is_error && { isError: true }),
+          ...("image" in tr && tr.image ? { image: tr.image } : {}),
+          ...(meta ? { meta } : {}),
+        });
+        appendedToolResultIds.add(tr.tool_use_id);
+      };
       const executeOptions = {
+          onToolResult: async (result) => {
+            appendToolResult(result);
+            await self.activeTurnJournal?.settled();
+          },
           callbacks: {
             onToolStart: (name, input, meta) => {
               toolMetaByUseId.set(meta.toolUseId, meta);
@@ -2206,40 +2295,8 @@ export async function queryLoop(
 
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
-      // tool_result 히스토리 append → loop back
-      // Derived from history, so a file whose carrying row compaction dropped
-      // or stubbed is no longer attached and rides the next touch again.
-      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
-      for (const tr of toolResults) {
-        const resultMeta = toolResultMeta(
-          tr,
-          toolMetaByUseId.get(tr.tool_use_id),
-          permissionReviewByUseId.get(tr.tool_use_id),
-        );
-        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
-        const directoryInstructions = directoryInstructionsForToolResult({
-          projectRoot: self.getSessionProjectContext().projectRoot,
-          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
-          toolInput: toolUse?.input,
-          isError: tr.is_error === true,
-          toolResultContent: tr.content,
-          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
-          attached: attachedDirectoryInstructions,
-          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
-        });
-        const meta = directoryInstructions
-          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
-          : resultMeta;
-        self.history.append({
-          role: "tool_result",
-          toolUseId: tr.tool_use_id,
-          toolName: toolUse?.name,
-          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
-          ...(tr.is_error && { isError: true }),
-          ...("image" in tr && tr.image ? { image: tr.image } : {}),
-          ...(meta ? { meta } : {}),
-        });
-      }
+      // Synthetic terminal results have no invocation callback; completed calls are already stored.
+      for (const result of toolResults) appendToolResult(result);
       if (abortSignal?.aborted) {
         log.info(
           `queryLoop: EARLY-EXIT(tool-abort) — round=${roundIndex} toolResults=${toolResults.length}`,
@@ -2247,7 +2304,14 @@ export async function queryLoop(
         // No streamed text exists on the tool-abort path: empty prose plus the
         // interrupted marker; the renderer badge carries the whole meaning.
         const savedText = "";
-        self.history.append({ role: "assistant", content: savedText, meta: { interrupted: true } });
+        self.history.append({
+          role: "assistant",
+          content: savedText,
+          meta: {
+            interrupted: true,
+            ...(isHostExitAbort(abortSignal?.reason) ? { interruptedBy: HOST_EXIT_INTERRUPTION } : {}),
+          },
+        });
         return withServingIdentity({
           text: savedText,
           toolCalls: allToolCalls,

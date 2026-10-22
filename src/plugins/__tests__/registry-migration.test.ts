@@ -37,8 +37,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
         version: 1,
         plugins: [
           {
-            id: "agent-hub",
-            manifestPath: "agent-hub/plugin.json",
+            id: "samplehub",
+            manifestPath: "samplehub/plugin.json",
             enabled: true,
             installedBy: "user",
             _devLinked: true,
@@ -50,8 +50,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
 
     const registry = await readPluginRegistry(registryPath);
     expect(registry.plugins[0]).toEqual({
-      id: "agent-hub",
-      manifestPath: "agent-hub/plugin.json",
+      id: "samplehub",
+      manifestPath: "samplehub/plugin.json",
       enabled: true,
       installSource: "local-dev",
     });
@@ -154,8 +154,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
         version: 1,
         plugins: [
           {
-            id: "agent-hub",
-            manifestPath: "agent-hub/plugin.json",
+            id: "samplehub",
+            manifestPath: "samplehub/plugin.json",
             enabled: true,
             installSource: "dev-link",
           },
@@ -278,16 +278,16 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
     expect(after).toEqual(before);
   });
 
-  it("does not rewrite pageindex registry entries to local-indexer", async () => {
-    const approvedPluginAccess = { plugins: [{ pluginId: "agent-hub", events: ["agent.ready"] }] };
+  it("does not rewrite a registry entry under a former plugin id to local-indexer", async () => {
+    const approvedPluginAccess = { plugins: [{ pluginId: "samplehub", events: ["agent.ready"] }] };
     await writeFile(
       registryPath,
       JSON.stringify({
         version: 1,
         plugins: [
           {
-            id: "pageindex",
-            manifestPath: "/opt/ave/custom-pageindex/plugin.json",
+            id: "sampleindexer",
+            manifestPath: "/opt/ave/custom-sampleindexer/plugin.json",
             enabled: false,
             installSource: "local-dev",
             bundleRefs: ["custom-bundle"],
@@ -303,8 +303,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
     const after = await readFile(registryPath, "utf-8");
     expect(registry.plugins).toEqual([
       {
-        id: "pageindex",
-        manifestPath: "/opt/ave/custom-pageindex/plugin.json",
+        id: "sampleindexer",
+        manifestPath: "/opt/ave/custom-sampleindexer/plugin.json",
         enabled: false,
         installSource: "local-dev",
         bundleRefs: ["custom-bundle"],

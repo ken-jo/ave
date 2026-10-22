@@ -189,3 +189,32 @@ export function resolveHeadUpdates(parsed, headBranch) {
         : update),
   };
 }
+
+/**
+ * Parse `git diff --no-renames --raw -z` output into one entry per path:
+ * { oldMode, newMode, status, path }. A copy or rename record yields both of
+ * its paths. Returns null for output that does not have that shape, so a
+ * caller never classifies a change set it only partly read.
+ *
+ * Shared by the pre-push hook and scripts/run-ci-suite.mjs, which classify
+ * the same diffs with the same source policy.
+ */
+export function parseGitRawDiff(decoded) {
+  if (typeof decoded !== "string") return null;
+  const fields = decoded.split("\0");
+  if (fields.at(-1) !== "") return null;
+  fields.pop();
+
+  const entries = [];
+  for (let index = 0; index < fields.length; ) {
+    const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[index++]);
+    if (!raw) return null;
+    const [, oldMode, newMode, status] = raw;
+    const pathCount = /^[RC]/.test(status) ? 2 : 1;
+    if (index + pathCount > fields.length) return null;
+    for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
+      entries.push({ oldMode, newMode, status, path: fields[index++] });
+    }
+  }
+  return entries;
+}

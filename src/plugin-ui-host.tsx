@@ -36,6 +36,8 @@ export type PluginUiExtensionView = {
     displayName?: string;
     title: string;
     description?: string;
+    /** Per-language text overrides; resolved by `shared/plugin-view-label.ts`. */
+    locales?: Record<string, { displayName?: string; title?: string; description?: string }>;
     defaults?: Record<string, unknown>;
     entry?: string;
     exportName?: string;

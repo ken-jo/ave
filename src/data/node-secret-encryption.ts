@@ -6,8 +6,9 @@ import {
   timingSafeEqual,
   type KeyObject,
 } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { isAbsolute } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { SecretEncryptionUnavailableError, type SecretEncryption } from "./secret-document-store.js";
 
 const KEY_BYTES = 32;
@@ -23,27 +24,27 @@ export class SecretKeyFileError extends Error {
   }
 }
 
-function assertPrivateKeyFile(stats: Stats): void {
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+function assertPrivateKeyFile(stats: BigIntStats): void {
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1n) {
     throw new SecretKeyFileError("Secret key must be a regular file with no symbolic or hard links");
   }
-  if (stats.uid !== process.geteuid!()) {
+  if (stats.uid !== BigInt(process.geteuid!())) {
     throw new SecretKeyFileError("Secret key file must be owned by the current user");
   }
-  const mode = stats.mode & 0o7777;
-  if (mode !== 0o400 && mode !== 0o600) {
+  const mode = stats.mode & 0o7777n;
+  if (mode !== 0o400n && mode !== 0o600n) {
     throw new SecretKeyFileError("Secret key file must have mode 0400 or 0600");
   }
-  if (stats.size !== KEY_BYTES) {
+  if (stats.size !== BigInt(KEY_BYTES)) {
     throw new SecretKeyFileError("Secret key file must contain exactly 32 raw bytes");
   }
 }
 
-function sameKeyFile(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino
+function sameKeyFile(left: BigIntStats, right: BigIntStats): boolean {
+  return sameFileIdentity(left, right)
     && left.size === right.size && left.uid === right.uid
     && left.mode === right.mode && left.nlink === right.nlink
-    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+    && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
 function readKeyWindow(fd: number, bytes: Buffer): void {
@@ -71,12 +72,12 @@ function readPrivateKey(keyFilePath: string): KeyObject {
     // before open. NOFOLLOW rejects links and NONBLOCK prevents a FIFO from
     // hanging startup before fstat can reject its type.
     fd = openSync(keyFilePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     assertPrivateKeyFile(opened);
     readKeyWindow(fd, bytes);
     readKeyWindow(fd, verification);
-    const afterHandle = fstatSync(fd);
-    const afterPath = lstatSync(keyFilePath);
+    const afterHandle = fstatSync(fd, { bigint: true });
+    const afterPath = lstatSync(keyFilePath, { bigint: true });
     assertPrivateKeyFile(afterHandle);
     assertPrivateKeyFile(afterPath);
     if (!sameKeyFile(opened, afterHandle) || !sameKeyFile(opened, afterPath)

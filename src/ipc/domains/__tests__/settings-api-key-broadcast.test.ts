@@ -40,15 +40,19 @@ function makeWindow() {
   };
 }
 
+/** Main's projection for these fakes: an API route with no stored credential. */
+const NO_CONNECTED_PROVIDER = { kind: "none", reason: "no-connected-provider" } as const;
+
 function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: string) {
   const llm = {
     provider: "openai",
+    activeChatRuntime: { kind: "api" },
     vendors: { "azure-foundry": { baseUrl: vendorBaseUrl ?? null } },
   };
   const marketplace = { installedProviderIds: [] as string[] };
   return {
     settingsService: {
-      getAll: vi.fn(() => ({ llm: { provider: "openai" } })),
+      getAll: vi.fn(() => ({ llm: { provider: "openai", activeChatRuntime: { kind: "api" } } })),
       get: vi.fn((key?: string) => {
         if (key === "marketplace") return marketplace;
         if (key === "shortcuts") return {};
@@ -58,6 +62,7 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
       patch: vi.fn(async (p: unknown) => p),
       replaceLlm: vi.fn(async (llm: unknown) => llm),
       getSecret: vi.fn(() => null),
+      hasStoredSecret: vi.fn(() => false),
       setSecret: vi.fn(async () => undefined),
       deleteSecret: vi.fn(async () => undefined),
     },
@@ -86,7 +91,7 @@ describe("set-api-key broadcast (M3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after storing the key", async () => {
     const windows = [makeWindow(), makeWindow()];
     const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
+    const snapshot = { llm: { provider: "openai", activeChatRuntime: { kind: "api" } } };
     deps.settingsService.getAll.mockReturnValue(snapshot);
 
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -98,7 +103,7 @@ describe("set-api-key broadcast (M3)", () => {
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalled();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalled();
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 
@@ -138,6 +143,7 @@ describe("set-api-key broadcast (M3)", () => {
       if (key === "system") return {};
       return {
         provider: "openai",
+        activeChatRuntime: { kind: "api" },
         vendors: { "azure-foundry": { baseUrl: null } },
       };
     });
@@ -180,7 +186,7 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after deleting the key", async () => {
     const windows = [makeWindow(), makeWindow()];
     const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
+    const snapshot = { llm: { provider: "openai", activeChatRuntime: { kind: "api" } } };
     deps.settingsService.getAll.mockReturnValue(snapshot);
 
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -192,7 +198,7 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalled();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalled();
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 
@@ -215,6 +221,7 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
       if (key === "system") return {};
       return {
         provider: "openai",
+        activeChatRuntime: { kind: "api" },
         vendors: { "azure-foundry": { baseUrl: null } },
       };
     });
@@ -255,7 +262,7 @@ describe("set-web-api-key broadcast (MAJOR-3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after storing the web key", async () => {
     const windows = [makeWindow(), makeWindow()];
     const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
+    const snapshot = { llm: { provider: "openai", activeChatRuntime: { kind: "api" } } };
     deps.settingsService.getAll.mockReturnValue(snapshot);
 
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -265,7 +272,7 @@ describe("set-web-api-key broadcast (MAJOR-3)", () => {
 
     expect(deps.settingsService.setSecret).toHaveBeenCalledWith("web.apiKey.bing", "bing-key-123");
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 });
@@ -274,7 +281,7 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after deleting the web key", async () => {
     const windows = [makeWindow(), makeWindow()];
     const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
+    const snapshot = { llm: { provider: "openai", activeChatRuntime: { kind: "api" } } };
     deps.settingsService.getAll.mockReturnValue(snapshot);
 
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -284,7 +291,7 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
 
     expect(deps.settingsService.deleteSecret).toHaveBeenCalledWith("web.apiKey.bing");
     for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
   });
 });
@@ -325,7 +332,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   it("lets the settings chooser see saved credential presence without reading its value while retirement is unresolved", async () => {
     const deps = makeDeps([]);
     deps.settingsService.get.mockImplementation((key?: string) => key === "llm"
-      ? { provider: "openai", retiredProvider: "copilot", vendors: {} } as never
+      ? { provider: "openai", activeChatRuntime: { kind: "api" }, retiredProvider: "copilot", vendors: {} } as never
       : {} as never);
     const hasStoredSecret = vi.fn(() => true);
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -337,7 +344,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   it("rewires the reviewer when the retirement marker clears without changing provider or model", async () => {
     const rewire = vi.fn();
     const baseDeps = makeDeps([]);
-    const nextLlm = { provider: "openai", vendors: { openai: { model: "gpt-4o" } } };
+    const nextLlm = { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { openai: { model: "gpt-4o" } } };
     const previousLlm = { ...nextLlm, retiredProvider: "copilot" };
     let saved = false;
     const deps = {
@@ -360,6 +367,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const rewire = vi.fn();
     const prevLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -368,6 +376,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const nextLlm = {
       provider: "claude",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -405,6 +414,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const rewire = vi.fn();
     const prevLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         "azure-foundry": { baseUrl: null },
@@ -412,6 +422,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const nextLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-5.4" },
         "azure-foundry": { baseUrl: null },
@@ -452,6 +463,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const prevLlm = {
       provider: "openai-compatible",
+      activeChatRuntime: { kind: "api" },
       marketplaceProviderPresetId: "router-a",
       vendors: {
         "openai-compatible": providerBlock,
@@ -460,6 +472,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const nextLlm = {
       provider: "openai-compatible",
+      activeChatRuntime: { kind: "api" },
       marketplaceProviderPresetId: "router-b",
       vendors: {
         "openai-compatible": providerBlock,
@@ -539,6 +552,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       if (key === "system") return {};
       return {
         provider: "openai-compatible",
+        activeChatRuntime: { kind: "api" },
         marketplaceProviderPresetId: "manual-router",
         vendors: {
           "openai-compatible": {
@@ -592,6 +606,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       if (key === "system") return {};
       return {
         provider: "openai-compatible",
+        activeChatRuntime: { kind: "api" },
         marketplaceProviderPresetId: "manual-router",
         vendors: {
           "openai-compatible": {
@@ -631,6 +646,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const refreshWildcard = vi.fn();
     const prevLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -639,6 +655,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const nextLlm = {
       provider: "claude",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -686,6 +703,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   it("does not restore a stale LLM predecessor over a newer concurrent update", async () => {
     const previousLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -694,6 +712,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const appliedLlm = {
       provider: "claude",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         claude: { model: "claude-sonnet-4-6" },
@@ -768,6 +787,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       .mockImplementationOnce(() => undefined);
     const prevLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: { model: "gpt-4o" },
         "azure-foundry": { baseUrl: null },
@@ -775,6 +795,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     };
     const nextLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: {
         openai: {
           model: "gpt-4o",
@@ -838,6 +859,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
           if (key === "llm") {
             return {
               provider: "openai",
+              activeChatRuntime: { kind: "api" },
               vendors: {
                 "azure-foundry": {
                   baseUrl: patched ? "https://proj.services.ai.azure.com" : null,
@@ -877,7 +899,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       ...baseDeps,
       settingsService: {
         ...baseDeps.settingsService,
-        get: vi.fn(() => ({ provider: "openai", vendors: { "azure-foundry": { baseUrl: sameUrl } } })),
+        get: vi.fn(() => ({ provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: sameUrl } } })),
         patch: vi.fn(async (p: unknown) => p),
       },
       rewireReviewerAgent: rewire,
@@ -923,7 +945,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
 describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers call it", () => {
   it("set-api-key broadcasts snapshot via helper (not stale inline copy)", async () => {
     const win = makeWindow();
-    const snapshot = { llm: { provider: "anthropic", version: 2 } };
+    const snapshot = { llm: { provider: "anthropic", activeChatRuntime: { kind: "api" }, version: 2 } };
     const deps = {
       ...makeDeps([win]),
       settingsService: {
@@ -938,13 +960,14 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
 
     await invoke("ave:settings:set-api-key", "openai", "sk-test");
 
-    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 
   it("suppresses a stale generic settings:update locale side effect and snapshot", async () => {
     const win = makeWindow();
     const initialLlm = {
       provider: "openai",
+      activeChatRuntime: { kind: "api" },
       vendors: { "azure-foundry": { baseUrl: null } },
     };
     let settings = {
@@ -1025,7 +1048,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
     const win = makeWindow();
     const snapshot = {
       appearance: { language: "ko" },
-      llm: { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } },
+      llm: { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: null } } },
       marketplace: {},
     };
     const baseDeps = makeDeps([win]);
@@ -1052,14 +1075,14 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
 
     expect(getLocale()).toBe("ko");
     expect(translate("ko", "settings.appearance.language.title")).toBe("언어");
-    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+    expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 
   it("keeps the current main-process locale and still broadcasts when lazy locale loading fails", async () => {
     const win = makeWindow();
     const snapshot = {
       appearance: { language: "ko" },
-      llm: { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } },
+      llm: { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: null } } },
       marketplace: {},
     };
     const baseDeps = makeDeps([win]);
@@ -1088,7 +1111,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
       await invoke("ave:settings:update", { appearance: { language: "ko" } });
 
       expect(getLocale()).toBe("en");
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
+      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     } finally {
       restore();
     }
@@ -1128,7 +1151,7 @@ describe("Minor-4: settings:update rejects non-string baseUrl", () => {
   it("accepts valid string baseUrl", async () => {
     const deps = makeDeps([]);
     deps.settingsService.patch.mockResolvedValue({ ok: true });
-    deps.settingsService.get = vi.fn(() => ({ provider: "openai", vendors: { "azure-foundry": { baseUrl: "https://proj.services.ai.azure.com" } } }));
+    deps.settingsService.get = vi.fn(() => ({ provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: "https://proj.services.ai.azure.com" } } }));
 
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
@@ -1253,6 +1276,6 @@ describe("the renderer settings snapshot", () => {
 
     const snapshot = await invoke("ave:settings:get") as Record<string, unknown>;
 
-    expect(snapshot).toEqual({ llm: { provider: "openai" } });
+    expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 });

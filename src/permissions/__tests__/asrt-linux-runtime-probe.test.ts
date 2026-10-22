@@ -42,7 +42,7 @@ import {
 
 const ORIGINAL_PLATFORM = process.platform;
 const CONFIGURED_LINUX_BWRAP_COMMAND =
-  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --proc /proc -- /bin/bash -c true";
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 
 interface ProbeChild extends EventEmitter {
   kill: ReturnType<typeof vi.fn>;
@@ -86,7 +86,7 @@ beforeEach(() => {
   h.initialize.mockResolvedValue(undefined);
   h.wrapWithSandboxArgv.mockResolvedValue({
     // This is the exact shape ASRT uses on Linux: its outer shell runs a
-    // rendered bwrap command. The adapter must spawn it untouched, not `true`.
+    // rendered bwrap command. The adapter hardens its mounts before spawning.
     argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND],
     env: { ASRT_PROBE_ENV: "configured" },
   });

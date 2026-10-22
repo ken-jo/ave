@@ -26,12 +26,25 @@ export function getLocale(): Locale {
 /**
  * Set the process-local UI locale. Accepts any value (coerced via
  * {@link normalizeLocale}); a no-op when unchanged. Notifies subscribers.
+ *
+ * Each subscriber is isolated: one that throws is reported and the rest still
+ * run. The locale has already changed by then, and a throw escaping here would
+ * skip every later subscriber (a menu rebuild skipping the dock's retitle) and
+ * fail the caller — a settings write whose language is already applied.
  */
 export function setLocale(value: unknown): Locale {
   const next = normalizeLocale(value);
   if (next === activeLocale) return activeLocale;
   activeLocale = next;
-  for (const listener of listeners) listener(next);
+  for (const listener of [...listeners]) {
+    try {
+      listener(next);
+    } catch (error) {
+      // This module stays dependency-free for main and the renderer alike, so
+      // it reports through the console both processes route to their logs.
+      console.error(`[i18n] a locale-change listener failed for '${next}'`, error);
+    }
+  }
   return next;
 }
 

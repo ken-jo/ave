@@ -183,8 +183,8 @@ export interface PluginChildRuntime {
    * lifetime-bearing shapes allocate their ids at opposite ends. A
    * `handler-registration` member (`onEvent`, `config.onChange`, …) is named by
    * the CHILD so no event can arrive before its handler is registered; a
-   * `handle` member (`spawnWorker`, `resolveApiKey`) is named by the HOST,
-   * because the host owns the resource and cannot be told what to call it.
+   * lease handle is named by the HOST. Worker handles derive their id from the
+   * existing request id and register here before that request is sent.
    */
   adoptSubscription(
     path: HostApiPath,
@@ -243,13 +243,14 @@ export type HostApiCaller = (
   path: HostApiPath,
   args: readonly unknown[],
   signal?: AbortSignal,
+  onRequestId?: (id: JsonRpcRequestId) => void,
 ) => Promise<unknown>;
 
 export function createHostApiCaller(
   channel: HostApiChannel,
   context: Pick<PluginChildContext, "pluginId">,
 ): HostApiCaller {
-  return async (path, args, signal) => {
+  return async (path, args, signal, onRequestId) => {
     const nonJson = describeNonJson(args, `${path}(args)`);
     if (nonJson) {
       // Refused here rather than sent, so the plugin sees the failure at its own
@@ -282,6 +283,7 @@ export function createHostApiCaller(
         params,
         (id) => {
           requestId = id;
+          onRequestId?.(id);
         },
       );
       if ("error" in reply) throw reconstructWireError(fromHostApiRpcError(reply.error));
@@ -740,6 +742,7 @@ export async function startPluginChildRuntime(
       await run();
     },
     hostGone() {
+      pendingLeaseClosures.clear();
       return subscriptions.end("peer-gone");
     },
   };

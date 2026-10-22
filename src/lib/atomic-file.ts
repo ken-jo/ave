@@ -8,11 +8,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pid, platform } from "node:process";
 import {
   RENAME_FILE_LOCK_CODES,
   SYNC_UI_BLOCKING_ATTEMPTS,
+  retryOnTransientFsLock,
   transientFsLockDelayMs,
 } from "./transient-fs-lock-retry.js";
 
@@ -265,6 +267,49 @@ function writeUtf8FileAtomicSyncInternal(
         );
       }
       throw cleanupErrors[0];
+    }
+  }
+}
+
+/**
+ * Async twin of {@link writeUtf8FileAtomicSync} for writers on a hot path of
+ * the main process (the turn journal's streaming snapshot): the same staging
+ * file, fsync, rename and parent-directory sync, but every syscall runs on the
+ * libuv pool, so the event loop that is delivering stream frames never waits
+ * on the disk. Windows rename locks retry on the background budget.
+ */
+export async function writeUtf8FileAtomic(
+  filePath: string,
+  content: string,
+  mode = PRIVATE_FILE_MODE,
+): Promise<void> {
+  const parentDir = dirname(filePath);
+  await fsp.mkdir(parentDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const tempPath = join(parentDir, `.${basename(filePath)}.${pid}.${randomUUID()}.tmp`);
+  let committed = false;
+  try {
+    const handle = await fsp.open(tempPath, "wx", mode);
+    try {
+      await handle.writeFile(content, { encoding: "utf8" });
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await retryOnTransientFsLock(() => fsp.rename(tempPath, filePath));
+    committed = true;
+    if (platform !== "win32") {
+      const directory = await fsp.open(parentDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+  } finally {
+    if (!committed) {
+      await fsp.unlink(tempPath).catch((error: unknown) => {
+        if (!isMissingPathError(error)) throw error;
+      });
     }
   }
 }

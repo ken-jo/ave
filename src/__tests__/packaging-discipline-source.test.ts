@@ -1158,14 +1158,18 @@ describe("installer smoke and packaging discipline", () => {
     // Sorted, because VERIFIES_THE_CODE is sorted and `matched` returns marker
     // order — this pins the set, not the step order. The step order is pinned
     // by the ordering scan above. A2A verification is part of the vitest suite
-    // that `check:test-coverage` runs; there is no separate evidence step.
+    // that `test:ci` runs; there is no separate evidence step. `test:ci`
+    // (scripts/run-ci-suite.mjs) runs `check:test-coverage`'s gate on every
+    // full run and the affected tests on a traceable pull request.
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([
       "bun run build",
+      "bun run test:ci",
       "bun run typecheck",
-      "check:test-coverage",
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
+    expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
+    expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });
 
   it("keeps check:gate-core in step with its callers", () => {

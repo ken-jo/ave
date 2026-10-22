@@ -1,17 +1,19 @@
 /**
  * Per-project permission rule files (issue #28, P1a):
  * `<ave home>/permissions/project-rules/<identity>.json`, where identity is the
- * Store B working-directory identity of the project root — the git root of
- * the session cwd, or the cwd outside a repository (sha256 of the case-folded
+ * Store B working-directory identity of the eligible repository root of
+ * the session cwd, or the cwd itself (sha256 of the case-folded
  * canonical realpath). Rules are never written into the user's
  * repository. Project files hold rules-language specifiers only.
  */
 import { readFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { withFileLock } from "../../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
+import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rule-files.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
@@ -31,15 +33,87 @@ export interface ProjectRulesLocation {
   identity: string;
 }
 
-/**
- * The project a session cwd belongs to: the nearest ancestor (inclusive) that
- * holds a `.git` entry, so sessions started in a subdirectory share the
- * repository's rules; the cwd itself when it is not inside a repository.
- */
+const MAX_REPOSITORY_METADATA_BYTES = 65_536;
+
+/** Bound reads on the opened regular file, including concurrent growth. */
+function readRepositoryMetadata(path: string): string {
+  const entry = lstatSync(path);
+  if (!entry.isFile()) throw new Error("Invalid repository metadata");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.size > MAX_REPOSITORY_METADATA_BYTES) throw new Error("Invalid repository metadata");
+    const buffer = Buffer.alloc(MAX_REPOSITORY_METADATA_BYTES + 1);
+    const length = readSync(fd, buffer, 0, buffer.length, 0);
+    if (length > MAX_REPOSITORY_METADATA_BYTES) throw new Error("Invalid repository metadata");
+    return buffer.toString("utf8", 0, length).trim();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function isRepositoryMarker(marker: string): boolean {
+  const entry = lstatSync(marker);
+  let gitDir = marker;
+  if (entry.isFile()) {
+    const match = /^gitdir: ([^\r\n\0]+)$/.exec(readRepositoryMetadata(marker));
+    if (!match) return false;
+    gitDir = resolve(dirname(marker), match[1]);
+  } else if (!entry.isDirectory()) {
+    return false;
+  }
+  if (!statSync(gitDir).isDirectory()) return false;
+  const head = readRepositoryMetadata(join(gitDir, "HEAD"));
+  if (!/^(?:ref: refs\/[^\s\0]+|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(head)) return false;
+  let commonDir = gitDir;
+  let commonPath: string | undefined;
+  try {
+    commonPath = readRepositoryMetadata(join(gitDir, "commondir"));
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+  if (commonPath !== undefined) {
+    if (!commonPath || /[\r\n\0]/.test(commonPath)) return false;
+    commonDir = resolve(gitDir, commonPath);
+    // Linked worktrees must point back to this checkout's own marker.
+    const backlink = resolve(gitDir, readRepositoryMetadata(join(gitDir, "gitdir")));
+    if (captureApprovalWorkingDirectory(backlink).identity !== captureApprovalWorkingDirectory(marker).identity) return false;
+  }
+  return statSync(join(commonDir, "objects")).isDirectory() && statSync(join(commonDir, "refs")).isDirectory();
+}
+
+/** Nearest verified marker below home; uncertain discovery stays at cwd. */
 function projectRootFor(projectCwd: string): string {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
+  let home: string;
+  try {
+    const homePath = homedir();
+    if (!isAbsolute(homePath)) return start;
+    home = captureApprovalWorkingDirectory(homePath).path;
+    if (dirname(home) === home) return start;
+  } catch {
+    // Without a trustworthy home boundary, project rules stay at cwd.
+    return start;
+  }
+  const homeKey = caseFoldForMatch(home);
   for (let dir = start, guard = 0; guard < 256; guard += 1) {
-    if (existsSync(join(dir, ".git"))) return dir;
+    const dirKey = caseFoldForMatch(dir);
+    // Home and every ancestor of home may identify only an exact-cwd session.
+    if (dir !== start && (homeKey === dirKey || homeKey.startsWith(`${dirKey.replace(/\/$/, "")}/`))) break;
+    try {
+      if (isRepositoryMarker(join(dir, ".git"))) return dir;
+      // An invalid inner marker must not inherit an outer repository's allows.
+      return start;
+    } catch (error) {
+      if (!isMissingPathError(error)) return start;
+      // A present but incomplete marker is a boundary too.
+      try {
+        lstatSync(join(dir, ".git"));
+        return start;
+      } catch (markerError) {
+        if (!isMissingPathError(markerError)) return start;
+      }
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

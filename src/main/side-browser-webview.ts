@@ -11,6 +11,15 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
 import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
 import { createLogger } from "../lib/logger.js";
+import { browserWorkspaceOrigin, browserWorkspaceUrl } from "../shared/browser-workspace.js";
+import type { BrowserPermissionDetails } from "./browser/browser-site-permissions.js";
+import {
+  browserWorkspaceGuestWindowId,
+  getBrowserWorkspaceService,
+  observeBrowserWorkspaceDownload,
+  observeBrowserWorkspaceGuest,
+  registerBrowserWorkspacePopup,
+} from "./browser/browser-workspace-desktop.js";
 
 const log = createLogger("ave");
 
@@ -24,22 +33,22 @@ function isHttpUrl(value: string): boolean {
   return validateExternalUrl(value).ok;
 }
 
-/**
- * The only permissions a side-browser page is granted. The browser is meant to
- * work like a normal one for reading, signing in and downloading, but there is
- * no per-site prompt UI yet, so anything that reaches a device or the user's
- * attention (camera, microphone, location, notifications, MIDI, HID...) stays
- * denied. `fullscreen` is denied too: the app shows no exit hint for an
- * element going fullscreen, so a page could cover the whole app window and
- * draw a convincing copy of the approval UI. Request and check handlers read
- * the same set so they always agree.
- */
-const SIDE_BROWSER_ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set([
-  "clipboard-sanitized-write",
-]);
-
-function isSideBrowserPermissionAllowed(permission: string): boolean {
-  return SIDE_BROWSER_ALLOWED_PERMISSIONS.has(permission);
+function permissionDetails(contents: WebContents | null, permission: string, details: unknown, requestingOrigin?: string): BrowserPermissionDetails | null {
+  if (!contents || contents.isDestroyed() || !isSideBrowserContents(contents) || browserWorkspaceGuestWindowId(contents) === null) return null;
+  // Sanitized writes have no device/read capability and remain safe for frames.
+  if (permission === "clipboard-sanitized-write") return details && typeof details === "object" ? details as BrowserPermissionDetails : {};
+  if (details === null || typeof details !== "object") return null;
+  const record = details as Record<string, unknown>;
+  if (record.isMainFrame !== true) return null;
+  const current = browserWorkspaceUrl(contents.getURL());
+  const requesting = browserWorkspaceUrl(record.requestingUrl);
+  if (!current || current !== requesting || record.embeddingOrigin !== undefined) return null;
+  const origin = new URL(current).origin;
+  if (requestingOrigin !== undefined && browserWorkspaceOrigin(requestingOrigin) !== origin) return null;
+  if (record.securityOrigin !== undefined && browserWorkspaceOrigin(record.securityOrigin) !== origin) return null;
+  if (record.mediaTypes !== undefined && (!Array.isArray(record.mediaTypes) || record.mediaTypes.some((value) => typeof value !== "string"))) return null;
+  if (record.mediaType !== undefined && typeof record.mediaType !== "string") return null;
+  return details as BrowserPermissionDetails;
 }
 
 export function installSideBrowserPartitionPolicy(): void {
@@ -48,12 +57,22 @@ export function installSideBrowserPartitionPolicy(): void {
   // embedded browser; present the same vanilla Chromium/Edge UA as the link
   // viewer so logins in the in-app browser work and persist.
   sideBrowserSession.setUserAgent(buildPersistentBrowserUserAgent());
-  sideBrowserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(isSideBrowserPermissionAllowed(permission));
+  sideBrowserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const verified = permissionDetails(contents, permission, details);
+    if (verified === null) { callback(false); return; }
+    void getBrowserWorkspaceService().requestPermission(contents.id, permission, verified).then(callback, (error) => {
+      log.warn({ error, permission }, "browser permission request failed");
+      callback(false);
+    });
   });
-  sideBrowserSession.setPermissionCheckHandler((_webContents, permission) =>
-    isSideBrowserPermissionAllowed(permission));
-  sideBrowserSession.on("will-download", createSideBrowserDownloadPolicy());
+  sideBrowserSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    const verified = permissionDetails(contents, permission, details, requestingOrigin);
+    return verified !== null && getBrowserWorkspaceService().checkPermission(contents!.id, permission, verified);
+  });
+  const downloadPolicy = createSideBrowserDownloadPolicy();
+  sideBrowserSession.on("will-download", (event, item, contents) => {
+    if (downloadPolicy(event, item, contents)) observeBrowserWorkspaceDownload(contents, item);
+  });
 }
 
 /** Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}. */
@@ -91,7 +110,7 @@ function originOf(url: string): string {
 export function createSideBrowserDownloadPolicy(options: {
   now?: () => number;
   warn?: (fields: Record<string, unknown>, message: string) => void;
-} = {}): (event: Pick<ElectronEvent, "preventDefault">, item: DownloadPolicyItem, contents: DownloadPolicyContents | null | undefined) => void {
+} = {}): (event: Pick<ElectronEvent, "preventDefault">, item: DownloadPolicyItem, contents: DownloadPolicyContents | null | undefined) => boolean {
   const now = options.now ?? Date.now;
   const warn = options.warn ?? ((fields, message) => log.warn(fields, message));
   const pendingPrompt = new Set<number>();
@@ -103,7 +122,7 @@ export function createSideBrowserDownloadPolicy(options: {
     if (pendingPrompt.has(contentsId)) {
       event.preventDefault();
       warn({ origin, url: item.getURL() }, "side browser download cancelled: a Save dialog is already open");
-      return;
+      return false;
     }
     const at = now();
     const recent = (promptsByOrigin.get(origin) ?? []).filter((t) => at - t < DOWNLOAD_RATE_WINDOW_MS);
@@ -111,7 +130,7 @@ export function createSideBrowserDownloadPolicy(options: {
       promptsByOrigin.set(origin, recent);
       event.preventDefault();
       warn({ origin, url: item.getURL() }, "side browser download cancelled: too many download prompts from this origin");
-      return;
+      return false;
     }
     recent.push(at);
     promptsByOrigin.set(origin, recent);
@@ -121,6 +140,7 @@ export function createSideBrowserDownloadPolicy(options: {
       if (item.getSavePath()) settle();
     });
     item.on("done", settle);
+    return true;
   };
 }
 
@@ -207,13 +227,18 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
  */
 export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
   markAsLinkOwned(contents);
+  observeBrowserWorkspaceGuest(contents, owner);
   contents.setWindowOpenHandler(({ url }) => {
     if (!isSideBrowserPopupUrlAllowed(url)) return { action: "deny" };
     if (owner.isDestroyed()) return { action: "deny" };
     return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions(owner) };
   });
   contents.on("did-create-window", (child) => {
-    if (!isSideBrowserContents(child.webContents)) {
+    if (owner.isDestroyed() || !isSideBrowserContents(child.webContents)) {
+      child.destroy();
+      return;
+    }
+    if (registerBrowserWorkspacePopup(contents.id, child, owner) === null) {
       child.destroy();
       return;
     }

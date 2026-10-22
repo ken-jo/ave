@@ -64,3 +64,17 @@ export declare function resolveHeadUpdates(
  * the list could not be read at all, which is not the same as an empty one.
  */
 export declare function readPrePushInput(): PrePushInput;
+
+/** One path of a `git diff --raw` record. */
+export interface GitRawDiffEntry {
+  oldMode: string;
+  newMode: string;
+  status: string;
+  path: string;
+}
+
+/**
+ * Parse `git diff --no-renames --raw -z` output; null when the output does not
+ * have that shape.
+ */
+export declare function parseGitRawDiff(decoded: string): GitRawDiffEntry[] | null;

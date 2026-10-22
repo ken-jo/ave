@@ -261,8 +261,9 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     .map(quoteShellWord)
     .join(" ");
   const insertion = words[separator].start;
+  const hardened = `${command.slice(0, insertion)}${remounts} ${command.slice(insertion)}`;
   return {
     ...wrapped,
-    argv: [wrapped.argv[0], wrapped.argv[1], `${command.slice(0, insertion)}${remounts} ${command.slice(insertion)}`],
+    argv: [wrapped.argv[0], wrapped.argv[1], hardened],
   };
 }

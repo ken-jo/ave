@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 
 const priorAveHome = process.env.AVE_HOME;
@@ -239,7 +240,7 @@ it("refuses a wrapper that passes its mounts to bwrap through a file", () => {
 
 it.each([
   "--args 9",
-  "--bind-try /tmp/example /tmp/example",
+  "--overlay-src /tmp/example",
   "--tmpfs=/tmp/example",
   "--new-session=1",
   "--bind /tmp/other /tmp/example",
@@ -381,6 +382,59 @@ it.runIf(process.platform !== "win32")("accepts the --disable-userns a socket-pe
   }
 });
 
+it.runIf(process.platform !== "win32")("leaves an explicitly granted host temp bind unchanged", () => {
+  const wrapped = { argv: ["/bin/bash", "-c", "bwrap --ro-bind / / --bind /tmp /tmp -- /bin/sh -c 'true'"], env: {} };
+  expect(hardenLinuxSandboxWrap(wrapped)).toBe(wrapped);
+});
+
+it.runIf(process.platform !== "win32").each(["directory", "file", "symlink"])("preserves an existing shared temp leaf: %s", (kind) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-temp-leaf-")));
+  temporaryRoots.push(root);
+  const shared = join(root, "shared");
+  const leaf = join(shared, "entry");
+  mkdirSync(shared);
+  if (kind === "directory") mkdirSync(leaf);
+  else if (kind === "file") writeFileSync(leaf, "existing file");
+  else symlinkSync(root, leaf, "dir");
+  if (process.getuid?.() === 0) lchownSync(leaf, 65534, 65534);
+  const before = lstatSync(leaf);
+  const link = kind === "symlink" ? readlinkSync(leaf) : undefined;
+  const wrapped = {
+    argv: ["/bin/bash", "-c", `bwrap --ro-bind / / --bind /tmp /tmp --bind ${shellQuote(shared)} ${shellQuote(shared)} -- /bin/sh -c 'true'`],
+    env: {},
+  };
+  expect(hardenLinuxSandboxWrap(wrapped)).toBe(wrapped);
+  const after = lstatSync(leaf);
+  expect({ inode: after.ino, uid: after.uid, gid: after.gid, mode: after.mode }).toEqual({
+    inode: before.ino, uid: before.uid, gid: before.gid, mode: before.mode,
+  });
+  if (kind === "symlink") expect(readlinkSync(leaf)).toBe(link);
+});
+
+async function wrapSharedTempCommand(command: string) {
+  const generated = await wrapCommandWithSandboxLinux({
+    command,
+    needsNetworkRestriction: false,
+    readConfig: { denyOnly: [], allowWithinDeny: [] },
+    writeConfig: { allowOnly: ["/tmp"], denyWithinAllow: [] },
+    allowAllUnixSockets: true,
+  });
+  return hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} });
+}
+
+it.runIf(process.platform !== "win32")("accepts a generated shared temp wrapper with quoted command operands", async () => {
+  const command = "printf 'shared bytes' > '/tmp/shared file'";
+  try {
+    const wrapped = await wrapSharedTempCommand(command);
+    const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
+      encoding: "utf8",
+    }).trimEnd().split("\n");
+    expect(words.at(-1)).toBe(command);
+  } finally {
+    cleanupBwrapMountPoints();
+  }
+});
+
 it("accepts the --cap-add a uid-0 caller with the seccomp helper carries", () => {
   const capabilities = capabilityArgs({ euid: 0, hasSetfcap: true, usesSeccompHelper: true });
   expect(capabilities).toEqual(["--cap-drop", "ALL", "--cap-add", "CAP_SETFCAP"]);
@@ -443,4 +497,29 @@ it("knows every option the installed Linux wrapper can emit", () => {
       option,
     ).not.toThrow();
   }
+});
+
+it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-shared-temp-"));
+  temporaryRoots.push(root);
+  const target = join(tmpdir(), `${root.split("/").at(-1)}-new`);
+  temporaryRoots.push(target);
+  const run = async (command: string) => {
+    try {
+      const wrapped = await wrapSharedTempCommand(command);
+      return spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: process.env });
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  };
+  const first = await run(`printf shared > ${shellQuote(target)}`);
+  expect(first.status, first.stderr).toBe(0);
+  expect(execFileSync("cat", [target], { encoding: "utf8" })).toBe("shared");
+  const second = await run(`cat ${shellQuote(target)}`);
+  expect(second.status, second.stderr).toBe(0);
+  expect(second.stdout).toBe("shared");
+  writeFileSync(target, "host update");
+  const third = await run(`cat ${shellQuote(target)}`);
+  expect(third.status, third.stderr).toBe(0);
+  expect(third.stdout).toBe("host update");
 });

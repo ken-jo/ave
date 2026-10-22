@@ -168,6 +168,8 @@ export interface FloatingDockSurface {
   mountSlot(panelId: string, surface: ResolvedFloatingSurface, height: number): void;
   /** Change one slot's height. */
   resizeSlot(panelId: string, height: number): void;
+  /** Replace one slot's header title (the UI language changed). */
+  retitleSlot(panelId: string, title: string): void;
   /** Remove one slot's card. */
   unmountSlot(panelId: string): void;
   /** Push the host's own activity line. */
@@ -245,6 +247,8 @@ interface Slot {
   readonly panelId: string;
   readonly pluginId: string;
   readonly extensionId: string;
+  /** The header text last sent to the dock. */
+  title: string;
   height: number;
   detached: boolean;
   readonly listeners: Set<(reason: DetachReason) => void>;
@@ -326,6 +330,7 @@ export class FloatingDock {
       panelId,
       pluginId,
       extensionId: resolved.extensionId,
+      title: resolved.title,
       height,
       detached: false,
       listeners: new Set(),
@@ -353,6 +358,24 @@ export class FloatingDock {
       throw new FloatingDockError("slot-detached", `panel ${panelId} is not an open slot of '${pluginId}'`);
     }
     return this.#applyResize(slot, height);
+  }
+
+  /**
+   * Re-resolve every open slot's title and push the ones that changed.
+   *
+   * The title is the manifest's text in the UI language current at attach;
+   * after a language switch the header would keep the old language until the
+   * plugin re-attached. A slot whose surface no longer resolves keeps its
+   * title — detaching it is the runtime's call (`detachForPlugin`), not a side
+   * effect of a language switch.
+   */
+  refreshTitles(): void {
+    for (const slot of this.#slots.values()) {
+      const resolved = this.#resolve(slot.pluginId, slot.extensionId);
+      if (typeof resolved === "string" || resolved.title === slot.title) continue;
+      slot.title = resolved.title;
+      this.#surface.retitleSlot(slot.panelId, resolved.title);
+    }
   }
 
   /** Detach a slot named by id, on behalf of the plugin that owns it. */

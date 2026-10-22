@@ -1,12 +1,28 @@
 name: CI
+# Pull requests (to main and to integration/* category branches) run the
+# affected Vitest tests unless the selection cannot be trusted. A category
+# merge (integration/* into main) and every other event run the full suite
+# with its coverage gate: a push to main after a merge, a release tag, the
+# nightly schedule and a manual dispatch. See
+# scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
 on:
   pull_request:
     branches: [main, "integration/**"]
   push:
     branches: [main]
+    tags: ["v*"]
+  schedule:
+    # 18:00 UTC is 03:00 KST, outside the owner's working hours.
+    - cron: "0 18 * * *"
   workflow_dispatch:
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # The event is part of the group so the nightly run on main never cancels,
+  # and is never cancelled by, the full run of a push to main. A push groups
+  # by ref and commit, so a second merge never cancels the first merge's
+  # full run, and tagging a merge commit (a push of the same sha to a tag
+  # ref) never cancels that commit's main run. A pull
+  # request still cancels its own superseded run.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: true
 jobs:
   build-and-test:
@@ -60,22 +76,28 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       # Cache the built node_modules (Electron dist + electron-rebuilt native
       # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
       # ABI-correct binaries without re-downloading Electron or recompiling
       # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
       # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -125,10 +147,30 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
+      # The terminal's real-shell tests (typing, and the differential check of
+      # what zsh and bash run against what the permission rules read) need zsh,
+      # which the Ubuntu image lacks. A runner without passwordless sudo keeps
+      # its own shells and those tests skip zsh.
+      - name: Install zsh for the real-shell terminal tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: |
+          if command -v zsh >/dev/null; then exit 0; fi
+          if sudo -n true 2>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+          else
+            echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
+          fi
       - name: Run the suite and its coverage gate
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
+        #
+        # `test:ci` (scripts/run-ci-suite.mjs) runs `check:test-coverage`, the
+        # full suite and every global coverage threshold, on every event but a
+        # pull request, and on a pull request whose selection it cannot trust.
+        # Otherwise it runs the pull request's affected tests plus the
+        # must-run set (config/ci-must-run-tests.json) without coverage; the
+        # step summary names the mode and the reason.
         #
         # `check:test-coverage`, not `check:test-quality`: that composite runs
         # `check:test-duplicates` first, so a duplicated test helper would end
@@ -136,9 +178,15 @@ jobs:
         # layer down, in an npm script instead of a workflow. This job calls the
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
+        #
+        # Three workers, not the config's four: the self-hosted runners share
+        # one cgroup slice capped at three CPUs (CPUQuota=300%), where 80% of
+        # scheduling periods were throttled with four workers plus their
+        # subprocesses.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
-        run: bun run check:test-coverage
+          AVE_VITEST_MAX_WORKERS: "3"
+        run: bun run test:ci
         working-directory: ave
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
       # the gates that read them. Nothing below compiles or runs the product; a
@@ -226,6 +274,10 @@ jobs:
 
   windows-permission-tests:
     name: Windows permission path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
     # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
     # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
@@ -255,7 +307,7 @@ jobs:
       # Self-hosted machines have no preinstalled toolcache; install Node into
       # the runner's own tool cache instead of relying on a system Node. The
       # runner check and the docs classifier below both run on it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
@@ -291,17 +343,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -376,6 +431,10 @@ jobs:
 
   macos-permission-tests:
     name: macOS permission path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
     # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
     # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
@@ -401,7 +460,7 @@ jobs:
       # Self-hosted machines have no preinstalled toolcache; install Node into
       # the runner's own tool cache instead of relying on a system Node. The
       # runner check and the docs classifier below both run on it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
@@ -436,17 +495,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -504,6 +566,10 @@ jobs:
 
   linux-confinement-tests:
     name: Linux confinement path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
@@ -540,13 +606,13 @@ jobs:
         # already; install only what is missing so both runner kinds pass.
         run: |
           missing=0
-          for tool in bwrap socat rg xvfb-run; do
+          for tool in bwrap socat rg xvfb-run bash zsh; do
             command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
           done
           if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
+            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
           else
-            echo "bubblewrap, socat, ripgrep and xvfb already installed"
+            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
           fi
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
@@ -577,17 +643,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -626,3 +695,4 @@ jobs:
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
+          src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts

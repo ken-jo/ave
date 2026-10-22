@@ -3,7 +3,7 @@
  * covers every package's files, no git command runs, and a failed background
  * read keeps its reason through the Sources status after a reload.
  */
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import { translate } from "../../../i18n/translate.js";
 import { sourceStatusDetail } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 import { FakeVolume, nodeFolders, TEST_FOLDER_LIMITS, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../__tests__/fixtures/folder-service.js";
+import type { FolderStat } from "../folder-fs.js";
 
 const skill = (name: string) => `${JSON.stringify({ schemaVersion: 2, kind: "skill", name, version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } })}\n`;
 const index = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages })}\n`;
@@ -36,6 +37,71 @@ async function addMarket() {
 }
 
 describe("folder source reads", () => {
+  it.each(["dev", "ino"] as const)("repairs a refused legacy numeric %s record with freshly verified decimal identities", async (field) => {
+    const highBits = 2n ** 60n + 1n;
+    let identityOffset = highBits;
+    const volume = new FakeVolume("linux", { dev: highBits })
+      .file("/srv/team/marketplace.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
+      .file("/srv/team/skills/alpha/ave-package.json", skill("alpha"))
+      .file("/srv/team/skills/alpha/SKILL.md", "Write alpha.\n");
+    const exactStats = (stats: FolderStat): FolderStat => ({ ...stats, dev: identityOffset, ino: identityOffset + stats.ino });
+    const lstat = volume.lstat.bind(volume);
+    const fstat = volume.fstat.bind(volume);
+    volume.lstat = async (path) => exactStats(await lstat(path));
+    volume.fstat = async (handle) => exactStats(await fstat(handle));
+    const folders = { fs: volume, platform: "linux" as const, limits: TEST_FOLDER_LIMITS };
+    const harness = await folderService({ root, folders });
+    try {
+      const preview = await harness.service.previewSource({ input: "/srv/team", auth: "none" });
+      if (preview.type !== "marketplace") throw new Error("Expected a marketplace preview");
+      await harness.service.addSource({ previewId: preview.previewId, id: "team" });
+      const verified = (await harness.registry.readState("team")).folder!;
+      const statePath = join(root, "marketplaces", "team", "state.json");
+      const legacy = JSON.parse(readFileSync(statePath, "utf8"));
+      legacy.folder[field] = Number(verified[field]);
+      expect(String(legacy.folder[field])).not.toBe(verified[field]);
+      writeFileSync(statePath, JSON.stringify(legacy));
+
+      await expect(harness.registry.readState("team")).rejects.toMatchObject({
+        code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "team" },
+      });
+      expect(await harness.service.listSources()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "team", status: expect.objectContaining({ state: "broken" }) }),
+      ]));
+
+      identityOffset += 2n;
+      const rootNow = await volume.lstat("/srv/team");
+      const ancestorsNow = await Promise.all(["/", "/srv"].map((path) => volume.lstat(path)));
+      volume.calls.length = 0;
+      expect(await harness.service.repairSource("team")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "team", status: { state: "up-to-date" }, packageCount: 1 }),
+      ]));
+      expect(volume.paths("lstat")).toContain("/srv/team");
+      const repaired = JSON.parse(readFileSync(statePath, "utf8"));
+      const persistedIdentity = (stats: FolderStat) => ({ dev: stats.dev.toString(), ino: stats.ino.toString() });
+      expect(repaired.folder).toEqual({ ...persistedIdentity(rootNow), ancestors: ancestorsNow.map(persistedIdentity) });
+      expect(repaired.folder.dev).not.toBe(verified.dev);
+      expect(repaired.folder.ino).not.toBe(verified.ino);
+      for (const identity of [repaired.folder, ...repaired.folder.ancestors]) {
+        expect(identity.dev).toMatch(/^\d+$/u);
+        expect(identity.ino).toMatch(/^\d+$/u);
+      }
+      await expect(harness.syncer.sync("team")).resolves.toMatchObject({ status: "ok", changed: false });
+    } finally {
+      harness.service.close();
+    }
+
+    const reopened = await folderService({ root, folders });
+    try {
+      await expect(reopened.syncer.sync("team")).resolves.toMatchObject({ status: "ok", changed: false });
+      expect(await reopened.service.listSources()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "team", status: { state: "up-to-date" }, packageCount: 1 }),
+      ]));
+    } finally {
+      reopened.service.close();
+    }
+  });
+
   it("pins a local- revision that changes when a package's SKILL.md is edited, and runs no git command", async () => {
     writeFolderFiles(folder, {
       "marketplace.json": index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]),

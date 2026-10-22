@@ -67,6 +67,7 @@ function stubSurface(workArea: WorkArea = WORK_AREA) {
       mounted.push({ panelId, surface: resolved, height });
     },
     resizeSlot: (panelId, height) => calls.push(`resize:${panelId}:${height}`),
+    retitleSlot: (panelId, title) => calls.push(`retitle:${panelId}:${title}`),
     unmountSlot: (panelId) => calls.push(`unmount:${panelId}`),
     setActivity: (a) => activities.push(a),
     onSurfaceEvent: (listener) => {
@@ -305,6 +306,38 @@ describe("FloatingDock attachment", () => {
     } catch (error) {
       expect((error as FloatingDockError).code).toBe("dock-full");
     }
+  });
+});
+
+describe("FloatingDock slot titles", () => {
+  it("re-resolves each open slot's title and pushes only the ones that changed", () => {
+    const stub = stubSurface();
+    const titles: Record<string, string> = { recorder: "녹음", notes: "Notes" };
+    const outcome: { current: ResolvedFloatingSurface | "unknown-plugin" | null } = { current: null };
+    const dock = new FloatingDock(stub.surface, (pluginId, extensionId) =>
+      outcome.current ?? { ...SURFACE, pluginId, extensionId, title: titles[extensionId] });
+
+    const recorder = dock.attach("meeting", { extensionId: "recorder" });
+    dock.attach("meeting", { extensionId: "notes" });
+    expect(stub.mounted.map((m) => m.surface.title)).toEqual(["녹음", "Notes"]);
+
+    // The UI language switched: the resolver now answers in English.
+    titles.recorder = "Recording";
+    dock.refreshTitles();
+    expect(stub.calls.filter((c) => c.startsWith("retitle:"))).toEqual([
+      `retitle:${recorder.panelId}:Recording`,
+    ]);
+
+    // Nothing changed — nothing is sent.
+    dock.refreshTitles();
+    expect(stub.calls.filter((c) => c.startsWith("retitle:"))).toHaveLength(1);
+
+    // A surface that no longer resolves keeps its title; detaching is not a
+    // side effect of a language switch.
+    outcome.current = "unknown-plugin";
+    dock.refreshTitles();
+    expect(stub.calls.filter((c) => c.startsWith("retitle:"))).toHaveLength(1);
+    expect(dock.attachedCount).toBe(2);
   });
 });
 

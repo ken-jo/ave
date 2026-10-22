@@ -38,7 +38,13 @@ import type {
   MarketplaceSettings,
   ShortcutSettings,
   AppSettings,
+  SettingsService,
 } from "../../data/settings-store.js";
+import type { ActiveChatModel } from "../../shared/active-chat-model.js";
+import {
+  resolveMainActiveChatModel,
+  type ActiveChatModelSettingsReader,
+} from "../../engine/turn/active-chat-model.js";
 import type {
   CodexSubscriptionActionResult,
   CodexSubscriptionDeviceCodeResult,
@@ -229,17 +235,26 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
 
 /**
  * The settings shape the renderer sees. Authoritative remote route lineage
- * (`a2aRemote`) is main-only and never projected to the renderer, and the
- * upstream proxy (`upstreamProxy`) crosses only through its own permissions
- * channels; every other field crosses as-is, so the renderer's `AppSettings`
- * is exactly this type.
+ * (`a2aRemote`) is main-only and never projected to the renderer. The upstream
+ * proxy (`upstreamProxy`) crosses only through its own permissions channels;
+ * every other stored field crosses as-is.
+ *
+ * `activeChatModel` is the one derived field. A vendor block always names a
+ * model, so the stored settings cannot say whether chat has a model at all;
+ * only main, which holds the secret store, can. Every renderer surface that
+ * names the active model reads it from here.
  */
-export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy">;
+export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy"> & {
+  readonly activeChatModel: ActiveChatModel;
+};
 
-function rendererSettingsSnapshot(snapshot: AppSettings): RendererSettingsSnapshot {
+export function rendererSettingsSnapshot(
+  settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
+  snapshot: AppSettings = settingsService.getAll(),
+): RendererSettingsSnapshot {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, ...projected } = structuredClone(snapshot);
-  return projected;
+  return { ...projected, activeChatModel: resolveMainActiveChatModel(settingsService) };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the
@@ -277,7 +292,7 @@ export async function broadcastSettingsSnapshot(
     return;
   }
   if (localeLoaded) setLocale(nextLocale);
-  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
+  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(deps.settingsService, snapshot));
 }
 
 /**
@@ -326,7 +341,7 @@ function sameLlmSettings(left: LLMSettings, right: LLMSettings): boolean {
 
 /** Keep main and side-chat provider instances on the same persisted settings. */
 function refreshChatRuntimeProviders(
-  deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop">,
+  deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop" | "paneChatLoops">,
 ): void {
   // Refresh each binding even if another one fails. ConversationLoop clears
   // its provider before rebuilding, so this leaves no stale API-key transport
@@ -339,11 +354,13 @@ function refreshChatRuntimeProviders(
     failed = true;
     firstError = error;
   }
-  try {
-    deps.sideChatConversationLoop?.refreshProvider();
-  } catch (error) {
-    failed = true;
-    firstError ??= error;
+  for (const loop of [deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])]) {
+    try {
+      loop?.refreshProvider();
+    } catch (error) {
+      failed = true;
+      firstError ??= error;
+    }
   }
   if (failed) throw firstError;
 }
@@ -698,6 +715,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       const reason = new Error("active chat runtime changed");
       conversationLoop.abortCurrentTurn?.(reason);
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
+      for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
     const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const transitionRevision = ++activeChatRuntimeTransitionRevision;
@@ -785,7 +803,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
 
   // read-only — no sender guard needed
-  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService.getAll()));
+  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService));
 
   // Read-only, and presence only: the answer is a list of settings paths the
   // environment is forcing ON, never the value of any variable. A control that
@@ -1158,7 +1176,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("choose-runtime", "invalid", "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    if (!subscriptionRuntimeDescriptor(providerValue).requiresExecutable) {
+    // A discovered CLI (codex, claude) is found by Ave, never picked: no dialog.
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
       auditSubscriptionMutation("choose-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
@@ -1188,6 +1207,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
       auditSubscriptionMutation("forget-runtime", "invalid", "rejected", "subscription-provider-not-supported");
+      return { ok: false as const, error: "subscription-provider-not-supported" as const };
+    }
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
+      auditSubscriptionMutation("forget-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
     const result = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.forgetExecutable(provider));

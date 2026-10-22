@@ -385,6 +385,20 @@ describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
     expect(reopened.diagnostics()).toEqual([]);
   });
 
+  it.each(["ino", "dev"] as const)("rejects legacy numeric %s instead of trusting a rounded identity", async (field) => {
+    const exact = 2n ** 60n + 1n;
+    const registry = await open(policy(), "linux");
+    await registry.addFolder(folder({ dev: exact, ino: exact }));
+    const path = join(root, "team", "state.json");
+    const stored = JSON.parse(readFileSync(path, "utf8"));
+    expect(stored.folder[field]).toBe(exact.toString());
+    stored.folder[field] = Number(exact);
+    writeFileSync(path, JSON.stringify(stored));
+    await expect(registry.readState("team")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "team" },
+    });
+  });
+
   it("holds no confirmation given for another path: confirmations are bound to the canonical path", async () => {
     writeSources([{ id: "team", origin: "custom", path: "/srv/team", auth: { kind: "none" }, addedAt: NOW.toISOString(), acknowledged: { path: "/srv/other", warnings: ["network-folder"] } }]);
     const registry = await open(policy(), "linux");

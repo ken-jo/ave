@@ -1,4 +1,4 @@
-Two backports and five Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and six Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -171,6 +171,9 @@ the installed package.
    If publication fails after reserving the target, its reservation may
    remain unclaimed: that identity was not recorded. Debug logging reports
    the target for inspection instead of risking removal of a replacement.
+
+8. Caller-owned writes: default write paths contain only device paths. All
+   filesystem write roots come from caller policy.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
@@ -3287,6 +3290,62 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761
 +};
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
+diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
+index 3c92084c9e46fb8bec96a25789e0fdec69965ecb..3384c42609399cdd4b59318af6e07a41f3fdb425 100644
+--- a/dist/sandbox/sandbox-utils.js
++++ b/dist/sandbox/sandbox-utils.js
+@@ -515,44 +515,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
+     '.npm/_logs',
+     '.claude/debug',
+ ];
+-/**
+- * Get recommended system paths that should be writable for commands to work properly
+- *
+- * WARNING: These default paths are intentionally broad for compatibility but may
+- * allow access to files from other processes. In highly security-sensitive
+- * environments, you should configure more restrictive write paths.
+- *
+- * With no argument this is the whole list. Given the read rules of a
+- * filesystem policy, a home convenience directory (~/.npm/_logs,
+- * ~/.claude/debug) is left out when a `denyRead` entry names it or a
+- * directory above it: kept, it would be bound back over that deny on Linux
+- * (readable and writable again) and stay writable on macOS, so the explicit
+- * denyRead wins over the implicit write allow. It is kept when an `allowRead`
+- * entry beneath that deny re-opens it, because the caller has already made it
+- * readable. A caller who wants it writable regardless lists it in
+- * `allowWrite`. What the sandbox itself needs (stdio, /tmp/claude) is never
+- * left out.
+- *
+- * Pass the entries as configured, not expanded. `dir/**` counts as `dir`,
+- * and a glob covers a directory when it matches that directory or one above
+- * it; nothing is listed from disk. On Linux, where the backend expands globs
+- * against the disk, two things follow: a glob that matches nothing there
+- * still counts (which only ever drops a convenience path), and a glob whose
+- * match is a symlink to one of these directories is not seen. A glob
+- * `allowRead` entry is not counted as re-opening anything.
+- *
+- * An entry marked `{ path, literal: true }` is a name whatever it holds. A
+- * spelling is read by its characters alone: the name it also is when that
+- * exists on disk is for the caller to add as a marked entry.
+- */
++/** Device defaults only; filesystem write roots come from caller policy. */
+ export function getDefaultWritePaths(readRules) {
+-    const home = homedir();
+-    const keptDirs = !readRules || readRules.denyRead.length === 0
+-        ? HOME_CONVENIENCE_WRITE_DIRS
+-        : homeDirsNotReadDenied(home, readRules.denyRead, readRules.allowRead);
+     return [
+-        ...SANDBOX_OWN_WRITE_PATHS,
+-        ...keptDirs.map(rel => path.join(home, rel)),
++        '/dev/stdout',
++        '/dev/stderr',
++        '/dev/null',
++        '/dev/tty',
++        '/dev/dtracehelper',
++        '/dev/autofs_nowait',
+     ];
+ }
+ /**
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
 index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..5c42847231dd55c0f594a973a51aebd87c3c25dc 100644
 --- a/dist/sandbox/socks-proxy.d.ts

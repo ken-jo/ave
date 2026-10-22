@@ -4,12 +4,17 @@
  * the snapshot cap, sensitive-field refusal, cancellation, and the
  * cross-origin redirect guard of navigate.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
   BrowserActionError,
   click,
+  hover,
+  upload,
+  drag,
+  scroll,
+  select,
   createBrowserPageActions,
   navigate,
   pressKey,
@@ -22,6 +27,7 @@ import {
   type CdpSession,
   type NavigableGuest,
 } from "../browser-actions.js";
+import { withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
@@ -42,6 +48,8 @@ function page(children: AXNode[]): AXNode[] {
 class FakeCdp implements CdpSession {
   frameTree = { frame: { id: "main", loaderId: "loader-1", url: "https://a.example/form", securityOrigin: "https://a.example" }, childFrames: [] as unknown[] };
   hit = { backendNodeId: 0, frameId: "main" };
+  /** How far the page is scrolled, as the layout metrics report it. */
+  scroll = { x: 0, y: 0 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
     this.events.on("message", listener);
@@ -56,6 +64,7 @@ class FakeCdp implements CdpSession {
   dropTexts = 0;
   private focusedNode: number | undefined;
   private pressed = false;
+  focusPage(): void { this.pressed = true; this.checksSincePress = 0; }
   loseFocus(): void {
     this.pressed = false;
     this.checksSincePress = 0;
@@ -68,6 +77,7 @@ class FakeCdp implements CdpSession {
         if (params?.type === "touchEnd") this.pressed = true;
         return {};
       case "Page.getFrameTree": return { frameTree: this.frameTree };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y } };
       case "DOM.getNodeForLocation": return { ...this.hit, backendNodeId: this.hit.backendNodeId || this.nodes.find((node) => node.backendDOMNodeId)?.backendDOMNodeId };
       case "Input.dispatchMouseEvent":
         if (params?.type === "mousePressed") this.pressed = true;
@@ -119,10 +129,16 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
     url: () => url,
     title: () => "Fixture",
     cdp,
+    pointerInput: async (run) => run(),
+    wheelInput: async (run) => run(),
+    focusPage: async () => { cdp.focusPage(); },
     injectInput: async (inject) => {
       injected.push(cdp.calls.length);
       return inject();
     },
+    // One page alone: its window's press lock and delivery check are the
+    // adapter's, covered with the window router below.
+    press: (run) => run(),
     releaseFocus: () => {
       released.push(cdp.calls.length);
       cdp.loseFocus();
@@ -749,29 +765,118 @@ describe("focused field and document replacement", () => {
   });
 });
 
-function adapterFixture() {
+/** Where the fixture's window content sits on screen, and where its page sits in that window. */
+const HOST_CONTENT = { x: 1000, y: 500, windowId: 1 };
+const PAGE_IN_WINDOW = { x: 40, y: 60 };
+
+/**
+ * The window's one touch sequence, as measured with two pages in one window:
+ * a lone sequence reaches the page that sent it; a touch start sent while
+ * another page's sequence is open joins that sequence and lands in that page;
+ * the tap is derived after the sequence ends. Each page reports what reaches
+ * it as native input events, marked with the debugger bit.
+ */
+class WindowTouchRouter {
+  private open: FixtureGuest | null = null;
+  /** Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`. */
+  hang = false;
+  private held: Array<() => void> = [];
+  /** The busy page answers: the held dispatches are delivered, in order. */
+  wake(): void {
+    this.hang = false;
+    for (const deliver of this.held.splice(0)) deliver();
+  }
+  dispatch(sender: FixtureGuest, type: string): Promise<void> {
+    if (this.hang) {
+      return new Promise((resolve) => {
+        this.held.push(() => { void this.deliver(sender, type); resolve(); });
+      });
+    }
+    return this.deliver(sender, type);
+  }
+  private deliver(sender: FixtureGuest, type: string): Promise<void> {
+    const marked = { _modifiers: 1 << 23 };
+    if (type === "touchStart") {
+      const to = this.open ?? sender;
+      this.open = to;
+      to.report({ type: "touchStart", ...marked });
+      to.report({ type: "gestureTapDown", _modifiers: 0 });
+    } else if (type === "touchEnd" || type === "touchCancel") {
+      const to = this.open ?? sender;
+      this.open = null;
+      to.report({ type, ...marked });
+      if (type === "touchEnd") {
+        setTimeout(() => {
+          to.report({ type: "gestureShowPress", _modifiers: 0 });
+          to.report({ type: "gestureTap", _modifiers: 0 });
+        }, 5);
+      }
+    }
+    return Promise.resolve();
+  }
+}
+
+/** What the router needs of a page: where its native touch input is reported. */
+interface FixtureGuest { report(input: { type: string; _modifiers: number }): void }
+
+function adapterFixture(options: {
+  hostKnown?: boolean;
+  registry?: BrowserTabRegistry<never>;
+  router?: WindowTouchRouter;
+  guestId?: number;
+  tabId?: string;
+} = {}) {
   const cdp = new FakeCdp();
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
+  const router = options.router ?? new WindowTouchRouter();
+  const registry = (options.registry ?? new BrowserTabRegistry()) as BrowserTabRegistry<never>;
   let attached = false;
+  const echo = { on: true };
+  const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
+    detach: vi.fn(() => { attached = false; }),
     isAttached: () => attached,
-    sendCommand: (method: string, params?: Record<string, unknown>) => cdp.send(method, params),
+    sendCommand: async (method: string, params?: Record<string, unknown>) => {
+      const result = await cdp.send(method, params);
+      if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
+        registry.userInput(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
+      }
+      // The native echo of a pointer move: the page point and its screen point.
+      if (echo.on && method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
+        const x = params.x as number;
+        const y = params.y as number;
+        guestEvents.emit("input-event", {}, {
+          type: "mouseMove", x, y,
+          globalX: HOST_CONTENT.x + PAGE_IN_WINDOW.x + x,
+          globalY: HOST_CONTENT.y + PAGE_IN_WINDOW.y + y,
+        });
+      }
+      if (method === "Input.dispatchTouchEvent") await router.dispatch(guest, params?.type as string);
+      return result;
+    },
   });
+  cdp.events.on("message", (method: string, params: Record<string, unknown>) => debuggerEvents.emit("message", {}, method, params));
   const mainFrame = { framesInSubtree: [] };
   let url = "https://a.example/form";
-  const guest = {
-    id: 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
-    mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents,
-  };
-  const registry = new BrowserTabRegistry();
-  registry.guestAttached(guest, 1);
-  registry.bindTab(1, { tabId: "user", webContentsId: guest.id });
-  const tab = registry.liveTab("tab-1")!;
-  const actions = createBrowserPageActions(registry, browserOrigin);
+  const touches: string[] = [];
+  const guest = Object.assign(guestEvents, {
+    id: options.guestId ?? 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
+    mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents, touches,
+    // What the guest tracking does with a page's native touch input.
+    report: (input: { type: string; _modifiers: number }) => {
+      if (input.type === "touchStart") touches.push("touchStart");
+      registry.userInput(guest.id, input);
+    },
+  });
+  registry.guestAttached(guest as never, 1);
+  registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
+  const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
+  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
     tabs: registry,
+    pickUploadFiles: async () => null,
     windowIdForHostedSession: () => 1,
     liveOriginSessionId: () => undefined,
     loadActions: async () => actions as unknown as import("../../../tools/browser-tools.js").BrowserPageActions<typeof guest>,
@@ -781,11 +886,11 @@ function adapterFixture() {
     const scope = await tool(name).approvalMemoryScope!({ tabId: tab.handle }, { cwd: tmpdir(), sessionId: "conversation" });
     if (scope?.kind !== "browser-origin" || scope.documentId === undefined) throw new Error("Missing page approval");
     return {
-      tab, signal: tab.actions.signal,
-      approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId },
+      tab, signal: tab.actions.signal, leaseId: tab.lease?.id ?? registry.acquireControl(tab, { sessionId: "conversation" }).id,
+      approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId, controlGeneration: scope.controlGeneration },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
-  return { cdp, guest, registry, tab, actions, approve, tool, navigate: (next: string) => {
+  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, navigate: (next: string) => {
     url = next;
     cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
     registry.navigationStarted(guest.id, url);
@@ -810,11 +915,11 @@ it("refuses a real document replacement between approval and the first dispatch"
 });
 
 it.each(["https://a.example/next", "https://b.example/next"])("reports navigation completed by the approved link to %s", async (destination) => {
-  const { cdp, tab, actions, approve, navigate, tool } = adapterFixture();
+  const { cdp, tab, actions, approve, navigate, tool, registry } = adapterFixture();
   tab.opener = "agent";
   tab.agentOrigin = "https://a.example:443";
   cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
-  await actions.snapshot({ tab, signal: tab.actions.signal } as unknown as Parameters<typeof actions.snapshot>[0], {});
+  await actions.snapshot({ tab, signal: new AbortController().signal } as unknown as Parameters<typeof actions.snapshot>[0], {});
   const live = await approve("browser_click");
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
@@ -825,6 +930,7 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
     if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") navigate(destination);
     return result;
   });
+  registry.releaseControl(tab.handle, tab.lease!.id);
   const result = await tool("browser_click").execute({ tabId: tab.handle, ref }, {
     cwd: tmpdir(), extraAllowedDirectories: [],
     metadata: { sessionId: "conversation", approvalMemoryScope: {
@@ -835,6 +941,187 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
   expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+});
+
+describe("tap placement", () => {
+  async function clickLink(options: { hostKnown?: boolean } = {}) {
+    const fixture = adapterFixture(options);
+    const { cdp, tab, actions, approve } = fixture;
+    cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+    const live = await approve("browser_click");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    return { ...fixture, run: () => actions.click(live, ref), tab };
+  }
+
+  it("presses the page point at the page's place in its window", async () => {
+    const { cdp, run } = await clickLink();
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
+    // The pointer move stays a page point; the tap is the same point in window space.
+    expect(start.touchPoints).toEqual([{ x: (move.x as number) + PAGE_IN_WINDOW.x, y: (move.y as number) + PAGE_IN_WINDOW.y, id: 1 }]);
+  });
+
+  it("hit-tests the press point in document space on a scrolled page", async () => {
+    const { cdp, run } = await clickLink();
+    cdp.scroll = { x: 236, y: 40 };
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
+    expect([hit.x, hit.y]).toEqual([(move.x as number) + 236, (move.y as number) + 40]);
+  });
+
+  it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
+    const { cdp, actions, approve, echo } = adapterFixture();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
+    // The page never reports focus, so typing presses again; only the first
+    // pointer move is echoed.
+    cdp.focusLag = Number.POSITIVE_INFINITY;
+    const live = await approve("browser_type");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    let moves = 0;
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && ++moves > 1) echo.on = false;
+      return send(method, params);
+    });
+    await expect(actions.type(live, ref, "Ada", {})).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toHaveLength(1);
+  }, 10_000);
+
+  it("refuses to press when the page's place in its window is unknown", async () => {
+    const { cdp, run } = await clickLink({ hostKnown: false });
+    await expect(run()).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+});
+
+describe("one press at a time in a window", () => {
+  // A window left wedged by one test would refuse the next test's presses:
+  // every busy page answers before the next test.
+  const routers: WindowTouchRouter[] = [];
+  afterEach(async () => {
+    for (const router of routers.splice(0)) router.wake();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  /** Two pages of one window, each with a link to press. */
+  async function twoPages() {
+    const router = new WindowTouchRouter();
+    routers.push(router);
+    const registry = new BrowserTabRegistry() as BrowserTabRegistry<never>;
+    const pages = [];
+    for (const [guestId, tabId] of [[101, "page-a"], [102, "page-c"]] as const) {
+      const fixture = adapterFixture({ router, registry, guestId, tabId });
+      fixture.cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+      const live = await fixture.approve("browser_click");
+      const ref = /\[ref=(e\d+)\]/.exec((await fixture.actions.snapshot(live, {})).text)![1]!;
+      pages.push({ ...fixture, click: () => fixture.actions.click(live, ref) });
+    }
+    return { router, pages: pages as [typeof pages[0], typeof pages[0]] };
+  }
+  const touchSends = (cdp: FakeCdp) => cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent").map((call) => call.params?.type);
+
+  it("lands two pages' concurrent clicks each in its own page", async () => {
+    const { pages: [a, c] } = await twoPages();
+    await expect(Promise.all([a.click(), c.click()])).resolves.toEqual([undefined, undefined]);
+    expect(a.guest.touches).toEqual(["touchStart"]);
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  });
+
+  it("fails a press that another page of the window took, never reporting it done", async () => {
+    const { router, pages: [a, c] } = await twoPages();
+    const dispatch = router.dispatch.bind(router);
+    // Another sequence's touch reaches page C while page A's press is open.
+    vi.spyOn(router, "dispatch").mockImplementation((sender, type) => {
+      if (sender === a.guest && type === "touchStart") c.guest.report({ type: "touchStart", _modifiers: 1 << 23 });
+      return dispatch(sender, type);
+    });
+    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("another page") });
+  });
+
+  it("fails a press its own page never reported", async () => {
+    const { router, pages: [a] } = await twoPages();
+    vi.spyOn(router, "dispatch").mockResolvedValue(undefined);
+    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
+    const result = await a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
+      cwd: tmpdir(), extraAllowedDirectories: [], metadata: { sessionId: "conversation" },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("ends a press cut off between its touch start and end, so the next press in the window lands", async () => {
+    const { pages: [a, c] } = await twoPages();
+    const send = a.cdp.send.bind(a.cdp);
+    vi.spyOn(a.cdp, "send").mockImplementation(async (method, params) => {
+      const result = await send(method, params);
+      // The user takes over right after the touch start.
+      if (method === "Input.dispatchTouchEvent" && params?.type === "touchStart") a.tab.actions.abort(new Error("the user took over this tab"));
+      return result;
+    });
+    await expect(a.click()).rejects.toMatchObject({ code: "cancelled" });
+    expect(touchSends(a.cdp)).toEqual(["touchStart", "touchCancel"]);
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  });
+
+  it("frees the window from a page that stops answering inside its press, within the press budget", async () => {
+    const { pages: [a, c] } = await twoPages();
+    const send = c.cdp.send.bind(c.cdp);
+    // Page C stops answering the guard's hit test, a read made while its press holds the window.
+    let hung = false;
+    vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
+      if (method !== "DOM.getNodeForLocation") return send(method, params);
+      hung = true;
+      return new Promise(() => {});
+    });
+    // Settled into a value at once: it fails while page A's click runs.
+    const stuck = c.click().then(() => null, (err: unknown) => err);
+    await vi.waitFor(() => expect(hung).toBe(true));
+    const started = Date.now();
+    await expect(a.click()).resolves.toBeUndefined();
+    // One press budget (5 s) and margin, not the life of the hung page.
+    expect(Date.now() - started).toBeLessThan(6_500);
+    await expect(stuck).resolves.toMatchObject({ code: "input-not-delivered" });
+    expect(a.guest.touches).toEqual(["touchStart"]);
+    expect(c.guest.touches).toEqual([]);
+  }, 15_000);
+
+  /** Page A's touch start and its closing cancel both go unanswered: A's sequence stays open. */
+  async function wedgedByA() {
+    const fixture = await twoPages();
+    fixture.router.hang = true;
+    await expect(fixture.pages[0].click()).rejects.toMatchObject({ code: "input-not-delivered" });
+    return fixture;
+  }
+
+  it("refuses at once, sending nothing, every press in a window whose open sequence was never answered", async () => {
+    const { pages: [a, c] } = await wedgedByA();
+    const before = c.cdp.calls.length;
+    const started = Date.now();
+    await expect(c.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    await expect(a.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(c.cdp.calls.slice(before).filter((call) => call.method.startsWith("Input."))).toEqual([]);
+    expect(c.guest.touches).toEqual([]);
+  }, 20_000);
+
+  it("takes presses again once the busy page answers its cancel", async () => {
+    const { router, pages: [a, c] } = await wedgedByA();
+    router.wake();
+    await vi.waitFor(() => expect(a.guest.touches).toEqual(["touchStart"]));
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  }, 20_000);
+
+  it.each(["did-navigate", "destroyed", "render-process-gone"])("takes presses again once the busy page is gone (%s)", async (event) => {
+    const { pages: [a, c], router } = await wedgedByA();
+    a.guest.emit(event);
+    // A's held dispatches never answer; the window no longer waits for them.
+    router.hang = false;
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  }, 20_000);
 });
 
 it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {
@@ -848,4 +1135,309 @@ it.each(["Enter", "Space"])("finishes after navigation on %s without releasing i
   });
   await expect(actions.pressKey(live, key)).resolves.toBeUndefined();
   expect(cdp.inputs()).toEqual(["Input.dispatchKeyEvent"]);
+});
+
+describe("typed page actions", () => {
+  async function fixture() {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    return { cdp, refs, start: "e1", end: "e2" };
+  }
+
+  it("hovers and scrolls at the exact ref and refuses iframe recipients", async () => {
+    const { cdp, refs, start } = await fixture();
+    await hover(target(cdp), start, refs);
+    await scroll(target(cdp), start, "down", 700, refs);
+    expect(cdp.calls).toContainEqual({ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x: 20, y: 15, deltaX: 0, deltaY: 700 } });
+    cdp.hit.frameId = "child";
+    const before = cdp.inputs().length;
+    await expect(hover(target(cdp), start, refs)).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.inputs().length).toBe(before);
+  });
+
+  it("drags only after native delivery verification is available", async () => {
+    const { cdp, refs, start, end } = await fixture();
+    await expect(drag(target(cdp), start, end, refs)).rejects.toMatchObject({ code: "drag-unavailable" });
+    cdp.hit.backendNodeId = 11;
+    const value = target(cdp);
+    value.mouseDrag = async (run) => run({ intercepted: () => undefined });
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      const result = await send(method, params);
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") cdp.hit.backendNodeId = 12;
+      return result;
+    });
+    await drag(value, start, end, refs);
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params?.type)).toEqual(["mouseMoved", "mousePressed", "mouseMoved", "mouseReleased"]);
+  });
+
+  it("refuses unavailable full-page capture before sending any protocol request", async () => {
+    const cdp = new FakeCdp();
+    vi.spyOn(cdp, "send");
+    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
+    expect(cdp.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("select", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "not-native-select" });
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11, children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
+      const result = await send(method, params);
+      if (method === "Input.dispatchKeyEvent" && params?.key === "Home") cdp.events.emit("message", "Page.frameNavigated", {});
+      return result;
+    });
+    await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "document-changed" });
+  });
+});
+
+describe("file-input effect guard", () => {
+  it("refuses a custom upload control before invoking the native picker", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("button", "button", "Choose", { backendDOMNodeId: 11 })]);
+    const refs = new BrowserRefTable();
+    await snapshot(target(cdp), {}, refs);
+    const picker = vi.fn(async () => null);
+    await expect(upload(target(cdp), "e1", { windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443", documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal, pickFiles: picker }, refs)).rejects.toMatchObject({ code: "not-file-input" });
+    expect(picker).not.toHaveBeenCalled();
+  });
+
+  it("classifies file assignment as an effect and denies child-frame nodes", async () => {
+    const cdp = new FakeCdp();
+    cdp.attributes.set(11, { type: "file" });
+    cdp.nodes = page([ax("file", "button", "File", { backendDOMNodeId: 11 })]);
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+      ? { root: { nodeName: "#document", children: [{ nodeName: "IFRAME", backendNodeId: 50, children: [{ nodeName: "INPUT", backendNodeId: 11 }] }] } }
+      : send(method, params));
+    await expect(withGuardedAction(target(cdp), async (guarded) => {
+      guarded.expectNode(11);
+      await guarded.cdp.send("DOM.setFileInputFiles", { backendNodeId: 11, files: ["/private/staging/selected.txt"] });
+    })).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toEqual([]);
+  });
+
+  it("checks file-input type and exact operands at the final dispatch boundary", async () => {
+    const cdp = new FakeCdp();
+    cdp.attributes.set(11, { type: "file" });
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+      ? { root: { nodeName: "#document", children: [{ nodeName: "INPUT", backendNodeId: 11 }] } }
+      : send(method, params));
+    const assign = (extra: Record<string, unknown> = {}) => withGuardedAction(target(cdp), async (guarded) => {
+      guarded.expectNode(11);
+      await guarded.cdp.send("DOM.setFileInputFiles", { backendNodeId: 11, files: ["/private/staging/selected.txt"], ...extra });
+    });
+    await assign();
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toHaveLength(1);
+    await expect(assign({ objectId: "other" })).rejects.toMatchObject({ code: "wrong-input-target" });
+    cdp.attributes.set(11, { type: "text" });
+    await expect(assign()).rejects.toMatchObject({ code: "wrong-input-target" });
+    expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toHaveLength(1);
+  });
+});
+
+describe("approved navigation lifetime", () => {
+  async function fixture() {
+    const value = adapterFixture();
+    await value.actions.prepare({ tab: value.tab, signal: new AbortController().signal } as Parameters<typeof value.actions.prepare>[0]);
+    const lease = value.registry.acquireControl(value.tab, { sessionId: "conversation" });
+    const caller = new AbortController();
+    const live = {
+      tab: value.tab, signal: AbortSignal.any([value.tab.actions.signal, caller.signal]), callerSignal: caller.signal, leaseId: lease.id,
+      approval: { tabId: value.tab.handle, origin: "https://a.example:443", documentId: value.tab.documentId, controlGeneration: value.tab.controlGeneration },
+    } as unknown as Parameters<typeof value.actions.navigate>[0];
+    const stop = vi.fn();
+    Object.assign(value.guest, { stop });
+    return { ...value, live, caller, stop };
+  }
+
+  it("allows the approved load's own document transition without cancelling it", async () => {
+    const value = await fixture();
+    Object.assign(value.guest, { loadURL: async (url: string) => { value.navigate(url); await Promise.resolve(); } });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next" });
+    expect(value.stop).not.toHaveBeenCalled();
+  });
+
+  it.each(["caller", "human"] as const)("keeps %s cancellation ahead of an in-flight document transition", async (source) => {
+    const value = await fixture();
+    Object.assign(value.guest, { loadURL: async (url: string) => {
+      value.navigate(url);
+      if (source === "caller") value.caller.abort(); else value.registry.pause(1, "user");
+      await Promise.resolve();
+    } });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).rejects.toMatchObject({ code: "cancelled" });
+    expect(value.stop).toHaveBeenCalled();
+  });
+});
+
+it("fails hover when the native pointer move is not reported", async () => {
+  const { cdp, actions, approve, echo } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Hover", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_hover");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  echo.on = false;
+  await expect(actions.hover(live, ref)).rejects.toMatchObject({ code: "no-pointer-position" });
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+});
+
+it("fails scroll when the intended guest reports no native wheel sequence", async () => {
+  const { cdp, actions, approve } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Scroll", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_scroll");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  await expect(actions.scroll(live, ref, "down", 200)).rejects.toMatchObject({ code: "input-not-delivered" });
+});
+
+it("releases the native pointer observer when dispatch fails", async () => {
+  const { cdp, actions, approve, guest } = adapterFixture();
+  cdp.nodes = page([ax("button", "button", "Hover", { backendDOMNodeId: 11 })]);
+  const live = await approve("browser_hover");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  const before = guest.listenerCount("input-event");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "Input.dispatchMouseEvent") throw new Error("Native dispatch refused");
+    return send(method, params);
+  });
+  await expect(actions.hover(live, ref)).rejects.toThrow("Native dispatch refused");
+  expect(guest.listenerCount("input-event")).toBe(before);
+});
+
+it("sends no selection keys when native focus proof is unavailable", async () => {
+  const { cdp, actions, approve } = adapterFixture();
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11,
+      children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
+    return send(method, params);
+  });
+  const live = await approve("browser_select");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  await expect(actions.select(live, ref, "b")).rejects.toMatchObject({ code: "no-focus" });
+  expect(cdp.inputs()).toEqual([]);
+});
+
+describe("native intercepted drag lifetime", () => {
+  let nextGuestId = 600;
+  async function fixture(options: {
+    payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean;
+    stopAfterDrop?: boolean; loseDropAck?: boolean; stopAfterEnter?: boolean; targetCancelFails?: boolean;
+    stop?: "caller" | "human" | "navigation";
+  } = {}) {
+    const fixture = adapterFixture({ guestId: nextGuestId++ });
+    const { cdp, guest, registry, actions, approve, tab, navigate } = fixture;
+    cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
+    cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
+    cdp.attributes.set(11, { draggable: "true" });
+    cdp.hit.backendNodeId = 11;
+    const live = await approve("browser_drag");
+    const caller = new AbortController();
+    const actionLive = { ...live, signal: AbortSignal.any([live.signal, caller.signal]), callerSignal: caller.signal };
+    const shot = await actions.snapshot(actionLive, {});
+    const refs = [...shot.text.matchAll(/\[ref=(e\d+)\]/g)].map((match) => match[1]!);
+    const data = options.payload ?? { items: [{ mimeType: "text/plain", data: "native fixture payload" }], dragOperationsMask: 1 };
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "Input.setInterceptDrags" && params?.enabled === false && options.disableFails) throw new Error("disable failed");
+      if (method === "Input.dispatchDragEvent" && params?.type === "dragCancel" && options.targetCancelFails) throw new Error("target cancel failed");
+      const result = await send(method, params);
+      if (method === "Input.setInterceptDrags" && params?.enabled === true && options.beforePress) cdp.events.emit("message", "Input.dragIntercepted", { data });
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") cdp.hit.backendNodeId = 12;
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1) {
+        if (!options.noEvent) cdp.events.emit("message", "Input.dragIntercepted", { data });
+        if (options.stop === "caller") caller.abort(new Error("caller stopped"));
+        if (options.stop === "human") registry.userInput(guest.id, { type: "mouseDown", x: 999, y: 999, button: "left", clickCount: 1 });
+        if (options.stop === "navigation") navigate("https://a.example/new-document");
+      }
+      if (method === "Input.dispatchDragEvent" && params?.type === "drop" && options.stopAfterDrop) {
+        registry.userInput(guest.id, { type: "mouseDown", x: 999, y: 999, button: "left", clickCount: 1 });
+      }
+      if (method === "Input.dispatchDragEvent" && params?.type === "drop" && options.loseDropAck) {
+        caller.abort(new Error("caller stopped after destination effect"));
+        return new Promise(() => {});
+      }
+      if (method === "Input.dispatchDragEvent" && params?.type === "dragEnter" && options.stopAfterEnter) caller.abort(new Error("caller stopped after target entry"));
+      return result;
+    });
+    return { ...fixture, tab, run: () => actions.drag(actionLive, refs[0]!, refs[1]!), drops: () => cdp.calls.filter((call) => call.method === "Input.dispatchDragEvent" && call.params?.type === "drop") };
+  }
+
+  it("ends source interception before enter/over/drop and releases the payload listener", async () => {
+    const f = await fixture();
+    await f.run();
+    const effects = f.cdp.calls.filter((call) => call.method.startsWith("Input."));
+    const disable = effects.findIndex((call) => call.method === "Input.setInterceptDrags" && call.params?.enabled === false);
+    const enter = effects.findIndex((call) => call.method === "Input.dispatchDragEvent");
+    expect(effects.slice(0, disable).some((call) => call.method === "Input.cancelDragging")).toBe(true);
+    expect(disable).toBeLessThan(enter);
+    expect(f.drops()).toHaveLength(1);
+    expect(f.cdp.events.listenerCount("message")).toBe(1); // only fixture protocol forwarding remains
+  });
+
+  it.each([
+    { noEvent: true, code: "drag-not-intercepted" },
+    { payload: { items: [], dragOperationsMask: 1 }, code: "invalid-drag-data" },
+    { payload: { items: [{ mimeType: "text/plain", data: "x" }], files: ["/private/secret"], dragOperationsMask: 1 }, code: "invalid-drag-data" },
+    { beforePress: true, code: "invalid-drag-source" },
+    { stop: "caller" as const, code: "cancelled" },
+    { stop: "human" as const, code: "cancelled" },
+    { stop: "navigation" as const, code: "document-changed" },
+  ])("refuses an unproven or cancelled source before any destination drop ($code)", async (options) => {
+    const f = await fixture(options);
+    await expect(f.run()).rejects.toMatchObject({ code: options.code });
+    expect(f.drops()).toHaveLength(0);
+    expect(f.cdp.calls).toContainEqual({ method: "Input.setInterceptDrags", params: { enabled: false } });
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+  });
+
+  it("detaches and quarantines a session whose pre-drop disable never succeeds", async () => {
+    const f = await fixture({ disableFails: true });
+    await expect(f.run()).rejects.toThrow("disable failed");
+    expect(f.drops()).toHaveLength(0);
+    expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
+    expect(f.guest.debugger.isAttached()).toBe(false);
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    f.guest.emit("destroyed"); // release this fixture window's quarantine
+  });
+
+  it("keeps human cancellation priority and names the acknowledged drop as committed", async () => {
+    const f = await fixture({ stopAfterDrop: true });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("do not repeat") });
+    expect(f.drops()).toHaveLength(1);
+    expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+  });
+
+  it("reports unknown committed effect and quarantines when the drop acknowledgement is lost", async () => {
+    const f = await fixture({ loseDropAck: true });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("outcome is unknown; do not repeat") });
+    expect(f.drops()).toHaveLength(1);
+    expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
+    expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    f.guest.emit("destroyed");
+  });
+
+  it.each([false, true])("cancels only the entered destination before drop; quarantines failed cleanup (%s)", async (targetCancelFails) => {
+    const f = await fixture({ stopAfterEnter: true, targetCancelFails });
+    await expect(f.run()).rejects.toMatchObject({ code: "cancelled" });
+    expect(f.drops()).toHaveLength(0);
+    const attempts = vi.mocked(f.cdp.send).mock.calls.filter(([method, params]) => method === "Input.dispatchDragEvent" && params?.type === "dragCancel");
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.[1]).toMatchObject({ x: 20, y: 15, data: { items: [{ mimeType: "text/plain", data: "native fixture payload" }] } });
+    expect(f.cdp.events.listenerCount("message")).toBe(1);
+    expect(f.guest.debugger.detach).toHaveBeenCalledTimes(targetCancelFails ? 1 : 0);
+    f.guest.emit("destroyed");
+  });
 });

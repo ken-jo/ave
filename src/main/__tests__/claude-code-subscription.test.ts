@@ -6,6 +6,7 @@ import {
 import {
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
+  SUBSCRIPTION_RUNTIME_API_COUNTERPART,
   SUBSCRIPTION_RUNTIME_DESCRIPTORS,
 } from "../../shared/subscription-runtime.js";
 import {
@@ -54,7 +55,11 @@ describe("claude-code subscription contract", () => {
     expect(isClaudeCodeSubscriptionProviderId("codex")).toBe(false);
     const descriptor = subscriptionRuntimeDescriptor("claude-code");
     expect(descriptor.transport).toBe("claude-cli");
-    expect(descriptor.requiresExecutable).toBe(true);
+    // Ave finds the user's own `claude`; there is no path to pick.
+    expect(descriptor.executable).toBe("discovered");
+    expect(descriptor.installGuidance?.documentationUrl).toBe("https://code.claude.com/docs/en/setup");
+    // One company, one row: the Claude plan is Anthropic's other way in.
+    expect(SUBSCRIPTION_RUNTIME_API_COUNTERPART["claude-code"]).toBe("claude");
     expect(descriptor.loginMethods).toEqual(["browser"]);
     expect(descriptor.supportsManagedLogout).toBe(true);
     expect(descriptor.supportsModelSelection).toBe(false);
@@ -102,7 +107,6 @@ describe("claude-code subscription contract", () => {
     const claudeCodeClient = {
       getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
       verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
-      getConfiguredExecutable: vi.fn(() => "C:\\Tools\\claude.exe"),
       getRuntimePaths: vi.fn(() => ({
         runtimeHome: "C:\\isolated\\claude-home",
         workspaceDir: "C:\\isolated\\claude-workspace",

@@ -83,6 +83,7 @@ function setup(options?: {
   llmModel?: UseSendMessageDeps["llmModel"];
   llmRouteModalities?: UseSendMessageDeps["llmRouteModalities"];
   checkApiKey?: UseSendMessageDeps["checkApiKey"];
+  activeChatModel?: UseSendMessageDeps["activeChatModel"];
   settingsReady?: boolean;
   streaming?: boolean;
   handleCompactCommand?: UseSendMessageDeps["handleCompactCommand"];
@@ -97,6 +98,7 @@ function setup(options?: {
   const unmarkLastAssistantInterrupted = vi.fn();
   const appendSystemEntry = vi.fn();
   const setQuestion = vi.fn();
+  const onOpenSettings = vi.fn();
   const activeSubscriptionRuntime = options?.activeSubscriptionRuntime ?? null;
   const subscriptionRuntimePolicy = options?.subscriptionRuntimePolicy
     ?? selectSubscriptionRuntimeUiPolicy({
@@ -172,9 +174,11 @@ function setup(options?: {
     llmModel: options?.llmModel ?? "claude-sonnet-4-5",
     ...(options?.llmRouteModalities !== undefined ? { llmRouteModalities: options.llmRouteModalities } : {}),
     llmReadyWithoutApiKey: true,
+    activeChatModel: options?.activeChatModel
+      ?? { kind: "api", vendor: "claude", model: options?.llmModel ?? "claude-sonnet-4-5" },
     subscriptionRuntimePolicy,
     settingsReady: options?.settingsReady ?? true,
-    onOpenSettings: vi.fn(),
+    onOpenSettings,
     setQuestion,
     handleAskRef: { current: null },
   } as unknown as UseSendMessageDeps;
@@ -197,7 +201,7 @@ function setup(options?: {
       : deps);
   });
   return {
-    result, chatSend, chatAbort, setQuestion, setAttachments, dropUserEntry, setErrorWithThought,
+    result, chatSend, chatAbort, setQuestion, setAttachments, onOpenSettings, dropUserEntry, setErrorWithThought,
     beginStreamingRequest,
     resetStreamAccumulators, markLastAssistantInterrupted, unmarkLastAssistantInterrupted, appendSystemEntry,
     chat: () => chat as unknown as ReturnType<typeof useChatState>,
@@ -380,6 +384,26 @@ describe("handleAsk — a turn carrying an attached resource", () => {
 
     expect(checkApiKey).not.toHaveBeenCalled();
     expect(chatSend).not.toHaveBeenCalled();
+  });
+
+  it("does not send to a vendor default when main reports no connected provider", async () => {
+    // The keyless gate and a stored key for some other vendor must not make a
+    // first-run send go out on a model nobody chose; the user is taken to
+    // provider setup and the draft stays.
+    const checkApiKey = vi.fn(async () => true);
+    const { result, chatSend, onOpenSettings, setQuestion } = setup({
+      attachments: [],
+      activeChatModel: { kind: "none", reason: "no-connected-provider" },
+      checkApiKey,
+    });
+
+    await act(async () => {
+      await result.current.handleAsk("hello on a fresh profile");
+    });
+
+    expect(chatSend).not.toHaveBeenCalled();
+    expect(onOpenSettings).toHaveBeenCalledWith("llm");
+    expect(setQuestion).not.toHaveBeenCalledWith("");
   });
 
   it("does not consult an inactive stored API key when subscription chat is unavailable", async () => {
