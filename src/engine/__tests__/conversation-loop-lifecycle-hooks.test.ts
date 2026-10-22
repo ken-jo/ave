@@ -21,6 +21,7 @@ import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { MAX_STOP_HOOK_CONTINUATIONS } from "../turn/query-loop.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -185,6 +186,101 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
     });
     expect(result.text).toBe("ok");
+  });
+});
+
+describe("ConversationLoop — Stop hook continuation", () => {
+  type StopDispatch = { decision: "allow" | "deny"; reason: string; results: Array<{ blockFeedback?: string }> };
+  const BLOCK: StopDispatch = { decision: "deny", reason: "hook blocked", results: [{ blockFeedback: "Run the focused tests first." }] };
+  const ALLOW: StopDispatch = { decision: "allow", reason: "noop", results: [] };
+
+  /** Every round ends cleanly; counts how often the model was asked. */
+  function countingProvider() {
+    const provider = {
+      vendor: "openai" as const,
+      calls: 0,
+      async *streamTurn(): AsyncIterable<StreamEvent> {
+        provider.calls += 1;
+        yield { type: "text_delta", text: `answer ${provider.calls}` };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    return provider;
+  }
+
+  function stopManager(stop: (call: number) => StopDispatch, stopEvent = "Stop") {
+    const mgr = stubManager();
+    let stops = 0;
+    const runLifecycleEvent = vi.fn(async (event: string, _sessionId: string, _origin: string, _payload?: Record<string, unknown>) =>
+      event === stopEvent ? stop(++stops) : ALLOW);
+    return { ...mgr, runLifecycleEvent };
+  }
+
+  it("continues a sub-agent turn through SubagentStop and leaves its Stop observe-only", async () => {
+    const provider = countingProvider();
+    const mgr = stopManager((call) => (call === 1 ? BLOCK : ALLOW), "SubagentStop");
+    const loop = buildLoop(provider, mgr as unknown as ReturnType<typeof stubManager>);
+    (loop as { provider: LLMProvider | null }).provider = provider;
+    const onDispatched = vi.fn();
+    await loop.runTurn("child task", undefined, undefined, {
+      inputOrigin: "llm-tool-arg", spawnDepth: 1, subagentStop: { agentId: "child-1", agentType: "worker", onDispatched },
+    });
+    expect(provider.calls).toBe(2);
+    const events = mgr.runLifecycleEvent.mock.calls.map((c) => [c[0], c[3]?.stopHookActive]);
+    expect(events.filter(([event]) => event === "SubagentStop")).toEqual([["SubagentStop", false], ["SubagentStop", true]]);
+    expect(events.filter(([event]) => event === "Stop")).toHaveLength(1);
+    expect(onDispatched).toHaveBeenCalled();
+  });
+
+  async function run(provider: LLMProvider, mgr: ReturnType<typeof stopManager>, signal?: AbortSignal, onError?: (message: string) => void) {
+    const loop = buildLoop(provider, mgr as unknown as ReturnType<typeof stubManager>);
+    (loop as { provider: LLMProvider | null }).provider = provider;
+    const result = await loop.runTurn("finish the change", onError ? { onError } : undefined, signal, { inputOrigin: "user-keyboard" });
+    const stops = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "Stop");
+    return { loop, result, stops };
+  }
+
+  it("continues once on a block, feeding the reason back as the next input", async () => {
+    const provider = countingProvider();
+    const { loop, result, stops } = await run(provider, stopManager((call) => (call === 1 ? BLOCK : ALLOW)));
+    expect(provider.calls).toBe(2);
+    expect(result).toMatchObject({ text: "answer 2", stopReason: "end_turn" });
+    expect(stops).toHaveLength(2);
+    const feedback = loop.history.getMessages().filter((m) => m.meta?.displayText === "Run the focused tests first.");
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]).toMatchObject({ role: "user", meta: { hostInjectionId: expect.any(String) } });
+  });
+
+  it("sets stopHookActive only while a continuation is in progress", async () => {
+    const { stops } = await run(countingProvider(), stopManager((call) => (call === 1 ? BLOCK : ALLOW)));
+    expect(stops.map((c) => c[3]?.stopHookActive)).toEqual([false, true]);
+  });
+
+  it("stops at the continuation cap and surfaces a notice", async () => {
+    const provider = countingProvider();
+    const onError = vi.fn();
+    const { result, stops } = await run(provider, stopManager(() => BLOCK), undefined, onError);
+    expect(provider.calls).toBe(MAX_STOP_HOOK_CONTINUATIONS + 1);
+    expect(stops).toHaveLength(MAX_STOP_HOOK_CONTINUATIONS + 1);
+    expect(result.stopReason).toBe("end_turn");
+    expect(onError.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining(String(MAX_STOP_HOOK_CONTINUATIONS))]);
+  });
+
+  it("does not continue when the turn is cancelled during the stop hook", async () => {
+    const provider = countingProvider();
+    const controller = new AbortController();
+    await run(provider, stopManager(() => { controller.abort(); return BLOCK; }), controller.signal);
+    expect(provider.calls).toBe(1);
+  });
+
+  it("ends normally on an allow or a hook failure", async () => {
+    for (const outcome of [ALLOW, { decision: "deny" as const, reason: "hook exited non-zero (1)", results: [{}] }]) {
+      const provider = countingProvider();
+      const { result, stops } = await run(provider, stopManager(() => outcome));
+      expect(provider.calls).toBe(1);
+      expect(stops).toHaveLength(1);
+      expect(result).toMatchObject({ text: "answer 1", stopReason: "end_turn" });
+    }
   });
 });
 

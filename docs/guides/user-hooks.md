@@ -51,11 +51,11 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `SessionStart` | Optional `session_meta: object` | Observe only; before the first turn after session creation or loading |
 | `SessionEnd` | Optional `reason: string`, `session_meta: object`, `stop_reason: string` | Observe only; session switch or reset, not a crash/shutdown guarantee |
 | `Notification` | Optional `message: string` | Observe only; turn-end notification |
-| `Stop` | Optional `stop_reason: string`, `tool_count: number`, `duration_ms: number` | Observe only; does not continue the turn |
+| `Stop` | Optional `stop_reason: string`, `tool_count: number`, `duration_ms: number`, `stop_hook_active: boolean` | A block at a clean end continues the turn; see below |
 | `PreCompact` | Optional `reason: string`, `token_estimate: number` | Observe only |
 | `PostCompact` | Optional `messages_before: number`, `messages_after: number`, `tokens_before: number`, `tokens_after: number` | Observe only |
 | `SubagentStart` | Optional `agent_id: string`, `agent_type: string` | Observe only |
-| `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string` | Observe only |
+| `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string`, `stop_hook_active: boolean` | A block at a clean end continues the sub-agent run; see below |
 
 Fields depend on the dispatch site; an unavailable optional field is omitted. Prompt text, top-level tool input strings and string-array items, tool output, error text, denial text, and notification text are DLP-redacted before dispatch. Nested tool objects and session metadata retain the existing caller-owned redaction responsibility. No transcript path or permission-mode field is promised by this contract.
 
@@ -70,7 +70,9 @@ Fields depend on the dispatch site; an unavailable optional field is omitted. Pr
 | Malformed, unsupported, or oversized output | Explicit failure; blocking events fail closed |
 | Timeout or spawn/wrap/admission failure | Explicit failure; blocking events fail closed |
 
-`PreToolUse`, `PermissionRequest`, and `UserPromptSubmit` enforce denials. Tool hook denials, post-tool feedback, and `PostToolUseFailure` feedback reach the model through the tool result path. A refused prompt is reported to the user before the model is called. Observe-only lifecycle events report failures to the host log and preserve turn/session control flow; events other than `PostToolUseFailure` do not inject context, and none request continuation. The hook chain stops at its first denial, including for observation events. Legacy files run first in filename order, followed by configured handlers in file order.
+`PreToolUse`, `PermissionRequest`, and `UserPromptSubmit` enforce denials. Tool hook denials, post-tool feedback, and `PostToolUseFailure` feedback reach the model through the tool result path. A refused prompt is reported to the user before the model is called. Observe-only lifecycle events report failures to the host log and preserve turn/session control flow; events other than `PostToolUseFailure`, `Stop`, and `SubagentStop` do not inject context. The hook chain stops at its first denial, including for observation events. Legacy files run first in filename order, followed by configured handlers in file order.
+
+`Stop` and `SubagentStop` follow the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) (accessed 2026-10-22) when a turn ends cleanly (`end_turn`). Exit `2` (its stderr) or `{ "decision": "block", "reason": "..." }` keeps the run going: the reason is added to the conversation as a host-generated input and the model takes another round. `stop_hook_active` is `true` while such a continuation is in progress; check it to avoid blocking forever. At most 8 consecutive continuations run per turn, matching the reference default; the next block ends the turn with a notice. `continue: false`, a legacy `action: "deny"`, and any failure end the run normally. A cancelled turn never continues. Top-level turns use `Stop`; sub-agent runs use `SubagentStop`. Other outcomes, such as errors, interruptions, and round caps, still dispatch `Stop` or `SubagentStop` observe-only.
 
 Handlers default to a five-second ceiling. `timeoutMs` is a positive integer in milliseconds, clamped to 5000 by configuration parsing; invalid configuration budgets warn and use the default. Execution expiry terminates the managed process/group and reports `hook timed out after <budget>ms`. Approval waiting uses the existing approval gate's separate deadline. Stdout and stderr each have a 16 KiB capture bound. Oversized stdout fails rather than accepting a truncated decision. Keep decisions and diagnostics concise.
 
@@ -135,7 +137,7 @@ Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/
 | `SessionEnd` | `reason`: `clear`, `resume`, `logout`, `prompt_input_exit`, `other` | `reason`: `new-conversation`, `load-session` | Gap (value set) |
 | `PreCompact` / `PostCompact` | `trigger` (`manual`/`auto`), `custom_instructions`; `compact_summary` after | `reason` (`manual`/`auto-compact`), token and message counts | Gap (naming) |
 | `Notification` | Fires per notification with `message`, `title`, `notification_type` | Fires once at turn end with the assistant text as `message` | Gap (semantics) |
-| `Stop` / `SubagentStop` | `stop_hook_active`, `last_assistant_message`; `decision: "block"` or exit 2 continues the turn, capped at 8 | Observe only; no continuation fields | Owner decision |
+| `Stop` / `SubagentStop` | `stop_hook_active`, `last_assistant_message`; `decision: "block"` or exit 2 continues the turn, capped at 8 | Same continuation and cap with `stop_hook_active`; no `last_assistant_message` | Implemented; `last_assistant_message` is a gap |
 | Matchers | `\|`/`,` lists of exact names, otherwise an unanchored JavaScript regex; `if` with permission-rule syntax on tool events | Anchored, case-sensitive globs, so `Edit\|Write` matches nothing | Gap |
 | Lifecycle matcher subject | Source, trigger, notification type, agent type, or error type; ignored on `UserPromptSubmit` and `Stop` | Session ID; prompt text for `UserPromptSubmit` | Gap |
 | Other nonzero exit | Non-blocking error unless `onFailure: "block"` | Fails closed on blocking events | Intended |

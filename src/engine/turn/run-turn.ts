@@ -33,6 +33,7 @@ import type * as QueryLoopModule from "./query-loop.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
+import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
@@ -673,6 +674,30 @@ async function runTurnInSpan(
     // queryLoop failure; it is never skipped or replaced.
     const { queryLoop } = await import("./query-loop.js");
     let result: Awaited<ReturnType<typeof QueryLoopModule.queryLoop>>;
+    // A top-level turn's clean end runs a continuable Stop; a SubAgentRunner
+    // child's runs SubagentStop. Other nested turns keep observe-only Stop.
+    let stopHookDispatched = false;
+    const subagentStop = options?.subagentStop;
+    const onStopHook = subagentStop || !options?.spawnDepth
+      ? async ({ toolCount, stopHookActive }: { toolCount: number; stopHookActive: boolean }) => {
+          stopHookDispatched = true;
+          if (subagentStop) {
+            subagentStop.onDispatched();
+            return fireContinuableStop(self.deps, self.sessionId, "SubagentStop", {
+              ...(subagentStop.agentId !== undefined ? { agentId: subagentStop.agentId } : {}),
+              ...(subagentStop.agentType !== undefined ? { agentType: subagentStop.agentType } : {}),
+              stopReason: "end_turn",
+              stopHookActive,
+            }, effectiveSessionId);
+          }
+          return fireContinuableStop(self.deps, self.sessionId, "Stop", {
+            stopReason: "end_turn",
+            toolCount,
+            durationMs: Math.max(0, Date.now() - turnStartedAt),
+            stopHookActive,
+          }, effectiveSessionId);
+        }
+      : undefined;
     // Establish per-session ALS context so Gate 4 (plugin-runtime-delegate)
     // can consult the CALLING session's on-demand activation set. The context
     // uses effectiveSessionId (respects sessionIdOverride for sub-agents) and
@@ -703,6 +728,7 @@ async function runTurnInSpan(
           rolePrompt: options?.rolePrompt,
           onMemoryCaptureTaint: (reason) => memoryCaptureTaint.add(reason),
           memoryQuery: input,
+          ...(onStopHook ? { onStopHook } : {}),
         },
       ),
     );
@@ -742,9 +768,11 @@ async function runTurnInSpan(
     // ── #811 m2: Stop (NON-BLOCKING) ──
     // Fired when the turn's query loop has resolved, BEFORE the internal
     // post-turn hook chain — a user lifecycle hook must never block the
-    // hardcoded persistence chain (design §1.4). OBSERVE-ONLY: result discarded.
-    // Payload: stopReason, toolCount, durationMs.
-    await self.fireLifecycleEvent(
+    // hardcoded persistence chain (design §1.4). A clean end_turn already
+    // dispatched its continuable stop hook inside queryLoop; a sub-agent's
+    // turn still observes Stop here, as before. Other outcomes are
+    // OBSERVE-ONLY: result discarded. Payload: stopReason, toolCount, durationMs.
+    if (!(stopHookDispatched && result.stopReason === "end_turn" && !subagentStop)) await self.fireLifecycleEvent(
       "Stop",
       {
         ...(result.stopReason !== undefined
