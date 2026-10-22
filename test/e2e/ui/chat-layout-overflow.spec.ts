@@ -222,7 +222,7 @@ test.describe("chat layout overflow", () => {
   test("historical WorkGroup tools do not clip chat horizontally", async () => {
     await page.setViewportSize({ width: 560, height: 900 });
     // A cleanly completed historical turn collapses into one "work complete"
-    // group with no step count (8810dec73); expanding it shows the tool rows.
+    // group with no step count; expanding it shows the tool rows.
     const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: t("workGroup.completed") });
     await expect(workGroup).toHaveCount(1);
     await workGroup.waitFor({
@@ -230,7 +230,7 @@ test.describe("chat layout overflow", () => {
       timeout: 15_000,
     });
     await workGroup.locator("button").first().click();
-    await expect(workGroup).toContainText("agent_hub_list_approval_requests");
+    await expect(workGroup).toContainText("samplehub_list_approval_requests");
     const buttons = await workGroup.locator("button").count();
     for (let i = 1; i < buttons; i++) {
       await workGroup.locator("button").nth(i).click();
