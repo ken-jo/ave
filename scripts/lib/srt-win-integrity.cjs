@@ -14,4 +14,4 @@ function assertSrtWinVendor(vendorDirectory, arches = Object.keys(pins.sha256)) 
   for (const arch of arches) assertSrtWinFile(join(vendorDirectory, "srt-win", arch, "srt-win.exe"), arch);
 }
 
-module.exports = { assertSrtWinFile, assertSrtWinVendor };
+module.exports = { assertSrtWinVendor };

@@ -9,8 +9,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, prepareSrtWinExecutable } from "../srt-win-integrity.js";
 
 const require = createRequire(import.meta.url);
-const { assertSrtWinFile, assertSrtWinVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
-  assertSrtWinFile: (path: string, arch: string) => void;
+const { assertSrtWinVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
   assertSrtWinVendor: (path: string, arches?: string[]) => void;
 };
 const vendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
@@ -30,7 +29,7 @@ describe("Windows helper integrity", () => {
   it.each(["x64", "arm64"])("pins the shipped %s bytes in both runtime and packaging verifiers", (arch) => {
     const path = join(vendor, "srt-win", arch, "srt-win.exe");
     expect(() => assertSrtWinDigest(readFileSync(path), arch)).not.toThrow();
-    expect(() => assertSrtWinFile(path, arch)).not.toThrow();
+    expect(() => assertSrtWinVendor(vendor, [arch])).not.toThrow();
   });
 
   it.each(["bitflip", "same-size garbage"])("rejects %s with an integrity code before staging", (kind) => {
@@ -39,7 +38,10 @@ describe("Windows helper integrity", () => {
     else bytes.fill(0x41);
     writeFileSync(source, bytes);
     expect(() => prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
-    expect(() => assertSrtWinFile(source, process.arch)).toThrow("srt-win-integrity-mismatch");
+    const packaged = join(dirname(source), "vendor", "srt-win", process.arch);
+    mkdirSync(packaged, { recursive: true });
+    writeFileSync(join(packaged, "srt-win.exe"), bytes);
+    expect(() => assertSrtWinVendor(join(dirname(source), "vendor"), [process.arch])).toThrow("srt-win-integrity-mismatch");
   });
 
   it("retains the missing-file code and refuses unpinned architectures", () => {
