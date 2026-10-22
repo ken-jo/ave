@@ -212,6 +212,19 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     expect(CHANNEL_GESTURE[event]).toBeUndefined();
   });
 
+  it("keeps the browser tab-op and control events internal and outbound-only", () => {
+    for (const event of [CHANNELS.browser.tabOp, CHANNELS.browser.control]) {
+      expect(channels).not.toContain(event);
+      expect(PUBLIC_CHANNELS).not.toContain(event);
+      expect(isPublicChannel(event)).toBe(false);
+      expect(CHANNEL_GESTURE[event]).toBeUndefined();
+    }
+    for (const invoke of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.surface.setActive]) {
+      expect(channels).toContain(invoke);
+      expect(isPublicChannel(invoke)).toBe(false);
+    }
+  });
+
   it("keeps the bootstrap status event outbound-only, beside its invoke twin", () => {
     // The event channel had a second spelling in `src/boot/bootstrap-status.ts`
     // that no gate compared against the contract, because only the invoke
@@ -265,6 +278,21 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:away-authority:status",
         "ave:bootstrap:retry",
         "ave:bootstrap:status:get",
+        "ave:browser-workspace:clear-history",
+        "ave:browser-workspace:find",
+        "ave:browser-workspace:get-state",
+        "ave:browser-workspace:preview",
+        "ave:browser-workspace:set-bookmark",
+        "ave:browser-workspace:set-site-permission",
+        "ave:browser-workspace:stop-find",
+        "ave:browser-workspace:zoom",
+        "ave:browser:bind-tab",
+        "ave:browser:get-state",
+        "ave:browser:pause",
+        "ave:browser:pause-popup",
+        "ave:browser:resume",
+        "ave:browser:resume-popup",
+        "ave:browser:stop",
         "ave:chat:abort",
         "ave:chat:branch-from-checkpoint",
         "ave:chat:compact",
@@ -507,15 +535,18 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:update",
         "ave:shell:open-external",
         "ave:sidechat:abort",
+        "ave:sidechat:end-pane-chat",
         "ave:sidechat:get-sub-agent-transcript",
         "ave:sidechat:load",
         "ave:sidechat:new",
+        "ave:sidechat:pane-history",
         "ave:sidechat:send",
         "ave:skills:list",
         "ave:skills:uninstall",
         "ave:starred:add",
         "ave:starred:list",
         "ave:starred:remove",
+        "ave:surface:set-active",
         "ave:tailnet-observer:apply",
         "ave:tailnet-observer:configure-serve",
         "ave:tailnet-observer:guided-setup",

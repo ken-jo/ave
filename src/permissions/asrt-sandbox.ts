@@ -1283,6 +1283,7 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
 export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
   const home = homedir();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
+  // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
   const writePersistence = [
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
@@ -1313,28 +1314,6 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     // that in a dev checkout this exe can sit inside a write grant). Grandparent
     // of the exe → covers every arch subdir + build script. Inert off win32.
     dirname(dirname(getVendoredSrtWinExePath())),
-    // ── ASRT's OWN default write paths ─────────────────────────────────────
-    // `sandbox-manager` composes the write allow-list as
-    // `[...getDefaultWritePaths(), ...userAllowWrite]`, so an ALLOW grant
-    // cannot subtract from it and every confined process on the machine — this
-    // app's plugins, this app's workers, and any OTHER ASRT consumer — reaches
-    // the same directories. Measured before this deny existed: a confined
-    // plugin child listed 141 entries under `/tmp/claude` and wrote a file of
-    // its own, and a second child spawned with a different plugin root read it
-    // back. That is a channel between two plugins the boundary exists to keep
-    // apart, and a channel out of the sandbox into two directories under the
-    // user's REAL home that belong to other tools.
-    //
-    // A DENY is what closes it: ASRT applies these as `denyWithinAllow`, which
-    // takes precedence over its own defaults. This could not be done until now
-    // for one reason, and it was not a small one — ASRT pointed `TMPDIR` AT
-    // this list, so denying it also broke every `writeFileSync(join(tmpdir(),
-    // …))` in every confined child. `useAppOwnedSandboxTempRoot` moved the temp
-    // root under `~/.ave` first, which is what makes the deny survivable.
-    "/tmp/claude",
-    "/private/tmp/claude",
-    join(home, ".npm", "_logs"),
-    join(home, ".claude", "debug"),
   ];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1650,7 +1629,7 @@ async function verifyLinuxAsrtRuntime(
       process.cwd(),
     );
     wrapped = true;
-    await executeLinuxAsrtRuntimeProbe(probe, abortController);
+    await executeLinuxAsrtRuntimeProbe(hardenLinuxSandboxWrap(probe), abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error)) throw error;
     throw new AsrtLinuxRuntimeProbeError("configured ASRT wrapper could not be prepared");
@@ -1741,6 +1720,7 @@ export async function initializeAsrtSandbox(
   // the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
   _workerUnixSocketDirs.clear();
+  useAppOwnedSandboxTempRoot();
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
@@ -1804,10 +1784,8 @@ export async function wrapToolCommand(
   }
   // A wrapped command is a confined process that may write a plugin tree.
   noteConfinedProcessesMayRun();
-  // Publish the temp root HERE rather than trusting a boot step to have run.
-  // The deny floor refuses ASRT's shared default paths unconditionally, so a
-  // wrap that happened without this would hand the child a `TMPDIR` it is not
-  // allowed to write — a broken temp directory with no visible cause. Idempotent.
+  // Publish before wrapping: the runtime sets TMPDIR inside the command,
+  // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   const SandboxManager = await loadSandboxManager();
@@ -1822,34 +1800,10 @@ export async function wrapToolCommand(
 
 
 /**
- * Point ASRT's substituted temp root at a directory this app owns.
- *
- * WHAT IT REPLACES, and why that is not a hypothetical. On macOS and Linux ASRT
- * writes `TMPDIR=` into the sandboxed command line itself, reading
- * `CLAUDE_CODE_TMPDIR` (or the legacy `CLAUDE_TMPDIR`) from the WRAPPING
- * process and falling back to `/tmp/claude`. Because the assignment is inside
- * the command, no environment a caller composes can outrank it — measured: a
- * confined child whose `extraEnv` carried a `TMPDIR` still reported
- * `/tmp/claude`, while the `HOME` from that same object came through.
- *
- * `/tmp/claude` is not ours. It is a per-MACHINE path shared by every ASRT
- * consumer, and it is also one of ASRT's own default write paths, which no
- * grant this app passes can subtract from. Measured on a developer machine: a
- * confined plugin child listed 141 entries there and wrote a file of its own —
- * a read/write channel between this app's sandbox and whatever else on the
- * machine uses the same runtime, in both directions, that no manifest mentions.
- *
- * WHAT THIS CLOSES. Moving the root under `~/.ave` ends the
- * CROSS-APPLICATION half: the directory is ours, created `0o700`. The
- * cross-PRINCIPAL half — every confined child of this app sharing one root —
- * is closed one level down, by {@link ensureSandboxTempPrincipalDir}: plugin-
- * owned and third-party processes get a directory of their own under this root
- * and a `TMPDIR` naming it, set inside the wrap, and none of them is granted
- * the root itself. What this variable still decides is the `TMPDIR` ASRT
- * writes for a wrap that sets none of its own, which it keeps off
- * `/tmp/claude`.
- *
- * Called once, before any wrap, so nothing observes it changing.
+ * The host-owned root used for the runtime's inline TMPDIR assignment.
+ * Non-device write roots come only from caller policy; setting TMPDIR alone
+ * grants no access. Confined principals receive their own directory below this
+ * root, with the root read-denied and only their own directory granted.
  */
 export function appOwnedSandboxTempRoot(): string {
   return join(sandboxPrivateBase(), "tmp");
@@ -1886,12 +1840,24 @@ export function appOwnedSandboxHomeRoot(): string {
 }
 
 /**
+ * Where the workspace terminal hands its sandboxed shell command to the
+ * trampoline it spawned on the pty (`terminal-tty-handoff.ts`): one `mkdtemp`
+ * directory with one fifo per spawn. The host alone writes here. No wrap
+ * grants it, so no confined process can write the fifo (which the trampoline
+ * runs unsandboxed), and the read floor denies it, so none can read the
+ * command and environment out of it either.
+ */
+export function appOwnedTerminalHandoffRoot(): string {
+  return join(sandboxPrivateBase(), "handoff");
+}
+
+/**
  * The roots of the confined processes' private directories, read-denied by
  * the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
  */
 export function appOwnedSandboxPrivateRoots(): string[] {
   if (process.platform === "win32") return [];
-  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot()];
+  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
 }
 
 /**
@@ -2085,23 +2051,51 @@ export async function wrapWorkerCommand(
   command: string,
   options: WrapOptions = {},
 ): Promise<SandboxWrapResult> {
+  return wrapLongLivedCommand("wrapWorkerCommand", command, options, undefined);
+}
+
+/**
+ * Wrap the workspace terminal's login shell. The same wrap as
+ * {@link wrapWorkerCommand}, plus ONE terminal grant: macOS `file-ioctl` on
+ * `ownTty`, the pty slave the shell is spawned on, and on no other terminal.
+ * Without it the shell cannot turn off echo or take the terminal for a
+ * foreground job (every command is printed twice, job control is off), and
+ * ASRT's only other grant, `allowPty: true`, covers every `/dev/ttys*` of the
+ * user. ASRT refuses an `ownTty` that is not `/dev/ttys` + 3 or more digits.
+ *
+ * Only the terminal passes a tty: tool and worker wraps never get one.
+ */
+export async function wrapTerminalCommand(
+  command: string,
+  options: WrapOptions & { readonly ownTty: string },
+): Promise<SandboxWrapResult> {
+  return wrapLongLivedCommand("wrapTerminalCommand", command, options, { ttys: [options.ownTty] });
+}
+
+async function wrapLongLivedCommand(
+  caller: string,
+  command: string,
+  options: WrapOptions,
+  wrapOptions: { readonly ttys: readonly string[] } | undefined,
+): Promise<SandboxWrapResult> {
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
-    throw new Error("wrapWorkerCommand: ASRT sandbox is not active (initialize at boot first)");
+    throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
   noteConfinedProcessesMayRun();
-  // Publish the temp root HERE rather than trusting a boot step to have run.
-  // The deny floor refuses ASRT's shared default paths unconditionally, so a
-  // wrap that happened without this would hand the child a `TMPDIR` it is not
-  // allowed to write — a broken temp directory with no visible cause. Idempotent.
+  // Publish before wrapping: the runtime sets TMPDIR inside the command,
+  // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
-  assertPerExecFilesystemSupported(options.filesystem, "wrapWorkerCommand");
+  assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();
+  // `wrapOptions` is undefined for every wrap but the terminal's.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
+    undefined,
+    wrapOptions,
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }

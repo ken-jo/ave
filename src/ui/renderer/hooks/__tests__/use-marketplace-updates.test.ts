@@ -142,10 +142,10 @@ describe("useMarketplaceUpdates", () => {
       await Promise.resolve();
     });
     act(() => {
-      emit([update("meeting", "0.5.24"), update("agent-hub", "1.0.0")]);
+      emit([update("meeting", "0.5.24"), update("samplehub", "1.0.0")]);
     });
 
-    expect(result.current.updates).toEqual([update("agent-hub", "1.0.0")]);
+    expect(result.current.updates).toEqual([update("samplehub", "1.0.0")]);
 
     act(() => {
       emit([update("meeting", "0.5.25")]);

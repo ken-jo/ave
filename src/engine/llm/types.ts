@@ -48,6 +48,18 @@ export interface MessageMeta {
    * the marker never contaminates the text that is replayed to the model.
    */
   interrupted?: boolean;
+  /**
+   * Why an interrupted row stopped, when it was not the user's Stop: the app
+   * quit, crashed, or was killed mid-turn (`host-exit`). Rows recovered from a
+   * crashed turn and rows of a turn aborted by a graceful quit carry it; the
+   * renderer offers Continue for a session whose last turn ended this way.
+   */
+  interruptedBy?: "host-exit";
+  /**
+   * User row written by Continue after a host-exit interruption. Its content is
+   * the host's resume instruction, so it never becomes the session's title.
+   */
+  resumesInterruptedTurn?: true;
   /** Host-minted nonce for rollbackable injected rows across history cloning. */
   hostInjectionId?: string;
   /**

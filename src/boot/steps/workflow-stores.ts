@@ -33,6 +33,10 @@ import type { BootContext } from "../context.js";
 import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
+import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
+import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
+import { browserOrigin } from "../../tools/browser-tools.js";
 
 const log = createLogger("ave");
 
@@ -144,25 +148,70 @@ export async function setupWorkflowStores(
     },
     networkFetch,
     singleHopNetworkFetch,
-    // The workspace terminal exists only in the desktop host. Every
-    // interactive loop — the primary chat, each chat tile and the side chat —
-    // is shown in the one app window (getAppWindows), so a session one of them
-    // holds is hosted there; routine and work-board loops are not, and get no
-    // terminals. Read at call time: the loops are wired after this step.
+    // The workspace terminal and the browser tabs exist only in the desktop
+    // host. A conversation reaches the window that shows it: a chat tile's
+    // session the window whose tile holds it, the side chat the window it was
+    // last typed in, a pane chat its pane's window. A sub-agent inherits its parent's (session-window-scope.ts);
+    // routine and work-board loops are shown nowhere and get neither. Read at
+    // call time: the loops are wired after this step.
     ...(ctx.host.desktop !== undefined
-      ? {
-        terminalRead: {
-          windowIdForHostedSession: (sessionId: string): number | null => {
-            const hosted = ctx.findLoopBySessionId(sessionId) !== undefined
-              || ctx.sideChatConversationLoop.getSessionId() === sessionId;
-            if (!hosted) return null;
-            const window = getMainWindow();
-            return window && !window.isDestroyed() ? window.id : null;
+      ? (() => {
+        const desktop = ctx.host.desktop!;
+        const windowIdForHostedSession = (sessionId: string): number | null => {
+          if (ctx.findLoopBySessionId(sessionId) !== undefined) {
+            const holder = findSessionMainWindowContents(sessionId);
+            return holder ? mainWindowForContents(holder)?.id ?? null : null;
+          }
+          if (ctx.sideChatConversationLoop.getSessionId() === sessionId) {
+            return sideChatOwnerWindow()?.id ?? null;
+          }
+          // A pane chat reaches the window its pane is in.
+          return ctx.paneChatLoops.holding(sessionId)?.windowId ?? null;
+        };
+        const liveOriginSessionId = (sessionId: string): string | undefined =>
+          subAgentRunnerRef.fn?.liveOriginSessionId(sessionId);
+        return {
+          terminalRead: {
+            windowIdForHostedSession,
+            liveOriginSessionId,
+            defaultTerminalTabId: (windowId: number, sessionId: string): string | undefined =>
+              browserTabRegistry.defaultTerminalTabId(windowId, sessionId),
           },
-          liveOriginSessionId: (sessionId: string): string | undefined =>
-            subAgentRunnerRef.fn?.liveOriginSessionId(sessionId),
-        },
-      }
+          terminalRun: {
+            windowIdForHostedSession,
+            liveOriginSessionId,
+            activeTerminalTabId: (windowId: number): string | undefined =>
+              browserTabRegistry.activeTerminalTabId(windowId),
+            // A pane chat's own terminal (or its page, which has none).
+            boundSurface: (windowId: number, hostSessionId: string) =>
+              browserTabRegistry.conversationSurface(windowId, hostSessionId),
+            ensureAgentTerminal,
+            typeCommand: typeAgentTerminalCommand,
+            verifyShell: verifyAgentTerminalShell,
+            auditMismatch: (mismatch) => {
+              ctx.bootAuditLogger.log({
+                timestamp: new Date().toISOString(),
+                sessionId: mismatch.sessionId ?? "unknown",
+                type: "warn",
+                // Digests, not text: a command can hold secrets.
+                output: `terminal_run: terminal ${mismatch.tabId} ran a different command from the one approved `
+                  + `(approved sha256 ${mismatch.approvedSha256}, ran sha256 ${mismatch.ranSha256})`,
+              });
+            },
+          },
+          browser: {
+            windowIdForHostedSession,
+            liveOriginSessionId,
+            tabs: browserTabRegistry,
+            pickUploadFiles: desktop.pickBrowserUploadFiles,
+            // Page actions (CDP) load on first use, outside the initial bundle.
+            loadActions: async () => {
+              const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
+              return createBrowserPageActions(browserTabRegistry, browserOrigin, desktop.browserGuestContentOrigin);
+            },
+          },
+        };
+      })()
       : {}),
     getStudioMcpConfigs: () => ctx.mcpManager ? ctx.mcpManager.getConfigs() : Promise.resolve([]),
     getStudioConnectorSummary: (serverId: string) => {

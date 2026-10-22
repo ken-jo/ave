@@ -14,7 +14,7 @@ travels in `_meta["ave/invocation"]`. Its schema and generated client are
 `schemas/plugin-host-protocol/3/protocol-client.ts`; the golden fixtures live under
 `src/plugins/isolation/__tests__/fixtures/host-protocol/3/`. An extension for app
 0.14.0 or later declares `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the `ave/*` wire served
+`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the wire served
 by apps 0.12–0.13) is refused before activation and must be re-vendored from an Ave
 release tag. Where a step or decision below says `hostProtocol: "2"`, `…/2/…` or
 names an `ave-plugin-*` repository, it records that step at its pinned commit and
@@ -860,7 +860,7 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `withdrawAlert` (:1893 at `f1a8d191e`) | req | plain-json → plain-json | caller's own alert kinds only | unchanged; golden fixture `.../withdrawAlert.json` |
 | `logEvent` (:1377) | notif | plain-json → void | tagged `plugin:<id>` by host | none |
 | `onShutdown` (:1388) | sub | handler-registration, host-terminated | 5 s per handler (`:1384-1386`) | becomes `ave/instance/shutdown` request (§3.4) |
-| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ socketPath, pid }` cross; stdout/stderr/exit are notifications (`host-api-wire.ts:1652-1666`) |
+| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, socketPath, pid }` cross; the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
 | `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | unchanged |
 | `pickFolders` (:1510) | UI | plain-json | OS dialog, user consent is the dialog | unchanged; the chosen paths do not widen the envelope unless declared (§2.2) |
@@ -1529,11 +1529,10 @@ the site deploys on every `web/**` merge, so the copy must travel with the tag, 
 of it (decision 6). The `$id` is that tagged URL and is never reassigned: an additive
 change within protocol `1` (§3.3) ships in a new app tag and therefore under a new `$id`
 (Agent Plugins conformance, "Never reassign a published canonical schema identifier",
-[checklist](https://agent-plugins.org/client-implementers/conformance)). Protocols 1 and 2
-were published under the Ave site's origin (`https://former-site.invalid/schemas/…`); their files keep
-that `$id` byte for byte and ave.agent-connector.ai serves them at the same paths. Protocol 3
-onward carries the Ave origin.
-`.../plugin-host-protocol/1/protocol.schema.json` is a documented moving alias to the
+[checklist](https://agent-plugins.org/client-implementers/conformance)). The site
+publishes only protocols the host serves (protocol 3, under the Ave origin); the
+schemas of retired protocols 1 and 2 are no longer published.
+`.../plugin-host-protocol/<protocol>/protocol.schema.json` is a documented moving alias to the
 newest tag's copy, for editors; a plugin pins the tag through `contract/sources.json`,
 never the alias.
 
@@ -2751,6 +2750,18 @@ The mirror check makes the canonical protocol schema **frozen on `main` from a t
 until the next version bump**, and the bump is therefore the first change after the
 tag (`docs/development/release-process.md`, "Between releases: the next protocol
 candidate", added by #2589). Exactly what happened, and what it means for this plan:
+
+- **Enforced since 0.14.1.** The check now compares every recorded copy whose version
+  has a `v<version>` tag in the checkout with the canonical schema that tag carries,
+  published or not, and `syncProtocolMirror` refuses to write such a copy
+  (`scripts/lib/plugin-host-protocol-mirror.mjs`, `checkTaggedCopy`). Before that, a
+  candidate left at a tagged version (`3/v0.14.0`, `publishedTag: null`, with
+  `package.json` still at `0.14.0`) passed the check after being regenerated with a
+  later protocol change. A version with no tag yet (the open candidate, including
+  the release script's pre-tag sync) is not compared; a checkout that cannot say
+  whether a version is tagged — shallow, without any `v*` tag, or not a git
+  repository — is refused, so CI checks out full history (`fetch-depth: 0`) in
+  every job that builds or checks the mirror.
 
 - **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
   at `publishedTag: null`, that copy was the candidate, and the check refused any `main`
@@ -4665,7 +4676,7 @@ Verified on 2026-10-03, each with the source that proves it.
     `TODO.md` records, not a defect in the job.
 11. **The old server and its publication path.** `marketplace.former-site.invalid` is
     `former_org/agent-marketplace` (FastAPI, Docker Compose + Nginx under `deploy/`,
-    on the owner's own Cloudflare and server; not archived, last push 2026-09-19). Plugin
+    on the owner's own Cloudflare and server; not archived at the time, last push 2026-09-19). Plugin
     repositories publish to it through `former_org/.github/workflows/marketplace-publish.yml`
     (siblings `plugin-ci.yml`, `validate-plugin-manifest.yml`). Nothing under `src/` or
     `web/` in ave names the host any more (grep 2026-10-03); the app has read only git

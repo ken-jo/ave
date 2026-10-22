@@ -396,7 +396,12 @@ export async function wireConversation(
     scriptHookManager,
     getLoop: () => sideChatConversationLoop,
   });
-  sideChatConversationLoop = createSideChatConversationLoop({
+  // The pane chats' loops, keyed by window and tab; declared before the rail
+  // loop so both share one held-session check over the side-chat store.
+  const paneLoops = new Map<string, { windowId: number; tabId: string; loop: ConversationLoop }>();
+  const sideSessionHeldElsewhereFor = (self: () => ConversationLoop) =>
+    sessionHeldByOtherLoop(() => [sideChatConversationLoop, ...[...paneLoops.values()].map((entry) => entry.loop)], self);
+  const sideChatLoopDeps = {
     settingsService,
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
     inputClassifier,
@@ -419,9 +424,52 @@ export async function wireConversation(
     getAdditionalDirectories: () => readPermissionSettings().permissions.additionalDirectories,
     subscriptionProviderFactory,
     broadcastPermissionConfigChanged: () => broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []),
+  };
+  sideChatConversationLoop = createSideChatConversationLoop({
+    ...sideChatLoopDeps,
+    sessionHeldElsewhere: sideSessionHeldElsewhereFor(() => sideChatConversationLoop),
     ...sideChatRationaleBindings,
   });
   ctx.sideChatConversationLoop = sideChatConversationLoop;
+
+  // A terminal or web pane's own chat is its own conversation on its own loop,
+  // so pane chats and the rail stream at the same time. Each pane loop gets its
+  // own rationale bindings (a closure over itself) and, through the factory,
+  // its own post-turn chain over the shared side-chat store.
+  const paneKey = (windowId: number, tabId: string) => `${windowId}\u0000${tabId}`;
+  ctx.paneChatLoops = {
+    resolve: (windowId, tabId) => {
+      const existing = paneLoops.get(paneKey(windowId, tabId));
+      if (existing) return existing.loop;
+      let paneLoop!: ConversationLoop;
+      paneLoop = createSideChatConversationLoop({
+        ...sideChatLoopDeps,
+        sessionHeldElsewhere: sideSessionHeldElsewhereFor(() => paneLoop),
+        ...createLoopRationaleBindings({
+          service: rationaleHostService,
+          permissionManager,
+          hookRunner,
+          scriptHookManager,
+          getLoop: () => paneLoop,
+        }),
+      });
+      paneLoops.set(paneKey(windowId, tabId), { windowId, tabId, loop: paneLoop });
+      return paneLoop;
+    },
+    get: (windowId, tabId) => paneLoops.get(paneKey(windowId, tabId))?.loop,
+    release: (windowId, tabId) => {
+      const entry = paneLoops.get(paneKey(windowId, tabId));
+      if (!entry) return undefined;
+      paneLoops.delete(paneKey(windowId, tabId));
+      entry.loop.abortCurrentTurn(new Error("pane chat ended"));
+      return entry.loop;
+    },
+    inWindow: (windowId) => [...paneLoops.values()]
+      .filter((entry) => entry.windowId === windowId)
+      .map(({ tabId, loop }) => ({ tabId, loop })),
+    holding: (sessionId) => [...paneLoops.values()].find((entry) => entry.loop.getSessionId() === sessionId),
+    all: () => [...paneLoops.values()].map((entry) => entry.loop),
+  };
   ctx.sideChatMemoryManager = sideChatMemoryManager;
 
   // Tiled chat groups — the main area can hold several conversations at once.

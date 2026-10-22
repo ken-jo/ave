@@ -77,6 +77,7 @@ import { registerPreviewHandlers } from "./domains/preview.js";
 import { registerWorkspaceHandlers } from "./domains/workspace.js";
 import { registerUiHandlers } from "./domains/ui.js";
 import { registerTerminalHandlers } from "./domains/terminal.js";
+import { registerBrowserHandlers } from "./domains/browser.js";
 import { registerDevHandlers } from "./domains/dev.js";
 import { registerRemoteA2AHandlers } from "./domains/remote-a2a.js";
 import { registerTailnetObserverHandlers } from "./domains/tailnet-observer.js";
@@ -164,6 +165,7 @@ export function registerIpcHandlers(
   registerWorkspaceHandlers(deps);
   registerUiHandlers(deps);
   registerTerminalHandlers(deps);
+  registerBrowserHandlers(deps);
   registerRemoteA2AHandlers(deps);
   registerTailnetSharingHandlers(deps);
   registerTailnetObserverHandlers(deps);

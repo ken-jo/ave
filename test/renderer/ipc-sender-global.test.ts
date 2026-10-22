@@ -1,21 +1,16 @@
 /**
  * IPC sender validation regression test — fix/ipc-sender-full-audit
  *
- * Two concerns:
- *  1. validateSender() allows trusted frames (file://, localhost) and rejects
- *     untrusted origins.
- *  2. Every channel classified as mutating or sensitive in the channel manifest has
- *     a sender guard present in the IPC domain source files
- *     (src/ipc/domains/*). Public read-only channels are excluded.
+ * Every channel classified as mutating or sensitive in the channel manifest has
+ * a sender guard present in the IPC domain source files (src/ipc/domains/*).
+ * Public read-only channels are excluded. validateSender() itself is unit
+ * tested in src/ipc/__tests__/gated.test.ts.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import { OVERLAY_V1, PERMISSIONS, ROUTINES } from "../../src/shared/ipc-channels.js";
 import { CHANNELS } from "../../src/contract/app-contract.js";
-import { validateSender } from "../../src/ipc/gated.js";
-import type { IpcMainInvokeEvent } from "electron";
-import { foreignFrameEvent } from "../../src/__tests__/test-helpers.js";
 
 // ─── Channel manifest ────────────────────────────────────────────────────────
 
@@ -110,44 +105,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:routines:trigger-now": "mutating",
   "ave:routines:list-sessions": "public-read",
 };
-
-// ─── validateSender unit tests ───────────────────────────────────────────────
-
-describe("validateSender", () => {
-  it("trusts file:// renderer (packaged app)", () => {
-    expect(validateSender(foreignFrameEvent("file:///app/index.html"))).toBe(true);
-  });
-
-  it("trusts http://localhost dev server", () => {
-    expect(validateSender(foreignFrameEvent("http://localhost:5173/"))).toBe(true);
-  });
-
-  it("trusts http://127.0.0.1 dev server", () => {
-    expect(validateSender(foreignFrameEvent("http://127.0.0.1:5173/"))).toBe(true);
-  });
-
-  it("rejects https://evil.com (remote origin)", () => {
-    expect(validateSender(foreignFrameEvent("https://evil.com"))).toBe(false);
-  });
-
-  it("rejects http://localhost.attacker.com (hostname spoof)", () => {
-    expect(validateSender(foreignFrameEvent("http://localhost.attacker.com"))).toBe(false);
-  });
-
-  it("rejects https://localhost (HTTPS is not trusted)", () => {
-    expect(validateSender(foreignFrameEvent("https://localhost"))).toBe(false);
-  });
-
-  it("rejects empty url", () => {
-    expect(validateSender(foreignFrameEvent(""))).toBe(false);
-  });
-
-  it("returns false when the event has no senderFrame", () => {
-    expect(validateSender(null)).toBe(false);
-    expect(validateSender(undefined)).toBe(false);
-    expect(validateSender({} as IpcMainInvokeEvent)).toBe(false);
-  });
-});
 
 // ─── Source-level guard audit ────────────────────────────────────────────────
 

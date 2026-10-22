@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   statSync,
@@ -557,8 +558,16 @@ describe("SecretDocumentStore atomicity and policy", () => {
     expect(readFileSync(path, "utf-8")).toBe(mismatched);
   });
 
-  it.skipIf(process.platform === "win32")("rejects a symlinked secret document without reading its target", async () => {
-    const externalPath = join(root, "outside.json");
+  // An unprivileged Windows process cannot create a file symlink (EPERM) but
+  // can put a directory junction at the document's name, which lstat reports
+  // as a link; Windows opens without O_NOFOLLOW, so the lstat check is the
+  // refusal there. POSIX keeps the file symlink and adds the same directory link.
+  it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
+    "rejects a %s secret document without reading its target",
+    async (linkKind) => {
+    const externalDir = join(root, "outside");
+    if (linkKind === "directory link") mkdirSync(externalDir);
+    const externalPath = linkKind === "file symlink" ? join(root, "outside.json") : join(externalDir, "outside.json");
     const external = `${JSON.stringify({
       version: 1,
       entries: {
@@ -569,7 +578,9 @@ describe("SecretDocumentStore atomicity and policy", () => {
       },
     })}\n`;
     writeFileSync(externalPath, external, { mode: 0o600 });
-    symlinkSync(externalPath, path);
+    if (linkKind === "file symlink") symlinkSync(externalPath, path);
+    // A junction on Windows; the type is ignored on POSIX.
+    else symlinkSync(externalDir, path, "junction");
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
 
     await expect(store.migrate()).rejects.toThrow(SecretDocumentValidationError);

@@ -58,7 +58,7 @@ jobs:
 
       # The runner check and the home isolation below run on Node; a
       # self-hosted runner has no toolcache to rely on.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
@@ -83,14 +83,12 @@ jobs:
             refs/remotes/origin/main
           printf 'source_sha=%s\n' "$REQUESTED_HEAD" >> "$GITHUB_OUTPUT"
 
-      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
-      # runner would replace the owner's own bun; this step alone sees a home
-      # under RUNNER_TEMP (see build-installers.yml). The version stays the
-      # one web-ci.yml verifies the site with.
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-          USERPROFILE: ${{ runner.temp }}/bun-home
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version-file: .bun-version
 
       # The install scripts and the Next build resolve os.homedir() and
       # os.tmpdir(): on the owner's machine those are the owner's own.
@@ -176,7 +174,7 @@ jobs:
 
       # wrangler-action runs wrangler with npm; take Node and npm from the
       # runner's tool cache rather than whatever the machine has installed.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false

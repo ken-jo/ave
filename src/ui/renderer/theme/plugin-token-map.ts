@@ -30,8 +30,8 @@ function tripleToHslWithAlpha(triple: string, alpha: number): string {
 // Theme-invariant tokens — same across all bundles.
 //
 // These values reach plugin webviews via the primed token payload that
-// `main.ts:initialThemeArgs` ships on every `BrowserWindow` (commit 1696f92,
-// closes ave#667). The host owns the broadcast values; plugins supply
+// `main.ts:initialThemeArgs` ships on every `BrowserWindow` (commit 1696f92).
+// The host owns the broadcast values; plugins supply
 // their own CSS fallback before the first payload arrives.
 const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-radius-xs":       "0.15rem",

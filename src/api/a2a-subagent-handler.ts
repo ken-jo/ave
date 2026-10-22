@@ -85,10 +85,10 @@ function hasValidTenant(params: Record<string, unknown>): boolean {
 
 function isSafeChildSessionId(value: unknown): value is string {
   return isValidSessionId(value)
-    && maskSensitiveData(value).detections.length === 0;
+    && isSafeStructuralId(value);
 }
 
-/** UUID-compatible context ID whose complete value passes the DLP scanner. */
+/** Canonical UUID context key admitted by the structural identifier validator. */
 export function createA2AContextId(): string {
   return createDlpSafeUuid();
 }

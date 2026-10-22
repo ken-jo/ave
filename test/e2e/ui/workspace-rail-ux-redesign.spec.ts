@@ -1,10 +1,10 @@
 import { test, expect } from "./fixtures";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { FONT_SIZE_SCALE_VALUES } from "../../../src/shared/appearance-font.js";
@@ -31,7 +31,7 @@ test.describe("workspace rail UX redesign", () => {
   async function launch() {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
-      app = await electron.launch({
+      app = await launchElectron({
         args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
         env: buildIsolatedElectronEnv({
           HOME: tempHome,

@@ -42,6 +42,10 @@ export interface ClaudeCodeSubscriptionStatus {
 export type ClaudeCodeSubscriptionErrorCode =
   | "claude-code-runtime-not-configured"
   | "claude-code-runtime-invalid-executable"
+  /** A discovered executable failed runtime identity or authentication-command qualification. */
+  | "claude-code-runtime-incompatible"
+  /** The executable content proof changed or has not passed connected print verification. */
+  | "claude-code-runtime-unverified"
   | "claude-code-runtime-unavailable"
   | "claude-code-login-in-progress"
   | "claude-code-login-failed"

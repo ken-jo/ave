@@ -317,6 +317,13 @@ export function PermissionsTab({
   const [banner, setBanner] = useState<{ type: "error" | "warn"; msg: string } | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useEffect(() => () => {
+    if (bannerTimerRef.current !== null) {
+      clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = null;
+    }
+  }, []);
+
   const showBanner = useCallback((type: "error" | "warn", msg: string) => {
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
     setBanner({ type, msg });

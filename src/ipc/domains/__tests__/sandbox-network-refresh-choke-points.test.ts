@@ -55,11 +55,12 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
     const refreshSandboxNetworkConfig = vi.fn();
     const deps = {
       settingsService: {
-        getAll: vi.fn(() => ({ llm: { provider: "openai", vendors: {} }, appearance: {} })),
+        getAll: vi.fn(() => ({ llm: { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: {} }, appearance: {} })),
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
               provider: "openai",
+              activeChatRuntime: { kind: "api" },
               vendors: { openai: { baseUrl: currentBaseUrl } },
             };
           }
@@ -73,6 +74,7 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
         }),
         replaceLlm: vi.fn(async () => {}),
         getSecret: vi.fn(() => null),
+        hasStoredSecret: vi.fn(() => false),
         setSecret: vi.fn(async () => {}),
         deleteSecret: vi.fn(async () => {}),
       },
@@ -140,11 +142,12 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
     const refreshSandboxNetworkConfig = vi.fn();
     const deps = {
       settingsService: {
-        getAll: vi.fn(() => ({ llm: { provider: "openai-compatible", vendors: {} }, appearance: {} })),
+        getAll: vi.fn(() => ({ llm: { provider: "openai-compatible", activeChatRuntime: { kind: "api" }, vendors: {} }, appearance: {} })),
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
               provider: "openai-compatible",
+              activeChatRuntime: { kind: "api" },
               ...(presetId ? { marketplaceProviderPresetId: presetId } : {}),
               vendors: { "openai-compatible": {} },
             };
@@ -162,6 +165,7 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
         patch: vi.fn(async () => ({ ok: true })),
         replaceLlm: vi.fn(async () => {}),
         getSecret: vi.fn(() => null),
+        hasStoredSecret: vi.fn(() => false),
         setSecret: vi.fn(async () => {}),
         deleteSecret: vi.fn(async () => {}),
       },
@@ -205,13 +209,14 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
       settingsService: {
         get: vi.fn((key: string) => {
           if (key === "llm") {
-            return { provider: "openai", vendors: { openai: currentBlock } };
+            return { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { openai: currentBlock } };
           }
           return {};
         }),
         patch: vi.fn(async () => {}),
         getAll: vi.fn(() => ({})),
         getSecret: vi.fn(() => null),
+        hasStoredSecret: vi.fn(() => false),
       },
       conversationLoop: {
         refreshProvider: vi.fn(),

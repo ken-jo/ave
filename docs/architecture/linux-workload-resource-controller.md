@@ -40,6 +40,11 @@ Before issuing a capability, the host verifies all of the following:
 - the root device/inode identity and controller membership still match when an
   invocation is created.
 
+Root verification follows the [exact file identity contract](file-identity.md).
+The capability hash serializes each identity field as a decimal string.
+Numeric identities require fresh capability verification and issuance.
+Capabilities are held only in memory.
+
 Capability issuance and invocation creation are serialized for each canonical
 delegated root. Issuance repeats the empty-root check after removing its probe
 and before activating the new generation. A rotation therefore cannot pass an

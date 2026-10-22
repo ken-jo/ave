@@ -132,6 +132,7 @@ type TestAppWindow = {
 };
 
 function makeDeps() {
+  const paneLoop = { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() };
   const llm: TestLlm = {
     provider: "openai",
     vendors: { openai: { model: "gpt-5", baseUrl: null } },
@@ -159,11 +160,14 @@ function makeDeps() {
       }),
       replaceLlm: vi.fn(async (value: unknown) => value),
       getSecret: vi.fn(() => null),
+      hasStoredSecret: vi.fn(() => false),
       setSecret: vi.fn(async () => undefined),
       deleteSecret: vi.fn(async () => undefined),
     },
     conversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
     sideChatConversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
+    // One pane chat's own loop, held while its pane is open.
+    paneChatLoops: { all: () => [paneLoop] },
     auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn<() => TestAppWindow[]>(() => []),
     refreshActiveLlmWildcard: vi.fn(),
@@ -288,6 +292,9 @@ describe("common subscription runtime IPC", () => {
     expect(deps.refreshActiveLlmWildcard).toHaveBeenCalledOnce();
     expect(deps.conversationLoop.abortCurrentTurn).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.abortCurrentTurn).toHaveBeenCalledOnce();
+    const [paneLoop] = deps.paneChatLoops.all();
+    expect(paneLoop!.refreshProvider).toHaveBeenCalledOnce();
+    expect(paneLoop!.abortCurrentTurn).toHaveBeenCalledOnce();
 
     releasePersistence.resolve();
     await expect(pending).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
@@ -958,6 +965,56 @@ describe("common subscription runtime IPC", () => {
     expect(runtime.getStatus).toHaveBeenCalledWith("codex");
     expect(runtime.getStatus).toHaveBeenCalledWith("kimi-code");
     expect(runtimeServiceMock.get).toHaveBeenCalled();
+  });
+
+  it.each(["codex", "claude-code"] as const)(
+    "never opens a file picker for %s: Ave finds that CLI itself",
+    async (provider) => {
+      const deps = makeDeps();
+      const { dialog } = await import("electron");
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+
+      await expect(invoke("ave:settings:subscription:choose-runtime", provider))
+        .resolves.toEqual({ ok: false, error: "subscription-provider-not-supported" });
+      await expect(invoke("ave:settings:subscription:forget-runtime", provider))
+        .resolves.toEqual({ ok: false, error: "subscription-provider-not-supported" });
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+      expect(runtime.chooseExecutable).not.toHaveBeenCalled();
+      expect(runtime.forgetExecutable).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still lets the user point an ACP runtime at its executable (control)", async () => {
+    const deps = makeDeps();
+    const { dialog } = await import("electron");
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/opt/tools/kimi"] });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:subscription:choose-runtime", "kimi-code"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "kimi-code" } });
+    expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ title: "Select Kimi Code executable" }));
+    expect(runtime.chooseExecutable).toHaveBeenCalledWith("kimi-code", "/opt/tools/kimi");
+    await expect(invoke("ave:settings:subscription:forget-runtime", "kimi-code"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "kimi-code" } });
+    expect(runtime.forgetExecutable).toHaveBeenCalledWith("kimi-code");
+  });
+
+  it("maps a too-old or incompatible Codex CLI onto the legacy codes", async () => {
+    const deps = makeDeps();
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-version-unsupported" });
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-incompatible" });
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-unsafe-location" });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-version-unsupported" });
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-incompatible" });
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-unsafe-location" });
   });
 
   it("rejects invalid generic subscription inputs before the runtime service", async () => {

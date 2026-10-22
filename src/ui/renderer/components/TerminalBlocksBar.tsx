@@ -15,6 +15,7 @@ import { Button } from "../../../components/ui/button.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
+import type { TerminalSessionInfo } from "../../../shared/terminal-session.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -26,6 +27,7 @@ import {
   formatBlockForChat,
   formatBlockForCopy,
 } from "../utils/terminal-block-text.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 type TerminalApi = NonNullable<AveApi["terminal"]>;
 
@@ -34,17 +36,20 @@ const ATTACHED_FLASH_MS = 1500;
 
 export function TerminalBlocksBar({
   terminalApi,
-  tabId,
+  session,
   tabLabel,
   revision,
   onAttachText,
+  onSession,
 }: {
   terminalApi: TerminalApi;
-  tabId: string;
+  session: TerminalSessionInfo;
   tabLabel: string;
   /** Bumped by the terminal view whenever a block may have started or ended. */
   revision: number;
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
+  /** The directory the shell last reported, from the newest block that has one. */
+  onSession?: (session: TerminalSessionInfo) => void;
 }): ReactElement {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -63,9 +68,10 @@ export function TerminalBlocksBar({
 
   useEffect(() => {
     let cancelled = false;
-    void terminalApi.listBlocks(tabId).then((res) => {
+    void terminalApi.listBlocks(session).then((res) => {
       if (cancelled || !res.ok) return;
       setBlocks(res.blocks);
+      onSession?.(res.session);
       setIntegrated(res.integrated || res.blocks.length === 0);
     }).catch(() => {
       // The list is a convenience view; a failed refresh keeps the last one
@@ -74,7 +80,7 @@ export function TerminalBlocksBar({
     return () => {
       cancelled = true;
     };
-  }, [terminalApi, tabId, revision]);
+  }, [terminalApi, session.tabId, session.lane, session.terminalSessionId, revision]);
 
   const visible = useMemo(() => filterBlocksByCommand(blocks, query), [blocks, query]);
   const latestDone = useMemo(() => blocks.find((block) => block.status === "done") ?? blocks[0] ?? null, [blocks]);
@@ -83,28 +89,29 @@ export function TerminalBlocksBar({
     async (blockId: number, use: (text: { chat: string; copy: string }) => void) => {
       setNotice(null);
       try {
-        const res = await terminalApi.getBlock(tabId, blockId);
+        const res = await terminalApi.getBlock(session, blockId);
         if (!res.ok) {
           setNotice(t("terminalBlocks.loadFailed", { error: formatIpcError(res.error, undefined) }));
           return;
         }
         use({
-          chat: formatBlockForChat(res.block, { label: tabLabel, id: tabId }, t),
+          chat: formatBlockForChat(res.block, { label: tabLabel, id: session.tabId }, t),
           copy: formatBlockForCopy(res.block),
         });
       } catch (err) {
         setNotice(t("terminalBlocks.loadFailed", { error: errorMessage(err) }));
       }
     },
-    [tabId, tabLabel, t, terminalApi],
+    [session, tabLabel, t, terminalApi],
   );
 
   const attach = useCallback(
     (blockId: number) => {
       if (!onAttachText) return;
       void withBlock(blockId, ({ chat }) => {
-        if (!onAttachText(chat)) {
-          setNotice(t("terminalBlocks.attachFull"));
+        const result = onAttachText(chat);
+        if (result !== true) {
+          setNotice(t(result === "no-composer" ? "terminalBlocks.attachNoComposer" : "terminalBlocks.attachFull"));
           return;
         }
         setAttachedId(blockId);

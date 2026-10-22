@@ -113,7 +113,15 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(btn.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(btn);
     expect(screen.queryByText(/^≈ \$/)).toBeNull();
-    expect(screen.getByText("미정")).toBeTruthy();
+    // The unknown-price state is stated in words (model-capability-catalog §6:
+    // "shown as unknown, never as $0") — the same wording the breakdown uses,
+    // not a "TBD"/"미정" placeholder that reads as a price still to come.
+    expect(btn.textContent).toContain("가격 정보 없음");
+    expect(btn.textContent).not.toMatch(/TBD|미정/);
+    // The label is longer than the placeholder was; in the action bar's flex
+    // row the chip keeps its width and one line instead of wrapping.
+    expect(btn.className).toMatch(/\bshrink-0\b/);
+    expect(btn.className).toMatch(/\bwhitespace-nowrap\b/);
   });
 
   it("prices a turn recorded at the retired hand-kept table's rates, in words", () => {

@@ -51,6 +51,7 @@ import {
 } from "./test-helpers.js";
 import { nodeFolders } from "../../marketplace/__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../marketplace/sources/source-tree.js";
+import { UNREACHABLE_OFFICIAL } from "../../marketplace/__tests__/fixtures/official.js";
 
 const AT = "2026-10-01T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -134,7 +135,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(testDir, "marketplaces");
     await mkdir(marketplaces, { recursive: true });
-    const registry = await SourceRegistry.open({ root: marketplaces, policy });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, official: UNREACHABLE_OFFICIAL });
     await registry.add({ id: "acme", origin, url: server.url(repoName), auth: { kind: "none" } });
     const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });

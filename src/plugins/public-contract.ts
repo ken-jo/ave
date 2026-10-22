@@ -47,26 +47,6 @@ export const AGENT_PLUGINS_SCHEMA_URL =
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
 
 /**
- * The key {@link AVE_EXTENSION_NAMESPACE} had before it was renamed. It is not
- * an alias: read as a namespace, it would pass as another vendor's data and the
- * plugin would load with none of its Ave fields. Every manifest path refuses it
- * by name instead.
- */
-export const RENAMED_EXTENSION_NAMESPACE = "xyz.retiredname-namespace";
-
-/** The refusal every manifest path gives for {@link RENAMED_EXTENSION_NAMESPACE}. */
-export const RENAMED_EXTENSION_NAMESPACE_MESSAGE =
-  `extensions.${RENAMED_EXTENSION_NAMESPACE} was renamed to extensions.${AVE_EXTENSION_NAMESPACE}; update the manifest`;
-
-/** {@link RENAMED_EXTENSION_NAMESPACE_MESSAGE} when `document` still uses the old key, else null. */
-export function renamedExtensionNamespaceProblem(document: unknown): string | null {
-  if (!document || typeof document !== "object" || Array.isArray(document)) return null;
-  const extensions = (document as Record<string, unknown>).extensions;
-  if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return null;
-  return Object.hasOwn(extensions, RENAMED_EXTENSION_NAMESPACE) ? RENAMED_EXTENSION_NAMESPACE_MESSAGE : null;
-}
-
-/**
  * The plugin id grammar: the manifest `name` rule of
  * `schemas/plugin-manifest.schema.json` (kebab-case, no `--`, 3–64
  * characters), which the host reads as `PluginManifest.id`. Every host
@@ -354,6 +334,13 @@ export interface PluginAccessSpec {
 export interface PluginAuthSpec {
   /** Human-readable label shown next to the badge (defaults to plugin `name`). */
   label?: string;
+  /**
+   * Per-language overrides of `label`, keyed by a normalized lower-case
+   * BCP-47 tag; resolved like {@link PluginUiExtension.locales}
+   * (exact tag → base language → own `label` → the plugin name).
+   * @optional
+   */
+  locales?: Record<string, { label: string }>;
   /** Name of an app-visible tool returning {@link PluginAuthStatus}. */
   statusTool: string;
 
@@ -453,7 +440,7 @@ export interface Tool {
    * Surface visibility + Ave restriction metadata. Recognized keys: the
    * standard `ui` visibility block, `ave/pathFields`, and the signed
    * `ave/operationPolicy`. Any other key — including the removed legacy reverse-DNS
-   * `xyz.retiredname/pathFields` — is rejected by the manifest schema (fail-closed). @optional
+   * spelling of `ave/pathFields` — is rejected by the manifest schema (fail-closed). @optional
    */
   _meta?: {
     /** SEP-1865 surface visibility. @optional */
@@ -886,6 +873,14 @@ export interface PluginConfigSchema {
   customPanel?: { entry: string; exportName: string };
 }
 
+/** One language's overrides for a {@link PluginConfigSchemaProperty}'s text. At least one field. */
+export interface PluginConfigSchemaPropertyLocalizedText {
+  /** @optional */
+  title?: string;
+  /** @optional */
+  description?: string;
+}
+
 /** Schema for a single configuration property. */
 export interface PluginConfigSchemaProperty {
   /** JSON Schema-compatible value type. */
@@ -894,6 +889,13 @@ export interface PluginConfigSchemaProperty {
   title?: string;
   /** Long-form description rendered as helper text. @optional */
   description?: string;
+  /**
+   * Per-language overrides of `title` / `description`, keyed by a normalized
+   * lower-case BCP-47 tag; resolved like {@link PluginUiExtension.locales}
+   * (exact tag → base language → own field → the config key).
+   * @optional
+   */
+  locales?: Record<string, PluginConfigSchemaPropertyLocalizedText>;
   /** Default value used when the saved config has no entry for this key. @optional */
   default?: unknown;
   /** Closed list of allowed values; renders a select. @optional */
@@ -922,6 +924,16 @@ export interface PluginConfigSchemaProperty {
   };
 }
 
+/** One language's overrides for a {@link PluginUiExtension}'s text. At least one field. */
+export interface PluginUiExtensionLocalizedText {
+  /** @optional */
+  displayName?: string;
+  /** @optional */
+  title?: string;
+  /** @optional */
+  description?: string;
+}
+
 export interface PluginUiExtension {
   id: string;
   /**
@@ -940,9 +952,21 @@ export interface PluginUiExtension {
    * app-invokable behavior is now expressed by a tool's `_meta.ui.visibility`.
    */
   kind: "embedded-module" | "embedded-page" | "info-card";
+  /** Short label for menus and the sidebar. Falls back to `title`. */
   displayName?: string;
   title: string;
   description?: string;
+  /**
+   * Per-language overrides of `displayName` / `title` / `description`, keyed
+   * by a normalized lower-case BCP-47 tag (`en`, `ko`, `pt-br`). The host
+   * resolves against its UI language: the exact tag, then its base language,
+   * then this entry's own fields, then the plugin id. Requires Ave 0.14.1 or
+   * later: earlier hosts reject the key, so a plugin declaring it (or the
+   * `locales` of a `configSchema` property or of `auth`) sets
+   * `requires.minAppVersion` to `"0.14.1"` or later.
+   * @optional
+   */
+  locales?: Record<string, PluginUiExtensionLocalizedText>;
   defaults?: Record<string, unknown>;
   entry?: string;
   exportName?: string;

@@ -41,9 +41,9 @@ describe("parsePluginAuthUri", () => {
   // 32-char URL-safe code — representative of a real plugin OAuth callback.
   const validCode = "abc123_DEF456-ghi789.JKL012~mno3";
 
-  it("parses a well-formed plugin-auth URL with pluginId 'agent-hub'", () => {
-    expect(parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}`)).toEqual({
-      pluginId: "agent-hub",
+  it("parses a well-formed plugin-auth URL with pluginId 'samplehub'", () => {
+    expect(parsePluginAuthUri(`ave://plugin-auth/samplehub?code=${validCode}`)).toEqual({
+      pluginId: "samplehub",
       code: validCode,
     });
   });
@@ -57,30 +57,30 @@ describe("parsePluginAuthUri", () => {
 
   it("ignores URL fragments — they never reach the host process anyway", () => {
     expect(
-      parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}#noise`),
-    ).toEqual({ pluginId: "agent-hub", code: validCode });
+      parsePluginAuthUri(`ave://plugin-auth/samplehub?code=${validCode}#noise`),
+    ).toEqual({ pluginId: "samplehub", code: validCode });
   });
 
   it("rejects empty code (`?code=`)", () => {
-    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub?code=")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/samplehub?code=")).toBeNull();
   });
 
   it("rejects missing code", () => {
-    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/samplehub")).toBeNull();
   });
 
   it("rejects code shorter than the minimum length", () => {
-    expect(parsePluginAuthUri("ave://plugin-auth/agent-hub?code=short")).toBeNull();
+    expect(parsePluginAuthUri("ave://plugin-auth/samplehub?code=short")).toBeNull();
   });
 
   it("rejects code longer than the maximum length (>256)", () => {
     const tooLong = "a".repeat(257);
-    expect(parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${tooLong}`)).toBeNull();
+    expect(parsePluginAuthUri(`ave://plugin-auth/samplehub?code=${tooLong}`)).toBeNull();
   });
 
   it("rejects parameter pollution (`?code=a&code=b`)", () => {
     expect(
-      parsePluginAuthUri(`ave://plugin-auth/agent-hub?code=${validCode}&code=${validCode}`),
+      parsePluginAuthUri(`ave://plugin-auth/samplehub?code=${validCode}&code=${validCode}`),
     ).toBeNull();
   });
 
@@ -106,12 +106,12 @@ describe("parsePluginAuthUri", () => {
 
   it("rejects extra path segments under plugin-auth", () => {
     expect(
-      parsePluginAuthUri(`ave://plugin-auth/agent-hub/extra?code=${validCode}`),
+      parsePluginAuthUri(`ave://plugin-auth/samplehub/extra?code=${validCode}`),
     ).toBeNull();
   });
 
-  it("rejects the legacy `ave://agent-hub-auth?code=...` host (no backwards compat)", () => {
-    expect(parsePluginAuthUri(`ave://agent-hub-auth?code=${validCode}`)).toBeNull();
+  it("rejects the legacy `ave://samplehub-auth?code=...` host (no backwards compat)", () => {
+    expect(parsePluginAuthUri(`ave://samplehub-auth?code=${validCode}`)).toBeNull();
   });
 
   it("rejects unrelated host (`ave://other-host?code=...`)", () => {
@@ -119,17 +119,17 @@ describe("parsePluginAuthUri", () => {
   });
 
   it("rejects non-ave schemes", () => {
-    expect(parsePluginAuthUri(`https://plugin-auth/agent-hub?code=${validCode}`)).toBeNull();
+    expect(parsePluginAuthUri(`https://plugin-auth/samplehub?code=${validCode}`)).toBeNull();
   });
 
   it("rejects code with disallowed characters", () => {
     // Spaces decode but aren't in the unreserved class.
     expect(
-      parsePluginAuthUri("ave://plugin-auth/agent-hub?code=has%20space1234567"),
+      parsePluginAuthUri("ave://plugin-auth/samplehub?code=has%20space1234567"),
     ).toBeNull();
     // Slashes are not URL-safe-base64.
     expect(
-      parsePluginAuthUri("ave://plugin-auth/agent-hub?code=has/slash1234567"),
+      parsePluginAuthUri("ave://plugin-auth/samplehub?code=has/slash1234567"),
     ).toBeNull();
   });
 

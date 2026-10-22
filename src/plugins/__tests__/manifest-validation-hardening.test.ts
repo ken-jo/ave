@@ -21,6 +21,9 @@ import {
 import { agentPluginsDocument, servedAgentPluginsDocument } from "./test-helpers.js";
 import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 
+/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
+const UNKNOWN_NAMESPACE = "xyz.example";
+
 describe("runtime manifest validation hardening", () => {
   let testDir: string;
   let installedDir: string;
@@ -408,19 +411,19 @@ describe("runtime manifest validation of a process entry", () => {
     await expect(parse({ process: PROCESS })).resolves.toMatchObject({ process: PROCESS });
   });
 
-  it.each([
-    ["on its own", (ave: unknown) => ({ "xyz.retiredname-namespace": ave })],
-    ["beside the current key", (ave: unknown) => ({ "ai.agent-connector.ave": ave, "xyz.retiredname-namespace": {} })],
-  ])("refuses the renamed extension key %s, naming both keys", async (_name, extensions) => {
+  it("refuses a process extension declared only under an unknown namespace, and admits one beside the Ave key", async () => {
     const document = agentPluginsDocument({
       id: "process-kit", name: "Process Kit", version: "1.0.0", description: "A process entry fixture.",
       tools: [pureTool("process_kit_ping")], process: PROCESS, requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
     }) as Record<string, unknown> & { extensions: Record<string, unknown> };
+    const ave = document.extensions["ai.agent-connector.ave"];
     const path = join(dir, "plugin.json");
-    await writeFile(path, JSON.stringify({ ...document, extensions: extensions(document.extensions["ai.agent-connector.ave"]) }), "utf-8");
+    await writeFile(path, JSON.stringify({ ...document, extensions: { [UNKNOWN_NAMESPACE]: ave } }), "utf-8");
     await expect(parsePluginJson(path, await buildManifestValidator())).rejects.toThrow(
-      `Invalid plugin manifest 'process-kit' at 'extensions["xyz.retiredname-namespace"]' (${path}): extensions.xyz.retiredname-namespace was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
+      `Invalid plugin manifest 'process-kit' at 'extensions["ai.agent-connector.ave"].entry' (${path}): must be a non-empty relative path to the plugin ESM entry, or declare 'process' instead.`,
     );
+    await writeFile(path, JSON.stringify({ ...document, extensions: { "ai.agent-connector.ave": ave, [UNKNOWN_NAMESPACE]: {} } }), "utf-8");
+    await expect(parsePluginJson(path, await buildManifestValidator())).resolves.toMatchObject({ process: PROCESS });
   });
 
   it.each([

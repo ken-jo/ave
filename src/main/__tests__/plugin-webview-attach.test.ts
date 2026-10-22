@@ -187,14 +187,12 @@ describe("main window webview attach", () => {
   const attach = (partition: string, src: string) => {
     const event = attachEvent();
     const webPreferences = weakRequest();
-    const enqueued: string[] = [];
     const result = configureMainWindowWebviewAttach({
       event,
       webPreferences,
       params: { partition, src },
-      enqueueSideBrowserSrc: (value) => enqueued.push(value),
     });
-    return { result, event, webPreferences, enqueued };
+    return { result, event, webPreferences };
   };
 
   it("hands each guest to the guard that owns its partition", () => {
@@ -209,7 +207,6 @@ describe("main window webview attach", () => {
 
     const side = attach(AVE_SIDE_BROWSER_PARTITION, "https://example.com/");
     expect(side.result).toEqual({ owner: "side-browser", result: "accepted" });
-    expect(side.enqueued).toEqual(["https://example.com/"]);
     for (const guest of [plugin, mcpApp, side]) expect(guest.event.preventDefault).not.toHaveBeenCalled();
   });
 

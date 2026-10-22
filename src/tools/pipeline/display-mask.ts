@@ -70,33 +70,54 @@ export const ARGS_APPROVAL_MEMORY: ApprovalMemory = Object.freeze({ kind: "args"
  * hashes the scope together with the sealed host-shell plan, so a decision
  * made under one execution substrate never answers for another.
  */
-function approvalMemoryFor(
+async function approvalMemoryFor(
   tool: Tool,
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
-): ApprovalMemory {
-  const scope = tool.approvalMemoryScope?.(input, { cwd });
+  sessionId?: string,
+): Promise<ApprovalMemory> {
+  const scope = await tool.approvalMemoryScope?.(input, sessionId === undefined ? { cwd } : { cwd, sessionId });
   if (scope === undefined) return ARGS_APPROVAL_MEMORY;
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
     : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);
+  // Remember the origin policy while handing execute this invocation's live
+  // tab and document identity. Cached metadata must never select an old tab.
+  // A terminal command is remembered by command, terminal and directory: each
+  // terminal's shell has its own sandbox jail, fixed when it was spawned, so a
+  // decision made for one terminal does not carry to another (cwdForMatch is
+  // derived from cwd and left out).
+  const memoryScope = scope.kind === "browser-origin"
+    ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
+    : scope.kind === "browser-agent-tabs" ? { kind: scope.kind }
+      : scope.kind === "terminal-command" ? {
+        kind: scope.kind,
+        commandSha256: scope.commandSha256,
+        tabId: scope.tabId,
+        lane: scope.lane,
+        terminalSessionId: scope.terminalSessionId,
+        sandboxGeneration: scope.sandboxGeneration,
+        cwd: scope.cwd,
+      }
+        : scope;
   return Object.freeze({
     kind: "key",
-    key: `${tool.name}:${canonicalStringify({ scope, executionPlan })}`,
+    key: `${tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
     scope: Object.freeze({ ...scope }),
   });
 }
 
-export function approvalIdentityFor(
+export async function approvalIdentityFor(
   tool: Tool,
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
-): InvocationApprovalIdentity {
+  sessionId?: string,
+): Promise<InvocationApprovalIdentity> {
   return {
     approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
-    approvalMemory: approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan),
+    approvalMemory: await approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
   };
 }
 

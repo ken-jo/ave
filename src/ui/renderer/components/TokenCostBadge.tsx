@@ -109,7 +109,7 @@ function TokenCostBadgeImpl({
           <span
             data-testid={TEST_IDS.tokenCostBadge}
             data-usage-kind="subscription"
-            className="inline-flex items-center gap-1 rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums"
             aria-label={t("tokenCostBadge.ariaLabelSubscriptionUsage")}
           >
             <span>🪙 {formatTokens(totalTokens)}</span>
@@ -184,7 +184,7 @@ function TokenCostBadgeImpl({
             e.stopPropagation();
             if (cost !== null) setMode((m) => (m === "tokens" ? "cost" : "tokens"));
           }}
-          className={`inline-flex items-center gap-1 rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums ${cost !== null ? "cursor-pointer hover:bg-muted/(--opacity-strong)" : "cursor-default"}`}
+          className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums ${cost !== null ? "cursor-pointer hover:bg-muted/(--opacity-strong)" : "cursor-default"}`}
           aria-disabled={cost === null}
           aria-label={
             cost === null
@@ -199,7 +199,7 @@ function TokenCostBadgeImpl({
           ) : (
             <>
               <span>🪙 {formatTokens(headlineTokens)}</span>
-              {cost === null && <span className="text-muted-foreground">{t("tokenCostBadge.pricingUnknownBadge")}</span>}
+              {cost === null && <span className="text-muted-foreground">{t("tokenCostBadge.pricingUnknownLabel")}</span>}
             </>
           )}
           {cost !== null && <span className="text-[8px] opacity-50">⇅</span>}

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 
 const electronMock = vi.hoisted(() => {
@@ -20,6 +20,21 @@ vi.mock("electron", () => ({
   },
 }));
 
+const workspace = vi.hoisted(() => ({
+  requestPermission: vi.fn(async (_guestId: number, _permission: string, _details: unknown) => true),
+  checkPermission: vi.fn((_guestId: number, _permission: string, _details: unknown) => true),
+  observeGuest: vi.fn(), observeDownload: vi.fn(), registerPopup: vi.fn(() => "tab-popup"),
+}));
+vi.mock("../browser/browser-workspace-desktop.js", () => ({
+  getBrowserWorkspaceService: () => workspace,
+  browserWorkspaceGuestWindowId: (contents: { id?: number } | null) => typeof contents?.id === "number" ? 1 : null,
+  observeBrowserWorkspaceGuest: workspace.observeGuest,
+  observeBrowserWorkspaceDownload: workspace.observeDownload,
+  registerBrowserWorkspacePopup: workspace.registerPopup,
+}));
+
+beforeEach(() => vi.clearAllMocks());
+
 const {
   DOWNLOAD_PROMPTS_PER_ORIGIN,
   DOWNLOAD_RATE_WINDOW_MS,
@@ -29,7 +44,6 @@ const {
   installSideBrowserPartitionPolicy,
   isSideBrowserContents,
   isSideBrowserPopupUrlAllowed,
-  takePendingSideBrowserSrc,
 } = await import("../side-browser-webview.js");
 
 function event() {
@@ -44,7 +58,6 @@ describe("side browser webview attach policy", () => {
       nodeIntegration: true,
       sandbox: false,
     };
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -53,12 +66,10 @@ describe("side browser webview attach policy", () => {
         partition: AVE_SIDE_BROWSER_PARTITION,
         src: "https://example.com/docs",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("accepted");
     expect(attachEvent.preventDefault).not.toHaveBeenCalled();
-    expect(enqueueAllowedSrc).toHaveBeenCalledWith("https://example.com/docs");
     expect(prefs.preload).toBeUndefined();
     expect(prefs.nodeIntegration).toBe(false);
     expect(prefs.contextIsolation).toBe(true);
@@ -67,28 +78,44 @@ describe("side browser webview attach policy", () => {
     expect(prefs.partition).toBe(AVE_SIDE_BROWSER_PARTITION);
   });
 
-  it("blocks non-http side-browser navigations", () => {
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "about:blank#script",
+    "about:blank?script=1",
+    "about:srcdoc",
+  ])("blocks non-http side-browser attachment to %s", (src) => {
     const attachEvent = event();
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
       webPreferences: {},
       params: {
         partition: AVE_SIDE_BROWSER_PARTITION,
-        src: "javascript:alert(1)",
+        src,
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("blocked");
     expect(attachEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
+  });
+
+  it("accepts the exact blank document for a guarded tab bootstrap", () => {
+    const attachEvent = event();
+    const prefs: Record<string, unknown> = { preload: "untrusted.js", nodeIntegration: true };
+
+    expect(configureSideBrowserWebviewAttach({
+      event: attachEvent,
+      webPreferences: prefs,
+      params: { partition: AVE_SIDE_BROWSER_PARTITION, src: "about:blank" },
+    })).toBe("accepted");
+    expect(attachEvent.preventDefault).not.toHaveBeenCalled();
+    expect(prefs).toMatchObject({ nodeIntegration: false, contextIsolation: true, sandbox: true });
+    expect(prefs.preload).toBeUndefined();
   });
 
   it("blocks credentialed side-browser URLs", () => {
     const attachEvent = event();
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -97,18 +124,15 @@ describe("side browser webview attach policy", () => {
         partition: AVE_SIDE_BROWSER_PARTITION,
         src: "https://user:pass@example.com/docs",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("blocked");
     expect(attachEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
   });
 
   it("ignores unrelated webviews", () => {
     const attachEvent = event();
     const prefs: Record<string, unknown> = { nodeIntegration: true };
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -119,25 +143,14 @@ describe("side browser webview attach policy", () => {
         partition: "ave-mcp-app:676974687562",
         src: "data:text/html,ok",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("ignored");
     expect(attachEvent.preventDefault).not.toHaveBeenCalled();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
     expect(prefs.nodeIntegration).toBe(true);
   });
 
-  it("matches attached guests by URL instead of blindly shifting the pending queue", () => {
-    const pending = ["https://example.com/docs", "https://google.com/"];
-
-    expect(takePendingSideBrowserSrc(pending, "https://unrelated.example/")).toBeNull();
-    expect(pending).toEqual(["https://example.com/docs", "https://google.com/"]);
-    expect(takePendingSideBrowserSrc(pending, "https://google.com/")).toBe("https://google.com/");
-    expect(pending).toEqual(["https://example.com/docs"]);
-  });
-
-  it("installs a browser-like UA, a narrow permission allow-list without fullscreen, and a download policy", () => {
+  it("installs a browser-like UA, verified permission callbacks, and a download policy", async () => {
     installSideBrowserPartitionPolicy();
 
     const ua = electronMock.sideBrowserSession.setUserAgent.mock.calls[0]?.[0] as string;
@@ -152,26 +165,75 @@ describe("side browser webview attach policy", () => {
       (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void;
     const checkHandler = electronMock.sideBrowserSession.setPermissionCheckHandler.mock.calls[0]?.[0] as
       (webContents: unknown, permission: string) => boolean;
+    const contents = { id: 71, session: electronMock.sideBrowserSession, isDestroyed: () => false, getURL: () => "https://site.example/" };
     // `fullscreen` is denied: a fullscreen page could cover the app and spoof its approval UI.
     for (const denied of ["fullscreen", "media", "geolocation", "notifications", "midi", "hid", "openExternal"]) {
       const callback = vi.fn();
-      requestHandler({}, denied, callback);
+      requestHandler(contents, denied, callback);
       expect(callback).toHaveBeenCalledWith(false);
-      expect(checkHandler({}, denied)).toBe(false);
+      expect(checkHandler(contents, denied)).toBe(false);
     }
     for (const allowed of ["clipboard-sanitized-write"]) {
       const callback = vi.fn();
-      requestHandler({}, allowed, callback);
+      requestHandler(contents, allowed, callback);
+      await Promise.resolve();
       expect(callback).toHaveBeenCalledWith(true);
-      expect(checkHandler({}, allowed)).toBe(true);
+      expect(checkHandler(contents, allowed)).toBe(true);
     }
   });
 
-  it("allows only http(s) and about:blank popups", () => {
+  it("forwards actual native main-frame details and rejects frame/origin substitutions", async () => {
+    installSideBrowserPartitionPolicy();
+    const request = electronMock.sideBrowserSession.setPermissionRequestHandler.mock.calls[0]![0];
+    const check = electronMock.sideBrowserSession.setPermissionCheckHandler.mock.calls[0]![0];
+    const contents = { id: 71, session: electronMock.sideBrowserSession, isDestroyed: () => false, getURL: () => "https://site.example/page" };
+    const details = { requestingUrl: "https://site.example/page", isMainFrame: true, mediaTypes: ["video"] };
+    const allowed = vi.fn();
+    request(contents, "media", allowed, details);
+    await Promise.resolve();
+    expect(workspace.requestPermission).toHaveBeenCalledWith(71, "media", details);
+    expect(workspace.requestPermission.mock.calls[0]![2]).toBe(details);
+    expect(allowed).toHaveBeenCalledWith(true);
+    expect(check(contents, "media", "https://site.example", { ...details, mediaType: "video" })).toBe(true);
+    for (const invalid of [
+      { ...details, isMainFrame: false }, { ...details, isMainFrame: undefined },
+      { ...details, requestingUrl: "https://site.example/other" },
+      { ...details, requestingUrl: "https://other.example/page" },
+      { ...details, embeddingOrigin: "https://other.example" },
+      { ...details, securityOrigin: "https://other.example" },
+    ]) {
+      const denied = vi.fn();
+      request(contents, "media", denied, invalid);
+      expect(denied).toHaveBeenCalledWith(false);
+      expect(check(contents, "media", "https://site.example", invalid)).toBe(false);
+    }
+    expect(check(contents, "media", "https://other.example", details)).toBe(false);
+    expect(check(null, "media", "https://site.example", details)).toBe(false);
+    expect(check({ ...contents, session: electronMock.otherSession }, "media", "https://site.example", details)).toBe(false);
+    expect(workspace.requestPermission).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds download observation only after the existing Save and rate admission", () => {
+    installSideBrowserPartitionPolicy();
+    const download = electronMock.sideBrowserSession.on.mock.calls.find(([name]) => name === "will-download")![1];
+    const contents = { id: 71, getURL: () => "https://site.example/" };
+    const item = { getURL: () => "https://site.example/report", getSavePath: () => "", on: vi.fn() };
+    const first = event();
+    download(first, item, contents);
+    expect(first.preventDefault).not.toHaveBeenCalled();
+    expect(workspace.observeDownload).toHaveBeenCalledWith(contents, item);
+    const second = event();
+    download(second, item, contents);
+    expect(second.preventDefault).toHaveBeenCalledOnce();
+    expect(workspace.observeDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows only concrete http(s) popup URLs", () => {
     expect(isSideBrowserPopupUrlAllowed("https://accounts.google.com/o/oauth2/auth")).toBe(true);
     expect(isSideBrowserPopupUrlAllowed("http://example.com/")).toBe(true);
-    expect(isSideBrowserPopupUrlAllowed("about:blank")).toBe(true);
     for (const blocked of [
+      "about:blank",
+      "",
       "file:///etc/passwd",
       "javascript:alert(1)",
       "data:text/html,x",
@@ -207,12 +269,20 @@ describe("side browser webview attach policy", () => {
     return { isDestroyed: () => destroyed, destroy: () => { destroyed = true; } };
   }
 
+  it("denies ambiguous blank popup requests before creating a window", () => {
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never, fakeOwner() as never);
+
+    expect(guest.open("about:blank")).toEqual({ action: "deny" });
+  });
+
   it("lets the guest open hardened popup windows and guards each popup recursively", () => {
     const owner = fakeOwner();
     const guest = fakeContents(electronMock.sideBrowserSession);
     attachSideBrowserWebview(guest as never, owner as never);
 
     expect(guest.open("javascript:alert(1)")).toEqual({ action: "deny" });
+    expect(guest.open("data:text/html,<script>alert(1)</script>")).toEqual({ action: "deny" });
     const allowed = guest.open("https://accounts.google.com/signin");
     expect(allowed.action).toBe("allow");
     const prefs = allowed.overrideBrowserWindowOptions?.webPreferences ?? {};

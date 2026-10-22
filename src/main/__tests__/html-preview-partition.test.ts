@@ -275,13 +275,13 @@ describe("installPluginPartitionPolicy", () => {
     installPluginPartitionPolicy("persist:plugin:shellfiles", {}, mockSessionApi);
 
     expect(invokePluginHandler("file:///etc/passwd")).toEqual({ cancel: true });
-    expect(invokePluginHandler("file:///plugins/agent-hub/dist/ui.js")).toEqual({ cancel: true });
+    expect(invokePluginHandler("file:///plugins/samplehub/dist/ui.js")).toEqual({ cancel: true });
     expect(invokePluginHandler(pluginShellHtmlUrl)).toEqual({ cancel: false });
     expect(invokePluginHandler(pluginShellJsUrl)).toEqual({ cancel: false });
   });
 
   it("registers the ave-plugin handler when a plugin root is provided", () => {
-    installPluginPartitionPolicy("persist:plugin:withroot", { pluginRoot: "/plugins/agent-hub" }, mockSessionApi);
+    installPluginPartitionPolicy("persist:plugin:withroot", { pluginRoot: "/plugins/samplehub" }, mockSessionApi);
     expect(mockProtocolHandlePlugin).toHaveBeenCalledWith("ave-plugin", expect.any(Function));
   });
 

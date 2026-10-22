@@ -64,6 +64,8 @@ const WorkBoardIcon = BUILTIN_VIEW_ICONS["work-board"];
 const RoutinesIcon = BUILTIN_VIEW_ICONS.routines;
 const InsightsIcon = BUILTIN_VIEW_ICONS.insights;
 const SettingsIcon = BUILTIN_VIEW_ICONS.settings;
+const TerminalViewIcon = BUILTIN_VIEW_ICONS.terminal;
+const WebViewIcon = BUILTIN_VIEW_ICONS.web;
 
 /**
  * What a conversation row draws, per family.
@@ -748,9 +750,9 @@ function PluginNavItem({
   collapsed: boolean;
   role?: "menuitem";
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const viewKey = toViewKey(view);
-  const label = getPluginViewLabel(view);
+  const label = getPluginViewLabel(view, locale);
   const IconComponent = pluginIconFor({
     icon: view.icon,
     iconText: view.iconText,
@@ -2134,7 +2136,8 @@ export function Sidebar({
     || inactivePluginCards.length > 0;
   // A rail group icon lights when the current page is one of its rows.
   const featuresContainActive =
-    activeView === "work-board" || activeView === "routines" || activeView === "insights" || activeView === "starred";
+    activeView === "work-board" || activeView === "routines" || activeView === "insights" || activeView === "starred"
+    || activeView === "terminal" || activeView === "web";
   const pluginsContainActive =
     pluginViews.some((view) => toViewKey(view) === activeView)
     || failedPluginCards.some((plugin) => toPluginDoctorViewKey(plugin.id) === activeView)
@@ -2433,6 +2436,29 @@ export function Sidebar({
                   role="menuitem"
                   data-testid="sidebar-starred"
                   data-viewkey="insights"
+                />
+                {/* A terminal or a web page as a pane of its own, beside the
+                    conversations — the same surfaces the work panel's tabs
+                    hold, in the main area. */}
+                <NavItem
+                  viewKey="terminal"
+                  label={t(BUILTIN_LABEL_KEYS.terminal)}
+                  icon={<TerminalViewIcon className="h-4 w-4" />}
+                  isActive={activeView === "terminal"}
+                  {...viewRowHandlers("terminal", { after: close })}
+                  collapsed={false}
+                  role="menuitem"
+                  data-testid="sidebar-terminal"
+                />
+                <NavItem
+                  viewKey="web"
+                  label={t(BUILTIN_LABEL_KEYS.web)}
+                  icon={<WebViewIcon className="h-4 w-4" />}
+                  isActive={activeView === "web"}
+                  {...viewRowHandlers("web", { after: close })}
+                  collapsed={false}
+                  role="menuitem"
+                  data-testid="sidebar-web"
                 />
               </>
             )}

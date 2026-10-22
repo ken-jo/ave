@@ -5,7 +5,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
-  type Stats,
+  type BigIntStats,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { posix as pathPosix } from "node:path";
@@ -49,7 +49,7 @@ class FakeCgroupHost {
   denyCgroupKillWrite = false;
   supportsMemoryPeak = true;
   supportsOomGroup = true;
-  rootIno = 99;
+  rootIno = 99n;
   failNextRmdir: Error | undefined;
   repopulateOnNextRmdir = false;
 
@@ -139,10 +139,10 @@ class FakeCgroupHost {
     stat: async (path) => {
       if (!this.directories.has(path)) throw FakeCgroupHost.error("ENOENT");
       return {
-        dev: 42,
-        ino: path === ROOT ? this.rootIno : 100,
+        dev: 42n,
+        ino: path === ROOT ? this.rootIno : 100n,
         isDirectory: () => true,
-      } as Pick<Stats, "dev" | "ino" | "isDirectory">;
+      } as Pick<BigIntStats, "dev" | "ino" | "isDirectory">;
     },
   };
 
@@ -298,12 +298,40 @@ describe("Linux workload cgroup capability", () => {
   it("rejects a capability after the delegated root generation identity changes", async () => {
     const fake = host();
     const issued = await capability(fake);
-    fake.rootIno += 1;
+    fake.rootIno += 1n;
     await expect(createLinuxWorkloadCgroup({
       capability: issued,
       invocationId: "stale",
       limits: LIMITS,
     })).rejects.toThrow("generation is stale");
+  });
+
+  it("rejects a root inode replacement beyond number precision", async () => {
+    const fake = host();
+    fake.rootIno = 2n ** 60n;
+    const issued = await capability(fake);
+    fake.rootIno += 1n;
+    await expect(createLinuxWorkloadCgroup({
+      capability: issued,
+      invocationId: "replaced-root",
+      limits: LIMITS,
+    })).rejects.toThrow("generation is stale");
+    expect([...fake.directories]).toEqual([ROOT, CONTROLLER]);
+  });
+
+  it("keeps serialized root identities distinct beyond number precision", async () => {
+    const first = host();
+    const second = host();
+    first.rootIno = 2n ** 60n;
+    second.rootIno = first.rootIno + 1n;
+    const [left, right] = await Promise.all([capability(first), capability(second)]);
+    expect(left.identity).not.toBe(right.identity);
+  });
+
+  it("rejects legacy numeric identities instead of converting rounded identifiers", async () => {
+    const fake = host();
+    fake.rootIno = Number(2n ** 60n) as unknown as bigint;
+    await expect(capability(fake)).rejects.toThrow("requires exact file identity");
   });
 
   it("invalidates an older capability when the host rotates the root generation", async () => {

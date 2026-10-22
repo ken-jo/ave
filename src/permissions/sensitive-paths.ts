@@ -34,7 +34,7 @@
  */
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
-import { globMatch } from "../lib/glob-matcher.js";
+import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
@@ -156,6 +156,16 @@ export interface SensitiveEntry {
   readonly rotations?: true;
   /** The configured primary session store is readable, but never tool-writable. */
   readonly access?: "read-only";
+  /**
+   * A Windows location (`%APPDATA%`, `%LOCALAPPDATA%`). Windows paths are
+   * case-insensitive, so its glob matches case-insensitively on EVERY
+   * platform — a command scanned on a POSIX host (a PowerShell script, a
+   * staged copy) must not slip past by spelling `appdata\roaming` in lower
+   * case. Stores that sit at the same place under the profile on every OS
+   * (`.ssh`, `.aws`, `.kube/config`, …) are the POSIX rows above, which the
+   * anchor-free host guard already matches under `C:/Users/<name>/`.
+   */
+  readonly windows?: true;
   /** Why this is secret. Kept next to the row so neither side drifts alone. */
   readonly why: string;
 }
@@ -202,6 +212,21 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".python_history"], kind: "file", why: "REPL history" },
   { anchor: "home", segments: [".psql_history"], kind: "file", why: "psql history (may hold DSNs)" },
   { anchor: "home", segments: [".viminfo"], kind: "file", why: "editor history + register contents" },
+  // ── Windows credential stores under the profile (%APPDATA%, %LOCALAPPDATA%) ──
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (local)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", windows: true, why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", windows: true, why: "user CryptoAPI/CNG private keys" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (web and app credentials, roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (local)" },
+  {
+    anchor: "home",
+    segments: ["AppData", "Local", "Microsoft", "PowerShell", "secretmanagement"],
+    kind: "dir",
+    windows: true,
+    why: "PowerShell SecretStore vault",
+  },
+  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", windows: true, why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
   // ── Ave hook scripts — supply-chain / re-exec protection ────────────
   {
     anchor: "home",
@@ -258,6 +283,12 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
  * A `dir` row needs only the `/**` form: `policyMatchPaths` also tries
  * `<path>/`, so `**\/.ssh/**` already matches the bare directory.
  */
+/**
+ * Host-guard-only Windows patterns (no literal form): Chromium-family
+ * `Login Data` under any `User Data` profile (Chrome, Edge, Brave, …).
+ */
+const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = ["**/AppData/Local/**/User Data/**/Login Data"];
+
 function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH_ENTRIES): readonly string[] {
   const globs: string[] = [];
   for (const entry of entries) {
@@ -272,6 +303,12 @@ function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH
 const READ_ONLY_NAMESPACE_PATTERNS = new Set(sensitiveEntryGlobs(
   SENSITIVE_PATH_ENTRIES.filter((entry) => entry.access === "read-only"),
 ));
+
+/** Patterns matched case-insensitively on every platform (Windows locations). */
+const CASE_INSENSITIVE_PATTERNS: ReadonlySet<string> = new Set([
+  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.windows === true)),
+  ...WINDOWS_UNANCHORED_PATTERNS,
+]);
 
 /**
  * Patterns use minimatch-compatible glob syntax:
@@ -305,6 +342,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
+  ...WINDOWS_UNANCHORED_PATTERNS,
   // ── Host-guard-only: deliberate sandbox exclusion ───
   // Recorded in `getDefaultSensitiveReadDenyPaths`: encrypted-at-rest and
   // outside ASRT's filesystem threat model, so consciously not on the OS floor.
@@ -505,41 +543,53 @@ export function getConfiguredSessionReadPolicy(): {
  * still apply, including credentials placed inside the readable namespace.
  */
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
-  if (!absPath) return null;
-  const candidates = policyMatchPaths(absPath);
-  const sessionRoot = effect === "read" ? getConfiguredSessionReadRoot() : undefined;
-  const canReadSession = sessionRoot !== undefined && isConfiguredSessionReadPath(absPath)
-    && !policyMatchPaths(pathRelative(caseFoldForMatch(sessionRoot), absPath)).some((candidate) =>
-      [...READ_ONLY_NAMESPACE_PATTERNS].some((pattern) => globMatch(candidate, pattern)));
-  for (const keyPath of getRuntimeSensitiveKeyPaths()) {
-    const normalizedKey = caseFoldForMatch(foldCanonicalPathSeparators(keyPath));
-    if (candidates.includes(normalizedKey)) return "runtime-secret-key";
-  }
-  for (const candidate of candidates) {
-    for (const pattern of SENSITIVE_PATH_PATTERNS) {
-      if (canReadSession && READ_ONLY_NAMESPACE_PATTERNS.has(pattern)) continue;
-      if (globMatch(candidate, pattern)) {
-        return pattern;
-      }
-    }
-  }
-  // A custom AVE_HOME need not contain a `.ave` segment. Use the same table
-  // as the OS deny floor, retaining literal comparisons for paths containing
-  // glob syntax and the frozen-canonical form of the caller's candidate.
-  const home = canonicalizePathForMatch(aveHome());
-  for (const entry of SENSITIVE_PATH_ENTRIES) {
-    if (entry.anchor !== "ave-home") continue;
-    if (canReadSession && entry.access === "read-only") continue;
-    const base = caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments)));
+  return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
+}
+
+/** Snapshot policy roots and compiled globs once for one permission decision. */
+export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPath: string) => string | null {
+  const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
+  const patterns = SENSITIVE_PATH_PATTERNS.map((pattern) => ({
+    pattern,
+    expression: globToRegExp(pattern, { caseInsensitive: CASE_INSENSITIVE_PATTERNS.has(pattern) || platformCaseInsensitive }),
+    readOnly: READ_ONLY_NAMESPACE_PATTERNS.has(pattern),
+  }));
+  let roots: { session?: string; keys: readonly string[] } | undefined;
+  let applicationPaths: { entry: SensitiveEntry; base: string }[] | undefined;
+  return (absPath) => {
+    if (!absPath) return null;
+    const candidates = policyMatchPaths(absPath);
+    roots ??= {
+      session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+      keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
+    };
+    const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
+    const foldedPath = caseFoldForMatch(absPath);
+    const canReadSession = sessionRoot !== undefined
+      && (foldedPath === sessionRoot || foldedPath.startsWith(`${sessionRoot}/`))
+      && !policyMatchPaths(pathRelative(sessionRoot, absPath)).some((candidate) =>
+        patterns.some(({ expression, readOnly }) => readOnly && expression.test(candidate)));
+    if (roots.keys.some((path) => candidates.includes(path))) return "runtime-secret-key";
     for (const candidate of candidates) {
-      if (candidate === base ||
-          (entry.kind === "dir" && candidate.startsWith(`${base}/`)) ||
-          (entry.rotations && candidate.startsWith(`${base}.`))) {
-        return `ave-home:${entry.segments.join("/")}`;
+      for (const { pattern, expression, readOnly } of patterns) {
+        if (!(canReadSession && readOnly) && expression.test(candidate)) return pattern;
       }
     }
-  }
-  return null;
+    // A relocated application root need not contain a literal namespace segment.
+    if (applicationPaths === undefined) {
+      const home = canonicalizePathForMatch(aveHome());
+      applicationPaths = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home").map((entry) => ({
+        entry, base: caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments))),
+      }));
+    }
+    for (const { entry, base } of applicationPaths) {
+      if (canReadSession && entry.access === "read-only") continue;
+      if (candidates.some((candidate) => candidate === base
+        || (entry.kind === "dir" && candidate.startsWith(`${base}/`))
+        || (entry.rotations && candidate.startsWith(`${base}.`)))) return `ave-home:${entry.segments.join("/")}`;
+    }
+    return null;
+  };
 }
 
 // ─── Internal glob matcher ──────────────────────────

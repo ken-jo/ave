@@ -23,7 +23,8 @@ import {
   resolveReviewerSandboxCapability,
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
-import { isCanonicalBashTool } from "./shell-tools.js";
+import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -404,25 +405,45 @@ export async function authorizeToolInvocation(
     // (mode==="allow" → no prompt, meta included) remains single-sourced in
     // PermissionManager.
     //
-    // Issue #28 — the canonical shell tool carries its command as the rule
-    // subject so `Bash(...)` deny/ask/allow rules (user-global and this
-    // project's file in Ave home) can match it. The project rules are loaded
-    // here because the decision itself is synchronous.
+    // Issue #28 — every canonical host shell carries its command as the rule
+    // subject, so the exfiltration and sensitive-path floors read it whatever
+    // the shell. `dialect` keeps the languages apart: `Bash(...)` deny/ask/
+    // allow rules (user-global and this project's file in Ave home) match
+    // bash only, and PowerShell has no rule language, so it gets no project
+    // rule scope either (project glob rules would otherwise start applying to
+    // `powershell` by name). The project rules are loaded here because the
+    // decision itself is synchronous.
     // Project rules follow the directory the command will actually run in
     // (the tool's own cwd resolution); `projectRulesLocation` realpaths it
     // and walks up to the repository root.
-    const shellRuleSubject = isCanonicalBashTool(tool) && typeof finalInput.command === "string"
+    const shellDialect = isCanonicalBashTool(tool)
+      ? "bash" as const
+      : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
+    // A command typed into the user's terminal is judged as a bash command
+    // in the directory that terminal's shell reported — the one sealed into
+    // its approval scope before this decision (terminal-run.ts). Only zsh and
+    // bash terminals are typed into, and the command text refuses everything
+    // they read differently from bash (terminal-command-text.ts), so the words
+    // the rules match are the words the shell runs.
+    const terminalScope = isCanonicalTerminalRunTool(tool)
+      ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
+      : undefined;
+    const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
+          dialect: shellDialect,
           command: finalInput.command,
           cwd: resolveHostShellWorkingDirectory(
             executionCwd,
             typeof finalInput.cwd === "string" && finalInput.cwd.length > 0 ? finalInput.cwd : undefined,
           ),
         }
-      : undefined;
-    if (services.permissionManager && shellRuleSubject) {
-      await services.permissionManager.ensureProjectRulesLoaded(shellRuleSubject.cwd);
+      : terminalScope !== undefined && typeof finalInput.command === "string"
+        ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
+        : undefined;
+    const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
+    if (services.permissionManager && projectRulesCwd !== undefined) {
+      await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
     permissionResult = services.permissionManager
       ? services.permissionManager.checkDetailed(
@@ -433,7 +454,8 @@ export async function authorizeToolInvocation(
           {
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
-            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject, projectRulesCwd: shellRuleSubject.cwd } : {}),
+            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )
       : {
@@ -500,6 +522,32 @@ export async function authorizeToolInvocation(
         reason: "Remote controller request requires local allow-once approval",
         forceModal: true,
       };
+    }
+
+    // A builtin that declares this input per-action (a browser action on a tab
+    // the user opened) is a person's decision every time, in every mode: no
+    // foreground reviewer, no remembered or mode-wide allow ("allow" mode
+    // included), and below, an allow-once / deny-once prompt that records
+    // nothing. Only a deny stands; with no one to ask (headless) it is denied.
+    const requiresPerActionApproval =
+      source === "builtin" &&
+      tool.requiresPerActionApproval?.(finalInput, {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(invocationPermissionContext.approvalMemory?.kind === "key"
+          ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
+      }) === true;
+    if (requiresPerActionApproval && permissionResult.decision !== "deny") {
+      const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+      permissionResult = invocationPermissionContext.headless === true
+        ? { decision: "deny", reason: "this action needs a person's approval each time, and no one can be asked here", layer: permissionResult.layer }
+        : {
+            ...withoutReviewer,
+            decision: "ask",
+            reason: permissionResult.decision === "ask"
+              ? permissionResult.reason
+              : "an action on a tab the user opened asks every time",
+            forceModal: true,
+          };
     }
 
     // A pre-issued app mutation grant replaces only the ordinary foreground
@@ -1448,7 +1496,7 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot
+          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
                 // Plain host-shell and remote-controller approvals are both
                 // exact, local one-shot decisions: neither can mint a cache.

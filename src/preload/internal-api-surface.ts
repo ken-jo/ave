@@ -1,5 +1,8 @@
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
+import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
+import { buildTerminalApiSurface } from "./terminal-api-surface.js";
+import { buildBrowserWorkspaceApiSurface } from "./browser-workspace-api-surface.js";
 import {
   ALERTS,
   CHANNELS,
@@ -37,7 +40,9 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
-import type { TerminalBlock, TerminalBlockSummary } from "../shared/terminal-blocks.js";
+import {
+  type ActiveWorkspaceSurface,
+} from "../shared/browser-surface.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
@@ -272,58 +277,11 @@ export function buildInternalApiSurface() {
   // onExit subscribe to main→renderer events and return an unsubscribe fn (the
   // settings.updated / auth.progress pattern). All channels are INTERNAL — an
   // external origin can never reach them (fail-closed isPublicChannel).
-  terminal: {
-    spawn: async (payload: { tabId: string; cwd?: string; cols?: number; rows?: number }) =>
-      ipcRenderer.invoke(CHANNELS.terminal.spawn, payload) as Promise<
-        | { ok: true; tabId: string; replayed: boolean }
-        | { ok: false; reason: string; message: string }
-      >,
-    input: async (tabId: string, data: string) =>
-      ipcRenderer.invoke(CHANNELS.terminal.input, { tabId, data }) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
-    resize: async (tabId: string, cols: number, rows: number) =>
-      ipcRenderer.invoke(CHANNELS.terminal.resize, { tabId, cols, rows }) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
-    kill: async (tabId: string) =>
-      ipcRenderer.invoke(CHANNELS.terminal.kill, { tabId }) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
-    onData: (handler: (payload: { tabId: string; chunk: string }) => void) => {
-      const listener = (_event: unknown, payload: { tabId?: unknown; chunk?: unknown }) => {
-        if (typeof payload?.tabId !== "string" || typeof payload?.chunk !== "string") return;
-        handler({ tabId: payload.tabId, chunk: payload.chunk });
-      };
-      ipcRenderer.on(CHANNELS.terminal.data, listener);
-      return () => ipcRenderer.removeListener(CHANNELS.terminal.data, listener);
-    },
-    onExit: (handler: (payload: { tabId: string; exitCode: number; signal?: number }) => void) => {
-      const listener = (
-        _event: unknown,
-        payload: { tabId?: unknown; exitCode?: unknown; signal?: unknown },
-      ) => {
-        if (typeof payload?.tabId !== "string" || typeof payload?.exitCode !== "number") return;
-        handler({
-          tabId: payload.tabId,
-          exitCode: payload.exitCode,
-          ...(typeof payload?.signal === "number" ? { signal: payload.signal } : {}),
-        });
-      };
-      ipcRenderer.on(CHANNELS.terminal.exit, listener);
-      return () => ipcRenderer.removeListener(CHANNELS.terminal.exit, listener);
-    },
-    listBlocks: async (tabId: string) =>
-      ipcRenderer.invoke(CHANNELS.terminal.blocks, { tabId }) as Promise<
-        | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
-        | { ok: false; error: string }
-      >,
-    getBlock: async (tabId: string, blockId: number) =>
-      ipcRenderer.invoke(CHANNELS.terminal.block, { tabId, blockId }) as Promise<
-        | { ok: true; block: TerminalBlock }
-        | { ok: false; error: string }
-      >,
-  },
+  terminal: buildTerminalApiSurface(),
+  browserTabs: buildBrowserTabsApiSurface(),
+  browserWorkspace: buildBrowserWorkspaceApiSurface(),
+  setActiveSurface: async (surface: ActiveWorkspaceSurface | null) =>
+    ipcRenderer.invoke(CHANNELS.surface.setActive, surface) as Promise<{ ok: true } | { ok: false; error: string }>,
   // ─── Side chat (workspace rail) ──────────────────────
   // A second, independently-streaming chat session. send/new/load/abort are
   // invokes; onStream/onFallback subscribe to the DEDICATED
@@ -331,10 +289,19 @@ export function buildInternalApiSurface() {
   // unsubscribe fn (the onChatStream pattern). All channels are INTERNAL — an
   // external origin can never reach them (fail-closed isPublicChannel).
   sideChat: {
-    send: async (input: string, attachments?: unknown[], originSessionId?: string, sendRequestId?: string) =>
+    send: async (
+      input: string,
+      attachments?: unknown[],
+      originSessionId?: string,
+      sendRequestId?: string,
+      surface?: ActiveWorkspaceSurface,
+      sessionId?: string,
+    ) =>
       ipcRenderer.invoke(CHANNELS.sidechat.send, {
         input, attachments, originSessionId,
         ...(sendRequestId !== undefined ? { sendRequestId } : {}),
+        ...(surface !== undefined ? { surface } : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
       }) as Promise<
         | { ok: true; result: TurnResult }
         | { ok: false; error: string }
@@ -354,6 +321,16 @@ export function buildInternalApiSurface() {
     abort: async (sendRequestId: string) =>
       ipcRenderer.invoke(CHANNELS.sidechat.abort, { sendRequestId }) as Promise<
         { ok: true } | { ok: false; error: string }
+      >,
+    paneHistory: async (tabId: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.paneHistory, { tabId }) as Promise<
+        | { ok: true; sessionId: string | null; messages: SerializedHistoryMessage[] }
+        | { ok: false; error: string }
+      >,
+    endPaneChat: async (tabId: string, reason: "new" | "closed") =>
+      ipcRenderer.invoke(CHANNELS.sidechat.endPaneChat, { tabId, reason }) as Promise<
+        | { ok: true; sessionId: string | null }
+        | { ok: false; error: string }
       >,
     onStream: (handler: (event: ChatStreamEvent) => void) => {
       const listener = (_event: unknown, payload: ChatStreamEvent) => handler(payload);

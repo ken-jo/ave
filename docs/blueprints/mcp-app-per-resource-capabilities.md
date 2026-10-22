@@ -1,7 +1,5 @@
 # Per-resource card capabilities — what reviving `permissions` opens up
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
-
 - Status: **design note, not yet implemented.** Written while wiring the spec's `_meta.ui.permissions` (PR #1600), because that work exposes a declaration channel we have nothing plugged into yet.
 - Related: [`docs/guides/mcp-app-authoring.md`](../guides/mcp-app-authoring.md) (the author-facing contract).
 

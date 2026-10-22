@@ -51,8 +51,7 @@ importers when a shared module reaches over 150 test files. Each source module
 must have related test files; empty discovery selects full checks and a
 zero-test run fails closed. A new sub-branch is measured from the closest live
 tip of the default or an `integration/*` branch. The full `bun run test` and
-`bun run build` run once before merge on the merged tree, and
-CI runs full checks. The hook keeps the full gate for pushes to `integration/*`,
+`bun run build` run once before merge on the merged tree. The hook keeps the full gate for pushes to `integration/*`,
 non-fast-forward pushes, deleted modules, documentation consumed by runtime,
 tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
@@ -63,7 +62,21 @@ consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
-Every `main` push runs the full app suite in CI as a backstop. Do not duplicate
+CI's `build-and-test` always runs typecheck and the build. A category merge
+(a pull request from `integration/*` into `main`) runs the full suite with
+coverage, as the multi-stage flow requires. Any other pull request to `main`
+or to an `integration/*` branch runs only the affected Vitest
+tests (`bun run test:ci`, `scripts/run-ci-suite.mjs`): the changed tests, every
+test `vitest related` reaches from a changed module, the triggered lock suites,
+and the must-run set in `config/ci-must-run-tests.json` (security, permissions,
+sandbox, contract, IPC, naming, and every test that runs repository code in a
+tsx child process or an esbuild bundle). It runs the full suite whenever that
+selection cannot be trusted: the hook's global inputs, message catalogs,
+deleted or renamed modules, a module that computes its imports, a module no
+test reaches, failed discovery, or more than 600 selected files. An affected
+run skips coverage. Global coverage thresholds describe the whole suite, so
+they are enforced on full runs only: every push to `main`, every `v*` tag, and
+the nightly schedule. A red full run there fails the check on that commit. Do not duplicate
 the trio around a successful push. If a check fails, fix it and rerun
 only the failed or invalidated checks before pushing again. No CI workflow and no release
 gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and self-contained:
@@ -76,8 +89,10 @@ pushing and keep the tracked working tree and index clean. The hook checks
 this before and after validation, and refuses a different commit with
 checkout instructions. Push different commits separately. Deletion-only
 updates skip code checks because they push no commit tree.
-Annotated tag objects cannot equal `HEAD`; check out their commit and push
-a branch or lightweight tag instead. A complete checkout with no
+An annotated tag is pushed by checking out its commit
+(`git checkout --detach <tag>^{commit}`) and pushing the tag; the hook
+validates the peeled commit. A tag that does not peel to a commit is refused.
+A complete checkout with no
 assume-unchanged or skip-worktree index flags is required for validation.
 
 ## Architecture

@@ -78,6 +78,7 @@ import {
   encodeWireHttpResponse,
   hostApiArgsOf,
   hostApiMethodOf,
+  workerSubscriptionIdOfRequest,
   hostApiPathOf,
   inactiveHostApiMessage,
   toHostApiRpcError,
@@ -1276,16 +1277,21 @@ function spawnWorkerPath(
     const push = (payload: WireWorkerEvent): void => {
       if (live) scope.deliver(handleId, payload);
     };
-    worker.onStdout((chunk) => push({ kind: "stdout", chunk }));
-    worker.onStderr((chunk) => push({ kind: "stderr", chunk }));
-    worker.onExit((info) => {
-      exited = true;
-      push({ kind: "exit", code: info.code, signal: info.signal });
-      // The process is gone, so the registration has nothing left to own. Released
-      // here rather than left for `childGone` so a plugin that spawns and lets
-      // workers die does not accumulate host-side entries.
+    try {
+      worker.onStdout((chunk) => push({ kind: "stdout", chunk }));
+      worker.onStderr((chunk) => push({ kind: "stderr", chunk }));
+      worker.onExit((info) => {
+        exited = true;
+        push({ kind: "exit", code: info.code, signal: info.signal });
+        // The process is gone, so the registration has nothing left to own. Released
+        // here rather than left for `childGone` so a plugin that spawns and lets
+        // workers die does not accumulate host-side entries.
+        scope.release(handleId);
+      });
+    } catch (error) {
       scope.release(handleId);
-    });
+      throw error;
+    }
     return {
       handleId,
       socketPath: worker.socketPath,
@@ -2187,7 +2193,7 @@ export class HostApiDispatcher {
       }
       const invoke = () => handler.invoke(
         { path: handler.path, args, signal: controller.signal },
-        this.scopeFor(handler.path, reservation),
+        this.scopeFor(handler.path, reservation, request.id),
       );
       const token = invocationTokenOf(request.params);
       const value = await (token === undefined
@@ -2449,7 +2455,8 @@ export class HostApiDispatcher {
 
   private scopeFor(
     path: HostApiPath,
-    reservation?: { active: boolean; consume: () => void },
+    reservation: { active: boolean; consume: () => void } | undefined,
+    requestId: JsonRpcRequestId,
   ): SubscriptionScope {
     /**
      * The one place a host-side close becomes a message to the child.
@@ -2494,7 +2501,12 @@ export class HostApiDispatcher {
       },
       open: (teardown) => {
         if (!reservation?.active) this.ensureSubscriptionCapacity(path);
-        const subscriptionId = this.subscriptions.open({ path, teardown }, release);
+        const subscriptionId = path === "spawnWorker"
+          ? workerSubscriptionIdOfRequest(requestId)
+          : this.subscriptions.open({ path, teardown }, release);
+        if (path === "spawnWorker") {
+          this.subscriptions.adopt(subscriptionId, { path, teardown }, release);
+        }
         reservation?.consume();
         return subscriptionId;
       },

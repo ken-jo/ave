@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { _electron as electron, type ElectronApplication } from "playwright";
+import type { ElectronApplication } from "playwright";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv, MAIN_ENTRY } from "./seeded-electron.js";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, MAIN_ENTRY, launchElectron } from "./seeded-electron.js";
 
 test("missing-plugin routines retain their status and can be removed", async ({}, testInfo) => {
   const root = mkdtempSync(join(tmpdir(), "routine-missing-e2e-"));
@@ -22,7 +22,7 @@ test("missing-plugin routines retain their status and can be removed", async ({}
   ] }));
   let app: ElectronApplication | undefined;
   try {
-    app = await electron.launch({
+    app = await launchElectron({
     args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
     env: Object.fromEntries(Object.entries(buildIsolatedElectronEnv({ AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test", ELECTRON_DISABLE_SECURITY_WARNINGS: "1" })).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   });

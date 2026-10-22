@@ -769,24 +769,44 @@ export function useChatState(
     setEntries((p) => upsertStreamingAssistant(p, content));
   }, []);
 
-  const handleContinueFromLastUser = useCallback(async (sessionId: string) => {
+  // A Continue whose turn the host refused never got a user row; its bubble
+  // (still awaiting the host's id) must not stay on screen as if it had.
+  const dropUnannouncedUserBubble = useCallback((text: string): void => {
+    setEntries((p) => {
+      for (let i = p.length - 1; i >= 0; i -= 1) {
+        const entry = p[i];
+        if (entry.kind !== "user") continue;
+        if (entry.text !== text || entry.awaitingHostId !== true) return p;
+        return [...p.slice(0, i), ...p.slice(i + 1)];
+      }
+      return p;
+    });
+  }, []);
+
+  const handleContinueFromLastUser = useCallback(async (sessionId: string, opts?: { userBubble?: string }) => {
     const requestId = beginStreamingRequest();
     streamRef.current = "";
     thoughtRef.current = "";
     releaseActiveStream();
     finalAssistantRoundClosedRef.current = false;
+    // Resuming an interrupted turn starts a new user row on the host; showing
+    // its bubble now keeps the resumed answer in its own turn instead of
+    // folding it into the interrupted one.
+    if (opts?.userBubble) appendUserMessage(opts.userBubble);
     appendAssistantStatus(t("useChatState.continueFromLastUserStatus"));
     try {
       const res = await api.chatContinueLastUser(sessionId);
       if (!res?.ok) {
+        if (opts?.userBubble) dropUnannouncedUserBubble(opts.userBubble);
         setErrorWithThought(t("useChatState.continueGenerationFailedError", { error: res?.error ?? t("useChatState.unknownError") }));
       }
     } catch (err) {
+      if (opts?.userBubble) dropUnannouncedUserBubble(opts.userBubble);
       setErrorWithThought(t("useChatState.errorPrefix", { error: errorMessage(err) }));
     } finally {
       finishStreamingRequest(requestId);
     }
-  }, [api, beginStreamingRequest, finishStreamingRequest, appendAssistantStatus, setErrorWithThought, releaseActiveStream]);
+  }, [api, beginStreamingRequest, finishStreamingRequest, appendAssistantStatus, appendUserMessage, dropUnannouncedUserBubble, setErrorWithThought, releaseActiveStream]);
 
   const appendSystemEntry = useCallback((text: string): void => {
     if (text.length === 0) return;
