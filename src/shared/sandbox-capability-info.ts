@@ -23,6 +23,8 @@
  */
 
 /** What the sandbox confines, by platform. `network` is false where egress is not contained. */
+import type { AveHomePrincipal, AveHomePrivacyFailureCategory } from "./ave-home.js";
+
 export interface SandboxConfinement {
   filesystem: boolean;
   process: boolean;
@@ -64,8 +66,8 @@ export interface SandboxWindowsStatusInfo {
   /** Confinement is refused until this private directory verifies at restart. */
   homePrivacyError?: {
     path: string;
-    category: import("./ave-home.js").AveHomePrivacyFailureCategory;
-    extraPrincipals?: import("./ave-home.js").AveHomePrincipal[];
+    category: AveHomePrivacyFailureCategory;
+    extraPrincipals?: AveHomePrincipal[];
   };
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
