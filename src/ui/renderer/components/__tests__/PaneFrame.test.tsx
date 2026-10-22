@@ -492,6 +492,7 @@ describe("useChatGroups", () => {
     expect(result.current.groups.map((group) => group.id))
       .toEqual(["main", "group-2", "group-3", "group-4"]);
 
+    act(() => result.current.setThumbnailOpen("group-4", true));
     // Every group idle, so only the exclusions can decide which one goes.
     act(() => result.current.focus("group-3"));
     let adopted: { chatGroupId: string; released: string | null } | null = null;
@@ -501,6 +502,7 @@ describe("useChatGroups", () => {
     // beside, the focused group, the primary. Each of those three exclusions
     // would name a different leaf here if it were dropped.
     expect(adopted).toMatchObject({ released: "group-4" });
+    expect(result.current.thumbnailOpenIds).toEqual([]);
     expect(result.current.groups.map((group) => group.id))
       .toEqual(["main", "group-2", "group-5", "group-3"]);
   });
@@ -560,6 +562,46 @@ describe("useChatGroups", () => {
     expect(result.current.maximizedId).toBeNull();
     expect(result.current.groups.filter((group) => !group.hidden).map((group) => group.id))
       .toEqual(["main", "group-2"]);
+  });
+
+  it("tracks session thumbnails independently of work panels and clears closed panes", () => {
+    const { result } = renderHook(() => useChatGroups());
+    act(() => result.current.split("main", "row"));
+    expect(result.current.groups.map((group) => group.thumbnailOpen)).toEqual([false, false]);
+
+    act(() => result.current.setThumbnailOpen("main", true));
+    act(() => result.current.setPanelOpen("group-2", true));
+    expect(result.current.groups.map(({ id, panelOpen, thumbnailOpen }) => ({ id, panelOpen, thumbnailOpen })))
+      .toEqual([
+        { id: "main", panelOpen: false, thumbnailOpen: true },
+        { id: "group-2", panelOpen: true, thumbnailOpen: false },
+      ]);
+
+    act(() => result.current.setThumbnailOpen("main", true));
+    expect(result.current.thumbnailOpenIds).toEqual(["main"]);
+    act(() => result.current.setThumbnailOpen("group-2", true));
+    act(() => result.current.close("group-2"));
+    expect(result.current.thumbnailOpenIds).toEqual(["main"]);
+    act(() => result.current.setThumbnailOpen("main", false));
+    expect(result.current.thumbnailOpenIds).toEqual([]);
+  });
+
+  it("restores independent thumbnail and work panel choices", () => {
+    const { result } = renderHook(() => useChatGroups());
+    act(() => result.current.split("main", "row"));
+    const tree = result.current.tree;
+    act(() => result.current.restore({
+      tree,
+      focusedId: "group-2",
+      panelOpenIds: ["main"],
+      thumbnailOpenIds: ["group-2"],
+      content: {},
+    }));
+    expect(result.current.groups.map(({ id, panelOpen, thumbnailOpen }) => ({ id, panelOpen, thumbnailOpen })))
+      .toEqual([
+        { id: "main", panelOpen: true, thumbnailOpen: false },
+        { id: "group-2", panelOpen: false, thumbnailOpen: true },
+      ]);
   });
 
   it("tracks the work panel per group rather than per window", () => {

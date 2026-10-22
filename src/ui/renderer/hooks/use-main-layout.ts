@@ -28,11 +28,13 @@ interface ChatGroupsForLayout {
   tree: PaneNode;
   focusedId: string;
   panelOpenIds: readonly string[];
+  thumbnailOpenIds: readonly string[];
   contentById: Readonly<Record<string, ViewLocation>>;
   restore: (layout: {
     tree: PaneNode;
     focusedId: string;
     panelOpenIds: readonly string[];
+    thumbnailOpenIds: readonly string[];
     content: Readonly<Record<string, ViewLocation>>;
   }) => void;
 }
@@ -54,7 +56,7 @@ function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout
     content[paneId] = { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: surface.tabId };
   }
   // The saved tree's nodes have the pane tree's shape; the parser checked them.
-  chatGroups.restore({ tree: layout.tree as PaneNode, focusedId: layout.focusedId, panelOpenIds: layout.panelOpenIds, content });
+  chatGroups.restore({ tree: layout.tree as PaneNode, focusedId: layout.focusedId, panelOpenIds: layout.panelOpenIds, thumbnailOpenIds: layout.thumbnailOpenIds, content });
   // Panes whose conversation is already mounted (the main one, at least) take
   // their side tabs now; the rest take them when they mount.
   for (const paneId of Object.keys(layout.sideTabs)) {
@@ -125,6 +127,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
         tree: groups.tree,
         focusedId: groups.focusedId,
         panelOpenIds: groups.panelOpenIds,
+        thumbnailOpenIds: groups.thumbnailOpenIds,
         contentById: groups.contentById,
         surfaceOf: (tabId) => {
           const surface = surfaces.get(tabId);
@@ -182,5 +185,5 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
   // The window's own layout state changing is a change to save.
   useEffect(() => {
     if (settled) emitMainLayoutChange();
-  }, [settled, chatGroups.tree, chatGroups.focusedId, chatGroups.panelOpenIds, chatGroups.contentById, mainSurfaces.surfaces]);
+  }, [settled, chatGroups.tree, chatGroups.focusedId, chatGroups.panelOpenIds, chatGroups.thumbnailOpenIds, chatGroups.contentById, mainSurfaces.surfaces]);
 }

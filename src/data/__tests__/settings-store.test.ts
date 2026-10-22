@@ -4273,6 +4273,7 @@ describe("SettingsService system — main window layout", () => {
     focusedId: "group-2",
     surfaces: { "group-2": { kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null } },
     panelOpenIds: ["main"],
+    thumbnailOpenIds: ["group-2"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-4", ordinal: 1, cwd: null, url: "https://example.com/" }] },
   } as const;
 

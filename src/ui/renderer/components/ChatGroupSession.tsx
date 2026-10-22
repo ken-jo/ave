@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { GalleryVerticalEnd, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
@@ -201,6 +201,8 @@ export interface ChatGroupSessionProps {
     currentSessionId: string;
   }) => ReactNode;
   panelOpen: boolean;
+  thumbnailOpen: boolean;
+  onThumbnailOpenChange: (open: boolean) => void;
   /** Is this the tile the window is focused on? It adopts cards no tile holds. */
   focused: boolean;
   /**
@@ -231,7 +233,7 @@ export interface ChatGroupSessionProps {
  */
 export function ChatGroupSession({
   chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
-  paneHidden, onSidePanelOpenChange,
+  paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange,
 }: ChatGroupSessionProps) {
   const { t } = useTranslation();
 
@@ -894,15 +896,26 @@ export function ChatGroupSession({
     [t, currentSessionId, env, handleImportAndLoad],
   );
 
-  // The one control this pane owns as a TILE rather than as content: the work
-  // panel is the conversation's, so it opens from the conversation's own frame.
+  // Each column belongs to this conversation and opens from its own frame.
   const panelLabel = panelOpen ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
   // The side chat holds a card the user cannot see from here — the panel is
   // closed, or another tab is up. The window decided that; the toggle only
   // carries the dot, because opening the panel is how the user reaches it.
   const sideChatPendingAnswer =
     sideChat !== null && env.pendingAnswers.sideChatSessionIds.has(sideChat.sessionId);
+  const thumbnailLabel = t(thumbnailOpen ? "chatThumbnails.close" : "chatThumbnails.open");
   const trailing = (
+    <>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon" className={HEADER_BUTTON_CLASS}
+          onClick={() => onThumbnailOpenChange(!thumbnailOpen)} title={thumbnailLabel}
+          aria-label={thumbnailLabel} aria-pressed={thumbnailOpen} data-testid={TEST_IDS.paneThumbnailToggle}>
+          <GalleryVerticalEnd className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{thumbnailLabel}</TooltipContent>
+    </Tooltip>
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
@@ -921,6 +934,7 @@ export function ChatGroupSession({
       </TooltipTrigger>
       <TooltipContent side="bottom">{panelLabel}</TooltipContent>
     </Tooltip>
+    </>
   );
 
   const chatContextValue = useMemo<ChatContextValue>(() => ({
@@ -996,6 +1010,7 @@ export function ChatGroupSession({
         onSlashPickerOpenChange={env.onSlashPickerOpenChange}
         statusBar={tileStatusBar}
         onAttachmentWarning={handleAttachmentWarning}
+        thumbnailOpen={thumbnailOpen}
         sidePanelOpen={panelOpen}
         onSidePanelOpenChange={onSidePanelOpenChange}
         sideChatOpenRequest={env.sideChatOpenRequest?.chatGroupId === chatGroupId

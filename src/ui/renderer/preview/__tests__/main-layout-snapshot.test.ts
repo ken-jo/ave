@@ -21,6 +21,7 @@ describe("buildMainLayoutSnapshot", () => {
       tree,
       focusedId: "group-2",
       panelOpenIds: ["main", "group-9"],
+      thumbnailOpenIds: ["group-2", "group-9"],
       contentById: { main: { view: "home" }, "group-2": { view: "terminal", surface: "terminal:0000000a-3" } },
       surfaceOf: (tabId) => (tabId === "terminal:0000000a-3" ? savedSurfaceOf({ tabId, kind: "terminal", ordinal: 1 }, "/work", null) : null),
       sideTabsOf: (paneId) => (paneId === "main" ? [savedSurfaceOf({ tabId: "browser:0000000a-4", kind: "browser", ordinal: 1 }, null, "https://example.com/")] : []),
@@ -29,6 +30,7 @@ describe("buildMainLayoutSnapshot", () => {
     expect(snapshot.sideTabs).toEqual({ main: [{ kind: "browser", tabId: "browser:0000000a-4", ordinal: 1, cwd: null, url: "https://example.com/" }] });
     // A panel id the tree no longer has is not carried.
     expect(snapshot.panelOpenIds).toEqual(["main"]);
+    expect(snapshot.thumbnailOpenIds).toEqual(["group-2"]);
     expect(parseMainLayout(snapshot)).toEqual({ ok: true, layout: snapshot });
   });
 });

@@ -1,10 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Globe, X } from "lucide-react";
 import type { BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceTab } from "../../../shared/browser-workspace.js";
 import { browserPreviewScheduler } from "../hooks/browser-preview-scheduler.js";
+import { useTranslation } from "../../../i18n/react.js";
+import { subscribeWebSurfaces, webSurfaceFavicon } from "../preview/web-surfaces.js";
 
-export function BrowserWorkspaceCard({ api, tab, visible, mode }: { api: BrowserWorkspaceApi; tab: BrowserWorkspaceTab; visible: boolean; mode: string }) {
+export function BrowserWorkspaceCard({ api, tab, visible, mode, active = false, onOpen, onClose }: {
+  api: BrowserWorkspaceApi;
+  tab: BrowserWorkspaceTab;
+  visible: boolean;
+  mode: string;
+  active?: boolean;
+  onOpen?: () => void;
+  onClose?: () => void;
+}) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLLIElement>(null);
   const [preview, setPreview] = useState<BrowserPreview | null>(null);
+  const favicon = useSyncExternalStore(subscribeWebSurfaces, () => webSurfaceFavicon(tab.tabId), () => null);
   useEffect(() => {
     const element = ref.current;
     setPreview(null);
@@ -24,10 +37,19 @@ export function BrowserWorkspaceCard({ api, tab, visible, mode }: { api: Browser
     document.addEventListener("visibilitychange", synchronize);
     return () => { unregister?.(); observer.disconnect(); document.removeEventListener("visibilitychange", synchronize); };
   }, [api, tab.tabId, tab.documentGeneration, visible]);
-  return <li ref={ref} className="min-w-0 rounded border p-2" data-tab-id={tab.tabId}>
+  const title = tab.title || tab.url;
+  const content = <>
+    <span className={`mb-1 flex min-w-0 items-center gap-1.5 ${onClose ? "pr-6" : ""}`}>
+      {favicon ? <img src={favicon} alt="" width={16} height={16} className="size-4 shrink-0" /> : <Globe aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />}
+      <span className="min-w-0 flex-1 truncate font-medium" title={tab.url}>{title}</span>
+    </span>
     {preview && <img src={preview.dataUrl} width={preview.width} height={preview.height} alt="" className="mb-1 max-w-full rounded" />}
-    <div className="truncate font-medium" title={tab.url}>{tab.title || tab.url}</div>
-    <div className="truncate text-muted-foreground">{tab.url}</div>
-    <span className="text-muted-foreground">{mode}</span>
+    <span className="block truncate text-muted-foreground">{tab.url}</span>
+    <span className="block text-muted-foreground">{mode}</span>
+  </>;
+  return <li ref={ref} className={`relative min-w-0 rounded border ${active ? "border-primary bg-accent" : ""}`} data-tab-id={tab.tabId} data-active={active}>
+    {onOpen ? <button type="button" className="block w-full min-w-0 p-2 text-left" aria-label={title} aria-pressed={active} onClick={onOpen}>{content}</button>
+      : <div className="p-2">{content}</div>}
+    {onClose && <button type="button" className="absolute right-1 top-1 rounded p-1 hover:bg-accent" aria-label={t("chatPreviewRail.closeTab")} title={t("chatPreviewRail.closeTab")} onClick={onClose}><X aria-hidden="true" className="size-3.5" /></button>}
   </li>;
 }

@@ -21,6 +21,7 @@ import {
   publishLiveWebTabs,
   registerWebSurfaceOccluder,
   withdrawLiveWebTabs,
+  webSurfaceFavicon,
 } from "../../preview/web-surfaces.js";
 
 const source = Symbol("test-store");
@@ -102,15 +103,24 @@ describe("WebSurfaceLayer", () => {
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/" })); });
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })); });
     expect(committedWebSurfaceLocation("browser:9")).toBe("https://a.example/");
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://a.example/icon.png"] })); });
+    expect(webSurfaceFavicon("browser:9")).toBe("https://a.example/icon.png");
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["file:///private/icon.png", "https://user:password@a.example/icon.png", "https://a.example/" + "a".repeat(8192)] })); });
+    expect(webSurfaceFavicon("browser:9")).toBeNull();
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [null, "https://a.example/icon.png"] })); });
+    act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://a.example/route", isMainFrame: true })); });
+    expect(webSurfaceFavicon("browser:9")).toBe("https://a.example/icon.png");
 
     // Moved to a pane: the same guest, not bound again, its request kept.
     rerender(<Moving where="pane" />);
     expect(guests()).toEqual([guest]);
+    expect(webSurfaceFavicon("browser:9")).toBe("https://a.example/icon.png");
     expect(bindTab).toHaveBeenCalledTimes(1);
     expect(getWebSurfaces().find((surface) => surface.tabId === "browser:9")?.bindRequestId).toBe("browser-op-9");
 
     // A new guest process: the old address is forgotten and the guest bound again.
     act(() => { guest.dispatchEvent(new Event("did-attach")); });
+    expect(webSurfaceFavicon("browser:9")).toBeNull();
     await act(async () => { await Promise.resolve(); });
     expect(committedWebSurfaceLocation("browser:9")).toBeNull();
     expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9" });
