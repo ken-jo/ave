@@ -850,6 +850,9 @@ export function buildInternalApiSurface() {
     sandboxWindowsInstall: async () =>
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
     listRules: async () => ipcRenderer.invoke(PERMISSIONS.listRules),
+    listScopedRules: async () => ipcRenderer.invoke(PERMISSIONS.listScopedRules),
+    removeScopedRule: async (rule: import("../shared/permissions-events.js").ScopedPermissionRule) =>
+      ipcRenderer.invoke(PERMISSIONS.removeScopedRule, { ...rule, intent: ipcUserKeyboardIntent() }),
     addRule: async (pattern: string, action: string) =>
       ipcRenderer.invoke(PERMISSIONS.addRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
     removeRule: async (pattern: string, action: string) =>
@@ -992,6 +995,7 @@ export function buildInternalApiSurface() {
     record: async (entry: {
       /** Server-side ApprovalRequest binding — required for IPC handler validation. */
       requestId: string;
+      rule?: { pattern: string; scope: "project" | "user" };
       toolName: string;
       args: string;
       source: string;
@@ -1009,6 +1013,7 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.userApprovalRevoke, { key, intent: ipcUserKeyboardIntent() }),
     /** List all approval entries (for PermissionsTab display). */
     list: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList),
+    listSession: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList, { scope: "session" }),
   },
 
   // ─── DLP Hit Statistics (Observability) ─────────

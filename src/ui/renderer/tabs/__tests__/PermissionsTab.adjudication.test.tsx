@@ -43,6 +43,8 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],
@@ -98,6 +100,7 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
     },
     userApproval: {
       list: vi.fn(async () => []),
+      listSession: vi.fn(async () => []),
       revokeByKey: vi.fn(async () => ({ ok: true })),
       record: vi.fn(async () => ({ ok: true })),
     },

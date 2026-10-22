@@ -19,6 +19,27 @@ import type { RiskLevel } from "./permission-review-status.js";
  */
 export type UserApprovalScope = "session" | "persistent";
 
+export interface ScopedPermissionRuleError {
+  filePath: string;
+  errorCode: "rules-file-unavailable";
+}
+
+/** Rule-store row with its host-owned persistence scope. */
+export interface ScopedPermissionRule {
+  pattern: string;
+  action: "allow" | "deny" | "ask";
+  source?: string;
+  scope: "user" | "project";
+  projectCwd?: string;
+}
+
+export interface ShellRuleApproval {
+  suggestedPattern: string | null;
+  projectCwd: string;
+  sessionAllowed: boolean;
+  persistentAllowed: boolean;
+}
+
 /**
  * Exact-tuple decision stored for a user-reviewed tool invocation.
  *

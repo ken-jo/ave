@@ -6,7 +6,7 @@
  * canonical realpath). Rules are never written into the user's
  * repository. Project files hold rules-language specifiers only.
  */
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, readdir } from "node:fs/promises";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -14,6 +14,7 @@ import { withFileLock } from "../../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
+import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rule-files.js";
 
@@ -181,4 +182,54 @@ export async function updateProjectRulesFile(
     writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
     return file;
   });
+}
+
+/** Exact stored identity; listing and revoke must not repeat repository discovery. */
+export function storedProjectRulesLocation(baseDir: string, projectRoot: string): ProjectRulesLocation {
+  const captured = captureApprovalWorkingDirectory(projectRoot);
+  return {
+    filePath: resolve(baseDir, "permissions", "project-rules", captured.identity + ".json"),
+    projectRoot: captured.path,
+    identity: captured.identity,
+  };
+}
+
+/** Enumerate stored projects, retaining independent corruption errors. */
+export async function listStoredProjectRules(baseDir: string): Promise<{
+  files: ProjectRulesFile[];
+  errors: ScopedPermissionRuleError[];
+}> {
+  const directory = resolve(baseDir, "permissions", "project-rules");
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (isMissingPathError(error)) return { files: [], errors: [] };
+    throw error;
+  }
+  const files: ProjectRulesFile[] = [];
+  const errors: ScopedPermissionRuleError[] = [];
+  for (const name of names.sort()) {
+    if (!name.endsWith(".json")) continue;
+    const filePath = resolve(directory, name);
+    try {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new PermissionRulesFileCorruptError(filePath, "invalid file identity");
+      const raw = await readFile(filePath, "utf8");
+      if (!raw.trim()) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch (error) {
+        throw new PermissionRulesFileCorruptError(filePath, invalidJsonDetail(error, raw));
+      }
+      const projectRoot = parsed && typeof parsed === "object" ? (parsed as { projectRoot?: unknown }).projectRoot : undefined;
+      if (typeof projectRoot !== "string" || !isAbsolute(projectRoot)) throw new PermissionRulesFileCorruptError(filePath, "invalid project root");
+      const location = storedProjectRulesLocation(baseDir, projectRoot);
+      if (location.filePath !== filePath || location.projectRoot !== projectRoot) throw new PermissionRulesFileCorruptError(filePath, "projectRoot does not match the file identity");
+      const file = await readProjectRulesFile(location);
+      if (file) files.push(file);
+    } catch (error) {
+      console.error("[permission]", error);
+      errors.push({ filePath, errorCode: "rules-file-unavailable" });
+    }
+  }
+  return { files, errors };
 }

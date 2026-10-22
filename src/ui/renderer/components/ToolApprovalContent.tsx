@@ -11,6 +11,9 @@ import {
   resolveUserApprovalVerdict,
   type UserApprovalVerdict,
 } from "../../../shared/permissions-events.js";
+import { refusedShellPrefix } from "../../../permissions/rules/shell-prefix-values.js";
+import { parseRuleSpecifier, formatRuleSpecifier } from "../../../permissions/rules/rule-specifier.js";
+import { Input } from "../../../components/ui/input.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -699,6 +702,8 @@ export function ToolApprovalContent({
   const { t: tHook } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [recordingDecision, setRecordingDecision] = useState(false);
+  const [shellPattern, setShellPattern] = useState(request?.shellRule?.suggestedPattern ?? "");
+  const [shellScope, setShellScope] = useState<"project" | "user">("project");
   const [recordError, setRecordError] = useState<string | null>(null);
   const activeRequestIdRef = useRef<string | null>(request?.id ?? null);
   const recordingRequestIdRef = useRef<string | null>(null);
@@ -764,6 +769,11 @@ export function ToolApprovalContent({
     setRecordError(null);
   }, [request?.id]);
 
+  useEffect(() => {
+    setShellPattern(request?.shellRule?.suggestedPattern ?? "");
+    setShellScope("project");
+  }, [request?.id, request?.shellRule?.suggestedPattern]);
+
   useEffect(() => () => {
     activeRequestIdRef.current = null;
     recordingRequestIdRef.current = null;
@@ -817,12 +827,31 @@ export function ToolApprovalContent({
   // A browser scope is remembered until restart only; the remember button
   // says so and records `scope: "session"` (the record handler enforces it).
   const rememberIsSessionOnly = !outOfDirScopes && isSessionOnlyRemember(request);
-  const alwaysAllowUnavailable = outOfDirScopes
+  const shellRule = request?.shellRule;
+  const parsedShellPattern = useMemo(() => {
+    try {
+      const parsed = parseRuleSpecifier(shellPattern.trim());
+      return parsed.kind === "bash" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [shellPattern]);
+  const canonicalShellPattern = parsedShellPattern ? formatRuleSpecifier(parsedShellPattern) : null;
+  const shellPrefixRefused = parsedShellPattern !== null && refusedShellPrefix(parsedShellPattern.tokens) !== null;
+  const alwaysAllowUnavailable = shellRule
+    ? !shellRule.persistentAllowed || !shellRule.suggestedPattern || !canonicalShellPattern || shellPrefixRefused
+    : outOfDirScopes
     ? outOfDirScopes.always === null
     : approvalIsOneShot || request?.persistentAllowAllowed === false ||
       (finalVerdict === "high" && request?.persistentAllowAllowed !== true);
   const persistentUnavailableReason = alwaysAllowUnavailable
-    ? outOfDirScopes
+    ? shellRule
+      ? shellPrefixRefused || (!shellRule.suggestedPattern && shellRule.sessionAllowed)
+        ? tHook("toolApprovalDialog.shellPrefixUnavailable")
+        : !shellRule.persistentAllowed
+          ? tHook("toolApprovalDialog.persistentUnavailableOneShot")
+          : tHook("toolApprovalDialog.shellRuleInvalid")
+      : outOfDirScopes
       ? outOfDirSuggestedParent
         ? tHook("toolApprovalDialog.persistentUnavailableOneShot")
         : tHook("toolApprovalDialog.persistentUnavailableNoParent")
@@ -913,19 +942,13 @@ export function ToolApprovalContent({
     denyDecisionDisabled,
   ]);
 
-  // Wrap onDecide("allow-*") to record durable approval before deciding.
-  //
-  // Only the explicit `allow-always` choice writes an exact persistent tuple.
-  // `allow-once` never records, and the card no longer creates a glob rule or
-  // a session-wide grant.
-  //
-  // CRITICAL: use canonicalStringify for args + propagate trustOrigin
-  // + approvalCacheKey so that the record key matches the lookup key in
-  // dispatchReviewer. Without this, user-approval memory hit rate is 0%.
+  // Save remembered decisions before resolving the live request. Shell rules
+  // belong only to the scoped rule store; session approvals use exact memory.
   const handleApprove = useCallback(async (
     choice: ApprovalChoice,
     pattern?: string,
     extras?: ApprovalDecisionExtras,
+    shellAction?: "session" | "deny",
   ) => {
     if (interactionLocked || recordingRequestIdRef.current !== null) return;
     const requestIdAtStart = request?.id ?? null;
@@ -933,7 +956,9 @@ export function ToolApprovalContent({
     // A path-grant allow-always persists through the host's directory grant
     // (the rememberPattern argument) — never as an exact-args tuple, so the
     // user-approval record path is skipped for out-of-allowed-dir requests.
-    if (request && choice === "allow-always" && !alwaysAllowUnavailable && !isOutOfDir) {
+    if (shellAction === "session" && !shellRule?.sessionAllowed) return;
+    if (shellAction === "deny" && (!shellRule || !canonicalShellPattern)) return;
+    if (request && ((choice === "allow-always" && !alwaysAllowUnavailable && !isOutOfDir) || shellAction)) {
       // canonicalStringify: sort object keys so {a,b} and {b,a} produce the
       // same string — matching how dispatchReviewer builds the lookup key.
       const canonicalArgs = canonicalStringifyForRenderer(request.args ?? {});
@@ -945,8 +970,11 @@ export function ToolApprovalContent({
           toolName: request.toolName,
           args: canonicalArgs,
           source: request.source ?? "builtin",
-          decision: "allow",
-          scope: rememberIsSessionOnly ? "session" : "persistent",
+          decision: shellAction === "deny" ? "deny" : "allow",
+          scope: shellAction === "session" || (!shellRule && rememberIsSessionOnly) ? "session" : "persistent",
+          ...(shellRule && shellAction !== "session" && canonicalShellPattern
+            ? { rule: { pattern: canonicalShellPattern, scope: shellScope } }
+            : {}),
           verdictAtApproval: finalVerdict as UserApprovalVerdict,
           nlJustification: null,
           trustOrigin: request.trustOrigin,
@@ -954,13 +982,13 @@ export function ToolApprovalContent({
         });
         if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
-            setRecordError(result?.message ?? result?.error ?? tHook("toolApprovalDialog.exactDecisionSaveFailed"));
+            setRecordError(tHook(shellRule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed"));
           }
           return;
         }
-      } catch (err) {
+      } catch {
         if (activeRequestIdRef.current === request.id) {
-          setRecordError(err instanceof Error ? err.message : tHook("toolApprovalDialog.exactDecisionSaveFailed"));
+          setRecordError(tHook(shellRule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed"));
         }
         return;
       } finally {
@@ -976,10 +1004,13 @@ export function ToolApprovalContent({
     // exact-record completion from a request that was cancelled/replaced must
     // never resolve the next request.
     if (activeRequestIdRef.current !== requestIdAtStart) return;
+    const responseChoice = shellRule && (choice === "allow-always" || shellAction)
+      ? shellAction === "deny" ? "deny-once" : "allow-once"
+      : choice;
     if (extras === undefined) {
-      onDecide(choice, pattern);
+      onDecide(responseChoice, pattern);
     } else {
-      onDecide(choice, pattern, extras);
+      onDecide(responseChoice, pattern, extras);
     }
   }, [
     request,
@@ -989,6 +1020,9 @@ export function ToolApprovalContent({
     isOutOfDir,
     interactionLocked,
     rememberIsSessionOnly,
+    shellRule,
+    canonicalShellPattern,
+    shellScope,
     tHook,
   ]);
   const approvalExtras = useMemo<ApprovalDecisionExtras | undefined>(
@@ -1516,6 +1550,34 @@ export function ToolApprovalContent({
 
         </section>
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
+            {shellRule ? (
+              <div className="space-y-2" data-testid="approval-shell-rule-editor">
+                <Label htmlFor={`shell-rule-${request.id}`} className="text-[11px]">{tHook("toolApprovalDialog.shellRulePattern")}</Label>
+                <Input id={`shell-rule-${request.id}`} data-testid="approval-shell-rule-pattern" className="h-8 font-mono text-xs"
+                  value={shellPattern} onChange={(event) => setShellPattern(event.target.value)}
+                  disabled={recordingDecision || interactionLocked} placeholder="Bash(git status *)" />
+                {shellPattern && !canonicalShellPattern ? <p role="alert" className="text-[11px] text-destructive">{tHook("toolApprovalDialog.shellRuleInvalid")}</p> : null}
+                <NativeSelect aria-label={tHook("toolApprovalDialog.shellRuleScope")} data-testid="approval-shell-rule-scope"
+                  value={shellScope} onChange={(event) => setShellScope(event.target.value as "project" | "user")}
+                  disabled={recordingDecision || interactionLocked}>
+                  <NativeSelectOption value="project">{tHook("toolApprovalDialog.shellScopeProject")}</NativeSelectOption>
+                  <NativeSelectOption value="user">{tHook("toolApprovalDialog.shellScopeUser")}</NativeSelectOption>
+                </NativeSelect>
+                <p className="break-all text-[10px] text-muted-foreground">{shellScope === "project" ? shellRule.projectCwd : tHook("toolApprovalDialog.shellScopeUserHelp")}</p>
+                <div className="flex flex-wrap gap-2">
+                  {shellRule.sessionAllowed ? <Button type="button" variant="outline" size="sm" data-testid="approval-allow-session"
+                    disabled={approveDisabled || recordingDecision || interactionLocked}
+                    onClick={() => void handleApprove("allow-once", undefined, undefined, "session")}>
+                    {tHook("toolApprovalDialog.allowForSession")}
+                  </Button> : null}
+                  <Button type="button" variant="outline" size="sm" data-testid="approval-deny-always"
+                    disabled={!canonicalShellPattern || recordingDecision || interactionLocked}
+                    onClick={() => void handleApprove("deny-once", undefined, undefined, "deny")}>
+                    {tHook("toolApprovalDialog.shellDenyAlways")}
+                  </Button>
+                </div>
+              </div>
+            ) : (
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
               <span>{tHook("toolApprovalDialog.permanentDenyInSettings")}</span>
               <Button
@@ -1535,6 +1597,7 @@ export function ToolApprovalContent({
                 {tHook("toolApprovalDialog.openPermissionSettings")}
               </Button>
             </div>
+            )}
             {/* `anywhere`, not `break-word`: a button is an inline-flex box whose
                 text item keeps a whole word as its min-content under
                 `break-word`, so one long translated word spills past the
@@ -1652,7 +1715,7 @@ export function ToolApprovalContent({
                 {note}
               </p>
             ))}
-            {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
+            {!shellRule && !alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>

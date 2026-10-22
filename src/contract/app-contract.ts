@@ -891,6 +891,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.setMode]: "required",
   [PERMISSIONS.addRule]: "required",
   [PERMISSIONS.removeRule]: "required",
+  [PERMISSIONS.removeScopedRule]: "required",
   [PERMISSIONS.policySet]: "required",
   [PERMISSIONS.dirDispatch]: "required",
   [PERMISSIONS.reviewerDispatch]: "required",

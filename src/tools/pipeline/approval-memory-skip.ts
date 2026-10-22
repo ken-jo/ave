@@ -138,6 +138,7 @@ export async function tryUserApprovalMemorySkip(
   pluginId?: string,
   hostShellExecutionPlan?: HostShellExecutionPlan,
   auditInput?: Record<string, unknown>,
+  sessionId?: string,
   /**
    * Disclosure sink — `PermissionManager.discloseUserApprovalHit`, bound by
    * `ToolExecutor` from the PermissionManager it already holds. Optional
@@ -166,6 +167,7 @@ export async function tryUserApprovalMemorySkip(
     context.trustOrigin,
     identity,
     executionCwd,
+    sessionId,
   ).catch(() => null); // storage failure must never block tool execution
 
   // No active (non-revoked) approval → fall through to the approval dock.
@@ -217,6 +219,7 @@ export async function tryUserApprovalMemorySkip(
     const reviewed = await dispatchFreshReview(
       toolName,
       {
+        ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
         pathFields,

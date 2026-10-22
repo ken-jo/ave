@@ -1,6 +1,6 @@
 # Permissions: always-allow baseline and judge slot
 
-Status: decided 2026-10-14 (issue #28). P1a is implemented; P1b, P1c and P2 are planned.
+Status: decided 2026-10-14 (issue #28). The rules baseline and approval rules UI are implemented. Scoped file, network and MCP rule enforcement remains separate work.
 
 This page carries the owner-approved direction for issue #28 into the repository. It has two goals:
 
@@ -90,9 +90,13 @@ does not prove that the command or task contents are read-only.
 - "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. Identity, repository discovery, the home boundary, and retained legacy rules follow [Project Rule Scope](../architecture/permission-policy-design.md#project-rule-scope). The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
 - "Everywhere" writes the user-global scope, which is Store A (`<ave home>/permissions.json`) extended in place.
 - Deny-always uses the same files.
-- Session scope is the conversation session id, in memory.
+- New shell session approvals use the conversation session id, in memory. Existing browser and terminal exact approvals retain their app-session lifetime.
 
 **7. Existing Store B entries** (exact tuples) keep matching unchanged and are never converted to prefixes.
+- The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
+- Allow for session records an exact Store B approval under the conversation id. It does not write a rule file or authorize another conversation. Existing entries keep their original identities.
+- Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes.
+- The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
 - A corrupt Store A, Store B or project file fails clearly with a visible error.
 - Corrupt files are never silently dropped and never overwritten.
 
@@ -169,10 +173,10 @@ allow rules, then the mode matrix, then the judge, then the dock.
 
 ## Delivery
 
-All work lands on the category branch `integration/permissions`.
+The baseline work used `integration/permissions`. The approval rules UI is delivered through `integration/permissions-2`.
 
 - **P1a** (this change): rules language, parser, shell matcher, refused list, arity suggestion, Store A extension with `ask`, per-project rule files, corrupt-file handling for Store A and B, removal of the blanket shell → HIGH. No UI.
-- **P1b:** the dock (prefix suggestion, allow-session / deny-always, per-project vs everywhere), one Settings list with revoke across Store A, project files and Store B, and i18n.
+- **P1b:** implemented in the shared approval content and Permissions Settings, with project/user rule persistence, conversation-scoped exact approvals, unified revoke and English/Korean copy.
 - **P1c:** path-scoped `Edit`, host-scoped `WebFetch`, `Mcp`, and out-of-directory depth.
 - **P2:** `src/permissions/judge/` is built in isolation. The auto-mode relocation and the judge call site land together after P1a.
 
@@ -199,7 +203,7 @@ All work lands on the category branch `integration/permissions`.
 Checks run in this order:
 
 1. Deny decides at layer 1.
-2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired (the repair UI is P1b). A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
+2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired. Settings identifies unavailable files without overwriting them; the user repairs the file outside the rule list. A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
 3. An identified sensitive-path or credential/sink signal decides at layer 2 as
    a forced, never-remembered prompt, before any allow rule or saved approval.
 4. Explicit ask rules decide at layer 2 as forced, never-remembered prompts.
@@ -442,9 +446,9 @@ The decision-table and classifier checks establish policy-analysis behavior.
 Native shell execution and proxy/sandbox egress behavior are not validated by
 this change.
 
-### Gaps closed by P1b
+### Approval rules UI
 
-The Settings IPC still accepts only allow/deny patterns without whitespace. Until P1b, `Bash(...)` rules are added through `PermissionManager.addRulePersist` (and removed through `removeRulePersist`).
+Settings accepts canonical `Bash(...)` rules, including whitespace inside their command prefix. The dock saves through the same `PermissionManager.addRulePersist` method. Revocation uses `removeRulePersist` for rules and the existing Store B revoke method for exact approvals. Each row identifies its decision, source and user, project, persistent or conversation scope. Revoking an entry affects subsequent permission checks; it does not answer an open approval request. Failed saves and revocations remain visible.
 
 ## Tests
 
@@ -462,3 +466,6 @@ The Settings IPC still accepts only allow/deny patterns without whitespace. Unti
   - sibling projects;
   - Store B coexistence;
   - the default-mode gate offering "remember" for `ls` / `npm test` but not `rm -rf`.
+- `src/ui/renderer/components/__tests__/ToolApprovalContent-shell-rules.test.tsx` covers rule editing, refused prefixes, session scope, durable deny, save failure and English/Korean copy.
+- `src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx` covers the unified list, refresh, scoped revocation and unavailable stores.
+- `test/e2e/ui/approval-shell-rules.spec.ts` covers bilingual shell controls, one-shot credential requests and project-rule revocation through the host bridge.

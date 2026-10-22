@@ -279,6 +279,45 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     expect(result[0].is_error).toBeUndefined();
   });
 
+  it.each([
+    { sessionId: "approved-conversation", permitted: true },
+    { sessionId: "another-conversation", permitted: false },
+    { sessionId: undefined, permitted: false },
+  ])("conversation approval permits only its owning session: $sessionId", async ({ sessionId, permitted }) => {
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    const input = { path: join(dir, "conversation.txt") };
+    await recordApproval("write_probe", canonicalStringify(input), "builtin", {
+      scope: "session",
+      sessionId: "approved-conversation",
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    });
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({
+      requestId: request.id,
+      choice: "deny-once" as const,
+    }));
+    const executor = new ToolExecutor(
+      registry, undefined, manager, undefined,
+      { requestAndWait } as never, undefined, auditLogger,
+    );
+    const result = await executor.executeAll(
+      [{ id: "conversation-write", name: "write_probe", input }],
+      {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        executionCwd: dir,
+        permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
+      },
+    );
+    expect(execute).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(requestAndWait).toHaveBeenCalledTimes(permitted ? 0 : 1);
+    expect(Boolean(result[0].is_error)).toBe(!permitted);
+  });
+
   it("(d) approval under a different (trustOrigin, approvalCacheKey) does NOT match — modal shown", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();

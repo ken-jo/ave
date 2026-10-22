@@ -10,6 +10,8 @@ function installAveApi() {
     getMode: vi.fn(async () => ({ mode: "default" })),
     setMode: vi.fn(),
     listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
     addRule: vi.fn(),
     removeRule: vi.fn(),
     hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),

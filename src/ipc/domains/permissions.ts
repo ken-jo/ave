@@ -4,9 +4,12 @@
  */
 import { ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
+import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
+import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
+import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import type { ApprovalDecision } from "../../permissions/approval-gate.js";
+import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
@@ -47,6 +50,7 @@ import {
   approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
+  listSessionApprovals,
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
@@ -78,6 +82,12 @@ function validateRulePatternInput(pattern: unknown): { ok: true; pattern: string
   const normalized = pattern.trim();
   if (normalized.length === 0) {
     return { ok: false, error: "invalid-pattern", message: "pattern must be non-empty" };
+  }
+  if (isRuleSpecifier(normalized)) {
+    try { validatePermissionRule({ pattern: normalized, action: "deny" }); } catch {
+      return { ok: false, error: "invalid-pattern", message: "Invalid command rule" };
+    }
+    return { ok: true, pattern: normalized };
   }
   if (normalized.length > 128) {
     return { ok: false, error: "invalid-pattern", message: "pattern must not exceed 128 characters" };
@@ -354,6 +364,34 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return pm.listPersistedRules();
   });
 
+  ipcMain.handle(PERMISSIONS.listScopedRules, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listScopedRules, e); return UNAUTHORIZED_FRAME; }
+    const pm = conversationLoop.permissionManager;
+    return pm ? pm.listScopedRules() : { rules: [], errors: [] };
+  });
+
+  ipcMain.handle(PERMISSIONS.removeScopedRule, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.removeScopedRule, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return { ok: false, error: "no-permission-manager" };
+    try {
+      // Only a row enumerated by this host can name a stored project identity.
+      const listed = await pm.listScopedRules();
+      const row = listed.rules.find((rule) => rule.pattern === body.pattern && rule.action === body.action &&
+        rule.scope === body.scope && rule.projectCwd === body.projectCwd && rule.source === body.source);
+      if (!row) return { ok: false, error: "invalid-rule" };
+      await pm.removeRulePersist(row, row.scope === "project"
+        ? { kind: "project", projectCwd: row.projectCwd!, storedIdentity: true } : { kind: "user" });
+      deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: "remove-failed", message: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   ipcMain.handle(PERMISSIONS.addRule, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.addRule, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
@@ -366,13 +404,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`add ${action} ${validated.pattern}`);
+    const parsed = isRuleSpecifier(validated.pattern) ? { sub: "add" as const, action, pattern: validated.pattern } : parsePermissionRulesCommand(`add ${action} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
     try {
-      if (parsed.action === "allow") {
+      if (isRuleSpecifier(parsed.pattern)) {
+        await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });
+      } else if (parsed.action === "allow") {
         await pm.addAlwaysAllowedPersist(parsed.pattern);
       } else {
         await pm.addAlwaysDeniedPersist(parsed.pattern);
@@ -398,7 +438,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`remove ${action} ${validated.pattern}`);
+    const parsed = isRuleSpecifier(validated.pattern) ? { sub: "remove" as const, action, pattern: validated.pattern } : parsePermissionRulesCommand(`remove ${action} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
@@ -1104,6 +1144,40 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (!snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
+    if (body.rule !== undefined) {
+      const rule = payloadRecord(body.rule);
+      const context = snapshot.shellRule;
+      if (!context || typeof rule.pattern !== "string" || (rule.scope !== "project" && rule.scope !== "user") || scope !== "persistent") {
+        return { ok: false, error: "invalid-rule", message: "A command rule requires a live shell request" };
+      }
+      if (decision === "allow" && !context.persistentAllowed) {
+        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
+      }
+      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
+      const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
+      try {
+        if (typeof command !== "string" || !shellRuleCoversCommand(rule.pattern, decision, command, context.projectCwd)) {
+          return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
+        }
+        const pm = conversationLoop.permissionManager;
+        if (!pm) return { ok: false, error: "no-permission-manager" };
+        await pm.addRulePersist({ pattern: rule.pattern, action: decision }, rule.scope === "project"
+          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+        auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+        });
+        broadcastPermissionConfigChanged(deps);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: "invalid-rule", message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {
+      return { ok: false, error: "command-rule-required", message: "A persistent shell allow must record the offered command rule" };
+    }
     if (!snapshot.durableApprovalRecordAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "user-approval record: one-shot approvals cannot be recorded" };
     }
@@ -1125,6 +1199,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const verdictAtApproval = snapshot.verdictAtApproval;
     // Conservative risk display during a failed assessment does not decide
     // persistence. Only the gate's live eligibility snapshot can authorize it.
+    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.shellRule.sessionAllowed) {
+      return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create a session approval" };
+    }
+    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.sessionId) {
+      return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+    }
     if (decision === "allow" && (!snapshot.persistentAllowAllowed || !snapshot.workingDirectoryIdentity)) {
       return { ok: false, error: verdictAtApproval === "high" ? "high-is-one-shot" : "one-shot-not-recordable", message: "This request requires a one-shot approval and cannot be recorded" };
     }
@@ -1147,6 +1227,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
+        ...(scope === "session" && snapshot.shellRule ? { sessionId: snapshot.sessionId } : {}),
+        ...(snapshot.projectCwd === undefined ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
@@ -1157,6 +1239,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
+      });
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
       });
       // User-approval store mutation — outside PermissionManager, so
       // emit the broadcast explicitly to keep the Active Approvals view
@@ -1194,12 +1282,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(PERMISSIONS.userApprovalList, async (e) => {
+  ipcMain.handle(PERMISSIONS.userApprovalList, async (e, payload?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalList, e); return UNAUTHORIZED_FRAME; }
-    try {
-      return await listApprovals();
-    } catch {
-      return [];
-    }
+    if (payloadRecord(payload).scope === "session") return listSessionApprovals();
+    return listApprovals();
   });
 }

@@ -14,6 +14,8 @@ process.env.AVE_HOME = TEST_HOME;
 import { PermissionManager } from "../permission-manager.js";
 import { readPermissionsFile, updatePermissionsFile } from "../permissions-store.js";
 import { PermissionRulesFileCorruptError } from "../rules/rule-files.js";
+import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -21,6 +23,9 @@ import {
   lookupApproval,
   readApprovals,
   recordApproval,
+  listApprovals,
+  listSessionApprovals,
+  revokeApprovalByKey,
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 import { resolveUserApprovalVerdict } from "../../shared/permissions-events.js";
@@ -400,4 +405,139 @@ describe("shell verdict for the dock (no blanket shell → HIGH)", () => {
     expect(resolveUserApprovalVerdict({ toolCategory: "shell" })).toBe("high");
     expect(resolveUserApprovalVerdict({ toolCategory: "shell", reviewerVerdict: { level: "high" }, ruleVerdict: { level: "low" } })).toBe("high");
   });
+});
+
+
+describe("scoped rule management", () => {
+  it("lists unvisited projects and retains corrupt sibling errors", async () => {
+    const secondProject = join(dir, "second-project");
+    mkdirSync(secondProject);
+    const writer = new PermissionManager(permissionsFile);
+    await writer.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
+    await writer.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "project", projectCwd: project });
+    const corrupt = projectRulesLocation(dir, secondProject);
+    writeFileSync(corrupt.filePath, "{broken");
+    const fresh = new PermissionManager(permissionsFile);
+    const listed = await fresh.listScopedRules();
+    expect(listed.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pattern: "Bash(git status *)", scope: "user" }),
+      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: project }),
+    ]));
+    expect(listed.errors).toEqual([{ filePath: corrupt.filePath, errorCode: "rules-file-unavailable" }]);
+    await fresh.removeRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "project", projectCwd: project, storedIdentity: true });
+    expect((await fresh.listScopedRules()).rules).toHaveLength(1);
+    expect(readFileSync(corrupt.filePath, "utf8")).toBe("{broken");
+  });
+
+  it("preserves live user rules when a corrupt file prevents revoke", async () => {
+    const manager = new PermissionManager(permissionsFile);
+    await manager.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" });
+    writeFileSync(permissionsFile, "{broken");
+    await expect(manager.removeRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" })).rejects.toThrow(/corrupt/);
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("ls"))).toMatchObject({ decision: "allow" });
+  });
+});
+
+describe("conversation-scoped exact decisions", () => {
+  beforeEach(() => { __resetSessionStoreForTest(); rmSync(join(TEST_HOME, "permissions", "user-approvals.json"), { force: true }); });
+
+  it("matches only the named conversation and revokes without creating disk state", async () => {
+    const identity = captureApprovalWorkingDirectory(project).identity;
+    await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "conversation-a", workingDirectoryIdentity: identity, projectCwd: project });
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project, "conversation-a")).toMatchObject({ sessionId: "conversation-a" });
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project, "conversation-b")).toBeNull();
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project)).toBeNull();
+    const rows = await listApprovals();
+    expect(rows).toEqual([expect.objectContaining({ sessionId: "conversation-a", projectCwd: project, scope: "session" })]);
+    await revokeApprovalByKey(rows[0].key);
+    expect(await listApprovals()).toEqual([]);
+    await expect(readApprovals()).resolves.toEqual({ approvals: {} });
+  });
+
+  it("retains legacy session matching without converting its key", async () => {
+    await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null });
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, undefined, "conversation-a")).not.toBeNull();
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, undefined, "conversation-b")).not.toBeNull();
+  });
+});
+
+
+describe("host shell-rule suggestions", () => {
+  it("uses canonical arity and proves whole-command coverage", () => {
+    expect(buildShellRuleApproval("git status --short", project, true, "conversation-a")).toMatchObject({ suggestedPattern: "Bash(git status *)", persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("git status && git diff", project, true, "conversation-a").suggestedPattern).toBeNull();
+    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status --short", project)).toBe(true);
+  });
+
+  it.each(["node -e console.log(1)", "env FOO=1 ls", "git -c core.pager=cat status"])("retains session choices for a refused prefix: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it("does not derive a session grant without a conversation or widen a sealed one-shot", () => {
+    expect(buildShellRuleApproval("ls", project, true).sessionAllowed).toBe(false);
+    expect(buildShellRuleApproval("ls", project, false, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+});
+
+
+describe("case-independent persistent-prefix refusal", () => {
+  it.each([
+    ["PYTHON", "interpreter"], ["/usr/bin/Python3.12", "interpreter"], ["NODE.EXE", "interpreter"],
+    ["SUDO", "wrapper"], ["/usr/bin/SuDo", "wrapper"], ["BASH", "shell"],
+    ["GIT", "multi-verb-tool"], ["Docker.EXE", "multi-verb-tool"], ["Rscript", "interpreter"],
+    ["NPX.CMD", "package-runner"], ["PNPM@10", "package-runner"],
+  ])("refuses a case-variant program identity %s", (program, reason) => {
+    expect(refusedShellPrefix([program])).toBe(reason);
+  });
+
+  it("rejects edited rules through the same validator and never matches them as an allow", () => {
+    expect(() => shellRuleCoversCommand("Bash(PYTHON *)", "allow", "PYTHON script.py", project)).toThrow(/refused/);
+    expect(() => shellRuleCoversCommand("Bash(SUDO *)", "allow", "SUDO ls", project)).toThrow(/refused/);
+  });
+});
+
+it("refuses case variants of delegated and config-writing verbs", () => {
+  expect(refusedShellPrefix(["GIT", "CONFIG"])).toBe("config-writer");
+  expect(refusedShellPrefix(["npm", "ExEc"])).toBe("package-runner");
+  expect(() => shellRuleCoversCommand("Bash(git CONFIG *)", "allow", "git CONFIG x y", project)).toThrow(/refused/);
+});
+
+
+it("revokes only the selected source-scoped persisted rule and live decision", async () => {
+  await updatePermissionsFile(permissionsFile, (file) => {
+    file.rules.push({ pattern: "custom_tool", action: "deny", source: "plugin" });
+    file.rules.push({ pattern: "custom_tool", action: "deny", source: "mcp" });
+    file.rules.push({ pattern: "custom_tool", action: "allow" });
+  });
+  const manager = new PermissionManager(permissionsFile);
+  await manager.loadRulesFromFile();
+  expect(manager.checkDetailed("custom_tool", "plugin", "write", null)).toMatchObject({ decision: "deny" });
+  const row = (await manager.listScopedRules()).rules.find((rule) => rule.source === "plugin")!;
+  await manager.removeRulePersist(row, { kind: "user" });
+  expect((await readPermissionsFile(permissionsFile))!.rules).toEqual([
+    { pattern: "custom_tool", action: "deny", source: "mcp" },
+    { pattern: "custom_tool", action: "allow" },
+  ]);
+  expect(manager.checkDetailed("custom_tool", "plugin", "write", null)).toMatchObject({ decision: "allow" });
+  expect(manager.checkDetailed("custom_tool", "mcp", "write", null)).toMatchObject({ decision: "deny" });
+});
+
+it("keeps conversation grants inspectable and revocable while Store B is corrupt", async () => {
+  __resetSessionStoreForTest();
+  const path = join(TEST_HOME, "permissions", "user-approvals.json");
+  rmSync(path, { force: true });
+  await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "conversation-corrupt", workingDirectoryIdentity: captureApprovalWorkingDirectory(project).identity });
+  mkdirSync(join(TEST_HOME, "permissions"), { recursive: true });
+  writeFileSync(path, "{broken");
+  await expect(listApprovals()).rejects.toBeInstanceOf(UserApprovalStoreCorruptError);
+  const rows = listSessionApprovals();
+  expect(rows).toEqual([expect.objectContaining({ sessionId: "conversation-corrupt", scope: "session" })]);
+  await revokeApprovalByKey(rows[0].key);
+  expect(listSessionApprovals()).toEqual([]);
+  expect(readFileSync(path, "utf8")).toBe("{broken");
 });

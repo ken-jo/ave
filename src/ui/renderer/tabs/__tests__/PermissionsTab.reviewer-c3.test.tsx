@@ -48,6 +48,8 @@ function installApi(providerKeys: Partial<Record<string, boolean>> = {}) {
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),

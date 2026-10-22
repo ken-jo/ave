@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -95,6 +96,8 @@ function makeDeps(options: {
   persistentAllowAllowed?: boolean;
   workingDirectoryIdentity?: string;
   snapshotArgs?: unknown;
+  snapshotSessionId?: string | null;
+  shellRule?: import("../../../shared/permissions-events.js").ShellRuleApproval;
   snapshotVerdict?: "low" | "medium" | "high";
   snapshotApprovalCacheKey?: string;
   snapshotApprovalMemory?: import("../../../shared/permissions-events.js").ApprovalMemory;
@@ -124,6 +127,9 @@ function makeDeps(options: {
     setMode: vi.fn(),
     setModePersist: vi.fn(async () => undefined),
     listPersistedRules: vi.fn(async () => []),
+    listScopedRules: vi.fn(async (): Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }> => ({ rules: [], errors: [] })),
+    addRulePersist: vi.fn(async () => undefined),
+    removeRulePersist: vi.fn(async () => undefined),
     addAlwaysAllowedPersist: vi.fn(async () => undefined),
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
     removeRule: vi.fn(async () => undefined),
@@ -170,6 +176,9 @@ function makeDeps(options: {
       // this host snapshot. Tests opt into HIGH explicitly; renderer claims
       // cannot downgrade it into a persistent allow.
       getRequestSnapshot: vi.fn((_requestId: string) => ({
+        sessionId: options.snapshotSessionId === null ? undefined : options.snapshotSessionId ?? "conversation-1",
+        projectCwd: "/srv/project",
+        shellRule: options.shellRule,
         toolName: "bash_run",
         args: options.snapshotArgs ?? { command: "ls" },
         source: "user-keyboard" as const,
@@ -1377,6 +1386,8 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(session).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
       expect.objectContaining({ scope: "session" }));
+    expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
+      expect.not.objectContaining({ sessionId: expect.anything() }));
   });
 
   it("refuses to record a host key that carries no remembered-identity mode", async () => {
@@ -1622,6 +1633,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
     [PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT }],
     [PERMISSIONS.addRule, { pattern: "write_file:path:/tmp/a.md", action: "allow", intent: USER_INTENT }],
     [PERMISSIONS.removeRule, { pattern: "write_file:path:/tmp/a.md", action: "allow", intent: USER_INTENT }],
+    [PERMISSIONS.removeScopedRule, { pattern: "Bash(ls *)", action: "allow", scope: "user", intent: USER_INTENT }],
     [PERMISSIONS.approvalRespond, { requestId: "approval-1", choice: "allow-once" }],
     [PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }],
     [
@@ -1674,4 +1686,141 @@ describe("state-mutating permission channels refuse non-host frames", () => {
     expect(result).toEqual({ ok: true, mode: "auto" });
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
   });
+});
+
+
+describe("command rules recorded from live approvals", () => {
+  const rule = { pattern: "Bash(git status *)", scope: "project" };
+  const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule };
+  const shellRule = { suggestedPattern: rule.pattern, projectCwd: "/srv/project", persistentAllowed: true, sessionAllowed: true };
+
+  it("writes only the host project rule and never also records an exact decision", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
+    expect(result).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: rule.pattern, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+    expect(deps.auditLogger.log).toHaveBeenCalledWith({
+      timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
+      output: '[approval:remembered] store=rules decision=allow scope=project toolName="bash_run" source="user-keyboard"',
+    });
+  });
+
+  it.each(["Bash(sudo *)", "Bash(git push *)", "Bash(*)", "Edit(/srv/project/**)"])("refuses an edited rule that cannot cover the pending command: %s", async (pattern) => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status" } });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } });
+    expect(result).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses allow persistence for floors even when the renderer submits a valid rule", async () => {
+    const { deps } = await setup({ shellRule: { ...shellRule, persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "git status" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  });
+
+  it("allows a persistent command denial to narrow a one-shot request", async () => {
+    const { deps } = await setup({ durableApprovalRecordAllowed: false, shellRule: { ...shellRule, persistentAllowed: false }, snapshotArgs: { command: "rm -rf build" } });
+    const deniedRule = { pattern: "Bash(rm *)", scope: "user" };
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: deniedRule, decision: "deny" })).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: deniedRule.pattern, action: "deny" }, { kind: "user" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a conversation identity for new session records", async () => {
+    await setup({ snapshotSessionId: null, shellRule });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: undefined })).toMatchObject({ ok: false, error: "missing-session" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("shell persistence cannot fall back to exact input", () => {
+  const body = { requestId: "live-shell", args: "{}", verdictAtApproval: "medium", nlJustification: null };
+  it("refuses a persistent exact allow when a refused prefix is offered only session scope", async () => {
+    const { deps } = await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", persistentAllowed: false, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "persistent" })).toMatchObject({ ok: false, error: "command-rule-required" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session" })).toMatchObject({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", expect.any(String), "user-keyboard", expect.objectContaining({ sessionId: "conversation-1" }));
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "conversation-1", type: "approval",
+      output: '[approval:remembered] store=exact decision=allow scope=session toolName="bash_run" source="user-keyboard"',
+    });
+  });
+  it.each(["session", "persistent"])("refuses omitted rule persistence for a floor in %s scope", async (scope) => {
+    await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("scoped rule removal authority", () => {
+  const row = { pattern: "Bash(ls *)", action: "allow" as const, scope: "project" as const, projectCwd: "/srv/project" };
+  it("accepts an enumerated stored identity and rejects a renderer-retargeted row", async () => {
+    const { permissionManager } = await setup();
+    permissionManager.listScopedRules.mockResolvedValue({ rules: [row], errors: [] });
+    expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, projectCwd: "/srv/other", intent: USER_INTENT })).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(permissionManager.removeRulePersist).not.toHaveBeenCalled();
+    expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, intent: USER_INTENT })).toMatchObject({ ok: true });
+    expect(permissionManager.removeRulePersist).toHaveBeenCalledWith(row, { kind: "project", projectCwd: "/srv/project", storedIdentity: true });
+  });
+  it("requires current user intent for revoke", async () => {
+    const { permissionManager } = await setup();
+    expect(await invoke(PERMISSIONS.removeScopedRule, row)).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(permissionManager.removeRulePersist).not.toHaveBeenCalled();
+  });
+});
+
+
+it("revokes a host-enumerated source-scoped rule without dropping its source", async () => {
+  const { permissionManager } = await setup();
+  const row = { pattern: "custom_tool", action: "deny" as const, scope: "user" as const, source: "plugin" };
+  permissionManager.listScopedRules.mockResolvedValue({ rules: [row], errors: [] });
+  expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, intent: USER_INTENT })).toMatchObject({ ok: true });
+  expect(permissionManager.removeRulePersist).toHaveBeenCalledWith(row, { kind: "user" });
+});
+
+it("lists and revokes in-memory sessions through IPC while the persistent file stays corrupt", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ave-session-list-"));
+  vi.stubEnv("AVE_HOME", home);
+  const store = await vi.importActual<typeof import("../../../permissions/user-approval-store.js")>("../../../permissions/user-approval-store.js");
+  store.__resetSessionStoreForTest();
+  try {
+    await setup();
+    await store.recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "live-conversation" });
+    mkdirSync(join(home, "permissions"));
+    const path = join(home, "permissions", "user-approvals.json");
+    writeFileSync(path, "{broken");
+    await expect(invoke(PERMISSIONS.userApprovalList)).rejects.toBeInstanceOf(store.UserApprovalStoreCorruptError);
+    const rows = await invoke(PERMISSIONS.userApprovalList, { scope: "session" }) as Awaited<ReturnType<typeof store.listApprovals>>;
+    expect(rows).toEqual([expect.objectContaining({ sessionId: "live-conversation", scope: "session" })]);
+    expect(await invoke(PERMISSIONS.userApprovalRevoke, { key: rows[0].key, intent: USER_INTENT })).toMatchObject({ ok: true });
+    expect(await invoke(PERMISSIONS.userApprovalList, { scope: "session" })).toEqual([]);
+    expect(readFileSync(path, "utf8")).toBe("{broken");
+  } finally {
+    store.__resetSessionStoreForTest();
+    vi.unstubAllEnvs();
+    cleanupTmpDir(home);
+  }
+});
+
+it("rejects edited rule values detected by the existing DLP filter without echoing them", async () => {
+  const secret = `sk-${"synthetic".repeat(6)}`;
+  const pattern = `Bash(git status ${secret} *)`;
+  const { maskSensitiveData } = await import("../../../audit/dlp-filter.js");
+  expect(maskSensitiveData(pattern).masked).not.toBe(pattern);
+  const { permissionManager, deps } = await setup({
+    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/srv/project", persistentAllowed: true, sessionAllowed: true },
+    snapshotArgs: { command: `git status ${secret}` },
+  });
+  const result = await invoke(PERMISSIONS.userApprovalRecord, {
+    requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null,
+    rule: { pattern, scope: "project" },
+  });
+  expect(result).toEqual({ ok: false, error: "invalid-rule", message: "The rule does not cover this command" });
+  expect(permissionManager.addRulePersist).not.toHaveBeenCalled();
+  expect(recordApprovalMock).not.toHaveBeenCalled();
+  expect(deps.auditLogger.log).not.toHaveBeenCalled();
 });

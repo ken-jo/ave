@@ -25,7 +25,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
-import type { HookTrustRow } from "../../types.js";
+import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
@@ -65,6 +65,8 @@ function installApi(
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -208,6 +210,7 @@ function installApi(
     },
     userApproval: {
       list: vi.fn(async () => []),
+      listSession: vi.fn(async () => []),
       record: vi.fn(async () => ({ ok: true })),
       revokeByKey: vi.fn(async () => ({ ok: true })),
     },
@@ -1177,6 +1180,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         onModeChanged: vi.fn(() => () => undefined),
         listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
         removeRule: vi.fn(async () => ({ ok: true })),
         deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -1904,9 +1909,9 @@ describe("PermissionsTab background refresh", () => {
     const notify = onConfigChanged.mock.calls[0]?.[0] as (() => void) | undefined;
     expect(notify).toBeTypeOf("function");
 
-    let resolveRules: ((rows: never[]) => void) | undefined;
-    (api.permission.listRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      () => new Promise((resolve) => { resolveRules = resolve as (rows: never[]) => void; }),
+    let resolveRules: ((rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void) | undefined;
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRules = resolve as (rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void; }),
     );
 
     await act(async () => {
@@ -1918,16 +1923,16 @@ describe("PermissionsTab background refresh", () => {
     expect(screen.getByTestId("permissions-rule-pattern-input")).toBeTruthy();
 
     await act(async () => {
-      resolveRules?.([]);
+      resolveRules?.({ rules: [], errors: [] });
     });
     expect(screen.queryByTestId("permissions-loading")).toBeNull();
   });
 
   it("still shows the loading surface on the FIRST load, where there is nothing to keep", async () => {
     const api = installApi([[]]);
-    let resolveRules: ((rows: never[]) => void) | undefined;
-    (api.permission.listRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      () => new Promise((resolve) => { resolveRules = resolve as (rows: never[]) => void; }),
+    let resolveRules: ((rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void) | undefined;
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRules = resolve as (rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void; }),
     );
 
     await act(async () => {
@@ -1936,7 +1941,7 @@ describe("PermissionsTab background refresh", () => {
     expect(screen.getByTestId("permissions-loading")).toBeTruthy();
 
     await act(async () => {
-      resolveRules?.([]);
+      resolveRules?.({ rules: [], errors: [] });
     });
     await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
   });
@@ -1967,7 +1972,7 @@ describe("PermissionsTab — revoking a stored approval", () => {
       await act(async () => {
         render(<PermissionsTab />);
       });
-      await waitFor(() => expect(screen.getByTestId("permissions-approvals-table")).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toBeTruthy());
 
       await act(async () => {
         fireEvent.click(screen.getByText(t("permissionsTab.revokeButton")));
@@ -1978,5 +1983,84 @@ describe("PermissionsTab — revoking a stored approval", () => {
     } finally {
       confirm.mockRestore();
     }
+  });
+});
+
+describe("PermissionsTab unified permission rules", () => {
+  it("lists user/project rules and persistent/session exact approvals together and revokes each at its owner", async () => {
+    const api = installApi([[]]);
+    const userRule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const projectRule = { pattern: "Bash(git push *)", action: "deny", scope: "project", projectCwd: "/workspace/project" };
+    const listRules = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    listRules.mockResolvedValue({ rules: [userRule, projectRule], errors: [] });
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { key: "exact-persistent", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "read_file", projectCwd: "/workspace/project" },
+      { key: "exact-session", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "session", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "bash", sessionId: "conversation-session" },
+    ]);
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(4);
+    expect(table).toHaveTextContent("Bash(git status *)");
+    expect(table).toHaveTextContent("Bash(git push *)");
+    expect(table).toHaveTextContent("conversation-session");
+    expect(screen.queryByTestId("permissions-approvals-table")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: projectRule.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(projectRule));
+    const exactRow = Array.from(table.querySelectorAll('tr[data-rule-store="exact"]')).find((row) => row.textContent?.includes("conversation-session"));
+    fireEvent.click(exactRow!.querySelector("button")!);
+    await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith("exact-session"));
+  });
+
+  it("refreshes the scoped list after adding or revoking a rule", async () => {
+    const api = installApi([[]]);
+    const rule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [], errors: [] }).mockResolvedValueOnce({ rules: [rule], errors: [] }).mockResolvedValueOnce({ rules: [], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(screen.getByTestId("permissions-rule-pattern-input")).toBeVisible());
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: rule.pattern } });
+    fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toHaveTextContent(rule.pattern));
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: rule.pattern }) }));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
+    expect(api.permission.listRules).not.toHaveBeenCalled();
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps live session approvals visible and revocable when the persistent store is corrupt", async () => {
+    const api = installApi([[]]);
+    const session = { key: "live-session", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "session", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "bash", sessionId: "live-conversation" };
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    const sessionList = api.userApproval.listSession as unknown as ReturnType<typeof vi.fn>;
+    sessionList.mockResolvedValueOnce([session]).mockResolvedValueOnce([]);
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    expect(table).toHaveTextContent("live-conversation");
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+    fireEvent.click(table.querySelector('tr[data-rule-store="exact"] button')!);
+    await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith(session.key));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
+    expect(sessionList).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("permissions-rule-load-error")).toBeVisible();
+  });
+
+  it("preserves the visible store error if session listing also fails", async () => {
+    const api = installApi([[]]);
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    (api.userApproval.listSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("session unavailable"));
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(api.userApproval.listSession).toHaveBeenCalled());
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+  });
+
+  it("shows scoped corruption and exact-store load failures visibly", async () => {
+    const api = installApi([[]]);
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rules: [], errors: [{ filePath: "/ave-home/permissions/projects/project.json", errorCode: "rules-file-unavailable" }] });
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(screen.getByTestId("permissions-rule-load-error")).toBeVisible());
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.unifiedRulesLoadError"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("/ave-home/permissions/projects/project.json");
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
   });
 });

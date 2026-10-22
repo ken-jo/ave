@@ -216,6 +216,7 @@ export async function dispatchReviewerForInteractiveAuto(
   hostShellExecutionPlan?: HostShellExecutionPlan,
   abortSignal?: AbortSignal,
   auditInput?: Record<string, unknown>,
+  sessionId?: string,
 ): Promise<PermissionCheckResult | null> {
   if (context.headless === true) return null;
   // PermissionManager's resolved route marker is the sole eligibility SOT.
@@ -236,6 +237,7 @@ export async function dispatchReviewerForInteractiveAuto(
     reviewer = await mgr.dispatchReviewer(
       toolName,
       {
+        ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
         pathFields,
