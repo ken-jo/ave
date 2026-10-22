@@ -101,6 +101,9 @@ export const en = {
   "be_conversationLoop.hookDisabled": "Hook disabled: {fileName}\ntrusted={count}",
   "be_conversationLoop.hookRejected": "Hook permanently rejected: {fileName}\ntrusted={count}",
   "be_conversationLoop.userPromptBlocked": "This prompt was blocked by a trusted hook: {reason}",
+  "be_conversationLoop.hostExitToolResultUnknown": "Interrupted: Ave closed before this tool call returned. Its outcome is unknown and it was not run again.",
+  "be_conversationLoop.resumeInterruptedTurnInput": "Continue from where you left off. Your previous response was interrupted because Ave closed. Any tool call marked as interrupted has an unknown outcome and was not run again, so check its effect before relying on it.",
+  "be_conversationLoop.resumeInterruptedTurnDisplay": "Continue",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "be_conversationLoop.generateTextSystemPrompt": "당신은 Ave, 사용자의 AI 비서입니다.",
@@ -204,4 +207,7 @@ export const ko: Record<keyof typeof en, string> = {
   "be_conversationLoop.hookDisabled": "Hook 비활성화됨: {fileName}\ntrusted={count}",
   "be_conversationLoop.hookRejected": "Hook 영구 거부됨: {fileName}\ntrusted={count}",
   "be_conversationLoop.userPromptBlocked": "신뢰된 hook 이 이 프롬프트를 차단했습니다: {reason}",
+  "be_conversationLoop.hostExitToolResultUnknown": "중단됨: 이 도구 호출이 끝나기 전에 Ave 가 종료되었습니다. 결과는 알 수 없으며 다시 실행하지 않았습니다.",
+  "be_conversationLoop.resumeInterruptedTurnInput": "중단된 지점부터 이어서 진행해 주세요. Ave 가 종료되어 이전 응답이 중단되었습니다. 중단됨으로 표시된 도구 호출은 결과를 알 수 없고 다시 실행되지 않았으니, 그 결과에 기대기 전에 실제 상태를 확인하세요.",
+  "be_conversationLoop.resumeInterruptedTurnDisplay": "계속",
 };

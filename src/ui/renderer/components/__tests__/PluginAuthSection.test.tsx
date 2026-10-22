@@ -183,3 +183,33 @@ describe("PluginAuthSection", () => {
     }
   });
 });
+
+describe("PluginAuthSection label language", () => {
+  it("resolves auth.label through auth.locales and follows a language switch", async () => {
+    const { I18nProvider } = await import("../../../../i18n/react.js");
+    const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
+    const suiteLocale = getLocale();
+    const auth: PluginAuthSummary = { ...baseAuth, locales: { en: { label: "Microsoft account" } } };
+    const tree = (locale: string) => (
+      <I18nProvider locale={locale} setLocale={() => undefined}>
+        <PluginAuthSection
+          api={pluginAuthSectionApi()}
+          pluginId="samplemail"
+          pluginName="samplemail"
+          auth={auth}
+          state={{ kind: "unauthed" }}
+          onRefresh={() => undefined}
+        />
+      </I18nProvider>
+    );
+    try {
+      const { rerender } = render(tree("en-us"));
+      expect(screen.getByText("Microsoft account")).toBeInTheDocument();
+      rerender(tree("ko"));
+      expect(screen.getByText("Microsoft 계정")).toBeInTheDocument();
+      expect(screen.queryByText("Microsoft account")).toBeNull();
+    } finally {
+      setLocale(suiteLocale);
+    }
+  });
+});

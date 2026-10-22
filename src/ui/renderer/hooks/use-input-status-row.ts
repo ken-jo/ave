@@ -72,8 +72,8 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
         const descriptor = subscriptionRuntimeDescriptor(activeRuntime.provider);
         // A CLI with no chosen model runs its own default; say so rather than
         // name a model Ave did not pick.
-        const unchosen = descriptor.offersCliDefaultModel ? `${descriptor.label} · ${t("llmTab.cliDefaultModel")}` : descriptor.label;
-        setVendorModel(model.length > 0 ? `${descriptor.label} · ${model}` : unchosen);
+        const unchosen = descriptor.offersCliDefaultModel ? `${descriptor.planName} · ${t("llmTab.cliDefaultModel")}` : descriptor.planName;
+        setVendorModel(model.length > 0 ? `${descriptor.planName} · ${model}` : unchosen);
         return;
       }
       const provider = settings.llm?.provider ?? "";

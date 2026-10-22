@@ -12,7 +12,25 @@ import {
   type LLMVendor,
 } from "../llm-vendor-defaults.js";
 
+import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
+
 describe("model-complexity-map", () => {
+  it("resolves a newly installed family entry without retaining an imported id", () => {
+    const original = activeModelCatalog();
+    const model = original.providers.openai!.models[resolveModelForComplexity("openai", "mid")!]!;
+    try {
+      installModelCatalog({ ...original, providers: { ...original.providers, openai: {
+        models: { ...original.providers.openai!.models,
+          "future-workhorse": { ...model, id: "future-workhorse", releaseDate: "2099-01-01" },
+        },
+      } } });
+      expect(resolveModelForComplexity("openai", "mid")).toBe("future-workhorse");
+    } finally {
+      installModelCatalog(original);
+    }
+    expect(resolveModelForComplexity("openai", "mid")).toBe(model.id);
+  });
+
   describe("MODEL_COMPLEXITY_MAP coverage", () => {
     it("declares every LLM vendor", () => {
       for (const vendor of LLM_VENDORS) {
@@ -25,17 +43,15 @@ describe("model-complexity-map", () => {
 
     it("declares every complexity tier per vendor", () => {
       for (const vendor of LLM_VENDORS) {
-        // Handshake-only vendors (openai-compatible) have no static catalog, so
-        // every tier maps to the empty model → parent-model fallback. Vendors
-        // with a static catalog must map each tier to a non-empty model id.
-        const handshakeOnly = llmVendorModelOptions(vendor).length === 0;
+        // Only routes with a declared family policy may change the parent model.
+        const usesParent = !["claude", "openai", "gemini", "vertex-ai"].includes(vendor);
         for (const level of MODEL_COMPLEXITY_LEVELS) {
           const model = MODEL_COMPLEXITY_MAP[vendor][level];
           expect(
             typeof model,
             `${vendor}/${level} must be a string`,
           ).toBe("string");
-          if (handshakeOnly) {
+          if (usesParent) {
             expect(model, `${vendor}/${level} handshake-only tier must be empty`).toBe("");
           } else {
             expect(model.length).toBeGreaterThan(0);
@@ -45,13 +61,7 @@ describe("model-complexity-map", () => {
     });
 
     it("every (vendor, tier, model) triple appears in the vendor's model options", () => {
-      // Doubao's default could not be checked against Volcengine's own model
-      // list (the page does not render outside a browser session) and the
-      // catalog does not carry it; it is kept, reported, and exempted here by
-      // name rather than dropped. Every other tier must be a listed model.
-      const orphans = findOrphanedComplexityModels().filter(
-        (orphan) => !(orphan.vendor === "doubao" && orphan.model === "doubao-1-5-pro-256k-250115"),
-      );
+      const orphans = findOrphanedComplexityModels();
       expect(
         orphans,
         `complexity map references models the vendor catalog does not list: ${JSON.stringify(orphans, null, 2)}`,
@@ -132,14 +142,14 @@ describe("model-complexity-map", () => {
       });
     });
 
-    it("openai and azure tiers: luna=low, sol=mid, astra=high", () => {
+    it("native reasoning tiers select the efficient, balanced and flagship families", () => {
       const tiers = { low: "gpt-6-luna", mid: "gpt-6.1-sol", high: "gpt-6-astra" };
       expect(MODEL_COMPLEXITY_MAP.openai).toEqual(tiers);
-      expect(MODEL_COMPLEXITY_MAP["azure-foundry"]).toEqual(tiers);
+      expect(MODEL_COMPLEXITY_MAP["azure-foundry"]).toEqual({ low: "", mid: "", high: "" });
     });
 
-    it("gemini and vertex tiers: flash-lite=low, flash=mid and high", () => {
-      const tiers = { low: "gemini-3.5-flash-lite", mid: "gemini-3.8-flash", high: "gemini-3.8-flash" };
+    it("mapped tiers preserve distinct efficient, balanced and deep-reasoning families", () => {
+      const tiers = { low: "gemini-3.5-flash-lite", mid: "gemini-3.8-flash", high: "gemini-3.1-pro-preview" };
       expect(MODEL_COMPLEXITY_MAP.gemini).toEqual(tiers);
       expect(MODEL_COMPLEXITY_MAP["vertex-ai"]).toEqual(tiers);
     });

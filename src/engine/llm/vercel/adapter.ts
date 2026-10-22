@@ -71,6 +71,7 @@ import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
 import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
 import {
+  catalogModelFor,
   resolveInputModalities,
   resolveOutputCeiling,
   resolveReasoningSupport,
@@ -333,7 +334,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
-      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model, capabilities.reasoning);
+      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model, capabilities.reasoning, baseUrl);
       // Only this slot's provider caches up to explicit breakpoints; the
       // `openai` / `azure-foundry` slots cache automatically, keyed by
       // `promptCacheKey` below.
@@ -413,7 +414,9 @@ export class VercelUnifiedProvider implements LLMProvider {
       const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
         && params.outputCeilingSource === "provider-reported";
       // Request shape is a host rule (model-host-policy.ts), not a catalog fact.
-      const claudeShape = slot === "claude" ? claudeRequestShape(params.model) : undefined;
+      const claudeShape = slot === "claude"
+        ? claudeRequestShape(catalogModelFor(slot, params.model, params.catalogModel, baseUrl)?.model)
+        : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
         && claudeShape?.interleavedNumericThinking === true;
       const model = this.resolveModel(

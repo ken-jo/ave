@@ -8,52 +8,27 @@ import {
   MAX_CREDIBLE_CONTEXT_WINDOW,
 } from "../model-host-policy.js";
 
-describe("request shape — Claude 1M window", () => {
-  it.each([
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6-20260217",
-    "claude-opus-5-5",
-    "claude-sonnet-4-5",
-  ])("%s asks for no context-1m beta header (1M is the default where a model has it)", (model) => {
-    expect(claudeRequestShape(model)).not.toHaveProperty("context1MBeta");
+describe("catalog request controls", () => {
+  it("sends no inferred control for an unknown entry", () => {
+    expect(claudeRequestShape(undefined)).toEqual({ adaptiveThinking: false, numericThinking: false, interleavedNumericThinking: false });
     expect(claudeBetaHeaders({ interleavedThinking: false })).toEqual([]);
   });
-});
 
-describe("request shape — interleaved numeric thinking", () => {
-  it.each([
-    "claude-opus-4",
-    "claude-opus-4-0",
-    "claude-opus-4-1",
-    "claude-opus-4-5",
-    "claude-sonnet-4",
-    "claude-sonnet-4-0",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-1-20250805",
-    "claude-sonnet-4-5-latest",
-    "CLAUDE-OPUS-4-5",
-  ])("%s supports a budget across tool calls", (model) => {
-    expect(claudeRequestShape(model).interleavedNumericThinking).toBe(true);
+  it("uses an explicitly declared numeric budget even when effort is also offered", () => {
+    expect(claudeRequestShape({ id: "opaque-deployment", limits: {}, reasoning: { supported: true, budgetTokens: { min: 1024 }, effort: ["low", "high"] } }))
+      .toEqual({ adaptiveThinking: false, numericThinking: true, interleavedNumericThinking: false });
   });
 
-  it.each([
-    "claude-sonnet-4-1",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
-    "claude-haiku-4-5",
-    "claude-3-7-sonnet-20250219",
-    "claude-opus-4-5-preview",
-  ])("%s does not", (model) => {
+  it("uses adaptive thinking for qualitative-only reasoning, independent of the id", () => {
+    expect(claudeRequestShape({ id: "opaque-deployment", limits: {}, reasoning: { supported: true, effort: ["low", "high"] } }).adaptiveThinking).toBe(true);
+    expect(claudeRequestShape({ id: "claude-sonnet-99", limits: {}, reasoning: { supported: false } }).adaptiveThinking).toBe(false);
+  });
+
+  it("requires an explicit interleaving declaration for the beta opt-in", () => {
+    const model = { id: "opaque-deployment", limits: {}, reasoning: { supported: true, budgetTokens: {} } };
+    expect(claudeRequestShape({ ...model, interleaved: true }).interleavedNumericThinking).toBe(true);
     expect(claudeRequestShape(model).interleavedNumericThinking).toBe(false);
-  });
-});
-
-describe("request shape — beta header values", () => {
-  it("carries interleaved thinking only when the request asks for it", () => {
     expect(claudeBetaHeaders({ interleavedThinking: true })).toEqual(["interleaved-thinking-2025-05-14"]);
-    expect(claudeBetaHeaders({ interleavedThinking: false })).toEqual([]);
   });
 });
 

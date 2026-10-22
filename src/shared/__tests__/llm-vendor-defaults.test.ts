@@ -33,6 +33,8 @@ import {
   RETIRED_LLM_VENDOR_IDS,
 } from "../llm-vendor-defaults.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
+import { activeModelCatalog } from "../model-catalog/active.js";
+import { resolveCatalogKey } from "../model-catalog/resolve.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
 
 describe("isLLMVendor", () => {
@@ -299,10 +301,8 @@ describe("LLM vendor defaults", () => {
   });
 
   it("never starts a vendor on gpt-4o", () => {
-    // Whether gpt-4o is offered is the catalog's call: OpenAI announced its
-    // shutdown on 2026-10-14 (for 2027-01-14), after the bundled snapshot was
-    // fetched, so the openai list offers it until a refreshed catalog marks
-    // it deprecated — the test below then keeps it out. No default may be it.
+    // Offering an id follows the active catalog. Default selection is a
+    // separate policy; a later catalog may deprecate an existing choice.
     for (const v of LLM_VENDORS) {
       expect(LLM_VENDOR_DEFAULTS[v].model).not.toBe("gpt-4o");
     }
@@ -323,7 +323,7 @@ describe("LLM vendor defaults", () => {
     expect(getLlmVendorSettings({ "azure-foundry": { model: "gpt-4o" } } as never, "azure-foundry").model).toBe("gpt-4o");
   });
 
-  it("uses gemini-3.8-flash as the Gemini default model", () => {
+  it("uses a currently listed general-purpose default model", () => {
     expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("gemini-3.8-flash");
   });
 
@@ -421,14 +421,15 @@ describe("LLM vendor defaults", () => {
   });
 
   it("starts each vendor the catalog describes on a chat model the catalog lists for it", () => {
-    // Doubao's default could not be checked against Volcengine's own model
-    // list (the page does not render outside a browser session) and the
-    // catalog does not carry it. It is kept and reported, and exempted here by
-    // name; any other default missing from the catalog fails.
+    // This account-scoped deployment is not described by the public catalog.
+    // Preserve its existing default; other native defaults must resolve.
     const unverified = new Set(["doubao"]);
     const missing = LLM_VENDORS
       .filter((vendor) => CATALOG_PROVIDERS_BY_VENDOR[vendor].length > 0 && !unverified.has(vendor))
-      .filter((vendor) => !llmVendorModelOptions(vendor).includes(LLM_VENDOR_DEFAULTS[vendor].model))
+      .filter((vendor) => {
+        const hit = resolveCatalogKey(activeModelCatalog(), vendor, LLM_VENDOR_DEFAULTS[vendor].model);
+        return !hit || !llmVendorModelOptions(vendor).includes(hit.id);
+      })
       .map((vendor) => `${vendor}/${LLM_VENDOR_DEFAULTS[vendor].model}`);
     expect(missing).toEqual([]);
     expect(llmVendorModelOptions("doubao")).not.toContain(LLM_VENDOR_DEFAULTS.doubao.model);

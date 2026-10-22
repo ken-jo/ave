@@ -36,7 +36,7 @@ describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
     expect(mapReasoningEffort(32_000)).toBe("high");
   });
 
-  it("routes every OpenAI model the catalog says reasons, and every Azure request, to the Responses wire", () => {
+  it("selects the response protocol from catalog reasoning or a deployment route", () => {
     const wireFor = (vendor: string, model: string) =>
       usesOpenAIResponsesWire(vendor, model, resolveReasoningSupport({ vendor, model }));
     // gpt-6.x: a `gpt-5` substring check sent these to Chat Completions, where
@@ -52,8 +52,11 @@ describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
     // An endpoint report that names a control states the wire itself.
     expect(usesOpenAIResponsesWire("openai", "acme-unlisted-model", { supported: true, source: "endpoint-report", control: "reasoning" })).toBe(true);
     expect(usesOpenAIResponsesWire("openai", "acme-unlisted-model", { supported: true, source: "endpoint-report", control: "reasoning_effort" })).toBe(false);
-    // At a custom endpoint nothing establishes the route, and the id's own entry picks the protocol.
-    expect(usesOpenAIResponsesWire("openai", "gpt-6.1-sol", undefined)).toBe(true);
+    // A catalog id cannot establish a custom endpoint's protocol.
+    const custom = "https://gateway.invalid/v1";
+    expect(usesOpenAIResponsesWire("openai", "gpt-6.1-sol", undefined, custom)).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "gpt-6.1-sol", resolveReasoningSupport({ vendor: "openai", model: "gpt-6.1-sol" }), custom)).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "opaque-model", { supported: true, source: "endpoint-report", control: "reasoning" }, custom)).toBe(true);
   });
 });
 
@@ -124,7 +127,7 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   });
 });
 
-describe("VercelUnifiedProvider — the wire a reasoning model takes on a tool turn", () => {
+describe("provider protocol for a reasoning model on a tool turn", () => {
   it("sends gpt-6.1-sol over Responses with its effort, not over Chat Completions without it", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn((_options: unknown) => ({

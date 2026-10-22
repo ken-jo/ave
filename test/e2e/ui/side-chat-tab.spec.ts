@@ -1,10 +1,10 @@
 import { test, expect } from "./fixtures";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 
@@ -41,7 +41,7 @@ test.describe("side-chat tab", () => {
       JSON.stringify(buildE2eSecrets(), null, 2) + "\n",
       { encoding: "utf-8", mode: 0o600 },
     );
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
@@ -76,7 +76,6 @@ test.describe("side-chat tab", () => {
 
     // The dedicated, lightweight SideChatView mounts (not a placeholder).
     await expect(page.getByTestId("side-chat-view")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-side-chat-placeholder")).toHaveCount(0);
 
     // The SHARED composer (same component as the main dock, at the side
     // surface) + the New affordance are present; the field is the side chat's

@@ -69,12 +69,14 @@ import { ko as ko_be_subagentRunner } from "../generated/be_subagentRunner.js";
 import { ko as ko_be_systemPromptBuilder } from "../generated/be_systemPromptBuilder.js";
 import { ko as ko_be_telegramBridge } from "../generated/be_telegramBridge.js";
 import { ko as ko_be_terminalRead } from "../generated/be_terminalRead.js";
+import { ko as ko_be_terminalRun } from "../generated/be_terminalRun.js";
 import { ko as ko_be_toolSearch } from "../generated/be_toolSearch.js";
 import { ko as ko_be_tools } from "../generated/be_tools.js";
 import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
 import { ko as ko_be_windowTitlebarShell } from "../generated/be_windowTitlebarShell.js";
 import { ko as ko_bootstrapStatusPill } from "../generated/bootstrapStatusPill.js";
 import { ko as ko_bottomActionRow } from "../generated/bottomActionRow.js";
+import { ko as ko_browserWorkspace } from "../generated/browserWorkspace.js";
 import { ko as ko_chatPreviewRail } from "../generated/chatPreviewRail.js";
 import { ko as ko_chatTab } from "../generated/chatTab.js";
 import { ko as ko_chatView } from "../generated/chatView.js";
@@ -254,12 +256,14 @@ export const koMessages: Record<string, string> = {
   ...ko_be_systemPromptBuilder,
   ...ko_be_telegramBridge,
   ...ko_be_terminalRead,
+  ...ko_be_terminalRun,
   ...ko_be_toolSearch,
   ...ko_be_tools,
   ...ko_be_windowDomain,
   ...ko_be_windowTitlebarShell,
   ...ko_bootstrapStatusPill,
   ...ko_bottomActionRow,
+  ...ko_browserWorkspace,
   ...ko_chatPreviewRail,
   ...ko_chatTab,
   ...ko_chatView,

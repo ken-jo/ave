@@ -481,9 +481,8 @@ Important rules:
   preset and nothing opens a saved file); one Save dialog may be pending per
   side browser, and a page origin gets at most 3 download prompts a minute —
   requests beyond either limit are cancelled and logged. Other schemes stay
-  blocked, and only the `clipboard-sanitized-write` permission is granted
-  (`fullscreen` is denied: with no exit hint a page could cover the app and
-  imitate its approval UI).
+  blocked. Site capability decisions are separate from agent control and
+  origin approval; see [Browser And Terminal Workspace](#browser-and-terminal-workspace).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
 is bounded by the route's effective output limit
@@ -511,9 +510,10 @@ settings, the endpoint's report or the catalog, never from its name. Where none 
 them, the window is the 128K host fallback (source `fallback`), the price is unknown,
 images are refused and an OpenAI-family request sends no reasoning effort. Host-owned
 values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the 128K
-fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
-Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
-the Responses-vs-Chat wire choice).
+fallback, the credible-window ceiling, TPM defaults, and request-control projection. A declared numeric reasoning budget
+selects numeric thinking; qualitative-only reasoning selects adaptive thinking.
+Unknown entries carry no inferred control. Protocol selection reads reported
+controls or catalog reasoning support instead of model-version patterns.
 A model that is going away is in one of two tiers (`resolveModelRetirement`,
 `src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
 listing on its native host no longer names it (never for local, self-hosted, gateway,
@@ -751,6 +751,223 @@ chat a file. The sidebar draws the row under that conversation. A side chat
 whose conversation is not in the list — a page that did not reach it, a
 conversation since deleted — is listed in its own right rather than dropped.
 
+A terminal or web pane opens the side chat in its own panel (the header's
+panel toggle), beside the page or terminal, as that pane's own conversation.
+Each open pane chat has its own conversation loop, made on its first turn and
+kept by main per window and pane tab (`paneChatLoops`); the side panel's chat
+keeps the app's side loop. Pane chats and the side panel therefore stream at
+the same time, and each refuses only a second send on its own loop
+(`streaming-active`). There is no cap: a pane loop lives only while its pane
+is open, and ends with the pane, its window, or the app. All of them write the
+side-chat store. A pane's turn binds its session to the pane's tab
+(`browserTabRegistry` bound conversations), and the session's row records the
+tab (`paneTabId`), so a restart reopens each restored pane on its conversation
+(restored tabs keep their ids). A turn from a conversation's side panel runs
+on the side loop in the session its view shows; a conversation a pane holds
+is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
+history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
+and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
+that pane's turn and archiving a closed pane's conversation. A pane that ends
+while its conversation is loading sends nothing (`pane-chat-ended`). When an
+authorized `browser_tab_close` destroys an agent-owned pane's page, its turn
+runs to its end before its pane chat ends. Releasing a borrowed user tab keeps
+the page alive.
+
+The browser tools and `terminal_read` called without a tab id act on the bound
+tab, and sub-agents inherit it through their hosting session; a bound tab that
+is gone, or of the other kind, is an error, never another tab. A click uses
+touch input, which the window routes through its one touch sequence
+even when sent through the page's own protocol session; so each press runs
+alone in its window, a started press always ends, and a press counts only when
+its own page reports it and no other page of the window took a touch. A conversation
+that is not a pane's acts on the window's active surface, which the side
+panel's chat shows as its target chip; its × drops the target until another
+terminal or page is shown. The pane chat claims its session's approval cards,
+so the window's lane does not draw them again.
+
+## Browser And Terminal Workspace
+
+Chat, browser, and terminal remain simultaneous workspace surfaces. Side/main
+placement is presentation state: moving a pane preserves its live browser guest
+and both terminal lanes. The [workspace guide](../guides/browser-terminal-workspace.md)
+explains the user workflow; [permission policy](permission-policy-design.md#shared-browser-control-and-effects)
+owns consent and effect checks. These contracts describe code behavior; native
+interaction and provider-authentication validation remain separate evidence.
+
+### Browser control and tab lifetime
+
+The browser sandbox and context isolation are always enabled. Agent authority
+is an additional host-owned layer in `src/shared/browser-surface.ts` and
+`src/main/browser/browser-tab-registry.ts`; selecting Human mode never removes
+the browser sandbox. Origin approval authorizes an operation on a page, not a
+complete network firewall for that page.
+
+The registry publishes revisioned state with `human`, `agent-active`, and
+`human-paused` modes. Recognized human page input, Stop, and user navigation invalidate
+pending agent effects and persistently pause mutation. Read-only observation
+still follows normal policy. Only explicit Resume in trusted browser chrome
+can restore eligible control; a tool, navigation, or a later turn cannot resume
+it. Document and control generations bind actions and approvals, so a stale
+approval does not survive pause followed by Resume. Renderers subscribe before
+their initial state fetch and ignore older revisions.
+
+Native mouse receipts do not expose an injected-versus-human source bit. Ordinary
+pointer/range drag uses host-armed one-shot correlation of the exact live guest,
+button, coordinates, click count, down/up phase, and order. Each expectation
+expires after one second within a maximum five-second sequence, with one
+mouse/wheel watch per owning window. A mismatch pauses mutation. Wheel gestures
+must follow a marked native wheel event and the expected begin/update/end
+sequence. Keyboard input retains its debugger-source flags.
+
+HTML5 text drag has a separate guarded path because a native renderer may finish
+the drag without a raw mouse-up receipt. A generic input acknowledgement is not
+proof that release or drop was delivered. The host instead correlates a
+browser-originated `dragIntercepted` event with the observed source press and
+the same live guest, document, lease, and endpoints. It captures one bounded
+text-only payload and reuses that immutable payload for guarded enter/over/drop.
+Ordinary pointer/range drag still requires native down and up receipts.
+
+This is bounded correlation, not perfect provenance: a human click at the same
+expected coordinates/button/phase during the armed interval is indistinguishable
+through the native API. Extra or mismatched observable input still interrupts,
+but the host cannot promise that every simultaneous human click wins. Stop and
+trusted-chrome navigation remain explicit takeover controls.
+
+Creator identity is durable and distinct from the current control lease. A
+lease identifies the actual conversation actor, its direct parent when present,
+and an `owned` or `borrowed` lifetime. Window-wide tab discovery grants no
+authority over another conversation's tabs. Conversation-scoped `browser_tabs`
+can include the caller's direct children; aggregation uses the stored
+direct-parent relation, not a recursive hosting-window ancestor. An owned tab authorizes its creator,
+the creator's direct parent, or a direct child whose trusted parent is the
+creator. This relation is symmetric across one parent/child step; a grandchild,
+sibling, or unrelated session cannot inherit that authority. An existing lease
+still excludes a different caller. Release revokes only the matching
+lease, so a late cleanup cannot release a newer controller.
+
+Agent-created tabs open in the background by default and remain for human
+handoff after a turn. An explicit agent close destroys only a creator-owned tab
+within that authorized one-step relationship. Closing a borrowed tab
+through the tool releases its association and reports that the page was retained.
+User chrome close destroys the actual tab; window/app shutdown releases its
+resources.
+
+Native popups enter the registry only through the validated child-window
+callback. They keep the owning window, guarded session, opener relationship,
+and sandbox; they can have a tool handle without a renderer tab slot. Popups
+start with user permission provenance. Discovery or focus does not inherit the
+opener's origin approval or remove sensitive-field restrictions.
+
+Tool `tabId` values are main-issued handles, while embedded chrome identifies
+slots with `rendererTabId`. `BrowserTabsApi.stop`, `pause`, and `resume` accept
+only embedded renderer IDs. Native popup `pausePopup` and `resumePopup` accept
+only main-issued popup handles. These namespaces are not interchangeable, and
+the browser workspace library/find/zoom/preview API targets embedded slots only.
+
+Focusing an embedded page uses a main-owned `focus` operation addressed only by its stored
+renderer ID. It requires a visible owning window, that window's active embedded
+tab, and unchanged guest, document, control generation, and lease across awaits.
+Trusted renderer chrome focuses only the connected visible webview. Completion
+requires actual native guest focus; keyboard actions independently require
+`focusedFrame === mainFrame`. A renderer acknowledgement alone is insufficient.
+Popups require their registered native focus callback and observed native focus.
+
+### Typed page actions and browser chrome
+
+Browser tools expose typed snapshot, screenshot, navigation, click, text, and
+key operations plus hover, drag, native single-select, targeted scroll, and
+picker-only upload. Schemas and execution both validate operands. Page effects
+recheck the live document, target reference, recipient, and control generation.
+There is no model-facing arbitrary script or generic protocol dispatcher.
+HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
+`Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
+only bounded approved text MIME data is accepted, with no files or host-path
+payloads. Model inputs remain source/target references, never arbitrary protocol
+methods or drag data. The source drag is cancelled and interception is confirmed
+disabled before destination enter/over/drop. A failed pre-drop teardown sends no
+destination drop; an uncertain session is detached and quarantined. Cancellation
+after entering the destination cancels its remaining drag state on the original
+session. A dispatched drop with a lost acknowledgement is outcome-unknown and
+must not be repeated automatically. Cleanup never retargets a replacement guest.
+Viewport screenshots retain pixel/byte bounds. Full-page capture is unavailable:
+the embedded renderer can return a correctly sized image with repeated viewport
+content, and popup full-page output has not been independently proved. Requests
+fail explicitly before capture rather than reporting such an image as complete.
+Selection verifies the final native value and rejects unsupported controls.
+
+The host distinguishes a document transition from cancellation. A page-input
+action can finish through navigation only after a confirmed final input effect
+and a typed document-change result. No following input reaches the replacement
+document. A navigation request can follow document transitions only while its
+original caller, tab, and lease remain valid. Takeover, lease loss, caller
+cancellation, or destruction cannot become navigation success. Lease acquisition
+keeps the approval generation stable; pause, Resume, and document changes
+advance it.
+
+The host-owned browser workspace API uses renderer tab IDs and derives window
+ownership from the sender. It provides bookmarks, bounded history, find, zoom,
+site decisions, download status, and tab-card previews. Persistent bookmarks,
+history, and site decisions use `openFeatureNamespace("browser-workspace")`;
+invalid stored state cannot become a permission grant. Download paths and
+history are not disclosed by browser tools merely because the UI lists them.
+Downloads retain native Save consent and prompt-rate limits, with no auto-open.
+
+Site capability checks bind the current requesting origin and owned guest.
+`clipboard-sanitized-write` retains its safe baseline for a known guest. Camera,
+microphone, geolocation, and notifications require a verified current main-frame
+request and explicit site decisions or trusted prompts. Iframes and redirects
+cannot borrow unrelated origin grants; unknown permissions deny. Fullscreen
+capability is `false` until safe exit UI exists, so even a stored allow decision
+cannot enable it.
+
+Preview work is scheduled only for connected, intersecting cards in a visible
+app window. Main owns at most one in-flight capture per window, throttling,
+invalidation epochs, and reduced image size; it retains no preview image cache.
+`BrowserPreviewScheduler` in the renderer owns the tab/document cache, capped
+at 16 entries with reuse for less than ten seconds. Only a completion whose
+original card is still eligible enters that cache. Hidden or unmounted panels
+stop scheduling; late results after hide, unmount, navigation, or close are
+neither displayed nor cached. Preview never claims the live surface slot, focuses or navigates
+a tab, or retains a closed guest. Hidden/visible capture counts and actual guest
+behavior require runtime validation; this contract is not a measured resource
+improvement.
+
+### Separate terminal lanes
+
+`src/shared/terminal-session.ts` identifies each PTY by `tabId`, required
+`lane: "manual" | "agent"`, and a host-issued `terminalSessionId`. Input,
+resize, output, exit, and block reads carry the same incarnation. A pane unmount
+kills neither lane; closing the tab kills both, and the live-PTY cap counts both.
+
+**Manual · host** runs the native host shell with the user's real HOME/profile
+and validated initial directory. It neither wraps the shell in the agent
+sandbox nor writes integration startup files into the real HOME. Without shell
+integration, current directory and command exit status remain unknown rather
+than inferred from the initial directory or terminal output.
+
+**Agent · isolated** is a distinct companion PTY with a disposable HOME,
+authenticated shell integration, and active filesystem/process confinement.
+Its initial write-jail directory may be within the default workspace or a
+user-approved additional project, as resolved by the host's project authority.
+Canonical, segment-aligned containment rejects paths resolving outside those
+projects at admission; a renderer cwd does not add a grant. This path check is
+separate from the sandbox's actual access enforcement and does not alone prove
+safety against later path changes. The whole user HOME remains an invalid jail anchor even
+when selected as a project. These Agent restrictions do not redefine Manual's
+ordinary host cwd behavior.
+`terminal_run` always targets this lane. Approval seals its session incarnation,
+directory, exact command, and containment identity; execution rechecks them
+before typing. No agent bytes, cancellation, or output can redirect to Manual
+or another tab; agent output does not take Manual's focus. A wait timeout means
+the command can still be running, and cancellation of a waiter does not prove
+process cleanup.
+
+An unavailable confined backend leaves Manual usable and Agent explicitly
+unavailable. The current Windows interactive Agent backend cannot attest this
+contract and is unavailable; it never falls back to a host PTY. General sandbox
+availability and unrelated native backend work are not proof of this lane's
+capability.
+
 ## Extension Runtime
 
 Extension installation and runtime behavior are governed by manifest declarations,
@@ -818,6 +1035,20 @@ Key boundaries:
   Bundled `manifest.skills` contribute instructions, while host-selected extension
   scope and `tool_search` control model-visible Tool discovery;
 - extension UI can render in host slots but cannot bypass permission review;
+- the text a host renders from a manifest can be localized per entry. A `ui[]`
+  entry may carry `locales: { [tag]: { displayName?, title?, description? } }`
+  (normalized lower-case BCP-47 tags, 1 to 16; empty entries, blank strings and
+  unknown fields are refused). The host resolves against its current UI
+  language: the exact tag, then its base language (`pt-br` → `pt`), then the
+  entry's own fields, then the plugin id; for the label, `displayName` precedes
+  `title` within each language step. The sidebar and its Extensions menu, the
+  plugin pane header, the command list, the native app menu and the floating
+  dock's slot titles share `src/shared/plugin-view-label.ts` and re-render on a
+  language switch. `configSchema` properties (`title`, `description`) and
+  `auth` (`label`) accept the same `locales` shape. A host that predates the
+  field refuses the manifest as an unknown key: the field requires Ave 0.14.1 or
+  later, and an extension declaring any of these `locales` sets
+  `requires.minAppVersion` to `0.14.1` or later;
 - optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in

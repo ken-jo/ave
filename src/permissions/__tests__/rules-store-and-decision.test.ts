@@ -16,6 +16,7 @@ import { readPermissionsFile, updatePermissionsFile } from "../permissions-store
 import { PermissionRulesFileCorruptError } from "../rules/rule-files.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
+  captureApprovalWorkingDirectory,
   UserApprovalStoreCorruptError,
   lookupApproval,
   readApprovals,
@@ -41,8 +42,15 @@ beforeEach(() => {
   permissionsFile = join(dir, "permissions.json");
   project = join(dir, "project");
   mkdirSync(project);
+  const home = join(dir, "home");
+  mkdirSync(home);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(dir, { recursive: true, force: true });
+});
 afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const shell = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
@@ -125,6 +133,22 @@ describe("Store A (user-global permissions.json)", () => {
 });
 
 describe("decision path", () => {
+  it.each([undefined, "", "/"])("can save and evaluate a project rule with HOME=%j", async (home) => {
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    const pm = new PermissionManager(permissionsFile);
+    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    const restarted = new PermissionManager(permissionsFile);
+    await restarted.ensureProjectRulesLoaded(project);
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project }))
+      .toMatchObject({ decision: "allow" });
+    const sibling = join(dir, "sibling");
+    mkdirSync(sibling);
+    await restarted.ensureProjectRulesLoaded(sibling);
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling }))
+      .toMatchObject({ decision: "ask" });
+  });
+
   it("Bash allow rules persist, survive restart, and match only via the shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
@@ -210,15 +234,39 @@ describe("decision path", () => {
   it("project rules key to the git root, so subdirectory sessions share them", async () => {
     const repo = join(dir, "repo");
     mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, ".git", "objects"));
+    mkdirSync(join(repo, ".git", "refs"));
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     mkdirSync(join(repo, "packages", "app"), { recursive: true });
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
-    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(realpathSync(repo));
+    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
     // Outside a repository the cwd itself is the project.
-    expect(projectRulesLocation(dir, project).projectRoot).toBe(project);
+    expect(projectRulesLocation(dir, project).projectRoot).toBe(captureApprovalWorkingDirectory(project).path);
+  });
+
+  it("a project allow in one non-repository folder never reaches a sibling under a home repository", async () => {
+    const home = process.env.HOME!;
+    mkdirSync(join(home, ".git"));
+    mkdirSync(join(home, ".git", "objects"));
+    mkdirSync(join(home, ".git", "refs"));
+    writeFileSync(join(home, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const a = join(home, "a");
+    const b = join(home, "b");
+    mkdirSync(a);
+    mkdirSync(b);
+    const pm = new PermissionManager(permissionsFile);
+    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: a });
+    const restarted = new PermissionManager(permissionsFile);
+    for (const [cwd, decision] of [[a, "allow"], [b, "ask"]] as const) {
+      await restarted.ensureProjectRulesLoaded(cwd);
+      expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: cwd }))
+        .toMatchObject({ decision });
+    }
+    expect(projectRulesLocation(dir, a).identity).not.toBe(projectRulesLocation(dir, b).identity);
   });
 
   it("project rules follow the shell call's own cwd, resolved with realpath", async () => {
@@ -228,7 +276,13 @@ describe("decision path", () => {
     const repoB = join(repoA, "vendor", "b");
     mkdirSync(join(repoA, ".git"), { recursive: true });
     mkdirSync(join(repoB, ".git"), { recursive: true });
-    symlinkSync(repoB, join(repoA, "b-link"));
+    mkdirSync(join(repoA, ".git", "objects"));
+    mkdirSync(join(repoA, ".git", "refs"));
+    mkdirSync(join(repoB, ".git", "objects"));
+    mkdirSync(join(repoB, ".git", "refs"));
+    writeFileSync(join(repoA, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(repoB, ".git", "HEAD"), "ref: refs/heads/main\n");
+    symlinkSync(repoB, join(repoA, "b-link"), "junction");
     const pm = new PermissionManager(permissionsFile);
     pm.setMode("allow");
     await pm.addRulePersist({ pattern: "Bash(printf *)", action: "deny" }, { kind: "project", projectCwd: repoB });
@@ -245,7 +299,7 @@ describe("decision path", () => {
     ));
 
     const context = check.mock.calls[0]![4]!;
-    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(realpathSync(repoB));
+    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(captureApprovalWorkingDirectory(repoB).path);
     expect(context.ruleSubject).toMatchObject({ kind: "shell", cwd: join(repoA, "b-link") });
     expect(check.mock.results[0]!.value).toMatchObject({ decision: "deny" });
     expect(execute).not.toHaveBeenCalled();

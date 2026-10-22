@@ -139,7 +139,9 @@ let during = [];
 let failure;
 const logs = [];
 try {
-  withHostLock({ name, label: name, directory, timeoutMs: 40, pollMs: 5,
+  // The "absent" probe and the occupied-"full" probes wait out the timeout;
+  // the others settle on their first or second attempt.
+  withHostLock({ name, label: name, directory, timeoutMs: 400, pollMs: 5,
     ...(mode === "pool" ? { slots: 2 } : {}), log: (line) => logs.push(line) }, () => {
     ran += 1;
     during = fs.readdirSync(directory).filter((name) => name.endsWith(".lock"));
@@ -235,6 +237,28 @@ describe("pre-push host lock", () => {
     expect(existsSync(join(lock, "owner-live-owner.json"))).toBe(true);
   });
 
+  it("names the holder even when the first acquisition round alone outlasts the timeout", () => {
+    // A loaded host can spend longer than the timeout in one round; the notice
+    // must not depend on getting a second round in before the deadline.
+    const directory = lockDirectory();
+    const lock = join(directory, "ave-prepush-full.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner-live-owner.json"), JSON.stringify({ pid: process.pid, token: "live-owner", createdAt: new Date().toISOString() }));
+    const log: string[] = [];
+    let clock = 0;
+    const now = () => {
+      const value = clock;
+      clock += 1_000;
+      return value;
+    };
+    expect(() => withHostLock(
+      { name: "full", label: "full-tier", directory, timeoutMs: 40, pollMs: 5, now, sleep: () => {}, log: (line) => log.push(line) },
+      () => {},
+    )).toThrow(/PRE_PUSH_HOST_LOCK_TIMEOUT/);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
+  });
+
   it("lets fast runs share slots and makes the next one wait when all are taken", async () => {
     const directory = lockDirectory();
     const first = holder(directory, "fast", 2);
@@ -290,7 +314,10 @@ describe("pre-push host lock", () => {
     expect(report).toMatchObject({ ran: 0, ownerPreserved: false, remaining: [] });
     expect(report.error).toContain("PRE_PUSH_HOST_LOCK_TIMEOUT");
     expect(report.logs[0]).toContain("unknown PID");
-    expect(report.denied).toBeGreaterThan(3);
+    // It kept retrying until the deadline. How many attempts fit in the
+    // window depends on the host's load (a full pre-push run on a busy host
+    // saw exactly 3 in 40 ms), so the claim is "more than one", not a rate.
+    expect(report.denied).toBeGreaterThan(1);
   });
 
   it("propagates publication errors outside the contention errno set", () => {

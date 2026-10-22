@@ -1033,6 +1033,188 @@ describe("context.log reaches the host and is not merely sent", () => {
 });
 
 describe("spawnWorker crosses as an id, never as a live handle", () => {
+  it("preserves lifecycle events delivered before the spawn reply continuation", async () => {
+    const worker = makeFakeWorker();
+    const eagerWorker: SpawnedPluginWorker = {
+      socketPath: worker.socketPath,
+      pid: worker.pid,
+      stop: worker.stop,
+      onStdout: (listener) => listener("already written"),
+      onStderr: (listener) => listener("already warned"),
+      onExit: (listener) => listener({ code: 0, signal: null }),
+    };
+    const harness = await createServiceHarness({ spawnWorker: async () => eagerWorker });
+
+    const handle = await harness.child.hostApi.spawnWorker!({
+      workerId: "short-lived",
+      command: "/bin/true",
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exits: { code: number | null; signal: NodeJS.Signals | null }[] = [];
+    handle.onStdout((chunk) => stdout.push(chunk));
+    handle.onStderr((chunk) => stderr.push(chunk));
+    handle.onExit((info) => exits.push(info));
+
+    expect(stdout).toEqual(["already written"]);
+    expect(stderr).toEqual(["already warned"]);
+    expect(exits).toEqual([{ code: 0, signal: null }]);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+  });
+
+  it.each([
+    ["events", Array.from({ length: 257 }, () => "")],
+    ["bytes", ["x".repeat(512 * 1024 + 1)]],
+  ])("rejects and releases a worker whose handoff exceeds its %s bound", async (_kind, chunks) => {
+    const worker = makeFakeWorker();
+    const eagerWorker: SpawnedPluginWorker = {
+      socketPath: worker.socketPath,
+      pid: worker.pid,
+      stop: worker.stop,
+      onStdout: (listener) => {
+        for (const chunk of chunks) listener(chunk);
+      },
+      onStderr: () => {},
+      onExit: () => {},
+    };
+    const harness = await createServiceHarness({ spawnWorker: async () => eagerWorker });
+
+    await expect(harness.child.hostApi.spawnWorker!({
+      workerId: "noisy-startup",
+      command: "/bin/true",
+    })).rejects.toMatchObject({ code: "payload-too-large" });
+    expect(worker.stopped()).toBe(1);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+  });
+
+  it("drops unlistened live output after handoff without changing exit status", async () => {
+    const worker = makeFakeWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker });
+    const handle = await harness.child.hostApi.spawnWorker!({
+      workerId: "unlistened-after-reply",
+      command: "/bin/true",
+    });
+    const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
+    handle.onExit((info) => exits.push(info));
+    for (let index = 0; index < 300; index += 1) worker.emitStdout("unlistened");
+    const stdout: string[] = [];
+    handle.onStdout((chunk) => stdout.push(chunk));
+    expect(stdout).toEqual([]);
+    expect(worker.stopped()).toBe(0);
+    expect(exits).toEqual([]);
+    worker.emitStdout("listened");
+    worker.emitExit(9, null);
+    expect(stdout).toEqual(["listened"]);
+    expect(exits).toEqual([{ code: 9, signal: null }]);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+  });
+
+  it("drops unknown worker events without retaining ownerless state", async () => {
+    const harness = await createServiceHarness();
+    for (let index = 0; index < 300; index += 1) {
+      expect(harness.child.deliver({
+        jsonrpc: "2.0",
+        method: "notifications/ave/subscription",
+        params: { subscriptionId: `worker_unknown_${index}`, payload: { kind: "stdout", chunk: "queued" } },
+      })).toBe("unknown-subscription");
+    }
+    expect(harness.child.openSubscriptionCount).toBe(0);
+    expect(harness.child.hostGone()).toBe(0);
+  });
+
+  it("releases the host handle when worker listener setup fails", async () => {
+    const worker = makeFakeWorker();
+    const brokenWorker: SpawnedPluginWorker = {
+      socketPath: worker.socketPath,
+      pid: worker.pid,
+      stop: worker.stop,
+      onStdout: () => {
+        throw new Error("pre-listener output overflow");
+      },
+      onStderr: worker.onStderr,
+      onExit: worker.onExit,
+    };
+    const harness = await createServiceHarness({ spawnWorker: async () => brokenWorker });
+
+    await expect(harness.child.hostApi.spawnWorker!({
+      workerId: "listener-setup-failure",
+      command: "/bin/true",
+    })).rejects.toMatchObject({ code: "host-internal" });
+    expect(worker.stopped()).toBe(1);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+  });
+
+  it("clears captured output and both ledgers after rejected setup and ignores late frames", async () => {
+    const worker = makeFakeWorker();
+    let rejected = true;
+    const harness = await createServiceHarness({ spawnWorker: async () => rejected ? {
+      ...worker,
+      onStdout: (listener) => listener("captured before rejection"),
+      onStderr: () => { throw new Error("listener setup failed"); },
+    } : worker });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(harness.child.hostApi.spawnWorker!({ workerId: "rejected", command: "/bin/true" })).rejects.toMatchObject({ code: "host-internal" });
+      const request = harness.requests.at(-1)!;
+      expect(harness.child.deliver({ jsonrpc: "2.0", method: "notifications/ave/subscription", params: {
+        subscriptionId: `worker_${request.id}`, payload: { kind: "stdout", chunk: "late" },
+      } })).toBe("unknown-subscription");
+      expect(harness.child.openSubscriptionCount).toBe(0);
+      expect(harness.host.openSubscriptionCount).toBe(0);
+    }
+    rejected = false;
+    const handle = await harness.child.hostApi.spawnWorker!({ workerId: "valid", command: "/bin/true" });
+    const stdout: string[] = [];
+    handle.onStdout((chunk) => stdout.push(chunk));
+    worker.emitStdout("valid output");
+    expect(stdout).toEqual(["valid output"]);
+    handle.stop();
+  });
+
+  it("releases and clears both queues when a captured-output listener throws", async () => {
+    const worker = makeFakeWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => ({
+      ...worker,
+      onStdout: (listener) => { listener("first"); listener("second"); },
+      onStderr: (listener) => listener("warning"),
+    }) });
+    const handle = await harness.child.hostApi.spawnWorker!({ workerId: "throwing-listener", command: "/bin/true" });
+    const failure = new Error("listener failed");
+    const listener = vi.fn(() => { throw failure; });
+    expect(() => handle.onStdout(listener)).toThrow(failure);
+    expect(listener).toHaveBeenCalledTimes(1);
+    const stderr = vi.fn();
+    handle.onStderr(stderr);
+    expect(stderr).not.toHaveBeenCalled();
+    expect(worker.stopped()).toBe(1);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+  });
+
+  it("clears pre-listener output when the plugin stops the worker", async () => {
+    const worker = makeFakeWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => ({
+      ...worker,
+      onStdout: (listener) => { worker.onStdout(listener); listener("discard on stop"); },
+    }) });
+    const handle = await harness.child.hostApi.spawnWorker!({
+      workerId: "stopped-before-listening",
+      command: "/bin/true",
+    });
+
+    handle.stop();
+    const stdout: string[] = [];
+    handle.onStdout((chunk) => stdout.push(chunk));
+
+    expect(stdout).toEqual([]);
+    expect(worker.stopped()).toBe(1);
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
+  });
+
   it("gives the plugin a handle whose methods are local", async () => {
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
@@ -1075,9 +1257,8 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     // What the plugin received is an id and two scalars — nothing that could be
     // a `ChildProcess`, which is the security improvement over the in-process
     // handle rather than merely a port of it.
-    const reply = await harness.host.handle(
-      harness.requests.find((request) => pathOfRequest(request) === "spawnWorker")!,
-    );
+    const request = harness.requests.find((request) => pathOfRequest(request) === "spawnWorker")!;
+    const reply = harness.replies.find((reply) => reply.id === request.id)!;
     expect("result" in reply).toBe(true);
     if (!("result" in reply)) return;
     expect(Object.keys(reply.result as object).sort()).toEqual([

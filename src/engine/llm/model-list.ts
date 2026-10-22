@@ -45,25 +45,16 @@ const MAX_MODEL_ID_LENGTH = 256;
 
 const STANDARD_MODEL_LIST_BASE_URLS: Partial<Record<LLMVendor, string>> = {
   openai: "https://api.openai.com/v1",
-  // GET /v1/models (Anthropic Models API) and GET /v1beta/models (Gemini API).
+  // Native model-list addresses.
   claude: "https://api.anthropic.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
 };
 
-/**
- * Pages one listing may take. Anthropic and Gemini page their lists (up to
- * 1,000 rows a page), so this bounds a listing at ten times the page size
- * while each page keeps the per-response byte limit. A list still paging
- * after the last allowed page is cached as incomplete.
- */
+/** A bounded paginated listing remains incomplete when its page cap is reached. */
 const MAX_MODEL_LIST_PAGES = 10;
 const VENDOR_MODEL_LIST_PAGE_SIZE = 1_000;
 
-/**
- * The headers a vendor's `/models` takes its key in: Anthropic's `x-api-key`
- * with the `anthropic-version` its API requires, Gemini's `x-goog-api-key`,
- * and a bearer token for everything OpenAI-shaped.
- */
+/** Native key headers for each supported listing protocol. */
 function modelListAuthHeaders(vendor: LLMVendor, apiKey: string): Record<string, string> {
   if (!apiKey) return {};
   if (vendor === "claude") return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
@@ -71,10 +62,7 @@ function modelListAuthHeaders(vendor: LLMVendor, apiKey: string): Record<string,
   return { Authorization: `Bearer ${apiKey}` };
 }
 
-/**
- * The URL of one page: Anthropic pages with `limit` and `after_id`, Gemini
- * with `pageSize` and `pageToken`. Every other vendor answers in one response.
- */
+/** Preserve the selected protocol's cursor and page-size parameters. */
 function modelListPageUrl(vendor: LLMVendor, endpoint: string, cursor: string | null): string {
   if (vendor !== "claude" && vendor !== "gemini") return endpoint;
   const url = new URL(endpoint);
@@ -88,11 +76,7 @@ function modelListPageUrl(vendor: LLMVendor, endpoint: string, cursor: string | 
   return url.toString();
 }
 
-/**
- * Where the next page starts, or null on the last page. Anthropic says
- * `has_more` and names the page's `last_id`; Gemini sends `nextPageToken`.
- * A page that says there is more without saying where is a malformed answer.
- */
+/** A continuation without a usable cursor is a malformed listing. */
 function modelListNextCursor(vendor: LLMVendor, payload: unknown): string | null {
   if (vendor !== "claude" && vendor !== "gemini") return null;
   const record = payload !== null && typeof payload === "object" && !Array.isArray(payload)
@@ -107,14 +91,15 @@ function modelListNextCursor(vendor: LLMVendor, payload: unknown): string | null
   return typeof token === "string" && token.trim() !== "" ? token : null;
 }
 
-/**
- * One page's rows as the standard parser reads them. Gemini names a model
- * `models/<id>` and lists embedding and other non-chat models beside the chat
- * ones; only a model that serves `generateContent` can answer a turn, and its
- * id is the part after `models/`.
- */
+/** Project native listing rows and omit models explicitly marked retired. */
 function modelListPageRows(vendor: LLMVendor, payload: unknown): unknown[] {
   const rows = modelListRows(payload);
+  if (vendor === "claude") {
+    return rows.filter((row) => {
+      const lifecycle = optionalRecord(row)?.lifecycle;
+      return lifecycle !== "retired";
+    });
+  }
   if (vendor !== "gemini") return rows;
   const chatRows: unknown[] = [];
   for (const row of rows) {
@@ -123,7 +108,12 @@ function modelListPageRows(vendor: LLMVendor, payload: unknown): unknown[] {
     const methods = record.supportedGenerationMethods;
     if (!Array.isArray(methods) || !methods.includes("generateContent")) continue;
     if (typeof record.name !== "string") continue;
-    chatRows.push({ ...record, id: record.name.replace(/^models\//u, "") });
+    chatRows.push({
+      ...record,
+      id: record.name.replace(/^models\//u, ""),
+      context_length: record.inputTokenLimit,
+      max_output_tokens: record.outputTokenLimit,
+    });
   }
   return chatRows;
 }
@@ -601,7 +591,7 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   const topProvider = optionalRecord(record.top_provider);
   const limits = optionalRecord(record.limits);
   const pricing = pricingFromRecord(record.pricing);
-  const name = optionalString(record.name);
+  const name = optionalString(record.display_name) ?? optionalString(record.displayName) ?? optionalString(record.name);
   const provider = optionalString(record.provider) ?? optionalString(record.publisher);
   const ownedBy = optionalString(record.owned_by);
   const description = optionalString(record.description) ?? optionalString(record.summary);
@@ -615,7 +605,8 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
     ?? optionalNumber(limits?.max_input_tokens)
     ?? optionalNumber(record.max_input_tokens)
     ?? optionalNumber(record.max_model_len);
-  const maxOutputTokens = optionalNumber(record.max_output_tokens)
+  const maxOutputTokens = optionalNumber(record.max_tokens)
+    ?? optionalNumber(record.max_output_tokens)
     ?? optionalNumber(limits?.max_output_tokens);
   const inputModalities = optionalStringArray(architecture?.input_modalities)
     ?? optionalStringArray(record.supported_input_modalities);

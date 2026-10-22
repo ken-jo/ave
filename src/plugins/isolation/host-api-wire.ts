@@ -2122,6 +2122,11 @@ export type WireApiKeyLease =
 // spawnWorker (§3.2)
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Internal lifecycle identity derived before the existing request is sent. */
+export function workerSubscriptionIdOfRequest(id: JsonRpcRequestId): string {
+  return `worker_${id}`;
+}
+
 /** The reply behind the `handle` `spawnWorker` declares. The process stays host-side. */
 export interface WireWorkerHandle {
   readonly handleId: string;

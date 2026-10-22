@@ -4,7 +4,7 @@
  *
  * Shared by every suite that spawns a confined child and asserts what the
  * kernel refused (`confined-plugin-child.test.ts`, `adversarial-escapes.test.ts`,
- * `bundled-hook-asrt.smoke.test.ts`),
+ * `bundled-hook-asrt.smoke.test.ts`, `session-read-shell.test.ts`),
  * so "the sandbox is not here" is decided by one rule rather than by a copy per
  * file that could drift into a quieter one.
  *
@@ -21,6 +21,7 @@
  * turns a silent pass into a failure; nothing about the cases themselves reads
  * it.
  */
+import type { TestContext } from "vitest";
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
 
 /** Set by the CI jobs whose green must mean "measured". */
@@ -39,4 +40,13 @@ export async function sandboxCasesRun(): Promise<boolean> {
     );
   }
   return false;
+}
+
+/**
+ * Skip the running case, with its reason, where ASRT cannot initialise; fail
+ * instead where a confinement job asks for real sandbox cases
+ * ({@link sandboxCasesRun}).
+ */
+export async function requireSandboxCases(test: TestContext): Promise<void> {
+  if (!(await sandboxCasesRun())) test.skip("ASRT cannot initialize (sandbox dependencies missing)");
 }

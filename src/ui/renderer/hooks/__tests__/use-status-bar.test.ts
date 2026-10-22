@@ -232,10 +232,10 @@ describe("useStatusBar — install lifecycle producer", () => {
   it("pushes a success toast when onPluginInstallResult reports an install", () => {
     const { result, emit } = renderWithResultHandler();
 
-    emit({ slug: "agent-hub", success: true });
+    emit({ slug: "samplehub", success: true });
 
     expect(result.current.toasts).toHaveLength(1);
-    expect(result.current.toasts[0]).toMatchObject({ severity: "success", message: "agent-hub 설치 완료" });
+    expect(result.current.toasts[0]).toMatchObject({ severity: "success", message: "samplehub 설치 완료" });
   });
 
   it("sanitizeToastField strips C0 control characters (0x00–0x1F) from slug", () => {

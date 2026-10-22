@@ -38,9 +38,9 @@ describe("useInputStatusRow", () => {
   });
 
   it.each([
-    [{ kind: "subscription", provider: "claude-code" }, `Claude Code · ${t("llmTab.cliDefaultModel")}`],
-    [{ kind: "subscription", provider: "claude-code", model: "claude-sonnet-5-5" }, "Claude Code · claude-sonnet-5-5"],
-    [{ kind: "subscription", provider: "kimi-code" }, "Kimi Code"],
+    [{ kind: "subscription", provider: "claude-code" }, `Claude · ${t("llmTab.cliDefaultModel")}`],
+    [{ kind: "subscription", provider: "claude-code", model: "claude-sonnet-5-5" }, "Claude · claude-sonnet-5-5"],
+    [{ kind: "subscription", provider: "kimi-code" }, "Kimi"],
   ] as const)("labels a subscription runtime %j as %s", async (activeChatRuntime, expected) => {
     const settings = fakeAppSettings({ llm: { activeChatRuntime } });
     const { result } = renderHook(() => useInputStatusRow(apiWith(settings)));

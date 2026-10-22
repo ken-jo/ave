@@ -54,9 +54,9 @@ export interface OpenAICompatibleVendorPreset {
   apiKeyPlaceholder: string;
   baseUrl: string;
   /**
-   * The model a newly connected route starts on. For a vendor with a catalog
-   * provider it must be a chat model the catalog lists for that vendor
-   * (`llm-vendor-defaults.test.ts` pins it).
+   * The provider-native id a newly connected route starts on. Public ids
+   * must resolve to a catalog chat entry; an existing account-scoped
+   * deployment may remain unclassified.
    */
   defaultModel: string;
   /**
@@ -150,7 +150,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "Requesty",
     apiKeyPlaceholder: "rq_...",
     baseUrl: "https://router.requesty.ai/v1",
-    defaultModel: "gpt-6-luna",
+    defaultModel: "openai/gpt-6-luna",
     gateway: true,
   },
   litellm: {
@@ -802,8 +802,7 @@ export type LLMVendorSettingsMap = Partial<
 const CORE_DEFAULT_MODEL = {
   claude: "claude-sonnet-4-6",
   openai: "gpt-5.4-mini",
-  // ai.google.dev limits the Gemini 2.5 models to existing users and points
-  // new projects at 3.8 Flash.
+  // New routes start on a currently listed general-purpose chat model.
   gemini: "gemini-3.8-flash",
   "azure-foundry": "gpt-5.4-mini",
   // The catalog marks Vertex's Gemini 2.5 models deprecated (design

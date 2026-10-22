@@ -6,6 +6,7 @@ import {
 import {
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
+  SUBSCRIPTION_RUNTIME_API_COUNTERPART,
   SUBSCRIPTION_RUNTIME_DESCRIPTORS,
 } from "../../shared/subscription-runtime.js";
 import {
@@ -59,7 +60,11 @@ describe("claude-code subscription contract", () => {
     expect(isClaudeCodeSubscriptionProviderId("codex")).toBe(false);
     const descriptor = subscriptionRuntimeDescriptor("claude-code");
     expect(descriptor.transport).toBe("claude-cli");
-    expect(descriptor.requiresExecutable).toBe(true);
+    // Ave finds the user's own `claude`; there is no path to pick.
+    expect(descriptor.executable).toBe("discovered");
+    expect(descriptor.installGuidance?.documentationUrl).toBe("https://code.claude.com/docs/en/setup");
+    // One company, one row: the Claude plan is Anthropic's other way in.
+    expect(SUBSCRIPTION_RUNTIME_API_COUNTERPART["claude-code"]).toBe("claude");
     expect(descriptor.loginMethods).toEqual(["browser"]);
     expect(descriptor.supportsManagedLogout).toBe(true);
     expect(descriptor.supportsModelSelection).toBe(true);
@@ -108,7 +113,6 @@ describe("claude-code subscription contract", () => {
     const claudeCodeClient = {
       getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
       verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
-      getConfiguredExecutable: vi.fn(() => "C:\\Tools\\claude.exe"),
       getRuntimePaths: vi.fn(() => ({
         runtimeHome: "C:\\isolated\\claude-home",
         workspaceDir: "C:\\isolated\\claude-workspace",
@@ -164,8 +168,8 @@ async function claudeService() {
   return { service, opened };
 }
 
-describe("Claude Code model choice — the user's CLI with --model", () => {
-  it("offers the catalog's Anthropic chat models, and nothing it would have to invent", async () => {
+describe("subscription model choice through the installed CLI", () => {
+  it("offers only chat models listed by the catalog", async () => {
     const { service } = await claudeService();
     const { models } = await service.listModels("claude-code");
     expect(models.map((model) => model.id)).toEqual(catalogChatModelIds("claude"));
@@ -197,11 +201,11 @@ describe("Claude Code model choice — the user's CLI with --model", () => {
   });
 });
 
-describe("Claude subscription guarantees — the credentials stay the CLI's", () => {
+describe("subscription credentials remain owned by the CLI", () => {
   const source = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
   const modules = ["claude-code-subscription-client.ts", "claude-code-conversation-runtime.ts", "claude-code-stream.ts"];
 
-  it("never reads Claude credentials: no credentials file, keychain entry, or token store is named", () => {
+  it("never names a credentials file, keychain entry or token store", () => {
     for (const file of modules) {
       const text = source(file);
       for (const forbidden of [

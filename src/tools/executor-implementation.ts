@@ -444,24 +444,22 @@ export class ToolExecutor {
       completedToolUseIds: string[],
     ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> => {
       if (isInterceptedMetaTool(toolUse) && interceptedMetaToolHandler) {
+        let intercepted: ToolResult | null = null;
         try {
-          const intercepted = await interceptedMetaToolHandler(toolUse);
-          return intercepted?.tool_use_id === toolUse.id
-            ? intercepted
-            : {
-                tool_use_id: toolUse.id,
-                content: "Intercepted meta-tool handling failed closed",
-                is_error: true,
-                durationMs: 0,
-              };
+          intercepted = await interceptedMetaToolHandler(toolUse);
         } catch {
-          return {
-            tool_use_id: toolUse.id,
-            content: "Intercepted meta-tool handling failed closed",
-            is_error: true,
-            durationMs: 0,
-          };
+          // A failed interception still produces one final paired result.
         }
+        const result: ToolResult = intercepted?.tool_use_id === toolUse.id
+          ? intercepted
+          : {
+              tool_use_id: toolUse.id,
+              content: "Intercepted meta-tool handling failed closed",
+              is_error: true,
+              durationMs: 0,
+            };
+        await opts.onToolResult?.(result);
+        return result;
       }
       if (runtime?.requestAnchor) {
         return this.executeOne(toolUse, batchId, displayOrder, opts, {
@@ -613,7 +611,7 @@ export class ToolExecutor {
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
-    return runToolInvocation(
+    const result = await runToolInvocation(
       {
         toolRegistry: this.toolRegistry,
         hookRunner: this.hookRunner,
@@ -640,6 +638,8 @@ export class ToolExecutor {
       rationaleBatchContext,
       rationaleResumeContext,
     );
+    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
+    return result;
   }
 
 

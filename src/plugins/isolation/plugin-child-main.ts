@@ -178,8 +178,8 @@ export function servePluginChild(
       // approval gate (§7.5). It rejects when the host is gone, which is the
       // condition a deadline here would only be standing in for.
       const settled = hostApiReplies.register(String(id), undefined, () => undefined);
-      onSent?.(id);
       try {
+        onSent?.(id);
         stream.send({ jsonrpc: "2.0", id, method, params });
       } catch (error) {
         // Refused before it was written (a request too large to frame), so no

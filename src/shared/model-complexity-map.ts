@@ -1,51 +1,11 @@
-/**
- * Single source of truth for the agent-profile **complexity level**
- * ("low" / "mid" / "high") → vendor-specific model resolver used by
- * `SubAgentRunner` when an agent profile's `model:` frontmatter is a
- * complexity tier instead of an explicit model ID.
- *
- * Why a separate SOT (vs. baking it into llm-vendor-defaults.ts):
- *   - `llm-vendor-defaults.ts` is the SOT for the user-facing settings
- *     dialog: which vendors exist, which models the dropdown shows, what
- *     defaults each vendor block ships with. That file answers "what can
- *     the user pick?" It must stay decoupled from agent-profile semantics
- *     so a marketplace plugin adding new agent profiles never needs to
- *     touch the vendor list.
- *   - This file answers a different question: "given the active vendor
- *     and a tier the profile writer specified, which model ID should the
- *     sub-agent run against?" The mapping is opinionated — a complexity
- *     tier is *not* a model ID, and the resolver knows about each
- *     vendor's model catalog only enough to pick three representatives.
- *
- * Design-intent fallback (per Ave CLAUDE.md "No Fallback Code" rule):
- *   - When a vendor block is missing the tier (e.g. a new vendor enrolled
- *     before the map is updated), `resolveModelForComplexity` returns
- *     `null` and the caller MUST fall back to the parent loop's active
- *     model. That fallback is a *design-intent safety path* — not a
- *     legacy alias — and the caller is required to log "parent-model
- *     fallback used" so the audit trail captures the gap.
- *   - All known tiers must resolve to a model that also appears in
- *     `llmVendorModelOptions(vendor)` for that vendor — verified by
- *     the unit test under `__tests__/`.
- *
- * Cline-scale provider expansion note:
- *   - OpenAI-compatible preset vendors use their configured default model for
- *     all three tiers. Those endpoints are heterogeneous and user-routed, so a
- *     hardcoded low/mid/high catalog would be more misleading than useful.
- *
- * Cross-importer boundary:
- *   - Imported by `SubAgentRunner` (engine) and `agent-profile-store`
- *     (main). Pure / browser-safe — no Electron / Node imports.
- *   - When a new vendor needs real tier semantics, add it to
- *     `EXPLICIT_MODEL_COMPLEXITY_MAP`. Otherwise the runtime coverage test
- *     verifies that the vendor falls back to its selectable default model.
- */
+/** Resolve profile complexity tiers from the active catalog's model families. */
 import {
-  LLM_VENDOR_DEFAULTS,
   LLM_VENDORS,
   llmVendorModelOptions,
   type LLMVendor,
 } from "./llm-vendor-defaults.js";
+import { activeModelCatalog } from "./model-catalog/active.js";
+import { resolveCatalogKey } from "./model-catalog/resolve.js";
 
 /**
  * Complexity tiers an agent profile may declare in its `model:`
@@ -69,76 +29,37 @@ export function isModelComplexityLevel(
   );
 }
 
-/**
- * Vendor × tier → model ID. Each cell MUST also appear in
- * `llmVendorModelOptions(vendor)` (enforced by unit test).
- *
- * Picking rationale per vendor:
- *   - low: fastest / cheapest tier suitable for narrow lookups and
- *     short-form generation (e.g. `explorer` agent's file/email scan).
- *   - mid: balanced workhorse for staff office artifacts (memo, table,
- *     meeting minutes). Used by `executor` and `researcher`.
- *   - high: deep-reasoning model for analysis / multi-step planning
- *     (e.g. `planner`'s 7-dimension clarity scoring loop).
- */
-const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
-  Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>
-> = {
-  // Tiers follow each vendor's own current line-up (2026-10): Anthropic's
-  // Haiku/Sonnet/Opus 5.5; OpenAI's models page names gpt-6-luna "most
-  // efficient", gpt-6.1-sol "balanced" and gpt-6-astra the flagship; Google
-  // recommends 3.5 Flash-Lite and 3.8 Flash for new projects and has no newer
-  // Pro in the catalog, so Flash serves both upper tiers.
-  claude: Object.freeze({
-    low: "claude-haiku-5-5",
-    mid: "claude-sonnet-5-5",
-    high: "claude-opus-5-5",
-  }),
-  openai: Object.freeze({
-    low: "gpt-6-luna",
-    mid: "gpt-6.1-sol",
-    high: "gpt-6-astra",
-  }),
-  gemini: Object.freeze({
-    low: "gemini-3.5-flash-lite",
-    mid: "gemini-3.8-flash",
-    high: "gemini-3.8-flash",
-  }),
-  "azure-foundry": Object.freeze({
-    low: "gpt-6-luna",
-    mid: "gpt-6.1-sol",
-    high: "gpt-6-astra",
-  }),
-  "vertex-ai": Object.freeze({
-    low: "gemini-3.5-flash-lite",
-    mid: "gemini-3.8-flash",
-    high: "gemini-3.8-flash",
-  }),
-  // Custom OpenAI-compatible endpoints are endpoint-defined and handshake-only:
-  // there is no static catalog to map tiers against (see
-  // llmVendorModelOptions("openai-compatible") is empty). Deliberately absent
-  // here → `defaultComplexityMapForVendor` yields the empty default model →
-  // `resolveModelForComplexity` returns null → the sub-agent runs on the
-  // parent loop's active (user-selected) model. Never send a fabricated tier id.
+/** Family choices are host policy; the catalog supplies each family's current id. */
+const COMPLEXITY_FAMILIES: Partial<Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>> = {
+  claude: { low: "claude-haiku", mid: "claude-sonnet", high: "claude-opus" },
+  openai: { low: "gpt-luna", mid: "gpt-sol", high: "gpt-astra" },
+  gemini: { low: "gemini-flash-lite", mid: "gemini-flash", high: "gemini-pro" },
+  "vertex-ai": { low: "gemini-flash-lite", mid: "gemini-flash", high: "gemini-pro" },
 };
 
-function defaultComplexityMapForVendor(
-  vendor: LLMVendor,
-): Readonly<Record<ModelComplexityLevel, string>> {
-  const model = LLM_VENDOR_DEFAULTS[vendor].model;
-  return Object.freeze({ low: model, mid: model, high: model });
+function complexityMapForVendor(vendor: LLMVendor): Readonly<Record<ModelComplexityLevel, string>> {
+  const options = llmVendorModelOptions(vendor);
+  const families = COMPLEXITY_FAMILIES[vendor];
+  const select = (level: ModelComplexityLevel): string => {
+    // Deployment aliases and gateways retain the parent route: a public
+    // catalog cannot name the account-specific target to send a tier to.
+    if (!families) return "";
+    return options.find((id) => {
+      const model = resolveCatalogKey(activeModelCatalog(), vendor, id)?.model;
+      return model?.family === families[level] && model.structuredOutput === true;
+    }) ?? "";
+  };
+  return Object.freeze({ low: select("low"), mid: select("mid"), high: select("high") });
 }
 
-export const MODEL_COMPLEXITY_MAP: Readonly<
-  Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>
-> = Object.freeze(
-  Object.fromEntries(
-    LLM_VENDORS.map((vendor) => [
-      vendor,
-      EXPLICIT_MODEL_COMPLEXITY_MAP[vendor] ?? defaultComplexityMapForVendor(vendor),
-    ]),
-  ) as Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>,
-);
+/** Read lazily so catalog installation and refresh cannot leave stale tier ids. */
+export const MODEL_COMPLEXITY_MAP = Object.freeze(Object.defineProperties(
+  {} as Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>,
+  Object.fromEntries(LLM_VENDORS.map((vendor) => [vendor, {
+    enumerable: true,
+    get: () => complexityMapForVendor(vendor),
+  }])),
+));
 
 /**
  * Resolve `(vendor, level)` to a concrete model ID. Returns `null` when

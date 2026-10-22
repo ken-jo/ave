@@ -13,7 +13,7 @@ const CLAUDE_CODE_MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/iu;
 
 /**
  * The CLI's tool list covers built-ins; MCP approval is a separate option.
- * `model` is passed as `--model <id>` (Claude Code CLI reference); without it
+ * `model` is passed as `--model <id>`; without it
  * the CLI runs its own default model.
  */
 export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly string[], model?: string): string[] {
@@ -34,7 +34,7 @@ function invalid(): never {
 }
 
 /**
- * Validates the print stream for verification and chat. Tool announcements
+ * Validates each user-requested print stream. Tool announcements
  * never authorize a host call. Ave supplies complete history on every round,
  * so native session ids are checked but never resumed.
  */

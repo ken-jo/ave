@@ -1,43 +1,65 @@
-import { test, expect } from './fixtures';
+import { test, expect, type Page } from "@playwright/test";
+import {
+  buildLlmSettings,
+  builtMainExists,
+  launchSeededElectron,
+  teardownSeededElectron,
+  type SeededElectronContext,
+} from "./seeded-electron";
 
 /**
- * Pinned message toggle smoke ("Star" → "Pin" rename, 2026-07) — finds any
- * pin/bookmark affordance on a message row and toggles it. Skips gracefully
- * when no pin UI exists.
+ * Pinned message toggle ("Star" → "Pin" rename, 2026-07). A finished assistant
+ * turn carries a pin control in its action bar (TurnActionBar
+ * `turn-pin-button`). Pressing it stores the turn in the starred list and
+ * fills the pin icon; pressing it again removes it.
  */
-test('pinned message toggle flips state, or skips', async ({ mainWindow }) => {
-  const star = mainWindow
-    .locator(
-      [
-        '[data-testid="star-toggle"]',
-        '[data-testid="message-star"]',
-        'button[aria-label*="Pin" i]',
-        'button[aria-label*="핀"]',
-        'button[aria-label*="고정"]',
-      ].join(', '),
-    )
-    .first();
 
-  const found = await star
-    .waitFor({ state: 'visible', timeout: 8_000 })
-    .then(() => true)
-    .catch(() => false);
+type StarredEntry = { sessionId: string; messageIndex: number; role: string; text: string };
 
-  test.skip(!found, 'No star/favorite toggle present — skipping.');
+function starredList(page: Page): Promise<StarredEntry[]> {
+  return page.evaluate(() =>
+    (window as unknown as { aveApi: { starredList: () => Promise<StarredEntry[]> } }).aveApi.starredList(),
+  );
+}
 
-  const beforePressed =
-    (await star.getAttribute('aria-pressed').catch(() => null)) ??
-    (await star.getAttribute('data-state').catch(() => null));
+test.describe("pinned message toggle", () => {
+  test.skip(!builtMainExists(), "dist/src/main/main.js not built; run bun run build first");
 
-  await star.click();
-  await mainWindow.waitForTimeout(200);
+  let ctx: SeededElectronContext | null = null;
 
-  const afterPressed =
-    (await star.getAttribute('aria-pressed').catch(() => null)) ??
-    (await star.getAttribute('data-state').catch(() => null));
+  test.afterEach(async () => {
+    if (ctx) await teardownSeededElectron(ctx);
+    ctx = null;
+  });
 
-  await expect(star).toBeVisible();
-  if (beforePressed !== null && afterPressed !== null) {
-    expect(afterPressed).not.toBe(beforePressed);
-  }
+  test("pins a finished assistant turn and unpins it again", async () => {
+    const now = Date.now();
+    ctx = await launchSeededElectron({
+      settings: buildLlmSettings("openai", "gpt-5.4-mini"),
+      sessionTitle: "pinned toggle",
+      historyRows: [
+        { index: 0, role: "user", content: "Name one prime number.", createdAt: now - 2_000 },
+        { index: 1, role: "assistant", content: "Seven is a prime number.", createdAt: now - 1_000 },
+      ],
+      userDataPrefix: "ave-pin-toggle-user-data-",
+      homePrefix: "ave-pin-toggle-home-",
+    });
+    const { page } = ctx;
+
+    await expect(page.getByText("Seven is a prime number.")).toBeVisible({ timeout: 20_000 });
+    const pin = page.getByTestId("turn-pin-button").first();
+    await expect(pin).toBeVisible();
+    const icon = pin.locator("svg");
+    await expect(icon).not.toHaveClass(/fill-emphasis/);
+    expect(await starredList(page)).toEqual([]);
+
+    await pin.click();
+    await expect(icon).toHaveClass(/fill-emphasis/);
+    await expect.poll(async () => (await starredList(page)).map((entry) => entry.text))
+      .toEqual([expect.stringContaining("Seven is a prime number.")]);
+
+    await pin.click();
+    await expect(icon).not.toHaveClass(/fill-emphasis/);
+    await expect.poll(async () => (await starredList(page)).length).toBe(0);
+  });
 });

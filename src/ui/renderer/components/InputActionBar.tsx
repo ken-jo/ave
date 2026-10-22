@@ -781,8 +781,8 @@ function ModelQuickPicker({
             // it empty; the muted vendor column is then blank rather than
             // repeating the same label twice.
             const modelLessSubscription = subscriptionChoice !== null && subscriptionChoice.modelId === null;
-            // A CLI that runs its own default when nothing is chosen (Claude
-            // Code) says so instead of leaving the model column to the label.
+            // A CLI that runs its own default when nothing is chosen
+            // says so instead of leaving the model column to the label.
             const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
               && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
             const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;

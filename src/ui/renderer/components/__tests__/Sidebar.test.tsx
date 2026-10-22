@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
+import { I18nProvider } from "../../../../i18n/react.js";
+import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
@@ -47,7 +49,10 @@ function Harness(props: Parameters<typeof Sidebar>[0]) {
   );
 }
 
-function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
+function renderSidebar(
+  overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
+  options: { locale?: string } = {},
+) {
   const onLoadSession = vi.fn();
   const onNewChatForProject = vi.fn();
   // EVERY listener, not the last one: the preload's own registration is
@@ -154,11 +159,17 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     },
   };
 
-  const result = render(
-    <TooltipProvider>
-      <Harness {...props} />
-    </TooltipProvider>,
-  );
+  const tree = (locale: string | undefined) => {
+    const sidebar = (
+      <TooltipProvider>
+        <Harness {...props} />
+      </TooltipProvider>
+    );
+    return locale === undefined
+      ? sidebar
+      : <I18nProvider locale={locale} setLocale={() => {}}>{sidebar}</I18nProvider>;
+  };
+  const result = render(tree(options.locale));
 
   return {
     ...result,
@@ -169,6 +180,8 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     listRoots,
     pickRoot,
     addedRoot: ADDED_ROOT,
+    /** Re-render under another UI language, the way App's provider does on a switch. */
+    switchLocale: (locale: string) => result.rerender(tree(locale)),
     emitNativeContextCommand: (command: NativeContextMenuAction["command"]) => {
       const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
       if (!payload) throw new Error("native context menu was not requested");
@@ -187,6 +200,51 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     },
   };
 }
+
+describe("Sidebar plugin view labels follow the UI language", () => {
+  const meeting = {
+    pluginId: "meeting",
+    extension: {
+      id: "meeting-control",
+      slot: "sidebar" as const,
+      kind: "embedded-module" as const,
+      displayName: "미팅",
+      title: "회의 기록",
+      entry: "dist/ui.js",
+      exportName: "PluginUi",
+      locales: { en: { displayName: "Meeting" }, ko: { displayName: "미팅" } },
+    },
+  };
+
+  it("names the extension in the active language and re-renders on a switch", async () => {
+    // The provider mirrors its locale into the process-wide runtime; the rest
+    // of this file renders under the suite's own, so put it back.
+    const suiteLocale = getLocale();
+    const { getByTestId, findByRole, queryByRole, switchLocale, restore } = renderSidebar(
+      { pluginViews: [meeting] },
+      { locale: "en" },
+    );
+    try {
+      fireEvent.click(getByTestId("sidebar-group-plugins"));
+      expect(await findByRole("menuitem", { name: /Meeting/ })).toBeTruthy();
+      expect(queryByRole("menuitem", { name: /미팅/ })).toBeNull();
+
+      switchLocale("ko");
+      if (!queryByRole("menuitem", { name: /미팅/ })) fireEvent.click(getByTestId("sidebar-group-plugins"));
+      expect(await findByRole("menuitem", { name: /미팅/ })).toBeTruthy();
+      expect(queryByRole("menuitem", { name: /Meeting/ })).toBeNull();
+
+      // A language the map does not name falls back to the entry's own text.
+      switchLocale("fr");
+      if (!queryByRole("menuitem", { name: /미팅/ })) fireEvent.click(getByTestId("sidebar-group-plugins"));
+      expect(await findByRole("menuitem", { name: /미팅/ })).toBeTruthy();
+    } finally {
+      restore();
+      cleanup();
+      setRuntimeLocale(suiteLocale);
+    }
+  });
+});
 
 describe("Sidebar project sessions", () => {
   it("does not fetch workspace roots when the parent supplies projects", async () => {

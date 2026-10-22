@@ -321,7 +321,7 @@ function normalizeRecord(value: unknown, maxHistoryMessages: number): A2ATaskRec
   }
   if (
     !isValidSessionId(value.childSessionId)
-    || maskSensitiveData(value.childSessionId).detections.length > 0
+    || !isSafeStructuralId(value.childSessionId)
   ) {
     return null;
   }
@@ -777,7 +777,7 @@ export class A2ATaskStore {
         !A2A_HANDLER_ID_PATTERN.test(input.handlerId)
         || !isValidSessionId(input.childSessionId)
         || maskSensitiveData(input.handlerId).detections.length > 0
-        || maskSensitiveData(input.childSessionId).detections.length > 0
+        || !isSafeStructuralId(input.childSessionId)
         || !isSafeStructuralId(input.contextId)
       ) {
         return { ok: false, reason: "invalid-task" };

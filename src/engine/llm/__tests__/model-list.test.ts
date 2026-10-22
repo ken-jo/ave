@@ -1347,15 +1347,15 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
   });
 });
 
-describe("Anthropic and Gemini /models — the vendors' own paged listings", () => {
+describe("vendor /models paged listings", () => {
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-  it("asks Anthropic with x-api-key and anthropic-version, following has_more by last_id", async () => {
+  it("uses x-api-key and anthropic-version, following has_more by last_id", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
       return url.searchParams.get("after_id") === "claude-sonnet-5-5"
         ? json({ data: [{ id: "claude-haiku-5-5", type: "model" }], has_more: false, first_id: "claude-haiku-5-5", last_id: "claude-haiku-5-5" })
-        : json({ data: [{ id: "claude-opus-5-5", type: "model" }, { id: "claude-sonnet-5-5", type: "model" }], has_more: true, first_id: "claude-opus-5-5", last_id: "claude-sonnet-5-5" });
+        : json({ data: [{ id: "claude-opus-5-5", type: "model", lifecycle: "active", display_name: "Flagship", max_input_tokens: 1_000_000, max_tokens: 128_000 }, { id: "retired-model", lifecycle: "retired" }, { id: "claude-sonnet-5-5", type: "model" }], has_more: true, first_id: "claude-opus-5-5", last_id: "claude-sonnet-5-5" });
     });
     const result = await listLlmModelsFromSettings(
       makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
@@ -1372,12 +1372,14 @@ describe("Anthropic and Gemini /models — the vendors' own paged listings", () 
       "https://api.anthropic.com/v1/models?limit=1000",
       "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-sonnet-5-5",
     ]);
+    expect(result.ok && result.modelEntries?.find((entry) => entry.id === "claude-opus-5-5"))
+      .toMatchObject({ name: "Flagship", contextLength: 1_000_000, maxOutputTokens: 128_000 });
     const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
     expect(headers).toMatchObject({ "x-api-key": "fixture-anthropic-key", "anthropic-version": "2023-06-01" });
     expect(headers).not.toHaveProperty("Authorization");
   });
 
-  it("asks Gemini with x-goog-api-key, keeps only generateContent models, and strips models/", async () => {
+  it("uses x-goog-api-key, keeps only generateContent models, and strips models/", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const url = new URL(String(input));
       return url.searchParams.get("pageToken") === "page-2"
@@ -1431,7 +1433,7 @@ describe("Anthropic and Gemini /models — the vendors' own paged listings", () 
     expect(result).toMatchObject({ ok: false, error: "invalid-model-list-response" });
   });
 
-  it("resolves Claude and Gemini to their vendors' own /models with no address saved", () => {
+  it("resolves native model-list endpoints with no address saved", () => {
     expect(isDefaultModelListEndpoint(undefined, "claude", "https://api.anthropic.com/v1/models")).toBe(true);
     expect(isDefaultModelListEndpoint(undefined, "gemini", "https://generativelanguage.googleapis.com/v1beta/models")).toBe(true);
   });

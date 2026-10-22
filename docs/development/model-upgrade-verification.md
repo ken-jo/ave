@@ -1,7 +1,7 @@
 # Model Upgrade Verification
 
 Status: Current procedure. Apply it whenever a change adds or replaces a model
-in the catalog snapshot, the host request-shape table, or a vendor's default
+in the catalog snapshot, request-control projection, or a vendor's default
 model.
 
 Static wiring can pass typecheck and unit tests while the live API disagrees:
@@ -15,10 +15,10 @@ procedure adds a live check before merge.
 |---|---|---|
 | Context window, prompt cap, output limit, input modalities, reasoning levels, pricing, deprecation status | Bundled catalog `src/core/model-catalog/bundled-snapshot.json`, generated from committed input in `scripts/model-catalog/` | `bun run generate:model-catalog -- --fetch` |
 | Vendor to catalog provider mapping | `CATALOG_PROVIDERS_BY_VENDOR` in `src/shared/model-catalog/provider-map.ts` | Hand edit; exhaustive over `LLMVendor`, so a new vendor fails typecheck until mapped |
-| Request shape the catalog does not state (interleaved numeric thinking; 1M needs no header on any model that has it) | `CLAUDE_REQUEST_SHAPES` and `claudeBetaHeaders` in `src/shared/model-host-policy.ts` | Hand edit |
-| Wire choice (Responses API vs Chat Completions) | `usesOpenAIResponsesWire` in `src/engine/llm/reasoning-plan.ts`: Azure always Responses; OpenAI Responses when the catalog says the model reasons | Catalog (no hand edit) |
+| Request controls | `claudeRequestShape` and `claudeBetaHeaders` in `src/shared/model-host-policy.ts`; protocol selection in `src/engine/llm/reasoning-plan.ts` | Read catalog or reported capabilities; never parse model versions |
+| Request protocol | `usesOpenAIResponsesWire` in `src/engine/llm/reasoning-plan.ts` | Reported control first, otherwise host protocol preference from catalog reasoning support |
 | Host fallbacks (128K window, output limit, TPM defaults) | `src/shared/model-host-policy.ts` | Hand edit |
-| Default model per vendor | `DEFAULT_MODEL` behind `LLM_VENDOR_DEFAULTS` in `src/shared/llm-vendor-defaults.ts` | Hand edit; a vendor with a catalog provider must default to a catalog chat model (test) |
+| Default model per vendor | `DEFAULT_MODEL` behind `LLM_VENDOR_DEFAULTS` in `src/shared/llm-vendor-defaults.ts` | Public defaults must resolve to catalog chat entries; existing account-scoped deployment defaults remain explicitly unclassified |
 | Model choices per vendor | `llmVendorModelOptions` in `src/shared/llm-vendor-defaults.ts`: the catalog's chat models for mapped vendors, hand-picked `modelOptions` only for unmapped presets | Catalog |
 
 A model the catalog does not know still runs, on the host fallback: a 128K
@@ -37,10 +37,11 @@ snapshot is what fresh installs, pinned runs, and tests see.
    `bun run generate:model-catalog -- --fetch` and commit both the snapshot and
    the input files. `bun run check:model-catalog` (part of `check:gate-core`
    and the pre-push hook) fails when the snapshot does not match its input.
-2. If the model needs a request-shape feature, add a row to
-   `CLAUDE_REQUEST_SHAPES`. Rows match id prefixes, so dated snapshots of the
-   same family are covered. The catalog never says that a large window requires
-   a header.
+2. Check the catalog's reasoning control: a numeric budget selects numeric
+   thinking; qualitative-only reasoning selects adaptive thinking. Interleaving
+   requires an explicit catalog declaration. Unknown entries receive no guessed
+   control. Check the endpoint report when it declares a protocol parameter.
+
 3. If you replace a vendor default, change `DEFAULT_MODEL` in the same change,
    and confirm the catalog lists the new id under the vendor's mapped provider
    without `status: "deprecated"` (see
@@ -102,7 +103,7 @@ not merge.
 - `bun run check:model-catalog` - `scripts/generate-model-catalog.ts --check`.
 - `src/core/model-catalog/__tests__/bundled-snapshot.test.ts` - snapshot equals
   generated input, every mapped provider present.
-- `src/shared/__tests__/model-host-policy.test.ts` - request-shape rows and
+- `src/shared/__tests__/model-host-policy.test.ts` - catalog request controls and
   header order.
 - `src/shared/model-catalog/__tests__/resolve.test.ts` - resolution and
   fallbacks.

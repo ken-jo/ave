@@ -1,9 +1,7 @@
 export const PERMISSION_REVIEWER_FRAMEWORK_VERSION = "permission-reviewer-framework/v2";
 
 /**
- * The model a reviewer starts on before the user picks one. OpenAI names
- * gpt-6-luna the replacement for gpt-4o-mini, which it deprecated on
- * 2026-10-14 (shutdown 2027-01-14).
+ * Default for a reviewer without a saved model selection.
  */
 export const DEFAULT_PERMISSION_REVIEWER_MODEL = "gpt-6-luna";
 

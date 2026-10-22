@@ -12,12 +12,8 @@
  * model's name is a 400 on a model that does not take it. Naming the entry the
  * endpoint serves (`llm.vendors.<vendor>.catalogModel`) supplies the levels.
  *
- * Request SHAPE stays out of this: whether a Claude model takes adaptive or
- * numeric thinking, whether numeric thinking interleaves with tools, and
- * whether an OpenAI model is reached over the Responses API are properties of
- * the wire the catalog does not describe (it lists effort levels for models
- * that take numeric thinking), so they are host rules in the request-shape
- * table (`shared/model-host-policy.ts`).
+ * Request controls come from the catalog or the endpoint report. Unknown
+ * entries send no inferred thinking control.
  *
  * The adapter applies {@link planReasoning}; the conversation loop records the
  * same function's answer in the turn summary, so the record is what was sent.
@@ -30,43 +26,31 @@ import {
 } from "../../shared/context-budget.js";
 import { isOpenAICompatibleVendor, isSelfHostedVllmVendor, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { claudeRequestShape } from "../../shared/model-host-policy.js";
-import { activeModelCatalog } from "../../shared/model-catalog/active.js";
-import { resolveCatalogKey } from "../../shared/model-catalog/resolve.js";
+import { allowsImplicitModelLimits } from "../../shared/model-catalog/resolve.js";
 
 /**
- * Whether a request goes over OpenAI's Responses API rather than Chat
- * Completions: every Azure Foundry request, and an OpenAI request for a model
- * that reasons. OpenAI's migration guide: "Starting with GPT-5.4, Chat
- * Completions does not support tool calling with `reasoning_effort` values
- * other than `none`", and its pro and codex models are served on Responses
- * only — so whether the model reasons, not the id's spelling, picks the wire
- * (a `gpt-5` substring sent every gpt-6 model to Chat Completions).
- *
- * `reasoning` is the route's resolved support (`resolveReasoningSupport`), in
- * its order:
- * - an endpoint report that names a control states the wire itself:
- *   `reasoning` is the Responses parameter, `reasoning_effort` the Chat
- *   Completions one;
- * - a catalog answer (the entry the user named, or the id where the route
- *   establishes it) says whether the model reasons.
- * With neither — a custom endpoint, where the catalog does not establish the
- * model's limits — the id's own catalog entry still picks the protocol: the
- * wire is what the id selects at OpenAI's API, not a limit of this host. An id
- * the catalog does not know goes over Chat Completions, the wire every OpenAI
- * chat model answers.
+ * Reported controls select their protocol. At a native API origin the host
+ * prefers the response protocol for reasoning-capable entries, where tools
+ * and effort can be sent together. Custom endpoints retain the chat protocol
+ * unless their report explicitly selects the response control.
  */
 export function usesOpenAIResponsesWire(
   vendor: string,
   model: string,
   reasoning: ResolvedReasoningSupport | undefined,
+  baseUrl?: string,
 ): boolean {
   if (vendor === "azure-foundry") return true;
   if (vendor !== "openai") return false;
   if (reasoning?.source === "endpoint-report" && reasoning.control !== undefined) {
     return reasoning.control === "reasoning";
   }
-  if (reasoning?.source === "model-catalog") return reasoning.supported;
-  return resolveCatalogKey(activeModelCatalog(), vendor, model)?.model.reasoning?.supported === true;
+  // A public model identity does not establish a custom endpoint's protocol.
+  if (!allowsImplicitModelLimits(vendor, baseUrl)) return false;
+  const nativeSupport = reasoning?.source === "model-catalog"
+    ? reasoning
+    : resolveReasoningSupport({ vendor, model, baseUrl });
+  return nativeSupport?.supported === true;
 }
 
 /**
@@ -150,35 +134,15 @@ export interface ReasoningPlan {
   readonly budgetTokens?: number;
   /**
    * Which knowledge decided: the catalog entry; the endpoint's `/models`
-   * report (a reasoning parameter or price); the request-shape table, for a
-   * Claude model whose reasoning the catalog does not state (adaptive or
-   * numeric thinking is a wire rule); or the host fallback, which sends no
-   * effort when nobody states the levels an OpenAI-family model accepts.
+   * report (a reasoning parameter or price); or the host fallback, which
+   * sends no inferred control when neither source describes one.
    */
   readonly source: ReasoningPlanSource;
   /**
-   * The effort the route would carry was dropped for this request: a tool turn
-   * on Chat Completions (see {@link chatCompletionsRejectsToolTurnEffort}).
+   * Historical records may name a control the host suppressed. New plans
+   * preserve explicitly reported controls instead of guessing restrictions.
    */
   readonly suppressed?: "chat-completions-tool-turn";
-}
-
-/**
- * Whether this request must not carry `reasoning_effort`: Chat Completions
- * answers 400 when a reasoning model (the catalog's flag) gets it together
- * with tools. The actual protocol
- * selected by the adapter decides this; changing an endpoint does not change
- * that protocol. The responses wire has no such restriction.
- * One rule for the request and for the turn's record of it.
- */
-function chatCompletionsRejectsToolTurnEffort(params: {
-  vendor: LLMVendor;
-  model: string;
-  hasTools: boolean;
-  reasoning: ResolvedReasoningSupport | undefined;
-}): boolean {
-  if (!params.hasTools || params.reasoning?.supported !== true) return false;
-  return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model, params.reasoning);
 }
 
 const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "azure-foundry"]);
@@ -205,13 +169,7 @@ export function planReasoning(params: {
 }): ReasoningPlan | undefined {
   if (!params.enableThinking) return undefined;
   const reasoning = routeReasoningSupport(params);
-  const plan = planReasoningLevel({ ...params, reasoning });
-  if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({
-    vendor: params.vendor, model: params.model, reasoning, ...params.request,
-  })) {
-    return { kind: "none", requestedEffort: plan.requestedEffort, source: plan.source, suppressed: "chat-completions-tool-turn" };
-  }
-  return plan;
+  return planReasoningLevel({ ...params, reasoning });
 }
 
 /**
@@ -246,7 +204,7 @@ function planReasoningLevel(params: {
       // The SDK sends `reasoningEffort` as `reasoning.effort` on the Responses
       // wire and as `reasoning_effort` on Chat Completions; the report has to
       // name that parameter.
-      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support) ? "reasoning" : "reasoning_effort";
+      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support, params.baseUrl) ? "reasoning" : "reasoning_effort";
       return support.control === wireParameter
         ? { kind: "openai-effort", requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" }
         : { kind: "none", requestedEffort, source: "endpoint-report" };
@@ -270,10 +228,12 @@ function planReasoningLevel(params: {
       : { kind: "endpoint-reasoning", control: support.control, requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" };
   }
   if (params.vendor === "claude") {
-    const source = entry?.reasoning !== undefined ? "model-catalog" : "request-shape";
-    if (!claudeRequestShape(params.model).adaptiveThinking) {
+    const source = "model-catalog";
+    const shape = claudeRequestShape(entry);
+    if (shape.numericThinking) {
       return { kind: "anthropic-numeric", budgetTokens: params.budgetTokens, source };
     }
+    if (!shape.adaptiveThinking) return { kind: "none", source: "host-fallback" };
     const requestedEffort = mapBudgetToEffort(params.budgetTokens);
     const effort = accepted ? nearestAcceptedEffort(requestedEffort, accepted) ?? requestedEffort : requestedEffort;
     return { kind: "anthropic-adaptive", requestedEffort, effort, source };

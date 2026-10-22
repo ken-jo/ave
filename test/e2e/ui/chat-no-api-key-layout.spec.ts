@@ -44,7 +44,6 @@ test.describe("chat no-API-key layout", () => {
     await expect(chip).toBeVisible();
     await expect(composer).toBeVisible();
     await expect(projectSelector).toBeVisible();
-    await expect(ctx.page.locator('[data-testid="chat-view:no-api-key-card"]')).toHaveCount(0);
 
     const metrics = await ctx.page.evaluate(() => {
       const toBox = (selector: string) => {

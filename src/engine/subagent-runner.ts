@@ -550,7 +550,8 @@ function isValidA2AWireId(value: unknown): value is string {
 function isValidA2AWireHandlerId(value: unknown): value is string {
   return isSafeA2AStructuralId(value)
     && value.length <= A2A_WIRE_ID_MAX_CHARS
-    && A2A_HANDLER_ID_PATTERN.test(value);
+    && A2A_HANDLER_ID_PATTERN.test(value)
+    && maskSensitiveData(value).detections.length === 0;
 }
 
 function isValidOptionalA2AWireText(

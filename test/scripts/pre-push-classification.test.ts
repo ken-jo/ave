@@ -6,7 +6,7 @@ import { TextDecoder } from "node:util";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { classifyDocumentationChanges, isCanonicalGitPath } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
-import { isIntegrationBranchRef } from "../../scripts/hooks/pre-push-ref-updates.mjs";
+import { isIntegrationBranchRef, parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import {
   selectFastSourceChecks,
   selectMessageCatalogChecks,
@@ -181,7 +181,7 @@ describe("pre-push classification precedence", () => {
       const historyStart = source.indexOf("function decodeUtf8Strict(");
       const historyEnd = source.indexOf("function classifyPrePushChanges(");
       const historyReason = runInNewContext(`${source.slice(historyStart, historyEnd)}; getPushedHistoryFullReason`, {
-        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks,
+        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
         spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
         captureOptional: (_command: string, args: string[]) => git(args),
       });
@@ -220,7 +220,7 @@ describe("pre-push classification precedence", () => {
       const historyStart = source.indexOf("function decodeUtf8Strict(");
       const historyEnd = source.indexOf("function classifyPrePushChanges(");
       const historyReason = runInNewContext(`${source.slice(historyStart, historyEnd)}; getPushedHistoryFullReason`, {
-        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks,
+        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
         spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
         captureOptional: (_command: string, args: string[]) => git(args),
       });

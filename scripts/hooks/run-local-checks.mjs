@@ -56,6 +56,9 @@
 // Every non-deletion update must name HEAD (an annotated tag through the
 // commit it peels to) and the tracked checkout must be clean before and after
 // checks. Deletion-only pushes have no tree to check.
+// Every pushed commit must also share history with the remote's default
+// branch (pre-push-shared-history.mjs): a clone of the history replaced on
+// 2026-10-17 would otherwise upload the old objects under a new branch name.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,12 +66,14 @@ import {
   chooseNewBranchBase,
   findMissingCandidateTips,
   isIntegrationBranchRef,
+  parseGitRawDiff,
   parsePrePushUpdates,
   parseRemoteHeads,
   readPrePushInput,
   selectBaseCandidates,
 } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
+import { checkSharedHistory } from "./pre-push-shared-history.mjs";
 import { withoutGitContext } from "../lib/git-process-environment.mjs";
 import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -543,6 +548,22 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
   return { sha: chosen.sha };
 }
 
+function runSharedHistoryGuard(repoRoot, parsedUpdates, remote, remoteLocation) {
+  const verdict = checkSharedHistory({
+    updates: parsedUpdates.updates,
+    remoteName: remote,
+    remoteLocation,
+    git: gitRunner(repoRoot, 15_000),
+    fetchGit: gitRunner(repoRoot, 120_000),
+  });
+  if (verdict.kind === "refuse") throw new Error(verdict.message);
+  console.log(
+    verdict.kind === "ok"
+      ? `[checks] shared history: ${verdict.message}`
+      : `[checks] shared-history guard skipped: ${verdict.message}`
+  );
+}
+
 function isFastForwardUpdate(repoRoot, remoteSha, localSha) {
   const result = spawnSync(
     commands.git,
@@ -578,22 +599,7 @@ function getChangedEntries(repoRoot, baseSha, localSha) {
 
   const decoded = decodeUtf8Strict(result.stdout);
   if (decoded === null) return null;
-  const fields = decoded.split("\0");
-  if (fields.at(-1) !== "") return null;
-  fields.pop();
-
-  const entries = [];
-  for (let index = 0; index < fields.length; ) {
-    const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[index++]);
-    if (!raw) return null;
-    const [, oldMode, newMode, status] = raw;
-    const pathCount = /^[RC]/.test(status) ? 2 : 1;
-    if (index + pathCount > fields.length) return null;
-    for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
-      entries.push({ oldMode, newMode, status, path: fields[index++] });
-    }
-  }
-  return entries;
+  return parseGitRawDiff(decoded);
 }
 
 function getGitBlob(repoRoot, objectId, relativePath) {
@@ -1092,13 +1098,14 @@ function runAppCommentOnlyChecks(dir) {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const { stage, repo, remoteLocation } = parseArgs(process.argv.slice(2));
+const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
 const prePushUpdates =
   stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
 let pushCheckout;
 if (stage === "pre-push") {
   runPushPolicyChecks(repoRoot, prePushUpdates);
+  runSharedHistoryGuard(repoRoot, prePushUpdates, remote, remoteLocation);
   pushCheckout = runPushCheckoutChecks(repoRoot, prePushUpdates);
 }
 

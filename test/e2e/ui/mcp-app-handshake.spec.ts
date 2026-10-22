@@ -33,11 +33,11 @@
  *     (McpAppView also receives the HTML from the IPC, not from the bridge).
  */
 import { test, expect } from "@playwright/test";
-import { _electron as electron } from "playwright";
 import { build } from "esbuild";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { launchElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -85,7 +85,7 @@ test.beforeAll(async () => {
 });
 
 test("real <webview> completes ui/initialize with an UNMODIFIED ext-apps App", async () => {
-  const app = await electron.launch({
+  const app = await launchElectron({
     args: [MAIN_OUT, "--no-sandbox"],
     timeout: 30_000,
   });

@@ -104,6 +104,14 @@ describe.skipIf(HOST === "win32")("executable location admission", () => {
     await expect(assertCodexExecutableLocation(fixture.executable)).rejects.toThrow("writable by another account");
   });
 
+  it("admits a sticky root-owned ancestor while rejecting a writable regular file", async () => {
+    const fixture = posixFixture();
+    fixture.metadata.set(fixture.root, { uid: 0, mode: 0o041777 });
+    await expect(assertCodexExecutableLocation(fixture.executable)).resolves.toBeUndefined();
+    fixture.metadata.set(fixture.executable, { uid: 0, mode: 0o101777 });
+    await expect(assertCodexExecutableLocation(fixture.executable)).rejects.toThrow("writable by another account");
+  });
+
   it("rejects a foreign-owned ancestor", async () => {
     const fixture = posixFixture();
     fixture.metadata.set(fixture.root, { uid: (process.getuid?.() ?? 0) + 1 });

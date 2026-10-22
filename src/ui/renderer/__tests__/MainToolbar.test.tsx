@@ -158,7 +158,7 @@ describe("MainToolbar", () => {
     // One window-level button cannot mean the right thing once more than one
     // conversation is on screen, so the control moved into the group header.
     renderWithProvider(defaultProps());
-    expect(screen.queryByTestId("chat-side-panel-toggle")).toBeNull();
+    expect(screen.queryByTestId(TEST_IDS.panePanelToggle)).toBeNull();
   });
 });
 

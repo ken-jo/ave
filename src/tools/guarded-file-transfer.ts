@@ -1,10 +1,11 @@
-import { constants, createReadStream, read, type Stats, type ReadStream } from "node:fs";
+import { constants, createReadStream, read, type BigIntStats, type ReadStream } from "node:fs";
 import { lstat, mkdir, open, opendir, realpath, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { sameFileIdentity, type FileIdentity } from "../lib/file-identity.js";
 import { errorMessage } from "../shared/error-message.js";
 import { ensureFileAccess } from "./file-access-policy.js";
 import { FileTransferError } from "./file-transfer-error.js";
@@ -13,14 +14,13 @@ import type { CopyPathInput, FileTransferLimits, TransferResult, TransferSession
 import type { ToolExecutionContext } from "./types.js";
 
 type EntryKind = "file" | "directory";
-type Identity = Pick<Stats, "dev" | "ino">;
-type Anchor = { path: string; identity: Identity };
+type Anchor = { path: string; identity: FileIdentity };
 type OwnedHandle = { handle: FileHandle; path: string; closing?: Promise<void> };
 type OwnedEntry = {
   relativePath: string;
   kind: EntryKind;
-  identity?: Identity;
-  parentIdentity: Identity;
+  identity?: FileIdentity;
+  parentIdentity: FileIdentity;
   explicit: boolean;
   handle?: OwnedHandle;
 };
@@ -45,14 +45,17 @@ function hasErrno(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-function sameIdentity(actual: Stats, expected: Identity): boolean {
-  return actual.dev === expected.dev && actual.ino === expected.ino;
+function sameSource(actual: BigIntStats, expected: BigIntStats): boolean {
+  return sameFileIdentity(actual, expected) && actual.size === expected.size &&
+    actual.mtimeNs === expected.mtimeNs && actual.ctimeNs === expected.ctimeNs &&
+    actual.nlink === expected.nlink && actual.mode === expected.mode;
 }
 
-function sameSource(actual: Stats, expected: Stats): boolean {
-  return sameIdentity(actual, expected) && actual.size === expected.size &&
-    actual.mtimeMs === expected.mtimeMs && actual.ctimeMs === expected.ctimeMs &&
-    actual.nlink === expected.nlink && actual.mode === expected.mode;
+function sourceSize(stats: BigIntStats): number {
+  if (stats.size < 0n || stats.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new FileTransferError("limit-exceeded", "Source size exceeds the supported transfer size");
+  }
+  return Number(stats.size);
 }
 
 function pathKey(path: string): string {
@@ -81,20 +84,20 @@ function assertAccess(path: string, context: ToolExecutionContext): void {
   if (denied) throw new FileTransferError("path-denied", denied.output);
 }
 
-function assertSupported(stats: Stats, path: string): void {
-  if ((!stats.isFile() && !stats.isDirectory()) || (stats.isFile() && stats.nlink > 1)) {
+function assertSupported(stats: BigIntStats, path: string): void {
+  if ((!stats.isFile() && !stats.isDirectory()) || (stats.isFile() && stats.nlink > 1n)) {
     throw new FileTransferError("unsupported-entry", `Unsupported source entry: ${path}`);
   }
 }
 
-async function sourceEndpoint(input: string, context: ToolExecutionContext): Promise<{ path: string; stats: Stats }> {
+async function sourceEndpoint(input: string, context: ToolExecutionContext): Promise<{ path: string; stats: BigIntStats }> {
   const lexical = resolvedInput(input, context);
   assertAccess(lexical, context);
-  const before = await lstat(lexical);
+  const before = await lstat(lexical, { bigint: true });
   assertSupported(before, lexical);
   const path = await realpath(lexical);
   assertAccess(path, context);
-  const stats = await lstat(path);
+  const stats = await lstat(path, { bigint: true });
   if (!sameSource(stats, before)) throw transferError(`Source changed during path resolution: ${lexical}`);
   return { path, stats };
 }
@@ -107,7 +110,7 @@ async function ancestorChain(path: string): Promise<Anchor[]> {
   }
   const chain: Anchor[] = [];
   for (const parent of paths) {
-    const stats = await lstat(parent);
+    const stats = await lstat(parent, { bigint: true });
     if (!stats.isDirectory()) throw transferError(`Parent is no longer an ordinary directory: ${parent}`);
     chain.push({ path: parent, identity: { dev: stats.dev, ino: stats.ino } });
   }
@@ -116,8 +119,8 @@ async function ancestorChain(path: string): Promise<Anchor[]> {
 
 async function verifyAnchors(anchors: readonly Anchor[]): Promise<void> {
   for (const anchor of anchors) {
-    const stats = await lstat(anchor.path);
-    if (!stats.isDirectory() || !sameIdentity(stats, anchor.identity)) {
+    const stats = await lstat(anchor.path, { bigint: true });
+    if (!stats.isDirectory() || !sameFileIdentity(stats, anchor.identity)) {
       throw transferError(`Parent directory changed: ${anchor.path}`);
     }
   }
@@ -145,7 +148,7 @@ class OwnedTransfer {
   readonly summary: TransferSummary;
   sourceAnchors: Anchor[] = [];
   destinationAnchors: Anchor[] = [];
-  sourceStats!: Stats;
+  sourceStats!: BigIntStats;
   firstFailure: unknown;
   accepting = true;
   stopping = false;
@@ -216,7 +219,7 @@ class OwnedTransfer {
     }
     // Inspect the entry itself before canonical resolution can follow a link.
     try {
-      await lstat(lexicalDestination);
+      await lstat(lexicalDestination, { bigint: true });
       throw new FileTransferError("destination-exists", `Destination already exists: ${lexicalDestination}`);
     } catch (error) {
       if (!hasErrno(error, "ENOENT")) throw error;
@@ -224,7 +227,7 @@ class OwnedTransfer {
     let parent: string;
     try {
       parent = await realpath(dirname(lexicalDestination));
-      if (!(await lstat(parent)).isDirectory()) throw new Error("Parent is not a directory");
+      if (!(await lstat(parent, { bigint: true })).isDirectory()) throw new Error("Parent is not a directory");
     } catch (error) {
       throw new FileTransferError("invalid-destination-parent", `Destination parent must be an existing directory: ${dirname(lexicalDestination)}`, { cause: error });
     }
@@ -266,7 +269,7 @@ class OwnedTransfer {
       const parentRelative = dirname(current.relativePath) === "." ? "" : dirname(current.relativePath);
       const parent = this.entries.get(ownedPathKey(join(this.summary.destinationPath, parentRelative)));
       if (!parent || parent.kind !== "directory" || !parent.identity ||
-          parent.identity.dev !== current.parentIdentity.dev || parent.identity.ino !== current.parentIdentity.ino) {
+          !sameFileIdentity(parent.identity, current.parentIdentity)) {
         throw transferError(`Owned parent is missing: ${this.entryPath(current)}`);
       }
       parents.unshift(parent);
@@ -280,9 +283,9 @@ class OwnedTransfer {
     for (const owned of this.ownedChain(entry)) {
       const path = this.entryPath(owned);
       assertAccess(path, this.context);
-      const stats = await lstat(path);
-      if (!owned.identity || !sameIdentity(stats, owned.identity) ||
-          (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1 : !stats.isDirectory())) {
+      const stats = await lstat(path, { bigint: true });
+      if (!owned.identity || !sameFileIdentity(stats, owned.identity) ||
+          (owned.kind === "file" ? !stats.isFile() || stats.nlink !== 1n : !stats.isDirectory())) {
         throw transferError(`Owned destination entry changed: ${path}`);
       }
     }
@@ -309,7 +312,7 @@ class OwnedTransfer {
         await mkdir(path, { mode: 0o700, recursive: false });
         this.ledger.push(entry);
         this.entries.set(ownedPathKey(path), entry);
-        const stats = await lstat(path);
+        const stats = await lstat(path, { bigint: true });
         if (!stats.isDirectory()) throw transferError(`Created directory changed: ${path}`);
         entry.identity = { dev: stats.dev, ino: stats.ino };
         this.summary.directories += 1;
@@ -318,8 +321,8 @@ class OwnedTransfer {
         entry.handle = this.ownHandle(handle, path);
         this.ledger.push(entry);
         this.entries.set(ownedPathKey(path), entry);
-        const stats = await handle.stat();
-        if (!stats.isFile() || stats.nlink !== 1) throw transferError(`Created file changed: ${path}`);
+        const stats = await handle.stat({ bigint: true });
+        if (!stats.isFile() || stats.nlink !== 1n) throw transferError(`Created file changed: ${path}`);
         entry.identity = { dev: stats.dev, ino: stats.ino };
       }
     } catch (error) {
@@ -432,7 +435,7 @@ class OwnedTransfer {
     }
   }
 
-  async verifySource(path: string, expected: Stats): Promise<void> {
+  async verifySource(path: string, expected: BigIntStats): Promise<void> {
     await verifyAnchors(this.sourceAnchors);
     assertAccess(path, this.context);
     const suffix = relative(this.summary.sourcePath, path);
@@ -441,12 +444,12 @@ class OwnedTransfer {
     }
     let cursor = this.summary.sourcePath;
     for (const component of suffix === "" ? [] : suffix.split(sep).slice(0, -1)) {
-      const stats = await lstat(cursor);
+      const stats = await lstat(cursor, { bigint: true });
       if (!stats.isDirectory()) throw transferError(`Source parent changed: ${cursor}`);
       cursor = join(cursor, component);
     }
-    if (suffix !== "" && !(await lstat(cursor)).isDirectory()) throw transferError(`Source parent changed: ${cursor}`);
-    const actual = await lstat(path);
+    if (suffix !== "" && !(await lstat(cursor, { bigint: true })).isDirectory()) throw transferError(`Source parent changed: ${cursor}`);
+    const actual = await lstat(path, { bigint: true });
     assertSupported(actual, path);
     if (!sameSource(actual, expected)) throw transferError(`Source changed during transfer: ${path}`);
   }
@@ -464,7 +467,7 @@ class OwnedTransfer {
 
   async createSourceStream(path: string): Promise<Readable> {
     const { path: lexical, stats: before } = await sourceEndpoint(path, this.context);
-    if (!before.isFile() || before.nlink > 1) throw new FileTransferError("unsupported-entry", `Unsupported source file: ${lexical}`);
+    if (!before.isFile() || before.nlink > 1n) throw new FileTransferError("unsupported-entry", `Unsupported source file: ${lexical}`);
     await this.verifySource(lexical, before);
     if (pathKey(lexical) === pathKey(this.summary.sourcePath) && !sameSource(before, this.sourceStats)) {
       throw transferError(`Source changed before opening: ${lexical}`);
@@ -473,8 +476,8 @@ class OwnedTransfer {
     const owned = this.ownHandle(await open(lexical, READ_FLAGS), lexical);
     let raw: ReadStream | undefined;
     try {
-      const snapshot = await owned.handle.stat();
-      if (!snapshot.isFile() || snapshot.nlink > 1 || !sameSource(snapshot, before)) throw transferError(`Source changed while opening: ${lexical}`);
+      const snapshot = await owned.handle.stat({ bigint: true });
+      if (!snapshot.isFile() || snapshot.nlink > 1n || !sameSource(snapshot, before)) throw transferError(`Source changed while opening: ${lexical}`);
       await this.verifySource(lexical, snapshot);
       this.check();
       raw = createReadStream(lexical, {
@@ -505,11 +508,11 @@ class OwnedTransfer {
           for await (const chunk of input) {
             transfer.check();
             bytesRead += (chunk as Buffer).length;
-            if (bytesRead > snapshot.size) throw transferError(`Source grew during transfer: ${lexical}`);
+            if (BigInt(bytesRead) > snapshot.size) throw transferError(`Source grew during transfer: ${lexical}`);
             yield chunk as Buffer;
           }
-          if (bytesRead !== snapshot.size) throw transferError(`Source size changed during transfer: ${lexical}`);
-          const after = await owned.handle.stat();
+          if (BigInt(bytesRead) !== snapshot.size) throw transferError(`Source size changed during transfer: ${lexical}`);
+          const after = await owned.handle.stat({ bigint: true });
           if (!sameSource(after, snapshot)) throw transferError(`Open source changed during transfer: ${lexical}`);
           await transfer.verifySource(lexical, snapshot);
           transfer.check();
@@ -566,8 +569,8 @@ class OwnedTransfer {
           for (const owned of this.ownedChain(entry)) {
             const observedPath = this.entryPath(owned);
             assertAccess(observedPath, this.context);
-            const stats = await lstat(observedPath);
-            if (owned === entry || !owned.identity || !stats.isDirectory() || !sameIdentity(stats, owned.identity)) {
+            const stats = await lstat(observedPath, { bigint: true });
+            if (owned === entry || !owned.identity || !stats.isDirectory() || !sameFileIdentity(stats, owned.identity)) {
               if (residualPaths.length < REPORT_PATH_LIMIT && !residualPaths.includes(observedPath)) residualPaths.push(observedPath);
               break;
             }
@@ -630,6 +633,8 @@ class OwnedTransfer {
   }
 }
 
+export { OwnedTransfer as _OwnedTransferForTest };
+
 /** Exclusively creates one destination and rolls back only entries it still owns.
  * Path rechecks detect replacements; they do not close the final ancestor syscall race.
  */
@@ -654,12 +659,12 @@ export async function copyPath(input: CopyPathInput, context: ToolExecutionConte
       const check = (): void => {
         if (session.signal.aborted) throw new FileTransferError("cancelled", "File transfer was cancelled");
       };
-      const copyFile = async (sourcePath: string, destinationRelative: string, before: Stats): Promise<void> => {
+      const copyFile = async (sourcePath: string, destinationRelative: string, before: BigIntStats): Promise<void> => {
         const body = await session.openSourceFile(sourcePath);
-        await session.sink.file(destinationRelative, body, { expectedBytes: before.size, ownerExecutable: (before.mode & 0o100) !== 0 });
-        if (!sameSource(await lstat(sourcePath), before)) throw transferError(`Source changed during copy: ${sourcePath}`);
+        await session.sink.file(destinationRelative, body, { expectedBytes: sourceSize(before), ownerExecutable: (before.mode & 0o100n) !== 0n });
+        if (!sameSource(await lstat(sourcePath, { bigint: true }), before)) throw transferError(`Source changed during copy: ${sourcePath}`);
       };
-      const visit = async (sourcePath: string, destinationRelative: string, before: Stats): Promise<void> => {
+      const visit = async (sourcePath: string, destinationRelative: string, before: BigIntStats): Promise<void> => {
         check();
         assertAccess(sourcePath, context);
         assertSupported(before, sourcePath);
@@ -667,12 +672,12 @@ export async function copyPath(input: CopyPathInput, context: ToolExecutionConte
         await session.sink.directory(destinationRelative);
         check();
         assertAccess(sourcePath, context);
-        if (!sameSource(await lstat(sourcePath), before)) throw transferError(`Source directory changed before opening: ${sourcePath}`);
+        if (!sameSource(await lstat(sourcePath, { bigint: true }), before)) throw transferError(`Source directory changed before opening: ${sourcePath}`);
         const directory = await opendir(sourcePath, { bufferSize: 1 });
         try {
           while (true) {
             check();
-            if (!sameSource(await lstat(sourcePath), before)) throw transferError(`Source directory changed: ${sourcePath}`);
+            if (!sameSource(await lstat(sourcePath, { bigint: true }), before)) throw transferError(`Source directory changed: ${sourcePath}`);
             const entry = await directory.read();
             if (!entry) break;
             check();
@@ -682,16 +687,16 @@ export async function copyPath(input: CopyPathInput, context: ToolExecutionConte
             if (childRelative.split("/").length > session.limits.maxDepth || Buffer.byteLength(childRelative) > session.limits.maxRelativePathBytes) {
               throw new FileTransferError("limit-exceeded", "Source tree exceeds the path or depth limit");
             }
-            await visit(childSource, childRelative, await lstat(childSource));
+            await visit(childSource, childRelative, await lstat(childSource, { bigint: true }));
           }
-          if (!sameSource(await lstat(sourcePath), before)) throw transferError(`Source directory changed: ${sourcePath}`);
+          if (!sameSource(await lstat(sourcePath, { bigint: true }), before)) throw transferError(`Source directory changed: ${sourcePath}`);
         } finally {
           try { await directory.close(); } catch (error) {
             throw new FileTransferCleanupError(`Source directory close failed: ${sourcePath}`, error);
           }
         }
       };
-      const current = await lstat(session.sourcePath);
+      const current = await lstat(session.sourcePath, { bigint: true });
       if (!sameSource(current, source.stats)) throw transferError("Source changed before copying");
       await visit(session.sourcePath, "", current);
     });

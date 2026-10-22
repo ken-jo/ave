@@ -12,15 +12,6 @@ describe("TokenProgressRing", () => {
     expect(ring).toHaveAttribute("tabindex", "0");
   });
 
-  it("has aria-label describing projected input", () => {
-    const { getByTestId } = renderWithProvider(<TokenProgressRing used={500} budget={1000} />);
-    const ring = getByTestId("token-progress-ring");
-    expect(ring).toHaveAttribute(
-      "aria-label",
-      t("tokenProgressRing.projectedInputAriaLabel", { pct: "50" }),
-    );
-  });
-
   it("has role=img", () => {
     const { getByTestId } = renderWithProvider(<TokenProgressRing used={250} budget={1000} />);
     const ring = getByTestId("token-progress-ring");

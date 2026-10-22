@@ -26,12 +26,10 @@ import {
   selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { messages } from "../../src/i18n/messages/index.js";
+import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 const root = resolve(import.meta.dirname, "../..");
 
-function modified(path: string) {
-  return { status: "M", oldMode: "100644", newMode: "100644", path };
-}
 function added(path: string) {
   return { status: "A", oldMode: "000000", newMode: "100644", path };
 }

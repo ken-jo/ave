@@ -87,7 +87,7 @@ does not prove that the command or task contents are read-only.
 - With no verdict at all, the fallback is still HIGH (fail closed).
 
 **6. Persistence.**
-- "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. The identity is the Store B working-directory identity of the project root (sha256 of the case-folded canonical realpath). The project root is the git root of the session cwd, or the cwd itself outside a repository, so subdirectory sessions share rules. The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
+- "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. Identity, repository discovery, the home boundary, and retained legacy rules follow [Project Rule Scope](../architecture/permission-policy-design.md#project-rule-scope). The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
 - "Everywhere" writes the user-global scope, which is Store A (`<ave home>/permissions.json`) extended in place.
 - Deny-always uses the same files.
 - Session scope is the conversation session id, in memory.

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { A2A_ROLE_AGENT, type A2APart } from "../../shared/a2a.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
+import { isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import {
   A2A_CAUSAL_CONTEXT_METADATA_KEY,
   type A2AAgentSendResult,
@@ -89,7 +89,7 @@ describe("agent_send host boundary", () => {
     const generatedMessageId = sendAgentMessage.mock.calls[0]?.[0].messageId ?? "";
     expect(generatedMessageId)
       .toMatch(UUID_PATTERN);
-    expect(maskSensitiveData(generatedMessageId).detections).toEqual([]);
+    expect(isSafeStructuralId(generatedMessageId)).toBe(true);
     expect(tool.modelVisible).toBe(false);
     expect(runtime.cancelQuestionWait).not.toHaveBeenCalled();
     expect(tool.parallelSafe).toBeUndefined();

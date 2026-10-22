@@ -24,6 +24,7 @@ import {
 } from "../adapter.js";
 import { mapBudgetToEffort } from "../../reasoning-plan.js";
 import { claudeRequestShape } from "../../../../shared/model-host-policy.js";
+import { catalogModelFor } from "../../../../shared/context-budget.js";
 import { extractSignatureSafely } from "../signature-shim.js";
 
 
@@ -44,20 +45,11 @@ describe("Claude helpers — budget → thinking effort mapping", () => {
     expect(mapBudgetToEffort(32_000)).toBe("max");
   });
 
-  it("separates adaptive-capable versions from numeric-only versions and release dates", () => {
-    expect(claudeRequestShape("claude-sonnet-4-5").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-sonnet-4-6").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-opus-4.6").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-opus-4").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-haiku-4").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-sonnet-4-20250514").adaptiveThinking).toBe(false);
-    // Future-proof: claude-5.x and later are picked up without code changes.
-    expect(claudeRequestShape("claude-sonnet-5-20270101").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-5-opus").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-3-5-sonnet-latest").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-3-opus-20240229").adaptiveThinking).toBe(false);
-  });
-});
+  it("reads the reasoning control from catalog metadata without inferring a future version", () => {
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-haiku-4-5")?.model).numericThinking).toBe(true);
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-sonnet-5-5")?.model).adaptiveThinking).toBe(true);
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-sonnet-99")?.model).adaptiveThinking).toBe(false);
+  });});
 
 // ────────────────────────────────────────────────────────────────
 // Unit: signature shim (#12433 log-and-skip)
@@ -466,7 +458,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
 
     await collect(
       provider.streamTurn({
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5-5",
         systemPrompt: "sys",
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
@@ -490,7 +482,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
       },
     });
     // Adaptive thinking interleaves automatically, and 1M is the default
-    // window with no beta header (Anthropic context-windows page).
+    // window with no beta header.
     expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
@@ -540,7 +532,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     vi.doUnmock("@ai-sdk/anthropic");
   });
 
-  it("claude-3.x + thinking uses budget-based enabled thinking", async () => {
+  it("an unclassified model carries no inferred thinking control", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -575,11 +567,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.providerOptions).toEqual({
-      anthropic: {
-        thinking: { type: "enabled", budgetTokens: 5000 },
-      },
-    });
+    expect(callArg.providerOptions).toBeUndefined();
     // No tools → no beta header even with thinking.
     expect(callArg.headers).toBeUndefined();
 

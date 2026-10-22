@@ -1,3 +1,5 @@
+import type { CatalogModel } from "./model-catalog/types.js";
+
 /**
  * Host-owned model policy: the values Ave decides for itself rather than
  * reads from a model's description (issue #2501;
@@ -70,62 +72,28 @@ export function hostTpmDefault(vendor: string, model: string): number | undefine
 }
 
 // ── Request shape ────────────────────────────────────────────────────────────
-//
-// Facts about the Anthropic wire, not about the model's capacity: the catalog
-// carries no interleaving flag for Anthropic. Each row names the model ids it
-// applies to and the request features it turns on. No row asks for the 1M
-// window: Anthropic's context-windows page says 1M is the default on every
-// model that has it, with no beta header.
 
-const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-
-interface ClaudeRequestShapeRow {
-  /** Matched against the model id as the route names it. */
-  readonly ids: RegExp;
-  /** Numeric thinking may span tool calls with the `interleaved-thinking-2025-05-14` beta header. */
-  readonly interleavedNumericThinking?: true;
-}
-
-const CLAUDE_REQUEST_SHAPES: readonly ClaudeRequestShapeRow[] = [
-  // The numeric-thinking generations that support a budget across tool calls.
-  // A release date or `-latest` does not change a generation's capabilities;
-  // Sonnet 4.1 does not exist, so it is not listed.
-  { ids: /^claude-opus-4(?:-(?:0|1|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-  { ids: /^claude-sonnet-4(?:-(?:0|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-];
-
-/** The request-shape features the Anthropic wire carries for a model. */
+/** The request controls the selected catalog entry explicitly describes. */
 export interface ClaudeRequestShape {
-  /**
-   * Thinking is sent as `{type: "adaptive"}` with an effort, not as a numeric
-   * budget: version 4.6 onward. A release date after the major version is not
-   * a minor version.
-   */
   readonly adaptiveThinking: boolean;
+  readonly numericThinking: boolean;
   readonly interleavedNumericThinking: boolean;
 }
 
-export function claudeRequestShape(model: string): ClaudeRequestShape {
-  const rows = CLAUDE_REQUEST_SHAPES.filter((row) => row.ids.test(model));
+export function claudeRequestShape(model: CatalogModel | undefined): ClaudeRequestShape {
+  const reasoning = model?.reasoning;
+  const numericThinking = reasoning?.supported === true && reasoning.budgetTokens !== undefined;
   return {
-    adaptiveThinking: takesAdaptiveThinking(model),
-    interleavedNumericThinking: rows.some((row) => row.interleavedNumericThinking === true),
+    // A numeric budget remains usable on models offering both controls.
+    // Qualitative-only reasoning uses adaptive thinking. Unknown entries do
+    // not acquire request capabilities from the spelling of their ids.
+    adaptiveThinking: reasoning?.supported === true && !numericThinking && Boolean(reasoning.effort?.length),
+    numericThinking,
+    interleavedNumericThinking: numericThinking && model?.interleaved === true,
   };
 }
 
-function takesAdaptiveThinking(model: string): boolean {
-  const match = model.toLowerCase().match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/u);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
-/**
- * The `anthropic-beta` values a Claude request carries: interleaved thinking
- * when this request sends numeric thinking with tools to a generation that
- * supports it.
- */
+/** The beta header is requested only for explicitly declared interleaving. */
 export function claudeBetaHeaders(request: { interleavedThinking: boolean }): string[] {
-  return request.interleavedThinking ? [INTERLEAVED_THINKING_BETA] : [];
+  return request.interleavedThinking ? ["interleaved-thinking-2025-05-14"] : [];
 }

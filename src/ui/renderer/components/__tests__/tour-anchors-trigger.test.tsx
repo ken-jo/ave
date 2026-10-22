@@ -32,6 +32,7 @@ import {
 } from "../../onboarding/default-tour-scenarios.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { en as tourEn, ko as tourKo } from "../../../../i18n/messages/generated/defaultTourScenarios.js";
+import { retiredPluginIdsIn } from "../../../../../scripts/lib/retired-plugin-ids.mjs";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "" };
 
@@ -319,19 +320,18 @@ describe("Tutorial-C PR #983 follow-up: ⌘+Shift+/ trigger", () => {
 });
 
 describe("host tour registry carries no scenario for a dissolved extension", () => {
-  // sampleassistant was dissolved into per-extension alerts and agent-hub was
-  // archived; the host must not keep tours that walk a user through their UI.
-  // A plugin-specific scenario in the host is the branch AGENTS.md forbids.
-  const DISSOLVED = /work[-_]?assistant|agent[-_]?hub/i;
-
+  // The assistant extension was dissolved into per-extension alerts and the
+  // board extension was archived; the host must not keep tours that walk a user
+  // through their UI. A plugin-specific scenario in the host is the branch
+  // AGENTS.md forbids. Their ids come from the retired-name gate's one list.
   it("no scenario id, anchor, title or body names a dissolved extension", () => {
     for (const [id, scenario] of Object.entries(DEFAULT_TOUR_SCENARIOS)) {
-      expect(id).not.toMatch(DISSOLVED);
-      expect(scenario.title).not.toMatch(DISSOLVED);
+      expect(retiredPluginIdsIn(id)).toEqual([]);
+      expect(retiredPluginIdsIn(scenario.title)).toEqual([]);
       for (const step of scenario.steps) {
-        expect(step.anchorSelector).not.toMatch(DISSOLVED);
-        expect(step.title).not.toMatch(DISSOLVED);
-        expect(step.body).not.toMatch(DISSOLVED);
+        expect(retiredPluginIdsIn(step.anchorSelector)).toEqual([]);
+        expect(retiredPluginIdsIn(step.title)).toEqual([]);
+        expect(retiredPluginIdsIn(step.body)).toEqual([]);
       }
     }
   });

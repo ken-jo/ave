@@ -271,18 +271,29 @@ describe("request fields the catalog decides", () => {
     }
   });
 
+  it("keeps a custom endpoint on its declared chat protocol despite a named catalog identity", async () => {
+    const body = await sentBody("openai", "deployment-alias", {
+      baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-6.1-sol",
+      thinkingBudgetTokens: 16_000, tools: true,
+    });
+    expect(body.messages).toBeDefined();
+    expect(body.input).toBeUndefined();
+    expect(body.reasoning_effort).toBe("high");
+  });
+
   it("records the reasoning a tool turn on Chat Completions actually sends", async () => {
     // The endpoint's report names `reasoning_effort`, the Chat Completions
     // parameter, for an id the catalog does not list: the request goes over
-    // Chat Completions, which answers 400 to reasoning_effort with tools.
+    // the explicitly declared chat protocol without guessing tool restrictions.
     const model = "chat-alias-fixture";
     const reasoning = { supported: true as const, source: "endpoint-report" as const, control: "reasoning_effort" as const };
     const request = { hasTools: true };
     const plan = planReasoning({ vendor: "openai", model, reasoning, enableThinking: true, budgetTokens: 16_000, request });
-    expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
+    expect(plan).toMatchObject({ kind: "openai-effort", requestedEffort: "high", effort: "high" });
+    expect(plan).not.toHaveProperty("suppressed");
     const withTools = await sentBody("openai", model, { thinkingBudgetTokens: 16_000, tools: true, modelCapabilities: { reasoning } });
     expect(withTools.messages).toBeDefined();
-    expect(withTools.reasoning_effort).toBeUndefined();
+    expect(withTools.reasoning_effort).toBe("high");
     // Without tools the same route carries the effort, and the plan says so.
     expect(planReasoning({ vendor: "openai", model, reasoning, enableThinking: true, budgetTokens: 16_000, request: { hasTools: false } }))
       .toMatchObject({ kind: "openai-effort", effort: "high" });
@@ -365,7 +376,7 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
     expect(body).not.toHaveProperty("reasoning_effort");
   });
 
-  it("sends an OpenAI-family effort over the wire whose parameter the report names", async () => {
+  it("sends effort over the protocol whose parameter the report names", async () => {
     // A custom endpoint does not establish the model; its report does, and the
     // parameter it names is the wire: `reasoning_effort` is Chat Completions,
     // `reasoning` is Responses.
@@ -467,7 +478,7 @@ describe("the output limit a chat round records is the one it sends", () => {
       llmSettings: round });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // The declaration names a reasoning model, which OpenAI serves tool turns
+    // The declaration names a reasoning model served with tools
     // with effort only over Responses.
     expect(body.input).toBeDefined();
     expect(body.reasoning).toMatchObject({ effort: "high" });
