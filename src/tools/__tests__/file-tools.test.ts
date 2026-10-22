@@ -1003,7 +1003,8 @@ describe("apply_patch tool", () => {
     expect(existsSync(join(workDir, "README.md"))).toBe(true);
   });
 
-  it("refuses two sections that reach one file through a symlink", async () => {
+  // Windows file symlinks need Developer Mode or elevation (EPERM); a junction cannot alias a file.
+  it.skipIf(process.platform === "win32")("refuses two sections that reach one file through a symlink", async () => {
     await readFirst("src/a.ts");
     symlinkSync(join(workDir, "src", "a.ts"), join(workDir, "alias.ts"));
     const result = await new ApplyPatchTool().execute(patchOf(
