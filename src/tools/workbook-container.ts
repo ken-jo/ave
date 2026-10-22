@@ -45,6 +45,9 @@ function refuse(message: string): never {
   throw new TableDocumentError("corrupt-document", message);
 }
 
+const ATTRIBUTE_PATTERN = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/y;
+const TRAILING_SPACE = /\s*$/y;
+
 /** Scans tags without expanding entities or allocating any document objects. */
 function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
   let xml: string;
@@ -95,12 +98,12 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
     const selfClosing = match[4] === "/";
     const attributes = new Map<string, string>();
     const remainder = match[3]!;
-    const attributePattern = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/gy;
     let position = 0;
     while (position < remainder.length) {
-      if (!remainder.slice(position).trim()) break;
-      attributePattern.lastIndex = position;
-      const attribute = attributePattern.exec(remainder);
+      TRAILING_SPACE.lastIndex = position;
+      if (TRAILING_SPACE.test(remainder)) break;
+      ATTRIBUTE_PATTERN.lastIndex = position;
+      const attribute = ATTRIBUTE_PATTERN.exec(remainder);
       if (!attribute) refuse("Invalid XML attribute");
       const key = attribute[1]!;
       // Attribute namespaces do not separate expansion controls for the
@@ -108,7 +111,7 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
       const effectiveName = key.slice(key.lastIndexOf(":") + 1).toLowerCase();
       if (attributes.has(effectiveName)) refuse("Duplicate XML attribute name");
       attributes.set(effectiveName, attribute[2]!.slice(1, -1));
-      position = attributePattern.lastIndex;
+      position = ATTRIBUTE_PATTERN.lastIndex;
     }
     if (closing) {
       if (selfClosing || attributes.size > 0 || stack.pop() !== name) refuse("Unbalanced XML tags");
