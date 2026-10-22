@@ -30,7 +30,8 @@
       "src/tools/__tests__/executor-rationale-batch.test.ts",
       "src/tools/pipeline/__tests__/",
       "src/engine/turn/__tests__/rationale-real-stack.integration.test.ts",
-      "src/engine/turn/__tests__/trust-origin.test.ts"
+      "src/engine/turn/__tests__/trust-origin.test.ts",
+      "src/tools/__tests__/workbook-parser-workspace.test.ts"
     ],
     "contract": [
       "src/contract/",
@@ -70,6 +71,7 @@
       "src/tools/__tests__/file-tools.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
       "src/tools/__tests__/preview-document-process.test.ts",
+      "src/tools/__tests__/table-document-reader.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
       "test/scripts/preview-document-bundle.test.ts",
       "test/scripts/protocol-client-check.test.ts"

@@ -103,6 +103,7 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
   if (!statSync(entryPath).isFile()) throw new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]);
   const child = spawnManaged(process.execPath, [
     `--max-old-space-size=${PREVIEW_DOCUMENT_LIMITS.maxOldSpaceMb}`,
+    "--disallow-code-generation-from-strings",
     entryPath,
     format, String(sheetIndex), String(bytes.length),
   ], {

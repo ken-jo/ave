@@ -1,5 +1,6 @@
 import { copyFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { workbookDocumentProgramPlugin } from "../../../scripts/lib/workbook-document-program.mjs";
 import {
   buildMainBoundaryBundle,
   repositoryRoot,
@@ -17,6 +18,7 @@ export async function buildPreviewDocumentRuntime(): Promise<string> {
     },
     outdir,
     splitting: true,
+    plugins: [workbookDocumentProgramPlugin(repositoryRoot())],
   });
   copyFileSync(join(outdir, "preview-document-child-main.mjs"), join(outdir, "preview-document-child-main.js"));
   return outdir;

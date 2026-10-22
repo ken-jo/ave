@@ -7,7 +7,7 @@ import {
   TableDocumentError,
   parseTableDocument,
   type TableDocumentLimits,
-} from "../table-document-reader.js";
+} from "../../__tests__/support/table-document-reader.js";
 import { verifyZipInflateLimits } from "../zip-inflate-guard.js";
 import { offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
 

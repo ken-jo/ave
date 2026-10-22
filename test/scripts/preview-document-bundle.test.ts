@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAIN_BUNDLE_EXTERNALS } from "../../scripts/lib/main-bundle-externals.mjs";
+import { compileWorkbookDocumentProgram, workbookDocumentProgramPlugin } from "../../scripts/lib/workbook-document-program.mjs";
 
 const { MAIN_BUNDLE_ROOT_FILES, isSafeMainBundleManifestPath } = createRequire(import.meta.url)(
   "../../scripts/lib/main-bundle-budget.mjs",
@@ -20,6 +21,7 @@ describe("document child bundle boundary", () => {
       outdir: ".cache/document-bundle-probe", write: false, metafile: true,
       bundle: true, splitting: true, format: "esm", platform: "node", target: "node22",
       preserveSymlinks: true, external: [...MAIN_BUNDLE_EXTERNALS], logLevel: "silent",
+      plugins: [workbookDocumentProgramPlugin(root)],
       chunkNames: "chunks/[name]-[hash]",
     });
     const inputs = result.metafile!.inputs;
@@ -33,9 +35,14 @@ describe("document child bundle boundary", () => {
         if (!imported.external) pending.push(imported.path);
       }
     }
-    const forbidden = /(?:table-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse)\//;
+    const forbidden = /(?:table-document-reader|bounded-workbook-reader|workbook-parser-workspace|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse|quickjs-emscripten-core)\//;
     expect([...visited].filter((path) => forbidden.test(path))).toEqual([]);
-    expect(Object.keys(inputs).some((path) => /node_modules\/xlsx\//.test(path))).toBe(true);
+    expect(Object.keys(inputs).some((path) => /node_modules\/xlsx\//.test(path))).toBe(false);
+    const program = await compileWorkbookDocumentProgram(root);
+    expect(program.inputs.some((path: string) => /node_modules\/xlsx\//.test(path))).toBe(true);
+    expect(program.inputs.some((path: string) => path.endsWith("workbook-document-parser.ts"))).toBe(true);
+    expect(program.watchFiles.every((path: string) => resolve(path) === path)).toBe(true);
+    expect(program.watchFiles).toContain(resolve(root, "src/tools/workbook-document-parser.ts"));
     expect(MAIN_BUNDLE_ROOT_FILES).toContain("preview-document-child-main.js");
     const child = Object.entries(result.metafile!.outputs)
       .find(([, output]) => output.entryPoint === "src/tools/preview-document-child-main.ts");

@@ -108,7 +108,7 @@ describe("isolated table parsing", () => {
   });
 
   it("reports heap exhaustion clearly without retaining fatal diagnostics", async () => {
-    childProgram("const retained=[]; for (;;) retained.push(new Array(100000).fill('cell')); ");
+    childProgram("const retained=[]; for (;;) retained.push(new Array(4000000).fill('cell')); ");
     const spawned = vi.spyOn(managedChildren, "spawnManaged");
     const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
     try {

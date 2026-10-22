@@ -17,7 +17,7 @@
  */
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
 // The SAME external boundary the shipped entry is built against, so the child
 // bundled here is the child that ships.
 import { MAIN_BUNDLE_EXTERNALS } from "../../../../scripts/lib/main-bundle-externals.mjs";
@@ -51,6 +51,7 @@ export async function buildMainBoundaryBundle(options: {
   readonly entryPoints: Record<string, string>;
   readonly outdir: string;
   readonly splitting: boolean;
+  readonly plugins?: readonly Plugin[];
 }): Promise<void> {
   await build({
     absWorkingDir: repositoryRoot(),
@@ -69,6 +70,7 @@ export async function buildMainBoundaryBundle(options: {
     minifySyntax: true,
     minifyWhitespace: true,
     external: [...MAIN_BUNDLE_EXTERNALS],
+    plugins: [...(options.plugins ?? [])],
     logLevel: "silent",
     banner: {
       js:

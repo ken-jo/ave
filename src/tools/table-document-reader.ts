@@ -15,8 +15,6 @@
  */
 import { Readable } from "node:stream";
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
-import * as cptable from "xlsx/dist/cpexcel.full.mjs";
 
 import {
   PREVIEW_DOCUMENT_LIMITS,
@@ -25,21 +23,13 @@ import {
   type PreviewTableDocument,
   type PreviewTableSheet,
 } from "../shared/preview-document.js";
-import { errorMessage } from "../shared/error-message.js";
-import { prepareWorkbookContainer } from "./workbook-container.js";
+import { readWorkbookDocument } from "./bounded-workbook-reader.js";
+import { clipTableCell } from "./table-display.js";
 import { TableDocumentError } from "./table-document-error.js";
 
 export { TableDocumentError } from "./table-document-error.js";
 
-// Legacy .xls stores text in Windows code pages (cp949, cp1252, …).
-XLSX.set_cptable(cptable);
-
 export type TableDocumentLimits = Readonly<PreviewDocumentLimits>;
-
-function clipCell(value: string, limits: TableDocumentLimits): { text: string; clipped: boolean } {
-  if (value.length <= limits.maxCellChars) return { text: value, clipped: false };
-  return { text: `${value.slice(0, limits.maxCellChars)}…`, clipped: true };
-}
 
 /** Decode only requested chunks; an aborted preview leaves the suffix untouched. */
 function* decodeDelimitedChunks(bytes: Uint8Array, chunkBytes: number): Generator<string> {
@@ -234,7 +224,7 @@ async function parseDelimited(
           }
           let clipped = false;
           const cells = row.slice(0, limits.maxColumns).map((cell) => {
-            const value = clipCell(cell, limits);
+            const value = clipTableCell(cell, limits);
             clipped ||= value.clipped;
             return value.text;
           });
@@ -263,110 +253,6 @@ async function parseDelimited(
   };
 }
 
-function workbookError(err: unknown): TableDocumentError {
-  const message = errorMessage(err);
-  if (/password|encrypt/i.test(message)) return new TableDocumentError("encrypted", message);
-  return new TableDocumentError("corrupt-document", message);
-}
-
-function parseWorkbook(
-  bytes: Buffer,
-  format: "xlsx" | "xls" | "ods",
-  sheetIndex: number,
-  limits: TableDocumentLimits,
-): Omit<PreviewTableDocument, "format"> {
-  const checkedBytes = prepareWorkbookContainer(bytes, format, limits);
-  const common: XLSX.ParsingOptions = {
-    type: "buffer",
-    cellFormula: false,
-    cellHTML: false,
-    cellStyles: false,
-    bookVBA: false,
-  };
-  let allNames: string[];
-  try {
-    allNames = XLSX.read(checkedBytes, { ...common, bookSheets: true }).SheetNames;
-  } catch (err) {
-    throw workbookError(err);
-  }
-  const sheetNames = allNames.slice(0, limits.maxSheets).map((name) => clipCell(name, limits).text);
-  const sourceName = allNames[sheetIndex];
-  const name = sheetNames[sheetIndex];
-  if (sourceName === undefined || name === undefined) {
-    throw new TableDocumentError("sheet-not-found", `sheet ${sheetIndex} of ${sheetNames.length}`);
-  }
-  let worksheet: XLSX.WorkSheet | undefined;
-  try {
-    // Sparse storage avoids allocating empty rows before a late used range.
-    // Absolute sheetRows would silently discard e.g. the only cell at A10001.
-    // The child heap/deadline contains the parse; the window below is relative.
-    worksheet = XLSX.read(checkedBytes, { ...common, dense: false, sheets: [sourceName] }).Sheets[sourceName];
-  } catch (err) {
-    throw workbookError(err);
-  }
-  if (!worksheet) throw new TableDocumentError("corrupt-document", `sheet "${name}" has no data part`);
-
-  const shown = worksheet["!ref"];
-  const full = worksheet["!fullref"] ?? shown;
-  let rows: string[][] = [];
-  let firstRow = 0;
-  let firstColumn = 0;
-  let totalRows = 0;
-  let totalColumns = 0;
-  let cellsTruncated = false;
-  if (shown && full) {
-    const fullRange = XLSX.utils.decode_range(full);
-    const shownRange = XLSX.utils.decode_range(shown);
-    firstRow = fullRange.s.r;
-    firstColumn = fullRange.s.c;
-    totalRows = fullRange.e.r - fullRange.s.r + 1;
-    totalColumns = fullRange.e.c - fullRange.s.c + 1;
-    const width = Math.min(totalColumns, limits.maxColumns);
-    const rowLimit = Math.min(limits.maxRows, Math.floor(limits.maxReturnedCells / width));
-    const range = {
-      s: fullRange.s,
-      e: {
-        r: Math.min(shownRange.e.r, fullRange.s.r + rowLimit - 1),
-        c: fullRange.s.c + width - 1,
-      },
-    };
-    const raw = rowLimit > 0 ? XLSX.utils.sheet_to_json<string[]>(worksheet, {
-      header: 1,
-      raw: false,
-      defval: "",
-      blankrows: true,
-      range,
-    }) : [];
-    rows = raw.map((row) => {
-      const cells: string[] = [];
-      for (let c = 0; c < width; c += 1) {
-        const value = row[c];
-        const clipped = clipCell(value === undefined || value === null ? "" : String(value), limits);
-        cellsTruncated ||= clipped.clipped;
-        cells.push(clipped.text);
-      }
-      return cells;
-    });
-  }
-  return {
-    sheetNames,
-    totalSheets: allNames.length,
-    sheetsTruncated: allNames.length > sheetNames.length,
-    sheet: {
-      index: sheetIndex,
-      name,
-      rows,
-      firstRow,
-      firstColumn,
-      totalRows,
-      totalColumns,
-      rowsTruncated: totalRows > rows.length,
-      columnsTruncated: totalColumns > limits.maxColumns,
-      cellsTruncated,
-    },
-  };
-}
-
 /**
  * Parse `bytes` as `format` and return sheet `sheetIndex` as a bounded grid.
  * Throws {@link TableDocumentError} for every refusal; the caller maps
@@ -389,5 +275,5 @@ export async function parseTableDocument(
     const sheet = await parseDelimited(bytes, format, limits);
     return { format, sheetNames: [sheet.name], totalSheets: 1, sheetsTruncated: false, sheet };
   }
-  return { format, ...parseWorkbook(bytes, format, sheetIndex, limits) };
+  return { format, ...await readWorkbookDocument(bytes, format, sheetIndex, limits) };
 }

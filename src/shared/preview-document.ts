@@ -45,6 +45,10 @@ export interface PreviewDocumentLimits {
   startupTimeoutMs: number;
   parseTimeoutMs: number;
   maxOldSpaceMb: number;
+  initialWorkbookMemoryBytes: number;
+  maxWorkbookMemoryBytes: number;
+  maxWorkbookHeapBytes: number;
+  maxWorkbookStackBytes: number;
   maxResponseBytes: number;
   maxConcurrentParses: number;
   frameCheckIntervalMs: number;
@@ -79,6 +83,11 @@ export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.f
   parseTimeoutMs: 3_000,
   /** Child managed old-space limit; native buffers are bounded separately. */
   maxOldSpaceMb: 256,
+  /** Workbook code, values and array buffers share a fixed linear workspace. */
+  initialWorkbookMemoryBytes: 16 * 1024 * 1024,
+  maxWorkbookMemoryBytes: 128 * 1024 * 1024,
+  maxWorkbookHeapBytes: 112 * 1024 * 1024,
+  maxWorkbookStackBytes: 512 * 1024,
   /** Serialized child response; larger grids are refused. */
   maxResponseBytes: 4 * 1024 * 1024,
   maxConcurrentParses: 1,

@@ -16,6 +16,8 @@ export const MAIN_BUNDLE_EXTERNALS = [
   // would break the prebuild `.node` resolution the same way better-sqlite3
   // / ASRT would — keep it external so it ships as a real node_modules entry.
   "node-pty",
+  // Interpreter bindings load their binary relative to the installed package.
+  "@jitl/quickjs-wasmfile-release-sync",
   // The decoder resolves its native addon and codec libraries from real packages.
   "sharp",
   "@sentry/electron",

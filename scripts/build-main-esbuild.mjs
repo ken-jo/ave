@@ -21,6 +21,7 @@ import {
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
+import { workbookDocumentProgramPlugin } from "./lib/workbook-document-program.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,7 @@ const buildOptions = {
   minifyIdentifiers: true,
   keepNames: true,
   external: MAIN_BUNDLE_EXTERNALS,
+  plugins: [workbookDocumentProgramPlugin(repoRoot)],
   logLevel: "info",
   // Inlined CommonJS modules reference CJS-only `require` directly; the ESM
   // bundle doesn't define it, so we shim it from `import.meta.url`. We

@@ -34,6 +34,8 @@
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
+        // Compiled into a bounded interpreter program by the document build plugin.
+        "src/tools/workbook-document-parser.ts",
         "scripts/smoke-live-model.mjs",
         "scripts/smoke-live-app.mjs",
         // Loaded by the installer packager through build.beforePack.
