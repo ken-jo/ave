@@ -121,7 +121,7 @@ export interface SessionTabBindingMetadata {
   readonly paneSessionId?: string;
 }
 
-export interface SessionTabBinding {
+interface SessionTabBinding {
   readonly sessionId: string;
   /** Renderer slot ids. A direct child's tab also appears under its existing parent identity. */
   readonly browserTabIds: readonly string[];
