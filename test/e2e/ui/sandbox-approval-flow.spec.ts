@@ -197,7 +197,7 @@ test.describe("Sandbox approval flow", () => {
     await testInfo.attach("explicit-host-approval", { body: await dock.screenshot(), contentType: "image/png" });
   });
 
-  test("PermissionsTab shows the exact permission decisions section", async () => {
+  test("PermissionsTab lists exact permission decisions in the unified rules list", async () => {
     // Pre-populate an approval record
     writeFileSync(
       resolve(tempHome, ".ave", "permissions", "user-approvals.json"),
@@ -217,12 +217,9 @@ test.describe("Sandbox approval flow", () => {
 
     const settingsPage = await openInlineSettings(app, page, "permissions");
 
-    // Permissions tab is selected by initialTab. Match the first section title
-    // rather than the empty-state copy, which deliberately shares the same
-    // exact-decision phrase.
-    const approvalsHeadingPrefix = t("permissionsTab.approvalsTitle", { count: 0 }).split("(")[0].trim();
+    // Exact decisions share the unified permission rules section with scoped rules.
     await expect(
-      settingsPage.locator(`:text(${JSON.stringify(approvalsHeadingPrefix)})`).first(),
+      settingsPage.getByText(t("permissionsTab.unifiedRulesTitle"), { exact: true }).first(),
     ).toBeVisible({ timeout: 5000 });
   });
 });
