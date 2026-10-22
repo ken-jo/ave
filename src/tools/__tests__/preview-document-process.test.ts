@@ -48,7 +48,13 @@ afterAll(async () => {
   await cleanupTmpDir(bundleDir);
   // The ordinary filesystem sees the archive as a file during removal.
   const originalFs = createRequire(import.meta.url)("original-fs") as typeof import("node:fs");
-  originalFs.rmSync(`${bundleDir}.asar`, { force: true });
+  try {
+    originalFs.rmSync(`${bundleDir}.asar`, { force: true });
+  } catch (error) {
+    // Electron keeps an archive it has read open without share-delete for the
+    // life of this worker, so Windows refuses the removal until it exits.
+    if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+  }
 });
 
 function childProgram(body: string): void {
