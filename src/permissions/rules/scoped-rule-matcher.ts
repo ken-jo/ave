@@ -79,6 +79,7 @@ export function evaluateScopedRules(
   let paths: ReturnType<typeof editPaths> = [];
   let destination: URL | undefined;
   let floor: string | undefined;
+  let grantable = true;
   try {
     if (subject.kind === "edit") {
       paths = editPaths(subject, root);
@@ -88,8 +89,10 @@ export function evaluateScopedRules(
       if (!["http:", "https:"].includes(destination.protocol) || destination.username || destination.password) {
         floor = "Network target requires explicit approval";
       }
-    } else if (!subject.nonDestructive) {
-      floor = "MCP tools without an explicit non-destructive annotation require approval";
+    } else {
+      // Owner decision (#69, option B): an unannotated MCP tool follows its
+      // mode; only an MCP allow rule cannot grant it (see below).
+      grantable = subject.nonDestructive;
     }
   } catch {
     return { floor: "Cannot resolve permission rule target" };
@@ -116,6 +119,7 @@ export function evaluateScopedRules(
     if (hit) return { decision: action, pattern: hit.pattern, floor };
   }
   if (floor) return { floor };
+  if (!grantable) return {};
   // A public host grant does not answer the separate private-network opt-in.
   if (subject.kind === "webfetch" && subject.privateNetwork) return {};
   const allowed = rules.filter((rule) => rule.action === "allow" && rule.tier !== "read");

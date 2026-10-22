@@ -168,13 +168,14 @@ describe("scoped permission rules", () => {
     })).not.toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it("matches server and original tool identity, with explicit annotation floors", () => {
+  it("matches server and original tool identity, and grants only annotated tools", () => {
     const rules = [allow("Mcp(catalog:lookup)")];
     expect(evaluate(mcp(), rules).decision).toBe("allow");
     expect(evaluate(mcp("remove"), rules).decision).toBeUndefined();
     expect(evaluate({ ...mcp(), server: "catalog-copy" } as ScopedRuleSubject, rules).decision).toBeUndefined();
     expect(evaluate(mcp("remove"), [allow("Mcp(catalog)")]).decision).toBe("allow");
-    expect(evaluate(mcp("lookup", false), rules)).toMatchObject({ floor: expect.any(String) });
+    // An unannotated tool is not a floor: the allow rule just does not cover it.
+    expect(evaluate(mcp("lookup", false), rules)).toEqual({});
     expect(evaluate(mcp("lookup", false), [{ pattern: "Mcp(catalog)", action: "deny" }]).decision).toBe("deny");
     expect(evaluate(mcp(), []).decision).toBeUndefined();
   });
@@ -185,10 +186,19 @@ describe("scoped permission rules", () => {
     await manager.addRulePersist(allow("Mcp(catalog)"), { kind: "user" });
     await manager.ensureProjectRulesLoaded(project);
     manager.setMode("allow");
-    for (const subject of [edit(".env"), edit(join(directory, "ave-home", "permissions.json")), mcp("lookup", false),
-      network(`https://example.com/?token=${"sk-" + "a".repeat(50)}`)]) {
-      const source = subject.kind === "mcp" ? "mcp" : "builtin";
-      expect(manager.checkDetailed("operation", source, subject.kind === "edit" ? "write" : "network", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "ask", forceModal: true });
+    for (const subject of [edit(".env"), edit(join(directory, "ave-home", "permissions.json"))]) {
+      expect(manager.checkDetailed("operation", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "ask", forceModal: true });
+    }
+    // An unannotated MCP tool and a screened request follow the mode; the
+    // matching allow rule never answers them.
+    const ungranted = [mcp("lookup", false), network(`https://example.com/?token=${"sk-" + "a".repeat(50)}`)];
+    for (const mode of ["allow", "default"] as const) {
+      manager.setMode(mode);
+      for (const subject of ungranted) {
+        const result = manager.checkDetailed("operation", subject.kind === "mcp" ? "mcp" : "builtin", "network", null, { ruleSubject: subject, projectRulesCwd: project });
+        expect(result.layer, `${mode} ${subject.kind}`).not.toBe(3);
+        expect(result.decision, `${mode} ${subject.kind}`).toBe(mode === "allow" ? "allow" : "ask");
+      }
     }
     manager.setMode("strict");
     expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject: edit("src/a.ts"), projectRulesCwd: project }).decision).toBe("ask");
@@ -369,7 +379,9 @@ describe("scoped permission rules", () => {
     if (!permitted) expect(result?.content).toContain("new permission decision");
   });
 
-  it.each(["none", "same-origin", "other-origin"] as const)("pins a mandatory per-call approval without a host rule: %s", async (redirect) => {
+  // A screened request without a host rule is an ordinary mode ask, not a
+  // mandatory per-call one, so its redirects follow like any approved fetch.
+  it.each(["none", "same-origin", "other-origin"] as const)("asks for a screened request without a host rule through the mode: %s", async (redirect) => {
     let requests = 0;
     const transport = vi.fn(async () => {
       requests += 1;
@@ -385,8 +397,8 @@ describe("scoped permission rules", () => {
       { id: "request-floor", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
     ], { sessionId: "request-floor", permissionContext: userPermissionContext() }));
     expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" ? 2 : 1);
-    expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin");
+    expect(transport).toHaveBeenCalledTimes(redirect === "none" ? 1 : 2);
+    expect(result?.is_error === true, result?.content).toBe(false);
   });
 
   it.each(["none", "same-origin", "same-origin-sensitive", "other-origin"] as const)("honors an initial per-call approval and keeps redirect checks: %s", async (redirect) => {

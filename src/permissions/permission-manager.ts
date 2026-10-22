@@ -1564,7 +1564,8 @@ export class PermissionManager {
       ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, this.rules, projectRules)
       : undefined;
     const networkScreen = scopedSubject?.kind === "webfetch" ? screenEgressRequest({ url: scopedSubject.url, allowPrivateNetwork: scopedSubject.privateNetwork }) : undefined;
-    const scopedFloor = scopedRules?.floor ?? (networkScreen?.outcome === "screened" ? `Network request requires approval: ${networkScreen.signal}` : undefined);
+    // A screened request is not a floor: it only keeps a WebFetch grant from covering it.
+    const scopedFloor = scopedRules?.floor;
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
@@ -1781,7 +1782,7 @@ export class PermissionManager {
 
     // 3. Allow rules
     let result: PermissionCheckResult | undefined;
-    if (scopedRules?.decision === "allow") {
+    if (scopedRules?.decision === "allow" && networkScreen?.outcome !== "screened") {
       result = { decision: "allow", reason: t("be_permissionManager.allowRuleReason", { pattern: scopedRules.pattern ?? "" }), layer: 3 };
     }
     if (shellRuleEvaluation?.decision === "allow") {

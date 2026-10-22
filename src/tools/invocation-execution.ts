@@ -714,7 +714,8 @@ export async function executeAuthorizedToolInvocation(
           // One approval covers ordinary redirects within that origin;
           // restrictions and fresh sensitive requests still apply per hop.
           if (rules.decision === "deny"
-            || (!initialApproval && (rules.floor || screen.outcome === "screened"))
+            || (!initialApproval && rules.floor)
+            || (!initial && (scopedFetch || hasPerCallApproval) && screen.outcome === "screened")
             || (rules.decision === "ask" && !approvedOrigin)
             || ((scopedFetch || hasPerCallApproval) && !initial && rules.decision !== "allow" && !approvedOrigin)) {
             throw new Error("Network destination requires a new permission decision");
