@@ -25,6 +25,27 @@ const XML_TARGET_RELATIONSHIP_TYPES = new Set([
   "http://purl.oclc.org/ooxml/officeDocument/relationships/comments",
   "http://schemas.microsoft.com/office/2017/10/relationships/threadedComment",
 ]);
+// Parts the decoder reads by content type for any requested sheet; themes and
+// calculation chains stay unread with the options parseWorkbook passes.
+const EXTERNAL_LINK_CONTENT_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml",
+  "application/vnd.ms-excel.externalLink",
+]);
+const SHARED_PART_CONTENT_TYPES = new Set([
+  ...EXTERNAL_LINK_CONTENT_TYPES,
+  WORKBOOK_CONTENT_TYPE,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml",
+  "application/vnd.ms-excel.sharedStrings",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
+  "application/vnd.ms-excel.styles",
+  "application/vnd.openxmlformats-package.core-properties+xml",
+  "application/vnd.openxmlformats-officedocument.custom-properties+xml",
+  "application/vnd.openxmlformats-officedocument.extended-properties+xml",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml",
+  "application/vnd.ms-excel.sheetMetadata",
+  "application/vnd.ms-excel.person+xml",
+]);
+const ODS_DECODED_PARTS = ["meta-inf/manifest.xml", "content.xml", "styles.xml", "meta.xml"];
 
 interface XmlTag {
   name: string;
@@ -122,6 +143,32 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
   if (stack.length > 0) refuse("Unclosed XML tags");
 }
 
+/** Native byte search over every XML part, read for this request or not. */
+function refuseXmlDeclarations(bytes: Buffer): void {
+  for (let offset = bytes.indexOf("<!"); offset >= 0; offset = bytes.indexOf("<!", offset + 2)) {
+    if (bytes[offset + 2] !== 0x2d || bytes[offset + 3] !== 0x2d) {
+      refuse("Package XML declarations and text sections are unsupported");
+    }
+  }
+}
+
+/** The decoder looks parts up case-insensitively and with either separator. */
+function partKey(name: string): string {
+  return name.toLowerCase().replaceAll("\\", "/");
+}
+
+/** The decoder's resolution of a relationship target against its source part. */
+function resolveTarget(target: string, source: string): string {
+  if (target.startsWith("/")) return target.slice(1);
+  const result = source.split("/");
+  result.pop();
+  for (const step of target.split("/")) {
+    if (step === "..") result.pop();
+    else if (step !== ".") result.push(step);
+  }
+  return result.join("/");
+}
+
 function requiredPart(parts: ReadonlyMap<string, Buffer>, name: string): Buffer {
   const bytes = parts.get(name);
   if (!bytes) refuse(`Missing package part: ${name}`);
@@ -147,11 +194,19 @@ function scanRelationships(bytes: Buffer, onRelationship: (relationship: Package
       refuse("Invalid or duplicate package relationship");
     }
     ids.add(id);
+    // The decoder unescapes entities in targets; a raw target must name the same part.
+    if (mode === "Internal" && target.includes("&")) refuse("Package relationship target contains an entity");
     onRelationship({ id, type, target, internal: mode === "Internal" });
   });
 }
 
-function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<string>): void {
+/** Validates the package and returns the keys of the parts decoded for `sheetIndex`. */
+function validateXlsx(
+  parts: ReadonlyMap<string, Buffer>,
+  names: ReadonlySet<string>,
+  xmlParts: ReadonlyMap<string, Buffer>,
+  sheetIndex: number,
+): Set<string> {
   const lowerNames = new Set([...names].map((name) => name.toLowerCase()));
   if (["meta-inf/manifest.xml", "objectdata.xml", "index/document.iwa"].some((name) => lowerNames.has(name))) {
     refuse("Package declares conflicting document families");
@@ -174,6 +229,15 @@ function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<str
     }
   });
   if (contentTypes.get("/xl/workbook.xml") !== WORKBOOK_CONTENT_TYPE) refuse("Package does not declare a spreadsheet workbook");
+  const decoded = new Set<string>();
+  for (const [path, type] of contentTypes) {
+    if (!SHARED_PART_CONTENT_TYPES.has(type)) continue;
+    // A binary-typed part under any name but .bin is still decoded as XML.
+    if (!/\.xml$/i.test(path)) refuse("Decoded package part has a non-XML name");
+    const part = path.replace(/^\//, "");
+    decoded.add(partKey(part));
+    if (EXTERNAL_LINK_CONTENT_TYPES.has(type)) decoded.add(partKey(part.replace(/([^/]*)$/, "_rels/$1.rels")));
+  }
   const rootRelationships = requiredPart(parts, "_rels/.rels");
   let workbookLinked = false;
   scanRelationships(rootRelationships, (relationship) => {
@@ -194,7 +258,7 @@ function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<str
     }
   });
   const relationships = requiredPart(parts, "xl/_rels/workbook.xml.rels");
-  const linked = new Set<string>();
+  const linked = new Map<string, string>();
   scanRelationships(relationships, (relationship) => {
     if (!WORKSHEET_RELATIONSHIP_TYPES.has(relationship.type)) return;
     if (!relationship.internal) refuse("Invalid worksheet relationship");
@@ -203,9 +267,25 @@ function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<str
       || contentTypes.get(`/${path}`) !== WORKSHEET_CONTENT_TYPE) {
       refuse("Worksheet package part is missing or ambiguous");
     }
-    linked.add(relationship.id);
+    linked.set(relationship.id, path);
   });
   if (sheetIds.size === 0 || [...sheetIds].some((id) => !linked.has(id))) refuse("Workbook has no complete worksheet relationships");
+
+  // Only the requested worksheet, its relationships and its comments are decoded.
+  const sheetId = [...sheetIds][sheetIndex];
+  const sheet = sheetId === undefined ? undefined : linked.get(sheetId);
+  if (sheet === undefined) return decoded;
+  const sheetRelationships = sheet.replace(/([^/]*)$/, "_rels/$1.rels");
+  decoded.add(partKey(sheet)).add(partKey(sheetRelationships));
+  const relationshipBytes = xmlParts.get(partKey(sheetRelationships));
+  if (relationshipBytes) {
+    scanRelationships(relationshipBytes, (relationship) => {
+      if (relationship.internal && XML_TARGET_RELATIONSHIP_TYPES.has(relationship.type)) {
+        decoded.add(partKey(resolveTarget(relationship.target, sheet)));
+      }
+    });
+  }
+  return decoded;
 }
 
 function repeatCount(tag: XmlTag, attribute: string, cap: number): number {
@@ -300,20 +380,24 @@ export function prepareWorkbookContainer(
   bytes: Buffer,
   format: "xlsx" | "xls" | "ods",
   limits: Readonly<PreviewDocumentLimits>,
+  sheetIndex: number,
 ): Buffer {
   if (format === "xls") {
     if (!CFB_MAGIC.every((byte, index) => bytes[index] === byte)) refuse("Document is not a compound binary workbook");
     return bytes;
   }
   const parts = new Map<string, Buffer>();
+  const xmlParts = new Map<string, Buffer>();
   const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
-    // Every XML part the decoder may read, not just the validated package
-    // parts, must expose the same plain tag stream to it.
     if (!XML_PART_NAME.test(name)) return;
-    const relationships = /\.rels$/i.test(name);
+    // No XML part carries a DTD or text section; the full tag scan below is
+    // kept for the parts decoded for this request, sparing unread worksheets.
+    refuseXmlDeclarations(data);
+    xmlParts.set(partKey(name), data);
+    if (!/\.rels$/i.test(name)) return;
     scanXml(data, (tag) => {
-      if (relationships && !tag.closing && tag.localName === "Relationship"
+      if (!tag.closing && tag.localName === "Relationship"
         && XML_TARGET_RELATIONSHIP_TYPES.has(tag.attributes.get("type") ?? "")
         && !XML_PART_NAME.test(tag.attributes.get("target") ?? "")) refuse("XML relationship targets a non-XML part");
     });
@@ -323,7 +407,12 @@ export function prepareWorkbookContainer(
     if (verdict.reason === "corrupt") refuse(verdict.detail);
     throw new TableDocumentError("archive-too-large", `${verdict.reason}: ${verdict.detail}`);
   }
-  if (format === "xlsx") validateXlsx(parts, new Set(verdict.entryNames));
+  let decoded: Iterable<string> = ODS_DECODED_PARTS;
+  if (format === "xlsx") decoded = validateXlsx(parts, new Set(verdict.entryNames), xmlParts, sheetIndex);
   else validateOds(parts, limits);
+  for (const key of decoded) {
+    const part = xmlParts.get(key);
+    if (part) scanXml(part, () => {});
+  }
   return verdict.canonicalBytes;
 }

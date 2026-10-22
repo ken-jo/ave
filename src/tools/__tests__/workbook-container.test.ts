@@ -37,9 +37,14 @@ function row(attributes = "", cells = '<table:table-cell office:value-type="stri
   return `<table:table-row${attributes}>${cells}</table:table-row>`;
 }
 
-function refusal(bytes: Buffer, format: "xlsx" | "xls" | "ods", overrides: Partial<PreviewDocumentLimits> = {}): TableDocumentError {
+function refusal(
+  bytes: Buffer,
+  format: "xlsx" | "xls" | "ods",
+  overrides: Partial<PreviewDocumentLimits> = {},
+  sheetIndex = 0,
+): TableDocumentError {
   try {
-    prepareWorkbookContainer(bytes, format, { ...PREVIEW_DOCUMENT_LIMITS, ...overrides });
+    prepareWorkbookContainer(bytes, format, { ...PREVIEW_DOCUMENT_LIMITS, ...overrides }, sheetIndex);
   } catch (error) {
     if (error instanceof TableDocumentError) return error;
     throw error;
@@ -52,7 +57,7 @@ describe("workbook container validation", () => {
     ["xlsx", "xlsx"], ["ods", "ods"], ["xls", "biff8"],
   ] as const)("preserves ordinary %s workbook data", (format, bookType) => {
     const original = workbook(bookType);
-    const checked = prepareWorkbookContainer(original, format, PREVIEW_DOCUMENT_LIMITS);
+    const checked = prepareWorkbookContainer(original, format, PREVIEW_DOCUMENT_LIMITS, 0);
     const parsed = XLSX.read(checked, { type: "buffer" });
     expect(XLSX.utils.sheet_to_json(parsed.Sheets.Data!, { header: 1 })).toEqual([["name", "value"], ["item", 2]]);
     if (format !== "xls") expect(checked).not.toBe(original);
@@ -143,7 +148,7 @@ describe("workbook container validation", () => {
         "http://purl.oclc.org/ooxml/officeDocument/relationships/",
       )));
     }
-    const checked = prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS);
+    const checked = prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS, 0);
     expect(XLSX.utils.sheet_to_json(XLSX.read(checked, { type: "buffer" }).Sheets.Data!, { header: 1 }))
       .toEqual([["name", "value"], ["item", 2]]);
   });
@@ -152,12 +157,38 @@ describe("workbook container validation", () => {
     "refuses XML declarations in decoder-read part %s",
     (part) => {
       const archive = new AdmZip(workbook("xlsx", true));
-      expect(prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS)).toBeInstanceOf(Buffer);
+      expect(prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
       const xml = archive.readAsText(part);
       archive.updateFile(part, Buffer.from(xml.replace("?>", '?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>')));
       expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
     },
   );
+
+  it("fully scans the requested worksheet and only byte-checks the others", () => {
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["first"]]), "First");
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["second"]]), "Second");
+    const archive = new AdmZip(XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer);
+    const part = "xl/worksheets/sheet2.xml";
+    const xml = archive.readAsText(part);
+    // Duplicate effective attribute names fail only the full tag scan.
+    archive.updateFile(part, Buffer.from(xml.replace("</worksheet>", '<x:junk a="1" A="2"/></worksheet>')));
+    const bytes = archive.toBuffer();
+    expect(XLSX.read(prepareWorkbookContainer(bytes, "xlsx", PREVIEW_DOCUMENT_LIMITS, 0), { type: "buffer", sheets: [0] })
+      .Sheets.First).toBeDefined();
+    expect(refusal(bytes, "xlsx", {}, 1).code).toBe("corrupt-document");
+
+    archive.updateFile(part, Buffer.from(xml.replace("?>", '?><!DOCTYPE x [<!ENTITY e "e">]>')));
+    expect(refusal(archive.toBuffer(), "xlsx", {}, 0).code).toBe("corrupt-document");
+
+    archive.updateFile(part, Buffer.from(xml));
+    archive.addFile("xl/comments1.xml", Buffer.from('<comments a="1" A="2"/>'));
+    archive.addFile("xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/></Relationships>',
+    ));
+    expect(prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS, 1)).toBeInstanceOf(Buffer);
+    expect(refusal(archive.toBuffer(), "xlsx", {}, 0).code).toBe("corrupt-document");
+  });
 
   it("refuses XML parts that a non-XML name would keep from the scan", () => {
     const archive = new AdmZip(workbook("xlsx", true));
@@ -198,7 +229,7 @@ describe("workbook container validation", () => {
       data: entry.getData(),
       descriptor: "signed" as const,
     })));
-    const checked = prepareWorkbookContainer(bytes, "xlsx", PREVIEW_DOCUMENT_LIMITS);
+    const checked = prepareWorkbookContainer(bytes, "xlsx", PREVIEW_DOCUMENT_LIMITS, 0);
     expect(checked.length).toBeLessThan(bytes.length);
     expect(new AdmZip(checked).getEntries().every((entry) => (entry.header.flags & 8) === 0)).toBe(true);
     expect(XLSX.read(checked, { type: "buffer" }).SheetNames).toEqual(["Data"]);
@@ -208,7 +239,7 @@ describe("workbook container validation", () => {
 describe("expanded spreadsheet bounds", () => {
   it("accepts bounded repeated rows and cells", () => {
     const bytes = odsContent(table(row(' table:number-rows-repeated="3"', '<table:table-cell table:number-columns-repeated="2"><text:p>x</text:p></table:table-cell>')));
-    expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS)).toBeInstanceOf(Buffer);
+    expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
   });
 
   it.each([
@@ -254,7 +285,7 @@ describe("expanded spreadsheet bounds", () => {
 
   it("ignores comments and refuses unsupported XML declarations", () => {
     const bytes = odsContent(table(`<!--${row(' table:number-rows-repeated="1000000000"')}-->${row()}`));
-    expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS)).toBeInstanceOf(Buffer);
+    expect(prepareWorkbookContainer(bytes, "ods", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
     const archive = new AdmZip(bytes);
     archive.updateFile("content.xml", Buffer.from(`<!DOCTYPE x [<!ENTITY n "1000000000">]>${archive.readAsText("content.xml")}`));
     expect(refusal(archive.toBuffer(), "ods").code).toBe("corrupt-document");
