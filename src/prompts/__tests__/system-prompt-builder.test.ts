@@ -16,7 +16,7 @@ import { SystemPromptBuilder, type SystemPromptBuilderDeps } from "../system-pro
 import type { MemoryManager, PromptMemorySource } from "../../memory/memory-manager.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { makePromptMemorySource, makeSystemPromptBuilder } from "./test-helpers.js";
-import { t } from "../../i18n/index.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
 
 function makeMemoryBuilder(memoryIndex: string): SystemPromptBuilder {
   return new SystemPromptBuilder({
@@ -499,6 +499,8 @@ describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-cou
     expect(prompt).toContain("같은 상태로 다시 보내지 마세요");
     expect(prompt).toContain("오류로 처리됩니다");
     expect(makeSystemPromptBuilder().build()).toContain("호출 순서는 도구 설명을 따르세요");
+    expect(prompt).toContain("마지막으로 돌려받은 목록의 번호를 사용하세요");
+    expect(prompt).toContain("create 로 목록을 교체하세요");
   });
 
   it("does not re-introduce the per-step mandate that forced a dedicated in_progress round before every tool call", () => {
@@ -518,6 +520,7 @@ describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-cou
     const prompt = makeSystemPromptBuilder().build();
     expect(prompt).toContain("### 도구 호출");
     expect(prompt).toContain("서로 의존하지 않는 도구는 한 메시지에서 함께 호출하고");
+    expect(prompt).toContain("충분한 정보가 모이면 도구 호출을 멈추고 답하세요");
     // The section names the context blocks the builder actually emits.
     expect(prompt).toContain("<ave-agents-context>, <ave-memory-index>, <ave-user-memory> 에 답이 있으면");
     // Regression guard: the narrated per-call procedure and the duplicated
@@ -525,6 +528,43 @@ describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-cou
     expect(prompt).not.toContain("기본 절차: Think → Act → Observe → Reflect");
     expect(prompt).not.toContain("올바른 호출 순서 예시");
     expect(prompt).not.toContain("**routine_schedule**");
+  });
+});
+
+describe("SystemPromptBuilder — context tag names", () => {
+  it("names only the user-memory tag the builder emits", () => {
+    const prompt = makeSystemPromptBuilder().build();
+    expect(prompt).toContain("<ave-user-memory>");
+    expect(prompt).not.toContain("<user-memory>");
+  });
+});
+
+describe("SystemPromptBuilder — tool-use and output rules (en)", () => {
+  const previousLocale = getLocale();
+  afterEach(() => setLocale(previousLocale));
+
+  it("mirrors the ko call rules, output guard and session_tasks contract", () => {
+    setLocale("en");
+    const prompt = makeSystemPromptBuilder().build();
+    expect(prompt).toContain("### Calling tools");
+    expect(prompt).toContain("Call tools that do not depend on each other together in one message");
+    expect(prompt).toContain("Once you have enough information, stop calling tools and answer.");
+    expect(prompt).toContain("<ave-agents-context>, <ave-memory-index>, or <ave-user-memory>");
+    expect(prompt).not.toContain("<user-memory>");
+    expect(prompt).toContain("**do not use agent_spawn**");
+    expect(prompt).toContain("its description gives the call order");
+    expect(prompt).not.toContain("Basic Procedure: Think → Act → Observe → Reflect");
+    expect(prompt).not.toContain("Correct call sequence example");
+    expect(prompt).not.toContain("**routine_schedule**");
+    expect(prompt).toContain("Emit a tagged block only where another section of these instructions asks for one.");
+    expect(prompt).not.toContain("[checkpoint-suggested]");
+
+    const tasks = t("be_sessionTasks.toolDescription");
+    expect(tasks).toContain("Do not spend a separate round only on status updates");
+    expect(tasks).toContain("listed before that work tool");
+    expect(tasks).toContain("Do not re-send a task in the status it already has");
+    expect(tasks).toContain("use the numbers from the latest returned list");
+    expect(tasks).toContain("replace the list with create");
   });
 });
 
