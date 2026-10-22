@@ -1407,7 +1407,11 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {sandboxBoot.reason === "degrade-windows-init-failed"
+                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                    : sandboxBoot.causes.includes("windows-sandbox-missing")
+                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
+                    : sandboxBoot.reason === "degrade-windows-init-failed"
                     ? t("permissionsTab.osSandboxInitFailedHint")
                     : t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>

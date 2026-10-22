@@ -140,6 +140,8 @@ export type SandboxGateReason =
  * - `windows-sandbox-missing`: the bundled srt-win binary is not where the
  *   installation put it — a packaging fault that reinstalling Ave repairs, not
  *   something the administrator setup can fix.
+ * - `windows-sandbox-integrity-failed`: the bundled helper failed verification;
+ *   repair or reinstall the application before starting it again.
  * - `linux-runtime-probe-failed`: the dependencies are present but the bwrap
  *   runtime probe failed (for example user namespaces are disabled).
  * - `init-failed`: ASRT failed to start for any other reason.
@@ -151,6 +153,7 @@ export type SandboxStartFailureCause =
   | "dependency-check-failed"
   | "windows-setup-incomplete"
   | "windows-sandbox-missing"
+  | "windows-sandbox-integrity-failed"
   | "linux-runtime-probe-failed"
   | "init-failed";
 

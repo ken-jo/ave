@@ -578,6 +578,7 @@ const SANDBOX_CAUSE_KEYS: Record<ShellSandboxUnavailableCause, string> = {
   "dependency-check-failed": "inputActionBar.sandboxCauseDependencyCheckFailed",
   "windows-setup-incomplete": "inputActionBar.sandboxCauseWindowsSetupIncomplete",
   "windows-sandbox-missing": "inputActionBar.sandboxCauseWindowsSandboxMissing",
+  "windows-sandbox-integrity-failed": "permissionsTab.osSandboxWindowsHelperIntegrityError",
   "linux-runtime-probe-failed": "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed",
   "init-failed": "inputActionBar.sandboxCauseInitFailed",
   "platform-unsupported": "inputActionBar.sandboxCausePlatformUnsupported",

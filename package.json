@@ -429,6 +429,7 @@
       ]
     },
     "win": {
+      "signExts": ["!srt-win.exe"],
       "target": [
         "nsis"
       ],

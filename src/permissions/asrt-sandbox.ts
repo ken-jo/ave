@@ -4,7 +4,7 @@
 
 
 import { spawn } from "node:child_process";
-import { prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
+import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -119,7 +119,7 @@ export function getVendoredSrtWinExePath(): string {
     "@anthropic-ai/sandbox-runtime/package.json",
   );
   const root = rewriteAsarPathToUnpacked(dirname(packageJson));
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const arch = getSrtWinArchitecture();
   return join(root, "vendor", "srt-win", arch, "srt-win.exe");
 }
 
@@ -2108,6 +2108,7 @@ export async function initializeAsrtSandbox(
 export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
+  dependencyFailure?: unknown;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
@@ -2118,7 +2119,7 @@ export async function checkAsrtDependencies(): Promise<{
     try {
       srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
     } catch (error) {
-      return { errors: [errorMessage(error)], warnings: [] };
+      return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }
     return mod.checkWindowsDependenciesAsync({ srtWin });
   }

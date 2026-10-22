@@ -1,12 +1,13 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, prepareSrtWinExecutable } from "../srt-win-integrity.js";
+import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 
 const require = createRequire(import.meta.url);
 const { assertSrtWinVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
@@ -18,14 +19,158 @@ function fixture(): { source: string; bytes: Buffer } {
   const directory = mkdtempSync(join(tmpdir(), "ave-srt-integrity-test-"));
   directories.push(directory);
   const source = join(directory, "srt-win.exe");
-  copyFileSync(join(vendor, "srt-win", process.arch, "srt-win.exe"), source);
+  copyFileSync(join(vendor, "srt-win", getSrtWinArchitecture(), "srt-win.exe"), source);
   return { source, bytes: readFileSync(source) };
 }
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe("Windows helper integrity", () => {
+  it.each([["ia32", "x64"], ["x64", "x64"], ["arm64", "arm64"]])("maps host architecture %s to %s", (host, expected) => {
+    expect(getSrtWinArchitecture(host)).toBe(expected);
+  });
+
+  it("excludes the pinned helper from signing while preserving application signing", () => {
+    const { build } = require("../../../package.json");
+    expect(build.win.signExts).toEqual(["!srt-win.exe"]);
+    expect(build.win.signExecutable).not.toBe(false);
+    expect(build.win.signAndEditExecutable).not.toBe(false);
+    // Exercise the installed packager's filter, without a signing identity.
+    require("app-builder-lib");
+    const { WinPackager } = require("app-builder-lib/out/winPackager.js");
+    const shouldSign = (file: string) => WinPackager.prototype.shouldSignFile.call({ platformSpecificBuildOptions: build.win }, file);
+    expect(shouldSign(join("app.asar.unpacked", "vendor", "srt-win", "x64", "srt-win.exe"))).toBe(false);
+    expect(shouldSign(join("app.asar.unpacked", "vendor", "srt-win", "arm64", "srt-win.exe"))).toBe(false);
+    expect(shouldSign("Ave.exe")).toBe(true);
+    expect(shouldSign("other-helper.exe")).toBe(true);
+  });
+
+  // Owner SID and image sharing checks require the native filesystem APIs.
+  describe.skipIf(process.platform !== "win32")("stale private image cleanup", () => {
+    function stage(): string {
+      const { source } = fixture();
+      const original = dirname(prepareSrtWinExecutable(source));
+      // Model another host's abandoned copy, outside this host's cache.
+      const directory = `${original}-abandoned`;
+      renameSync(original, directory);
+      directories.push(directory);
+      return directory;
+    }
+
+    function isolateTemp(): void {
+      const root = mkdtempSync(join(tmpdir(), "srt-sweep-test-"));
+      directories.push(root);
+      vi.stubEnv("TEMP", root);
+      vi.stubEnv("TMP", root);
+    }
+
+    function abandon(directory: string): void {
+      writeFileSync(join(directory, "owner.json"), JSON.stringify({ pid: 2147483647, started: "1" }));
+    }
+
+    it("removes a dead owner's image but retains the current process even with a reused PID marker", () => {
+      isolateTemp();
+      const stale = stage();
+      abandon(stale);
+      const current = stage();
+      const { source } = fixture();
+      const cached = dirname(prepareSrtWinExecutable(source));
+      directories.push(cached);
+      abandon(cached);
+      expect(JSON.parse(readFileSync(join(current, "owner.json"), "utf8"))).toMatchObject({ pid: process.pid, started: expect.any(String) });
+      writeFileSync(join(current, "owner.json"), JSON.stringify({ pid: process.pid, started: "1" }));
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(current)).toBe(true);
+      expect(existsSync(cached)).toBe(true);
+    });
+
+    it.each(["missing marker", "invalid marker", "unexpected file", "nested directory"])("retains an uncertain directory with %s", (kind) => {
+      isolateTemp();
+      const directory = stage();
+      abandon(directory);
+      if (kind === "missing marker") rmSync(join(directory, "owner.json"));
+      if (kind === "invalid marker") writeFileSync(join(directory, "owner.json"), "{}");
+      if (kind === "unexpected file") writeFileSync(join(directory, "extra"), "keep");
+      if (kind === "nested directory") mkdirSync(join(directory, "nested"));
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(join(directory, "srt-win.exe"))).toBe(true);
+    });
+
+    it("never traverses a junction or a linked directory entry", (context) => {
+      isolateTemp();
+      const target = stage();
+      abandon(target);
+      const link = join(tmpdir(), "ave-srt-win-link");
+      try { symlinkSync(target, link, "junction"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return context.skip("Directory links require a capability this host does not grant");
+        throw error;
+      }
+      // An extra entry makes the target ineligible independently of the link.
+      mkdirSync(join(target, "keep"));
+      const nested = stage();
+      abandon(nested);
+      rmSync(join(nested, "srt-win.exe"));
+      symlinkSync(target, join(nested, "srt-win.exe"), "junction");
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(link)).toBe(true);
+      expect(existsSync(join(nested, "owner.json"))).toBe(true);
+      expect(existsSync(join(target, "srt-win.exe"))).toBe(true);
+    });
+
+    it("keeps a live owner, rejects PID reuse, and keeps a dead owner's image while another process holds it", async () => {
+      isolateTemp();
+      const live = stage();
+      const reused = stage();
+      const held = stage();
+      abandon(held);
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "$handle = [System.IO.File]::Open($env:AVE_SRT_TEST_IMAGE, 'Open', 'Read', 'Read')",
+        "$p = [System.Diagnostics.Process]::GetCurrentProcess()",
+        "@{ pid = $p.Id; started = $p.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
+        "try { [Console]::ReadLine() | Out-Null } finally { $handle.Dispose() }",
+      ].join("; ");
+      const child = spawn(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+        "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
+      ], {
+        env: { SystemRoot: process.env.SystemRoot, AVE_SRT_TEST_IMAGE: join(held, "srt-win.exe") },
+        windowsHide: true, stdio: ["pipe", "pipe", "pipe"], timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+      });
+      const exited = once(child, "exit");
+      try {
+        const [output] = await once(child.stdout, "data");
+        const marker = JSON.parse(String(output));
+        writeFileSync(join(live, "owner.json"), JSON.stringify(marker));
+        writeFileSync(join(reused, "owner.json"), JSON.stringify({ ...marker, started: "1" }));
+        sweepStaleSrtWinDirectories();
+        expect(existsSync(live)).toBe(true);
+        expect(existsSync(reused)).toBe(false);
+        expect(existsSync(join(held, "srt-win.exe"))).toBe(true);
+        expect(existsSync(join(held, "owner.json"))).toBe(true);
+      } finally {
+        child.stdin.end("\n");
+        await exited;
+      }
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(live)).toBe(false);
+      expect(existsSync(held)).toBe(false);
+    });
+
+    it("retains a directory with inherited modification grants", () => {
+      isolateTemp();
+      const directory = stage();
+      abandon(directory);
+      const script = "$ErrorActionPreference = 'Stop'; $acl = [System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY); $acl.SetAccessRuleProtection($false, $true); [System.IO.Directory]::SetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY, $acl)";
+      execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+        "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
+      ], { env: { SystemRoot: process.env.SystemRoot, AVE_SRT_PRIVATE_DIRECTORY: directory }, windowsHide: true, stdio: "pipe", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs });
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(join(directory, "srt-win.exe"))).toBe(true);
+    });
+  });
   it.each(["x64", "arm64"])("pins the shipped %s bytes in both runtime and packaging verifiers", (arch) => {
     const path = join(vendor, "srt-win", arch, "srt-win.exe");
     expect(() => assertSrtWinDigest(readFileSync(path), arch)).not.toThrow();

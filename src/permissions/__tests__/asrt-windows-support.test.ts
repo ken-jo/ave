@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as asrtSandbox from "../asrt-sandbox.js";
+import * as srtWinIntegrity from "../srt-win-integrity.js";
+import { classifySandboxDependencyErrors } from "../sandbox-start-failure.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -657,6 +659,29 @@ describe("asrt-windows-support adapter", () => {
         configurable: true,
       });
       checkWindowsSandboxStatusAsyncMock.mockReset();
+    }
+  });
+
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("keeps %s from preparation through the boot dependency boundary", async (code, expected) => {
+    const originalPlatform = process.platform;
+    const cause = new srtWinIntegrity.SrtWinIntegrityError(code);
+    const wrapped = new Error("Preparation failed", { cause });
+    const prepare = vi.spyOn(srtWinIntegrity, "prepareSrtWinExecutable").mockImplementation(() => { throw wrapped; });
+    const mod = await import("@anthropic-ai/sandbox-runtime");
+    const resolver = vi.spyOn(mod, "resolveSrtWin");
+    setProcessPlatform("win32");
+    try {
+      const deps = await asrtSandbox.checkAsrtDependencies();
+      expect(deps.dependencyFailure).toBe(wrapped);
+      expect(classifySandboxDependencyErrors("win32", deps.errors, deps.dependencyFailure)).toEqual([expected]);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      resolver.mockRestore();
+      setProcessPlatform(originalPlatform);
     }
   });
 
