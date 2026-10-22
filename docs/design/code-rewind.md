@@ -13,3 +13,21 @@ Before restore, all affected files must match the last native edit's SHA-256 has
 Concurrent external writers cannot be locked by the host. An I/O failure during replacement can leave a partial restore and returns failure without truncating the conversation. The original checkpoint remains on failure, but already restored files can then conflict with its expected after-hashes. Inspect the affected files and recover using version control before retrying.
 
 [CODE_CHECKPOINT_POLICY](../../src/shared/code-rewind.ts) owns the limits: 8 MiB for either image of a file, 100 turns per session, 500 turns and 64 MiB retained serialized storage across the profile. Oldest whole turns are pruned on admission, keeping surviving boundaries complete. The active edit's own turn is never pruned to fit that edit; an image that cannot fit refuses before mutation. Atomic storage writes temporarily stage a replacement ledger alongside the previous ledger. The private `code-checkpoints` feature namespace owns persistence. File tools retain their existing authorization, fresh-read checks and broker routing.
+
+## Comparison with Claude Code
+
+Source: [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), accessed 2026-10-22. Claims not listed as matching are Ave's own design.
+
+Matches Claude Code:
+
+- Conversation-only, code-only and both restores at a prompt that starts a turn; conversation restore returns that prompt to the input.
+- File-editing tool changes are tracked; Bash side effects and external edits are not. Checkpoints survive resuming a conversation.
+- 100 checkpoints per conversation.
+- Rewind does not replace version control.
+
+Intended differences:
+
+- Claude Code skips symlinked and hard-linked paths and restores the rest with a warning. Ave refuses the whole restore and lists conflicting paths, including externally changed files, rather than skipping part of the selected range.
+- Claude Code removes snapshots in a retention sweep, by default about 30 days after the session last saved one, and keeps each file's first snapshot when discarding older checkpoints. Ave has no time-based sweep. It prunes oldest whole turns to the 100-turn, 500-turn and 64 MiB caps, so surviving restore ranges stay complete.
+
+Ave-specific, without a Claude Code counterpart in that page: the 8 MiB per-image, 500-turn and 64 MiB profile limits; hash guards and consumed later checkpoints; unavailability across file transfers and remote edits; and partial-restore disclosure on I/O failure. Claude Code's summarize actions, subagent edits and mid-turn queued messages are out of scope here.
