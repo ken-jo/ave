@@ -279,7 +279,8 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
         }
         // Recheck all files after staging, before the first destructive operation.
         for (const [path, change] of plan) {
-          if (hash((await snapshot(path)).bytes) !== change.afterHash) conflicts.add(path);
+          const file = await snapshot(path).catch(() => undefined);
+          if (!file || hash(file.bytes) !== change.afterHash) conflicts.add(path);
         }
         if (conflicts.size) return { ok: false, error: "code-restore-conflict", conflictingFiles: [...conflicts].sort() };
         for (const [path, change] of plan) {
