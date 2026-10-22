@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
+import * as helperIntegrity from "../srt-win-integrity.js";
 
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
@@ -361,6 +362,22 @@ describe("spawnConfinedChild", () => {
       }),
     ).rejects.toThrow(/empty argv/);
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn when helper integrity admission fails", async () => {
+    const check = vi.spyOn(helperIntegrity, "assertSrtWinSpawnIntegrity").mockImplementationOnce(() => {
+      throw new helperIntegrity.SrtWinIntegrityError("srt-win-integrity-mismatch");
+    });
+    try {
+      await expect(spawnConfinedChild({
+        egressOwner: TEST_WORKER_EGRESS_OWNER,
+        command: "/usr/bin/python3", args: [], label: "worker:x:main",
+        grantMode: "allow-list", tempPrincipal: PRINCIPAL, baseEnv: {},
+      })).rejects.toMatchObject({ code: "srt-win-integrity-mismatch" });
+      expect(check).toHaveBeenCalledWith("/bin/sandbox");
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(trackMock).not.toHaveBeenCalled();
+    } finally { check.mockRestore(); }
   });
 
   it("spawns the wrapped argv, never the caller's command", async () => {

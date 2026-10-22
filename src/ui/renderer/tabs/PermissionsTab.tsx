@@ -101,6 +101,8 @@ const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
   install_config_conflict: () => t("permissionsTab.osSandboxWindowsInstallFailedConfigConflict"),
   install_ambient_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedAmbient"),
   srt_win_not_found: () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-not-found": () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-integrity-mismatch": () => t("permissionsTab.osSandboxWindowsHelperIntegrityError"),
   unexpected: () => t("permissionsTab.osSandboxWindowsInstallFailedUnexpected"),
 };
 
@@ -115,6 +117,16 @@ const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
   installed: () => t("permissionsTab.osSandboxWindowsWfpStateInstalled"),
   "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
 };
+
+/**
+ * Boot degraded because the bundled Windows helper is missing or failed its
+ * integrity check. An env opt-in leaves the toggles off, so the helper status
+ * and notice key on this as well as on the toggles, agreeing with the banner.
+ */
+function bootReportsWindowsHelperFailure(boot: SandboxCapabilityInfo["boot"] | undefined): boolean {
+  return (boot?.action === "degrade" || boot?.action === "abort") &&
+    boot.causes.some((cause) => cause === "windows-sandbox-missing" || cause === "windows-sandbox-integrity-failed");
+}
 
 function windowsStateLabel(labels: Record<string, () => string>, value: unknown): string {
   return typeof value === "string" && Object.hasOwn(labels, value)
@@ -476,7 +488,9 @@ export function PermissionsTab({
       // On win32 with either setting already ON, surface the consent/setup
       // state on tab entry so the panel persists across navigations until
       // ready. Extension provisioning is separate from MXC shell readiness.
-      if (sandboxRes.platform === "win32" && (osSandboxOn || workerConfinementOn || sandboxRes.homePrivacyError)) {
+      if (sandboxRes.platform === "win32" &&
+        (osSandboxOn || workerConfinementOn || sandboxRes.homePrivacyError ||
+          bootReportsWindowsHelperFailure(sandboxRes.boot))) {
         const status = await window.ave.permission.sandboxWindowsStatus();
         if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
         setWindowsStatus(status);
@@ -1017,6 +1031,8 @@ export function PermissionsTab({
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  const windowsHelperRequested =
+    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
   // Windows: which substrate carries shells and extensions this session.
   // Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
@@ -1423,7 +1439,11 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {sandboxBoot.reason === "degrade-windows-init-failed"
+                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                    : sandboxBoot.causes.includes("windows-sandbox-missing")
+                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
+                    : sandboxBoot.reason === "degrade-windows-init-failed"
                     ? t("permissionsTab.osSandboxInitFailedHint")
                     : t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
@@ -1500,7 +1520,7 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {(sandboxEnabled || workerConfinementEnabled || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
+          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.homePrivacyError ? (
               <div
                 data-testid="os-sandbox-windows-home-privacy-error"
@@ -1538,7 +1558,9 @@ export function PermissionsTab({
                 role="status"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
               >
-                {t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+                {windowsStatus.helperError === "srt-win-integrity-mismatch"
+                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
               </p>
             ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (

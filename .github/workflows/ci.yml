@@ -106,6 +106,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run typecheck
+      - name: Verify Windows sandbox helper pins
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/check-srt-win-integrity.cjs
       # `typecheck` covers production sources only — both tsconfigs exclude
       # `src/**/__tests__/**`, so before this step a test could reference an unimported
       # symbol and reach CI green. This is the ratchet for the rest: new test files are
@@ -360,6 +364,7 @@ jobs:
           src/tools/__tests__/bash-dialect.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
+          src/permissions/__tests__/srt-win-integrity.test.ts
           src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts
           src/lib/__tests__/atomic-file.test.ts

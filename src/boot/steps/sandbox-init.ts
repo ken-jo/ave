@@ -168,6 +168,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
 
     if (sandboxOptIn) {
       const deps = await checkAsrtDependencies();
+      const dependencyCauses = deps.errors.length > 0
+        ? classifySandboxDependencyErrors(process.platform, deps.errors, deps.dependencyFailure)
+        : [];
       // Windows (proxy-egress PR 9): agent shells run in Microsoft Execution
       // Containers where the host offers them, srt-win or not; see
       // windows-sandbox-plan.ts for the four cases. The plan is recorded for
@@ -247,7 +250,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           `Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset ${explicitEnvNames.join(" and ")}. ` +
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
-        recordGate("abort", decision.reason, deps.errors, classifySandboxDependencyErrors(process.platform, deps.errors));
+        recordGate("abort", decision.reason, deps.errors, dependencyCauses);
         await bootAuditLogger.flush();
         throw new Error(message);
       } else if (decision.action === "degrade") {
@@ -266,7 +269,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           log.warn(
             "boot: OS tool sandbox is ON but the Windows sandbox (srt-win) is NOT ready — " +
               "tools run with NO OS isolation until setup completes. " +
-              "Complete the one-time administrator install, then restart the app. " +
+              (dependencyCauses.includes("windows-sandbox-missing") || dependencyCauses.includes("windows-sandbox-integrity-failed")
+                ? "Repair or reinstall Ave, then restart the app. "
+                : "Complete the one-time administrator install, then restart the app. ") +
               "Windows confines filesystem + network, but not process isolation. " +
               `Detail: ${detail}`,
           );
@@ -281,7 +286,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           );
         }
         recordWindows("none", false);
-        recordGate("degrade", decision.reason, deps.errors, classifySandboxDependencyErrors(process.platform, deps.errors));
+        recordGate("degrade", decision.reason, deps.errors, dependencyCauses);
       } else {
         // decision.action === "activate" — deps present, initialize ASRT. Wrapped
         // so a runtime init FAILURE degrades-or-aborts by the SAME explicit-vs-
@@ -488,7 +493,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             "activate",
             windowsStart === "proxy-only" ? "activate-windows-mxc-proxy-only" : decision.reason,
             deps.errors,
-            deps.errors.length > 0 ? classifySandboxDependencyErrors(process.platform, deps.errors) : [],
+            dependencyCauses,
           );
         } catch (initErr) {
           // Init FAILURE (initializeAsrtSandbox threw despite deps present) is the

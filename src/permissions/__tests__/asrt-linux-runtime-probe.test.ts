@@ -35,6 +35,12 @@ vi.mock("node:child_process", () => ({
   spawn: h.spawn,
 }));
 
+vi.mock("../srt-win-integrity.js", () => ({
+  getSrtWinArchitecture: () => "x64",
+  prepareSrtWinExecutable: (source: string) => source,
+  srtWinPrivateDirectories: () => [],
+}));
+
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   initializeAsrtSandbox,

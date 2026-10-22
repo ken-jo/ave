@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ComposerStatusRow, InputActionBar } from "../InputActionBar.js";
+import { t } from "../../../../i18n/index.js";
 import type { RolePreset } from "../../../../data/role-presets.js";
 import type {
   DynamicNativeMenuAction,
@@ -890,6 +891,13 @@ describe("permission card sandbox checkbox", () => {
     const { getByRole, getByTestId } = await openCard();
     expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("true");
     expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe(`사용 불가: ${reason}`);
+  });
+
+  it("shows application repair guidance for an integrity failure", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-integrity-failed"] }));
+    const { getByTestId } = await openCard();
+    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed"));
+    expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
   });
 
   it("disables the checkbox on a platform with no sandbox and says so", async () => {

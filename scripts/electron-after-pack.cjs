@@ -5,6 +5,7 @@ const { join } = require("node:path");
 const { gunzipSync } = require("node:zlib");
 const { assertGraphicsRuntimeFiles } = require("./lib/graphics-runtime-files.cjs");
 const { assertSandboxRuntimeFiles } = require("./lib/sandbox-runtime-files.cjs");
+const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
 const { assertImageRuntimeFiles } = require("./lib/image-runtime-files.cjs");
 const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = require("./lib/ripgrep-runtime-files.cjs");
 
@@ -148,6 +149,10 @@ function assertSandboxVendorBinaries(context) {
   }
 
   assertSandboxRuntimeFiles(vendorDir, platform);
+  if (platform === "win32") {
+    // Check every shipped image, including an architecture the host cannot execute.
+    assertSrtWinVendor(vendorDir, readdirSync(join(vendorDir, "srt-win")));
+  }
 
   if (!spec.keep) return;
 

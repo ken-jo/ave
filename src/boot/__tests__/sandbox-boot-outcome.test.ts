@@ -67,6 +67,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { SrtWinIntegrityError } from "../../permissions/srt-win-integrity.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -105,6 +106,17 @@ afterEach(() => {
 });
 
 describe("boot sandbox outcome", () => {
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("preserves %s through the dependency check and a wrapped cause at boot", async (code, cause) => {
+    setProcessPlatform("win32");
+    const dependencyFailure = new Error("Dependency preparation failed", { cause: new SrtWinIntegrityError(code) });
+    h.checkDeps.mockResolvedValue({ errors: [dependencyFailure.message], warnings: [], dependencyFailure });
+    await initSandboxGate(harness.context(true));
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", causes: [cause] });
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
   it("is null before the gate has run, which is not the same as off", () => {
     expect(getSandboxBootOutcome()).toBeNull();
   });
