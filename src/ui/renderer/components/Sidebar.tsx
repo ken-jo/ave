@@ -46,7 +46,6 @@ import type { SessionSummary } from "../hooks/use-sessions.js";
 import type { SessionFamily } from "../../../shared/session-lookup.js";
 import { tabIcon } from "./ChatSidePanelPreview.js";
 import { useActiveSurface } from "../preview/active-surface.js";
-import { validateExternalUrl } from "../../../shared/external-url.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { projectRootEquals, workspaceRootsToProjects } from "../../../shared/project-identity.js";
 import { CHAT_SESSION_DRAG_TYPE } from "./pane-drop.js";
@@ -405,9 +404,8 @@ function SidebarSurfaceRow({ surface, onOpen }: {
   const [failedFavicon, setFailedFavicon] = useState<string | null>(null);
   useEffect(() => {
     setFailedFavicon(null);
-  }, [surface.favicon, surface.url]);
-  const pageUrl = validateExternalUrl(surface.url);
-  const faviconUrl = surface.favicon?.url ?? (pageUrl.ok ? new URL("/favicon.ico", pageUrl.url).href : null);
+  }, [surface.faviconDataUrl]);
+  const faviconUrl = surface.faviconDataUrl;
   const label = surface.title || surface.url || `${t(BUILTIN_LABEL_KEYS[surface.kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`;
   const Icon = tabIcon(surface.kind);
   return (

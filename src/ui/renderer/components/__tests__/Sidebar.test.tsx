@@ -13,8 +13,9 @@ import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import type { MainSurface } from "../../preview/main-surfaces.js";
 import type { AveApi } from "../../types.js";
+import { BROWSER_FAVICON_DATA_URL, browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
-import { forgetWebSurfaceLocation, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
+import { forgetWebSurfaceLocation, noteWebSurfaceLocation } from "../../preview/web-surfaces.js";
 import { emitMainLayoutChange } from "../../preview/main-layout-restore.js";
 import { registerSideTabsSink } from "../../preview/surface-moves.js";
 import type {
@@ -383,8 +384,6 @@ describe("Sidebar stacked sections", () => {
   });
 
   it("groups all three item types by the bound session and leaves unbound or unknown sessions in General", async () => {
-    const guest = document.createElement("webview");
-    setWebSurfaceElement("browser:project", guest);
     const root = "/projects/example";
     const sessions = [
       sessionRow({ id: "project-chat", title: "Project chat", projectRoot: root, modifiedAt: new Date().toISOString() }),
@@ -398,7 +397,7 @@ describe("Sidebar stacked sections", () => {
       { tabId: "terminal:unknown", kind: "terminal", ordinal: 3, url: null, sessionId: "missing" },
     ];
     const state: BrowserTabControlState = { revision: 1, tabs: [{
-      tabId: "host-project", rendererTabId: "browser:project", url: "https://project.example/", title: "Project page",
+      tabId: "host-project", rendererTabId: "browser:project", url: "https://project.example/", title: "Project page", faviconDataUrl: BROWSER_FAVICON_DATA_URL,
       mode: "human-paused", owner: { sessionId: "project-chat" }, lease: null, generation: 1, kind: "embedded", openerTabId: null,
     }] };
     let receiveControl!: (state: BrowserTabControlState) => void;
@@ -423,19 +422,18 @@ describe("Sidebar stacked sections", () => {
       }
       expect(getByTestId("sidebar-conversation-glyph-project-chat").classList.contains("lucide-message-square-text")).toBe(true);
       expect(getByTestId("sidebar-surface-terminal:project").querySelector(".lucide-terminal")).not.toBeNull();
-      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/favicon.ico");
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
       fireEvent.click(getByTestId("sidebar-session-project-chat"));
       expect(onLoadSession).toHaveBeenCalledWith("project-chat");
       fireEvent.click(getByTestId("sidebar-surface-browser:project"));
       fireEvent.click(getByTestId("sidebar-surface-terminal:project"));
       expect(onOpenSurface.mock.calls).toEqual([["browser:project"], ["terminal:project"]]);
-      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://project.example/custom.png"] })));
-      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/custom.png");
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
       act(() => receiveControl({ revision: 2, tabs: state.tabs.map((tab) => ({ ...tab, owner: { sessionId: "general-chat" } })) }));
       expect(general.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
       expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(false);
-      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/custom.png");
-    } finally { act(() => unregister()); setWebSurfaceElement("browser:project", null); restore(); }
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
+    } finally { act(() => unregister()); restore(); }
   });
 
   it("tracks side-panel tab snapshots without a second tab store", () => {
@@ -451,38 +449,50 @@ describe("Sidebar stacked sections", () => {
     } finally { unregister(); restore(); }
   });
 
-  it("uses the page favicon event and falls back to a globe for blank, unsafe or failed icons", () => {
-    const guest = document.createElement("webview");
-    setWebSurfaceElement("browser:icon", guest);
+  it("displays only snapshot rasters and shows a globe after failure, navigation or missing metadata", async () => {
+    const state = browserControlFixture(["browser:icon"]);
+    let receiveControl!: (state: BrowserTabControlState) => void;
+    const unregister = registerBrowserTabHost({ browserTabs: {
+      getState: async () => state,
+      onControl: (listener: typeof receiveControl) => { receiveControl = listener; return () => {}; },
+      onTabOp: () => () => {},
+    } } as unknown as AveApi, { sessionId: () => null, hasTab: () => false, selectTab: vi.fn(), closeTab: vi.fn() });
     const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({ mainSurfaces: [
-      { tabId: "browser:icon", kind: "browser", ordinal: 1, url: "https://site.example/path" },
+      { tabId: "browser:icon", kind: "browser", ordinal: 1, url: "https://a.example/" },
       { tabId: "browser:blank", kind: "browser", ordinal: 2, url: null },
       { tabId: "browser:unsafe", kind: "browser", ordinal: 3, url: "file:///private/example" },
     ] });
+    const publish = (revision: number, faviconDataUrl: string | null, url = "https://a.example/") => {
+      act(() => receiveControl({ revision, tabs: state.tabs.map((tab) => ({ ...tab, url, faviconDataUrl })) }));
+    };
     try {
-      const row = getByTestId("sidebar-surface-browser:icon");
-      for (const id of ["browser:blank", "browser:unsafe"]) {
+      await waitFor(() => expect(getByTestId("sidebar-surface-browser:icon").textContent).toContain("Fixture page"));
+      for (const id of ["browser:icon", "browser:blank", "browser:unsafe"]) {
         expect(getByTestId(`sidebar-surface-${id}`).querySelector(".lucide-globe")).not.toBeNull();
       }
-      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["file:///private/icon", "https://site.example/custom.png"] })));
-      expect(row.querySelector("img")?.getAttribute("src")).toBe("https://site.example/custom.png");
+      publish(2, "https://a.example/favicon.png");
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")).toBeNull();
+      publish(3, BROWSER_FAVICON_DATA_URL);
+      const row = getByTestId("sidebar-surface-browser:icon");
+      expect(row.querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
       fireEvent.error(row.querySelector("img")!);
       expect(row.querySelector("img")).toBeNull();
       expect(row.querySelector(".lucide-globe")).not.toBeNull();
-      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://site.example/custom.png"] })));
-      expect(row.querySelector("img")?.getAttribute("src")).toBe("https://site.example/custom.png");
+      publish(4, null);
+      publish(5, BROWSER_FAVICON_DATA_URL);
+      expect(row.querySelector("img")).not.toBeNull();
       rerenderSidebar({ collapsed: true });
       expect(queryByTestId("sidebar-surface-browser:icon")).toBeNull();
-      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://site.example/collapsed.png"] })));
+      publish(6, null);
       rerenderSidebar({ collapsed: false });
-      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")?.getAttribute("src")).toBe("https://site.example/collapsed.png");
-      act(() => {
-        noteWebSurfaceLocation("browser:icon", "https://next.example/page");
-        guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://next.example/icon.png"] }));
-      });
-      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")?.getAttribute("src")).toBe("https://next.example/icon.png");
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector(".lucide-globe")).not.toBeNull();
+      publish(7, BROWSER_FAVICON_DATA_URL);
+      act(() => noteWebSurfaceLocation("browser:icon", "https://next.example/page"));
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")).toBeNull();
+      publish(8, BROWSER_FAVICON_DATA_URL, "https://next.example/page");
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")).not.toBeNull();
     } finally {
-      act(() => { forgetWebSurfaceLocation("browser:icon"); setWebSurfaceElement("browser:icon", null); });
+      act(() => { unregister(); forgetWebSurfaceLocation("browser:icon"); });
       restore();
     }
   });

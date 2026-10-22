@@ -47,6 +47,7 @@ import type {
 } from "../../shared/browser-surface.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+import { isBrowserFaviconDataUrl } from "../../shared/browser-surface.js";
 
 /** What one injected press's touch input did, by the guests' own native input events. */
 export interface TouchDeliveryReport {
@@ -148,7 +149,7 @@ export interface BrowserTabRecord<G extends BrowserGuest> {
 }
 
 /** One tab as a tool sees it. */
-export interface BrowserTabView extends BrowserTabControlView {
+export interface BrowserTabView extends Omit<BrowserTabControlView, "faviconDataUrl"> {
   readonly openedBy: BrowserTabOpener;
   readonly active: boolean;
 }
@@ -220,7 +221,7 @@ export function isUserActionInputType(type: string): boolean {
 }
 
 export class BrowserTabRegistry<G extends BrowserGuest> {
-  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
+  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; faviconDataUrl: string | null }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly handleByWindowTab = new Map<string, string>();
   // A takeover before bind must also prevent a pending new-tab request from granting control later.
@@ -252,7 +253,17 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   /** A browser guest attached to `windowId`. Call `guestDestroyed` when it goes. */
   guestAttached(guest: G, windowId: number): void {
-    this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment });
+    this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment, faviconDataUrl: null });
+  }
+
+  /** Main-derived presentation metadata never changes control authority. */
+  guestFaviconChanged(guestId: number, dataUrl: string | null): void {
+    const entry = this.attached.get(guestId);
+    if (!entry || entry.guest.isDestroyed()) return;
+    const faviconDataUrl = isBrowserFaviconDataUrl(dataUrl) ? dataUrl : null;
+    if (entry.faviconDataUrl === faviconDataUrl) return;
+    entry.faviconDataUrl = faviconDataUrl;
+    this.broadcastControl(entry.windowId);
   }
 
   guestDestroyed(guestId: number): void {
@@ -720,6 +731,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   /** Invalidate document authority before the next main-frame load commits. */
   navigationStarted(guestId: number, url: string): void {
+    this.guestFaviconChanged(guestId, null);
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
@@ -730,6 +742,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   documentChanged(guestId: number): void {
+    this.guestFaviconChanged(guestId, null);
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
@@ -919,11 +932,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const active = this.activeBrowserTab(windowId);
     return [...this.tabs.values()]
       .filter((tab) => tab.windowId === windowId && this.isLive(tab))
-      .map((tab) => ({
-        ...this.controlView(tab),
-        openedBy: tab.opener,
-        active: tab.handle === active,
-      }));
+      .map((tab) => {
+        const { faviconDataUrl, ...view } = this.controlView(tab);
+        return { ...view, openedBy: tab.opener, active: tab.handle === active };
+      });
   }
 
   listSessionTabs(windowId: number, actor: BrowserSessionActor, includeDirectChildren: boolean): BrowserTabView[] {
@@ -1052,6 +1064,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private controlView(tab: BrowserTabRecord<G>): BrowserTabControlView {
     return {
       tabId: tab.handle, rendererTabId: tab.rendererTabId, url: tab.guest!.getURL(), title: tab.guest!.getTitle(),
+      faviconDataUrl: this.attached.get(tab.guest!.id)?.faviconDataUrl ?? null,
       mode: tab.controlMode, owner: tab.owner === null ? null : copyActor(tab.owner),
       lease: tab.lease === null ? null : { ...tab.lease, actor: copyActor(tab.lease.actor) },
       generation: tab.controlGeneration, kind: tab.targetKind, openerTabId: tab.openerTabId,

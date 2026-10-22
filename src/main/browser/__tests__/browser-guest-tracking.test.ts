@@ -3,8 +3,12 @@ import type { WebContents } from "electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({
-  guestAttached: vi.fn(), guestDestroyed: vi.fn(), userInput: vi.fn(), documentChanged: vi.fn(), navigationStarted: vi.fn(),
+  guestAttached: vi.fn(), guestDestroyed: vi.fn(), userInput: vi.fn(), documentChanged: vi.fn(), navigationStarted: vi.fn(), guestFaviconChanged: vi.fn(),
 }));
+const load = vi.hoisted(() => vi.fn());
+const transport = vi.hoisted(() => vi.fn());
+vi.mock("../browser-favicon.js", () => ({ loadBrowserFavicon: load }));
+vi.mock("../../app-state.js", () => ({ getServices: () => ({ singleHopNetworkFetch: transport }) }));
 vi.mock("../browser-tab-registry.js", () => ({
   browserTabRegistry: registry,
   isUserActionInputType: (type: string) => ["keyDown", "rawKeyDown", "char", "mouseDown", "mouseWheel"].includes(type),
@@ -12,12 +16,49 @@ vi.mock("../browser-tab-registry.js", () => ({
 import { trackBrowserGuest } from "../browser-guest-tracking.js";
 
 function guest() {
-  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter() });
+  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter(), isDestroyed: () => false });
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); load.mockReset().mockResolvedValue(null); });
 
 describe("native browser guest tracking", () => {
+  it("loads the native page icon with the host transport, suppresses duplicate work and clears failed metadata", async () => {
+    const contents = guest();
+    trackBrowserGuest(contents as unknown as WebContents, 3);
+    load.mockResolvedValueOnce("data:image/png;base64,prepared");
+    contents.emit("page-favicon-updated", {}, ["file:///icon", "https://example.test/page-icon.png"]);
+    contents.emit("page-favicon-updated", {}, ["https://example.test/page-icon.png"]);
+    await Promise.resolve();
+    expect(load).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenCalledWith("https://example.test/page-icon.png", transport, expect.any(AbortSignal));
+    expect(registry.guestFaviconChanged).toHaveBeenLastCalledWith(71, "data:image/png;base64,prepared");
+    contents.emit("page-favicon-updated", {}, ["https://example.test/missing.png"]);
+    await Promise.resolve();
+    expect(registry.guestFaviconChanged).toHaveBeenLastCalledWith(71, null);
+    contents.emit("page-favicon-updated", {}, ["javascript:invalid", "file:///icon"]);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["navigation", "document", "destroyed"])("aborts stale favicon completion after %s", async (reason) => {
+    let finish!: (value: string | null) => void;
+    load.mockImplementationOnce(() => new Promise<string | null>((resolve) => { finish = resolve; }));
+    const contents = guest();
+    trackBrowserGuest(contents as unknown as WebContents, 3);
+    contents.emit("page-favicon-updated", {}, ["https://example.test/icon.png"]);
+    const signal = load.mock.calls[0]![2] as AbortSignal;
+    contents.emit("did-start-navigation", {}, "https://example.test/frame", false, false);
+    expect(signal.aborted).toBe(false);
+    if (reason === "navigation") contents.emit("did-start-navigation", {}, "https://example.test/new", false, true);
+    if (reason === "document") contents.debugger.emit("message", {}, "DOM.documentUpdated");
+    if (reason === "destroyed") contents.emit("destroyed");
+    expect(signal.aborted).toBe(true);
+    registry.guestFaviconChanged.mockClear();
+    finish("data:image/png;base64,stale");
+    await Promise.resolve();
+    expect(registry.guestFaviconChanged).not.toHaveBeenCalled();
+    if (reason === "destroyed") expect(contents.listenerCount("page-favicon-updated")).toBe(0);
+  });
+
   it("forwards raw mouse receipts once with original coordinates while ignoring their normalized copies", () => {
     const contents = guest();
     trackBrowserGuest(contents as unknown as WebContents, 3);

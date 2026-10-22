@@ -1,9 +1,19 @@
 import { test, expect } from "@playwright/test";
+import { createServer } from "node:http";
+import { BROWSER_FAVICON_DATA_URL } from "../../../src/__tests__/support/browser-control-fixture.js";
 import { buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 // A real renderer measures truncation; the component tests cover assignment and actions.
 test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({}, testInfo) => {
   expect(builtMainExists(), "Build the app before running the sidebar flow").toBe(true);
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<html><head><title>Sidebar icon</title><link rel="icon" type="image/png" href="${BROWSER_FAVICON_DATA_URL}"></head><body>Browser surface</body></html>`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture server address");
+  const url = `http://127.0.0.1:${address.port}/`;
   const sessionId = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const ctx = await launchSeededElectron({
     sessionId,
@@ -16,13 +26,13 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
         mainLayout: {
           version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: [],
           sideTabs: { main: [
-            { tabId: "browser:abc12345-1", kind: "browser", ordinal: 1, url: null, cwd: null },
+            { tabId: "browser:abc12345-1", kind: "browser", ordinal: 1, url, cwd: null },
             { tabId: "terminal:abc12345-2", kind: "terminal", ordinal: 1, url: null, cwd: null },
           ] },
         },
       },
     },
-  });
+  }).catch((error: unknown) => { server.close(); throw error; });
   try {
     const { page } = ctx;
     await expect(page.getByTestId("sidebar-sections")).toBeVisible();
@@ -56,7 +66,14 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     await page.getByTestId("sidebar-surface-browser:abc12345-1").click();
     await expect(page.getByTestId("chat-side-panel-browser-tab-host")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-browser-tab-host")).toHaveAttribute("data-tab-id", "browser:abc12345-1");
+    const icon = page.getByTestId("sidebar-surface-browser:abc12345-1").locator("img");
+    await expect(icon).toHaveAttribute("src", /^data:image\/png;base64,/);
+    await expect.poll(() => icon.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+    const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
+    expect(policy).toContain("img-src 'self' data: blob: ave-content:");
+    await page.screenshot({ path: testInfo.outputPath("sidebar-favicon.png") });
   } finally {
     await teardownSeededElectron(ctx);
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });

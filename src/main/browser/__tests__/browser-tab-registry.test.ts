@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
+import { BROWSER_FAVICON_DATA_URL } from "../../../__tests__/support/browser-control-fixture.js";
 
 const ACTOR = { sessionId: "conversation" };
 
@@ -45,6 +46,29 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+  it("publishes bounded favicon metadata only to its window and clears it with the document or guest", () => {
+    const { registry, control } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "browser:1", webContentsId: 11 });
+    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
+    expect(control.at(-1)).toMatchObject({ windowId: 1, state: { tabs: [{ faviconDataUrl: BROWSER_FAVICON_DATA_URL }] } });
+    expect(registry.listTabs(1)[0]).not.toHaveProperty("faviconDataUrl");
+    expect(registry.controlState(2).tabs).toEqual([]);
+    registry.guestFaviconChanged(11, "https://a.example/icon.png");
+    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
+    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
+    registry.navigationStarted(11, "https://b.example/");
+    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
+    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
+    registry.documentChanged(11);
+    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
+    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
+    registry.guestDestroyed(11);
+    registry.guestFaviconChanged(11, BROWSER_FAVICON_DATA_URL);
+    registry.guestAttached(new FakeGuest(12), 1);
+    registry.bindTab(1, { tabId: "browser:1", webContentsId: 12 });
+    expect(registry.controlState(1).tabs[0]?.faviconDataUrl).toBeNull();
+  });
   it("binds a tab only to a live guest attached to the sender's own window", () => {
     const { registry } = setup();
     const guest = new FakeGuest(11);
@@ -951,7 +975,7 @@ describe("strict browser chrome contracts", () => {
   it("rejects mixed-version state, extra fields, duplicate handles, impossible leases and malformed actors", () => {
     expect(parseBrowserTabControlState({ agentControlledTabIds: [] })).toBeNull();
     const tab = {
-      tabId: "tab-1", rendererTabId: "page", url: "about:blank", title: "Page", mode: "agent-active",
+      tabId: "tab-1", rendererTabId: "page", url: "about:blank", title: "Page", faviconDataUrl: null, mode: "agent-active",
       owner: ACTOR, lease: null, generation: 1, kind: "embedded", openerTabId: null,
     };
     const state = { revision: 1, tabs: [tab] };

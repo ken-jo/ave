@@ -127,6 +127,8 @@ export interface BrowserTabControlView {
   readonly rendererTabId: string | null;
   readonly url: string;
   readonly title: string;
+  /** Bounded raster metadata; remote image addresses never reach host image elements. */
+  readonly faviconDataUrl: string | null;
   readonly mode: BrowserControlMode;
   /** Durable creator, preserved across pause and release; null for a user resource. */
   readonly owner: BrowserSessionActor | null;
@@ -135,6 +137,28 @@ export interface BrowserTabControlView {
   readonly generation: number;
   readonly kind: "embedded" | "popup";
   readonly openerTabId: string | null;
+}
+
+export const BROWSER_FAVICON_LIMITS = Object.freeze({
+  dataUrlBytes: 16 * 1024,
+  dimension: 32,
+  sourceBytes: 128 * 1024,
+  concurrentLoads: 4,
+});
+
+/** Only small PNG rasters can be displayed in the privileged host document. */
+export function isBrowserFaviconDataUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > BROWSER_FAVICON_LIMITS.dataUrlBytes
+    || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try {
+    const bytes = atob(value.slice("data:image/png;base64,".length));
+    if (bytes.length < 33 || bytes.slice(0, 8) !== "\x89PNG\r\n\x1a\n"
+      || bytes.slice(8, 16) !== "\x00\x00\x00\rIHDR") return false;
+    const dimensionAt = (offset: number) => new DataView(Uint8Array.from(bytes.slice(offset, offset + 4), (char) => char.charCodeAt(0)).buffer).getUint32(0);
+    const width = dimensionAt(16);
+    const height = dimensionAt(20);
+    return width > 0 && height > 0 && width <= BROWSER_FAVICON_LIMITS.dimension && height <= BROWSER_FAVICON_LIMITS.dimension;
+  } catch { return false; }
 }
 
 /**
@@ -189,9 +213,10 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
   const handles = new Set<string>();
   const rendererIds = new Set<string>();
   for (const item of value.tabs) {
-    if (!isRecord(item) || !hasOnlyKeys(item, ["tabId", "rendererTabId", "url", "title", "mode", "owner", "lease", "generation", "kind", "openerTabId"])) return null;
+    if (!isRecord(item) || !hasOnlyKeys(item, ["tabId", "rendererTabId", "url", "title", "faviconDataUrl", "mode", "owner", "lease", "generation", "kind", "openerTabId"])) return null;
     if (typeof item.tabId !== "string" || item.tabId.length === 0 || handles.has(item.tabId)
       || typeof item.url !== "string" || typeof item.title !== "string"
+      || (item.faviconDataUrl !== null && !isBrowserFaviconDataUrl(item.faviconDataUrl))
       || !Number.isSafeInteger(item.generation) || (item.generation as number) < 0
       || (item.mode !== "human" && item.mode !== "agent-active" && item.mode !== "human-paused")
       || (item.kind !== "embedded" && item.kind !== "popup")
@@ -218,6 +243,7 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
     handles.add(item.tabId);
     tabs.push({
       tabId: item.tabId, rendererTabId: item.rendererTabId as string | null, url: item.url, title: item.title,
+      faviconDataUrl: item.faviconDataUrl as string | null,
       mode: item.mode, owner, lease, generation: item.generation as number, kind: item.kind,
       openerTabId: item.openerTabId as string | null,
     });
