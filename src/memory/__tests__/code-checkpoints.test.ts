@@ -156,9 +156,12 @@ describe("native file-tool code checkpoints", () => {
     const outside = join(root, "outside.txt");
     await writeFile(outside, "outside");
     await turn("create", () => write("agent"));
-    await rm(file); await symlink(outside, file);
-    expect(await restoreCodeCheckpoint(sessionId, "create")).toMatchObject({ ok: false, conflictingFiles: [file] });
-    expect(await readFile(outside, "utf8")).toBe("outside");
+    // Windows file symlinks need Developer Mode or elevation (EPERM); hard links do not.
+    if (process.platform !== "win32") {
+      await rm(file); await symlink(outside, file);
+      expect(await restoreCodeCheckpoint(sessionId, "create")).toMatchObject({ ok: false, conflictingFiles: [file] });
+      expect(await readFile(outside, "utf8")).toBe("outside");
+    }
     await rm(file); await link(outside, file);
     expect(await restoreCodeCheckpoint(sessionId, "create")).toMatchObject({ ok: false, conflictingFiles: [file] });
   });
@@ -169,7 +172,8 @@ describe("native file-tool code checkpoints", () => {
     const target = join(parent, "file.txt");
     await turn("create", () => write("agent", target));
     await rm(parent, { recursive: true }); await writeFile(join(elsewhere, "file.txt"), "agent");
-    await symlink(elsewhere, parent);
+    // Junctions need no privilege on Windows; POSIX ignores the type.
+    await symlink(elsewhere, parent, "junction");
     expect(await restoreCodeCheckpoint(sessionId, "create")).toMatchObject({ ok: false, conflictingFiles: [target] });
     expect(await readFile(join(elsewhere, "file.txt"), "utf8")).toBe("agent");
   });
