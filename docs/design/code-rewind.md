@@ -6,6 +6,8 @@ Checkpoints capture original bytes immediately before authorized local `write_fi
 
 Shell commands, including bash side effects, are not checkpointed. File transfers and remote workload edits make code restore unavailable for any selected range crossing their turn. Missing or pruned checkpoints refuse explicitly. Conversation-only restore remains available. Rewind does not replace version control.
 
+Code restore retains hash guards for its restored baseline. Repeating that restore checks for external changes again. Later code checkpoints whose edits were undone become unavailable; they cannot silently succeed as forward restores. Earlier checkpoints and new turns can still rewind through the restored baseline.
+
 Before restore, all affected files must match the last native edit's SHA-256 hash, or be absent after a deletion. Gaps between consecutive edits also refuse, protecting external changes made between agent edits. Refusals list conflicting paths and leave files and conversation untouched. Symlinks, hard links, special files, changed ancestor resolution and oversized files refuse. Restore stages replacement bytes and rechecks hashes before applying changes.
 
 Concurrent external writers cannot be locked by the host. An I/O failure during replacement can leave a partial restore and returns failure without truncating the conversation. The original checkpoint remains on failure, but already restored files can then conflict with its expected after-hashes. Inspect the affected files and recover using version control before retrying.

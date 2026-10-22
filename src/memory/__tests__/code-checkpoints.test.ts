@@ -42,6 +42,31 @@ describe("native file-tool code checkpoints", () => {
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
   });
 
+  it("keeps restored baselines guarded against later external edits", async () => {
+    await writeFile(file, "original");
+    await turn("restored", async () => { await read(); await write("agent"); });
+    expect(await restoreCodeCheckpoint(sessionId, "restored")).toEqual({ ok: true });
+    await writeFile(file, "external after restore");
+    expect(await restoreCodeCheckpoint(sessionId, "restored")).toEqual({ ok: false, error: "code-restore-conflict", conflictingFiles: [file] });
+    expect(await readFile(file, "utf8")).toBe("external after restore");
+  });
+
+  it("refuses consumed later checkpoints while earlier and new turns remain usable", async () => {
+    await writeFile(file, "original");
+    await turn("one", async () => { await read(); await write("first"); });
+    await turn("two", async () => { await read(); await write("second"); });
+    await turn("three", async () => { await read(); await write("third"); });
+    expect(await restoreCodeCheckpoint(sessionId, "two")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("first");
+    expect(await restoreCodeCheckpoint(sessionId, "three")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+    await turn("four", async () => { await read(); await write("new work"); });
+    expect(await restoreCodeCheckpoint(sessionId, "four")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("first");
+    expect(await restoreCodeCheckpoint(sessionId, "one")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("original");
+    expect(await restoreCodeCheckpoint(sessionId, "two")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+  });
+
   it("deletes created files without deleting unrelated shell-created files", async () => {
     const shellFile = join(root, "shell-created.txt");
     await turn("create", async () => { await write("created"); await writeFile(shellFile, "untracked bash effect"); });

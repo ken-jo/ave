@@ -37,7 +37,7 @@ async function setup() {
   writeFileSync(source, after); writeFileSync(created, after);
   mkdirSync(join(ctx.aveHome, "code-checkpoints"), { mode: 0o700 });
   writeFileSync(join(ctx.aveHome, "code-checkpoints/turns.json"), JSON.stringify([{
-    sessionId: SESSION_ID, messageId: MESSAGE_ID, unavailable: false,
+    sessionId: SESSION_ID, messageId: MESSAGE_ID, unavailable: false, consumed: false,
     changes: [
       { path: source, before: original.toString("base64"), mode: 0o644, afterHash: createHash("sha256").update(after).digest("hex") },
       { path: created, before: null, mode: 0o600, afterHash: createHash("sha256").update(after).digest("hex") },

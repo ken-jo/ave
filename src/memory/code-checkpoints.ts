@@ -16,13 +16,14 @@ const ChangeSchema = z.object({
   before: z.string().max(Math.ceil(CODE_CHECKPOINT_POLICY.maxFileBytes / 3) * 4)
     .refine((value) => Buffer.byteLength(value, "base64") <= CODE_CHECKPOINT_POLICY.maxFileBytes
       && Buffer.from(value, "base64").toString("base64") === value).nullable(),
-  mode: z.number().int(),
+  mode: z.number().int().min(0).max(0o777),
   afterHash: HashSchema,
 });
 const TurnSchema = z.object({
   sessionId: z.string(),
   messageId: z.string(),
   unavailable: z.boolean(),
+  consumed: z.boolean(),
   changes: z.array(ChangeSchema),
 });
 const LedgerSchema = z.array(TurnSchema).max(CODE_CHECKPOINT_POLICY.maxTurns);
@@ -146,7 +147,7 @@ export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => P
   await exclusive(async () => {
     const turns = await load();
     const existing = turns.find((turn) => turn.sessionId === identity.sessionId && turn.messageId === identity.messageId);
-    if (!existing) turns.push({ ...identity, unavailable: false, changes: [] });
+    if (!existing) turns.push({ ...identity, unavailable: false, consumed: false, changes: [] });
     await save(turns, existing ?? turns[turns.length - 1]);
   });
   return turnContext.run(identity, run);
@@ -224,7 +225,7 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
     try {
       const turns = await load();
       const index = turns.findIndex((turn) => turn.sessionId === sessionId && turn.messageId === messageId);
-      if (index < 0) return { ok: false, error: "code-checkpoint-unavailable" };
+      if (index < 0 || turns[index].consumed) return { ok: false, error: "code-checkpoint-unavailable" };
       const suffix = turns.slice(index).filter((turn) => turn.sessionId === sessionId);
       if (suffix.some((turn) => turn.unavailable)) return { ok: false, error: "code-checkpoint-unavailable" };
       const plan = new Map<string, Change>();
@@ -243,12 +244,15 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
         else if (file.bytes !== null) present.add(path);
       }
       if (conflicts.size) return { ok: false, error: "code-restore-conflict", conflictingFiles: [...conflicts].sort() };
+      const changed = new Set([...plan].filter(([, change]) =>
+        hash(change.before === null ? null : Buffer.from(change.before, "base64")) !== change.afterHash,
+      ).map(([path]) => path));
       // Stage every replacement before changing any target. Do not create missing
       // parent directories: their removal is an external change and must refuse.
       const staged = new Map<string, string>();
       try {
         for (const [path, change] of plan) {
-          if (change.before === null) continue;
+          if (change.before === null || !changed.has(path)) continue;
           const temporary = join(dirname(path), `.ave-restore-${randomUUID()}`);
           const handle = await open(temporary, "wx", 0o600);
           staged.set(path, temporary);
@@ -264,13 +268,21 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
         }
         if (conflicts.size) return { ok: false, error: "code-restore-conflict", conflictingFiles: [...conflicts].sort() };
         for (const [path, change] of plan) {
+          if (!changed.has(path)) continue;
           if (change.before === null) {
             if (present.has(path)) await unlink(path);
           } else await rename(staged.get(path)!, path);
         }
-        // Keep boundaries but consume their edits, so code-only rewind is idempotent
-        // and a later turn starts from the restored state.
-        for (const turn of suffix) turn.changes = [];
+        // Keep the restored baseline guarded on repeat calls. Later points no
+        // longer describe the current code and cannot act as forward restores.
+        for (const turn of suffix) {
+          turn.changes = [];
+          turn.consumed = turn !== turns[index];
+        }
+        turns[index].changes = [...plan.values()].map((change) => ({
+          ...change,
+          afterHash: hash(change.before === null ? null : Buffer.from(change.before, "base64")),
+        }));
         await save(turns);
         return { ok: true };
       } finally {
