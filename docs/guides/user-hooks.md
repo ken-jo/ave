@@ -122,3 +122,27 @@ process.stdin.on("end", () => {
 For example, stdin includes `{"schema_version":1,"hook_event_name":"PreToolUse","session_id":"session-example","cwd":"/workspace","tool_name":"bash","tool_input":{"command":"git push --force"}}` plus the legacy envelope. A normal command completes with exit 0 and no stdout.
 
 HTTP, model, input-mutation, and background hooks are outside the supported contract.
+
+## Differences from Claude Code hooks
+
+Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks), accessed 2026-10-22. **Intended** marks a deliberate security or design choice; **gap** marks a difference that could be closed; **owner decision** marks a behavior change still awaiting the owner.
+
+| Area | Claude Code | Ave | Status |
+| --- | --- | --- | --- |
+| Events | 33 events, including `Setup`, `PostToolBatch`, `StopFailure`, `ConfigChange`, `FileChanged`, `WorktreeCreate`, and model-switch events | The 14 events above | Intended for now |
+| Common input | `transcript_path`, `permission_mode`, `prompt_id`, `scratchpad_dir`, `effort`, and `agent_id`/`agent_type` in agent contexts | `schema_version`, `hook_event_name`, `session_id`, `cwd` only | Gap |
+| `SessionStart` | `source`: `startup`, `resume`, `clear`, `compact`, `fork` | `session_meta`; no `source` | Gap |
+| `SessionEnd` | `reason`: `clear`, `resume`, `logout`, `prompt_input_exit`, `other` | `reason`: `new-conversation`, `load-session` | Gap (value set) |
+| `PreCompact` / `PostCompact` | `trigger` (`manual`/`auto`), `custom_instructions`; `compact_summary` after | `reason` (`manual`/`auto-compact`), token and message counts | Gap (naming) |
+| `Notification` | Fires per notification with `message`, `title`, `notification_type` | Fires once at turn end with the assistant text as `message` | Gap (semantics) |
+| `Stop` / `SubagentStop` | `stop_hook_active`, `last_assistant_message`; `decision: "block"` or exit 2 continues the turn, capped at 8 | Observe only; no continuation fields | Owner decision |
+| Matchers | `\|`/`,` lists of exact names, otherwise an unanchored JavaScript regex; `if` with permission-rule syntax on tool events | Anchored, case-sensitive globs, so `Edit\|Write` matches nothing | Gap |
+| Lifecycle matcher subject | Source, trigger, notification type, agent type, or error type; ignored on `UserPromptSubmit` and `Stop` | Session ID; prompt text for `UserPromptSubmit` | Gap |
+| Other nonzero exit | Non-blocking error unless `onFailure: "block"` | Fails closed on blocking events | Intended |
+| Exit 2 on non-blocking events | Ignored on `PostToolUse` and `Notification` | Denial result; observe-only events log it | Intended |
+| Plain stdout on exit 0 | Added as context on `UserPromptSubmit` and `SessionStart` | Non-JSON output is an explicit failure | Intended |
+| Decision output | `ask`, `defer`, `updatedInput`, `updatedPermissions`, `updatedToolOutput`, `additionalContext`, `systemMessage`, `suppressOutput`, `terminalSequence` | Rejected as unsupported output; only allow/deny | Intended |
+| Handler types | `command`, `http`, `mcp_tool`, `prompt`, `agent`; `async` and `asyncRewake` | Trusted local argv `command` only | Intended |
+| Execution | Matching hooks run in parallel; identical handlers deduplicated | Sequential; the chain stops at the first denial | Intended |
+| Timeouts | 600 s default; 30 s on `UserPromptSubmit`; 1.5 s `SessionEnd` budget | 5 s ceiling | Intended |
+| Configuration | User, project, local, and managed settings; plugin `hooks/hooks.json`; skill and subagent frontmatter | `~/.config/ave/hooks/hooks.json` with hash enrollment; bundled plugin hooks run in their own relay | Intended |
