@@ -42,7 +42,8 @@ import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
-import { installShellIntegration } from "../shell-integration.js";
+import { installShellIntegration, TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
+import { readTerminalForeground } from "../shell-process.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
 import { typeLineAtPrompt } from "../pty-manager.js";
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
@@ -471,8 +472,15 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   // The shell's latest output, for the report of a command that left it not ready.
   let recentOutput = "";
+  const recentEvents: { at: number; kind: string; text: string; prompts: number; state: string }[] = [];
+  const recordEvent = (kind: string, text: string): void => {
+    recentEvents.push({ at: Date.now(), kind, text: text.slice(-800), prompts: tracker.promptEndCount(), state: tracker.promptState() });
+    if (recentEvents.length > 30) recentEvents.shift();
+  };
+  const writeInput = (data: string): void => { recordEvent("input", data); pty.write(data); };
   pty.onData((data) => {
     tracker.recordOutput(data);
+    recordEvent("output", data);
     recentOutput = (recentOutput + data).slice(-600);
   });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
@@ -487,43 +495,74 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     const assertUnsubmitted = (): void => {
       if (tracker.nextBlockId() !== expectedBlockId) throw new Error(`${name}: a command started during refused preparation: ${line}`);
     };
+    const capturePreparationState = async (stage: string, reason: string, query: boolean): Promise<void> => {
+      // Capture the live terminal before teardown; a ready marker alone does
+      // not establish that the shell owns the tty or still receives SIGINT.
+      const foreground = await readTerminalForeground(pty.pid);
+      const ttyPath: unknown = Reflect.get(pty, "pty");
+      const tty = typeof ttyPath === "string"
+        ? spawnSync("/bin/stty", [process.platform === "darwin" ? "-f" : "-F", ttyPath, "-a"], { encoding: "utf8", timeout: 1_000 })
+        : undefined;
+      const queryGeneration = tracker.editLineReportGeneration();
+      if (query && foreground.ok && foreground.foreground.pid === pty.pid && foreground.foreground.command === name && tracker.promptState() === "ready" && tracker.supportsEditLineQuery() && !tracker.hasExited()) {
+        assertUnsubmitted();
+        writeInput(TERMINAL_EDIT_LINE_QUERY);
+        await until(() => tracker.editLineReportGeneration() > queryGeneration, 500);
+        assertUnsubmitted();
+      }
+      process.stderr.write(`[terminal_run preparation diagnostic] ${JSON.stringify({ stage, reason, previous, refused: line, shell: name, pid: pty.pid, foreground, tty: tty?.stdout, ttyError: tty?.stderr, queryGeneration, queryAfter: tracker.editLineReportGeneration(), report: tracker.editLineReport(), trace: readFileSync(trace, "utf8").slice(-4_000), events: recentEvents })}\n`);
+    };
     const typeOnce = async () => {
       assertUnsubmitted();
       const result = await typeLineAtPrompt({
         blocks: tracker,
         isLive: () => !tracker.hasExited(),
-        write: (data) => pty.write(data),
+        write: (data) => writeInput(data),
         // The operating-system check is pty-manager's, tested on its own; here
         // the shell is known to be the foreground process.
         verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
         missing: "no terminal",
       }, line);
-      if (!result.ok) assertUnsubmitted();
-      else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
+      if (!result.ok) {
+        assertUnsubmitted();
+        if (result.reason === "no-fresh-prompt") await capturePreparationState("before-recovery", result.reason, false);
+      } else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
       return result;
     };
     let typed = await typeOnce();
+    const recoveries: string[] = [];
     // A preparation refusal must have run nothing. Retry the same line only
     // after another fresh prompt, and keep one block baseline across attempts.
     for (let attempt = 0; !typed.ok && ["no-fresh-prompt", "edit-line-mismatch", "between-prompts"].includes(typed.reason) && attempt < 3; attempt++) {
       preparationRetries.push(`${name}: ${typed.reason}`);
       assertUnsubmitted();
       const prompts = tracker.promptEndCount();
-      pty.write("\u0003");
-      const ready = await until(() => tracker.promptEndCount() > prompts && tracker.promptState() === "ready", 3_000);
-      assertUnsubmitted();
+      const deadline = Date.now() + 3_000;
+      let ready = false;
+      let interrupts = 0;
+      // Retry interruption within the same recovery deadline, and require
+      // that every attempt has still run nothing before accepting a prompt.
+      while (!ready && Date.now() < deadline && !tracker.hasExited()) {
+        assertUnsubmitted();
+        writeInput("\u0003");
+        interrupts++;
+        ready = await until(() => tracker.promptEndCount() > prompts && tracker.promptState() === "ready", Math.min(500, Math.max(0, deadline - Date.now())));
+        assertUnsubmitted();
+      }
+      recoveries.push(`attempt=${attempt + 1},reason=${typed.reason},interrupts=${interrupts},prompts=${prompts}->${tracker.promptEndCount()},ready=${ready}`);
       if (!ready) break;
       typed = await typeOnce();
     }
     if (!typed.ok) {
+      await capturePreparationState("final-refusal", typed.reason, true);
       const detail = `${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (state ${tracker.promptState()}; edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`;
       stuck.push(detail);
-      throw new Error(`${detail}; refused ${JSON.stringify(line)}`);
+      throw new Error(`${detail}; refused ${JSON.stringify(line)}; recoveries ${JSON.stringify(recoveries)}`);
     }
     previous = line;
     const prompts = tracker.promptEndCount();
     if (!await until(() => tracker.promptEndCount() > prompts, 5_000)) {
-      pty.write("\u0003");
+      writeInput("\u0003");
       await until(() => tracker.promptEndCount() > prompts, 3_000);
       return { blockId: typed.firstBlockId, hung: true };
     }
@@ -541,7 +580,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const refused = await typeLineAtPrompt({
     blocks: tracker,
     isLive: () => !tracker.hasExited(),
-    write: (data) => pty.write(data),
+    write: (data) => writeInput(data),
     verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
     missing: "no terminal",
   }, "true");
@@ -549,7 +588,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     throw new Error(`${name}: typing with a command-not-found handler defined was not refused (${JSON.stringify(refused)})`);
   }
   const beforeRemoval = tracker.promptEndCount();
-  pty.write(`${name === "zsh" ? "unfunction command_not_found_handler" : "unset -f command_not_found_handle"}\r`);
+  writeInput(`${name === "zsh" ? "unfunction command_not_found_handler" : "unset -f command_not_found_handle"}\r`);
   if (!await until(() => tracker.promptEndCount() > beforeRemoval && tracker.promptState() === "ready", 5_000)) {
     throw new Error(`${name}: the prompt was not ready after the handler was removed (${tracker.promptState()})`);
   }
