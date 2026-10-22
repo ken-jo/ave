@@ -59,7 +59,7 @@ import type { DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive } from "../permissions/asrt-sandbox.js";
+import { assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive } from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import {
@@ -270,6 +270,13 @@ export async function runOneHookScript(
   }
 
   assertManagedChildProcessAdmissionOpen("hook:script");
+  if (confinement) {
+    try {
+      assertExtensionStartAllowed();
+    } catch (error) {
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+  }
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;

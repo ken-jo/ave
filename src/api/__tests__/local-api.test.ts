@@ -140,6 +140,7 @@ describe("local-api dispatch — gesture-gated mutating channels are blocked", (
       PERMISSIONS.removeRule,
       PERMISSIONS.policySet,
       PERMISSIONS.sandboxWindowsInstall,
+      PERMISSIONS.approveExtensionsWithoutIsolation,
     ];
     for (const channel of gated) {
       for (const origin of ["local-api", "cli"] as const) {

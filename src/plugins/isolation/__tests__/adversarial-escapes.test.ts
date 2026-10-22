@@ -34,6 +34,7 @@
  * the Electron control and row 3 not exercised (`it.runIf`), never passed.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 
 /** What the protocol session warned about this connection, for escape 4's unknown field. */
 const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
@@ -84,6 +85,8 @@ import { resolveProcessLaunch } from "../../process-entry.js";
 import { buildChildEntry, childBundleDir } from "./child-entry-bundle.js";
 import { installPythonSmoke } from "./python-smoke-harness.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "./sandbox-cases.js";
+
+useVerifiedAveHomePrivacy();
 
 const FIXTURE_SOURCE = fileURLToPath(new URL("./fixtures/adversarial/", import.meta.url));
 const PLUGIN_ID = "adversarial";

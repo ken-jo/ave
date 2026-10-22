@@ -45,6 +45,9 @@ import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
 
 /** The preview's id; a confirmation step here is a test failure. */
@@ -54,6 +57,7 @@ function previewIdOf(view: SourcePreviewResultView): string {
 }
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
+const ORIGINAL_PLATFORM = process.platform;
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
@@ -338,6 +342,9 @@ describe("MarketplaceService", () => {
   }
 
   afterEach(async () => {
+    _resetAveHomePrivacyForTest();
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(ORIGINAL_PLATFORM);
     service.close();
     for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
@@ -392,6 +399,16 @@ describe("MarketplaceService", () => {
     expect(preview.type).toBe("marketplace");
     return service.addSource({ previewId: previewIdOf(preview) });
   }
+
+  it("returns an install plan while home privacy refuses extension starts", async () => {
+    const { url } = market();
+    await addMarket(url);
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: root, category: "read-back-failed", reason: "fixture" });
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" }))
+      .resolves.toMatchObject({ hookConfinement: "user-permissions", version: "1.0.0" });
+  });
 
   it("previews a marketplace, adds it under the suggested id, and lists its packages", async () => {
     const { url } = market();

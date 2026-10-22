@@ -85,7 +85,7 @@ import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler
 import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
-import { ensureAveHomePrivate, aveHome } from "./shared/ave-home.js";
+import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot } from "./shared/ave-home.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
@@ -225,9 +225,10 @@ export async function bootstrap(
   // `0o700` mkdir; on Windows `mode` is not a permission at all, so the same
   // step sets the DACL every file created underneath will inherit.
   const homePrivacy = ensureAveHomePrivate();
+  setAveHomePrivacyAtBoot(homePrivacy);
   if (homePrivacy.enforcement === "none") {
     log.error(
-      `boot: ${homePrivacy.home} could not be restricted to this account (${homePrivacy.reason}) — settings, audit log and secrets are protected only by whatever the parent directory grants`,
+      `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.category}: ${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,
     );
   }
 

@@ -149,6 +149,7 @@ export const PERMISSIONS = {
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
+  approveExtensionsWithoutIsolation: "ave:permissions:approve-extensions-without-isolation",
   // `/allow <sentence>` — resolve a user sentence onto one of the PENDING
   // approval's own scopes. Gesture-gated because only a keyboard-origin
   // submission may speak for the user, but it grants nothing on its own: the

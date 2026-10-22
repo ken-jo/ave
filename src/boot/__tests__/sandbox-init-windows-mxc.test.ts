@@ -54,6 +54,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { assertAveHomePrivacyForConfinement, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -93,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _resetAveHomePrivacyForTest();
   vi.unstubAllEnvs();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -100,6 +102,29 @@ afterEach(() => {
   __resetWindowsSandboxSubstrateForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
+});
+
+it("degrades before initializing the extension backend when private-directory protection fails", async () => {
+  const path = "D:/private-state/secrets";
+  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category: "read-back-failed", reason: "read-back failed" });
+  h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+  h.detectMxc.mockResolvedValue(MXC_OK);
+  h.initialize.mockImplementation(async (settings) => {
+    if (settings.windows?.externalConfinement !== true) assertAveHomePrivacyForConfinement();
+  });
+
+  const context = harness.context(true, true);
+  const logRefusal = vi.fn();
+  context.bootAuditLogger.log = logRefusal;
+  await initSandboxGate(context);
+
+  expect(h.initialize).not.toHaveBeenCalled();
+  expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed", causes: ["ave-home-privacy-failed"] });
+  expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), "read-back-failed", path);
+  expect(() => assertAveHomePrivacyForConfinement()).toThrow("Settings > Permissions");
+  expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
+  await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {

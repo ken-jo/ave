@@ -154,6 +154,7 @@ import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { createValidationHost } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
+import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
@@ -170,6 +171,8 @@ import { verifyPluginIntegrity } from "../../runtime/index.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
+
+useVerifiedAveHomePrivacy();
 
 const execFileAsync = promisify(execFile);
 

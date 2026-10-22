@@ -404,6 +404,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permission:remove-rule",
         "ave:permission:set-mode",
         "ave:permissions:approval-sentence-select",
+        "ave:permissions:approve-extensions-without-isolation",
         "ave:permissions:audit-show",
         "ave:permissions:audit-verify",
         "ave:permissions:deferred-list",
