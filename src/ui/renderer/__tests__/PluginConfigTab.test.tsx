@@ -1499,7 +1499,7 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   let changed = () => {};
   setRendererApi({
     gitMarketplace: market,
-    getSettings: async () => ({ alerts: { osNotificationsEnabled: false } }),
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } }),
     alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
   });
   render(<PluginConfigTab initialPluginId="meeting" />);

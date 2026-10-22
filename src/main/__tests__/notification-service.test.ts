@@ -1028,3 +1028,31 @@ describe("NotificationService — never-throw contract (#2103)", () => {
     expect(() => factoryStub.calls[0].clickHandler!()).not.toThrow();
   });
 });
+
+describe("turn completion sound", () => {
+  it("uses one normal-priority audible notification and shares the cooldown", () => {
+    const factory = makeNotificationFactoryStub();
+    let enabled = true;
+    const service = new NotificationService({
+      getMainWindow: () => null,
+      notificationFactory: factory.factory,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isTurnCompletionSoundEnabled: () => enabled,
+    });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
+    try {
+      service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
+      service.fire({ kind: "turn-end", title: "Done", body: "Duplicate" });
+      expect(factory.calls).toHaveLength(1);
+      expect(factory.calls[0]).toMatchObject({ silent: false, urgency: "normal" });
+      expect(factory.calls[0].show).toHaveBeenCalledOnce();
+      enabled = false;
+      clock.mockReturnValue(100_000 + __test.COOLDOWN_MS_BY_KIND["turn-end"] + 1);
+      service.fire({ kind: "turn-end", title: "Done", body: "Next", urgent: true });
+      expect(factory.calls).toHaveLength(2);
+      expect(factory.calls[1].silent).toBe(true);
+      expect(factory.calls[1].show).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
+  });
+});

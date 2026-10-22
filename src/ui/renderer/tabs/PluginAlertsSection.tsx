@@ -92,8 +92,9 @@ function AlertKindControl({ row, api, refresh }: { row: AlertKindRow; api: Alert
   </div>;
 }
 
-export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh }: {
+export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh, completionSound }: {
   pluginId: string; rows: AlertKindRow[]; api: AlertsApi; osEnabled: boolean; refresh: () => Promise<void>;
+  completionSound?: { enabled: boolean; onChange: (enabled: boolean) => Promise<void> };
 }) {
   const { t } = useTranslation();
   const kinds = rows.filter((row) => row.pluginId === pluginId);
@@ -110,9 +111,20 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh }:
     } catch { setError(t("alerts.saveFailed")); }
     finally { setWorking(false); }
   }
+  async function handleCompletionSoundChange(enabled: boolean) {
+    if (!completionSound) return;
+    setWorking(true); setError(null);
+    try { await completionSound.onChange(enabled); await refresh(); }
+    catch { setError(t("alerts.saveFailed")); }
+    finally { setWorking(false); }
+  }
   return <section data-testid={`plugin-alerts:${pluginId}`} className="min-w-0 space-y-3 border-t border-border pt-3">
     <h3 className="text-sm font-semibold">{t(builtIn ? "alerts.builtIn" : "alerts.title")}</h3>
     {builtIn && <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.osMaster")}</span><Switch className="shrink-0" aria-label={t("alerts.osMaster")} checked={osEnabled} disabled={working} onCheckedChange={(enabled) => void setMaster(enabled)} /></label>}
+    {builtIn && completionSound && <div className="space-y-1">
+      <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.turnCompletionSound")}</span><Switch data-testid="turn-completion-sound" className="shrink-0" aria-label={t("alerts.turnCompletionSound")} checked={completionSound.enabled} disabled={working} onCheckedChange={(enabled) => void handleCompletionSoundChange(enabled)} /></label>
+      <p className="text-xs text-muted-foreground">{t("alerts.turnCompletionSoundHelp")}</p>
+    </div>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {!builtIn && kinds[0]?.reasoning && <p className="break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">{kinds[0].reasoning}</p>}
     {kinds.map((row) => <AlertKindControl key={`${row.kindKey}:${row.declaration.visibility}`} row={row} api={api} refresh={refresh} />)}
