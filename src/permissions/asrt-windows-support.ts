@@ -380,6 +380,18 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     };
   }
 
+  const { getAveHomePrivacyFailurePath } = await import("../shared/ave-home.js");
+  const failedPath = getAveHomePrivacyFailurePath();
+  if (failedPath !== undefined) {
+    return {
+      applicable: true,
+      userState: null,
+      wfpState: null,
+      ready: false,
+      homePrivacyError: { path: failedPath },
+      instructions: "",
+    };
+  }
   const mod = await import("@anthropic-ai/sandbox-runtime");
   let srtWin: SrtWinSpawn;
   try {

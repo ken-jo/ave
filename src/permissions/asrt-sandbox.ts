@@ -9,7 +9,7 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -2048,6 +2048,9 @@ export async function initializeAsrtSandbox(
       "initializeAsrtSandbox: already active — refusing to re-initialize",
     );
   }
+  if (trustedSettings.windows?.externalConfinement !== true) {
+    assertAveHomePrivacyForConfinement();
+  }
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild
   // the SHARED config additively (see the WORKER UDS header). On a fresh init
@@ -2460,6 +2463,7 @@ async function wrapLongLivedCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
+  assertAveHomePrivacyForConfinement();
   noteConfinedProcessesMayRun();
   // Publish the temp root HERE rather than trusting a boot step to have run.
   // The deny floor refuses ASRT's shared default paths unconditionally, so a
@@ -2759,6 +2763,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
+  assertAveHomePrivacyForConfinement();
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,

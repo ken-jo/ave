@@ -1483,7 +1483,15 @@ export function PermissionsTab({
             </p>
           ) : null}
           {(sandboxEnabled || workerConfinementEnabled) && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.helperError ? (
+            windowsStatus.homePrivacyError ? (
+              <p
+                data-testid="os-sandbox-windows-home-privacy-error"
+                role="alert"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: windowsStatus.homePrivacyError.path })}
+              </p>
+            ) : windowsStatus.helperError ? (
               <p
                 data-testid="os-sandbox-windows-helper-unavailable"
                 data-error-code={windowsStatus.helperError}

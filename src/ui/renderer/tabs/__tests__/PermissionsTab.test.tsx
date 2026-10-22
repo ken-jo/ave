@@ -1380,6 +1380,23 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-install")).toBeInTheDocument();
   });
 
+  it("names the private directory when extension confinement is refused and offers no elevated setup", async () => {
+    const path = String.raw`D:\private-state\secrets`;
+    const { ave } = installApiWithWindows({
+      sandboxWindowsStatus: vi.fn().mockResolvedValue({
+        applicable: true, userState: null, wfpState: null, ready: false,
+        homePrivacyError: { path }, instructions: "",
+      }),
+    });
+    await act(async () => { render(<PermissionsTab />); });
+    const notice = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+    expect(notice).toHaveAttribute("role", "alert");
+    expect(notice).toHaveTextContent(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path }));
+    expect(notice).toHaveTextContent(path);
+    expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+    expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+  });
+
   it("says the container check is still running instead of claiming MXC or a failure", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({

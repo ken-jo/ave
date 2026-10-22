@@ -54,6 +54,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { assertAveHomePrivacyForConfinement, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -93,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _resetAveHomePrivacyForTest();
   vi.unstubAllEnvs();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -100,6 +102,24 @@ afterEach(() => {
   __resetWindowsSandboxSubstrateForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
+});
+
+it("refuses the extension backend on a failed private-directory check while retaining the proxy-only route", async () => {
+  const path = "D:/private-state/secrets";
+  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, reason: "read-back failed" });
+  h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+  h.detectMxc.mockResolvedValue(MXC_OK);
+  h.initialize.mockImplementation(async (settings) => {
+    if (settings.windows?.externalConfinement !== true) assertAveHomePrivacyForConfinement();
+  });
+
+  await initSandboxGate(harness.context(true, true));
+
+  expect(h.initialize).toHaveBeenCalledTimes(2);
+  expect(h.initialize.mock.calls[1]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
+  expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining(path));
+  await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {

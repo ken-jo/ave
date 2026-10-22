@@ -70,19 +70,62 @@ export const AGENTS_MERGED_DOC_NAME = "AGENTS.md.merged";
 export type AveHomePrivacy =
   | { enforcement: "posix-mode"; home: string }
   | { enforcement: "win32-dacl"; home: string; sid: string }
-  | { enforcement: "none"; home: string; reason: string };
+  | { enforcement: "none"; home: string; failedPath?: string; reason: string };
 
 /** Seam for the Windows ACL commands, so the argv can be asserted anywhere. */
 export interface AveHomePrivacyRuntime {
   platform: NodeJS.Platform;
   run(file: string, args: readonly string[]): string;
+  readDacl(path: string): string;
 }
 
 const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
   platform: process.platform,
   run: (file, args) =>
     execFileSync(file, [...args], { encoding: "utf-8", windowsHide: true }),
+  readDacl: readWindowsDirectoryDacl,
 };
+
+/** Read only the access descriptor, without localized account names. */
+export function readWindowsDirectoryDacl(path: string): string {
+  const literalPath = path.replace(/'/g, "''");
+  return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+    `$ErrorActionPreference = 'Stop'; $acl = Get-Acl -LiteralPath '${literalPath}'; $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)`,
+  ], { encoding: "utf-8", windowsHide: true }).trim();
+}
+
+function isOwnerOnlyDacl(sddl: string, sid: string): boolean {
+  const match = /^D:((?:P|AI|AR)*)\(A;(OICI|CIOI);(FA|0x001f01ff|0x1f01ff);;;(S-1-[0-9-]+)\)$/.exec(sddl.trim());
+  return match !== null && match[1].includes("P") && match[4] === sid;
+}
+
+let bootHomePrivacy: AveHomePrivacy | undefined;
+
+/** Boot publishes this before any confinement backend can start. */
+export function setAveHomePrivacyAtBoot(privacy: AveHomePrivacy): void {
+  bootHomePrivacy = Object.freeze({ ...privacy });
+}
+
+/** The failed path is safe to show; command diagnostics stay in the host log. */
+export function getAveHomePrivacyFailurePath(): string | undefined {
+  return process.platform === "win32" && bootHomePrivacy?.enforcement === "none"
+    ? bootHomePrivacy.failedPath ?? bootHomePrivacy.home
+    : undefined;
+}
+
+/** Guard initialization and each confined extension effect boundary. */
+export function assertAveHomePrivacyForConfinement(): void {
+  const path = getAveHomePrivacyFailurePath();
+  if (path !== undefined) {
+    throw new Error(`Extension confinement refused: owner-only directory protection could not be verified for ${path}`);
+  }
+}
+
+/** Test teardown only; production seals the result during boot. */
+export function _resetAveHomePrivacyForTest(): void {
+  bootHomePrivacy = undefined;
+}
 
 /**
  * Resolve a Windows system executable by absolute path rather than letting
@@ -141,28 +184,38 @@ function parseCurrentUserSid(whoamiCsv: string): string {
  * holds under `0o700` as well.
  *
  * Failure is REPORTED, never swallowed: the result says `"none"` with the
- * reason so the caller logs a home directory whose protection is unknown,
- * rather than the code implying a `0o700` that was never applied.
+ * reason so boot can refuse confinement whose private storage is unprotected.
+ * Secrets also get an independent protected DACL, checked by the same reader.
  */
 export function ensureAveHomePrivate(
   home = aveHome(),
   runtime: AveHomePrivacyRuntime = DEFAULT_PRIVACY_RUNTIME,
 ): AveHomePrivacy {
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  if (runtime.platform !== "win32") return { enforcement: "posix-mode", home };
+  if (runtime.platform !== "win32") {
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    return { enforcement: "posix-mode", home };
+  }
+  let path = home;
   try {
+    mkdirSync(home, { recursive: true, mode: 0o700 });
     const sid = parseCurrentUserSid(
       runtime.run(win32SystemBinary("whoami"), ["/user", "/fo", "csv", "/nh"]),
     );
-    runtime.run(win32SystemBinary("icacls"), [
-      home,
-      "/inheritance:r",
-      "/grant:r",
-      `*${sid}:(OI)(CI)F`,
-      "/q",
-    ]);
+    for (path of [home, join(home, "secrets")]) {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      runtime.run(win32SystemBinary("icacls"), [
+        path,
+        "/inheritance:r",
+        "/grant:r",
+        `*${sid}:(OI)(CI)F`,
+        "/q",
+      ]);
+      if (!isOwnerOnlyDacl(runtime.readDacl(path), sid)) {
+        throw new Error("Directory DACL is not protected owner-only FullControl with object and container inheritance");
+      }
+    }
     return { enforcement: "win32-dacl", home, sid };
   } catch (err) {
-    return { enforcement: "none", home, reason: (err as Error).message };
+    return { enforcement: "none", home, failedPath: path, reason: (err as Error).message };
   }
 }
