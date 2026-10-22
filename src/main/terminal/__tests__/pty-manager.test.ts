@@ -19,7 +19,7 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
  *   - kill / killAll tear down + decrement ASRT state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
@@ -237,8 +237,21 @@ function spawnedNonce(env: Record<string, string>): string {
   return readFileSync(join(env.ZDOTDIR ?? env.HOME!, SHELL_INTEGRATION_NONCE_FILE), "utf-8");
 }
 
-/** The workspace root the module anchors the write-jail to by default. */
-const ROOT = canonicalizePathForMatch(process.cwd());
+/**
+ * The workspace root the module anchors the write-jail to by default. It is
+ * canonicalized under the same platform the tests emulate (see beforeEach): on
+ * a win32 host the drive-letter case fold follows process.platform, so a root
+ * computed under the native platform would not match the module's.
+ */
+const ROOT = (() => {
+  if (nativePlatform !== "win32") return canonicalizePathForMatch(process.cwd());
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  try {
+    return canonicalizePathForMatch(process.cwd());
+  } finally {
+    Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+  }
+})();
 
 let emitted: Array<{ event: string; payload: unknown }> = [];
 /** The window each emitted event was addressed to, index for index with `emitted`. */
@@ -378,7 +391,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // command, so only an assignment inside the wrap reaches the shell.
     expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
     expect(statSync(temp).isDirectory()).toBe(true);
-    if (process.platform !== "win32") expect(statSync(temp).mode & 0o777).toBe(0o700);
+    if (nativePlatform !== "win32") expect(statSync(temp).mode & 0o777).toBe(0o700);
     // Written under the HOME the wrap already grants.
     expect(options.filesystem.allowWrite).toContain(sandboxHome);
   });
@@ -1348,14 +1361,16 @@ describe("pty-manager typing an approved agent command", () => {
     pty.emitData(prompt());
     const real = mkdtempSync(join(tmpdir(), "ave-pty-cwd-"));
     const link = `${real}-link`;
-    symlinkSync(real, link);
+    symlinkSync(real, link, nativePlatform === "win32" ? "junction" : "dir");
     try {
       foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: realpathSync.native(real) } };
       await expect(verifyTerminalShell(TAB, 3, link)).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch(real) });
       await expect(verifyTerminalShell(TAB, 3, tmpdir())).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
       await expect(verifyTerminalShell(TAB, 4, link)).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
     } finally {
-      rmSync(link, { force: true });
+      // A junction is removed as a directory; rmdir does not follow it.
+      if (nativePlatform === "win32") rmdirSync(link);
+      else rmSync(link, { force: true });
       rmSync(real, { recursive: true, force: true });
     }
   });
