@@ -23,10 +23,10 @@ export interface UseActiveViewResult {
   activeView: InlineViewKey;
   /**
    * Navigate — persists immediately, INCLUDING before the initial read has
-   * resolved. That last part is a deliberate divergence from `useSidebarTab`
-   * and `useSettingsTab`, which suppress writes until their own read lands:
-   * those two let the read win the race and overwrite local state with the
-   * stored value, so a write made before it arrives has nothing to protect.
+   * resolved. That last part differs from `useSettingsTab`, which suppresses
+   * writes until its own read lands: it lets the read win the race and
+   * overwrite local state with the stored value, so a write made before it
+   * arrives has nothing to protect.
    * This hook lets the NAVIGATION win it instead, so the same suppression
    * would leave the location it just discarded as the one the next launch
    * restores.
@@ -51,7 +51,7 @@ export interface UseActiveViewResult {
 /**
  * The main window's location, persisted so a restart resumes it.
  *
- * Mirrors `useSidebarTab`: mount-seed from `SystemSettings`, then a single
+ * Mount-seed from `SystemSettings`, then a single
  * setter that updates local state and writes through. A navigation is discrete
  * and has no uncommitted intermediate state (unlike a width drag), so every
  * switch persists rather than debouncing.

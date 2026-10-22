@@ -121,8 +121,27 @@ describe("main-area terminal and web panels", () => {
     expect(container.querySelector('[data-testid="web-panel-empty"]')).not.toBeNull();
 
     // The terminal the pane left is still running; the row brings THAT one back.
-    await clickSidebarNavRow("features", "sidebar-terminal");
+    await act(async () => fireEvent.click(container.querySelector(`[data-testid="sidebar-surface-${terminal!.tabId}"]`)!));
     await waitFor(() => expect(shownSurfaces(container)[0]).toEqual(terminal));
+  });
+
+  it("opens a side-panel browser from its sidebar item after the pane has shown another surface", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void } };
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "sidebar-side-page", op: "new", url: "about:blank" }));
+    const pageId = await waitFor(() => {
+      const tab = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]');
+      expect(tab).not.toBeNull();
+      return tab!.getAttribute("data-tab-id")!;
+    });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("terminal"));
+    const terminalId = shownSurfaces(container)[0]!.tabId;
+    await act(async () => fireEvent.click(container.querySelector(`[data-testid="sidebar-surface-${pageId}"]`)!));
+    await waitFor(() => expect(container.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')?.getAttribute("data-tab-id")).toBe(pageId));
+    expect(shownSurfaces(container)).toHaveLength(0);
+    expect(container.querySelectorAll(`[data-testid="sidebar-surface-${terminalId}"]`)).toHaveLength(1);
+    expect(container.querySelectorAll(`[data-testid="sidebar-surface-${pageId}"]`)).toHaveLength(1);
   });
 
   it("lets the agent browser tools reach a main web panel: reported as the active surface, shown, badged and closed there", async () => {

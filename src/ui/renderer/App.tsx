@@ -69,7 +69,6 @@ import { buildQuickActions } from "./components/command-actions.js";
 import { useAppUpdate } from "./hooks/use-app-update.js";
 import { useAppMode } from "./hooks/use-app-mode.js";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
-import { useSidebarTab } from "./hooks/use-sidebar-tab.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
@@ -235,8 +234,6 @@ export function App() {
     setWidth: setSidebarWidth,
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
-  // Sidebar Chats/Projects tab — persisted the same way as sidebarWidth.
-  const { activeTab: sidebarActiveTab, setActiveTab: setSidebarActiveTab } = useSidebarTab(api);
 
   // The tiled chat groups — the geometry. See `useChatGroups` and
   // docs/design/tiled-chat-groups.md.
@@ -583,6 +580,29 @@ export function App() {
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
 
+  const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
+  mainBrowserHostRef.current = { chatGroups, mainSurfaces };
+  const openWorkspaceSurface = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const surface = surfaces.get(tabId);
+    if (surface) {
+      const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
+      if (paneId) {
+        groups.focus(paneId);
+        const active = focusedActiveSurfaceRef.current;
+        if (active?.tabId === tabId) showActiveSurface(active);
+      } else groups.setPaneContent(groups.focusedId, { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId });
+      return true;
+    }
+    const groupId = activateSideTab(tabId);
+    if (groupId) {
+      groups.setPaneContent(groupId, PANE_HOME);
+      groups.focus(groupId);
+      return true;
+    }
+    return false;
+  }, []);
+
   /**
    * Show the terminal that most recently asked for attention: its pane when a
    * pane shows it, the focused pane when it is a main terminal no pane shows,
@@ -592,25 +612,11 @@ export function App() {
   const jumpToUnreadTerminal = useCallback(() => {
     for (let latest = latestUnreadTerminal(); latest; latest = latestUnreadTerminal()) {
       const { tabId } = latest;
-      const paneId = Object.entries(chatGroups.contentById).find(([, location]) => location?.surface === tabId)?.[0];
-      if (paneId) {
-        chatGroups.focus(paneId);
-        markTerminalRead(tabId);
-        return;
-      }
-      if (mainSurfaces.get(tabId)) {
-        chatGroups.setPaneContent(chatGroups.focusedId, { view: "terminal", surface: tabId });
-        markTerminalRead(tabId);
-        return;
-      }
-      const groupId = activateSideTab(tabId);
+      const opened = openWorkspaceSurface(tabId);
       markTerminalRead(tabId);
-      if (groupId) {
-        chatGroups.focus(groupId);
-        return;
-      }
+      if (opened) return;
     }
-  }, [chatGroups, mainSurfaces]);
+  }, [openWorkspaceSurface]);
 
   // What the side chat acts on is also the tab main's agent tools default to
   // when none is named: one report per window, from the one store.
@@ -631,20 +637,10 @@ export function App() {
   // focusing the pane that holds it, else putting it in the focused pane —
   // and close closes it like the pane's own close. It opens no agent tabs;
   // those go beside the chat that asked.
-  const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
-  mainBrowserHostRef.current = { chatGroups, mainSurfaces };
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => null,
     hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",
-    selectTab: (tabId) => {
-      const { chatGroups: groups } = mainBrowserHostRef.current;
-      const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
-      if (paneId) {
-        groups.focus(paneId);
-        const surface = focusedActiveSurfaceRef.current;
-        if (surface?.tabId === tabId) showActiveSurface(surface);
-      } else groups.setPaneContent(groups.focusedId, { view: "web", surface: tabId });
-    },
+    selectTab: openWorkspaceSurface,
     closeTab: (tabId) => {
       const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
       for (const [paneId, content] of Object.entries(groups.contentById)) {
@@ -653,7 +649,7 @@ export function App() {
       surfaces.close(tabId);
       forgetActiveSurface(tabId);
     },
-  }), [api]);
+  }), [api, openWorkspaceSurface]);
 
   // Focusing a pane that shows a terminal or a page makes it what the side
   // chat acts on (`preview/active-surface.ts`). Shown once per focus change;
@@ -2305,8 +2301,9 @@ export function App() {
                 viewNav={viewNav}
                 conversationActions={conversationActions}
                 projectActions={projectActions}
-                activeSidebarTab={sidebarActiveTab}
-                onActiveSidebarTabChange={setSidebarActiveTab}
+                mainSurfaces={mainSurfaces.surfaces}
+                chatGroupIds={leafIds(chatGroups.tree)}
+                onOpenSurface={openWorkspaceSurface}
                 isSessionStarred={isSessionStarred}
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}

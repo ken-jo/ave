@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { triggerIntersection } from "../../../../../test/renderer/setup.js";
-import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
@@ -11,43 +10,17 @@ import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.j
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
-import type { SidebarTab } from "../../hooks/use-sidebar-tab.js";
+import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
+import type { MainSurface } from "../../preview/main-surfaces.js";
+import type { AveApi } from "../../types.js";
+import { registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
+import { forgetWebSurfaceLocation, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
+import { emitMainLayoutChange } from "../../preview/main-layout-restore.js";
+import { registerSideTabsSink } from "../../preview/surface-moves.js";
 import type {
   NativeContextMenuAction,
   NativeContextMenuPayload,
 } from "../../../../shared/native-context-menu.js";
-
-/**
- * Wraps <Sidebar> with local tab state so a click on a TabsTrigger actually
- * flips the (controlled) active tab, mirroring how App.tsx wires
- * activeSidebarTab/onActiveSidebarTabChange through useSidebarTab. Tests that
- * only care about the initial tab can pass `activeSidebarTab` in overrides;
- * tests that click a tab trigger get real switching without needing App.tsx.
- */
-/**
- * Radix's TabsTrigger switches the active tab on `mousedown` (not `click` —
- * see @radix-ui/react-tabs's TabsTrigger, which calls `onValueChange` from
- * its onMouseDown handler so keyboard/roving-focus activation and pointer
- * activation share one code path). `fireEvent.click` alone never fires a
- * mousedown in jsdom, so tab-switch tests must dispatch mousedown instead.
- */
-function activateTab(trigger: HTMLElement) {
-  fireEvent.mouseDown(trigger, { button: 0 });
-}
-
-function Harness(props: Parameters<typeof Sidebar>[0]) {
-  const [tab, setTab] = useState<SidebarTab>(props.activeSidebarTab ?? "chats");
-  return (
-    <Sidebar
-      {...props}
-      activeSidebarTab={tab}
-      onActiveSidebarTabChange={(next) => {
-        setTab(next);
-        props.onActiveSidebarTabChange?.(next);
-      }}
-    />
-  );
-}
 
 function renderSidebar(
   overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
@@ -162,7 +135,7 @@ function renderSidebar(
   const tree = (locale: string | undefined) => {
     const sidebar = (
       <TooltipProvider>
-        <Harness {...props} />
+        <Sidebar {...props} />
       </TooltipProvider>
     );
     return locale === undefined
@@ -182,6 +155,10 @@ function renderSidebar(
     addedRoot: ADDED_ROOT,
     /** Re-render under another UI language, the way App's provider does on a switch. */
     switchLocale: (locale: string) => result.rerender(tree(locale)),
+    rerenderSidebar: (updates: Partial<Parameters<typeof Sidebar>[0]>) => {
+      Object.assign(props, updates);
+      result.rerender(tree(options.locale));
+    },
     emitNativeContextCommand: (command: NativeContextMenuAction["command"]) => {
       const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
       if (!payload) throw new Error("native context menu was not requested");
@@ -257,10 +234,10 @@ describe("Sidebar project sessions", () => {
     }
   });
 
-  it("renders no-project conversations as a plain ungrouped list on the Chats tab, and real projects as groups on the Projects tab", async () => {
+  it("renders no-project conversations as a plain ungrouped list on the General section, and real projects as groups on the project section", async () => {
     const { getByTestId, getByText, queryByTestId, restore } = renderSidebar();
     try {
-      // Chats tab is the default active tab — the ungrouped list is visible
+      // General section is the default active tab — the ungrouped list is visible
       // immediately, never wrapped in a fake default-project group.
       expect(queryByTestId("sidebar-current-project")).toBeNull();
       const unassigned = getByTestId("sidebar-unassigned-sessions");
@@ -270,9 +247,8 @@ describe("Sidebar project sessions", () => {
       expect(getByText("사이드 패널 개선")).toBeTruthy();
       expect(getByTestId("sidebar-session-sess-1").getAttribute("aria-current")).toBe("page");
 
-      // Switching to the Projects tab reveals "other-app" as its own named
+      // Switching to the project section reveals "other-app" as its own named
       // group.
-      activateTab(getByTestId("sidebar-tab-projects"));
       await waitFor(() => {
         expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app").textContent).toContain("other-app");
       });
@@ -303,8 +279,6 @@ describe("Sidebar project sessions", () => {
     });
     try {
       expect(getByTestId("sidebar-unassigned-sessions").textContent).toContain("보존된 일반 대화");
-
-      activateTab(getByTestId("sidebar-tab-projects"));
       await waitFor(() => {
         expect(queryByTestId("sidebar-project-C-Users-example-workspace-deleted-project")).toBeNull();
       });
@@ -325,7 +299,6 @@ describe("Sidebar project sessions", () => {
   it("starts a new conversation scoped to the selected project", async () => {
     const { getByTestId, onNewChatForProject, restore } = renderSidebar();
     try {
-      activateTab(getByTestId("sidebar-tab-projects"));
       await waitFor(() => {
         expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app").textContent).toContain("other-app");
       });
@@ -383,12 +356,11 @@ describe("Sidebar legacy default-root session handling", () => {
       });
       expect(getByText("레거시 기본 프로젝트 대화")).toBeTruthy();
       // No ghost project group synthesized from the default root anywhere in
-      // the Projects tab — only the unrelated "other-app" real project from
+      // the project section — only the unrelated "other-app" real project from
       // renderSidebar's stub. (Can't grep broadly for "workspace" in the
       // testid: the default root's OWN path legitimately contains that
       // substring — "C:\Users\example\workspace\..." — so the precise
       // ghost-group testid is asserted directly instead.)
-      activateTab(getByTestId("sidebar-tab-projects"));
       await waitFor(() => expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app")).toBeTruthy());
       expect(queryByTestId("sidebar-project-C-Users-example-workspace-ave-project-ave")).toBeNull();
     } finally {
@@ -397,32 +369,136 @@ describe("Sidebar legacy default-root session handling", () => {
   });
 });
 
-describe("Sidebar Chats/Projects tabs", () => {
-  it("defaults to the Chats tab and reports switches through onActiveSidebarTabChange", () => {
-    const onActiveSidebarTabChange = vi.fn();
-    const { getByTestId, restore } = renderSidebar({ onActiveSidebarTabChange });
+describe("Sidebar stacked sections", () => {
+  it("shows Projects before General without tab controls", () => {
+    const { getByTestId, queryByTestId, restore } = renderSidebar();
     try {
-      expect(getByTestId("sidebar-tab-chats").getAttribute("data-state")).toBe("active");
-      expect(getByTestId("sidebar-tab-projects").getAttribute("data-state")).toBe("inactive");
+      const sections = getByTestId("sidebar-sections");
+      expect(Array.from(sections.querySelectorAll("section")).map((section) => section.getAttribute("aria-label"))).toEqual(["프로젝트", "일반"]);
+      expect(sections.querySelector('[role="tablist"]')).toBeNull();
+      expect(queryByTestId("sidebar-tabs")).toBeNull();
+      expect(getByTestId("sidebar-projects").textContent).toContain("다른 프로젝트 대화");
+      expect(getByTestId("sidebar-unassigned-sessions").textContent).toContain("전체 동기화로 상태 파악");
+    } finally { restore(); }
+  });
 
-      activateTab(getByTestId("sidebar-tab-projects"));
-      expect(onActiveSidebarTabChange).toHaveBeenCalledWith("projects");
-      expect(getByTestId("sidebar-tab-projects").getAttribute("data-state")).toBe("active");
-      expect(getByTestId("sidebar-tab-chats").getAttribute("data-state")).toBe("inactive");
+  it("groups all three item types by the bound session and leaves unbound or unknown sessions in General", async () => {
+    const guest = document.createElement("webview");
+    setWebSurfaceElement("browser:project", guest);
+    const root = "/projects/example";
+    const sessions = [
+      sessionRow({ id: "project-chat", title: "Project chat", projectRoot: root, modifiedAt: new Date().toISOString() }),
+      sessionRow({ id: "general-chat", title: "General chat", modifiedAt: new Date().toISOString() }),
+    ];
+    const mainSurfaces: Array<MainSurface & { sessionId?: string }> = [
+      { tabId: "browser:project", kind: "browser", ordinal: 1, url: "https://project.example/" },
+      { tabId: "terminal:project", kind: "terminal", ordinal: 1, url: null, sessionId: "project-chat" },
+      { tabId: "browser:general", kind: "browser", ordinal: 2, url: null },
+      { tabId: "terminal:general", kind: "terminal", ordinal: 2, url: null },
+      { tabId: "terminal:unknown", kind: "terminal", ordinal: 3, url: null, sessionId: "missing" },
+    ];
+    const state: BrowserTabControlState = { revision: 1, tabs: [{
+      tabId: "host-project", rendererTabId: "browser:project", url: "https://project.example/", title: "Project page",
+      mode: "human-paused", owner: { sessionId: "project-chat" }, lease: null, generation: 1, kind: "embedded", openerTabId: null,
+    }] };
+    let receiveControl!: (state: BrowserTabControlState) => void;
+    const unregister = registerBrowserTabHost({ browserTabs: {
+      getState: async () => state,
+      onControl: (listener: typeof receiveControl) => { receiveControl = listener; return () => {}; },
+      onTabOp: () => () => {},
+    } } as unknown as AveApi, { sessionId: () => null, hasTab: () => false, selectTab: vi.fn(), closeTab: vi.fn() });
+    const onOpenSurface = vi.fn();
+    const { getByTestId, onLoadSession, restore } = renderSidebar({
+      sessions, projects: [{ projectRoot: root, projectName: "Example" }], mainSurfaces, onOpenSurface,
+    });
+    try {
+      const project = getByTestId("sidebar-projects");
+      const general = getByTestId("sidebar-unassigned-sessions");
+      await waitFor(() => expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true));
+      expect(project.contains(getByTestId("sidebar-session-project-chat"))).toBe(true);
+      expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
+      expect(general.contains(getByTestId("sidebar-session-general-chat"))).toBe(true);
+      for (const id of ["browser:general", "terminal:general", "terminal:unknown"]) {
+        expect(general.contains(getByTestId(`sidebar-surface-${id}`))).toBe(true);
+      }
+      expect(getByTestId("sidebar-conversation-glyph-project-chat").classList.contains("lucide-message-square-text")).toBe(true);
+      expect(getByTestId("sidebar-surface-terminal:project").querySelector(".lucide-terminal")).not.toBeNull();
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/favicon.ico");
+      fireEvent.click(getByTestId("sidebar-session-project-chat"));
+      expect(onLoadSession).toHaveBeenCalledWith("project-chat");
+      fireEvent.click(getByTestId("sidebar-surface-browser:project"));
+      fireEvent.click(getByTestId("sidebar-surface-terminal:project"));
+      expect(onOpenSurface.mock.calls).toEqual([["browser:project"], ["terminal:project"]]);
+      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://project.example/custom.png"] })));
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/custom.png");
+      act(() => receiveControl({ revision: 2, tabs: state.tabs.map((tab) => ({ ...tab, owner: { sessionId: "general-chat" } })) }));
+      expect(general.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
+      expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(false);
+      expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe("https://project.example/custom.png");
+    } finally { act(() => unregister()); setWebSurfaceElement("browser:project", null); restore(); }
+  });
+
+  it("tracks side-panel tab snapshots without a second tab store", () => {
+    let tabs = [{ tabId: "terminal:side", kind: "terminal" as const, ordinal: 4, url: null, cwd: null }];
+    const unregister = registerSideTabsSink("group-1", {
+      adopt: vi.fn(), release: vi.fn(), open: vi.fn(), activate: vi.fn(), snapshot: () => tabs,
+    });
+    const { getByTestId, queryByTestId, restore } = renderSidebar({ chatGroupIds: ["group-1"] });
+    try {
+      expect(getByTestId("sidebar-surface-terminal:side").textContent).toContain("4");
+      act(() => { tabs = []; emitMainLayoutChange(); });
+      expect(queryByTestId("sidebar-surface-terminal:side")).toBeNull();
+    } finally { unregister(); restore(); }
+  });
+
+  it("uses the page favicon event and falls back to a globe for blank, unsafe or failed icons", () => {
+    const guest = document.createElement("webview");
+    setWebSurfaceElement("browser:icon", guest);
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({ mainSurfaces: [
+      { tabId: "browser:icon", kind: "browser", ordinal: 1, url: "https://site.example/path" },
+      { tabId: "browser:blank", kind: "browser", ordinal: 2, url: null },
+      { tabId: "browser:unsafe", kind: "browser", ordinal: 3, url: "file:///private/example" },
+    ] });
+    try {
+      const row = getByTestId("sidebar-surface-browser:icon");
+      for (const id of ["browser:blank", "browser:unsafe"]) {
+        expect(getByTestId(`sidebar-surface-${id}`).querySelector(".lucide-globe")).not.toBeNull();
+      }
+      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["file:///private/icon", "https://site.example/custom.png"] })));
+      expect(row.querySelector("img")?.getAttribute("src")).toBe("https://site.example/custom.png");
+      fireEvent.error(row.querySelector("img")!);
+      expect(row.querySelector("img")).toBeNull();
+      expect(row.querySelector(".lucide-globe")).not.toBeNull();
+      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://site.example/custom.png"] })));
+      expect(row.querySelector("img")?.getAttribute("src")).toBe("https://site.example/custom.png");
+      rerenderSidebar({ collapsed: true });
+      expect(queryByTestId("sidebar-surface-browser:icon")).toBeNull();
+      act(() => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://site.example/collapsed.png"] })));
+      rerenderSidebar({ collapsed: false });
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")?.getAttribute("src")).toBe("https://site.example/collapsed.png");
+      act(() => {
+        noteWebSurfaceLocation("browser:icon", "https://next.example/page");
+        guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://next.example/icon.png"] }));
+      });
+      expect(getByTestId("sidebar-surface-browser:icon").querySelector("img")?.getAttribute("src")).toBe("https://next.example/icon.png");
     } finally {
+      act(() => { forgetWebSurfaceLocation("browser:icon"); setWebSurfaceElement("browser:icon", null); });
       restore();
     }
   });
 
-  it("honors an externally-controlled initial activeSidebarTab", () => {
-    const { getByTestId, restore } = renderSidebar({ activeSidebarTab: "projects" });
+  it.each([200, 216, 232])("keeps sections and long mixed rows bounded at %ipx", (width) => {
+    const { getByTestId, restore } = renderSidebar({ width, sessions: [sessionRow({ id: "long", title: "long-title-".repeat(50), modifiedAt: new Date().toISOString() })], mainSurfaces: [
+      { tabId: "browser:long", kind: "browser", ordinal: 1, url: `https://example.test/${"long-path".repeat(50)}` },
+      { tabId: "terminal:long", kind: "terminal", ordinal: 1, url: null },
+    ] });
     try {
-      expect(getByTestId("sidebar-tab-projects").getAttribute("data-state")).toBe("active");
-      expect(getByTestId("sidebar-tab-chats").getAttribute("data-state")).toBe("inactive");
-      expect(getByTestId("sidebar-projects").getAttribute("data-state")).toBe("active");
-    } finally {
-      restore();
-    }
+      expect(getByTestId("sidebar-card").style.width).toBe(`${width}px`);
+      expect(getByTestId("sidebar-sections").classList.contains("min-w-0")).toBe(true);
+      for (const id of ["sidebar-session-long", "sidebar-surface-browser:long", "sidebar-surface-terminal:long"]) {
+        expect(getByTestId(id).querySelector(".min-w-0.truncate")).not.toBeNull();
+      }
+    } finally { restore(); }
   });
 });
 
@@ -487,7 +563,7 @@ describe("Sidebar conversation pinning", () => {
       pinned = new Set();
       rerender(
         <TooltipProvider>
-          <Harness
+          <Sidebar
             activeView="home"
             onSelect={vi.fn()}
             pluginViews={[]}
@@ -563,7 +639,7 @@ describe("Sidebar project pinning", () => {
     } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       isProjectPinned: () => false,
       onToggleProjectPin,
     });
@@ -597,7 +673,7 @@ describe("Sidebar project pinning", () => {
     } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       onRefreshProjects,
     });
     try {
@@ -628,7 +704,7 @@ describe("Sidebar project pinning", () => {
     } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       onRefreshProjects,
       onProjectError,
     });
@@ -656,11 +732,11 @@ describe("Sidebar project pinning", () => {
       restore();
     }
   });
-  it("sorts a pinned project to the top of the Projects tab", async () => {
+  it("sorts a pinned project to the top of the project section", async () => {
     const { getByTestId, restore } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       isProjectPinned: (root) => root === "C:\\Users\\example\\workspace\\ave-project\\beta",
       onToggleProjectPin: vi.fn(),
     });
@@ -681,12 +757,12 @@ describe("Sidebar project pinning", () => {
   });
 });
 
-describe("Sidebar projects tab add-project context menu", () => {
+describe("Sidebar project section add-project context menu", () => {
   const projects: ProjectIdentity[] = [
     { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha", projectName: "alpha", isDefault: false },
   ];
 
-  it("offers add-project when the Projects tab's empty area is right-clicked, and adds through workspace.pickRoot", async () => {
+  it("offers add-project when the project section's empty area is right-clicked, and adds through workspace.pickRoot", async () => {
     const onRefreshProjects = vi.fn();
     const {
       getByTestId,
@@ -697,7 +773,7 @@ describe("Sidebar projects tab add-project context menu", () => {
     } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       onRefreshProjects,
     });
     try {
@@ -725,7 +801,7 @@ describe("Sidebar projects tab add-project context menu", () => {
     const { getByTestId, emitNativeContextCommand, pickRoot, restore } = renderSidebar({
       sessions: [],
       projects,
-      activeSidebarTab: "projects",
+
       onRefreshProjects,
       onProjectError,
     });
@@ -742,11 +818,11 @@ describe("Sidebar projects tab add-project context menu", () => {
     }
   });
 
-  it("offers add-project from the Projects tab trigger", async () => {
+  it("offers add-project from the project section trigger", async () => {
     const { getByTestId, showNativeContextMenu, emitNativeContextCommand, pickRoot, restore } =
-      renderSidebar({ sessions: [], projects, activeSidebarTab: "chats" });
+      renderSidebar({ sessions: [], projects });
     try {
-      fireEvent.contextMenu(getByTestId("sidebar-tab-projects"));
+      fireEvent.contextMenu(getByTestId("sidebar-projects-heading"));
       expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({
         kind: "project",
         commands: ["project.add"],
@@ -762,7 +838,7 @@ describe("Sidebar projects tab add-project context menu", () => {
   it("keeps the per-row menu authoritative — a right-click on a project row requests exactly one menu, the row's", async () => {
     const onRefreshProjects = vi.fn();
     const { getByTestId, showNativeContextMenu, emitNativeContextCommand, onNewChatForProject, restore } =
-      renderSidebar({ sessions: [], projects, activeSidebarTab: "projects", onRefreshProjects });
+      renderSidebar({ sessions: [], projects, onRefreshProjects });
     try {
       const row = await waitFor(() =>
         getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha"));
@@ -798,7 +874,7 @@ describe("Sidebar projects tab add-project context menu", () => {
       pickRoot,
       addedRoot,
       restore,
-    } = renderSidebar({ sessions: [], projects, activeSidebarTab: "projects", onRefreshProjects });
+    } = renderSidebar({ sessions: [], projects, onRefreshProjects });
     try {
       pickRoot.mockResolvedValueOnce({
         ok: true,
@@ -829,7 +905,7 @@ describe("Sidebar projects tab add-project context menu", () => {
   it("dismisses the adjacency warning without adding", async () => {
     const onRefreshProjects = vi.fn();
     const { getByTestId, queryByTestId, emitNativeContextCommand, pickRoot, addedRoot, restore } =
-      renderSidebar({ sessions: [], projects, activeSidebarTab: "projects", onRefreshProjects });
+      renderSidebar({ sessions: [], projects, onRefreshProjects });
     try {
       pickRoot.mockResolvedValueOnce({
         ok: true,
@@ -1137,19 +1213,16 @@ describe("Sidebar collapsed rail", () => {
     restore();
   });
 
-  it("expands the sidebar onto the Projects tab when the rail's folder is clicked", () => {
+  it("expands the sidebar to reveal its project section when the rail's folder is clicked", () => {
     const onToggleCollapse = vi.fn();
-    const onActiveSidebarTabChange = vi.fn();
     const { getByTestId, restore } = renderSidebar({
       collapsed: true,
       onToggleCollapse,
-      onActiveSidebarTabChange,
     });
 
     fireEvent.click(getByTestId("sidebar-projects-collapsed"));
 
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
-    expect(onActiveSidebarTabChange).toHaveBeenCalledWith("projects");
     restore();
   });
 });
@@ -1472,8 +1545,6 @@ describe("Sidebar conversation reveal on scroll", () => {
     });
     const moreId = "sidebar-project-sessions-more-C-Users-example-workspace-ave-project-other-app";
     try {
-      activateTab(getByTestId("sidebar-tab-projects"));
-
       // Every group shows its first page, so the tab stays an OVERVIEW of the
       // projects instead of one group running long enough to push its siblings
       // below the fold.
@@ -1612,7 +1683,7 @@ describe("Sidebar — every conversation family", () => {
 
   const allRows = [workBoardRow, routineRow, sideChatRow, orphanSideChatRow, mainRow];
 
-  it("lists a row per family, each with its own glyph and label", async () => {
+  it("lists a row per family, with a chat glyph and its accessible family label", async () => {
     const { getByTestId, restore } = renderSidebar({ sessions: allRows });
     try {
       await waitFor(() => getByTestId("sidebar-session-sess-1"));
@@ -1692,17 +1763,17 @@ describe("Sidebar — every conversation family", () => {
     }
   });
 
-  it("nests a side chat under its conversation and opens it with that parent", async () => {
+  it("keeps side chats flat and opens them with their origin session", async () => {
     const onOpenSideChat = vi.fn();
     const { getByTestId, onLoadSession, restore } = renderSidebar({
       sessions: allRows,
       onOpenSideChat,
     });
     try {
-      await waitFor(() => getByTestId("sidebar-conversation-tree-sess-1"));
-      const tree = getByTestId("sidebar-conversation-tree-sess-1");
-      expect(tree.contains(getByTestId("sidebar-session-sess-1"))).toBe(true);
-      expect(tree.contains(getByTestId("sidebar-session-side-1"))).toBe(true);
+      const list = getByTestId("sidebar-unassigned-sessions");
+      expect(list.contains(getByTestId("sidebar-session-sess-1"))).toBe(true);
+      expect(list.contains(getByTestId("sidebar-session-side-1"))).toBe(true);
+      expect(list.querySelector('[data-testid^="sidebar-conversation-tree-"]')).toBeNull();
 
       fireEvent.click(getByTestId("sidebar-session-side-1"));
       expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
@@ -1787,9 +1858,9 @@ describe("Sidebar pending-answer dot", () => {
     });
     try {
       await waitFor(() => getByTestId("sidebar-session-sess-1"));
-      // The parent row and its nested side chat both carry the dot: a card
+      // The conversation and its side chat both carry the dot: a card
       // parked in the side chat is news about the conversation it belongs to.
-      const tree = getByTestId("sidebar-conversation-tree-sess-1");
+      const tree = getByTestId("sidebar-unassigned-sessions");
       expect(tree.contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
       expect(tree.contains(getByTestId("sidebar-pending-answer-side-1"))).toBe(true);
       expect(getByTestId("sidebar-pending-answer-routine-run-1")).toBeTruthy();

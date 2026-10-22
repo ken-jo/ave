@@ -6,7 +6,7 @@ import { usePrefersReducedMotion } from "./use-prefers-reduced-motion.js";
 export interface UseSettingsTabResult {
   /** Which settings page the inline panel is on. */
   settingsTab: SettingsTab;
-  /** Set it — persists immediately, same family as `sidebarActiveTab`. */
+  /** Set it — persists immediately in `SystemSettings`. */
   setSettingsTab: (tab: string) => void;
   /**
    * How many times THIS hook has applied the stored page. Monotonic, and read
