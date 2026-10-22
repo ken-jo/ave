@@ -167,7 +167,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
     expect(result.stopReason).toBe("interrupted");
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
-      reasoning: expect.objectContaining({ kind: "none", suppressed: "chat-completions-tool-turn" }),
+      reasoning: expect.objectContaining({ kind: "openai-effort", effort: "high" }),
     }) }));
   });
 
