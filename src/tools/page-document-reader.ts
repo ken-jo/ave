@@ -81,6 +81,16 @@ function hasType(relationship: Relationship, kind: string): boolean {
   return RELATIONSHIP_BASES.some((base) => relationship.type === `${base}${kind}`);
 }
 
+function namespaceBindings(value: Record<string, unknown>, inherited = new Map<string, string>()): Map<string, string> {
+  const bindings = new Map(inherited);
+  for (const [name, uri] of Object.entries(value)) {
+    if (!name.startsWith("@xmlns:")) continue;
+    if (typeof uri !== "string") corrupt();
+    bindings.set(name.slice("@xmlns:".length), uri);
+  }
+  return bindings;
+}
+
 function boundedParagraphs(values: Iterable<string>): { paragraphs: string[]; textTruncated: boolean } {
   const paragraphs: string[] = [];
   let characters = 0;
@@ -100,7 +110,9 @@ function boundedParagraphs(values: Iterable<string>): { paragraphs: string[]; te
 }
 
 async function presentation(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
-  const verdict = verifyZipInflateLimits(bytes, PREVIEW_DOCUMENT_LIMITS);
+  const verdict = verifyZipInflateLimits(bytes, PREVIEW_DOCUMENT_LIMITS, {
+    opaqueArchiveMemberPrefixes: ["ppt/embeddings/"],
+  });
   if (!verdict.ok) {
     throw new TableDocumentError(verdict.reason === "encrypted" ? "encrypted"
       : verdict.reason === "corrupt" ? "corrupt-document" : "archive-too-large", "Presentation container was refused.");
@@ -127,12 +139,10 @@ async function presentation(bytes: Buffer, index: number): Promise<PreviewPageDo
   const office = [...roots.values()].filter((item) => hasType(item, "officeDocument"));
   if (office.length !== 1 || !office[0]!.internal || !/^\/?ppt\/presentation\.xml$/.test(office[0]!.target)) corrupt();
   const presentationRoot = record(xml(await part("ppt/presentation.xml")).presentation);
-  const relationshipPrefixes = Object.entries(presentationRoot).filter(([name, value]) => name.startsWith("@xmlns:")
-    && RELATIONSHIP_BASES.some((base) => value === base.slice(0, -1))).map(([name]) => name.slice("@xmlns:".length));
-  if (relationshipPrefixes.length !== 1) corrupt();
-  const relationshipId = `@${relationshipPrefixes[0]}:id`;
-  const slides = array(record(presentationRoot.sldIdLst).sldId);
-  if (slides.length === 0) corrupt();
+  const slideList = presentationRoot.sldIdLst === undefined || presentationRoot.sldIdLst === ""
+    ? {} : record(presentationRoot.sldIdLst);
+  const listBindings = namespaceBindings(slideList, namespaceBindings(presentationRoot));
+  const slides = array(slideList.sldId);
   if (index >= Math.min(slides.length, PAGE_PREVIEW_LIMITS.maxPages)) {
     throw new TableDocumentError("page-not-found", "Requested page does not exist.");
   }
@@ -140,7 +150,14 @@ async function presentation(bytes: Buffer, index: number): Promise<PreviewPageDo
   const usedIds = new Set<string>();
   let selected = "";
   for (let slideIndex = 0; slideIndex < slides.length; slideIndex += 1) {
-    const id = record(slides[slideIndex])[relationshipId];
+    const slide = record(slides[slideIndex]);
+    const bindings = namespaceBindings(slide, listBindings);
+    const references = Object.entries(slide).filter(([name]) => {
+      const prefix = /^@([^:]+):id$/.exec(name)?.[1];
+      return prefix !== undefined && RELATIONSHIP_BASES.some((base) => bindings.get(prefix) === base.slice(0, -1));
+    });
+    if (references.length !== 1) corrupt();
+    const id = references[0]![1];
     if (typeof id !== "string" || usedIds.has(id)) corrupt();
     usedIds.add(id);
     const link = links.get(id);

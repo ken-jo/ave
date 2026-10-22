@@ -39,11 +39,16 @@ test("document pages render, navigate and refuse malformed files through the rea
     await expect(preview).toContainText("개요");
     await preview.getByRole("button", { name: "다음", exact: true }).click();
     await expect(preview).toContainText("Last slide");
+    const outlineScreenshot = test.info().outputPath("document-outline.png");
+    await ctx.page.screenshot({ path: outlineScreenshot });
+    await test.info().attach("document-outline", { path: outlineScreenshot, contentType: "image/png" });
     await file("pages.pdf").click();
     await expect(ctx.page.getByTestId("chat-side-panel-pdf-page")).toBeVisible();
+    await expect.poll(() => ctx.page.getByTestId("chat-side-panel-pdf-page").evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
     await expect(preview).toContainText("First PDF page");
     await preview.getByRole("button", { name: "다음", exact: true }).click();
     await expect(preview).toContainText("Second PDF page");
+    await expect.poll(() => ctx.page.getByTestId("chat-side-panel-pdf-page").evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
     const screenshot = test.info().outputPath("document-pages.png");
     await ctx.page.screenshot({ path: screenshot });
     await test.info().attach("document-pages", { path: screenshot, contentType: "image/png" });

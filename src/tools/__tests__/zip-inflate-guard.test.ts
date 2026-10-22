@@ -122,7 +122,7 @@ describe("bounded ZIP verification", () => {
     const extra = Buffer.from([0xfe, 0xca, 0, 0]);
     const bytes = createZipFixture([{ name: "part.xml", data: "checked", descriptor: "signed", extra }]);
     const seen: string[] = [];
-    const verdict = verifyZipInflateLimits(bytes, LIMITS, (name, data) => seen.push(`${name}:${data.toString()}`));
+    const verdict = verifyZipInflateLimits(bytes, LIMITS, { onEntry: (name, data) => seen.push(`${name}:${data.toString()}`) });
     expect(seen).toEqual(["part.xml:checked"]);
     if (!verdict.ok) throw new Error(verdict.detail);
     expect(verdict.entryNames).toEqual(["part.xml"]);
@@ -135,6 +135,18 @@ describe("bounded ZIP verification", () => {
   it("refuses an embedded ZIP member", () => {
     const bytes = createZipFixture([{ name: "nested.xlsx", data: singleEntry() }]);
     expect(verifyZipInflateLimits(bytes, LIMITS)).toMatchObject({ ok: false, reason: "corrupt" });
+  });
+
+  it("keeps explicitly scoped opaque packages under the outer archive limits", () => {
+    const opaqueArchiveMemberPrefixes = ["ppt/embeddings/"];
+    const inner = singleEntry();
+    const bytes = createZipFixture([{ name: "ppt/embeddings/data.xlsx", data: inner }]);
+    expect(verifyZipInflateLimits(bytes, LIMITS)).toMatchObject({ ok: false, reason: "corrupt" });
+    expect(verifyZipInflateLimits(bytes, LIMITS, { opaqueArchiveMemberPrefixes })).toMatchObject({ ok: true });
+    const outside = createZipFixture([{ name: "ppt/slides/data.xlsx", data: inner }]);
+    expect(verifyZipInflateLimits(outside, LIMITS, { opaqueArchiveMemberPrefixes })).toMatchObject({ ok: false, reason: "corrupt" });
+    expect(verifyZipInflateLimits(bytes, { ...LIMITS, maxUncompressedBytes: inner.length - 1 }, { opaqueArchiveMemberPrefixes }))
+      .toMatchObject({ ok: false, reason: "too-large" });
   });
 
   it("refuses a wrapper whose nested member exceeds the inflate ratio", () => {

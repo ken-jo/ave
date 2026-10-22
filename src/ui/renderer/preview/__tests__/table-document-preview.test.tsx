@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
@@ -138,6 +140,13 @@ function workbookResult(sheetIndex: number): PreviewReadDocumentResult {
   };
 }
 
+function pageResult(path: string, index: number, totalPages = 2): PreviewReadDocumentResult {
+  return { ok: true, path, bytes: 1024, document: {
+    format: "pptx", totalPages, pagesTruncated: false,
+    page: { index, paragraphs: [`Outline ${index + 1}`], textTruncated: false, png: null, width: 0, height: 0 },
+  } };
+}
+
 let readFile: ReturnType<typeof vi.fn>;
 let readDocument: ReturnType<typeof vi.fn>;
 let previousAve: unknown;
@@ -159,6 +168,50 @@ afterEach(() => {
 });
 
 describe("file preview routing", () => {
+  it("shows a replaced page request as a recoverable error", async () => {
+    const path = "/w/slides.pptx";
+    readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "private supersession detail" })
+      .mockResolvedValueOnce(pageResult(path, 0));
+    render(<PreviewBody api={{} as never} target={fileTarget(path)} />);
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).toMatch(/replaced|취소/);
+    expect(error.textContent).not.toContain("private supersession detail");
+    fireEvent.click(screen.getByRole("button", { name: /Retry|다시 시도/ }));
+    await screen.findByText("Outline 1");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("opens another page document at its first page after navigation", async () => {
+    readDocument.mockImplementation(async (path: string, index: number) => pageResult(path, index, path.endsWith("short.pptx") ? 1 : 2));
+    const view = render(<PreviewBody api={{} as never} target={fileTarget("/w/slides.pptx")} />);
+    await screen.findByText("Outline 1");
+    fireEvent.click(screen.getByRole("button", { name: /Next|다음/ }));
+    await screen.findByText("Outline 2");
+    view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/short.pptx")} />);
+    await screen.findByText("Outline 1");
+    expect(readDocument).toHaveBeenLastCalledWith("/w/short.pptx", 0);
+    expect(screen.getByRole("button", { name: /Next|다음/ }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("reports a page image decode failure instead of leaving a broken image", async () => {
+    const response = pageResult("/w/pages.pdf", 0);
+    if (!response.ok || !("page" in response.document)) throw new Error("Expected a page fixture");
+    const png = readFileSync(join(process.cwd(), "build", "icon.png"));
+    response.document.format = "pdf";
+    response.document.page.png = png.toString("base64");
+    response.document.page.width = png.readUInt32BE(16);
+    response.document.page.height = png.readUInt32BE(20);
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);
+    fireEvent.error(await screen.findByTestId("chat-side-panel-pdf-page"));
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).not.toContain("chatPreviewRail.");
+    expect(screen.queryByTestId("chat-side-panel-pdf-page")).toBeNull();
+    expect(screen.getByRole("button", { name: /Retry|다시 시도/ })).toBeTruthy();
+  });
+
   it("reads a workbook through readDocument, never readFile, and shows tabs, banner and grid", async () => {
     render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
     await screen.findByTestId("chat-side-panel-table-preview");

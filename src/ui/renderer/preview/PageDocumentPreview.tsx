@@ -6,11 +6,12 @@ import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentError } from "../../../sha
 import { tableErrorKey } from "./table-document-preview.js";
 
 type LoadState = { phase: "loading" } | { phase: "ok"; document: PreviewPageDocument }
-  | { phase: "error"; code: Exclude<PreviewDocumentError, "superseded"> };
+  | { phase: "error"; code: PreviewDocumentError };
 
 export function PageDocumentPreview({ path }: { path: string }) {
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
+  const [retryGeneration, setRetryGeneration] = useState(0);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
   useEffect(() => {
     let cancelled = false;
@@ -25,13 +26,14 @@ export function PageDocumentPreview({ path }: { path: string }) {
         }
         if (result.ok) setState("page" in result.document
           ? { phase: "ok", document: result.document } : { phase: "error", code: "unsupported-format" });
-        else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
+        else setState({ phase: "error", code: result.error });
       }).catch(() => { if (!cancelled) setState({ phase: "error", code: "read-failed" }); });
     };
     read(0);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [path, index]);
-  const total = state.phase === "ok" ? Math.min(state.document.totalPages, PAGE_PREVIEW_LIMITS.maxPages) : 0;
+  }, [path, index, retryGeneration]);
+  const shownDocument = state.phase === "ok" ? state.document : null;
+  const total = shownDocument ? Math.min(shownDocument.totalPages, PAGE_PREVIEW_LIMITS.maxPages) : 0;
   return (
     <div className="space-y-3" data-testid="chat-side-panel-page-preview">
       <div className="flex items-center gap-2">
@@ -45,8 +47,10 @@ export function PageDocumentPreview({ path }: { path: string }) {
       </div>
       {state.phase === "loading" ? <div role="status">{t("chatPreviewRail.filePreviewLoading")}</div>
         : state.phase === "error" ? <div role="alert" className="text-xs text-destructive" data-testid="chat-side-panel-file-error">
-          {t(state.code === "corrupt-document" ? "pagePreview.corrupt" : state.code === "too-large" ? "pagePreview.tooLarge" : tableErrorKey(state.code),
-            { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
+          <p>{t(state.code === "superseded" ? "pagePreview.superseded"
+            : state.code === "corrupt-document" ? "pagePreview.corrupt" : state.code === "too-large" ? "pagePreview.tooLarge" : tableErrorKey(state.code),
+          { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => setRetryGeneration((current) => current + 1)}>{t("common.retry")}</Button>
         </div> : <>
           {state.document.format === "pptx" && <p className="text-xs text-muted-foreground">{t("pagePreview.outline")}</p>}
           {state.document.pagesTruncated && <p role="status">{t("pagePreview.pagesTruncated", { shown: PAGE_PREVIEW_LIMITS.maxPages })}</p>}
@@ -55,6 +59,8 @@ export function PageDocumentPreview({ path }: { path: string }) {
             src={`data:image/png;base64,${state.document.page.png}`}
             width={state.document.page.width} height={state.document.page.height}
             alt={t("pagePreview.pageImage", { index: state.document.page.index + 1 })}
+            onError={() => setState((current) => current.phase === "ok" && current.document === shownDocument
+              ? { phase: "error", code: "read-failed" } : current)}
             className="h-auto max-w-full rounded border" data-testid="chat-side-panel-pdf-page"
           />}
           <div className="space-y-2 text-sm [overflow-wrap:anywhere]" data-testid="chat-side-panel-page-text">

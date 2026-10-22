@@ -15,6 +15,8 @@ export const PAGE_PREVIEW_LIMITS = Object.freeze({
   maxSide: 1600,
   maxScale: 1.5,
   maxPngBytes: 2 * 1024 * 1024,
+  maxPngChunks: 512,
+  maxPngMetadataBytes: 4096,
 });
 
 export function previewPageFormatOf(path: string): PreviewPageFormat | null {

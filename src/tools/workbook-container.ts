@@ -294,9 +294,9 @@ export function prepareWorkbookContainer(
     return bytes;
   }
   const parts = new Map<string, Buffer>();
-  const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
+  const verdict = verifyZipInflateLimits(bytes, limits, { onEntry: (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
-  });
+  } });
   if (!verdict.ok) {
     if (verdict.reason === "encrypted") throw new TableDocumentError("encrypted", verdict.detail);
     if (verdict.reason === "corrupt") refuse(verdict.detail);
