@@ -97,7 +97,7 @@ describe("MainToolbar", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },
       pluginUpdates: {
-        updates: [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Ave Meeting", from: "1.0.0", to: "2.0.0", state: "manual" }],
+        updates: [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "2.0.0", state: "manual" }],
         onSkip: vi.fn(),
         onReview: vi.fn(),
       },
@@ -158,7 +158,7 @@ describe("MainToolbar", () => {
     // One window-level button cannot mean the right thing once more than one
     // conversation is on screen, so the control moved into the group header.
     renderWithProvider(defaultProps());
-    expect(screen.queryByTestId("chat-side-panel-toggle")).toBeNull();
+    expect(screen.queryByTestId(TEST_IDS.panePanelToggle)).toBeNull();
   });
 });
 

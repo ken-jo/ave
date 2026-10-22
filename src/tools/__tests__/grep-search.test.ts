@@ -11,6 +11,7 @@ import {
   resolveBundledRipgrep,
   searchWithRipgrep,
 } from "../grep-search.js";
+import { resolvePinnedRipgrepExecutable } from "../ripgrep-executable.js";
 
 let workDir: string;
 
@@ -32,10 +33,16 @@ afterEach(async () => {
 });
 
 describe("grep_files ripgrep engine", () => {
-  it("resolves the ripgrep build bundled with the pinned Codex platform package", () => {
+  it("resolves the ripgrep build of the pinned per-platform package", () => {
     const executable = resolveBundledRipgrep();
     expect(existsSync(executable)).toBe(true);
-    expect(executable).toMatch(/codex-path[\\/]rg(\.exe)?$/);
+    expect(executable).toMatch(/@vscode[\\/]ripgrep-[a-z0-9]+-[a-z0-9]+[\\/]bin[\\/]rg(\.exe)?$/);
+  });
+
+  it("refuses a target with no pinned package instead of searching PATH", () => {
+    const unavailable = new Error("unavailable");
+    expect(() => resolvePinnedRipgrepExecutable(() => unavailable, "freebsd", "x64")).toThrow(unavailable);
+    expect(() => resolvePinnedRipgrepExecutable(() => unavailable, "linux", "ia32")).toThrow(unavailable);
   });
 
   it("builds argv that ignores user config and cannot read the pattern or path as flags", () => {

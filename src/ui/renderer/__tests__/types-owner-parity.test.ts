@@ -59,11 +59,14 @@ import type { PermissionModeCommand } from "../../../permissions/permission-slas
 import type { TranslateFn } from "../../../i18n/translate.js";
 import type { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
+import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 describe("renderer types are the owner types", () => {
   it("AppSettings is the host settings minus the main-only a2aRemote block", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<RendererSettingsSnapshot>();
-    expectTypeOf<AppSettings>().toEqualTypeOf<Omit<HostAppSettings, "a2aRemote">>();
+    expectTypeOf<AppSettings>().toEqualTypeOf<
+      Omit<HostAppSettings, "a2aRemote"> & { readonly activeChatModel: ActiveChatModel }
+    >();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<MemoryCaptureMode>().toEqualTypeOf<HostMemoryCaptureMode>();
   });

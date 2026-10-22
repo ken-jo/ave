@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
@@ -30,13 +30,13 @@ import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
-import { PanelRightOpen } from "lucide-react";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
+import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
@@ -57,7 +57,7 @@ import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 // ─── Imports: types / constants / helpers / components / tabs ────────
-import { getApi, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
+import { getApi, getPluginViewDescription, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
 import type { PluginEntry } from "./types.js";
 import { pluginIconFor } from "./utils/plugin-icon.js";
 import {
@@ -615,6 +615,16 @@ export function App() {
   // What the side chat acts on is also the tab main's agent tools default to
   // when none is named: one report per window, from the one store.
   useReportActiveSurface(api);
+  // A closed terminal or page ends its pane chat: main stops that chat's turn
+  // and archives its conversation, and the list shows it archived.
+  useEffect(() => subscribeSurfaceClosed((tabId) => {
+    const sideChat = api.sideChat;
+    if (!sideChat) return;
+    void sideChat.endPaneChat(tabId, "closed").then((res) => {
+      if (!res.ok) console.warn(`pane chat for ${tabId} not ended: ${res.error}`);
+      else if (res.sessionId !== null) void refreshSessions();
+    }, (err: unknown) => console.warn(`pane chat for ${tabId} not ended: ${errorMessage(err)}`));
+  }), [api, refreshSessions]);
 
   // The main area's web panels are a host of the agent browser tools' tab
   // operations (`preview/agent-browser-bridge.ts`): select shows the page —
@@ -764,13 +774,16 @@ export function App() {
   // lane cannot disagree about who is waiting.
   const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
+  // A pane's own chat is no tile; the claim it holds is how the window knows it draws its cards.
+  const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
     approvals: approvalQueue,
     tiles: tileSessions,
     deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
-  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions]);
+    isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
+  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   // Cards waiting in the dedicated Suggestions conversation — its row's count.
   const suggestionsPendingCount = useMemo(
@@ -1149,6 +1162,7 @@ export function App() {
     refresh: refreshLlmSettings,
     settingsLoaded,
     toggleThinking,
+    activeChatModel,
   } = settings;
   const {
     activeSubscriptionRuntime,
@@ -1180,11 +1194,12 @@ export function App() {
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;
-  // Whether any chat model is configured — a selected subscription runtime, or
-  // an API vendor that names a model. Unknown until the settings snapshot
-  // lands, so the sidebar does not alert on the pre-load defaults.
-  const chatModelConfigured = settingsLoaded
-    ? subscriptionRuntimeSelected || llmModel.length > 0
+  // Whether any chat model is configured — main's `activeChatModel`, which is
+  // "none" for a route with no credential behind it even though its vendor
+  // block names a default id. Unknown until the settings snapshot lands, so
+  // the sidebar does not alert on the pre-load defaults.
+  const chatModelConfigured = settingsLoaded && activeChatModel
+    ? activeChatModel.kind !== "none"
     : null;
   const subscriptionImageAttachmentProvider = subscriptionRuntimePolicy.imageAttachmentProvider;
   const subscriptionFileAttachmentProvider = subscriptionRuntimePolicy.fileAttachmentProvider;
@@ -1210,7 +1225,7 @@ export function App() {
       t,
       pluginViewLabel: (viewKey: string) => {
         const view = pluginViews.find((candidate) => toViewKey(candidate) === viewKey);
-        return view ? getPluginViewLabel(view) : undefined;
+        return view ? getPluginViewLabel(view, locale) : undefined;
       },
       // A session on the workspace default is a plain chat (the sidebar's own
       // rule for its Chats tab); only a named project names the root crumb.
@@ -1231,7 +1246,7 @@ export function App() {
       onForward: viewHistory.goForward,
       onSelectSegment: navigateToLocation,
     };
-  }, [location, t, pluginViews, viewHistory, navigateToLocation, activeProject]);
+  }, [location, t, locale, pluginViews, viewHistory, navigateToLocation, activeProject]);
 
   // The conversation action set. Built once so the pane header and the
   // sidebar row's context menu cannot drift apart about what is offered.
@@ -1248,7 +1263,7 @@ export function App() {
         pluginId: view.pluginId,
         loadStatus: card?.loadStatus,
         preparationStatus: card?.preparationStatus,
-        label: getPluginViewLabel(view),
+        label: getPluginViewLabel(view, locale),
         icon: view.icon,
         iconText: view.iconText,
         unauthed: pluginAuthStatuses.get(view.pluginId)?.kind === "unauthed",
@@ -1271,7 +1286,8 @@ export function App() {
             pluginId: card.id,
             loadStatus: card.loadStatus,
             preparationStatus: card.preparationStatus,
-            label: extension.displayName?.trim() || extension.title || card.name,
+            // The card's name is this entry's last resort, ahead of its id.
+            label: getPluginViewLabel({ pluginId: card.name, extension }, locale),
             icon: card.icon,
             iconText: card.iconText,
             unauthed: false,
@@ -1293,7 +1309,7 @@ export function App() {
       }];
     });
     return [...viewEntries, ...preparingCardEntries, ...failedCardEntries];
-  }, [pluginViews, pluginAuthStatuses, pluginCards]);
+  }, [pluginViews, pluginAuthStatuses, pluginCards, locale]);
 
   const failedPluginCards = useMemo(() => {
     const pluginIdsWithViews = new Set(pluginViews.map((view) => view.pluginId));
@@ -1672,12 +1688,13 @@ export function App() {
         handleNewChat,
         openNewSurface: (view) => showInstanceView(chatGroupsRef.current.focusedId, view, true),
         pluginViews,
+        locale,
       }).concat(PANEL_COMMANDS.map((command) => ({
         id: command.id,
         label: isDarwin() ? `${t(command.labelKey)}  ${command.hint}` : t(command.labelKey),
         run: () => runPanelCommand(command.id),
       }))),
-    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
+    [pluginViews, locale, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
   );
 
   const onNewChat = useCallback(() => { void handleNewChat(); }, [handleNewChat]);
@@ -1734,7 +1751,7 @@ export function App() {
     // not a safe authority for a setting a selected subscription runtime does
     // not expose. Keep this control fail-closed with send/attachment UX.
     chatReasoningAvailable: settingsLoaded && activeSubscriptionRuntime === null,
-    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey,
     // The route's effective output limit — what the engine sends, not an
     // assumed 4,096 — so the output estimate is the most a reply may cost.
     onOpenSettings,
@@ -1772,7 +1789,7 @@ export function App() {
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
-    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey, onOpenSettings, llmOutputTokenLimit,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions,
     sideChatOpenRequest,
@@ -1786,6 +1803,21 @@ export function App() {
     activeProject, defaultWorkspaceProject, freshProjectByGroup, workspaceProjects,
     onNewChatForProject, refreshWorkspaceProjects, handleProjectError,
     pendingAnswers,
+  ]);
+
+  /** What a terminal or web pane's own chat composer needs to know about the model. */
+  const paneChatRuntime = useMemo<SideChatRuntime>(() => ({
+    hasApiKey: effectiveLlmReady, settingsLoaded, onOpenSettings,
+    subscriptionRuntimePolicy,
+    subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
+    subscriptionUnavailableProvider, subscriptionPendingProvider,
+    llmVendor, llmModel, llmRouteModalities, processingDisplayLevel,
+    usageAvailable: apiUsageProjectionAvailable,
+  }), [
+    effectiveLlmReady, settingsLoaded, onOpenSettings, subscriptionRuntimePolicy,
+    subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
+    subscriptionUnavailableProvider, subscriptionPendingProvider,
+    llmVendor, llmModel, llmRouteModalities, processingDisplayLevel, apiUsageProjectionAvailable,
   ]);
 
   // ─── Render ───────────────────────────────────
@@ -2082,15 +2114,10 @@ export function App() {
             // The header is the surface's drag handle: onto another pane, or
             // onto a side panel's tabs.
             dragSurface: { tabId: surface.tabId, kind: surface.kind, from: { pane: paneId } },
-            actions: [{
-              id: "surface.moveToSide",
-              label: t("mainPanels.moveToSide"),
-              icon: <PanelRightOpen className="h-4 w-4" />,
-              onSelect: () => surfaceMoves.paneToSide(paneId),
-            }],
           }}
+          chatRuntime={paneChatRuntime}
+          onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          onCwd={mainSurfaces.setCwd}
           // A main terminal has no conversation beside it: its blocks go to
           // the composer the user last typed in.
           onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
@@ -2137,12 +2164,12 @@ export function App() {
       iconText: pluginPane.view?.iconText,
     });
     const pluginTitle = pluginPane.view
-      ? getPluginViewLabel(pluginPane.view)
+      ? getPluginViewLabel(pluginPane.view, locale)
       : t("be_pluginUiHost.pluginUiTitle");
     return paneShell(view, (
       <PaneFrame
         title={pluginTitle}
-        description={pluginPane.view?.extension.description
+        description={(pluginPane.view && getPluginViewDescription(pluginPane.view.extension, locale))
           ?? t("be_pluginUiHost.pluginUiLoadingDesc")}
         icon={(
           <Suspense fallback={<span className="h-4 w-4" />}>

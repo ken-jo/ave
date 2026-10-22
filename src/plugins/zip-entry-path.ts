@@ -2,7 +2,7 @@
  * Defense-in-depth zip-entry path sanitizer.
  *
  * Extracted from `marketplace.ts` (§FU#267 decomposition) so that
- * both `PluginArtifactStore` and the MCP install consumer (ave#259)
+ * both `PluginArtifactStore` and the MCP install consumer
  * share the same path-validation rules instead of duplicating them.
  *
  * Returns:

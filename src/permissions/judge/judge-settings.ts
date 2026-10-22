@@ -141,7 +141,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * well-known credential names.
  */
 const REFUSED_ENV_NAMES: readonly RegExp[] = [
-  /^(AVE|RETIREDNAME|ELECTRON)_/i,
+  /^(AVE|ELECTRON)_/i,
   /_(API_KEY|TOKEN|SECRET|PASSWORD)$/i,
   /^AWS_/i,
   /^GITHUB_TOKEN$/i,

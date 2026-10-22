@@ -5,7 +5,7 @@
   "description": "Host protocol golden fixture: the hostApi surface the meeting plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
-      "displayName": "Ave Meeting",
+      "displayName": "Meeting",
       "entry": "entry.mjs",
       "capabilities": [
         "meeting-recorder",

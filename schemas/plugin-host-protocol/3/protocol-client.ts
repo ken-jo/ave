@@ -328,6 +328,13 @@ export interface PluginAlertsDeclaration {
 }
 export interface PluginAuthSpec {
   label?: string;
+  locales?: {
+    [k: string]:
+      | {
+          label: string;
+        }
+      | undefined;
+  };
   loginTool: string;
   logoutTool?: string;
   partitionDomains?: string[];
@@ -353,6 +360,9 @@ export interface PluginConfigSchemaProperty {
     enum?: (string | number | boolean)[];
     type: "string" | "number" | "integer" | "boolean";
   };
+  locales?: {
+    [k: string]: PluginConfigSchemaPropertyLocalizedText | undefined;
+  };
   maxLength?: number;
   maximum?: number;
   minLength?: number;
@@ -360,6 +370,10 @@ export interface PluginConfigSchemaProperty {
   pattern?: string;
   title?: string;
   type: "string" | "number" | "integer" | "boolean" | "array";
+}
+export interface PluginConfigSchemaPropertyLocalizedText {
+  description?: string;
+  title?: string;
 }
 export interface EventSubscription {
   hint?: EventSubscriptionHint;
@@ -485,9 +499,17 @@ export interface PluginUiExtension {
   exportName?: string;
   id: string;
   kind: "embedded-module" | "embedded-page" | "info-card";
+  locales?: {
+    [k: string]: PluginUiExtensionLocalizedText | undefined;
+  };
   page?: string;
   slot: "sidebar" | "floating";
   title: string;
+}
+export interface PluginUiExtensionLocalizedText {
+  description?: string;
+  displayName?: string;
+  title?: string;
 }
 export interface PluginUiResourceDecl {
   csp?: {

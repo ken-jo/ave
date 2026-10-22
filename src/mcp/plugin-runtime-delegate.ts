@@ -25,7 +25,7 @@
  *   return { ...myResult, _meta: { ui: { resourceUri: "ui://<myId>/card.html" } } };
  *
  * — the same `_meta.ui.*` keys an external MCP server puts on its `CallToolResult`
- * (NOT an `xyz.ave/*` vendor key), so both arms declare a card identically. The
+ * (NOT a legacy reverse-DNS vendor key), so both arms declare a card identically. The
  * delegate lifts it onto the wire `_meta.ui`, from which `PluginMcpHost.invoke`
  * builds the {@link McpUiPayload} (stamping `serverId` itself — a plugin can never
  * point a card at another server). The declaration is stripped from the value, so

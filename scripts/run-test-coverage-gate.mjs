@@ -9,6 +9,7 @@ const reportsDir =
   process.env.AVE_COVERAGE_REPORTS_DIR ??
   mkdtempSync(join(tmpdir(), "ave-vitest-coverage-"));
 const ownsReportsDir = !process.env.AVE_COVERAGE_REPORTS_DIR;
+const discardsReports = ownsReportsDir && !keepCoverage;
 const bunCommand = process.platform === "win32" ? "bun.exe" : "bun";
 
 try {
@@ -26,6 +27,11 @@ try {
         "--coverage",
         "--silent",
         `--coverage.reportsDirectory=${reportsDir}`,
+        // The gate reads coverage-summary.json and the log shows the text
+        // summary; the HTML report the config also asks for would be written
+        // into a directory this script deletes, so it is not generated here.
+        // A kept or caller-owned reports directory gets the config's full set.
+        ...(discardsReports ? ["--coverage.reporter=json-summary", "--coverage.reporter=text-summary"] : []),
       ],
       { stdio: "inherit" },
     );
@@ -42,7 +48,7 @@ try {
     }
   }
 } finally {
-  if (ownsReportsDir && !keepCoverage) {
+  if (discardsReports) {
     rmSync(reportsDir, { recursive: true, force: true });
   }
 }

@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { withoutGitContext } from "./git-process-environment.mjs";
 
 const MIRROR = "web/public/schemas/plugin-host-protocol";
 const VERSION = /^\d+\.\d+\.\d+$/u;
@@ -11,9 +13,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
 /**
  * Where Ave publishes its JSON Schemas: every schema `$id` the host owns is
  * this origin plus its path under `web/public/schemas/`, and the Ave site
- * serves the file at that URL. Protocols 1 and 2 were published under the
- * Ave site's origin and keep that `$id` byte for byte (RETIRED_COPIES); the
- * Ave site serves those files at the same paths.
+ * serves the file at that URL.
  */
 const AVE_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
 const PUBLIC_SCHEMAS = "web/public/schemas";
@@ -87,18 +87,70 @@ export function syncPublishedSchemas(root) {
 }
 
 /**
- * Retired protocols' published schemas. Protocols 1 and 2 named the wire the
- * host no longer serves, so they left mirror.json, but their URLs were
- * published and plugins built against them still cite the `$id`. They stay in
- * the public tree as frozen historical documents: never recorded as copies,
- * never changed, each checked against the sha256 it was published with.
+ * Refuse a checkout that cannot answer "is this version tagged?": a shallow
+ * clone, a tree with no release tags, or no git repository at all. Without
+ * the tags every copy would look untagged and the freeze below would pass by
+ * not running.
  */
-const RETIRED_COPIES = new Map([
-  ["1/protocol.schema.json", "aca9dfea7b1dc90a5ae49023c90aebb9d06384524254e80d172b0d19e098555e"],
-  ["1/v0.11.0/protocol.schema.json", "aca9dfea7b1dc90a5ae49023c90aebb9d06384524254e80d172b0d19e098555e"],
-  ["2/v0.12.0/protocol.schema.json", "c83bafc4724042725f27484b296c4ac6e42e9954a0e2400e4caf5acecea99ae0"],
-  ["2/v0.13.0/protocol.schema.json", "e334f1d9f7aeab3fb5cfc167e4a455d30289c1bc6e01f96aef7fbcd617bbc277"],
-]);
+function requireReleaseTags(root, git) {
+  const remedy = "fetch the release tags (a full clone, or actions/checkout with fetch-depth: 0; "
+    + "locally, git fetch --unshallow --tags, or git fetch --tags when the clone is not shallow)";
+  const notCheckout = () =>
+    fail(`${root} is not a git checkout, so tagged mirror copies cannot be verified; ${remedy}`);
+  let toplevel;
+  let shallow;
+  try {
+    toplevel = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
+    shallow = git(["rev-parse", "--is-shallow-repository"]).toString("utf8").trim();
+  } catch {
+    notCheckout();
+  }
+  // A tree nested inside some other repository answers git with that
+  // repository's tags, which say nothing about this tree's copies.
+  if (realpathSync(toplevel) !== realpathSync(root)) notCheckout();
+  if (shallow === "true") fail(`this checkout is shallow, so tagged mirror copies cannot be verified; ${remedy}`);
+  if (git(["tag", "--list", "v*"]).toString("utf8").trim() === "") {
+    fail(`this checkout has no v* release tags, so tagged mirror copies cannot be verified; ${remedy}`);
+  }
+}
+
+/**
+ * The canonical protocol schema bytes the release tag `v<appVersion>` carries,
+ * or `null` when that version is not tagged (yet) — the normal case for the
+ * open candidate, including the release script's pre-tag sync. A tag that
+ * exists but does not carry the protocol is answered with empty bytes, which
+ * match no recorded copy. A checkout that has no release tags to consult is
+ * refused ({@link requireReleaseTags}).
+ */
+function gitTaggedSchema(root, appVersion, protocol) {
+  const tag = `v${appVersion}`;
+  const git = (args) => execFileSync("git", ["-C", root, ...args], {
+    env: withoutGitContext(), stdio: ["ignore", "pipe", "ignore"],
+  });
+  requireReleaseTags(root, git);
+  try {
+    git(["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`]);
+  } catch {
+    return null;
+  }
+  try {
+    return git(["show", `${tag}:schemas/plugin-host-protocol/${protocol}/protocol.schema.json`]);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
+ * Once `v<appVersion>` is tagged, that version's copy is the tag's contract,
+ * published or not: the copy must be the bytes the tag carries. A candidate
+ * left at a tagged version would otherwise keep absorbing protocol changes the
+ * tagged app does not accept, under that app's schema URL.
+ */
+function checkTaggedCopy(root, relative, protocol, appVersion, bytes, taggedSchema) {
+  const tagged = taggedSchema(root, appVersion, protocol);
+  if (tagged === null || tagged.equals(bytes)) return;
+  fail(`${relative} differs from the schema tag v${appVersion} carries; a tagged version's copy is frozen — bump package.json to the next version, regenerate the schema, and run node scripts/sync-plugin-host-protocol-mirror.mjs`);
+}
 
 function fail(message) {
   throw new Error(`plugin host protocol mirror: ${message}`);
@@ -147,7 +199,7 @@ function newestPublished(copies, protocol) {
 }
 
 /** Check frozen copies, the live candidate, and aliases against the manifest. */
-export function checkProtocolMirror(root) {
+export function checkProtocolMirror(root, { taggedSchema = gitTaggedSchema } = {}) {
   const manifest = readManifest(root);
   const version = currentVersion(root);
   if (!VERSION.test(version)) fail("package.json version is invalid");
@@ -172,6 +224,7 @@ export function checkProtocolMirror(root) {
     const schema = JSON.parse(bytes.toString("utf8"));
     const expectedId = hostProtocolSchemaId(relative);
     if (schema.$id !== expectedId) fail(`${relative} has a different $id`);
+    checkTaggedCopy(root, relative, entry.protocol, entry.appVersion, bytes, taggedSchema);
     if (entry.publishedTag === null && entry.appVersion === version) {
       candidates += 1;
       candidateProtocols.add(entry.protocol);
@@ -235,17 +288,14 @@ export function checkProtocolMirror(root) {
     }
   }
   for (const path of found) {
-    if (expected.has(path)) continue;
-    const retired = RETIRED_COPIES.get(path);
-    if (!retired) fail(`unrecorded copy ${path}`);
-    if (digest(readFileSync(join(mirrorRoot, path))) !== retired) fail(`retired ${path} differs from its published sha256`);
+    if (!expected.has(path)) fail(`unrecorded copy ${path}`);
   }
   for (const path of expected) if (!found.has(path)) fail(`missing copy ${path}`);
   return `${manifest.copies.length} copies, ${Object.keys(manifest.aliases).length} aliases, ${candidates} candidate`;
 }
 
 /** Refresh only the current candidate after a version bump and schema generation. */
-export function syncProtocolMirror(root, generatedFrom) {
+export function syncProtocolMirror(root, generatedFrom, { taggedSchema = gitTaggedSchema } = {}) {
   if (!COMMIT.test(generatedFrom)) fail("generatedFrom must be a full commit SHA");
   const manifest = readManifest(root);
   const version = currentVersion(root);
@@ -261,6 +311,7 @@ export function syncProtocolMirror(root, generatedFrom) {
     const prior = manifest.copies.find((entry) =>
       entry.protocol === dir.name && entry.appVersion === version);
     if (prior?.publishedTag) fail(`${relative} is published and cannot be changed`);
+    checkTaggedCopy(root, relative, dir.name, version, bytes, taggedSchema);
     const target = join(mirrorRoot, relative);
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(canonical, target);
@@ -277,11 +328,11 @@ export function syncProtocolMirror(root, generatedFrom) {
  * protocol's alias at the newest published copy, which is not necessarily the
  * one just promoted.
  */
-export function publishProtocolMirror(root, target) {
+export function publishProtocolMirror(root, target, { taggedSchema = gitTaggedSchema } = {}) {
   const match = /^(\d+)\/(\d+\.\d+\.\d+)$/u.exec(target);
   if (!match) fail(`--publish takes <protocol>/<version>, such as 2/0.13.0, not ${target}`);
   const [, protocol, appVersion] = match;
-  checkProtocolMirror(root);
+  checkProtocolMirror(root, { taggedSchema });
   const manifest = readManifest(root);
   const relative = copyPath(protocol, appVersion);
   const entry = manifest.copies.find((copy) =>

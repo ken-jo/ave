@@ -560,7 +560,7 @@ unknown since (§8).
 ### 6.1 Retired models (slice 7 follow-up, owner direction 2026-10-13)
 
 A model that is going away is in one of two tiers (owner decision 2026-10-13,
-two-tier); nothing else puts it there, and the host keeps no list of retired names
+two-tier); nothing else puts it there, and the host keeps no list of retired model ids
 (`RETIRED_LLM_MODEL_IDS`, which retired `gpt-4o` by name, is gone):
 
 - **Retired (`"unlisted"`) — the vendor's own listing.** The route's last successful

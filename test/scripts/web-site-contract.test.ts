@@ -14,8 +14,6 @@ const web = resolve(root, "web");
 const pub = resolve(web, "public");
 const read = (path: string) => readFileSync(path, "utf8");
 const SITE = "https://ave.agent-connector.ai";
-/** The Ave site's origin, which protocols 1 and 2 were published under; their `$id` keeps it. */
-const AVE_SITE = "https://former-site.invalid";
 
 // The site's sources are read as text: they belong to the web package, not to
 // the app's TypeScript program.
@@ -61,9 +59,8 @@ describe("machine-readable files the app fetches", () => {
     expect(documentPath).toBe("/.well-known/ave-service.json");
 
     const current = readFileSync(join(pub, documentPath as string));
-    // Ave is a new app: no Ave build reads this host, so the site carries no
-    // pre-rename descriptor and names no move.
-    expect(existsSync(join(pub, ".well-known/former-service.json"))).toBe(false);
+    // Ave is a new app: the site carries no other descriptor and names no move.
+    expect(readdirSync(join(pub, ".well-known"))).toEqual(["ave-service.json"]);
 
     const descriptor = JSON.parse(current.toString("utf8")) as {
       schemaVersion: number; announcements: string; movedTo: unknown; movedFrom: unknown;
@@ -93,19 +90,9 @@ describe("machine-readable files the app fetches", () => {
     for (const copy of manifest.copies) {
       expect(existsSync(join(pub, `schemas/plugin-host-protocol/${copy.protocol}/v${copy.appVersion}/protocol.schema.json`))).toBe(true);
     }
-  });
-
-  it("keeps the published schema URLs of retired protocols 1 and 2", () => {
-    for (const path of [
-      "schemas/plugin-host-protocol/1/protocol.schema.json",
-      "schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
-      "schemas/plugin-host-protocol/2/v0.12.0/protocol.schema.json",
-      "schemas/plugin-host-protocol/2/v0.13.0/protocol.schema.json",
-    ]) {
-      const schema = JSON.parse(read(join(pub, path))) as { $id: string };
-      const versioned = path.replace("1/protocol.schema.json", "1/v0.11.0/protocol.schema.json");
-      expect(schema.$id, path).toBe(`${AVE_SITE}/${versioned}`);
-    }
+    // Only recorded protocols are published: the host serves no other wire.
+    const published = readdirSync(join(pub, "schemas/plugin-host-protocol")).filter((name) => name !== "mirror.json").sort();
+    expect(published).toEqual([...new Set(manifest.copies.map((copy) => copy.protocol))].sort());
   });
 });
 
@@ -196,12 +183,6 @@ describe("site copy", () => {
     };
     walk(resolve(web, dir));
     return out;
-  });
-
-  it("carries the product name only", () => {
-    for (const file of sources) {
-      expect(/retiredname/iu.test(read(file)), relative(root, file)).toBe(false);
-    }
   });
 
   it("states no licence and ends with the owner's notice", () => {

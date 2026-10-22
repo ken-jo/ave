@@ -5,6 +5,9 @@
  * `node` subprocess without a build step. Mirrors what a real spawned plugin
  * (StdioServerLoop + PluginMcpServer) would do.
  */
+
+/** A `_meta` vendor prefix the host does not own. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
 let buffer = Buffer.alloc(0);
 
 function write(message) {
@@ -45,11 +48,10 @@ function handle(req) {
               // the host ignores it (a plugin can lie) and registers the
               // default-strict "write" baseline. Kept to prove the reverse
               // projection does NOT honor a wire-declared category.
-              // transitional: also intentionally uses the LEGACY reverse-DNS
-              // `xyz.ave/*` prefix — this fixture stands in for an out-of-process
-              // plugin that has not yet migrated to `ave/*`, proving the host
-              // still tolerates (and ignores) legacy `_meta` from a real subprocess.
-              _meta: { "xyz.ave/category": "read", "xyz.ave/version": "1.0.0" },
+              // It travels under an unknown vendor `_meta` prefix, proving the
+              // host tolerates (and ignores) `_meta` keys it does not own from a
+              // real subprocess.
+              _meta: { [`${UNKNOWN_META_PREFIX}category`]: "read", [`${UNKNOWN_META_PREFIX}version`]: "1.0.0" },
             },
           ],
         },

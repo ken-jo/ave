@@ -55,6 +55,8 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 
 /** The app sets these for something it launched; they are not configuration. */
 const INTERNAL: readonly string[] = [
+  // The host supplies inspected filesystem paths to its access-rule query child.
+  "AVE_EXECUTABLE_ACL_PATHS",
   "AVE_HOOK_EVENT",
   "AVE_HOOK_SESSION",
   // Both halves of the subscription tool bridge. The host binds an ephemeral
@@ -69,10 +71,6 @@ const INTERNAL: readonly string[] = [
   // and names its local socket for the git child it spawns (design §9.3).
   "AVE_ASKPASS_ENDPOINT",
   "AVE_ASKPASS_TICKET",
-  // The workspace terminal's command-marker nonce: minted per terminal and
-  // handed to the shell's generated startup file, which unsets it before the
-  // first prompt (shell-integration.ts).
-  "AVE_TERMINAL_NONCE",
   // The workspace terminal's own tab id, set in each shell's environment so a
   // script run there can name the terminal it runs in (pty-manager.ts). The
   // host chooses it; nobody configures it.

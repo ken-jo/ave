@@ -53,7 +53,7 @@ describe("normalizeServiceBase", () => {
     expect(() => normalizeServiceBase("http://10.0.0.1", { allowLoopbackHttp: true })).toThrow(/https/u);
   });
 
-  it.each(["https:ave.agent-connector.ai", " https://ave.agent-connector.ai", "https://ave.agent-connector.ai ", "https://:@ave.agent-connector.ai", "https://ave.agent-connector.ai?", "https://ave.agent-connector.ai#", "https://ave.agent-connector.ai/%2e", "https://AVEAI.xyz"])(
+  it.each(["https:ave.agent-connector.ai", " https://ave.agent-connector.ai", "https://ave.agent-connector.ai ", "https://:@ave.agent-connector.ai", "https://ave.agent-connector.ai?", "https://ave.agent-connector.ai#", "https://ave.agent-connector.ai/%2e", "https://AVE.agent-connector.ai"])(
     "refuses %j, a spelling the URL parser would repair",
     (value) => {
       expect(() => normalizeServiceBase(value)).toThrow(/origin/u);

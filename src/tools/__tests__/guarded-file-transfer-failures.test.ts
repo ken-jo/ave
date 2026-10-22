@@ -3,13 +3,13 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile, lst
 import { read } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { copyPath, runOwnedTransfer } from "../guarded-file-transfer.js";
+import { copyPath, runOwnedTransfer, _OwnedTransferForTest } from "../guarded-file-transfer.js";
 import { FILE_TRANSFER_LIMITS } from "../file-transfer-policy.js";
 import type { ToolExecutionContext } from "../types.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), rmdir: vi.fn(actual.rmdir), unlink: vi.fn(actual.unlink) };
+  return { ...actual, lstat: vi.fn(actual.lstat), open: vi.fn(actual.open), opendir: vi.fn(actual.opendir), rmdir: vi.fn(actual.rmdir), unlink: vi.fn(actual.unlink) };
 });
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -33,6 +33,7 @@ function deferred() {
 }
 
 beforeEach(async () => {
+  vi.mocked(lstat).mockImplementation(actual.lstat);
   vi.mocked(open).mockImplementation(actual.open);
   vi.mocked(opendir).mockImplementation(actual.opendir);
   vi.mocked(rmdir).mockImplementation(actual.rmdir);
@@ -303,5 +304,90 @@ describe("detected replacement and cleanup faults", () => {
     }
     for (const call of vi.mocked(rmdir).mock.calls) expect(call).toHaveLength(1);
     expect(await readFile(join(destination, "file-0"))).toEqual(bytes);
+  });
+});
+
+describe("exact transfer file identities", () => {
+  beforeEach(() => { vi.mocked(open).mockClear(); });
+  const firstInode = 2n ** 60n;
+
+  function replaceInode(path: string, inode: () => bigint): void {
+    vi.mocked(lstat).mockImplementation((async (...args: Parameters<typeof actual.lstat>) => {
+      const stats = await actual.lstat(...args);
+      if (String(args[0]) !== path) return stats;
+      expect(args[1]).toEqual({ bigint: true });
+      return Object.assign(stats, { ino: inode() });
+    }) as typeof lstat);
+  }
+
+  it("refuses a source inode replacement beyond number precision", async () => {
+    let observations = 0;
+    replaceInode(source, () => firstInode + (observations++ === 0 ? 0n : 1n));
+    const result = await transfer(async () => { throw new Error("Producer must not run"); });
+    expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "not-created" });
+    expect(vi.mocked(open)).not.toHaveBeenCalled();
+  });
+
+  it("refuses an opened source whose inode differs beyond number precision", async () => {
+    replaceInode(source, () => firstInode);
+    observeHandles((handle, path) => {
+      if (path !== source) return;
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementation((async () => {
+        const stats = await stat({ bigint: true });
+        return Object.assign(stats, { ino: firstInode + 1n });
+      }) as FileHandle["stat"]);
+    });
+    const result = await transfer(async ({ openSourceFile }) => { await openSourceFile(source); });
+    expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "removed" });
+  });
+
+  it("refuses a destination ancestor inode replacement beyond number precision", async () => {
+    let observations = 0;
+    replaceInode(root, () => firstInode + (observations++ < 2 ? 0n : 1n));
+    const result = await transfer(async () => { throw new Error("Producer must not run"); });
+    expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "not-created" });
+    expect(vi.mocked(open)).not.toHaveBeenCalled();
+  });
+
+  it("refuses inconsistent owned-parent snapshots beyond number precision", () => {
+    const transfer = new _OwnedTransferForTest({
+      sourcePath: source,
+      destinationPath: destination,
+      destinationKind: "directory",
+    }, context, FILE_TRANSFER_LIMITS);
+    transfer.summary.destinationPath = "/owned";
+    const parent = {
+      relativePath: "",
+      kind: "directory" as const,
+      identity: { dev: 1n, ino: firstInode },
+      parentIdentity: { dev: 1n, ino: 1n },
+      explicit: false,
+    };
+    const child = {
+      relativePath: "child",
+      kind: "file" as const,
+      identity: { dev: 1n, ino: 2n },
+      parentIdentity: { dev: 1n, ino: firstInode + 1n },
+      explicit: true,
+    };
+    transfer.entries.set("/owned", parent);
+    expect(transfer.entries.get("/owned")).toBe(parent);
+    expect(() => transfer.ownedChain(child)).toThrow("Owned parent is missing");
+    transfer.signal.removeEventListener("abort", transfer.onAbort);
+  });
+
+  it("preserves an owned parent replaced beyond number precision", async () => {
+    let replaced = false;
+    replaceInode(destination, () => firstInode + (replaced ? 1n : 0n));
+    const result = await transfer(async ({ sink }) => {
+      await sink.file("first", body(), attributes);
+      replaced = true;
+      await sink.file("second", body(), attributes);
+    });
+    expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "incomplete" });
+    expect(await readFile(join(destination, "first"))).toEqual(bytes);
+    await expect(actual.lstat(join(destination, "second"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(vi.mocked(unlink)).not.toHaveBeenCalledWith(join(destination, "first"));
   });
 });

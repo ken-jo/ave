@@ -19,7 +19,7 @@
  *   `onTheme` — the dock's own chrome paints from the theme main sends: the
  *     current one when the window opens, then each later one. Not the plugin
  *     `getTheme` query, whose guard admits plugin frames only.
- *   the dock channels — the host's activity line and slot lifecycle.
+ *   the dock channels — the host's activity line, slot lifecycle and slot titles.
  *
  * What it does NOT expose: any way to move, resize or re-level the window. The
  * dock's geometry is main's, and a renderer that could change it would undo
@@ -66,6 +66,8 @@ const dockBridge = {
     subscribe(CHANNELS.dock.activity, handler),
   onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, handler),
   onResize: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.resize, handler),
+  /** A card's header title changed — the host resolved it in a new UI language. */
+  onRetitle: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.retitle, handler),
   onUnmount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.unmount, handler),
   /** The host theme current when the window opened, then each later one (main sends both). */
   onTheme: (handler: (theme: unknown) => void) => subscribe(CHANNELS.dock.theme, handler),

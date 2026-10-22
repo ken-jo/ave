@@ -153,6 +153,30 @@ describe("preload — plugin webview asset URLs", () => {
     }]]);
   });
 
+  it("bridges a pane chat's surface and the side chat a view shows on send", async () => {
+    mockInvoke.mockResolvedValueOnce({ ok: true, result: {} });
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    const sessionId = "34fd6270-309d-4e47-878b-75c0742a6ac2";
+    await sideChat.send("hello", [], undefined, "side-request", { kind: "terminal", tabId: "terminal:w-1" }, sessionId);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
+      input: "hello", attachments: [], originSessionId: undefined, sendRequestId: "side-request",
+      surface: { kind: "terminal", tabId: "terminal:w-1" }, sessionId,
+    }]]);
+  });
+
+  it("bridges a pane chat's history read and its ending", async () => {
+    mockInvoke.mockResolvedValue({ ok: true, sessionId: null, messages: [] });
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    await sideChat.paneHistory("browser:w-2");
+    await sideChat.endPaneChat("browser:w-2", "closed");
+    expect(mockInvoke.mock.calls).toEqual([
+      [CHANNELS.sidechat.paneHistory, { tabId: "browser:w-2" }],
+      [CHANNELS.sidechat.endPaneChat, { tabId: "browser:w-2", reason: "closed" }],
+    ]);
+  });
+
   it("bridges side-chat cancellation identity on the existing channel", async () => {
     const sendRequestId = "side-request";
     mockInvoke.mockResolvedValueOnce({ ok: true });

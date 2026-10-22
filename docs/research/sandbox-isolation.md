@@ -53,7 +53,7 @@ Confinement is provided by the `@anthropic-ai/sandbox-runtime` package (pinned i
 | Platform | Backend | `confines` | Install |
 |---|---|---|---|
 | macOS | OS built-in sandbox, egress through the runtime's loopback proxy | filesystem, process, network | Nothing to install. |
-| Linux | `bwrap`, plus `socat` and `ripgrep` | filesystem, process, network | OS packages. |
+| Linux | `bwrap`, plus `socat` and `ripgrep` | filesystem, process, network | OS packages. The workspace terminal also needs util-linux `script` at `/usr/bin/script` (installed by default: `bsdutils` on Debian and Ubuntu, `util-linux` elsewhere). |
 | Windows | Vendored `srt-win` helper running tools as a dedicated low-privilege `srt-sandbox` account; filesystem by ACL, egress by an OS packet filter and the loopback proxy | filesystem, network (no process isolation) | One-time administrator setup from Settings. |
 
 The Windows helper is the one bundled binary: it ships inside the package and is unpacked from `app.asar` (`getVendoredSrtWinExePath`). On Windows every confined process runs as the same account, so filesystem confinement protects the host, not one plugin from another.
@@ -87,7 +87,7 @@ The approval surface renders the capability card (`tool-approval-sandbox`) from 
 | Path | Where |
 |---|---|
 | Shell tools | `src/tools/shell-tools.ts` (`wrapToolCommand`) |
-| Integrated terminal | `src/main/terminal/pty-manager.ts` (`wrapWorkerCommand`; on macOS `wrapTerminalCommand`, which grants `file-ioctl` on the shell's own pty slave only, through the trampoline in `terminal-tty-handoff.ts`) |
+| Integrated terminal | `src/main/terminal/pty-manager.ts` (`wrapWorkerCommand`; on macOS `wrapTerminalCommand`, which grants `file-ioctl` on the shell's own pty slave only, through the trampoline in `terminal-tty-handoff.ts`; on Linux the shell runs on its own pty under util-linux `script` inside the sandbox, `terminal-inner-pty.ts`) |
 | MCP stdio servers | `src/mcp/mcp-client.ts` |
 | Out-of-process plugins | `src/plugins/isolation/out-of-process-plugin.ts` through `spawnConfinedChild` |
 | Bundled hook and server processes | `src/sandbox/wrap-bundled-command.ts`, used by `src/hooks/script-hook-runner.ts` and the MCP client |

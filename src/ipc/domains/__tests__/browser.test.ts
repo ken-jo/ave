@@ -8,6 +8,11 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
+vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
+  getBrowserWorkspaceService: () => ({ onChanged: vi.fn() }),
+  refreshBrowserPopupControl: vi.fn(),
+  disposeBrowserWorkspaceService: vi.fn(),
+}));
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -50,9 +55,19 @@ afterEach(() => {
 
 describe("browser IPC", () => {
   it("refuses a non-host frame on every invoke", () => {
-    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.surface.setActive]) {
+    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume,
+      CHANNELS.browser.getState, CHANNELS.browser.pausePopup, CHANNELS.browser.resumePopup, CHANNELS.surface.setActive]) {
       expect(invoke(channel, pluginShellFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
+  });
+
+  it("reads only the sender window state and keeps popup handles out of embedded controls", () => {
+    browserTabRegistry.guestAttached({ id: 41, isDestroyed: () => false, getURL: () => "https://a.example/", getTitle: () => "A" } as never, 7);
+    invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:1", webContentsId: 41 });
+    expect(invoke(CHANNELS.browser.getState, fromWindow(), undefined)).toMatchObject({ tabs: [expect.objectContaining({ rendererTabId: "browser:1" })] });
+    expect(invoke(CHANNELS.browser.getState, fromWindow(), {})).toEqual({ ok: false, error: "bad-request" });
+    expect(invoke(CHANNELS.browser.pausePopup, fromWindow(), { tabId: "browser:1" })).toEqual({ ok: false, error: "no-such-tab" });
+    expect(invoke(CHANNELS.browser.resumePopup, fromWindow(), { tabId: "browser:1" })).toEqual({ ok: false, error: "not-resumable" });
   });
 
   it("binds a tab to a guest attached to the sender's window only", () => {

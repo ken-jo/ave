@@ -3383,7 +3383,7 @@ export default async function createPlugin() {
     //
     // Reproduces by writing an entry that throws at the top level, which
     // surfaces through esbuild-style "Dynamic require of …" / generic
-    // ReferenceError patterns observed for samplemail 0.1.18 / pageindex 0.1.16
+    // ReferenceError patterns observed for samplemail 0.1.18 / the indexer plugin 0.1.16
     // pre-SDK-v3.4.2.
     const pluginDir = join(installedDir, "p-broken-entry");
     await mkdir(pluginDir, { recursive: true });
