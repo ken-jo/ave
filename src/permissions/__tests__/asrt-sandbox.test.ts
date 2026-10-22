@@ -895,10 +895,29 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
       // The windows section must be present and use the local SOT constant.
       expect(config.windows).toBeDefined();
       expect(config.windows!.proxyPortRange).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
+      const executable = config.windows!.srtWin!.path;
+      expect(executable).not.toBe(getVendoredSrtWinExePath());
+      expect(readFileSync(executable)).toEqual(readFileSync(getVendoredSrtWinExePath()));
+      expect(bare(config.filesystem.denyWrite)).toContain(dirname(executable));
+      expect(() => buildSandboxConfig({ allowWrite: [dirname(dirname(executable))] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
+      expect(() => buildSandboxConfig({ allowRead: [dirname(executable)] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
     } finally {
       if (prevPlatform) {
         Object.defineProperty(process, "platform", prevPlatform);
       }
+    }
+  });
+
+  it("does not require a helper image when external confinement owns Windows execution", () => {
+    const previous = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const config = buildSandboxConfig({ windows: { externalConfinement: true } });
+      expect(config.windows!.srtWin).toBeUndefined();
+    } finally {
+      if (previous) Object.defineProperty(process, "platform", previous);
     }
   });
 });

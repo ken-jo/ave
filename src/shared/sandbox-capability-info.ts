@@ -60,7 +60,7 @@ export interface SandboxWindowsStatusInfo {
    */
   ready: boolean;
   /** Expected helper resolution failure; never a readiness or provisioning claim. */
-  helperError?: "srt-win-not-found";
+  helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }

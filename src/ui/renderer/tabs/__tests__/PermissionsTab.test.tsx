@@ -1340,10 +1340,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
-  it("keeps MXC and policy sections usable when the helper is missing, and restores setup actions on a fresh status", async () => {
+  it.each([
+    ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
+    ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+  ] as const)("shows %s and restores setup actions on a fresh status", async (helperError, messageKey) => {
     const sandboxWindowsStatus = vi.fn().mockResolvedValueOnce({
       applicable: true, userState: null, wfpState: null, ready: false,
-      helperError: "srt-win-not-found", instructions: "",
+      helperError, instructions: "",
     }).mockResolvedValueOnce({
       applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "",
     });
@@ -1360,9 +1363,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
-      .toHaveAttribute("data-error-code", "srt-win-not-found");
+      .toHaveAttribute("data-error-code", helperError);
     expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
-      .toHaveTextContent(t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"));
+      .toHaveTextContent(t(messageKey));
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
       .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsMxc"));
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions"))

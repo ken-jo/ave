@@ -662,6 +662,7 @@ describe("asrt-windows-support adapter", () => {
 
   it("reports a missing helper without probing provisioned state, and observes restoration on the next read", async () => {
     const originalPlatform = process.platform;
+    const originalBytes = readFileSync(asrtSandbox.getVendoredSrtWinExePath());
     const dir = mkdtempSync(join(tmpdir(), "ave-helper-status-"));
     const helperPath = join(dir, "srt-win.exe");
     const path = vi.spyOn(asrtSandbox, "getVendoredSrtWinExePath").mockReturnValue(helperPath);
@@ -679,12 +680,12 @@ describe("asrt-windows-support adapter", () => {
 
       // The resolver is real; only the status subprocess is replaced. No
       // executable is launched by this lifecycle test.
-      writeFileSync(helperPath, "helper presence for descriptor resolution");
+      writeFileSync(helperPath, originalBytes);
       const restored = await readAsrtWindowsStatus();
       expect(restored).toMatchObject({ applicable: true, userState: "ready", wfpState: "installed", ready: true });
       expect(restored.helperError).toBeUndefined();
       expect(checkWindowsSandboxStatusAsyncMock).toHaveBeenCalledExactlyOnceWith({
-        srtWin: { exe: helperPath, prependArgs: ["--srt-win"] },
+        srtWin: { exe: expect.stringContaining("srt-win.exe"), prependArgs: ["--srt-win"] },
       });
 
       unlinkSync(helperPath);
@@ -694,6 +695,30 @@ describe("asrt-windows-support adapter", () => {
       path.mockRestore();
       setProcessPlatform(originalPlatform);
       checkWindowsSandboxStatusAsyncMock.mockReset();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each(["bitflip", "same-size garbage"])("reports %s as an integrity failure without probing readiness", async (kind) => {
+    const originalPlatform = process.platform;
+    const bytes = readFileSync(asrtSandbox.getVendoredSrtWinExePath());
+    const dir = mkdtempSync(join(tmpdir(), "ave-helper-tamper-"));
+    const helperPath = join(dir, "srt-win.exe");
+    if (kind === "bitflip") bytes[0x20] ^= 1;
+    else bytes.fill(0x41);
+    writeFileSync(helperPath, bytes);
+    const path = vi.spyOn(asrtSandbox, "getVendoredSrtWinExePath").mockReturnValue(helperPath);
+    setProcessPlatform("win32");
+    checkWindowsSandboxStatusAsyncMock.mockReset();
+    try {
+      expect(await readAsrtWindowsStatus()).toMatchObject({
+        applicable: true, ready: false, userState: null, wfpState: null,
+        helperError: "srt-win-integrity-mismatch",
+      });
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+    } finally {
+      path.mockRestore();
+      setProcessPlatform(originalPlatform);
       await cleanupTmpDir(dir);
     }
   });

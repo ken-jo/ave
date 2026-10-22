@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import * as srtIntegrity from "../../../permissions/srt-win-integrity.js";
 import {
   foreignFrameEvent,
   hostFrameEvent,
@@ -166,6 +167,18 @@ function readyUserStatus(): typeof asrtState.userStatus {
 }
 
 describe("sandboxWindowsStatus", () => {
+  it("surfaces an integrity failure without reporting ready or missing", async () => {
+    setProcessPlatform("win32");
+    await setup();
+    const prepare = vi.spyOn(srtIntegrity, "prepareSrtWinExecutable").mockImplementationOnce(() => {
+      throw new srtIntegrity.SrtWinIntegrityError("srt-win-integrity-mismatch");
+    });
+    try {
+      expect(await invoke(PERMISSIONS.sandboxWindowsStatus, hostFrameEvent())).toMatchObject({
+        applicable: true, ready: false, helperError: "srt-win-integrity-mismatch",
+      });
+    } finally { prepare.mockRestore(); }
+  });
   it("returns a not-applicable shape off win32 (no ASRT call)", async () => {
     setProcessPlatform("darwin");
     await setup();

@@ -101,6 +101,8 @@ const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
   install_config_conflict: () => t("permissionsTab.osSandboxWindowsInstallFailedConfigConflict"),
   install_ambient_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedAmbient"),
   srt_win_not_found: () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-not-found": () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-integrity-mismatch": () => t("permissionsTab.osSandboxWindowsHelperIntegrityError"),
   unexpected: () => t("permissionsTab.osSandboxWindowsInstallFailedUnexpected"),
 };
 
@@ -1490,7 +1492,9 @@ export function PermissionsTab({
                 role="status"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
               >
-                {t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+                {windowsStatus.helperError === "srt-win-integrity-mismatch"
+                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
               </p>
             ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
