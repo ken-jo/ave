@@ -1030,6 +1030,36 @@ describe("NotificationService — never-throw contract (#2103)", () => {
 });
 
 describe("turn completion sound", () => {
+  it("reads the master live and suppresses without consuming cooldown even for a focus bypass", () => {
+    const factory = makeNotificationFactoryStub();
+    const log = vi.fn();
+    let enabled = false;
+    const soundEnabled = vi.fn(() => true);
+    const service = new NotificationService({
+      getMainWindow: () => null,
+      notificationFactory: factory.factory,
+      auditLogger: { log } as unknown as AuditLogger,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isOsNotificationsEnabled: () => enabled,
+      isTurnCompletionSoundEnabled: soundEnabled,
+    });
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
+    expect(factory.calls).toHaveLength(0);
+    expect(soundEnabled).not.toHaveBeenCalled();
+    expect(JSON.parse(log.mock.calls[0][0].input)).toMatchObject({
+      event: "notification.suppressed", reason: "os-notifications-disabled",
+    });
+    enabled = true;
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
+    expect(factory.calls).toHaveLength(1);
+    expect(factory.calls[0].silent).toBe(false);
+    expect(factory.calls[0].show).toHaveBeenCalledOnce();
+    enabled = false;
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
+    expect(factory.calls).toHaveLength(1);
+  });
+
   it("uses one normal-priority audible notification and shares the cooldown", () => {
     const factory = makeNotificationFactoryStub();
     let enabled = true;
