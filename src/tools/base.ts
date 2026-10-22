@@ -137,6 +137,8 @@ export interface Tool {
    */
   readonly workerId?: string;
   readonly mcpServerId?: string;
+  /** Original server tool identity and conservative annotation summary, set by the host adapter. */
+  readonly mcpRuleIdentity?: { tool: string; nonDestructive: boolean };
   /** Host-only policy sidecar. It is never serialized onto MCP or passed to plugin input. */
   readonly operationPolicy?: PluginToolOperationPolicy;
   /**
@@ -317,6 +319,7 @@ export interface DynamicToolSpec {
   pluginGeneration?: PluginToolGenerationOwner;
   workerId?: string;
   mcpServerId?: string;
+  mcpRuleIdentity?: Tool["mcpRuleIdentity"];
   operationPolicy?: PluginToolOperationPolicy;
   /** MCP Apps app→server `tools/call` gate — see {@link Tool.appInvokable}. */
   appInvokable?: boolean;
@@ -365,6 +368,7 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     pluginGeneration: spec.pluginGeneration,
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
+    mcpRuleIdentity: spec.mcpRuleIdentity,
     operationPolicy: spec.operationPolicy,
     appInvokable: spec.appInvokable,
     ...(spec.requiresMcpScope ? { requiresMcpScope: true } : {}),

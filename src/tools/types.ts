@@ -99,6 +99,8 @@ export function trustFromSource(source: ToolSource): TrustLevel {
  */
 export interface ToolExecutionContext {
   cwd: string;
+  /** Host-built per-hop permission gate for mediated network requests. */
+  authorizeNetworkTarget?: (url: URL) => Promise<void>;
   /**
    * User-authorized filesystem roots beyond `cwd` for this invocation. The
    * executor derives this once from `permissions.additionalDirectories` and

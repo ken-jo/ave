@@ -99,7 +99,7 @@ describe("Store A (user-global permissions.json)", () => {
     [{ pattern: "Bash(bash *)", action: "allow" }, /refused allow prefix/],
     [{ pattern: "Bash(*)", action: "allow" }, /bare \*/],
     [{ pattern: "Bash(git  status)", action: "deny" }, /single spaces/],
-    [{ pattern: "Mcp(github)", action: "allow" }, /not enforced yet/],
+    [{ pattern: "Mcp(demo:*)", action: "allow" }, /tool name/],
     [{ pattern: "web_fetch", action: "maybe" }, /unknown action/],
   ])("treats an out-of-language rule as corrupt: %j", async (rule, message) => {
     writeFileSync(permissionsFile, JSON.stringify({ version: 1, rules: [rule], mode: "default", updatedAt: "" }));

@@ -1,6 +1,6 @@
 # Permissions: always-allow baseline and judge slot
 
-Status: decided 2026-10-14 (issue #28). P1a is implemented; P1b, P1c and P2 are planned.
+Status: decided 2026-10-14 (issue #28). Command and scoped rule backends are implemented. The out-of-directory depth picker remains a UI integration task.
 
 This page carries the owner-approved direction for issue #28 into the repository. It has two goals:
 
@@ -21,8 +21,8 @@ design must be reported explicitly.
 |---|---|
 | `Bash(<prefix> *)` | every command whose static argv starts with the prefix tokens, including the bare prefix |
 | `Bash(<exact>)` | exactly that static argv |
-| `Edit(<abs path>)` / `Edit(<abs dir>/**)` | one path, or a directory and everything under it |
-| `WebFetch(domain:<host>)` / `WebFetch(domain:*.<host>)` | exact host, or strict subdomains (only a leading `*.`) |
+| `Edit(<path-glob>)` | absolute or project-relative path, using `*`, `**`, and `?`; trailing `/**` also covers the directory itself |
+| `WebFetch(domain:<host>[:port])` / `WebFetch(domain:*.<host>[:port])` | exact host, or strict subdomains; omitted port covers all ports |
 | `Mcp(<server>)` / `Mcp(<server>:<tool>)` | every tool of a server, or one tool |
 
 - Parsing is strict: anything outside the grammar throws.
@@ -97,19 +97,19 @@ does not prove that the command or task contents are read-only.
 - Corrupt files are never silently dropped and never overwritten.
 
 **8. Writes.**
-- Write rules are path-scoped `Edit(<root>/**)`, resolved with realpath at decision time.
+- Write rules apply to native write, edit, multi-edit and patch tools. Relative globs are anchored to the discovered project root, even when the invocation cwd is a subdirectory. Rules reject `.` and `..` components, duplicate separators and unsupported glob syntax. Separators have one canonical spelling. Literal backslashes in POSIX targets or resolved names are refused rather than interpreted as directory separators.
+- The matcher consumes the executor's sealed canonical target identities. Every target must be covered by an allow; deny and ask need only one matching target. Sensitive paths and project escapes through symlinks or parent components retain a per-call gate, including for new files and unresolved links.
+- An absolute external Edit grant admits only the current invocation's sealed file targets through the existing directory and execution gates. A generic tool allow never grants an external path. No directory scope is propagated to later calls.
 - Sensitive paths and Ave's own config, permission and hook files are floors, checked before any allow rule.
 - Symlink escapes ask.
 
-**9. Network.** `WebFetch(domain:...)` rules feed the host-mediated fetch
-allow-list. They do not confine shell egress; the shell sink checks below remain
-necessary.
+**9. Network.** `WebFetch(domain:...)` rules govern the builtin mediated fetch. Hostnames are case-normalized with a trailing DNS dot removed; a rule port matches the URL's effective port. Only a leading `*.` wildcard is accepted, and it excludes the apex. The existing network guard checks each actual redirect destination before transport. A rule-authorized fetch follows destinations covered by an allow. A completed per-call approval also covers ordinary redirects within its initial origin; deny rules and fresh sensitive requests still win. Unapproved ask or uncovered destinations fail with an explicit error. Host allows apply to public fetches; private-network opt-ins retain their existing separate approval identity and policy. Sensitive request screening and SSRF checks remain independent. Fetches admitted solely by general tool or mode policy retain that policy; destination ask/deny rules and floors still apply at every hop. Rules never inspect shell command text, change plugin domain grants or confine shell egress.
 
 **10. MCP.**
 - Always-allow is per tool by default; per server is an explicit option.
-- A destructive annotation, or no annotation, keeps ask. Annotations never auto-allow by themselves.
+- Rules match the server id and original tool name retained by the host adapter. A destructive annotation, or absence of an explicit non-destructive hint, keeps a per-call ask. Annotations never auto-allow by themselves.
 
-**11. Out-of-directory.** The dock offers depth candidates (file, parent, project-like root) resolved by the host.
+**11. Out-of-directory.** The host resolves file, parent and project-root candidates through `editDepthCandidates`, using existing repository discovery and directory validation. Each candidate is an ordinary Edit rule in the same store; duplicate, sensitive, filesystem-root and wildcard-bearing literal candidates are refused. Connecting these candidates to the dock's depth picker is a separate UI task.
 
 **12. Floors.** These are never always-allowable, in any mode:
 - sensitive and secret paths;
@@ -176,11 +176,12 @@ All work lands on the category branch `integration/permissions`.
 - **P1c:** path-scoped `Edit`, host-scoped `WebFetch`, `Mcp`, and out-of-directory depth.
 - **P2:** `src/permissions/judge/` is built in isolation. The auto-mode relocation and the judge call site land together after P1a.
 
-## P1a implementation notes
+## Rule implementation
 
 ### Where the code is
 
-- `src/permissions/rules/rule-specifier.ts`: the grammar, plus the pure host and MCP matchers that P1c will wire in.
+- `src/permissions/rules/rule-specifier.ts`: the grammar and pure host/MCP identity matchers.
+- `src/permissions/rules/scoped-rule-matcher.ts`: edit, network and MCP precedence, mandatory scoped gates and host-resolved depth candidates.
 - `src/permissions/rules/shell-prefix-policy.ts`: the refused list and the arity suggestion.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
@@ -189,12 +190,10 @@ All work lands on the category branch `integration/permissions`.
 
 ### Decision path
 
-`PermissionManager.checkDetailed` takes two new context fields:
+`PermissionManager.checkDetailed` uses two host-built context fields:
 
-- `ruleSubject: { kind: "shell", command, dialect, cwd? }`, set for canonical
-  `bash` and `powershell` calls with a known dialect;
-- `projectRulesCwd`, which the tool pipeline sets for Bash after awaiting
-  `ensureProjectRulesLoaded`. PowerShell has no project command-rule scope.
+- `ruleSubject`: a shell command with its dialect, sealed native edit targets, a mediated fetch URL, or the original MCP server/tool identity;
+- `projectRulesCwd`, which the tool pipeline loads through `ensureProjectRulesLoaded` before a synchronous decision. Relative Edit globs use that scope's project root. PowerShell has no project command-rule scope.
 
 Checks run in this order:
 
@@ -247,9 +246,9 @@ spelling does not add a hidden-code blocker; the structural persistent-prefix
 check still rejects an ambiguous command boundary. The inner command is not a
 transparent alias.
 
-### Not yet enforced
+### Scoped rule storage
 
-`Edit`, `WebFetch` and `Mcp` rules parse but are not enforced yet. Writing them is refused, and a file that holds one is corrupt. This stops a stored rule from being a silent no-op that the user believes is in force. P1c lifts this by adding their kinds to `ENFORCED_RULE_KINDS`.
+`Edit`, `WebFetch` and `Mcp` use the existing validated global and project rule files. Malformed rules fail the whole file closed; no second store or conversion of exact approvals is introduced. Their subjects are built from host-created file/fetch instances or the registered MCP adapter identity rather than a tool-name resemblance.
 
 ### Shell classification buckets
 

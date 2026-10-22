@@ -25,6 +25,7 @@ import {
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
 import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -441,7 +442,12 @@ export async function authorizeToolInvocation(
       : terminalScope !== undefined && typeof finalInput.command === "string"
         ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
         : undefined;
-    const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
+    const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
+    // Guest file paths belong to the workload namespace, never to host Edit scopes.
+    const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
+      && invocationPermissionContext.disposableSubstrate?.authority === "workload-broker"
+      ? undefined : scopedSubjectCandidate;
+    const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : scopedRuleSubject ? executionCwd : undefined;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
@@ -455,6 +461,7 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(scopedRuleSubject ? { ruleSubject: scopedRuleSubject } : {}),
             ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )
