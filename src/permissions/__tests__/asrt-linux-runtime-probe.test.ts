@@ -33,6 +33,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 vi.mock("../srt-win-integrity.js", () => ({
+  getSrtWinArchitecture: () => "x64",
   prepareSrtWinExecutable: (source: string) => source,
   srtWinPrivateDirectories: () => [],
 }));
