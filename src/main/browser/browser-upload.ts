@@ -1,6 +1,7 @@
-import { constants, promises as fs } from "node:fs";
+import { constants, promises as fs, type BigIntStats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, extname, isAbsolute, join } from "node:path";
+import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import { DENY_EXTENSIONS } from "../../shared/attachments-deny-list.js";
 import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
@@ -30,13 +31,13 @@ const namespace = openFeatureNamespace("browser-uploads");
 const liveSelections = new Set<BrowserUploadSelection>();
 let reservedBytes = 0;
 let disposed = false;
-interface StagedFile { readonly path: string; readonly dev: number; readonly ino: number }
+interface StagedFile extends Readonly<FileIdentity> { readonly path: string }
 
 async function removeOwnedFile(file: StagedFile): Promise<void> {
   let current;
-  try { current = await fs.lstat(file.path); }
+  try { current = await fs.lstat(file.path, { bigint: true }); }
   catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return; throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
-  if (!current.isFile() || current.isSymbolicLink() || current.dev !== file.dev || current.ino !== file.ino || current.nlink !== 1) {
+  if (!current.isFile() || current.isSymbolicLink() || !sameFileIdentity(current, file) || current.nlink !== 1n) {
     throw new BrowserActionError("upload-cleanup-failed", "upload staging was replaced; its replacement was preserved");
   }
   // Descriptor-based chmod never follows a replaced file link. Recheck the
@@ -45,12 +46,12 @@ async function removeOwnedFile(file: StagedFile): Promise<void> {
   try {
     const handle = await fs.open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      const opened = await handle.stat();
-      if (opened.dev !== file.dev || opened.ino !== file.ino || opened.nlink !== 1) throw new Error("staging replaced");
+      const opened = await handle.stat({ bigint: true });
+      if (!sameFileIdentity(opened, file) || opened.nlink !== 1n) throw new Error("staging replaced");
       await handle.chmod(0o600);
     } finally { await handle.close(); }
-    const named = await fs.lstat(file.path);
-    if (!named.isFile() || named.dev !== file.dev || named.ino !== file.ino || named.nlink !== 1) throw new Error("staging replaced");
+    const named = await fs.lstat(file.path, { bigint: true });
+    if (!named.isFile() || !sameFileIdentity(named, file) || named.nlink !== 1n) throw new Error("staging replaced");
     await fs.unlink(file.path);
   }
   catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
@@ -65,8 +66,8 @@ function refused(): never {
   throw new BrowserActionError("upload-refused", "the selected files cannot be uploaded; choose ordinary non-sensitive files within the upload limits");
 }
 
-function sameFile(a: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, b: typeof a): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
+  return sameFileIdentity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 }
 
 function sameDestination(a: BrowserUploadPickerRequest, b: BrowserUploadPickerRequest): boolean {
@@ -168,18 +169,18 @@ export async function stageBrowserUpload(
       const real = await fs.realpath(original);
       assertUploadActive(destination.signal); assertDestination();
       if (real !== original || sensitiveFilePattern(real)) refused();
-      const before = await fs.lstat(original);
+      const before = await fs.lstat(original, { bigint: true });
       assertUploadActive(destination.signal); assertDestination();
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > BROWSER_UPLOAD_LIMITS.fileBytes
-        || bytes + before.size > BROWSER_UPLOAD_LIMITS.selectionBytes) refused();
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > BigInt(BROWSER_UPLOAD_LIMITS.fileBytes)
+        || BigInt(bytes) + before.size > BigInt(BROWSER_UPLOAD_LIMITS.selectionBytes)) refused();
       const source = await fs.open(original, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
         assertUploadActive(destination.signal); assertDestination();
-        const opened = await source.stat();
-        if (!opened.isFile() || opened.nlink !== 1 || !sameFile(before, opened)) refused();
+        const opened = await source.stat({ bigint: true });
+        if (!opened.isFile() || opened.nlink !== 1n || !sameFile(before, opened)) refused();
         // Bounded allocation and reads, including a trailing-byte probe: growth
         // after the initial size check cannot allocate or export unbounded data.
-        const buffer = Buffer.alloc(opened.size);
+        const buffer = Buffer.alloc(Number(opened.size));
         let offset = 0;
         while (offset < buffer.length) {
           const read = await source.read(buffer, offset, Math.min(64 * 1024, buffer.length - offset), offset);
@@ -189,8 +190,8 @@ export async function stageBrowserUpload(
         }
         const extra = await source.read(Buffer.alloc(1), 0, 1, offset);
         assertUploadActive(destination.signal); assertDestination();
-        const after = await source.stat();
-        const current = await fs.lstat(original);
+        const after = await source.stat({ bigint: true });
+        const current = await fs.lstat(original, { bigint: true });
         assertUploadActive(destination.signal); assertDestination();
         if (extra.bytesRead !== 0 || !sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
         assertUploadActive(destination.signal); assertDestination();
@@ -198,7 +199,7 @@ export async function stageBrowserUpload(
         const path = join(dir, `${paths.length}-${name}`);
         const staged = await fs.open(path, "wx", 0o600);
         try {
-          const identity = await staged.stat();
+          const identity = await staged.stat({ bigint: true });
           paths.push({ path, dev: identity.dev, ino: identity.ino });
           await staged.writeFile(buffer);
           await staged.chmod(0o400);
