@@ -226,6 +226,8 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
     const height = Math.max(1, Math.floor(viewport.height));
     const canvas = createCanvas(width, height);
     try {
+      // Read the complete operator stream: rendering can resolve after a stream error.
+      await page.getOperatorList();
       await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
       const png = canvas.toBuffer("image/png");
       if (png.length > PAGE_PREVIEW_LIMITS.maxPngBytes) limit();

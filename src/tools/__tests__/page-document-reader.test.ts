@@ -74,6 +74,19 @@ describe("page document previews", () => {
     expect(first.page.width * first.page.height).toBeLessThanOrEqual(PAGE_PREVIEW_LIMITS.maxPixels);
     expect(readPageDocumentResponse(first)).toBe(first);
     const png = Buffer.from(first.page.png!, "base64");
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const bitmap = createCanvas(first.page.width, first.page.height);
+    const pixels = bitmap.getContext("2d");
+    pixels.drawImage(await loadImage(png), 0, 0);
+    expect([...pixels.getImageData(30, 120, 1, 1).data]).toEqual([0, 0, 255, 255]);
+    // Glyph ink occupies the upper half, above the vector rectangle.
+    const textPixels = pixels.getImageData(0, 0, first.page.width, Math.floor(first.page.height / 2)).data;
+    let blueTextPixels = 0;
+    for (let offset = 0; offset < textPixels.length; offset += 4) {
+      if (textPixels[offset] === 0 && textPixels[offset + 1] === 0
+          && textPixels[offset + 2] === 255 && textPixels[offset + 3] === 255) blueTextPixels += 1;
+    }
+    expect(blueTextPixels).toBeGreaterThan(10);
     const checksumFailure = Buffer.from(png);
     checksumFailure[checksumFailure.length - 1] = checksumFailure[checksumFailure.length - 1]! ^ 1;
     for (const invalidPng of [

@@ -64,10 +64,12 @@ retains ownership of request projection and attachment limits.
 
 ## Process Boundaries
 
-Local table previews use a bounded and killable child. Admission covers reading
+Local document previews use a bounded and killable child. Admission covers reading
 and parsing; separate startup and parse deadlines cover the child lifecycle.
 The [table preview contract](table-document-preview.md) owns request replacement,
 container checks, expansion refusals and bounded display windows.
+[Page previews](page-document-preview.md) reuse that lifecycle for presentation
+outlines and rendered document pages.
 The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 
