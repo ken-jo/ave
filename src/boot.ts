@@ -228,7 +228,7 @@ export async function bootstrap(
   setAveHomePrivacyAtBoot(homePrivacy);
   if (homePrivacy.enforcement === "none") {
     log.error(
-      `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,
+      `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.category}: ${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,
     );
   }
 

@@ -62,7 +62,11 @@ export interface SandboxWindowsStatusInfo {
   /** Expected helper resolution failure; never a readiness or provisioning claim. */
   helperError?: "srt-win-not-found";
   /** Confinement is refused until this private directory verifies at restart. */
-  homePrivacyError?: { path: string };
+  homePrivacyError?: {
+    path: string;
+    category: import("./ave-home.js").AveHomePrivacyFailureCategory;
+    extraPrincipals?: import("./ave-home.js").AveHomePrincipal[];
+  };
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }

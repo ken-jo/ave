@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import {
   initializeAsrtSandbox,
   registerWorkerUnixSocketDir,
   resetAsrtSandbox,
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
+
+useVerifiedAveHomePrivacy();
 
 // Config ownership only: these tests do not claim OS confinement.
 const manager = vi.hoisted(() => ({

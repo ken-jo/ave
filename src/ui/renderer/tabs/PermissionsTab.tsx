@@ -1489,7 +1489,20 @@ export function PermissionsTab({
                 role="alert"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
               >
-                {t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: windowsStatus.homePrivacyError.path })}
+                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                  path: windowsStatus.homePrivacyError.path,
+                  reason: {
+                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
+                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
+                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
+                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+                    }),
+                  }[windowsStatus.homePrivacyError.category],
+                })}
               </p>
             ) : windowsStatus.helperError ? (
               <p

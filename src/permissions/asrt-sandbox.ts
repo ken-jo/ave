@@ -2039,6 +2039,9 @@ export async function initializeAsrtSandbox(
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
 ): Promise<void> {
+  if (trustedSettings.windows?.externalConfinement !== true) {
+    assertAveHomePrivacyForConfinement();
+  }
   // Idempotency guard. The boot gate must decide exactly once;
   // a double-initialize means two boot paths raced or a runtime channel tried
   // to re-seal the sandbox with a different config. Fail loud rather than
@@ -2047,9 +2050,6 @@ export async function initializeAsrtSandbox(
     throw new Error(
       "initializeAsrtSandbox: already active — refusing to re-initialize",
     );
-  }
-  if (trustedSettings.windows?.externalConfinement !== true) {
-    assertAveHomePrivacyForConfinement();
   }
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild
@@ -2459,11 +2459,11 @@ async function wrapLongLivedCommand(
   options: AttributedWrapOptions,
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
+  assertAveHomePrivacyForConfinement();
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
-  assertAveHomePrivacyForConfinement();
   noteConfinedProcessesMayRun();
   // Publish the temp root HERE rather than trusting a boot step to have run.
   // The deny floor refuses ASRT's shared default paths unconditionally, so a
@@ -2755,6 +2755,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
 }): Promise<WindowsWorkerFilesystemGrant> {
+  assertAveHomePrivacyForConfinement();
   if (!active || _baseTrustedSettings === undefined) {
     throw new Error(
       "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",
@@ -2763,7 +2764,6 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
-  assertAveHomePrivacyForConfinement();
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,

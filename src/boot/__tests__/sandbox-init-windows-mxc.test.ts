@@ -106,7 +106,7 @@ afterEach(() => {
 
 it("refuses the extension backend on a failed private-directory check while retaining the proxy-only route", async () => {
   const path = "D:/private-state/secrets";
-  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, reason: "read-back failed" });
+  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category: "read-back-failed", reason: "read-back failed" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.detectMxc.mockResolvedValue(MXC_OK);
   h.initialize.mockImplementation(async (settings) => {

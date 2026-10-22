@@ -3,12 +3,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacl, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest } from "../ave-home.js";
+import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacl, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 
 const originalAveHome = process.env.AVE_HOME;
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_DACL = `D:P(A;OICI;FA;;;${OWNER_SID})`;
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -60,21 +65,64 @@ describe("win32SystemBinary", () => {
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
 
+  it.each(["example\\guest", undefined])("lists extra SIDs even when account resolution returns %s", (account) => {
+    const dir = home();
+    const result = ensureAveHomePrivate(dir, {
+      platform: "win32",
+      run: () => `"example","${OWNER_SID}"`,
+      readDacls: (paths) => paths.map((path) => ({ path,
+        sddl: `${OWNER_DACL}(A;OICI;FR;;;S-1-5-21-100-200-300-9999)`,
+        principals: [{ sid: "S-1-5-21-100-200-300-9999", ...(account ? { account } : {}) }],
+      })),
+    });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals",
+      extraPrincipals: [{ sid: "S-1-5-21-100-200-300-9999", ...(account ? { account } : {}) }] });
+    setAveHomePrivacyAtBoot(result);
+    if (process.platform === "win32") {
+      expect(() => assertAveHomePrivacyForConfinement()).toThrow("S-1-5-21-100-200-300-9999");
+      expect(() => assertAveHomePrivacyForConfinement()).toThrow("remove these entries");
+    }
+  });
+
+  it("reads both descriptors in one process and retains a per-path read error", () => {
+    const dir = home();
+    const paths = [dir, join(dir, "secrets")];
+    const results = [{ path: paths[0], sddl: OWNER_DACL }, { path: paths[1], error: "read failed" }];
+    const command = vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(results));
+    const count = command.mock.calls.length;
+    expect(readWindowsDirectoryDacls(paths)).toEqual(results);
+    expect(command.mock.calls.slice(count)).toHaveLength(1);
+    expect(command.mock.calls.at(-1)?.[1]?.join(" ")).toContain("ConvertTo-Json");
+  });
+
+  it.runIf(process.platform === "win32").each(["home", "secrets"])("reports retained explicit extra entries on the real %s DACL", (target) => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir).enforcement).toBe("win32-dacl");
+    const path = target === "home" ? dir : join(dir, "secrets");
+    execFileSync(win32SystemBinary("icacls"), [path, "/grant", "*S-1-1-0:(OI)(CI)R", "/q"], { encoding: "utf-8", windowsHide: true });
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: path, category: "extra-principals",
+      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0", account: expect.any(String) })] });
+    setAveHomePrivacyAtBoot(result);
+    expect(() => assertAveHomePrivacyForConfinement()).toThrow(path);
+    expect(() => assertAveHomePrivacyForConfinement()).toThrow("S-1-1-0");
+  });
+
   it("protects the default home and secrets using only mocked profile and filesystem access", () => {
     delete process.env.AVE_HOME;
     const mkdir = vi.mocked(mkdirSync);
     const originalMkdir = mkdir.getMockImplementation()!;
     mkdir.mockImplementation(() => undefined);
-    const readDacl = vi.fn(() => OWNER_DACL);
+    const readDacls = vi.fn((paths: readonly string[]) => paths.map((path) => ({ path, sddl: OWNER_DACL })));
     try {
       const result = ensureAveHomePrivate(undefined, {
         platform: "win32",
         run: () => `"example","${OWNER_SID}"`,
-        readDacl,
+        readDacls,
       });
       const dir = resolve(tmpdir(), "synthetic-profile", ".ave");
       expect(result).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
-      expect(readDacl.mock.calls).toEqual([[dir], [join(dir, "secrets")]]);
+      expect(readDacls.mock.calls).toEqual([[[dir, join(dir, "secrets")]]]);
     } finally {
       mkdir.mockImplementation(originalMkdir);
     }
@@ -85,7 +133,7 @@ describe("ensureAveHomePrivate", () => {
     const result = ensureAveHomePrivate(dir, {
       platform: "darwin",
       run: () => { throw new Error("no command may run off Win32"); },
-      readDacl: () => { throw new Error("no DACL may be read off Win32"); },
+      readDacls: () => { throw new Error("no DACL may be read off Win32"); },
     });
 
     expect(result).toEqual({ enforcement: "posix-mode", home: dir });
@@ -99,7 +147,7 @@ describe("ensureAveHomePrivate", () => {
     const calls: Array<{ file: string; args: readonly string[] }> = [];
     const result = ensureAveHomePrivate(dir, {
       platform: "win32",
-      readDacl: () => OWNER_DACL,
+      readDacls: (paths) => paths.map((path) => ({ path, sddl: OWNER_DACL })),
       run: (file, args) => {
         calls.push({ file, args });
         return file === win32SystemBinary("whoami") ? '"CORP\\\\example","S-1-5-21-1004336348-11-77-1417"\r\n' : "";
@@ -133,7 +181,7 @@ describe("ensureAveHomePrivate", () => {
     const result = ensureAveHomePrivate(dir, {
       platform: "win32",
       run: () => "ERROR: Access is denied.\r\n",
-      readDacl: () => OWNER_DACL,
+      readDacls: (paths) => paths.map((path) => ({ path, sddl: OWNER_DACL })),
     });
 
     expect(result).toMatchObject({ enforcement: "none", home: dir });
@@ -155,7 +203,7 @@ describe("ensureAveHomePrivate", () => {
     const result = ensureAveHomePrivate(dir, {
       platform: "win32",
       run: () => `"example","${OWNER_SID}"`,
-      readDacl: () => sddl,
+      readDacls: (paths) => paths.map((path) => ({ path, sddl })),
     });
     expect(result).toMatchObject({ enforcement: "none", home: dir, failedPath: dir });
     setAveHomePrivacyAtBoot(result);
@@ -173,12 +221,12 @@ describe("ensureAveHomePrivate", () => {
         if (args[0] === failedPath && failure.endsWith("icacls")) throw new Error("ACL command failed");
         return "";
       },
-      readDacl: (path) => {
-        if (path === failedPath && failure.endsWith("read-back")) throw new Error("ACL read failed");
-        return path === failedPath && failure.endsWith("mismatch") ? "D:" : OWNER_DACL;
-      },
+      readDacls: (paths) => paths.map((path) => path === failedPath && failure.endsWith("read-back")
+        ? { path, error: "ACL read failed" }
+        : { path, sddl: path === failedPath && failure.endsWith("mismatch") ? "D:" : OWNER_DACL }),
     });
     expect(result).toMatchObject({ enforcement: "none", home: dir, failedPath });
+    expect(result).toHaveProperty("category", failure.endsWith("icacls") ? "icacls-failed" : failure.endsWith("read-back") ? "read-back-failed" : "not-protected");
     setAveHomePrivacyAtBoot(result);
     if (process.platform === "win32") expect(() => assertAveHomePrivacyForConfinement()).toThrow(failedPath);
   });
@@ -193,13 +241,16 @@ describe("ensureAveHomePrivate", () => {
       mkdirSync(dir);
       const inherited = readWindowsDirectoryDacl(dir);
       expect(inherited).toContain("ID;");
+      const callsBefore = vi.mocked(execFileSync).mock.calls.length;
       const applied = ensureAveHomePrivate(dir);
       expect(applied.enforcement).toBe("win32-dacl");
+      const bootCalls = vi.mocked(execFileSync).mock.calls.slice(callsBefore);
+      expect(bootCalls.filter(([file]) => String(file).endsWith("powershell.exe"))).toHaveLength(1);
 
       const sid = (applied as { sid: string }).sid;
-      for (const path of [dir, join(dir, "secrets")]) {
-        const sddl = readWindowsDirectoryDacl(path);
-        console.info(`Verified relocated private directory SDDL: ${sddl}`);
+      const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets")]);
+      console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);
+      for (const { sddl } of descriptors) {
         expect(sddl).toMatch(/^D:P(?:AI|AR)*\(A;OICI;FA;;;S-1-[0-9-]+\)$/);
         expect(sddl).toContain(`;;;${sid})`);
       }
@@ -236,7 +287,7 @@ describe("ensureAveHomePrivate", () => {
       const mismatch = ensureAveHomePrivate(dir, {
         platform: "win32",
         run: (file, args) => execFileSync(file, [...args], { encoding: "utf-8", windowsHide: true }),
-        readDacl: (path) => `${readWindowsDirectoryDacl(path)}(A;OICI;FR;;;S-1-1-0)`,
+        readDacls: (paths) => readWindowsDirectoryDacls(paths).map((entry) => ({ ...entry, sddl: `${entry.sddl}(A;OICI;FR;;;S-1-1-0)` })),
       });
       expect(mismatch.enforcement).toBe("none");
       setAveHomePrivacyAtBoot(mismatch);

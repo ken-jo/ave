@@ -9,6 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+
+useVerifiedAveHomePrivacy();
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),

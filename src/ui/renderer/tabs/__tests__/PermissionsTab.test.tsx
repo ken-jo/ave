@@ -1380,21 +1380,39 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-install")).toBeInTheDocument();
   });
 
-  it("names the private directory when extension confinement is refused and offers no elevated setup", async () => {
-    const path = String.raw`D:\private-state\secrets`;
-    const { ave } = installApiWithWindows({
-      sandboxWindowsStatus: vi.fn().mockResolvedValue({
-        applicable: true, userState: null, wfpState: null, ready: false,
-        homePrivacyError: { path }, instructions: "",
-      }),
-    });
-    await act(async () => { render(<PermissionsTab />); });
-    const notice = screen.getByTestId("os-sandbox-windows-home-privacy-error");
-    expect(notice).toHaveAttribute("role", "alert");
-    expect(notice).toHaveTextContent(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path }));
-    expect(notice).toHaveTextContent(path);
-    expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
-    expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+  it.each([
+    ["en", "icacls-failed"], ["ko", "icacls-failed"],
+    ["en", "read-back-failed"], ["ko", "read-back-failed"],
+    ["en", "not-protected"], ["ko", "not-protected"],
+    ["en", "extra-principals"], ["ko", "extra-principals"],
+  ] as const)("names the private directory and reason in %s for %s without elevated setup", async (locale, category) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const path = String.raw`D:\private-state\secrets`;
+      const { ave } = installApiWithWindows({
+        sandboxWindowsStatus: vi.fn().mockResolvedValue({
+          applicable: true, userState: null, wfpState: null, ready: false,
+          homePrivacyError: { path, category, extraPrincipals: [{ sid: "S-1-1-0", account: "Everyone" }, { sid: "S-1-5-21-100-200-300-9999" }] }, instructions: "",
+        }),
+      });
+      await act(async () => { render(<PermissionsTab />); });
+      const notice = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+      expect(notice).toHaveAttribute("role", "alert");
+      expect(notice).toHaveTextContent(path);
+      expect(notice).toHaveTextContent("AVE_HOME");
+      if (category === "extra-principals") {
+        expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
+        expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
+        expect(notice).toHaveTextContent(t("permissionsTab.homePrivacyExtraPrincipals", { principals: "S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999" }));
+      } else {
+        expect(notice).toHaveTextContent(category === "icacls-failed" ? t("permissionsTab.homePrivacyIcaclsFailed") : category === "read-back-failed" ? t("permissionsTab.homePrivacyReadBackFailed") : t("permissionsTab.homePrivacyNotProtected"));
+      }
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+      expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("says the container check is still running instead of claiming MXC or a failure", async () => {

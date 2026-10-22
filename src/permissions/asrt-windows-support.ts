@@ -380,15 +380,15 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     };
   }
 
-  const { getAveHomePrivacyFailurePath } = await import("../shared/ave-home.js");
-  const failedPath = getAveHomePrivacyFailurePath();
-  if (failedPath !== undefined) {
+  const { getAveHomePrivacyFailure } = await import("../shared/ave-home.js");
+  const failure = getAveHomePrivacyFailure();
+  if (failure !== undefined) {
     return {
       applicable: true,
       userState: null,
       wfpState: null,
       ready: false,
-      homePrivacyError: { path: failedPath },
+      homePrivacyError: { path: failure.failedPath ?? failure.home, category: failure.category, extraPrincipals: failure.extraPrincipals },
       instructions: "",
     };
   }
