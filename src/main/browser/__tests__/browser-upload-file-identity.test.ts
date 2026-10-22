@@ -30,7 +30,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const { promises: fs } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
-const { stageBrowserUpload } = await import("../browser-upload.js");
+const { stageBrowserUpload, BROWSER_UPLOAD_LIMITS } = await import("../browser-upload.js");
 const LARGE_ID = 2n ** 60n;
 const ORIGINAL_IDENTITY = { dev: LARGE_ID, ino: LARGE_ID };
 const destination = { windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443", documentId: 7, controlGeneration: 3, ref: "e1", signal: new AbortController().signal };
@@ -47,6 +47,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   identityFor = undefined;
+  vi.restoreAllMocks();
   if (previousHome === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = previousHome;
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -94,6 +95,96 @@ describe("browser upload exact file identity", () => {
       expect(observations).toBe(changedObservation + 1);
       expect(await fs.readFile(stagedPath, "utf8")).toBe("approved bytes");
     });
+  });
+
+
+  it.each(["replacement", "resize"] as const)("refuses a staged %s before dispatch", async (change) => {
+    const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+    const root = join(dir, "home", "browser-uploads");
+    const selectionDir = join(root, (await fs.readdir(root))[0]!);
+    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    if (change === "replacement") {
+      await fs.rename(stagedPath, stagedPath + ".original");
+      await fs.writeFile(stagedPath, "replaced bytes", { mode: 0o400 });
+    } else {
+      await fs.chmod(stagedPath, 0o600);
+      await fs.writeFile(stagedPath, "resized");
+    }
+    const before = await fs.stat(stagedPath, { bigint: true });
+    const send = vi.fn(async (_paths: readonly string[]) => {});
+    try {
+      await expect(selection!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
+      expect(send).not.toHaveBeenCalled();
+      expect(await fs.readFile(stagedPath, "utf8")).toBe(change === "replacement" ? "replaced bytes" : "resized");
+      expect((await fs.stat(stagedPath, { bigint: true })).mode).toBe(before.mode);
+    } finally {
+      await selection!.release().catch(() => {});
+    }
+    if (change === "replacement") {
+      expect(await fs.readFile(stagedPath, "utf8")).toBe("replaced bytes");
+      expect((await fs.stat(stagedPath, { bigint: true })).mode).toBe(before.mode);
+    }
+  });
+
+  it.each(["dev", "ino"] as const)("refuses adjacent large %s values at dispatch", async (field) => {
+    identityFor = (path) => path !== original ? ORIGINAL_IDENTITY : undefined;
+    const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+    identityFor = (path) => path !== original ? { ...ORIGINAL_IDENTITY, [field]: LARGE_ID + 1n } : undefined;
+    const send = vi.fn(async (_paths: readonly string[]) => {});
+    await expect(selection!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
+    expect(send).not.toHaveBeenCalled();
+    await expect(selection!.release()).rejects.toMatchObject({ code: "upload-cleanup-failed" });
+  });
+
+  it("delivers bytes read through the verified staging descriptor", async () => {
+    const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+    const root = join(dir, "home", "browser-uploads");
+    const selectionDir = join(root, (await fs.readdir(root))[0]!);
+    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    const open = fs.open.bind(fs);
+    let assertDescriptorRead: () => void = () => { throw new Error("Staging descriptor was not opened"); };
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === stagedPath) {
+        const stat = vi.spyOn(handle, "stat");
+        const read = vi.spyOn(handle, "read");
+        assertDescriptorRead = () => {
+          expect(stat).toHaveBeenCalledWith({ bigint: true });
+          expect(read).toHaveBeenCalled();
+          expect(stat.mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]!);
+        };
+      }
+      return handle;
+    });
+    try {
+      await selection!.dispatch(destination, async (paths) => {
+        assertDescriptorRead();
+        expect(paths[0]).not.toBe(stagedPath);
+        expect(await fs.readFile(paths[0]!, "utf8")).toBe("approved bytes");
+      });
+    } finally {
+      await selection!.release();
+    }
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
+  it("counts retained dispatch copies against the process storage ceiling", async () => {
+    await fs.truncate(original, BROWSER_UPLOAD_LIMITS.fileBytes - 1024 * 1024);
+    const selections: NonNullable<Awaited<ReturnType<typeof stageBrowserUpload>>>[] = [];
+    try {
+      for (let index = 0; index < 3; index++) {
+        const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+        expect(selection).not.toBeNull();
+        selections.push(selection!);
+      }
+      await selections[0]!.dispatch(destination, async () => {});
+      await selections[1]!.dispatch(destination, async () => {});
+      const send = vi.fn(async (_paths: readonly string[]) => {});
+      await expect(selections[2]!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all(selections.map((selection) => selection.release()));
+    }
   });
 
   it("stages and removes files with equal large identities", async () => {

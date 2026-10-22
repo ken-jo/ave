@@ -677,7 +677,16 @@ export async function upload(
       retained = true;
       await previous?.release();
       result = selection.result;
-    } finally { if (!retained) await selection.release(); }
+    } catch (error) {
+      if (!retained) {
+        try { await selection.release(); }
+        catch (cleanupError) {
+          // Preserve the refusal when cleanup also refuses an unowned replacement.
+          if (!(error instanceof BrowserActionError) || error.code !== "upload-refused") throw cleanupError;
+        }
+      }
+      throw error;
+    }
   });
   return result;
 }

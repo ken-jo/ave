@@ -1,4 +1,5 @@
 import { constants, promises as fs, type BigIntStats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
@@ -31,7 +32,7 @@ const namespace = openFeatureNamespace("browser-uploads");
 const liveSelections = new Set<BrowserUploadSelection>();
 let reservedBytes = 0;
 let disposed = false;
-interface StagedFile extends Readonly<FileIdentity> { readonly path: string }
+interface StagedFile extends Readonly<FileIdentity> { readonly path: string; readonly size: bigint }
 
 async function removeOwnedFile(file: StagedFile): Promise<void> {
   let current;
@@ -70,6 +71,23 @@ function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return sameFileIdentity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 }
 
+// Read only through the descriptor whose identity and size the caller verified.
+async function readBoundedFile(handle: FileHandle, size: bigint, assertCurrent: () => void): Promise<Buffer> {
+  if (size < 0n || size > BigInt(BROWSER_UPLOAD_LIMITS.fileBytes)) refused();
+  const buffer = Buffer.alloc(Number(size));
+  let offset = 0;
+  while (offset < buffer.length) {
+    const read = await handle.read(buffer, offset, Math.min(64 * 1024, buffer.length - offset), offset);
+    assertCurrent();
+    if (read.bytesRead === 0) refused();
+    offset += read.bytesRead;
+  }
+  const extra = await handle.read(Buffer.alloc(1), 0, 1, offset);
+  assertCurrent();
+  if (extra.bytesRead !== 0) refused();
+  return buffer;
+}
+
 function sameDestination(a: BrowserUploadPickerRequest, b: BrowserUploadPickerRequest): boolean {
   return a.windowId === b.windowId && a.sessionId === b.sessionId && a.tabId === b.tabId && a.origin === b.origin
     && a.documentId === b.documentId && a.controlGeneration === b.controlGeneration && a.ref === b.ref;
@@ -84,6 +102,9 @@ export class BrowserUploadSelection {
   private retaining = false;
   private dispatched = false;
   private inFlight: Promise<void> | undefined;
+  private readonly dispatchFiles: StagedFile[] = [];
+  private dispatchBytes = 0;
+  private dispatchDir: string | undefined;
   constructor(
     private readonly destination: BrowserUploadPickerRequest,
     private readonly dir: string,
@@ -99,9 +120,54 @@ export class BrowserUploadSelection {
     if (!sameDestination(this.destination, destination)) throw new BrowserActionError("upload-revoked", "the upload destination changed; choose files again");
     assertUploadActive(this.destination.signal);
     assertUploadActive(destination.signal);
-    this.inFlight = send(this.files.map((file) => file.path));
+    this.inFlight = this.sendVerifiedFiles(destination, send);
     try { await this.inFlight; this.dispatched = true; }
     finally { this.inFlight = undefined; }
+  }
+
+  private async sendVerifiedFiles(destination: BrowserUploadPickerRequest, send: (paths: readonly string[]) => Promise<void>): Promise<void> {
+    const assertCurrent = () => {
+      if (this.released) throw new BrowserActionError("upload-revoked", "the upload selection is no longer valid; choose files again");
+      assertUploadActive(this.destination.signal);
+      assertUploadActive(destination.signal);
+    };
+    // Browser file assignment consumes paths, so deliver fresh private copies
+    // read from verified descriptors. Account for both retained generations.
+    if (reservedBytes + this.result.bytes > BROWSER_UPLOAD_LIMITS.processBytes) refused();
+    this.dispatchBytes = this.result.bytes;
+    reservedBytes += this.dispatchBytes;
+    try {
+      for (const file of this.files) {
+        assertCurrent();
+        const source = await fs.open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)).catch(() => refused());
+        try {
+          assertCurrent();
+          const opened = await source.stat({ bigint: true }).catch(() => refused());
+          if (!opened.isFile() || opened.nlink !== 1n || !sameFileIdentity(opened, file) || opened.size !== file.size) refused();
+          const buffer = await readBoundedFile(source, opened.size, assertCurrent);
+          const after = await source.stat({ bigint: true }).catch(() => refused());
+          assertCurrent();
+          if (!sameFile(opened, after)) refused();
+          this.dispatchDir ??= await namespace.childDir(join(basename(this.dir), `dispatch-${randomUUID()}`));
+          assertCurrent();
+          const path = join(this.dispatchDir, basename(file.path));
+          const copy = await fs.open(path, "wx", 0o600);
+          try {
+            const identity = await copy.stat({ bigint: true });
+            this.dispatchFiles.push({ path, dev: identity.dev, ino: identity.ino, size: file.size });
+            await copy.writeFile(buffer);
+            await copy.chmod(0o400);
+            const written = await copy.stat({ bigint: true });
+            if (!sameFileIdentity(identity, written) || written.size !== file.size || written.nlink !== 1n) refused();
+          } finally { await copy.close(); }
+        } finally { await source.close(); }
+      }
+    } catch (error) {
+      if (error instanceof BrowserActionError) throw error;
+      throw new BrowserActionError("upload-failed", "the selected files could not be staged for this destination");
+    }
+    assertCurrent();
+    await send(this.dispatchFiles.map((file) => file.path));
   }
 
   retainUntil(stop: (revoke: () => void) => () => void): void {
@@ -123,10 +189,13 @@ export class BrowserUploadSelection {
     await this.inFlight?.catch(() => undefined);
     // Only these exclusively-created files belong to this selection. Never
     // recursively remove a directory, follow links or remove selected originals.
-    for (const file of this.files) await removeOwnedFile(file);
-    try { await fs.rmdir(this.dir); }
+    for (const file of [...this.dispatchFiles, ...this.files]) await removeOwnedFile(file);
+    try {
+      if (this.dispatchDir) await fs.rmdir(this.dispatchDir);
+      await fs.rmdir(this.dir);
+    }
     catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
-    reservedBytes -= this.result.bytes;
+    reservedBytes -= this.result.bytes + this.dispatchBytes;
     liveSelections.delete(this);
   }
 }
@@ -178,29 +247,18 @@ export async function stageBrowserUpload(
         assertUploadActive(destination.signal); assertDestination();
         const opened = await source.stat({ bigint: true });
         if (!opened.isFile() || opened.nlink !== 1n || !sameFile(before, opened)) refused();
-        // Bounded allocation and reads, including a trailing-byte probe: growth
-        // after the initial size check cannot allocate or export unbounded data.
-        const buffer = Buffer.alloc(Number(opened.size));
-        let offset = 0;
-        while (offset < buffer.length) {
-          const read = await source.read(buffer, offset, Math.min(64 * 1024, buffer.length - offset), offset);
-          assertUploadActive(destination.signal); assertDestination();
-          if (read.bytesRead === 0) refused();
-          offset += read.bytesRead;
-        }
-        const extra = await source.read(Buffer.alloc(1), 0, 1, offset);
-        assertUploadActive(destination.signal); assertDestination();
+        const buffer = await readBoundedFile(source, opened.size, () => { assertUploadActive(destination.signal); assertDestination(); });
         const after = await source.stat({ bigint: true });
         const current = await fs.lstat(original, { bigint: true });
         assertUploadActive(destination.signal); assertDestination();
-        if (extra.bytesRead !== 0 || !sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
+        if (!sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
         assertUploadActive(destination.signal); assertDestination();
         const name = basename(original).replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 200) || "file";
         const path = join(dir, `${paths.length}-${name}`);
         const staged = await fs.open(path, "wx", 0o600);
         try {
           const identity = await staged.stat({ bigint: true });
-          paths.push({ path, dev: identity.dev, ino: identity.ino });
+          paths.push({ path, dev: identity.dev, ino: identity.ino, size: BigInt(buffer.length) });
           await staged.writeFile(buffer);
           await staged.chmod(0o400);
         } finally { await staged.close(); }
