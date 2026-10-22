@@ -5,7 +5,8 @@ on:
     branches: [main]
     # The web build also reads these files outside web/ (CHANGELOG.md is the
     # changelog page; the scripts run the build, its document guard and its
-    # export check), so a change to any of them changes the site.
+    # export check; web/lib/providers.ts imports the two src/shared files), so a
+    # change to any of them changes the site.
     paths:
       - 'web/**'
       - 'CHANGELOG.md'
@@ -16,6 +17,8 @@ on:
       - 'scripts/lib/git-process-environment.mjs'
       - 'scripts/hooks/pre-push-markdown-policy.mjs'
       - 'scripts/hooks/documentation-references.json'
+      - 'src/shared/llm-vendor-defaults.ts'
+      - 'src/shared/model-host-policy.ts'
       - '.github/workflows/web-deploy.yml'
   repository_dispatch:
     types: [deploy-web]

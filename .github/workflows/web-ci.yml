@@ -18,6 +18,8 @@ on:
       - 'scripts/lib/git-process-environment.mjs'
       - 'scripts/hooks/pre-push-markdown-policy.mjs'
       - 'scripts/hooks/documentation-references.json'
+      - 'src/shared/llm-vendor-defaults.ts'
+      - 'src/shared/model-host-policy.ts'
       - '.github/workflows/web-ci.yml'
   pull_request:
     paths:
@@ -30,6 +32,8 @@ on:
       - 'scripts/lib/git-process-environment.mjs'
       - 'scripts/hooks/pre-push-markdown-policy.mjs'
       - 'scripts/hooks/documentation-references.json'
+      - 'src/shared/llm-vendor-defaults.ts'
+      - 'src/shared/model-host-policy.ts'
       - '.github/workflows/web-ci.yml'
 
 concurrency:
