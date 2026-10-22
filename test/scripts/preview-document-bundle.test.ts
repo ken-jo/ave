@@ -33,9 +33,10 @@ describe("document child bundle boundary", () => {
         if (!imported.external) pending.push(imported.path);
       }
     }
-    const forbidden = /(?:table-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse)\//;
+    const forbidden = /(?:table-document-reader|page-document-reader|workbook-container|zip-inflate-guard)\.ts$|node_modules\/(?:xlsx|papaparse|jszip|fast-xml-parser)\//;
     expect([...visited].filter((path) => forbidden.test(path))).toEqual([]);
     expect(Object.keys(inputs).some((path) => /node_modules\/xlsx\//.test(path))).toBe(true);
+    expect(Object.keys(inputs).some((path) => /node_modules\/jszip\//.test(path))).toBe(true);
     expect(MAIN_BUNDLE_ROOT_FILES).toContain("preview-document-child-main.js");
     const child = Object.entries(result.metafile!.outputs)
       .find(([, output]) => output.entryPoint === "src/tools/preview-document-child-main.ts");

@@ -9,6 +9,9 @@ import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
 
 describe("resolveFilePreviewRoute", () => {
+  it.each([["/w/deck.PPTX", "pptx"], ["C:\\w\\document.pdf", "pdf"]])("routes %s to the page viewer", (path, format) => {
+    expect(resolveFilePreviewRoute(path)).toEqual({ kind: "page", format });
+  });
   it.each([
     ["/w/data.csv", "csv"],
     ["/w/data.TSV", "tsv"],
@@ -19,7 +22,7 @@ describe("resolveFilePreviewRoute", () => {
     expect(resolveFilePreviewRoute(path)).toEqual({ kind: "table", format });
   });
 
-  it.each(["/w/notes.md", "/w/flow.mmd", "/w/data.csv.bak", "/w/.csv", "/w/csv", "/w/sheet.xlsm", "/w/deck.pptx", "/w/a.constructor", "/w/a.toString"])(
+  it.each(["/w/notes.md", "/w/flow.mmd", "/w/data.csv.bak", "/w/.csv", "/w/csv", "/w/sheet.xlsm", "/w/a.constructor", "/w/a.toString"])(
     "keeps %s on the text path",
     (path) => {
       expect(resolveFilePreviewRoute(path)).toEqual({ kind: "text" });

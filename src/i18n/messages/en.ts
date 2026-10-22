@@ -11,6 +11,17 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "pagePreview.previous": "Previous",
+  "pagePreview.next": "Next",
+  "pagePreview.count": "Page {index} of {total}",
+  "pagePreview.notFound": "That page isn't available.",
+  "pagePreview.corrupt": "This document is damaged or has the wrong format.",
+  "pagePreview.tooLarge": "Files over {mb} MB can't be previewed.",
+  "pagePreview.outline": "Slide text outline. Layout, images, charts and animations are not displayed.",
+  "pagePreview.pagesTruncated": "Only the first {shown} pages are available in this preview.",
+  "pagePreview.textTruncated": "Page text exceeds the preview limit and has been shortened.",
+  "pagePreview.noText": "This page has no extractable text.",
+  "pagePreview.pageImage": "Page {index}",
   "be_terminalRun.notFoundHandler": "The shell has a command-not-found handler. Ask the user to run `unset -f command_not_found_handle` (bash) or `unfunction command_not_found_handler` (zsh) in this terminal, then retry. This removes the handler for this terminal only; Ave preserves it until the user chooses to remove it.",
   "overlayCardRegion.continueInNewConversation": "Continue in a new conversation",
   "suggestionsSession.title": "Suggestions",

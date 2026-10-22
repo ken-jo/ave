@@ -125,8 +125,10 @@
     "@ai-sdk/openai-compatible": "~3.0.44",
     "@ai-sdk/otel": "^1.0.93",
     "@anthropic-ai/sandbox-runtime": "0.0.76",
+    "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@napi-rs/canvas": "1.0.13",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
@@ -139,9 +141,12 @@
     "better-sqlite3": "^13.0.1",
     "electron-audio-loopback": "^1.0.6",
     "electron-updater": "~6.8.9",
+    "fast-xml-parser": "5.11.2",
+    "jszip": "3.10.2",
     "mermaid": "^12.0.0",
     "node-pty": "^1.1.0",
     "papaparse": "5.7.0",
+    "pdfjs-dist": "6.4.299",
     "pino": "^10",
     "pino-pretty": "^13",
     "proper-lockfile": "^4.1.2",
@@ -151,8 +156,7 @@
     "undici": "^8.1.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.9.0",
-    "zod": "^4.3.6",
-    "@ave/shell-parser-runtime": "file:resources/shell-parser"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@ai-sdk/devtools": "^1.0.15",
@@ -273,6 +277,7 @@
       "node_modules/node-pty/**",
       "node_modules/better-sqlite3/**",
       "node_modules/sharp/**",
+      "node_modules/@napi-rs/**",
       "node_modules/@img/**"
     ],
     "directories": {
@@ -295,6 +300,10 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "resources/licenses/document-preview",
+        "to": "licenses/document-preview"
+      },
       {
         "from": "build/icon.png",
         "to": "icon.png"

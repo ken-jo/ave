@@ -6,6 +6,17 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "pagePreview.previous": "이전",
+  "pagePreview.next": "다음",
+  "pagePreview.count": "{total}쪽 중 {index}쪽",
+  "pagePreview.notFound": "해당 페이지를 찾을 수 없습니다.",
+  "pagePreview.corrupt": "문서가 손상되었거나 파일 형식이 일치하지 않습니다.",
+  "pagePreview.tooLarge": "{mb} MB를 넘는 파일은 미리 볼 수 없습니다.",
+  "pagePreview.outline": "슬라이드 텍스트 개요입니다. 배치, 이미지, 차트와 애니메이션은 표시하지 않습니다.",
+  "pagePreview.pagesTruncated": "처음 {shown}쪽만 미리 볼 수 있습니다.",
+  "pagePreview.textTruncated": "페이지 텍스트가 미리보기 한도를 넘어 일부만 표시합니다.",
+  "pagePreview.noText": "추출할 수 있는 텍스트가 없는 페이지입니다.",
+  "pagePreview.pageImage": "{index}쪽",
   "be_terminalRun.notFoundHandler": "셸에 command-not-found handler가 정의되어 있습니다. 사용자에게 이 터미널에서 `unset -f command_not_found_handle` (bash) 또는 `unfunction command_not_found_handler` (zsh)를 실행한 뒤 다시 시도하도록 안내하세요. 해당 터미널에서만 handler가 제거되며, Ave는 사용자가 제거하기 전까지 이를 보존합니다.",
   "overlayCardRegion.continueInNewConversation": "새 대화에서 이어가기",
   "suggestionsSession.title": "제안",
