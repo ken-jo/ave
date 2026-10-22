@@ -895,7 +895,7 @@ describe("permission card sandbox checkbox", () => {
   it("shows application repair guidance for an integrity failure", async () => {
     sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-integrity-failed"] }));
     const { getByTestId } = await openCard();
-    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("permissionsTab.osSandboxWindowsHelperIntegrityError"));
+    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed"));
     expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
   });
 
