@@ -6,7 +6,9 @@ import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { TableDocumentError } from "../table-document-error.js";
 
 const file = vi.hoisted(() => ({ open: vi.fn() }));
-vi.mock("node:fs/promises", () => ({ open: file.open }));
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  lstat: (await importOriginal<typeof import("node:fs/promises")>()).lstat, open: file.open,
+}));
 import { readPreviewDocumentInput } from "../preview-document-input.js";
 
 let dir: string;
@@ -65,6 +67,17 @@ describe("bounded document input", () => {
     expect((await readPreviewDocumentInput(path)).toString()).toBe("a,b\n1,2");
     expect(opened?.fd).toBe(-1);
     await expect(readPreviewDocumentInput(path)).rejects.toMatchObject({ code: "too-large" });
+  });
+
+  it("refuses a descriptor that is not the checked pathname's file", async () => {
+    // A link swapped in before the open is followed on Windows; the pathname
+    // then names a different file than the descriptor.
+    onOpened = () => {
+      renameSync(path, `${path}.opened`);
+      writeFileSync(path, "a,b\n1,2");
+    };
+    await expect(readPreviewDocumentInput(path)).rejects.toMatchObject({ code: "read-failed" });
+    expect(opened?.fd).toBe(-1);
   });
 
   it("bounds growth after fstat and closes the descriptor on refusal", async () => {
