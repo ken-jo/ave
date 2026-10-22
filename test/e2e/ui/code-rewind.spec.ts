@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron";
+import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron";
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 const MESSAGE_ID = "rewind-user-row";
@@ -12,6 +12,7 @@ test.afterEach(async () => { if (ctx) await teardownSeededElectron(ctx); });
 async function setup() {
   ctx = await launchSeededElectron({
     sessionId: SESSION_ID,
+    settings: { ...buildLlmSettings(), ...buildE2eBaseSettings(true, "en") },
     historyRows: [
       { role: "user", content: "Update the source file.", meta: { messageId: MESSAGE_ID } },
       { role: "assistant", content: "The source file is updated.", meta: { messageId: "rewind-answer-row" } },
