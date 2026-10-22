@@ -1,15 +1,9 @@
 import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
 import { validateSymbolicHookArgv } from "../plugins/resolve-bundled-argv.js";
+import { HOOK_EVENT_TYPES } from "./hook-contract.js";
 
-const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = {
-  PreToolUse: "pre", PostToolUse: "post", PermissionRequest: "perm",
-  UserPromptSubmit: "UserPromptSubmit", PostToolUseFailure: "PostToolUseFailure",
-  PermissionDenied: "PermissionDenied", SessionStart: "SessionStart",
-  SessionEnd: "SessionEnd", Notification: "Notification", Stop: "Stop",
-  PreCompact: "PreCompact", PostCompact: "PostCompact",
-  SubagentStart: "SubagentStart", SubagentStop: "SubagentStop",
-};
+const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
 
 export interface ImportedHookEntry {

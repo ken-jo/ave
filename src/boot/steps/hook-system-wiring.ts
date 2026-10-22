@@ -32,10 +32,12 @@ import { HOOKS_CONFIG_FILENAME } from "../../hooks/hook-config-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { randomUUID } from "node:crypto";
+import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
 
 const log = createLogger("hook-system-wiring");
 
 export interface WireHookSystemDeps {
+  authorizeCommand?: HookCommandAuthorizer;
   /** Override hook directory (test). */
   hooksDir?: string;
   /** Override lockfile path (test). */
@@ -75,6 +77,9 @@ export async function wireHookSystem(
     promptDispatcher: deps.promptDispatcher,
   });
   const manager = new ScriptHookManager();
+  manager.setCommandAuthorizer(deps.authorizeCommand ?? (async () => ({
+    decision: "deny", reason: "hook command policy is not wired",
+  })));
   // Feed the UNIFIED registry: trusted `.sh` hooks (filter the synthetic
   // `hooks.json` trust unit out — it is not a runnable `.sh`) + trusted
   // `hooks.json` command entries. `trust.trustedConfigEntries` is non-empty

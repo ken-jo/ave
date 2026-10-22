@@ -4,8 +4,8 @@
  * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4 (command-hooks
  * milestone) + issue #811. This is the PURE, INERT foundation: it parses an
  * already-deserialized `hooks.json` value into normalized config entries. It does
- * NO I/O (no fs, no spawn), and nothing in the boot / runner / trust pipeline
- * imports it yet — wiring lands separately.
+ * NO I/O (no fs, no spawn). The trust workflow loads its entries before the
+ * manager installs them in the unified registry.
  *
  * What it implements (the decisions already made for #811 m1, do not re-litigate):
  *
@@ -31,7 +31,7 @@
  *       `TOOL_TIMEOUT_POLICY`.
  *
  * Output contract: `parseHookConfig` never throws. It returns `{ entries,
- * warnings, errors }` so the (future) caller can surface non-fatal problems
+ * warnings, errors }` so the caller can surface non-fatal problems
  * (unknown events, ignored shapes) and fatal per-entry rejections (binary-only
  * commands, bad handler types) without aborting boot.
  */
@@ -40,6 +40,7 @@ import {
   type HookEvent,
 } from "./script-hook-types.js";
 import { isRecord } from "../shared/is-record.js";
+import { HOOK_EVENT_TYPES } from "./hook-contract.js";
 
 /**
  * A normalized declarative hook entry parsed from `hooks.json`. This is the
@@ -88,31 +89,7 @@ export interface ParsedHookConfig {
  * (non-blocking); `UserPromptSubmit` is BLOCKING + fail-closed (a `deny` refuses
  * the turn) and is dispatched via the manager's blocking path.
  */
-const EVENT_KEY_TO_TYPE: Readonly<Record<string, HookEvent>> = {
-  // Blocking tool-use events (legacy `.sh` prefix model).
-  PreToolUse: "pre",
-  PostToolUse: "post",
-  PermissionRequest: "perm",
-  // Non-blocking lifecycle events (config-only; #811 milestone-2, design §5).
-  PostToolUseFailure: "PostToolUseFailure",
-  PermissionDenied: "PermissionDenied",
-  SessionStart: "SessionStart",
-  // SessionEnd — fired when a session is left (newConversation / loadSession),
-  // the symmetric counterpart to SessionStart. Notification — fired when the
-  // host shows a turn-end notification. Both observe-only (canonical parity).
-  SessionEnd: "SessionEnd",
-  Notification: "Notification",
-  Stop: "Stop",
-  PreCompact: "PreCompact",
-  PostCompact: "PostCompact",
-  // Subagent (agent_spawn) lifecycle — observe-only; fired by subagent-runner
-  // around the child ConversationLoop's spawn run. Canonical parity (#811).
-  SubagentStart: "SubagentStart",
-  SubagentStop: "SubagentStop",
-  // The ONE blocking, fail-closed lifecycle event (config-only; #811 m2,
-  // design §5): a `deny` REFUSES the turn before queryLoop runs.
-  UserPromptSubmit: "UserPromptSubmit",
-};
+const EVENT_KEY_TO_TYPE: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 
 /**
  * Normalize a command field into an argv array. Accepts either a pre-split argv

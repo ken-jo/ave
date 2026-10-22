@@ -55,6 +55,7 @@ import { areExternalTurnHooksAllowed } from "../shared/turn-extension-policy.js"
 import type { PluginHookTrustStore, PreparedPluginHookProjection } from "./plugin-hook-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
+import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 
 const log = createLogger("script-hook-manager");
 
@@ -85,6 +86,16 @@ export class ScriptHookManager {
   private generation = 0;
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
   private readonly generationLeaseSources = new Map<string, (pluginId: string, activationId: string) => Promise<{ release(): void }>>();
+  private commandAuthorizer: HookCommandAuthorizer | undefined;
+
+  setCommandAuthorizer(authorizer: HookCommandAuthorizer): void {
+    this.commandAuthorizer = authorizer;
+    this.generation += 1;
+  }
+
+  private executionOptions(options?: RunOneHookOptions): RunOneHookOptions {
+    return { ...options, ...(this.commandAuthorizer ? { authorizeCommand: this.commandAuthorizer } : {}) };
+  }
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
     this.generationAccess = access;
@@ -346,8 +357,12 @@ export class ScriptHookManager {
       // decision is OBSERVE-ONLY, so the caller ignores it. (Chain-stop just
       // avoids running later hooks once one already signaled deny — the audit
       // captures every result up to that point, same as PostToolUse.)
-      return await this.runWithGenerationLeases(entries, (activeEntries) =>
-        runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+      const result = await this.runWithGenerationLeases(entries, (activeEntries) =>
+        runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
+      if (result.decision === "deny") {
+        log.warn("lifecycle hook %s reported a non-blocking failure or denial: %s", event, redactForLLM(result.reason).redacted);
+      }
+      return result;
     } catch (err) {
       // Fail-soft: a lifecycle dispatch must NEVER break the turn. Log + return
       // an empty observe result so the caller continues unaffected.
@@ -418,7 +433,7 @@ export class ScriptHookManager {
       // already collapsed to a deny RESULT by runOneHookScript, so the chain's
       // returned decision is authoritative — the caller refuses on deny.
       return await this.runWithGenerationLeases(entries, (activeEntries) =>
-        runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+        runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
     } catch (err) {
       // FAIL-CLOSED: a blocking event must DENY (refuse the turn) on an
       // unexpected dispatch error — NOT allow. (Contrast runLifecycleEvent,
@@ -458,14 +473,14 @@ export class ScriptHookManager {
       trustOrigin: payload.trustOrigin,
       ...(payload.mcpServerId !== undefined ? { mcpServerId: payload.mcpServerId } : {}),
       ...(payload.pluginId !== undefined ? { pluginId: payload.pluginId } : {}),
-      ...(payload.toolOutput !== undefined ? { toolOutput: payload.toolOutput } : {}),
+      ...(payload.toolOutput !== undefined ? { toolOutput: redactForLLM(payload.toolOutput).redacted } : {}),
       ...(payload.isError !== undefined ? { isError: payload.isError } : {}),
     };
     // Each entry runs with its own timeout: config entries carry a per-entry
     // (already-clamped) `timeoutMs`; `.sh` entries fall back to the default /
     // caller-supplied option.
     return this.runWithGenerationLeases(entries, (activeEntries) =>
-      runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+      runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
   }
 
   private async runWithGenerationLeases<T>(

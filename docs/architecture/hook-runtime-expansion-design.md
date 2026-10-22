@@ -16,6 +16,8 @@ compatibility** (generic command hooks, more lifecycle events, eventually HTTP /
 prompt / agent hooks) **without weakening that trust posture**. Every expansion is gated
 behind a phase that adds the security control it depends on first.
 
+The [user hook contract](../guides/user-hooks.md) owns the current public event names, per-event JSON input, accepted decision output, configuration location, and failure behavior. Internal `pre`/`post`/`perm` aliases remain stable. The tables below retain the original expansion rationale; the public contract includes the shipped session-end, notification, and subagent events.
+
 ---
 
 ## 1. Current state (verified against code)
@@ -39,10 +41,11 @@ Discovery: `src/hooks/hook-discovery.ts` resolves `~/.config/ave/hooks/`, globs 
 
 ### 1.3 Execution model
 
-- **Runner**: `src/hooks/script-hook-runner.ts:runOneHookScript`. Input = single-line JSON on **stdin** (`ScriptHookStdin`); output = stdout JSON (`ScriptHookStdout = { action: "allow"|"deny", reason }`).
+- **Runner**: `src/hooks/script-hook-runner.ts:runOneHookScript`. Input = newline-terminated JSON on **stdin**, adding the public `HookJsonInput` envelope to the legacy payload. Exit-0 output accepts the legacy `{action, reason}` or the documented structured decision forms; empty stdout is a successful no-op.
 - **Timeout**: `DEFAULT_HOOK_TIMEOUT_MS = 5_000` (`src/hooks/script-hook-types.ts`) — **separate** from `TOOL_TIMEOUT_POLICY`'s 120 s global ceiling. Enforced via `SIGKILL` of the detached process group.
 - **Env allowlist**: `buildSafeChildEnv` (`src/tools/safe-env.ts`) forwards only a generic non-secret allowlist (`FORWARD_ENV_KEYS`: `PATH`, `HOME`, `USER`, `USERNAME`, `LANG`, `LC_*`, `TZ`, …) plus the three injected `AVE_HOOK_TYPE` / `AVE_HOOK_TOOL_NAME` / `AVE_HOOK_TRUST_ORIGIN` vars. Everything else — `AVE_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_*`, `AWS_*`, `GITHUB_TOKEN`, future provider secrets — is stripped.
 - **Fail-closed**: non-zero exit, timeout, spawn error, or malformed stdout → **deny**.
+- **Command admission**: trusted user commands pass the existing shell permission manager and approval gate. On macOS/Linux an active OS sandbox wraps them with sensitive-path floors and the hook cwd write scope; wrapper failure never falls back to unconfined execution. Windows user commands retain the shell policy's exact host-approval limitation. Plugin-bundled hooks retain their existing confinement policy.
 - **Composition**: deny precedence — a hook may downgrade an upstream `allow` to `deny`, never upgrade `deny` to `allow`. **No `modify`/`updatedInput` action exists in v1** (deferred pending signing).
 - **DLP**: `input` strings are DLP-redacted at the caller (`src/hooks/script-hook-manager.ts`) before dispatch.
 
@@ -109,7 +112,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "bash|apply_patch|mcp__.*",   // regex over toolName; "*" = all
+        "matcher": "mcp_*",                     // anchored glob over toolName; "*" = all
         "hooks": [
           {
             "type": "command",
@@ -124,7 +127,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
 ```
 
 - `event` keys are the closed set in §5. Unknown events → entry ignored + warn-audited (fail-closed, never silently active).
-- `matcher` is a regex matched against the event's primary subject (`toolName` for tool events; empty/`*` for lifecycle events).
+- `matcher` is an anchored glob, sharing the legacy script matcher. It matches `toolName` for tool events, input text for `UserPromptSubmit`, and `sessionId` for other lifecycle events; empty/`*` matches all.
 - Each `handler` declares `type` (initially only `"command"`), `command` (argv string), and optional `timeoutMs`.
 - **Trust identity** of a `command` handler = the sha256 of the resolved local script/executable when the command resolves to a local file (see §6.1); plus the verbatim `command` string. Both are shown in the trust-review UI and recorded in the lockfile.
 

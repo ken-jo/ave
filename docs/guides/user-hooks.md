@@ -4,7 +4,7 @@ Ave runs trusted command hooks through the existing `ScriptHookManager` and `run
 
 ## Configuration
 
-Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `post-*.sh`, and `perm-*.sh` files remain in that directory. This is the existing hook configuration location, alongside Ave's separate permission configuration; application preferences remain in `ave-settings.json` under the application user-data directory. Hooks are not loaded from application preferences or a workspace settings file.
+Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `post-*.sh`, and `perm-*.sh` files remain in that directory. Application preferences remain in `ave-settings.json` under the application user-data directory. Hooks are not loaded from application preferences or a workspace settings file.
 
 ```json
 {
@@ -22,37 +22,103 @@ Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `po
 }
 ```
 
-Commands use argv, with no implicit shell expansion. Use an array for paths or arguments containing spaces. A string command is split on whitespace. A command must reference a local script or executable that can be hashed for trust.
+Commands use argv. Ave explicitly expands a leading `~` in each argument; it does not expand variables, quoting, pipes, or substitutions. Use an array for paths or arguments containing spaces. A string command is split on whitespace. A command must reference a local script or executable that can be hashed for trust. Relative paths resolve from the hook process's working directory; absolute paths are preferable.
 
-New or changed scripts and configuration are quarantined. Review them with `/permission hooks list`, then enroll the reviewed file with `/permission hooks accept hooks.json` or `/permission hooks accept pre-check.sh`. Enrollment requires local user input. Hook approval cannot override a tool permission denial.
+New or changed scripts and configuration are quarantined at discovery. Review them with `/permission hooks list`, then enroll the reviewed file with `/permission hooks accept hooks.json` or `/permission hooks accept pre-check.sh`. Accepting `hooks.json` approves that configuration and its local script anchors: argv[0] when it is a file path, otherwise the first later path-like argument. Use one explicit script path before other file arguments. PATH-resolved interpreters are not content-pinned. Discovery runs at startup and when hook trust commands refresh the registry; hashes are not rechecked before every invocation. Enrollment requires local user input.
+
+Enrollment does not grant shell authority. Production user commands also pass the existing shell permission rules and approval gate before spawning. Matching shell allow rules alone do not authorize interpreter scripts; the existing permission mode and approval policy still apply. A deny rule refuses execution; an ask requires an explicit allow-once response. An unavailable approval surface cannot authorize execution. Hooks never override a tool permission denial or dispatch privileged chat commands. Remote-controller turns suppress external hooks.
+
+Launch assumes host-side hook files remain stable during admission and sandbox preparation. File identity is not pinned against concurrent replacement by another host process; discovery-time hashes and path checks do not provide that guarantee.
+
+When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. Only the hook's cwd is added as a write scope. An exact canonical script beneath the protected hook configuration directory can be re-allowed for reading; anchors in other protected locations, including links escaping the hook directory, do not receive a read exception. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the existing host shell execution plan: an unavailable requested sandbox or a partially confined Windows backend requires an exact, gate-authenticated allow-once receipt for host execution. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
 
 Matchers use anchored, case-sensitive globs: `*` matches any sequence, `?` one character. Omit the matcher, or use `""` or `"*"`, to match all. Tool events match the tool name; `UserPromptSubmit` matches the prompt; other lifecycle events match the session ID.
 
 ## Events
 
-Every invocation receives one JSON object on stdin. Existing camelCase fields remain available. Tool events use `hookType` and `event` aliases `pre`, `post`, and `perm`; lifecycle events use their full event name.
+Every invocation receives one newline-terminated JSON object on stdin. The public envelope is `{schema_version: 1, hook_event_name: string, session_id: string, cwd: string}`. `hook_event_name` is one of the exact event names below. `cwd` is the hook process's actual working directory, which defaults to the host process's cwd; it is not a promise of the conversation's workspace root. The discriminated TypeScript schema is [`HookJsonInput`](../../src/hooks/hook-contract.ts).
+
+Existing camelCase fields remain available alongside the public fields. All inputs retain `sessionId` and `trustOrigin`. Tool events retain `hookType` and `event` aliases `pre`, `post`, and `perm`; lifecycle events use their full event name. Tool events also retain `source`, `category`, and optional `mcpServerId` and `pluginId`.
 
 | Event | Additional input | Effect of denial |
 | --- | --- | --- |
-| `PreToolUse` | `toolName`, `source`, `category`, `input` | Refuses the tool |
-| `PostToolUse` | Tool input plus `toolOutput`, `isError` | Feedback; the tool already ran |
-| `PermissionRequest` | Tool input | Refuses the pending permission request |
-| `UserPromptSubmit` | `inputText`, optional `inputOrigin`, `route`, `classification` | Refuses the turn |
-| `PostToolUseFailure` | `toolName`, `errorMessage`, `durationMs` | Observe only |
-| `PermissionDenied` | `toolName`, `denyReason` | Observe only |
-| `SessionStart` | `sessionMeta` | Observe only; once before the session's first turn |
-| `SessionEnd` | `stopReason` when supplied | Observe only; session switch or reset |
-| `Notification` | `message` | Observe only; turn-end notification |
-| `Stop` | `stopReason`, `toolCount`, `durationMs` | Observe only; does not continue the turn |
-| `PreCompact` | `reason`, `tokenEstimate` | Observe only |
-| `PostCompact` | `messagesBefore`, `messagesAfter`, `tokensBefore`, `tokensAfter` | Observe only |
-| `SubagentStart` | `agentId`, `agentType` | Observe only |
-| `SubagentStop` | `agentId`, `agentType`, `stopReason` when supplied | Observe only |
+| `PreToolUse` | `tool_name: string`, `tool_input: object` | Refuses the tool |
+| `PostToolUse` | Tool input plus optional `tool_response: string`, `is_error: boolean` | Feedback; the tool already ran |
+| `PermissionRequest` | `tool_name: string`, `tool_input: object` | Refuses the pending permission request |
+| `UserPromptSubmit` | `prompt: string`; legacy optional `inputOrigin`, `route`, `classification` | Refuses the turn |
+| `PostToolUseFailure` | Optional `tool_name: string`, `error: string`, `duration_ms: number` | Observe only |
+| `PermissionDenied` | Optional `tool_name: string`, `deny_reason: {layer?: number, source: string, reason?: string}` | Observe only |
+| `SessionStart` | Optional `session_meta: object` | Observe only; before the first turn after session creation or loading |
+| `SessionEnd` | Optional `reason: string`, `session_meta: object`, `stop_reason: string` | Observe only; session switch or reset, not a crash/shutdown guarantee |
+| `Notification` | Optional `message: string` | Observe only; turn-end notification |
+| `Stop` | Optional `stop_reason: string`, `tool_count: number`, `duration_ms: number` | Observe only; does not continue the turn |
+| `PreCompact` | Optional `reason: string`, `token_estimate: number` | Observe only |
+| `PostCompact` | Optional `messages_before: number`, `messages_after: number`, `tokens_before: number`, `tokens_after: number` | Observe only |
+| `SubagentStart` | Optional `agent_id: string`, `agent_type: string` | Observe only |
+| `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string` | Observe only |
 
-Fields depend on the dispatch site; an unavailable optional field is omitted. All events carry `sessionId` and `trustOrigin`. Free-text input is redacted before dispatch. No transcript path is promised by this contract.
+Fields depend on the dispatch site; an unavailable optional field is omitted. Prompt text, top-level tool input strings and string-array items, tool output, error text, denial text, and notification text are DLP-redacted before dispatch. Nested tool objects and session metadata retain the existing caller-owned redaction responsibility. No transcript path or permission-mode field is promised by this contract.
 
-## Current result contract
+## Results and failures
 
-The existing runtime requires `{ "action": "allow" | "deny", "reason": "..." }` on stdout. Nonzero exit, malformed output, spawn failure, and timeout produce a denial. Blocking events enforce it; observe-only events record it without changing control flow. Handlers default to a five-second ceiling and `timeoutMs` can shorten it. Output capture is bounded to 16 KiB.
+| Outcome | Meaning |
+| --- | --- |
+| Exit `0`, empty stdout or `{}` | Successful no-op; normal tool permission checks remain authoritative |
+| Exit `0`, supported JSON | Applies the decision below |
+| Exit `2` | Denial with bounded stderr as the reason; stdout cannot override it |
+| Other nonzero exit or signal | Failure with exit/signal and stderr diagnostics; blocking events fail closed |
+| Malformed, unsupported, or oversized output | Explicit failure; blocking events fail closed |
+| Timeout or spawn/wrap/admission failure | Explicit failure; blocking events fail closed |
+
+`PreToolUse`, `PermissionRequest`, and `UserPromptSubmit` enforce denials. Tool hook denials, post-tool feedback, and `PostToolUseFailure` feedback reach the model through the tool result path. A refused prompt is reported to the user before the model is called. Observe-only lifecycle events report failures to the host log and preserve turn/session control flow; events other than `PostToolUseFailure` do not inject context, and none request continuation. The hook chain stops at its first denial, including for observation events. Legacy files run first in filename order, followed by configured handlers in file order.
+
+Handlers default to a five-second ceiling. `timeoutMs` is a positive integer in milliseconds, clamped to 5000 by configuration parsing; invalid configuration budgets warn and use the default. Execution expiry terminates the managed process/group and reports `hook timed out after <budget>ms`. Approval waiting uses the existing approval gate's separate deadline. Stdout and stderr each have a 16 KiB capture bound. Oversized stdout fails rather than accepting a truncated decision. Keep decisions and diagnostics concise.
+
+Supported exit-0 output forms:
+
+```json
+{ "action": "deny", "reason": "Run the focused check first" }
+```
+
+The legacy `action` is `allow` or `deny`; its required reason retains the existing 280-character bound. The event-independent form is:
+
+```json
+{ "decision": "block", "reason": "Run the focused check first" }
+```
+
+`decision` is `block` or `allow`. `{ "continue": false, "stopReason": "..." }` also signals denial. A denial wins over an allow in the same structured response. Do not mix legacy `action` with structured control fields.
+
+`PreToolUse` also accepts:
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Run the focused check first" } }
+```
+
+`PermissionRequest` also accepts:
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "deny", "message": "Outside the approved scope" } } }
+```
+
+These event-specific decisions accept `allow` or `deny`; `allow` only means the hook does not object. A mismatched event, `ask`, permission updates, input mutation, or context-injection fields are rejected as unsupported output. Hook-specific decision objects on other events are unsupported. Legacy JSON wrapped in a code fence remains accepted.
+
+## Example script
+
+Save this as `~/.config/ave/hooks/check-command.cjs`, then use the configuration above, review it, and enroll `hooks.json`. On the next matching `bash` invocation, authorize the hook command if shell policy asks. A blocked invocation surfaces the script's stderr in the tool result; lifecycle failures appear in the host log.
+
+```js
+let input = "";
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  if (event.hook_event_name === "PreToolUse" &&
+      event.tool_input.command?.includes("--force")) {
+    process.stderr.write("Review the forced operation before proceeding.");
+    process.exitCode = 2;
+  }
+});
+```
+
+For example, stdin includes `{"schema_version":1,"hook_event_name":"PreToolUse","session_id":"session-example","cwd":"/workspace","tool_name":"bash","tool_input":{"command":"git push --force"}}` plus the legacy envelope. A normal command completes with exit 0 and no stdout.
 
 HTTP, model, input-mutation, and background hooks are outside the supported contract.

@@ -24,7 +24,9 @@
  *   }
  *
  * Failure semantics:
- *   - exit code !=0 → deny  (fail-safe)
+ *   - exit 0 with no output → successful no-op
+ *   - exit 2 → deny with stderr feedback
+ *   - other nonzero exit → failure / deny (fail-safe)
  *   - timeout >5s    → deny  (configurable via setting)
  *   - stdout JSON parse failure → deny
  *
@@ -235,8 +237,8 @@ export interface LifecycleHookStdin extends LifecycleEventPayload, Partial<UserP
 }
 
 /**
- * Wire-shape parsed from a hook script's stdout. v1 enum is "allow" |
- * "deny" only (hook-signing follow-up introduces "modify" once signing is in place).
+ * Normalized result of supported stdout decision forms. The public command
+ * protocol is documented in docs/guides/user-hooks.md; mutation is unsupported.
  */
 export interface ScriptHookStdout {
   action: "allow" | "deny";
