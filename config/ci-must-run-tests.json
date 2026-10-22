@@ -61,6 +61,7 @@
       "src/engine/__tests__/conversation-loop-kill-durability.test.ts",
       "src/engine/telemetry/__tests__/tracing.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
+      "src/main/browser/__tests__/browser-favicon.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
       "src/plugins/isolation/__tests__/host-protocol-schema-parity.test.ts",
       "src/plugins/validate/__tests__/adversarial-fixture.test.ts",
