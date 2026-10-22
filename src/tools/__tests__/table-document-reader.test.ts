@@ -107,6 +107,13 @@ describe("CSV / TSV", () => {
       .toBe("corrupt-document");
   });
 
+  it.each(['a,b\nstray"quote,2', 'a,b\n"closed" ,2'])(
+    "refuses invalid field quoting without accepting parser repairs: %j", async (text) => {
+      expect((await refusal(() => parseTableDocument(Buffer.from(text), "csv", 0))).code)
+        .toBe("corrupt-document");
+    },
+  );
+
   it("parses quoted records across bounded input chunks", async () => {
     const value = "a\n".repeat(40);
     const doc = await parseTableDocument(Buffer.from(`a,b\n1,"${value}"\n2,end`), "csv", 0,
