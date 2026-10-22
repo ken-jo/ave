@@ -7,7 +7,6 @@ import { t } from "../../src/i18n/runtime.js";
 import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../src/shared/browser-workspace.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
-import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 
 describe("chat columns", () => {
   it("opens the selected browser tab in the work panel and closes it through the existing tab store", async () => {
@@ -81,12 +80,16 @@ describe("chat columns", () => {
     expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(thumbnailToggle);
     fireEvent.click(panelToggle);
-    await waitFor(async () => {
-      const layout = (await first.api.getSettings()).system?.mainLayout;
-      expect(layout?.thumbnailOpenIds).toEqual(["main"]);
-      expect(layout?.panelOpenIds).toEqual([]);
-    }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
+    // pagehide writes a change still inside the save delay, so no real-time wait.
+    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    const layout = vi.mocked(first.api.updateSettings).mock.calls
+      .map(([patch]) => (patch as { system?: { mainLayout?: { thumbnailOpenIds: string[]; panelOpenIds: string[] } } }).system?.mainLayout)
+      .filter((each) => each !== undefined)
+      .at(-1);
+    expect(layout?.thumbnailOpenIds).toEqual(["main"]);
+    expect(layout?.panelOpenIds).toEqual([]);
     const settings = await first.api.getSettings();
+    expect(settings.system?.mainLayout).toEqual(layout);
     first.unmount();
     resetMainLayoutRestoreForTest();
     const second = await renderApp({ hasApiKey: true, settings });
