@@ -17,6 +17,7 @@ import { listStoredProjectRules, projectRulesLocation } from "./rules/project-ru
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
+import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
@@ -33,6 +34,7 @@ import {
   maxVerdict,
   isDestructiveShellText,
   type LlmRiskClassificationTrace,
+  screenEgressRequest,
   type RiskClassifier,
   type RiskVerdict,
   type ToolInvocationContext,
@@ -300,13 +302,11 @@ export interface PermissionCheckContext {
    */
   decisionOverride?: "ask" | "always-allow-with-audit";
   /**
-   * Issue #28 — host-built subject for rules-language specifiers and the
-   * shell floors. Set by the tool pipeline for the canonical host shells.
-   * `dialect` selects the reading: both dialects get the exfiltration and
-   * sensitive-path floors; only `bash` is matched by `Bash(...)` rules
-   * (PowerShell has no rule language, so no rule ever matches it).
+   * Host-built rule subject. Native file subjects retain the sealed path
+   * snapshot; mediated fetches and MCP use actual destination/tool identity.
+   * Shell dialects share floors; Bash rules match only the bash dialect.
    */
-  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string };
+  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string } | ScopedRuleSubject;
   /**
    * Issue #28 — project whose per-project rule file applies. The caller must
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
@@ -1182,6 +1182,19 @@ export class PermissionManager {
     await this.projectRuleScopes.ensureLoaded(projectCwd);
   }
 
+  /** Re-check actual destinations at the host fetch boundary, including redirects. */
+  async checkNetworkRules(url: string, projectCwd: string, privateNetwork = false): Promise<ScopedRuleEvaluation> {
+    await this.projectRuleScopes.ensureLoaded(projectCwd);
+    return this.checkScopedRules({ kind: "webfetch", url, privateNetwork }, projectCwd);
+  }
+
+  /** Read an already loaded scope; a generic tool allow is never a scoped grant. */
+  checkScopedRules(subject: ScopedRuleSubject, projectCwd: string): ScopedRuleEvaluation {
+    const state = this.projectRuleScopes.stateFor(projectCwd);
+    if (this.rulesLoadError || !state.ok) return { floor: "Permission rule store is unavailable" };
+    return evaluateScopedRules(subject, state.projectRoot, this.rules, state.rules);
+  }
+
   /** Issue #28 — the project scope's persisted rules (Settings list), or its load error. */
   async listProjectRules(projectCwd: string): Promise<
     { ok: true; projectRoot: string; rules: readonly PermissionRule[] } | { ok: false; projectRoot: string; error: string }
@@ -1538,7 +1551,20 @@ export class PermissionManager {
       ? undefined
       : this.projectRuleScopes.stateFor(context.projectRulesCwd);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
-    const ruleSubject = context.ruleSubject;
+    const ruleSubject = context.ruleSubject?.kind === "shell" ? context.ruleSubject : undefined;
+    const scopedSubject = context.ruleSubject?.kind !== "shell" ? context.ruleSubject : undefined;
+    if (scopedSubject && ((scopedSubject.kind === "mcp" && source !== "mcp")
+      || (scopedSubject.kind !== "mcp" && source !== "builtin"))) {
+      throw new Error("Permission rule subject does not match the tool source");
+    }
+    if (scopedSubject && projectRuleState === undefined) {
+      throw new Error("Scoped permission rules require an explicit project scope");
+    }
+    const scopedRules = scopedSubject
+      ? evaluateScopedRules(scopedSubject, projectRuleState!.projectRoot, this.rules, projectRules)
+      : undefined;
+    const networkScreen = scopedSubject?.kind === "webfetch" ? screenEgressRequest({ url: scopedSubject.url, allowPrivateNetwork: scopedSubject.privateNetwork }) : undefined;
+    const scopedFloor = scopedRules?.floor ?? (networkScreen?.outcome === "screened" ? `Network request requires approval: ${networkScreen.signal}` : undefined);
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
@@ -1591,6 +1617,9 @@ export class PermissionManager {
     }
     if (shellRuleEvaluation?.decision === "deny") {
       return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: shellRuleEvaluation.pattern }), layer: 1 };
+    }
+    if (scopedRules?.decision === "deny") {
+      return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: scopedRules.pattern ?? "" }), layer: 1 };
     }
 
 
@@ -1669,6 +1698,7 @@ export class PermissionManager {
         forceModal: true,
       };
     }
+    if (scopedFloor) return { decision: "ask", reason: scopedFloor, layer: 2, forceModal: true };
     // Ask rules (after deny, before every allow lane and mode). A per-call
     // hard ask: never remembered, never auto-reviewed.
     for (const rule of [...this.rules, ...projectRules]) {
@@ -1687,6 +1717,9 @@ export class PermissionManager {
         layer: 2,
         forceModal: true,
       };
+    }
+    if (scopedRules?.decision === "ask") {
+      return { decision: "ask", reason: t("be_permissionManager.askRuleReason", { pattern: scopedRules.pattern ?? "" }), layer: 2, forceModal: true };
     }
     const toolModeOverride = this.toolModeOverrides.get(toolName);
     if (toolModeOverride === "strict") {
@@ -1748,6 +1781,9 @@ export class PermissionManager {
 
     // 3. Allow rules
     let result: PermissionCheckResult | undefined;
+    if (scopedRules?.decision === "allow") {
+      result = { decision: "allow", reason: t("be_permissionManager.allowRuleReason", { pattern: scopedRules.pattern ?? "" }), layer: 3 };
+    }
     if (shellRuleEvaluation?.decision === "allow") {
       // Every subcommand is covered by a Bash(...) allow rule and none hits a
       // floor (see rules/shell-rule-matcher.ts).
