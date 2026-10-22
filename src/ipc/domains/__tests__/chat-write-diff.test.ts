@@ -63,7 +63,6 @@ vi.mock("../../../lib/logger.js", () => ({
 vi.mock("../../../shared/chat-history.js", () => ({
   serializeHistoryMessage: vi.fn((m: unknown, i: number) => ({ ...m as object, index: i })),
 }));
-vi.mock("../../../shared/fake-llm-settings.js", () => ({ fakeLlmSettings: {} }));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -165,6 +165,8 @@ export interface HostPluginAuthLifecycle {
 /** Bundled options shared by batch and single-invocation execution. */
 export interface ExecuteOptions {
   callbacks?: ToolExecutorCallbacks;
+  /** Final model-facing result, after invocation cleanup; awaited before ordered execution continues. */
+  onToolResult?: (result: ToolResult) => void | Promise<void>;
   sessionId?: string;
   overlayTriggerOrigin?: string | null;
   spawnDepth?: number;

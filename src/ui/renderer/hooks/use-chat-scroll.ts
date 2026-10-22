@@ -108,7 +108,11 @@ export function useChatScroll({
 
   useLayoutEffect(() => {
     const viewport = scrollViewportRef.current;
-    if (!viewport || !currentSessionId) return;
+    // A hidden tile's viewport has no size to restore into; the restore runs
+    // when it is shown again, which is why `hidden` is a dependency. It restores
+    // the saved distance from the bottom (`bottomGap`), not `top`, so content
+    // appended while the tile was hidden shifts what comes back into view.
+    if (hidden || !viewport || !currentSessionId) return;
     if (restoredSessionScrollRef.current === currentSessionId) return;
 
     const lastSaved = getLastSavedScrollPosition();
@@ -136,7 +140,7 @@ export function useChatScroll({
     restoredSessionScrollRef.current = currentSessionId;
     const frame = window.requestAnimationFrame(applyRestore);
     return () => window.cancelAnimationFrame(frame);
-  }, [currentSessionId, entries.length, saveScrollPosition, scrollViewportRef]);
+  }, [currentSessionId, entries.length, hidden, saveScrollPosition, scrollViewportRef]);
 
   const cancelAutoBottomPin = useCallback(() => {
     if (autoBottomPinFrameRef.current === null) return;
@@ -228,6 +232,10 @@ export function useChatScroll({
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
     const onScroll = () => {
+      // Hiding the tile zeroes the viewport, and the browser may report that as
+      // a scroll. Measured there, every position reads as "at the bottom" and
+      // would overwrite the one the restore puts back when the tile returns.
+      if (viewport.clientHeight === 0) return;
       const nearBottom = isNearBottom();
       pinnedToBottomRef.current = nearBottom;
       if (!nearBottom) cancelAutoBottomPin();

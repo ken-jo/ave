@@ -30,6 +30,148 @@ credentials. Authentication and billing stay attached to the selected route.
 It neither falls back between routes nor converts subscription authentication
 into an API credential.
 
+## The user's own `codex` CLI
+
+Ave ships no app-server binary. `src/main/codex-user-runtime.ts` finds the
+`codex` the user installed and qualifies it before either app-server client
+starts it:
+
+1. **Location.** Ave finds the CLI; the user never picks the file and
+   settings offers no path chooser. Each fully qualified
+   PATH entry is tried, then `$CODEX_INSTALL_DIR`, `~/.local/bin`,
+   `/opt/homebrew/bin` and `/usr/local/bin`; Windows also checks
+   `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and `%APPDATA%\npm`. Windows
+   paths must name a drive root or a UNC share. Drive-relative, root-relative
+   and device-namespace paths are rejected. The first existing `codex`
+   decides; an unsafe or invalid candidate and filesystem inspection errors
+   are reported instead of continuing discovery.
+2. **Trusted source.** The selected file, its symlink route, canonical route
+   and every ancestor must prevent writes by other accounts. POSIX owners
+   must be root or the current account; Windows checks ownership against the
+   current account and trusted system principals, plus access-control rules.
+   The npm launcher is followed to its native executable without running a
+   shell or interpreter, and its route receives the same checks. An unsafe
+   location reports `codex-runtime-unsafe-location`; recovery is to install
+   the CLI where its file and path meet these ownership and write rules.
+3. **Private artifact.** Ave copies the admitted executable into a random
+   private directory under its isolated runtime home. Exclusive creation,
+   no-follow opens where supported, pinned source handles and source
+   rechecks detect replacements during copying. Ave hashes the copied bytes
+   with SHA-256 and makes the file owner-readable and executable. Structural
+   validation runs on the copy and requires a complete Mach-O, ELF or PE
+   header for the current platform and architecture; a magic prefix alone
+   is insufficient. This does not prove the operating system's loader will
+   accept the file. Every compatibility probe also runs against the copy.
+4. **Version gate.** The copied `codex --version` must report
+   `CODEX_CLI_MINIMUM_VERSION` (0.152.0) or later.
+5. **Protocol check.** `codex features list` must name every feature Ave
+   disables at launch, and `codex app-server generate-json-schema
+   --experimental` must describe every request, field, enum value,
+   notification and server request Ave uses
+   (`src/main/codex-protocol-requirements.ts`). Required fields and their
+   types must coexist in the applicable union branch; fields from different
+   alternatives cannot collectively satisfy a request contract.
+6. **Launch identity.** Both account and conversation clients receive the
+   qualified artifact, including its digest and version. Its private
+   location, regular-file status, permissions and content hash are checked
+   immediately before every probe and app-server spawn.
+
+Capability probes use an empty private temporary home, database and output
+directory, removed on success or failure. They run only the three local commands
+above, with stdin ignored, and do not receive the persistent account home or
+send a model prompt. Account verification remains a separate auth-status read
+without starting a model turn.
+
+`src/main/codex-native-spawn.ts` preserves loader rejection as a start
+failure. Linux subscription startup requires a host runtime exposing
+`process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
+states the feature-specific runtime prerequisite. Ave trusts its host installation
+as the source of the bootstrap runtime; CLI candidate admission rules apply to
+discovered CLI paths and their private copies.
+On Linux, Ave starts a new host runtime process with a static bootstrap, passes the private
+CLI path and arguments as data, and replaces that process through `process.execve`.
+The bootstrap removes its launch-only environment before replacement. A missing API or
+catchable bootstrap failure exits with status 126. A rejected syscall can
+instead terminate the child with another nonzero status or signal; both are
+start failures.
+
+The desktop's [minimum macOS version](../../package.json#L366) is 13. On that
+supported system range, Ave starts the absolute artifact path directly through
+`posix_spawn`, avoiding replacement of an extra host runtime process. The current
+embedded runtime uses libuv 1.52.1; its [explicit-path spawn route](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/process.c#L704-L712)
+returns loader errors directly. The [legacy fork route](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/process.c#L872-L898)
+requires an unavailable spawn operation; working-directory changes are supported
+on the minimum system version. Account changes and detached sessions are
+rejected because they can select that legacy route. Every production caller uses
+the current account and session. Windows starts the artifact directly through
+`CreateProcess`. These supported CLI launch routes never pass a CLI candidate to
+`execvp`, so `ENOEXEC` cannot trigger a shell fallback.
+
+The in-memory compatibility cache identifies the CLI and copied helper by
+their SHA-256 content hashes. Changed bytes are checked again even if file
+size and timestamps are preserved. A probe that cannot run is a start failure
+and is retried; it is never read as a compatibility verdict. Settings shows
+one OpenAI provider whose card first asks for the sign-in method ("ChatGPT
+subscription" or "API key"). Under the subscription it shows the install
+methods and a "Check again" action while no CLI is found, the same with
+"Codex CLI 0.152.0+ required" when the found one is too old or incompatible,
+and the found CLI's version otherwise. "Check again" is a status read, which
+runs discovery again. These checks do not
+defend against root or an arbitrary malicious process already running as the
+same user. The final digest check and spawn are not atomic: a same-UID or root
+attacker able to modify the private artifact directory can swap its executable
+after that check for one invocation. The content proof assumes that ownership
+boundary holds; it is not an unconditional exact-binary guarantee.
+
+Rejected snapshots are discarded even when their negative verdict is cached.
+After a failed qualification, a cleanup failure evicts its verdict and retains
+ownership of the copy. Future snapshot requests retry pending removals first,
+keeping repeated removal failures from accumulating copies. Disposal can also
+retry those removals.
+Successful copies remain owned by their locator until its transports stop;
+disposal then removes only that locator's copies. A failed integrity check
+evicts the cached artifact, so the next request qualifies a fresh snapshot.
+Abrupt host termination can leave private copies, which a later host does not
+automatically reuse or remove across sessions.
+
+An installed `codex-code-mode-host` (`.exe` on Windows) receives the same
+source admission, native-header validation, private copy and digest checks.
+For a `CodexCLI.app/Contents/MacOS/codex` entry point, `codex-resources/` sits
+beside the application bundle. Package resources take precedence over the legacy
+sibling location; the qualified helper is placed beside the copied CLI under its
+expected name.
+The CLI alone can run the version, features and schema probes. The helper
+remains necessary for models whose metadata selects `code_mode_only`, which
+takes precedence over `--disable code_mode` in both
+[0.152.0](https://github.com/openai/codex/blob/rust-v0.152.0/codex-rs/core/src/tools/mod.rs#L68-L90)
+and [0.161.0](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/tools/mod.rs#L77-L102).
+A missing helper therefore does not invalidate every native executable;
+code-mode-only execution without it fails closed. Probe success does not
+establish support for those models. The package's `rg` serves thread search,
+and shell, sandbox and voice resources serve native execution or realtime
+paths outside Ave's governed request set.
+Startup's built-in command aliases point back to the private CLI rather
+than requiring another installed helper. Native execution denials and the
+host's dynamic-tool permission gates remain authoritative.
+
+The minimum was measured, not guessed: published versions from 0.140.0 to
+0.163.0 (every minor, with both patches either side of each boundary) were
+unpacked into an empty directory, each generated schema was checked against
+the requirements, and an app-server was started with Ave's exact argv and
+asked to `initialize`. Versions before 0.144.0 lack login
+fields Ave sends; versions before 0.152.0 refuse to start because they do
+not know the `sleep_tool` feature Ave disables under `--strict-config`.
+
+**Credentials stay isolated.** Ave still starts the user's binary with its
+own `CODEX_HOME`, a sanitized environment and `cli_auth_credentials_store =
+"file"`, and signs in through the app-server's `account/login/start`. The
+user therefore signs in once more inside Ave, even if `codex login` already
+ran in a terminal. That is the deliberate trade-off: sharing `~/.codex` would
+let the CLI and Ave rotate the same refresh token concurrently and would
+expose the user's own configuration, MCP servers and history to Ave's
+governed runtime. The model list still comes from the user's binary through
+`model/list`.
+
 The [Claude Code subscription runtime](claude-code-subscription-runtime.md)
 uses the same engine contract and JSONL reader with its own CLI authentication,
 print-stream validation, and MCP bridge adapter.

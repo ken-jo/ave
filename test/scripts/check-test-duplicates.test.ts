@@ -63,6 +63,33 @@ describe("check-test-duplicates", () => {
     }
   });
 
+  it("excludes generated dependency caches while detecting real test and helper duplicates", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-duplicate-cache-"));
+    try {
+      const sourceDir = join(root, "test", "cache");
+      const cachedDir = join(root, ".cache", "bun", "dependency", "test");
+      mkdirSync(sourceDir, { recursive: true });
+      mkdirSync(cachedDir, { recursive: true });
+      const body = "return { observed: 17 };";
+      writeFileSync(join(sourceDir, "runtime.test.ts"), `function sourceCase() { ${body} }\n`);
+      writeFileSync(join(sourceDir, "helpers.ts"), `export function sourceHelper() { ${body} }\n`);
+      writeFileSync(join(cachedDir, "runtime.test.ts"), `function cachedCase() { ${body} }\n`);
+      writeFileSync(join(cachedDir, "helpers.ts"), `export function cachedHelper() { ${body} }\n`);
+
+      const result = analyzeDuplicateHelpers(root);
+
+      expect(result.files.map((file: string) => normalizeRepoPath(file, root)).sort()).toEqual([
+        "test/cache/helpers.ts",
+        "test/cache/runtime.test.ts",
+      ]);
+      expect(result.duplicateBodies).toHaveLength(1);
+      expect(result.duplicateBodies[0].entries).toHaveLength(2);
+      expect([...result.duplicateBodies[0].uniqueNames].sort()).toEqual(["sourceCase", "sourceHelper"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("detects substantial duplicate helpers without requiring prefix names", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-duplicate-general-name-"));
     try {

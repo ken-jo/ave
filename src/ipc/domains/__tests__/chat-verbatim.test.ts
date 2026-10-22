@@ -946,6 +946,41 @@ describe("ave:chat:continue-last-user", () => {
     expect(history.restore).toHaveBeenCalledWith([terminalUser]);
     expect(history.getMessages()).toEqual([terminalUser]);
   });
+
+  it("resumes a turn the app's exit cut short from its persisted rows, without truncating or re-asking", async () => {
+    const persisted = [
+      { role: "user", content: "question" },
+      { role: "assistant", content: "round 1", toolCalls: [{ id: "c1", name: "bash", input: {} }] },
+      { role: "tool_result", toolUseId: "c1", content: "unknown", isError: true },
+      { role: "assistant", content: "partial answer", meta: { interrupted: true, interruptedBy: "host-exit" } },
+    ];
+    const loop = makeConversationLoop(SESSION_ID, [...persisted]);
+    loop.runTurn.mockResolvedValue({ text: "done", toolCalls: [], stopReason: "end_turn" });
+    await setupHandlers(loop);
+
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main");
+
+    expect(result).toMatchObject({ ok: true });
+    expect(loop.getHistory().truncate).not.toHaveBeenCalled();
+    expect(loop.getHistory().getMessages()).toEqual(persisted);
+    const [input, , , options] = loop.runTurn.mock.calls[0] as [string, unknown, unknown, Record<string, unknown>];
+    expect(input).toMatch(/Continue from where you left off|중단된 지점부터/);
+    expect(options).toMatchObject({ inputOrigin: "user-keyboard", resumesInterruptedTurn: true });
+    expect(typeof options.displayText).toBe("string");
+  });
+
+  it("does not resume a turn the user stopped themselves", async () => {
+    const loop = makeConversationLoop(SESSION_ID, [
+      { role: "user", content: "question" },
+      { role: "assistant", content: "partial", meta: { interrupted: true } },
+    ]);
+    await setupHandlers(loop);
+
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main");
+
+    expect(result).toEqual({ ok: false, error: "last-message-not-user" });
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
 });
 
 describe("ave:chat:send provenance", () => {

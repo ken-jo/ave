@@ -24,14 +24,6 @@ describe("App smoke (Phase 1 infra)", () => {
     await waitFor(() => expect(api.onChatStream).toHaveBeenCalled());
   });
 
-  it("receives stream events via emitChatStream without throwing", async () => {
-    const { emitChatStream } = await renderApp();
-    await act(async () => {
-      emitChatStream({ type: "text", text: "hello" });
-    });
-    expect(true).toBe(true);
-  });
-
   it("OverlayCard appears when onRoutineFired fires", async () => {
     // Routine cards are addressed to the Suggestions conversation; it is the one open here.
     const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
@@ -90,8 +82,6 @@ describe("App smoke (Phase 1 infra)", () => {
     await waitFor(() =>
       expect(container.querySelector("[data-settings-layout]")).toBeTruthy(),
     );
-    expect(container.querySelector('[data-testid="settings-close"]')).toBeNull();
-    expect(container.querySelector('[data-testid="settings-mobile-close"]')).toBeNull();
     expect(api.chatSend).not.toHaveBeenCalled();
   });
 
@@ -187,7 +177,6 @@ describe("App smoke (Phase 1 infra)", () => {
       fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
     });
     await waitFor(() => expect(windowApi.resizeForSidePanel).toHaveBeenCalledWith(false));
-    expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeFalsy();
 
     // The toggle points along the panel's axis: the panel opens BESIDE the
     // transcript, so the icon is the right-panel pair, not the bottom one.

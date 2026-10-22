@@ -1,11 +1,11 @@
-import { app, BrowserWindow, Notification, powerMonitor, session, shell } from "electron";
+import { app, BrowserWindow, dialog, Notification, powerMonitor, session, shell } from "electron";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { join } from "node:path";
 import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
 import { getAppWindows } from "../main/main-window.js";
-import { isAppShutdownStarted, findSessionMainWindowContents } from "../main/app-state.js";
+import { isAppShutdownStarted, findSessionMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { unregisterAllGlobalShortcuts } from "../main/global-shortcuts.js";
 import { openAuthWindow, clearAuthPartition } from "../main/auth-window-service.js";
@@ -69,6 +69,19 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       createAudioCaptureSurface: () => new ElectronAudioCaptureSurface(),
       createFloatingDockSurface: () => new ElectronFloatingDockSurface(hostDockThemeSource),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
+      pickBrowserUploadFiles: async (request) => {
+        const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());
+        if (!owner || request.signal.aborted) return null;
+        const selection = await dialog.showOpenDialog(owner, { title: request.origin, properties: ["openFile", "multiSelections"] });
+        return owner.isDestroyed() || request.signal.aborted || selection.canceled ? null : selection.filePaths;
+      },
+      browserGuestContentOrigin: (guest) => {
+        const host = guest.hostWebContents;
+        const window = host && !host.isDestroyed() ? mainWindowForContents(host) : BrowserWindow.fromWebContents(guest);
+        if (!window || window.isDestroyed()) return null;
+        const bounds = window.getContentBounds();
+        return { x: bounds.x, y: bounds.y, windowId: window.id };
+      },
       prepareRelease: prepareDesktopRelease,
       beforeShutdown: () => {
         unregisterAllGlobalShortcuts();

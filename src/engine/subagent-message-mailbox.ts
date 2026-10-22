@@ -1,7 +1,7 @@
 import type { FeatureNamespaceHandle } from "../main/storage/feature-namespace.js";
 import type { A2AMessage } from "../shared/a2a.js";
-import { maskSensitiveData } from "../shared/dlp.js";
-import { hasControlChars, hasNonWhitespaceControlChars } from "../shared/display-safe-text.js";
+import { isSafeStructuralId } from "../shared/dlp-safe-id.js";
+import { hasNonWhitespaceControlChars } from "../shared/display-safe-text.js";
 import {
   canonicalizeAgentMessage,
   isSafeA2AMessageId,
@@ -91,24 +91,16 @@ function isSafeString(value: unknown, maxLength = GUIDE_MAX_CHARS): value is str
     && !hasNonWhitespaceControlChars(value);
 }
 
-function isSafeDiagnosticStructuralId(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && value.length <= 256
-    && !hasControlChars(value)
-    && maskSensitiveData(value).detections.length === 0;
-}
-
 function diagnosticFor(
   value: unknown,
   reason: ParentMailboxLoadDiagnosticReason,
 ): ParentMailboxLoadDiagnostic {
   const diagnostic: ParentMailboxLoadDiagnostic = { reason };
-  if (!isRecord(value) || !isSafeDiagnosticStructuralId(value.parentSessionId)) {
+  if (!isRecord(value) || !isSafeStructuralId(value.parentSessionId)) {
     return diagnostic;
   }
   diagnostic.parentSessionId = value.parentSessionId;
-  if (isSafeDiagnosticStructuralId(value.childSessionId)) {
+  if (isSafeStructuralId(value.childSessionId)) {
     diagnostic.childSessionId = value.childSessionId;
   }
   if (isRecord(value.message) && isSafeA2AMessageId(value.message.messageId)) {
@@ -122,9 +114,9 @@ function normalizeMailboxEntry(
 ): { entry: ParentMailboxEntry | null; reason?: ParentMailboxLoadDiagnosticReason } {
   if (!isRecord(value)
     || !Object.keys(value).every((key) => MAILBOX_ENTRY_KEYS.has(key))
-    || !isSafeString(value.id, 256)
-    || !isSafeString(value.parentSessionId, 256)
-    || !isSafeString(value.childSessionId, 256)
+    || !isSafeStructuralId(value.id)
+    || !isSafeStructuralId(value.parentSessionId)
+    || !isSafeStructuralId(value.childSessionId)
     || !isSafeString(value.childTitle, 256)
     || !isSafeString(value.createdAt, 64)
     || !isSafeString(value.formattedText)

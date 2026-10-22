@@ -15,6 +15,7 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { sameFileIdentity } from "../../lib/file-identity.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -47,14 +48,14 @@ export async function checkCacheDirectory(dir: string, allowAbsent = false): Pro
 
 /** Read one regular inode, capped even if its size changes during the read. */
 export async function readRegularFile(path: string, maxBytes: number): Promise<string> {
-  const entry = await lstat(path);
+  const entry = await lstat(path, { bigint: true });
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("model catalog file is not a regular file");
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK
     | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino) throw new Error("model catalog file changed while opening");
-    if (opened.size > maxBytes) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameFileIdentity(opened, entry)) throw new Error("model catalog file changed while opening");
+    if (opened.size > BigInt(maxBytes)) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {

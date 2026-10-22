@@ -95,7 +95,7 @@ describe("modelCardChoices", () => {
       activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5.1-codex" },
     }));
     expect(choices).toEqual([
-      expect.objectContaining({ kind: "subscription", provider: "codex", vendorLabel: "Codex", modelId: "gpt-5.1-codex", current: true }),
+      expect.objectContaining({ kind: "subscription", provider: "codex", vendorLabel: "ChatGPT", modelId: "gpt-5.1-codex", current: true }),
       expect.objectContaining({ kind: "api", vendor: "openai", modelId: "gpt-5.4", current: false }),
     ]);
   });
@@ -106,7 +106,7 @@ describe("modelCardChoices", () => {
       activeChatRuntime: { kind: "subscription", provider: "kimi-code" },
     }));
     expect(choices).toEqual([
-      expect.objectContaining({ kind: "subscription", provider: "kimi-code", vendorLabel: "Kimi Code", modelId: null, current: true }),
+      expect.objectContaining({ kind: "subscription", provider: "kimi-code", vendorLabel: "Kimi", modelId: null, current: true }),
     ]);
   });
 

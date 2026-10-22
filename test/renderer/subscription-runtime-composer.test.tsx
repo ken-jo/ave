@@ -339,8 +339,8 @@ describe("subscription runtime composer readiness", () => {
   );
 
   it.each([
-    ["codex", "gpt-5.4", "Codex · gpt-5.4"],
-    ["kimi-code", "", "Kimi Code"],
+    ["codex", "gpt-5.4", "ChatGPT · gpt-5.4"],
+    ["kimi-code", "", "Kimi"],
   ] as const)(
     "shows the selected %s subscription runtime rather than the stale API provider in the status row",
     async (provider, model, expectedLabel) => {

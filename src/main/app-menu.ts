@@ -7,7 +7,8 @@
  * `refreshApplicationMenu()` whenever that state changes.
  */
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
-import { t } from "../i18n/index.js";
+import { getLocale, t } from "../i18n/index.js";
+import { getPluginViewLabel } from "../shared/plugin-view-label.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { getMainWindow, getServices } from "./app-state.js";
 import {
@@ -58,7 +59,7 @@ function createViewMenu() {
     .filter((item) => item.extension.slot === "sidebar")
     .map((item) => ({
       key: `plugin:${item.pluginId}:${item.extension.id}`,
-      label: item.extension.displayName?.trim() || item.extension.title || item.pluginId,
+      label: getPluginViewLabel(item, getLocale()),
     }));
   return {
     label: t("be_main.menuPlugins"),

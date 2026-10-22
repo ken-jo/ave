@@ -3021,6 +3021,20 @@ describe("SubAgentRunner terminal completion step", () => {
     });
   }
 
+  // The fake settings build a real OpenAI provider with a fake key, so without
+  // this the child sent a request to api.openai.com and the test passed only
+  // when that request came back 401 in time; a stalled network timed it out.
+  // These cases are about the completion step, so take the no-provider branch.
+  let hasProviderSpy: { mockRestore: () => void };
+  beforeEach(() => {
+    hasProviderSpy = vi
+      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
+      .mockReturnValue(false);
+  });
+  afterEach(() => {
+    hasProviderSpy.mockRestore();
+  });
+
   it("publishes the terminal state and the renderer frame in one uninterruptible step", async () => {
     const runner = completionRunner();
     const observed: string[] = [];

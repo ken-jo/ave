@@ -15,15 +15,16 @@
  * unroutable operation simply times out there.
  */
 import { useSyncExternalStore } from "react";
-import type { BrowserTabOpRequest } from "../../../shared/browser-surface.js";
+import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
+import { getWebSurfaceElement } from "./web-surfaces.js";
 
 export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
   sessionId: () => string | null;
   hasTab: (tabId: string) => boolean;
   /** Absent for a host that holds tabs but does not open the agent's new ones. */
-  openAgentTab?: (url: string, requestId: string) => void;
+  openAgentTab?: (url: string, requestId: string, active: boolean) => void;
   selectTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
 }
@@ -31,6 +32,9 @@ export interface BrowserTabHost {
 const hosts: BrowserTabHost[] = [];
 let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
+const EMPTY_CONTROL_STATE: BrowserTabControlState = { revision: -1, tabs: [] };
+let controlState = EMPTY_CONTROL_STATE;
+let controlFailure = false;
 const controlListeners = new Set<() => void>();
 
 /** Main revokes ownership before any user navigation, including while the badge mirror is empty. */
@@ -40,9 +44,11 @@ export async function navigateBrowserTabAsUser(api: AveApi, tabId: string, navig
     stopped = await api.browserTabs?.stop(tabId);
   } catch {
     // An unconfirmed takeover must not navigate under the agent's authority.
+    setControlFailure(true);
     return;
   }
   if (stopped?.ok) navigate();
+  else setControlFailure(true);
 }
 
 function isWebview(element: Element): boolean {
@@ -88,15 +94,24 @@ let hostFocus: HostFocusMemory | null = null;
 
 /** Route one operation to the single host that should carry it out. */
 export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): void {
+  if (request.op === "focus") {
+    const guest = getWebSurfaceElement(request.tabId);
+    if (!guest?.isConnected || document.visibilityState !== "visible" || guest.closest("[inert]")) return;
+    const bounds = guest.getBoundingClientRect();
+    const style = getComputedStyle(guest);
+    if (bounds.width > 0 && bounds.height > 0 && style.visibility !== "hidden" && style.display !== "none") guest.focus();
+    return;
+  }
   if (request.op === "restore-focus") {
     hostFocus?.restore();
     return;
   }
   if (request.op === "new") {
     const openers = candidates.filter((candidate) => candidate.openAgentTab !== undefined);
-    const host = openers.find((candidate) => request.sessionId !== undefined && candidate.sessionId() === request.sessionId)
-      ?? openers[0];
-    host?.openAgentTab?.(request.url, request.requestId);
+    const host = request.sessionId === undefined
+      ? openers[0]
+      : openers.find((candidate) => candidate.sessionId() === request.sessionId);
+    host?.openAgentTab?.(request.url, request.requestId, request.active);
     return;
   }
   const host = candidates.find((candidate) => candidate.hasTab(request.tabId));
@@ -105,9 +120,23 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   else host.closeTab(request.tabId);
 }
 
-function setControlled(ids: readonly string[]): void {
-  controlled = new Set(ids);
+function notifyControl(): void {
   for (const listener of controlListeners) listener();
+}
+
+function setControlFailure(failed: boolean): void {
+  if (controlFailure === failed) return;
+  controlFailure = failed;
+  notifyControl();
+}
+
+function setControlState(state: BrowserTabControlState): void {
+  if (state.revision <= controlState.revision) return;
+  controlState = state;
+  controlled = new Set(state.tabs.filter((tab) => tab.mode === "agent-active" && tab.rendererTabId !== null)
+    .map((tab) => tab.rendererTabId!));
+  controlFailure = false;
+  notifyControl();
 }
 
 /**
@@ -117,11 +146,18 @@ function setControlled(ids: readonly string[]): void {
 export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () => void {
   hosts.push(host);
   if (!unsubscribe && api.browserTabs) {
+    let current = true;
     const offOp = api.browserTabs.onTabOp((request) => routeBrowserTabOp(request));
-    const offControl = api.browserTabs.onControl((state) => setControlled(state.agentControlledTabIds));
+    const offControl = api.browserTabs.onControl((state) => setControlState(state));
+    void api.browserTabs.getState().then((state) => {
+      if (current) setControlState(state);
+    }, () => {
+      if (current) setControlFailure(true);
+    });
     hostFocus = new HostFocusMemory(document);
     const offFocus = hostFocus.attach();
     unsubscribe = () => {
+      current = false;
       offOp();
       offControl();
       offFocus();
@@ -134,7 +170,10 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
     if (hosts.length === 0 && unsubscribe) {
       unsubscribe();
       unsubscribe = null;
-      setControlled([]);
+      controlState = EMPTY_CONTROL_STATE;
+      controlled = new Set();
+      controlFailure = false;
+      notifyControl();
     }
   };
 }
@@ -227,11 +266,22 @@ export function useAgentControlledTabIds(): ReadonlySet<string> {
   return useSyncExternalStore(subscribeControl, () => controlled, () => controlled);
 }
 
+/** The same host state for active and paused control, independent of pane placement. */
+export function useBrowserControlState(): BrowserTabControlState {
+  return useSyncExternalStore(subscribeControl, () => controlState, () => controlState);
+}
+
+export function useBrowserControlUnavailable(): boolean {
+  return useSyncExternalStore(subscribeControl, () => controlFailure, () => controlFailure);
+}
+
 /** Test-only. */
 export function __resetBrowserTabBridgeForTest(): void {
   hosts.length = 0;
   unsubscribe?.();
   unsubscribe = null;
   controlled = new Set();
+  controlState = EMPTY_CONTROL_STATE;
+  controlFailure = false;
   controlListeners.clear();
 }

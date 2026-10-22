@@ -1,6 +1,6 @@
 {
   "name": "ave",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "aveRelease": {
@@ -86,10 +86,12 @@
     "check:test-duplicates": "node scripts/check-test-duplicates.mjs",
     "check:sot-shapes": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-sot-shapes.test.mjs && node scripts/check-sot-shapes.mjs",
     "check:asrt-claims": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs",
+    "check:retired-name": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs",
     "check:sot-shapes:update": "node scripts/check-sot-shapes.mjs --update-baseline",
-    "check:gate-core": "bun run check:knip && bun run check:test-duplicates -- --fail-on-duplicates && bun run check:sunset-inventory && bun run check:sot-shapes && bun run check:asrt-claims && bun run check:a2a-p4-5-contract && bun run check:model-catalog",
+    "check:gate-core": "bun run check:knip && bun run check:test-duplicates -- --fail-on-duplicates && bun run check:sunset-inventory && bun run check:sot-shapes && bun run check:asrt-claims && bun run check:retired-name && bun run check:a2a-p4-5-contract && bun run check:model-catalog",
     "test:coverage": "bun run test:prepare && bun run test:vitest -- run --coverage",
     "check:test-coverage": "node scripts/run-test-coverage-gate.mjs",
+    "test:ci": "node scripts/run-ci-suite.mjs",
     "check:test-quality": "bun run check:test-duplicates -- --fail-on-duplicates && bun run check:test-coverage",
     "test:watch": "bun run test:prepare && bun run test:vitest",
     "test:ui-e2e": "playwright test --config config/playwright.config.ts",
@@ -125,11 +127,11 @@
     "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@openai/codex": "0.153.4",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
+    "@vscode/ripgrep": "1.18.0",
     "adm-zip": "^0.6.0",
     "ai": "~7.0.93",
     "ajv": "^8.18.0",
@@ -267,7 +269,7 @@
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
-      "node_modules/@openai/codex*/**",
+      "node_modules/@vscode/ripgrep*/**",
       "node_modules/node-pty/**",
       "node_modules/better-sqlite3/**",
       "node_modules/sharp/**",
@@ -324,6 +326,10 @@
       {
         "from": "resources/licenses/models.dev",
         "to": "licenses/models.dev"
+      },
+      {
+        "from": "resources/licenses/ripgrep",
+        "to": "licenses/ripgrep"
       },
       {
         "from": "resources/AGENTS.md",

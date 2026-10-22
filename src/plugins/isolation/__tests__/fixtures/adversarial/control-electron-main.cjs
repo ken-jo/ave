@@ -8,8 +8,15 @@
 // `ELECTRON_RUN_AS_NODE=1` itself and sees the same path-string export the
 // child sees.
 //
-// The caller passes `--user-data-dir=<a temporary directory>`, so Electron keeps
-// nothing under the user's profile, and reads one JSON line from stdout.
+// The caller passes `--user-data-dir=<a temporary directory>` and, on macOS,
+// `--use-mock-keychain`, so Electron keeps nothing under the user's profile and
+// never opens the login Keychain; it reads one JSON line from stdout.
+//
+// The line is written synchronously, and everything the detector created — a
+// hidden `BrowserWindow` per form that constructed one, and its `ipcMain`
+// handler — is torn down before `app.exit`, so exit starts from an empty window
+// list instead of closing windows whose renderers may still be launching.
+const { writeSync } = require("node:fs");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, ipcMain, session } = require("electron");
@@ -22,7 +29,8 @@ app
   .then(async () => {
     const { probeElectron } = await import(pathToFileURL(join(__dirname, "entry.mjs")).href);
     const detector = await probeElectron(pathToFileURL(__filename).href);
-    process.stdout.write(
+    writeSync(
+      1,
       `${JSON.stringify({
         BrowserWindow: typeof BrowserWindow,
         defaultSession: typeof session.defaultSession,
@@ -30,9 +38,11 @@ app
         detector: { outcome: detector.outcome, usable: detector.usable },
       })}\n`,
     );
+    for (const window of BrowserWindow.getAllWindows()) window.destroy();
+    ipcMain.removeHandler("adversarial");
     app.exit(0);
   })
   .catch((error) => {
-    process.stderr.write(`control-electron-main: ${String(error?.stack ?? error)}\n`);
+    writeSync(2, `control-electron-main: ${String(error?.stack ?? error)}\n`);
     app.exit(1);
   });

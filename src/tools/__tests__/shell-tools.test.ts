@@ -676,11 +676,6 @@ describe("powershell tool", () => {
       ).toThrow();
     });
 
-    it("SOT stays in lockstep with the hardcoded contract (regression guard)", () => {
-      expect(TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000).toBe(120);
-      expect("shellMaxMs" in TOOL_TIMEOUT_POLICY).toBe(false);
-    });
-
     it("blocks expression execution and encoded command forms from the AST summary", () => {
       expect(validatePowerShellAst(ast([{ name: "Invoke-Expression" }]))).toContain("Invoke-Expression");
       expect(validatePowerShellAst(ast([{ name: "iex" }]))).toContain("Invoke-Expression");

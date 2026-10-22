@@ -70,6 +70,9 @@ export const en = {
   "chatView.tpmUsagePercent": "TPM limit {pct}% — {used} / {limit}",
   "chatView.tpmOverflowWarning": "— Sending may exceed the per-minute token limit. Wait a moment or split your message.",
   "chatView.tpmNearingWarning": "— Approaching the per-minute throughput limit for smaller-tier models (e.g. nano).",
+  "chatView.interruptedTurnResumeNotice": "The last response was interrupted when Ave closed. Everything up to that point was saved.",
+  "chatView.interruptedTurnUnansweredNotice": "Ave closed before answering the last message.",
+  "chatView.interruptedTurnContinue": "Continue",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "chatView.askAnswerSkippedLabel": "↳ 질문 건너뜀",
@@ -142,4 +145,7 @@ export const ko: Record<keyof typeof en, string> = {
   "chatView.tpmUsagePercent": "분당 한도(TPM) {pct}% — {used} / {limit}",
   "chatView.tpmOverflowWarning": "— 전송 시 분당 처리 한도 초과 가능. 잠시 대기하거나 메시지를 작게 쪼개세요.",
   "chatView.tpmNearingWarning": "— 작은-tier 모델 (예: nano) 의 분당 처리량 한도에 근접.",
+  "chatView.interruptedTurnResumeNotice": "Ave 가 종료되어 마지막 응답이 중단되었습니다. 그 시점까지의 내용은 저장되어 있습니다.",
+  "chatView.interruptedTurnUnansweredNotice": "Ave 가 마지막 메시지에 답하기 전에 종료되었습니다.",
+  "chatView.interruptedTurnContinue": "계속",
 };

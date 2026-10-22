@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { buildIsolatedElectronEnv } from './seeded-electron';
+import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron';
 
 /**
  * Chat history persistence — send a message, restart the app (reusing the
@@ -29,14 +29,13 @@ test('chat history persists across app restart, or skips cleanly', async ({
 
   await app.close().catch(() => {});
 
-  const { _electron: electron } = await import('playwright');
   const path = await import('node:path');
   const { fileURLToPath } = await import('node:url');
   const HERE = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(HERE, '../../..');
   const mainEntry = path.join(repoRoot, 'dist/src/main/main.js');
 
-  const app2 = await electron.launch({
+  const app2 = await launchElectron({
     args: [mainEntry, `--user-data-dir=${userDataDir}`],
     env: buildIsolatedElectronEnv({
       HOME: userDataDir,

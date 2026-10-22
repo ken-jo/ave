@@ -25,7 +25,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve, basename } from "node:path";
 import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport, PluginAttemptRefusal } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "../lifecycle-log.js";
-import { t } from "../../i18n/index.js";
+import { getLocale, t } from "../../i18n/index.js";
+import { getPluginViewTitle } from "../../shared/plugin-view-label.js";
 import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementPhase, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication, PreparedPluginRuntimeRemovalPublication } from "../plugin-host-generation.js";
 import { resolveDependencies } from "../dependency-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -8453,8 +8454,9 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       entryUrl: this.buildPluginUiEntryUrl(pluginId, plugin.manifest, entryPath),
       // The plugin's string, rendered inside the host's chrome. It is placed
       // as TEXT by the dock renderer, never as markup — a title is a label,
-      // not a way to draw into the host's own frame.
-      title: extension.title,
+      // not a way to draw into the host's own frame. Resolved in the current
+      // UI language; `FloatingDock.refreshTitles` re-resolves on a switch.
+      title: getPluginViewTitle(extension, getLocale()) ?? pluginId,
     };
   }
 

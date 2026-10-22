@@ -2,10 +2,11 @@
  * Tool execution timeout policy — single source of truth.
  *
  * All values are milliseconds for direct comparison without unit conversion.
- * Only `shellDefaultMs` is model-facing: the bash/powershell Zod schema does
- * `/ 1000` at the boundary to expose `timeoutSeconds` to the model. Every
- * other key is host-internal and consumed as ms directly — no other surface
- * should do the `/ 1000` conversion.
+ * Only `shellDefaultMs` and the two `terminalRunWait*Ms` keys are
+ * model-facing: the bash/powershell Zod schema does `/ 1000` at the boundary
+ * to expose `timeoutSeconds` to the model, and `terminal_run` does the same
+ * for `waitSeconds`. Every other key is host-internal and consumed as ms
+ * directly — no other surface should do the `/ 1000` conversion.
  *
  * The module-level invariant block at the bottom of this file enforces
  * `shellDefaultMs % 1000 === 0` at load time so a non-divisible value would
@@ -128,6 +129,13 @@ export const TOOL_TIMEOUT_POLICY = {
   workloadBrokerOuterGuardMs: 1_000,
   // Includes admission, source reading and decoder process lifetime.
   imagePreparationMs: 30_000,
+  // How long `terminal_run` waits for the command it typed to finish before
+  // returning the block as still running (the agent reads the rest later with
+  // terminal_read). The command keeps running in the terminal either way. The
+  // maximum stays below `globalCeilingMs` so the wait, not the executor
+  // ceiling, is what ends a long call. Model-facing in whole seconds.
+  terminalRunWaitDefaultMs: 15_000,
+  terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
   pluginStartupDefaultMs: 10_000,
@@ -299,14 +307,17 @@ export function resolveSubAgentCeilingMs(configuredRounds: number): number {
 // `.default(shellDefaultMs / 1000)`; if `shellDefaultMs` were e.g. 120_500,
 // that default is 120.5 and the `.int()` schema rejects its OWN default at
 // parse time. Crashing at module load makes the drift visible immediately.
-for (const key of ["shellDefaultMs"] as const) {
+for (const key of ["shellDefaultMs", "terminalRunWaitDefaultMs", "terminalRunWaitMaxMs"] as const) {
   if (TOOL_TIMEOUT_POLICY[key] % 1000 !== 0) {
     throw new Error(
       `TOOL_TIMEOUT_POLICY.${key} (${TOOL_TIMEOUT_POLICY[key]}) must be divisible by 1000 — ` +
-        "the bash/powershell Zod schema does `/ 1000` to expose seconds to the model, " +
+        "the bash/powershell and terminal_run schemas do `/ 1000` to expose seconds to the model, " +
         "and a non-divisible ms value yields a fractional default the integer schema rejects.",
     );
   }
+}
+if (TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs >= TOOL_TIMEOUT_POLICY.globalCeilingMs) {
+  throw new Error("TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs must stay below globalCeilingMs");
 }
 
 // Load-time invariant — the per-round allowance is DERIVED from the shipped
