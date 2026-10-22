@@ -233,6 +233,7 @@
       "en-US"
     ],
     "afterPack": "scripts/electron-after-pack.cjs",
+    "afterSign": "scripts/electron-after-sign.cjs",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
@@ -429,6 +430,7 @@
       ]
     },
     "win": {
+      "signExts": ["!srt-win.exe"],
       "target": [
         "nsis"
       ],

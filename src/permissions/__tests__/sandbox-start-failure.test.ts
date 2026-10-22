@@ -8,6 +8,21 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { classifySandboxDependencyErrors } from "../sandbox-start-failure.js";
+import { SrtWinIntegrityError } from "../srt-win-integrity.js";
+
+it.each([
+  ["srt-win-not-found", "windows-sandbox-missing"],
+  ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+] as const)("classifies %s by code across wrapping layers", (code, cause) => {
+  const failure = new Error("wrapper", { cause: new Error("inner", { cause: new SrtWinIntegrityError(code) }) });
+  expect(classifySandboxDependencyErrors("win32", ["unrelated wording"], failure)).toEqual([cause]);
+});
+
+it("terminates on an unknown cyclic cause chain", () => {
+  const failure = new Error("cycle");
+  failure.cause = failure;
+  expect(classifySandboxDependencyErrors("win32", ["setup"], failure)).toEqual(["windows-setup-incomplete"]);
+});
 
 function asrtSource(file: string): string {
   return readFileSync(

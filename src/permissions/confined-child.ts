@@ -21,6 +21,7 @@
  * paths only; the floor is not theirs to forget.
  */
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -296,6 +297,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   try {
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
+    if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
     child = spawn(executable, args, {
       stdio,
       shell: false,

@@ -39,11 +39,23 @@ const WINDOWS_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
 export function classifySandboxDependencyErrors(
   platform: NodeJS.Platform,
   errors: readonly string[],
+  dependencyFailure?: unknown,
 ): SandboxStartFailureCause[] {
   if (errors.length === 0) {
     throw new Error("classifySandboxDependencyErrors: called without a dependency error");
   }
   const causes: SandboxStartFailureCause[] = [];
+  if (platform === "win32") {
+    const seen = new Set<object>();
+    let failure = dependencyFailure;
+    while (failure !== null && typeof failure === "object" && !seen.has(failure)) {
+      seen.add(failure);
+      const { code, cause } = failure as { code?: unknown; cause?: unknown };
+      if (code === "srt-win-not-found") return ["windows-sandbox-missing"];
+      if (code === "srt-win-integrity-mismatch") return ["windows-sandbox-integrity-failed"];
+      failure = cause;
+    }
+  }
   for (const error of errors) {
     const cause = platform === "win32" ? windowsCause(error) : linuxCause(error);
     if (!causes.includes(cause)) causes.push(cause);

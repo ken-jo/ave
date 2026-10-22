@@ -26,6 +26,12 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 
+// Lifecycle fixtures intercept the launch; real image verification has native tests.
+vi.mock("../srt-win-integrity.js", async (original) => ({
+  ...await original<typeof import("../srt-win-integrity.js")>(),
+  assertSrtWinSpawnIntegrity: vi.fn(),
+}));
+
 // ─── node:fs / node:fs/promises mocks (no real disk touch) ──
 const mkdirMock = vi.fn<(path: unknown, opts?: unknown) => Promise<undefined>>(() =>
   Promise.resolve(undefined),

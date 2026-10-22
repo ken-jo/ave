@@ -941,6 +941,13 @@ describe("permission card sandbox checkbox", () => {
     expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe(`사용 불가: ${reason}`);
   });
 
+  it("shows application repair guidance for an integrity failure", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-integrity-failed"] }));
+    const { getByTestId } = await openCard();
+    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed"));
+    expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
+  });
+
   it("disables the checkbox on a platform with no sandbox and says so", async () => {
     sandboxCapability.mockResolvedValue(shellStatus({ state: "unsupported", causes: ["platform-unsupported"] }));
     const { getByRole, getByTestId } = await openCard();

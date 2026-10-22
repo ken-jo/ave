@@ -21,6 +21,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 }));
 
 import { PermissionsTab } from "../PermissionsTab.js";
+import { t } from "../../../../i18n/index.js";
 
 function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined) {
   const ave = {
@@ -126,6 +127,16 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
   afterEach(() => {
     cleanup();
     delete (window as unknown as { ave?: unknown }).ave;
+  });
+
+  it.each([
+    ["windows-sandbox-missing", "inputActionBar.sandboxCauseWindowsSandboxMissing"],
+    ["windows-sandbox-integrity-failed", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+  ])("shows the repair notice for boot cause %s", async (cause, key) => {
+    installApi({ action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: [cause] });
+    await renderTab();
+    expect(screen.getByTestId("os-sandbox-boot-degraded-detail")).toHaveTextContent(t(key));
+    expect(document.body.textContent).not.toContain(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
   });
 
   it("says the sandbox did not start and directs dependency diagnostics to the log", async () => {

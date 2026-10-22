@@ -88,13 +88,32 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
       tracker.recordInput(keys);
       pty.write(keys);
     },
-    type: (line) => typeLineAtPrompt({
-      blocks: tracker,
-      isLive: () => !tracker.hasExited(),
-      write: (data) => pty.write(data),
-      verify: async () => foregroundVerdict(await readTerminalForeground(pty.pid), pty.pid, shellName, tracker.currentCwd() ?? ""),
-      missing: "no terminal",
-    }, line),
+    type: async (line) => {
+      const nextBlockId = tracker.nextBlockId();
+      let reread = false;
+      return typeLineAtPrompt({
+        blocks: tracker,
+        isLive: () => !tracker.hasExited(),
+        write: (data) => pty.write(data),
+        verify: async () => {
+          let reading = await readTerminalForeground(pty.pid);
+          // Permit one real reread when the process-table command fails;
+          // semantic refusals and persistent unreadability still fail closed.
+          if (!reread && !reading.ok && reading.reason ===
+            "the terminal's process could not be read (Command failed: /bin/ps -axo ppid=)") {
+            expect(tracker.nextBlockId()).toBe(nextBlockId);
+            expect(tracker.hasExited()).toBe(false);
+            reread = true;
+            process.stderr.write("[terminal typing fixture] rereading the failed process table\n");
+            reading = await readTerminalForeground(pty.pid);
+            expect(tracker.nextBlockId()).toBe(nextBlockId);
+            expect(tracker.hasExited()).toBe(false);
+          }
+          return foregroundVerdict(reading, pty.pid, shellName, tracker.currentCwd() ?? "");
+        },
+        missing: "no terminal",
+      }, line);
+    },
   };
 }
 

@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
+import { assertSrtWinSpawnIntegrity } from "../../permissions/srt-win-integrity.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildHostShellChildEnv, buildSandboxedChildEnv } from "../../tools/safe-env.js";
 import {
@@ -612,6 +613,7 @@ async function spawnNewTerminal(
     } else {
       const { spawn: ptySpawn } = await loadPty();
       owner.abort.signal.throwIfAborted();
+      assertSrtWinSpawnIntegrity(cmd);
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
       addCleanup(() => pty.kill("SIGKILL"));
     }

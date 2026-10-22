@@ -4,6 +4,7 @@
 
 
 import { spawn } from "node:child_process";
+import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -118,8 +119,13 @@ export function getVendoredSrtWinExePath(): string {
     "@anthropic-ai/sandbox-runtime/package.json",
   );
   const root = rewriteAsarPathToUnpacked(dirname(packageJson));
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const arch = getSrtWinArchitecture();
   return join(root, "vendor", "srt-win", arch, "srt-win.exe");
+}
+
+/** The verified private execution image; the package path is never executed. */
+export function getVerifiedSrtWinExePath(): string {
+  return prepareSrtWinExecutable(getVendoredSrtWinExePath());
 }
 
 /** ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none. */
@@ -1407,6 +1413,7 @@ const POSIX_ASRT_TEMP_DENIES = ["/tmp/claude", "/private/tmp/claude"] as const;
 function writePersistenceDirectories(): string[] {
   const home = homedir();
   return [
+    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
     join(home, ".config"),
     join(home, "Library", "LaunchAgents"),
     dirname(dirname(getVendoredSrtWinExePath())),
@@ -1592,6 +1599,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
   const writePersistence = [
+    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
     join(home, ".zprofile"),
@@ -1643,6 +1651,8 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
  * part of the module's runtime API — boot uses {@link initializeAsrtSandbox}.
  */
 export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): SandboxRuntimeConfig {
+  const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
+    ? getVerifiedSrtWinExePath() : undefined;
   const network: NetworkConfig = {
     // Deny-by-default — empty allow-list ⇒ no network egress.
     allowedDomains: [...(trustedSettings.allowedDomains ?? [])],
@@ -1721,6 +1731,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   const allowWrite = writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor);
   const allowRead =
     trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
+  if (srtWinPath !== undefined) assertPrivateHelperGrants(allowRead ?? [], allowWrite);
   const windowsGrants = [...allowWrite, ...(allowRead ?? [])];
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
@@ -1755,7 +1766,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
           // resolution. Supply the explicit SoT path so SandboxManager.initialize
           // (+ wrapWithSandboxArgv + the in-initialize dependency check) can spawn
           // the backend instead of throwing. See getVendoredSrtWinExePath.
-          srtWin: { path: getVendoredSrtWinExePath() },
+          ...(srtWinPath !== undefined ? { srtWin: { path: srtWinPath } } : {}),
         }
       : undefined;
   // Linux-only: pin the helper bwrap execs to the one path each wrap is
@@ -2078,6 +2089,7 @@ export async function initializeAsrtSandbox(
 export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
+  dependencyFailure?: unknown;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
@@ -2086,9 +2098,9 @@ export async function checkAsrtDependencies(): Promise<{
     // into `windows-sandbox-missing` (sandbox-start-failure.ts).
     let srtWin: ReturnType<typeof mod.resolveSrtWin>;
     try {
-      srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+      srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
     } catch (error) {
-      return { errors: [errorMessage(error)], warnings: [] };
+      return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
     }
     return mod.checkWindowsDependenciesAsync({ srtWin });
   }
@@ -2720,7 +2732,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     resolveSrtWin,
   } = await import("@anthropic-ai/sandbox-runtime");
 
-  const srtWin = resolveSrtWin({ path: getVendoredSrtWinExePath() });
+  const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
   const user = getWindowsSandboxUserStatus({ srtWin });
   const sandboxUserSid = user.sid;
   if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
@@ -2738,6 +2750,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
       ...allowWrite,
     ])),
   ];
+
+  assertPrivateHelperGrants(allowRead, allowWrite);
 
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
@@ -2774,6 +2788,17 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
       revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
     },
   };
+}
+
+function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {
+  // Direct grants would override the image's DACL. A writable ancestor could
+  // replace the whole directory using its delete-child right, even though the
+  // image itself does not inherit the ancestor's permissions.
+  if (srtWinPrivateDirectories().some((directory) =>
+    read.some((path) => isGrantPathWithin(directory, path)) ||
+    write.some((path) => isGrantPathWithin(directory, path) || isGrantPathWithin(path, directory)))) {
+    throw new Error("Windows filesystem grant overlaps a private helper image");
+  }
 }
 
 /**
