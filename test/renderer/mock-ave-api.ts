@@ -541,12 +541,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       onUserApprovalHit: vi.fn(() => () => undefined),
       onReviewSuggestion: vi.fn(() => () => undefined),
     },
-    userApproval: {
-      record: vi.fn(async () => ({ ok: true })),
-      revokeByKey: vi.fn(async () => ({ ok: true })),
-      list: vi.fn(async () => []),
-      listSession: vi.fn(async () => []),
-    },
     policy: {
       get: vi.fn(async () => ({
         version: 1,

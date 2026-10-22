@@ -11,6 +11,7 @@ import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
@@ -388,7 +389,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       return { ok: true };
     } catch (error) {
-      return { ok: false, error: "remove-failed", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, error: "remove-failed", message: errorMessage(error) };
     }
   });
 
@@ -404,7 +405,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = isRuleSpecifier(validated.pattern) ? { sub: "add" as const, action, pattern: validated.pattern } : parsePermissionRulesCommand(`add ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "add", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`add ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
     const pm = conversationLoop.permissionManager;
@@ -438,7 +442,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = isRuleSpecifier(validated.pattern) ? { sub: "remove" as const, action, pattern: validated.pattern } : parsePermissionRulesCommand(`remove ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "remove", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`remove ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
@@ -1172,7 +1179,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         broadcastPermissionConfigChanged(deps);
         return { ok: true };
       } catch (error) {
-        return { ok: false, error: "invalid-rule", message: error instanceof Error ? error.message : String(error) };
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
       }
     }
     if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {

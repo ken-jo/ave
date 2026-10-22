@@ -10,7 +10,7 @@
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
 import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, ARITY, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
-export { refusedShellPrefix, type RefusedPrefixReason } from "./shell-prefix-values.js";
+export { refusedShellPrefix } from "./shell-prefix-values.js";
 
 /**
  * Setup operands, value options and shell-command options share one grammar.

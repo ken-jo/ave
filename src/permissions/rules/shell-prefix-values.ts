@@ -53,7 +53,7 @@ export const ARITY: ReadonlyMap<string, number> = new Map([
   ["git", 2], ["npm", 2], ["pnpm", 2], ["yarn", 2], ["docker", 2], ["kubectl", 2],
   ["npm run", 3], ["pnpm run", 3], ["yarn run", 3], ["bun run", 3],
 ]);
-export const MULTI_VERB_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "docker", "kubectl", "bun"]);
+const MULTI_VERB_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "docker", "kubectl", "bun"]);
 
 export const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
 export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
