@@ -133,7 +133,8 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
     }
     const after = await handle.stat();
     const pathAfter = await lstat(path, { bigint: true });
-    if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) {
+    if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs
+      || pathAfter.mtimeNs !== pathInfo.mtimeNs || pathAfter.ctimeNs !== pathInfo.ctimeNs) {
       throw new Error("Code checkpoint file changed during capture");
     }
     if (!pathAfter.isFile() || pathAfter.isSymbolicLink() || pathAfter.nlink !== 1n || !sameFileIdentity(pathInfo, pathAfter)) {
