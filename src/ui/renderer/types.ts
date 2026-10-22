@@ -1602,6 +1602,10 @@ export type AvePermissionApi = {
   reviewerDispatch: (
     rawArgs: string,
   ) => Promise<PermissionReviewerDispatchResult>;
+  judgeGet: () => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeReadResult>;
+  judgeSet: (
+    settings: import("../../shared/permission-judge-settings.js").PermissionJudgeSettings,
+  ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /**
    * Permission policy C3 — check whether an API key (or GCP service account)
    * is stored for a given reviewer provider. Used by the settings UI to

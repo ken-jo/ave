@@ -2,12 +2,18 @@
 
 
 
+import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassifier } from "./judge/builtin-llm-judge.js";
+import { JudgeCircuitBreaker } from "./judge/judge-breaker.js";
+import { JudgeContractError, JudgeFailure, isSameOrStricter, type JudgeDecision, type JudgeLane, type JudgeRequest } from "./judge/judge-contract.js";
+import { resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeOutcome } from "./judge/judge-engine.js";
+import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge-settings.js";
 import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
+import { projectRulesLocation } from "./rules/project-rule-files.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
@@ -23,6 +29,7 @@ import {
   LlmRiskClassifier,
   RuleBasedRiskClassifier,
   maxVerdict,
+  type LlmRiskClassificationTrace,
   type RiskClassifier,
   type RiskVerdict,
   type ToolInvocationContext,
@@ -453,9 +460,28 @@ export interface ReviewerDispatchResult {
    * to the manual queue. Foreground reviewer calls use `defer: "none"`.
    */
   deferredId?: string;
+  /** Builtin provider decision, preserving the original dispatch provenance. */
+  builtinDecision?: JudgeDecision;
+  /** Configured chain contribution; absent for the unchanged legacy lane. */
+  judge?: JudgeOutcome;
+  judgeBaselineAllowed?: boolean;
 }
 
 export type ReviewerDeferPolicy = "none" | "high" | "medium-high";
+
+function reviewerAssessmentTrace(
+  result: Pick<ReviewerDispatchResult, "verdict" | "outcome">,
+  ruleVerdict: RiskVerdict,
+): LlmRiskClassificationTrace {
+  if (!isReviewerAutoDecisionOutcome(result.outcome)) {
+    const kind = result.outcome === "timeout" ? "timeout" : result.outcome === "malformed" ? "unparseable" : result.outcome === "unavailable" ? "unavailable" : "error";
+    throw new JudgeFailure(kind, result.verdict.reason);
+  }
+  return {
+    ruleVerdict, finalVerdict: result.verdict, llmVerdict: null,
+    outcome: result.outcome === "host-determined" ? "host-determined" : "fresh",
+  };
+}
 
 // RejectResponse interface and MAX_REVIEWER_RETRIES deferred to follow-up.
 
@@ -508,6 +534,9 @@ export class PermissionManager {
   private readonly permissionsFilePath: string;
   /** Permission policy P3 — reviewer agent dispatch components. Wired at boot. */
   private reviewerClassifier: RiskClassifier | null = null;
+  private judgeDeps: JudgeEngineDeps | undefined;
+  private readonly judgeBreaker = new JudgeCircuitBreaker(DEFAULT_JUDGE_SETTINGS.breaker);
+  private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
   private deferredQueue: DeferredQueue | null = null;
   /**
@@ -603,6 +632,30 @@ export class PermissionManager {
     this.policyGeneration += 1;
   }
 
+  setJudge(deps: JudgeEngineDeps, resolveRootSessionId?: (sessionId: string) => string): void {
+    this.judgeDeps = deps;
+    this.resolveJudgeRootSession = resolveRootSessionId ?? ((sessionId) => sessionId);
+    this.policyGeneration += 1;
+  }
+
+  getJudgeBreaker(limits?: JudgeBreakerSettings): JudgeCircuitBreaker {
+    if (limits) this.judgeBreaker.setLimits(limits);
+    return this.judgeBreaker;
+  }
+
+  hasJudge(category?: ToolCategory): boolean {
+    const settings = this.judgeDeps?.settings;
+    return Boolean(settings && (settings.chain.length > 0 || this.judgeDeps?.chainRejected || this.judgeDeps?.settingsUnreadable) &&
+      (category === undefined ||
+        ((category === "shell" || category === "write" || category === "network") &&
+          (this.judgeDeps?.settingsUnreadable || settings.categories[category]))));
+  }
+
+  private routeJudge(result: PermissionCheckResult, category: ToolCategory, context: PermissionCheckContext, trust: TrustLevel): PermissionCheckResult {
+    if (trust === "low" || result.decision !== "ask" || result.layer < 3 || result.forceModal === true || !this.hasJudge(category)) return result;
+    return { ...result, reviewer: { route: context.headless === true ? "headless" : "foreground-auto" } };
+  }
+
   /**
    * Whether the reviewer is currently running rule-only because the persisted
    * "llm" mode could not be wired (provider/key absent). Read by the
@@ -614,18 +667,17 @@ export class PermissionManager {
 
   hasReviewer(): boolean {
     return (
-      this.reviewerClassifier !== null &&
+      this.hasJudge() || (this.reviewerClassifier !== null &&
       this.verdictCache !== null &&
-      this.deferredQueue !== null
+      this.deferredQueue !== null)
     );
   }
 
   /**
    * Permission SOT V3 — map a reviewer {@link RiskVerdict} to the layer-5
-   * allow/deny/ask decision. This is the single source of truth for the
-   * verdict→decision translation; the pipeline reviewer-dispatch lanes must
-   * call this rather than branching on `verdict.level` inline, so the
-   * execution layer can never loosen a verdict on its own.
+   * allow/deny/ask result. Production dispatch supplies the builtin provider's
+   * decision; synchronous callers use that provider's shared mapping. The
+   * pipeline keeps this facade rather than branching on risk levels itself.
    *
    * Rules (behavior-neutral move from `reviewer-dispatch.ts`):
    *  - headless lane: `low` → allow(layer 5); non-low (medium/high) → deny(layer 5).
@@ -638,49 +690,15 @@ export class PermissionManager {
   resolveReviewerDecision(
     verdict: RiskVerdict,
     lane: ReviewerLane,
+    builtinDecision?: JudgeDecision,
   ): PermissionCheckResult {
-    const isLow = verdict.level === "low";
-    // `requiresExplicitApproval` marks a verdict that means "the host could not
-    // determine what this call does". `interactive.autoApprove` ships as
-    // `"medium"`, so without this check such a verdict would be allowed with no
-    // prompt — turning "we don't know" into "go ahead" at exactly the moment a
-    // person should be looking. It never relaxes: LOW is unaffected, and a
-    // flagged verdict can only make the decision stricter than the threshold.
-    const isForegroundAutoApproved =
-      isLow ||
-      (verdict.level === "medium" &&
-        this.interactiveAutoApprove === "medium" &&
-        verdict.requiresExplicitApproval !== true);
-    if (lane === "headless") {
-      if (isLow) {
-        return {
-          decision: "allow",
-          reason: `reviewer ${verdict.level}: ${verdict.reason}`,
-          layer: 5,
-          reviewer: { route: "headless", verdict },
-        };
-      }
-      return {
-        decision: "deny",
-        reason: `reviewer ${verdict.level}: ${verdict.reason}`,
-        layer: 5,
-        reviewer: { route: "headless", verdict },
-      };
-    }
-    // foreground-auto lane
-    if (isForegroundAutoApproved) {
-      return {
-        decision: "allow",
-        reason: `reviewer ${verdict.level}: ${verdict.reason}`,
-        layer: 5,
-        reviewer: { route: "foreground-auto", verdict },
-      };
-    }
     return {
-      decision: "ask",
+      decision: builtinDecision ?? mapRiskVerdictToJudgeDecision(
+        verdict, lane === "headless" ? "headless" : "foreground", this.interactiveAutoApprove,
+      ),
       reason: `reviewer ${verdict.level}: ${verdict.reason}`,
       layer: 5,
-      reviewer: { route: "foreground-auto", verdict },
+      reviewer: { route: lane, verdict },
     };
   }
 
@@ -1653,8 +1671,8 @@ export class PermissionManager {
 
     if (context.headless === true && isMutating && context.ownerUnattended !== true) {
       const category = this.categoryBasedDecision(trust, resolvedCategory, context);
-      return ordinaryShellAsk && category.decision === "allow"
-        ? { decision: "ask", reason: ordinaryShellAsk, layer: 6 } : category;
+      return this.routeJudge(ordinaryShellAsk && category.decision === "allow"
+        ? { decision: "ask", reason: ordinaryShellAsk, layer: 6 } : category, resolvedCategory, context, trust);
     }
 
     // 3. Allow rules
@@ -1758,7 +1776,7 @@ export class PermissionManager {
       };
     }
 
-    return result;
+    return this.routeJudge(result, resolvedCategory, context, trust);
   }
 
   /**
@@ -1780,8 +1798,25 @@ export class PermissionManager {
     toolName: string,
     input: ReviewerDispatchInput,
     routineScope?: Record<string, unknown>,
-    options?: { defer?: ReviewerDeferPolicy; abortSignal?: AbortSignal },
+    options?: { defer?: ReviewerDeferPolicy; abortSignal?: AbortSignal; judgeBypass?: boolean; tracingClassifier?: TracingRiskClassifier; cacheScope?: Record<string, unknown> },
   ): Promise<ReviewerDispatchResult> {
+    if (options?.judgeBypass !== true && this.hasJudge(input.category) && this.mode !== "strict") {
+      const lane = options?.defer === "none" ? "foreground" : "headless";
+      const judged = await this.dispatchJudge(toolName, input, lane, options?.abortSignal, { routineScope, defer: options?.defer });
+      if (judged.baseline) {
+        return { ...judged.baseline, judge: judged.outcome, judgeBaselineAllowed: true };
+      }
+      return {
+        verdict: judged.reviewer?.verdict ?? judged.ruleVerdict,
+        outcome: judged.outcome.judged && judged.outcome.fallback
+          ? judged.outcome.fallback === "timeout" ? "timeout" : judged.outcome.fallback === "unparseable" ? "malformed" : judged.outcome.fallback === "unavailable" ? "unavailable" : "error"
+          : judged.reviewer?.outcome ?? "host-determined",
+        cacheReason: judged.reviewer?.cacheReason ?? "miss-not-found",
+        ...(judged.reviewer?.approvalBasis ? { approvalBasis: judged.reviewer.approvalBasis } : {}),
+        ...(judged.deferredId ? { deferredId: judged.deferredId } : {}),
+        judge: judged.outcome,
+      };
+    }
     // Freeze the canonical scope before review can await; the same path grades
     // raw arguments and later appears on the exact remembered-allow card.
     const workingDirectory = input.executionCwd === undefined
@@ -1818,7 +1853,7 @@ export class PermissionManager {
       issuedApprovalBases.add(basis);
       return basis;
     };
-    if (!this.hasReviewer()) {
+    if (!this.reviewerClassifier || !this.verdictCache || !this.deferredQueue) {
       return {
         verdict: { level: "high", reason: "reviewer not wired — fail-safe defer" },
         cacheReason: "miss-not-found",
@@ -1885,7 +1920,7 @@ export class PermissionManager {
         allowedDirectories: input.allowedDirectories,
         scope: {
           ...(routineScope ?? {}),
-          reviewer: this.reviewerCacheScope,
+          reviewer: options?.cacheScope ?? this.reviewerCacheScope,
           reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
           reviewerOutcomeContractVersion: 1,
           sandboxKind: sandboxScope.kind,
@@ -1980,8 +2015,9 @@ export class PermissionManager {
         // cancellation aborts an in-flight LLM call. The RiskClassifier
         // interface is signal-agnostic; LlmRiskClassifier accepts the optional
         // second argument — other classifiers safely ignore extra arguments.
-        if (classifier instanceof LlmRiskClassifier) {
-          const trace = await classifier.classifyWithTrace(ctx, { abortSignal: options?.abortSignal });
+        if (options?.tracingClassifier || classifier instanceof LlmRiskClassifier) {
+          const tracing = options?.tracingClassifier ?? classifier as LlmRiskClassifier;
+          const trace = await tracing.classifyWithTrace(ctx, { abortSignal: options?.abortSignal });
           verdict = trace.finalVerdict;
           outcome = trace.outcome;
           ruleVerdictForAudit = trace.ruleVerdict.level;
@@ -2105,8 +2141,11 @@ export class PermissionManager {
             : false
       );
 
+    const result: ReviewerDispatchResult = {
+      verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult.reason,
+    };
     if (shouldDefer) {
-      const deferredId = await queue.append({
+      result.deferredId = await queue.append({
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         toolName,
         source: input.source,
@@ -2115,9 +2154,160 @@ export class PermissionManager {
         ...(input.evaluationContext ? { evaluationContext: input.evaluationContext } : {}),
         verdict,
       });
-      return { verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult.reason, deferredId };
     }
-    return { verdict, outcome, approvalBasis: approvalBasisFor(ruleVerdictForAudit ?? verdict.level, outcome), cacheReason: cacheResult.reason };
+    if (options?.judgeBypass === true || options?.abortSignal?.aborted) return result;
+    // Storage and provenance stay in this dispatcher. The implicit auto lane
+    // consumes the same provider contract as a configured builtin stage.
+    const ruleVerdict: RiskVerdict = { level: ruleVerdictForAudit ?? verdict.level, reason: verdict.reason };
+    const builtin = new BuiltinLlmJudge({
+      classifyWithTrace: async () => reviewerAssessmentTrace(result, ruleVerdict),
+    }, () => this.interactiveAutoApprove);
+    try {
+      const judged = await builtin.judge({
+        sessionId: input.sessionId ?? "unscoped",
+        lane: options?.defer === "none" ? "foreground" : "headless",
+        invocation: buildReviewerContext(),
+        recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],
+        ruleVerdict,
+        policy: { mode: this.mode },
+      }, options?.abortSignal ?? new AbortController().signal);
+      if (!options?.abortSignal?.aborted) result.builtinDecision = judged.decision;
+    } catch (error) {
+      if (!(error instanceof JudgeFailure)) throw error;
+    }
+    return result;
+  }
+
+  async dispatchJudge(
+    toolName: string,
+    input: ReviewerDispatchInput,
+    lane: JudgeLane,
+    abortSignal?: AbortSignal,
+    context?: { routineScope?: Record<string, unknown>; defer?: ReviewerDeferPolicy },
+  ): Promise<{ outcome: JudgeOutcome; deferredId?: string; reviewer?: ReviewerDispatchResult; baseline?: ReviewerDispatchResult; ruleVerdict: RiskVerdict }> {
+    const deps = this.judgeDeps;
+    if (!deps) throw new Error("Permission judge is not wired");
+    const policyEpoch = this.getPolicyEpoch();
+    const sandboxState = resolveReviewerSandboxCacheState(
+      input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
+      input.hostShellExecutionPlan, input.disposableSubstrate,
+    );
+    const invocation: ToolInvocationContext = {
+      toolName, source: input.source, category: input.category, pathFields: input.pathFields,
+      trustOrigin: input.trustOrigin, finalInput: input.finalInput, executionCwd: input.executionCwd,
+      allowedDirectories: input.allowedDirectories, sensitivePathsAdjacent: input.sensitivePathsAdjacent,
+      sandboxCapability: sandboxState.capability,
+      ...(input.conversationContext ? { conversationContext: input.conversationContext } : {}),
+      ...(input.ownerPluginSandboxRoot ? { ownerPluginSandboxRoot: input.ownerPluginSandboxRoot } : {}),
+    };
+    const ruleVerdict = new RuleBasedRiskClassifier().classify(invocation);
+    let reviewer: ReviewerDispatchResult | undefined;
+    let reviewerStageId: string | undefined;
+    const chain = deps.chain.map((stage) => {
+      const builtin = stage.judge;
+      if (!(builtin instanceof BuiltinLlmJudge)) return stage;
+      return { ...stage, judge: new BuiltinLlmJudge({
+        classifyWithTrace: async (judgeInvocation, options) => {
+          // Hooks may hide values from a provider, but the approval identity
+          // and audit still describe the exact original call.
+          const policyRedacted = judgeInvocation.finalInput !== invocation.finalInput;
+          const result = await this.dispatchReviewer(toolName, {
+            ...input, finalInput: judgeInvocation.finalInput,
+            cacheIdentityInput: input.cacheIdentityInput ?? input.finalInput,
+          }, context?.routineScope, {
+            defer: "none", abortSignal: options?.abortSignal, judgeBypass: true,
+            ...(stage.settings.model || policyRedacted ? {
+              tracingClassifier: builtin.getClassifier(),
+              cacheScope: {
+                ...this.reviewerCacheScope,
+                judgeModel: builtin.model,
+                judgeTransport: builtin.cacheScope,
+                ...(policyRedacted ? { judgeView: canonicalStringify(judgeInvocation.finalInput) } : {}),
+              },
+            } : {}),
+          });
+          const finalVerdict = redactVerdictReason(maxVerdict(ruleVerdict, result.verdict));
+          reviewer = { ...result, verdict: finalVerdict, ...(policyRedacted ? { approvalBasis: undefined } : {}) };
+          reviewerStageId = stage.settings.id;
+          return reviewerAssessmentTrace({ ...result, verdict: finalVerdict }, ruleVerdict);
+        },
+      }, () => this.interactiveAutoApprove, builtin.model) };
+    });
+    const gate: JudgeGate = {
+      priorDecision: "undecided", strictMode: this.mode === "strict",
+      capabilityGrant: input.category === "meta", remoteController: false,
+    };
+    const request: JudgeRequest = {
+      sessionId: input.sessionId ? this.resolveJudgeRootSession(input.sessionId) : "unscoped",
+      lane, invocation,
+      recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],
+      projectRoot: projectRulesLocation(dirname(this.permissionsFilePath), input.executionCwd).projectRoot,
+      ruleVerdict, policy: { mode: this.mode },
+    };
+    let outcome = await resolveJudge(gate, request, {
+      ...deps,
+      chain,
+      hooks: {
+        ...(deps.hooks?.beforeJudge ? { beforeJudge: deps.hooks.beforeJudge } : {}),
+        afterJudge: async (verdict, request) => {
+          const hookResult = deps.hooks?.afterJudge ? await deps.hooks.afterJudge(verdict, request) : verdict.decision;
+          const decision = typeof hookResult === "string" ? hookResult : hookResult.decision;
+          if (!isSameOrStricter(verdict.decision, decision)) {
+            throw new JudgeContractError("afterJudge may only downgrade");
+          }
+          const current = resolveReviewerSandboxCacheState(
+            input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
+            input.hostShellExecutionPlan, input.disposableSubstrate,
+          );
+          const policyChanged = this.getPolicyEpoch() !== policyEpoch;
+          return policyChanged || !sameReviewerSandboxCacheState(sandboxState, current)
+            ? { decision: decision === "allow" ? "ask" : decision,
+                rationale: policyChanged ? "Permission policy changed during judge review" : "Execution sandbox changed during judge review", fallback: "unavailable" }
+            : hookResult;
+        },
+      },
+    }, abortSignal);
+    // Audit and the unchanged shadow reviewer can both await. Recheck the
+    // host snapshot after their last await before publishing any allow.
+    const staleReason = (): string | undefined => {
+      if (this.getPolicyEpoch() !== policyEpoch) return "Permission policy changed during judge review";
+      const current = resolveReviewerSandboxCacheState(
+        input.source, toolName, input.mcpServerId, input.workerId, input.pluginId,
+        input.hostShellExecutionPlan, input.disposableSubstrate,
+      );
+      return sameReviewerSandboxCacheState(sandboxState, current) ? undefined : "Execution sandbox changed during judge review";
+    };
+    const recordStateFailure = (reason: string): Promise<JudgeOutcome> => resolveJudge(
+      gate, request, {
+        ...deps,
+        hooks: { beforeJudge: () => ({ action: "short-circuit", decision: "ask", reason, fallback: "unavailable" }) },
+      }, abortSignal,
+    );
+    let stale = staleReason();
+    if (stale && outcome.judged && (outcome.decision === "allow" || outcome.fallback !== "unavailable")) outcome = await recordStateFailure(stale);
+    if (!stale && !deps.settingsUnreadable && deps.settings.mode === "shadow" && (request.policy.mode === "auto" || lane === "headless")) {
+      const baseline = await this.dispatchReviewer(toolName, input, context?.routineScope, {
+        defer: context?.defer ?? (lane === "headless" ? "medium-high" : "none"),
+        abortSignal, judgeBypass: true,
+      });
+      stale = staleReason();
+      if (!stale) return { outcome, ruleVerdict, baseline };
+      outcome = await recordStateFailure(stale);
+    }
+    if (!outcome.judged || outcome.decidedBy !== reviewerStageId) reviewer = undefined;
+    let deferredId: string | undefined;
+    const needsDeferral = outcome.judged ? outcome.defer : outcome.skip === "breaker-open" && lane === "headless" && deps.settings.mode === "active";
+    if (needsDeferral && !abortSignal?.aborted) {
+      if (!this.deferredQueue) throw new Error("Permission judge deferred queue is not wired");
+      deferredId = await this.deferredQueue.append({
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        toolName, source: input.source, category: input.category,
+        inputSummary: summariseInput(input.auditInput ?? input.finalInput),
+        ...(input.evaluationContext ? { evaluationContext: input.evaluationContext } : {}),
+        verdict: outcome.judged && outcome.deferral ? outcome.deferral.verdict : { level: "high", reason: "Judge automation paused" },
+      });
+    }
+    return { outcome, ruleVerdict, ...(reviewer ? { reviewer } : {}), ...(deferredId ? { deferredId } : {}) };
   }
 
   // ─── Private ─────────────────────────────────────

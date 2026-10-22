@@ -74,6 +74,8 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:permission:remove-rule": "mutating",
   [PERMISSIONS.dirDispatch]: "mutating",
   [PERMISSIONS.reviewerDispatch]: "sensitive",
+  [PERMISSIONS.judgeGet]: "sensitive",
+  [PERMISSIONS.judgeSet]: "mutating",
   [PERMISSIONS.deferredList]: "sensitive",
   [PERMISSIONS.deferredResolve]: "mutating",
   [PERMISSIONS.auditShow]: "sensitive",
@@ -113,7 +115,7 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
   // src/ipc/domains/*. Aggregate the full source so the channel + guard checks
   // remain valid against the actual implementation files.
   const domainDir = join(__dirname, "../../src/ipc/domains");
-  const domainFiles = ["settings.ts", "chat.ts", "plugins.ts", "usage.ts", "audit.ts", "permissions.ts", "window.ts", "routines.ts", "session-tasks.ts"];
+  const domainFiles = ["settings.ts", "chat.ts", "plugins.ts", "usage.ts", "audit.ts", "permissions.ts", "permission-judge.ts", "window.ts", "routines.ts", "session-tasks.ts"];
   // Inline IPC channel SoT constants (`shared/ipc-channels.ts`) into the
   // aggregated source so handlers written as `ipcMain.handle(ROUTINES.list,
   // ...)` are matched by the same `ipcMain.handle("ave:routines:list"`
@@ -181,6 +183,8 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
     "ave:policy:set": "PERMISSIONS.policySet",
     [PERMISSIONS.dirDispatch]: "PERMISSIONS.dirDispatch",
     [PERMISSIONS.reviewerDispatch]: "PERMISSIONS.reviewerDispatch",
+    [PERMISSIONS.judgeGet]: "PERMISSIONS.judgeGet",
+    [PERMISSIONS.judgeSet]: "PERMISSIONS.judgeSet",
     [PERMISSIONS.deferredList]: "PERMISSIONS.deferredList",
     [PERMISSIONS.deferredResolve]: "PERMISSIONS.deferredResolve",
     [PERMISSIONS.auditShow]: "PERMISSIONS.auditShow",

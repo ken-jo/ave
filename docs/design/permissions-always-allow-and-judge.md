@@ -1,6 +1,6 @@
 # Permissions: always-allow baseline and judge slot
 
-Status: decided 2026-10-14 (issue #28). P1a is implemented; P1b, P1c and P2 are planned.
+Status: decided 2026-10-14 (issue #28). P1a and the P2 judge module are implemented. P1b and P1c have separate delivery scopes; the P2 call-site contract is below.
 
 This page carries the owner-approved direction for issue #28 into the repository. It has two goals:
 
@@ -121,46 +121,167 @@ necessary.
 
 ### P2: judge slot
 
-**1. One seam.** `PermissionJudge` is the single automated-decision interface.
-- The existing auto-mode reviewer (`LlmRiskClassifier`, `max(rule, llm)`, verdict cache, deferred queue) moves behind it as the `builtin-llm` provider, with no behavior change.
-- jev is a drop-in provider.
+**1. One seam.** `PermissionJudge` is the automated-decision interface in
+`src/permissions/judge/`. The call site reuses that engine, the existing reviewer
+dispatch, canonical DLP redactor, audit writer and `DeferredQueue`.
 
-**2. Settings.** `permissions.judge = { provider: "off" | "builtin-llm" | "external", mode: "shadow" | "active", categories: { shell, write, network }, external: { command | url } }`.
-- The default provider is `off`.
-- When the provider is not `off`, the mode defaults to `shadow`.
-- The categories default to shell and write on, network off.
+The `builtin-llm` provider retains the existing `LlmRiskClassifier`,
+`max(rule, llm)` verdict, verdict cache, approval provenance and dispatch outcome.
+Absent judge settings or a valid empty chain leave existing auto-mode behavior
+intact; they do not disable the existing reviewer. Relocation must preserve every
+existing auto-mode test unchanged, including eligible host-built-in `meta` calls.
 
-**3. Placement.** deny, then mandatory floors, then explicit ask rules, then
-allow rules, then the mode matrix, then the judge, then the dock.
-- The judge decides only calls that are still undecided, and only for enabled categories.
-- It never overrides a rule or a floor.
-- It never decides capability grants, remote-controller requests or anything in `strict` mode.
-- It may suggest a rule but never writes one.
+**2. Settings and model selection.** The canonical persisted shape is an ordered
+`permissions.judge.chain`. The [settings parser](../../src/permissions/judge/judge-settings.ts)
+owns all fields, defaults and validation. For example, a local selection stage
+followed by the current reviewer model is configured as follows:
 
-**4. Input.**
-- It receives the latest user messages, the normalized and redacted tool call, the cwd and project root, the sandbox state, the rule verdict, and the policy text and mode.
-- It never receives tool results.
-- The host's canonical DLP redactor runs before anything leaves the process.
+```json
+{
+  "permissions": {
+    "judge": {
+      "chain": [
+        {
+          "provider": "external",
+          "id": "selection",
+          "escalateBelow": 0.8,
+          "external": { "command": ["/opt/example/judge"] }
+        },
+        { "provider": "builtin-llm", "id": "review" }
+      ],
+      "mode": "shadow",
+      "categories": { "shell": true, "write": true, "network": false }
+    }
+  }
+}
+```
 
-**5. Output** uses the strict schema `{decision: allow|ask|deny, rationale, confidence?, suggestedRule?}`. Anything else counts as unparseable.
+- A valid empty chain turns the configured chain off; legacy auto-review remains.
+  The earlier single-stage `provider: "off" |
+  "builtin-llm" | "external"` form is accepted on read and serialized as a
+  chain on save. Mixing the two forms is invalid.
+- A configured chain defaults to `shadow`. Shadow records the chain's result
+  without applying it; the existing approval path
+  remains authoritative, including when the breaker is already open. Shadow
+  creates no judge-induced deferred entries and does not change breaker counters.
+  In `active`, the chain's result decides eligible calls.
+- Settings offers ordered stages, provider/transport, mode, categories and a
+  model picker. Its English and Korean text use the same setting semantics.
+  Shell and write default on; network defaults off.
+- A builtin stage may set `model: "<provider>/<model>"`. The first slash
+  separates the provider from the model; model ids may contain further slashes.
+  The picker uses configured provider/model options, including the configured
+  endpoint's discovered models and saved model selection, as the chat picker
+  does. Omitting `model` follows the current reviewer model.
+- A selected model must be used exactly. Missing credentials, an unavailable
+  provider or a removed model never silently selects a different model.
+- Stage ids are unique within the chain. `escalateBelow` is an external-stage
+  confidence threshold in `[0, 1]`; builtin risk verdicts have no confidence and
+  do not accept that field.
+- Read issues are visible. A rejected chain retains typed `chainRejected`
+  metadata and enters the existing unavailable fallback; it does not become
+  explicit off, a partial chain or an implicit builtin provider. In normalized
+  `active` mode, it asks with forced approval in the foreground and denies plus
+  defers headless. In `shadow`, rejection only records the observation and keeps
+  the authoritative auto/headless baseline, without a judge-induced queue entry.
+  Warnings for other fields retain their normalizer defaults without blocking an
+  otherwise valid chain.
+- A fatal settings-file read, JSON parse, root-object or permissions-structure
+  failure cannot recover a trustworthy mode. The host carries `settingsUnreadable`
+  and conservatively applies the existing unavailable fallback to judgeable
+  categories: forced foreground approval or headless deny plus defer, without
+  legacy/provider fallback. This changes the effective host failure response,
+  not the persisted mode or normalizer defaults. A missing file or block remains
+  valid off; a parsed rejected shadow chain retains the baseline described above.
+- Invalid writes fail before persistence, and saving preserves unrelated
+  settings. If runtime refresh fails after a save, the host's write receipt
+  restores the original, unnormalized judge subtree, including its absence.
+  Compare-and-swap permits rollback only while that subtree still equals the
+  value just written; a later manual change is preserved and the conflict is
+  reported rather than overwritten. The [settings store](../../src/permissions/permission-settings-store.ts)
+  owns the write and rollback contract.
 
-**6. External provider.**
-- `command` is an argv array with an absolute path and no shell.
-- `url` must be loopback or HTTPS.
-- The `permissions.judge` subtree is itself a floor: the agent never writes it.
+**3. Placement.** Deny and mandatory floors, then explicit ask rules, then allow
+rules and saved grants, then the mode matrix, then the judge, then approval.
+The call site judges only calls still undecided after those earlier gates and
+only in enabled categories. A bare ask from a mandatory gate is not an invitation
+to the judge.
 
-**7. Fallbacks.**
-- Timeout, error, unparseable output or an unavailable judge: `ask` in the foreground; `deny` plus the deferred queue when headless.
-- A fallback never allows.
-- Timeouts are recorded apart from denials.
+No stage overrides a rule, floor, capability grant, remote-controller request or
+`strict` mode. A suggested rule is advisory; the judge never persists rules.
+The existing trust and approval requirements remain authoritative.
 
-**8. Breaker.** 3 consecutive or 20 total judge denials per session pause automation and return to prompting. Subagents share the parent session's counter.
+**4. Chain decisions.** Stages run in order. `ask`, a confidence below
+`escalateBelow`, or missing confidence when a threshold is configured advances
+to the next stage. An `allow` or `deny` meeting the threshold is final; without
+a threshold, `allow` and `deny` are final directly. A stage failure advances to
+the next stage within the chain deadline. The last stage's ambiguity asks the
+user. All stages receive the call context without tool results.
 
-**9. Hooks.**
-- `beforeJudge` may redact or short-circuit to ask/deny.
-- `afterJudge` may only downgrade a decision.
+**5. Input and output.** The host supplies recent user messages, the normalized
+tool call, cwd/project root, effective sandbox state, rule verdict, policy text
+and mode. Tool results are excluded. The canonical DLP redactor runs before
+external transport and audit. The [shared contract](../../src/permissions/judge/judge-contract.ts)
+owns request/verdict types, and the [engine](../../src/permissions/judge/judge-engine.ts)
+owns escalation, hook and audit semantics. The [external adapter](../../src/permissions/judge/external-judge.ts)
+owns transport framing and output bounds. Malformed output is a failure.
 
-**10. Audit.** Append-only JSONL, written by the existing audit writer.
+**6. External transport and settings floor.** A command is a non-empty argv array
+with an absolute executable path, launched without a shell. A URL is HTTPS or
+loopback HTTP and contains no embedded credentials. Exactly one transport is
+set. Commands receive a minimal environment allow-list plus validated configured
+variable names; runtime secrets are not forwarded. Stderr is bounded, redacted
+and audited, never interpreted as a verdict.
+
+The entire `permissions.judge` subtree is user-only. The Settings UI or a manual
+user edit may change it; an agent cannot write it through a settings tool,
+permission rule, saved grant or judge decision. Existing path protections for
+application configuration remain enforced independently.
+
+**7. Lanes and failures.** An active foreground `deny` blocks the invocation;
+`ask` requests user approval. A timeout, provider error, malformed verdict or
+unavailable final stage never allows and asks with the forced approval surface.
+In headless execution, an active non-allow decision denies the current invocation
+and appends an item to the existing `DeferredQueue`. An open breaker asks in the
+active foreground lane or denies and defers in the active headless lane; shadow
+keeps the pre-judge path.
+Caller cancellation remains terminal; internal contract violations and failures
+to write the active audit propagate instead of becoming an approval.
+
+For `builtin-llm`, successful LOW allows in both lanes. Foreground MEDIUM allows
+only under the existing `autoApprove: "medium"` threshold and without an explicit
+approval requirement; HIGH asks. A builtin foreground `ask` advances to any next
+stage before requesting approval. Headless MEDIUM/HIGH map to a final `deny`
+and defer, without advancing to a later stage. Failed
+reviewer outcomes never map their conservative verdict into an allow, including
+when `fallbackOnError` is `"rule"`. Existing foreground auto-approval-off behavior
+and failure metadata remain unchanged.
+
+**8. Breaker.** The default thresholds are 3 consecutive or 20 total final judge
+denials per root conversation, configurable in judge settings. Counts span the
+whole chain. An `allow` resets the consecutive count; `ask`, timeouts and other
+failures neither increment nor reset it. Intermediate verdicts do not count, and
+shadow does not mutate counters. Once open, the breaker remains open until the
+conversation ends; there is no Settings reset control. Subagents resolve to the
+same root conversation for breaker and judge audit identity. Deferred entries retain the
+actual requesting session so later approval returns to the correct conversation.
+Rewiring settings does not create a fresh counter for that conversation.
+
+**9. Hooks.** `beforeJudge` may redact the judge's input or short-circuit to
+ask/deny. It cannot change the executing invocation. `afterJudge` may only keep
+or downgrade a decision (`allow → ask → deny`).
+
+**10. Audit and verification.** The existing writer records root session, tool,
+argument hash, redacted request, provider id/version, rationale, latency and
+fallback. Each executed stage records its verdict, confidence, model and latency.
+Active decisions use the HMAC-protected permission audit; shadow uses the shadow
+channel. Active audit failure prevents execution.
+
+Module tests establish chain and adapter semantics. Call-site acceptance also
+requires parity through the real foreground and headless dispatch lanes,
+unchanged auto-mode tests, deferred/root-session integration, settings write
+protection, and changed-flow Settings UI validation. A mocked classifier test
+alone does not establish dispatch parity or a live provider's behavior.
 
 ### Deviations from the issue text
 
@@ -174,7 +295,7 @@ All work lands on the category branch `integration/permissions`.
 - **P1a** (this change): rules language, parser, shell matcher, refused list, arity suggestion, Store A extension with `ask`, per-project rule files, corrupt-file handling for Store A and B, removal of the blanket shell → HIGH. No UI.
 - **P1b:** the dock (prefix suggestion, allow-session / deny-always, per-project vs everywhere), one Settings list with revoke across Store A, project files and Store B, and i18n.
 - **P1c:** path-scoped `Edit`, host-scoped `WebFetch`, `Mcp`, and out-of-directory depth.
-- **P2:** `src/permissions/judge/` is built in isolation. The auto-mode relocation and the judge call site land together after P1a.
+- **P2:** reuse `src/permissions/judge/`; land auto-mode relocation with the call site after P1a. The call site owns deferred-queue wiring, root-session mapping, Settings storage/UI with English and Korean text, and the judge-settings write floor.
 
 ## P1a implementation notes
 

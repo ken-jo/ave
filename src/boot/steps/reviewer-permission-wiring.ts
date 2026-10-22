@@ -24,7 +24,10 @@ import {
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { LlmReviewerProviderAdapter, wireReviewerAgent } from "./reviewer-wiring.js";
-import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
+import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
+import { judgeModelCatalogFrom, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
+import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
+import { wireJudgeAgent } from "./judge-wiring.js";
 import type { ParentAdjudicationTarget } from "../../permissions/parent-adjudicator.js";
 import {
   bindManifestIntegrityAudit,
@@ -61,10 +64,10 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
   // For mode=llm, build an adapter over the host's existing
   // VercelUnifiedProvider streaming surface — the reviewer needs only a
   // one-shot complete() call shape.
-  const reviewerStreamProviderFor = (vendor: string): LLMProvider | null => {
+  const reviewerStreamProviderFor = (vendor: string, selectedModel?: string): LLMProvider | null => {
     const llmSettings = settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
-    if (activeChatRuntime?.kind === "subscription") {
+    if (selectedModel === undefined && activeChatRuntime?.kind === "subscription") {
       // Treat the runtime id as part of the reviewer identity. This keeps
       // verdict cache entries scoped to the authenticated transport and makes
       // a stale active-LLM read fail closed rather than falling through to an
@@ -83,7 +86,9 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     if (!llmVendor) return null;
     const block = getLlmVendorSettings(llmSettings.vendors, llmVendor);
     const hasMarketplaceProviderPresetSelection =
-      llmVendor === "openai-compatible" && Boolean(llmSettings.marketplaceProviderPresetId);
+      llmVendor === "openai-compatible" &&
+      (selectedModel === undefined || llmSettings.provider === llmVendor) &&
+      Boolean(llmSettings.marketplaceProviderPresetId);
     const marketplaceProviderPreset = hasMarketplaceProviderPresetSelection
       ? (settingsService.get("marketplace").installedProviderPresets ?? [])
         .find((preset) => preset.providerId === llmSettings.marketplaceProviderPresetId)
@@ -122,7 +127,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     return createProvider({
       vendor: llmVendor,
       apiKey: apiKey ?? "",
-      model: llmRouteModel(block, marketplaceProviderPreset?.providerId),
+      model: selectedModel ?? llmRouteModel(block, marketplaceProviderPreset?.providerId),
       ...(providerFetch ? { fetch: providerFetch } : {}),
       ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
       ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
@@ -156,6 +161,32 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       ...(providerBaseUrl ? { baseUrl: providerBaseUrl } : {}),
       ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
       ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
+    };
+  };
+  const selectedModelCacheScope = (model: JudgeModelRef): Record<string, unknown> => {
+    const llm = settingsService.get("llm");
+    const block = getLlmVendorSettings(llm.vendors, model.vendor);
+    const preset = model.vendor === "openai-compatible" && llm.provider === model.vendor && llm.marketplaceProviderPresetId
+      ? (settingsService.get("marketplace").installedProviderPresets ?? [])
+        .find((entry) => entry.providerId === llm.marketplaceProviderPresetId)
+      : undefined;
+    return {
+      provider: model.vendor,
+      model: model.model,
+      baseUrl: preset?.baseUrl ?? block.baseUrl ?? null,
+      credentialScope: preset
+        ? marketplaceProviderPresetSecretKey(preset.providerId)
+        : secretKeyFor(model.vendor),
+      ...(preset ? {
+        marketplaceProviderPresetId: preset.providerId,
+        providerCapabilities: preset.capabilities ?? null,
+        providerTrust: preset.trust ?? null,
+        requiresApiKey: preset.requiresApiKey,
+      } : {}),
+      ...(model.vendor === "vertex-ai" ? {
+        vertexProject: block.vertexProject || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || null,
+        vertexLocation: block.vertexLocation || "us-central1",
+      } : {}),
     };
   };
   /**
@@ -215,6 +246,30 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       onDeferredPendingChange: (summary) => {
         sendToWindow(getMainWindow(), PERMISSIONS.deferredPending, summary, log);
       },
+    });
+    const judgeSettings = readJudgeSettings(
+      undefined,
+      judgeModelCatalogFrom({
+        ...settingsService.get("llm"),
+        installedProviderPresets: settingsService.get("marketplace").installedProviderPresets ?? [],
+      }),
+    );
+    for (const issue of judgeSettings.issues) {
+      log.warn({ issue }, "Permission judge configuration warning");
+    }
+    wireJudgeAgent({
+      permissionManager,
+      reviewer: reviewerResult,
+      settings: judgeSettings.settings,
+      ...(judgeSettings.chainRejected === true ? { chainRejected: true } : {}),
+      ...(judgeSettings.unreadable === true ? { settingsUnreadable: true } : {}),
+      providerForModel: (model) => reviewerStreamProviderFor(model.vendor, model.model),
+      selectedModelCacheScope,
+      networkFetch: singleHopNetworkFetch,
+      audit: bootAuditLogger,
+      resolveRootSessionId: createRootSessionResolver(
+        (sessionId) => ctx.subAgentRunnerRef?.fn?.resolveOriginSessionId(sessionId),
+      ),
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;

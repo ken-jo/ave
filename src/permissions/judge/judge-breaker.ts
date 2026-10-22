@@ -17,7 +17,14 @@ interface SessionCounters {
 export class JudgeCircuitBreaker {
   private readonly sessions = new Map<string, SessionCounters>();
 
-  constructor(private readonly limits: JudgeBreakerSettings) {}
+  constructor(private limits: JudgeBreakerSettings) {}
+
+  setLimits(limits: JudgeBreakerSettings): void {
+    this.limits = { ...limits };
+    for (const counters of this.sessions.values()) {
+      if (counters.consecutive >= limits.consecutive || counters.total >= limits.total) counters.open = true;
+    }
+  }
 
   private counters(sessionId: string): SessionCounters {
     let c = this.sessions.get(sessionId);

@@ -38,6 +38,15 @@ import {
 } from "../shared/parent-adjudication-bounds.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import {
+  JudgeSettingsError,
+  normalizeJudgeSettings,
+  serializeJudgeSettings,
+  validateJudgeSettings,
+  type JudgeModelCatalog,
+  type JudgeSettings,
+  type NormalizedJudgeSettings,
+} from "./judge/judge-settings.js";
 
 const log = createLogger("permission-settings");
 
@@ -469,9 +478,9 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
  * array, a bare number) IS damage — every reader below indexes the result as a
  * record — so it is rejected here rather than in each of them.
  */
-function readSettingsDocument(filePath: string): Record<string, unknown> {
+function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   const raw = readFileSync(filePath, "utf-8");
-  if (raw.trim().length === 0) return {};
+  if (allowEmpty && raw.trim().length === 0) return {};
   const parsed = JSON.parse(raw) as unknown;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("settings root is not a JSON object");
@@ -976,6 +985,113 @@ export async function setReviewerSettingsPersist(
 ): Promise<ReviewerSettingsBlock> {
   await writePermissionSettings({ reviewer: patch }, pathOverride);
   return readPermissionSettings(pathOverride).permissions.reviewer;
+}
+
+export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected"> & {
+  /** An existing settings document could not be safely interpreted. */
+  unreadable?: true;
+};
+
+/** Read the user-owned judge block without concealing malformed file content. */
+export function readJudgeSettings(
+  pathOverride?: string,
+  catalog?: JudgeModelCatalog,
+): JudgeSettingsReadResult {
+  const filePath = pathOverride ?? defaultPath();
+  try {
+    const document = readSettingsDocument(filePath, false);
+    const permissions = document.permissions;
+    if (permissions !== undefined &&
+        (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) {
+      return { ...normalizeJudgeSettings(undefined, catalog), issues: ["permissions must be an object"], unreadable: true };
+    }
+    return normalizeJudgeSettings((permissions as Record<string, unknown> | undefined)?.judge, catalog);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeJudgeSettings(undefined, catalog);
+    log.warn("Judge settings could not be read: %s", (error as Error).message);
+    return { ...normalizeJudgeSettings(undefined, catalog), issues: ["Judge settings file could not be read"], unreadable: true };
+  }
+}
+
+export interface JudgeSettingsWriteReceipt {
+  settings: JudgeSettings;
+  /** Restore the exact prior subtree, including rejected configuration or absence. */
+  rollback(): Promise<void>;
+}
+
+function judgePermissionsForUpdate(document: Record<string, unknown>): Record<string, unknown> {
+  if (document.permissions !== undefined &&
+      (!document.permissions || typeof document.permissions !== "object" || Array.isArray(document.permissions))) {
+    throw new JudgeSettingsError("permissions must be an object");
+  }
+  return (document.permissions ?? {}) as Record<string, unknown>;
+}
+
+function persistJudgeSubtree(
+  filePath: string,
+  document: Record<string, unknown>,
+  permissions: Record<string, unknown>,
+  subtree: { present: boolean; value?: unknown },
+  keepPermissionsContainer: boolean,
+): void {
+  const nextPermissions = { ...permissions };
+  if (subtree.present) nextPermissions.judge = subtree.value;
+  else delete nextPermissions.judge;
+  const nextDocument = { ...document };
+  if (keepPermissionsContainer || Object.keys(nextPermissions).length > 0) nextDocument.permissions = nextPermissions;
+  else delete nextDocument.permissions;
+  writeUtf8FileAtomicSync(filePath, JSON.stringify(nextDocument, null, 2), 0o600);
+}
+
+/** Atomically merge a user patch and retain its exact host-owned rollback state. */
+export async function setJudgeSettingsPersist(
+  patch: unknown,
+  pathOverride?: string,
+  catalog?: JudgeModelCatalog,
+): Promise<JudgeSettingsWriteReceipt> {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    throw new JudgeSettingsError("permissions.judge patch must be an object");
+  }
+  const update = patch as Record<string, unknown>;
+  const allowed = new Set(["chain", "provider", "external", "mode", "categories", "timeoutMs", "chainDeadlineMs", "breaker"]);
+  if (Object.keys(update).some((key) => !allowed.has(key))) {
+    throw new JudgeSettingsError("permissions.judge patch contains unknown fields");
+  }
+  const filePath = pathOverride ?? defaultPath();
+  let receipt: JudgeSettingsWriteReceipt | undefined;
+  await withFileLock(filePath, async () => {
+    const document = readSettingsObjectForUpdate(filePath);
+    const permissions = judgePermissionsForUpdate(document);
+    const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
+    const permissionsPresent = Object.hasOwn(document, "permissions");
+    const current = serializeJudgeSettings(normalizeJudgeSettings(permissions.judge, catalog).settings);
+    if (update.provider !== undefined || update.external !== undefined) delete current.chain;
+    const merged = { ...current, ...update };
+    for (const key of ["categories", "breaker"] as const) {
+      if (update[key] && typeof update[key] === "object" && !Array.isArray(update[key])) {
+        merged[key] = { ...(current[key] as Record<string, unknown>), ...(update[key] as Record<string, unknown>) };
+      }
+    }
+    const settings = validateJudgeSettings(merged, catalog);
+    const applied = serializeJudgeSettings(settings);
+    const appliedIdentity = JSON.stringify(applied);
+    persistJudgeSubtree(filePath, document, permissions, { present: true, value: applied }, true);
+    receipt = {
+      settings,
+      async rollback() {
+        await withFileLock(filePath, async () => {
+          const latest = readSettingsObjectForUpdate(filePath);
+          const latestPermissions = judgePermissionsForUpdate(latest);
+          if (!Object.hasOwn(latestPermissions, "judge") || JSON.stringify(latestPermissions.judge) !== appliedIdentity) {
+            throw new Error("Judge settings changed before rollback");
+          }
+          persistJudgeSubtree(filePath, latest, latestPermissions, previous, permissionsPresent);
+        });
+      },
+    };
+  });
+  if (!receipt) throw new Error("Judge settings were not persisted");
+  return receipt;
 }
 
 /**

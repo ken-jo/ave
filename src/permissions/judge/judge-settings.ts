@@ -18,10 +18,13 @@
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
-import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { isLLMVendor, isOpenAICompatibleVendor, llmRouteModel, LLM_VENDOR_DEFAULTS, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { LlmModelListCache } from "../../shared/llm-model-list.js";
 import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
+import { resolveModelRetirement } from "../../shared/context-budget.js";
+import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
 import type { JudgeCategory } from "./judge-contract.js";
+import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 
 /** Settings path of the subtree. Enforcement as a write floor lives with the P1 floors list. */
 const JUDGE_SETTINGS_KEY = "permissions.judge";
@@ -34,8 +37,6 @@ const LEGACY_PROVIDERS = ["off", ...JUDGE_STAGE_PROVIDERS] as const;
 
 const JUDGE_MODES = ["shadow", "active"] as const;
 export type JudgeMode = (typeof JUDGE_MODES)[number];
-
-const MAX_JUDGE_STAGES = 4;
 
 export interface JudgeExternalSettings {
   /** argv array; argv[0] must be an absolute path. Run without a shell. */
@@ -214,38 +215,55 @@ export interface JudgeModelCatalog {
 /** The subset of `llm` settings the picker's option list is derived from. */
 export interface JudgeModelCatalogSource {
   /** Saved per-vendor blocks: the user's selected model and configured endpoint. */
-  vendors?: Partial<Record<LLMVendor, { model?: string; baseUrl?: string }>>;
+  vendors?: Partial<Record<LLMVendor, { model?: string; baseUrl?: string; presetModels?: Record<string, string> }>>;
   /** `/models` handshake results, as the picker reads them. */
   modelListCache?: LlmModelListCache;
+  provider?: string;
+  marketplaceProviderPresetId?: string;
+  installedProviderPresets?: readonly Pick<MarketplaceInstalledProviderPreset,
+    "providerId" | "baseUrl" | "defaultModel" | "modelOptions" | "modelDiscoveryPolicy" | "requiresApiKey">[];
 }
 
 /**
  * The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`):
- * the static catalog, the vendor's `/models` handshake listing for its
- * configured endpoint (how self-hosted `openai-compatible` models appear), and
- * the user's saved selection.
+ * the current route's listing or seeded policy, its saved selection, and the
+ * same retirement filter. A model identity selects each vendor's current route;
+ * inactive presets do not add alternative credential routes to this catalog.
  */
 export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
   return {
     optionsFor(vendor) {
-      const options = new Set<string>(LLM_VENDOR_MODEL_OPTIONS[vendor] ?? []);
       const block = source.vendors?.[vendor];
-      for (const entry of Object.values(source.modelListCache ?? {})) {
-        if (entry.vendor !== vendor) continue;
-        // Only the listing for the endpoint the vendor's route actually
-        // reaches, resolved exactly as the model-list fetch resolves it.
-        if (!isDefaultModelListEndpoint(source.vendors, vendor, entry.endpoint)) continue;
-        for (const model of entry.models) options.add(model);
-      }
-      const saved = block?.model?.trim();
-      if (saved) options.add(saved);
-      return [...options];
+      const presetId = vendor === "openai-compatible" && source.provider === vendor
+        ? source.marketplaceProviderPresetId?.trim() : undefined;
+      const preset = presetId ? source.installedProviderPresets?.find((entry) => entry.providerId === presetId) : undefined;
+      if (presetId && !preset) return [];
+      const vendors = preset ? { ...source.vendors, [vendor]: { ...block, baseUrl: preset.baseUrl } } : source.vendors;
+      const baseUrl = (preset?.baseUrl ?? block?.baseUrl ?? LLM_VENDOR_DEFAULTS[vendor].baseUrl)?.trim() || undefined;
+      const seeded = modelDiscoveryPolicyUsesSeededOptions(preset?.modelDiscoveryPolicy);
+      const listings = Object.entries(source.modelListCache ?? {}).filter(([key, entry]) => {
+        if (entry.vendor !== vendor) return false;
+        const scope = entry.credentialScope ?? key.split("\n")[2] ?? "";
+        return scope === (presetId ?? "") && isDefaultModelListEndpoint(vendors, vendor, entry.endpoint);
+      });
+      const listing = listings.sort((a, b) => (Date.parse(b[1].fetchedAt) || 0) - (Date.parse(a[1].fetchedAt) || 0))[0]?.[1];
+      const synced = seeded ? undefined : listing?.models;
+      const hasSynced = Boolean(synced?.length);
+      const handshakeOnly = !hasSynced && (isOpenAICompatibleVendor(vendor) || vendor === "openai") && !seeded;
+      const options = [...new Set<string>(hasSynced ? synced : handshakeOnly ? [] : preset?.modelOptions ?? LLM_VENDOR_MODEL_OPTIONS[vendor])];
+      const defaultModel = preset?.defaultModel ?? LLM_VENDOR_DEFAULTS[vendor].model;
+      if (!handshakeOnly && defaultModel.trim() && !options.includes(defaultModel.trim())) options.unshift(defaultModel.trim());
+      const saved = llmRouteModel({ model: block?.model ?? "", presetModels: block?.presetModels }, presetId).trim();
+      if (saved && !options.includes(saved)) options.unshift(saved);
+      return options.filter((model) => resolveModelRetirement({ vendor, model, baseUrl, listing }) === undefined);
     },
   };
 }
 
 /** Static-only catalog, for callers that have no live `llm` settings (tests, schema checks). */
-const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = judgeModelCatalogFrom({});
+const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = {
+  optionsFor: (vendor) => LLM_VENDOR_MODEL_OPTIONS[vendor],
+};
 
 /**
  * Parse `<vendor>/<model>` (split on the FIRST slash; model ids may contain
@@ -315,7 +333,7 @@ function parseStage(raw: unknown, index: number, catalog: JudgeModelCatalog): { 
 /** Parse a chain array; any invalid stage invalidates the whole chain. */
 function parseChain(raw: unknown, catalog: JudgeModelCatalog): { value?: JudgeStageSettings[]; error?: string } {
   if (!Array.isArray(raw)) return { error: "chain must be an array of stages" };
-  if (raw.length > MAX_JUDGE_STAGES) return { error: `chain allows at most ${MAX_JUDGE_STAGES} stages` };
+  if (raw.length > MAX_PERMISSION_JUDGE_STAGES) return { error: `chain allows at most ${MAX_PERMISSION_JUDGE_STAGES} stages` };
   const stages: JudgeStageSettings[] = [];
   const ids = new Set<string>();
   for (let i = 0; i < raw.length; i++) {
@@ -353,6 +371,8 @@ function defaults(): JudgeSettings {
 export interface NormalizedJudgeSettings {
   settings: JudgeSettings;
   issues: string[];
+  /** The supplied chain could not be accepted; an empty chain is not an explicit off choice. */
+  chainRejected?: true;
   /** True when the legacy single-provider form was read; the caller persists the chain form. */
   migrated: boolean;
 }
@@ -360,7 +380,8 @@ export interface NormalizedJudgeSettings {
 /**
  * Read path: settings file content is user input. Each invalid field falls back
  * to its default and is reported in `issues` so the caller can surface it. An
- * invalid chain resolves to an EMPTY chain (no automation) — never to a
+ * invalid chain resolves to an empty chain plus `chainRejected`; the host
+ * applies unavailable behavior under the normalized mode. It never adopts a
  * partial chain or a different provider.
  */
 export function normalizeJudgeSettings(
@@ -370,10 +391,11 @@ export function normalizeJudgeSettings(
   const settings = defaults();
   const issues: string[] = [];
   let migrated = false;
+  let chainRejected = false;
   if (parsed === undefined) return { settings, issues, migrated };
   if (!isPlainObject(parsed)) {
     issues.push(`${JUDGE_SETTINGS_KEY} must be an object`);
-    return { settings, issues, migrated };
+    return { settings, issues, migrated, chainRejected: true };
   }
   const obj = parsed;
 
@@ -381,9 +403,13 @@ export function normalizeJudgeSettings(
   const hasLegacy = obj.provider !== undefined || obj.external !== undefined;
   if (hasChain && hasLegacy) {
     issues.push("set either chain or the legacy provider/external fields, not both; judge disabled");
+    chainRejected = true;
   } else if (hasChain || hasLegacy) {
     const { value, error } = hasChain ? parseChain(obj.chain, catalog) : migrateLegacyProvider(obj, catalog);
-    if (error || !value) issues.push(`${error ?? "chain invalid"}; judge disabled`);
+    if (error || !value) {
+      issues.push(`${error ?? "chain invalid"}; judge disabled`);
+      chainRejected = true;
+    }
     else {
       settings.chain = value;
       migrated = hasLegacy;
@@ -425,7 +451,7 @@ export function normalizeJudgeSettings(
       settings.breaker = { consecutive, total };
     }
   }
-  return { settings, issues, migrated };
+  return { settings, issues, migrated, ...(chainRejected ? { chainRejected: true as const } : {}) };
 }
 
 /**
@@ -443,20 +469,4 @@ export function validateJudgeSettings(
   return settings;
 }
 
-/** The persisted (chain) form of validated settings, with models as `<provider>/<model>` strings. */
-export function serializeJudgeSettings(settings: JudgeSettings): Record<string, unknown> {
-  return {
-    chain: settings.chain.map((stage) => ({
-      provider: stage.provider,
-      id: stage.id,
-      ...(stage.escalateBelow !== undefined ? { escalateBelow: stage.escalateBelow } : {}),
-      ...(stage.model ? { model: formatJudgeModel(stage.model) } : {}),
-      ...(stage.external ? { external: { ...stage.external } } : {}),
-    })),
-    mode: settings.mode,
-    categories: { ...settings.categories },
-    timeoutMs: settings.timeoutMs,
-    chainDeadlineMs: settings.chainDeadlineMs,
-    breaker: { ...settings.breaker },
-  };
-}
+export { serializePermissionJudgeSettings as serializeJudgeSettings } from "../../shared/permission-judge-settings.js";
