@@ -161,6 +161,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     });
     if ($request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
       try {
+        # Immediate children only; deeper entries inherit from the verified, protected secrets/ DACL.
         $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
       } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
     }
@@ -187,7 +188,6 @@ function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean
 
 let bootHomePrivacy: AveHomePrivacy | undefined;
 let extensionsWithoutIsolationApproved = false;
-let privacyRecovered = false;
 let reportPrivacyRefusal: ((message: string) => void) | undefined;
 
 /** Main-process audit wiring; no renderer or extension owns this state. */
@@ -199,21 +199,15 @@ export function areExtensionsWithoutIsolationApproved(): boolean {
   return getAveHomePrivacyFailure() !== undefined && extensionsWithoutIsolationApproved;
 }
 
-/** A repaired home requires the backend to be live again before spawning. */
-export function hasAveHomePrivacyRecovered(): boolean {
-  return process.platform === "win32" && privacyRecovered;
-}
-
 /** Called only by the trusted, gesture-checked permissions IPC handler. */
 export function approveExtensionsWithoutIsolation(): void {
   if (getAveHomePrivacyFailure() === undefined) throw new Error("Home privacy approval is not applicable");
   extensionsWithoutIsolationApproved = true;
 }
 
-/** Boot publishes this before any confinement backend can start. */
+/** Boot publishes this once before confinement starts; folder permission repairs require a restart. */
 export function setAveHomePrivacyAtBoot(privacy: AveHomePrivacy): void {
   if (JSON.stringify(bootHomePrivacy) !== JSON.stringify(privacy)) extensionsWithoutIsolationApproved = false;
-  if (bootHomePrivacy?.enforcement === "none" && privacy.enforcement === "win32-dacl") privacyRecovered = true;
   bootHomePrivacy = Object.freeze(structuredClone(privacy));
 }
 
@@ -243,7 +237,6 @@ export function assertAveHomePrivacyForConfinement(): void {
 export function _resetAveHomePrivacyForTest(): void {
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
-  privacyRecovered = false;
   reportPrivacyRefusal = undefined;
 }
 

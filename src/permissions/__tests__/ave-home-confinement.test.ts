@@ -117,10 +117,6 @@ describe("private-directory confinement gate", () => {
     expect(areExtensionsWithoutIsolationApproved()).toBe(true);
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
     expect(areExtensionsWithoutIsolationApproved()).toBe(false);
-    expect(isPluginWorkerConfinementActive()).toBe(false);
-    expect(() => assertExtensionStartAllowed()).toThrow("Restart Ave");
-    await initializeAsrtSandbox({ allowedDomains: [] });
-    expect(isPluginWorkerConfinementActive()).toBe(true);
     setAveHomePrivacyAtBoot(privacy);
     expect(() => assertExtensionStartAllowed()).toThrow(dir);
     approveExtensionsWithoutIsolation();
