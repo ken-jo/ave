@@ -1080,6 +1080,13 @@ describe("LlmRiskClassifier — sandbox capability surface (issue #691)", () => 
       "MUST NOT downgrade a rule-based MEDIUM/HIGH verdict to LOW",
     );
   });
+
+  it("v3 prompt asks for the JSON object only and carries no developer notes", () => {
+    expect(PERMISSION_REVIEWER_FRAMEWORK.version).toBe("permission-reviewer-framework/v3");
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt.endsWith("Return only the JSON object.")).toBe(true);
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt).not.toContain("step-by-step");
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt).not.toContain("Mirrors weak-sandbox");
+  });
 });
 
 describe("LlmRiskClassifier — DLP filter on input (security threat-gap #3)", () => {

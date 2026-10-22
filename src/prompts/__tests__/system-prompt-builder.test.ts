@@ -346,7 +346,8 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     const prompt = builder.build();
     expect(prompt).toContain("## 대화 연속성 출력 규칙");
     expect(prompt).toContain("최종 답변에는 사용자에게 보여줄 본문만 작성하세요");
-    expect(prompt).toContain("`<title>...</title>`, `[checkpoint]`, `[checkpoint-suggested]` 문자열은 출력 금지입니다");
+    expect(prompt).toContain("태그로 감싼 블록은 이 지시문의 다른 절이 요구할 때만 출력하세요");
+    expect(prompt).not.toContain("[checkpoint-suggested]");
     expect(prompt).not.toContain("## 대화 메타 출력 (final answer 끝에 추가)");
     expect(prompt).not.toContain("<title>10-20자 한국어 제목</title>");
   });
@@ -484,8 +485,9 @@ describe("SystemPromptBuilder — Conversation Continuity Guard (always-on)", ()
 
 describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-count)", () => {
   it("instructs status transitions to ride along the next work-tool call (no dedicated round)", () => {
-    const builder = makeSystemPromptBuilder();
-    const prompt = builder.build();
+    // The contract lives in the session_tasks tool description (the model reads it
+    // next to the schema); the system prompt only points there.
+    const prompt = t("be_sessionTasks.toolDescription");
     // New batching contract: fold status updates into the SAME message as the work tool
     // so each step does not incur a separate full-context round.
     expect(prompt).toContain("상태 갱신만을 위한 별도 라운드를 만들지");
@@ -496,6 +498,7 @@ describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-cou
     // observed in_progress re-mark loop that spent 32/35 session_tasks calls on no change).
     expect(prompt).toContain("같은 상태로 다시 보내지 마세요");
     expect(prompt).toContain("오류로 처리됩니다");
+    expect(makeSystemPromptBuilder().build()).toContain("호출 순서는 도구 설명을 따르세요");
   });
 
   it("does not re-introduce the per-step mandate that forced a dedicated in_progress round before every tool call", () => {
@@ -509,6 +512,19 @@ describe("SystemPromptBuilder — session_tasks batching guidance (TPM round-cou
     expect(prompt).not.toContain(
       "session_tasks → 항목 1 을 in_progress 로 업데이트 (도구 호출 전)",
     );
+  });
+
+  it("keeps the tool-use strategy to call rules and points at tool descriptions for per-tool detail", () => {
+    const prompt = makeSystemPromptBuilder().build();
+    expect(prompt).toContain("### 도구 호출");
+    expect(prompt).toContain("서로 의존하지 않는 도구는 한 메시지에서 함께 호출하고");
+    // The section names the context blocks the builder actually emits.
+    expect(prompt).toContain("<ave-agents-context>, <ave-memory-index>, <ave-user-memory> 에 답이 있으면");
+    // Regression guard: the narrated per-call procedure and the duplicated
+    // session_tasks walkthrough cost a sentence per round and repeat the tool description.
+    expect(prompt).not.toContain("기본 절차: Think → Act → Observe → Reflect");
+    expect(prompt).not.toContain("올바른 호출 순서 예시");
+    expect(prompt).not.toContain("**routine_schedule**");
   });
 });
 
