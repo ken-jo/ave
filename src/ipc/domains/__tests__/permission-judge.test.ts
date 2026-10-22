@@ -56,6 +56,20 @@ describe("judge settings host boundary", () => {
     expect(result).not.toHaveProperty("migrated");
   });
 
+  it("names the chat model an unset reviewer follows and flags an unavailable selection", async () => {
+    (deps.settingsService as unknown as { get: () => unknown }).get = () => ({
+      provider: "openai-compatible",
+      vendors: { "openai-compatible": { model: "team/local", baseUrl: "http://localhost:9000/v1" } },
+    });
+    expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
+      ok: true, settings: { model: null }, chatModel: "openai-compatible/team/local", reviewerModelUnavailable: false,
+    });
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
+    expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
+      ok: true, settings: { model: null }, reviewerModelUnavailable: true,
+    });
+  });
+
   it("keeps fatal read metadata on the host side of the snapshot", async () => {
     writeFileSync(join(home, "settings.json"), "{broken");
     expect(permissionSettings.readJudgeSettings()).toHaveProperty("unreadable", true);

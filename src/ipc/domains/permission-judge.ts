@@ -3,13 +3,15 @@ import { createLogger } from "../../lib/logger.js";
 import { createSerialQueue } from "../../lib/with-file-lock.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { canUseLlmVendorWithoutApiKey, LLM_VENDORS } from "../../shared/llm-vendor-defaults.js";
+import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings, llmRouteModel, LLM_VENDORS } from "../../shared/llm-vendor-defaults.js";
 import type { PermissionJudgeReadResult, PermissionJudgeSnapshot, PermissionJudgeWriteResult } from "../../shared/permission-judge-settings.js";
-import { JudgeSettingsError, judgeModelCatalogFrom } from "../../permissions/judge/judge-settings.js";
+import { JudgeSettingsError } from "../../permissions/judge/judge-settings.js";
+import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { readJudgeSettings, setJudgeSettingsPersist, type JudgeSettingsWriteReceipt } from "../../permissions/permission-settings-store.js";
 import { hostSecretKeyForVendor } from "../../plugins/secret-access/secret-gate.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
+import type { AppSettings } from "../../data/settings-store.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 
 const log = createLogger("permission-judge");
@@ -32,8 +34,24 @@ function snapshot(deps: IpcDeps): PermissionJudgeSnapshot {
         }))) continue;
     for (const model of catalog.optionsFor(vendor)) modelOptions.push({ vendor, model });
   }
-  const { settings, issues } = readJudgeSettings(undefined, catalog);
-  return { settings, issues, modelOptions };
+  const { settings, issues, modelRejected } = readJudgeSettings(undefined, catalog);
+  const selected = settings.model;
+  return {
+    settings, issues, modelOptions,
+    chatModel: activeChatModelLabel(llm),
+    reviewerModelUnavailable: modelRejected === true || (selected !== null &&
+      !modelOptions.some((option) => option.vendor === selected.vendor && option.model === selected.model)),
+  };
+}
+
+/** The route an unset reviewer model follows: the active chat model. */
+function activeChatModelLabel(llm: AppSettings["llm"] | undefined): string | null {
+  const runtime = llm?.activeChatRuntime;
+  if (runtime?.kind === "subscription") return `${runtime.provider}/${runtime.model ?? "default"}`;
+  if (!llm?.provider) return null;
+  const presetId = llm.provider === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined;
+  const model = llmRouteModel(getLlmVendorSettings(llm.vendors, llm.provider), presetId);
+  return model ? `${llm.provider}/${model}` : null;
 }
 
 /** Only the host settings surface can read or change judge automation. */

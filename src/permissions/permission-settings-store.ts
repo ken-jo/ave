@@ -987,7 +987,7 @@ export async function setReviewerSettingsPersist(
   return readPermissionSettings(pathOverride).permissions.reviewer;
 }
 
-export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected"> & {
+export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected" | "modelRejected"> & {
   /** An existing settings document could not be safely interpreted. */
   unreadable?: true;
 };
@@ -1053,7 +1053,7 @@ export async function setJudgeSettingsPersist(
     throw new JudgeSettingsError("permissions.judge patch must be an object");
   }
   const update = patch as Record<string, unknown>;
-  const allowed = new Set(["chain", "provider", "external", "mode", "categories", "timeoutMs", "chainDeadlineMs", "breaker"]);
+  const allowed = new Set(["model", "chain", "provider", "external", "mode", "categories", "timeoutMs", "chainDeadlineMs", "breaker"]);
   if (Object.keys(update).some((key) => !allowed.has(key))) {
     throw new JudgeSettingsError("permissions.judge patch contains unknown fields");
   }
@@ -1064,7 +1064,11 @@ export async function setJudgeSettingsPersist(
     const permissions = judgePermissionsForUpdate(document);
     const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
     const permissionsPresent = Object.hasOwn(document, "permissions");
-    const current = serializeJudgeSettings(normalizeJudgeSettings(permissions.judge, catalog).settings);
+    const normalized = normalizeJudgeSettings(permissions.judge, catalog);
+    const current = serializeJudgeSettings(normalized.settings);
+    // An unavailable stored reviewer model is kept as written unless this
+    // patch replaces it, so a save never silently turns it into "follow chat".
+    if (normalized.modelRejected === true) current.model = (permissions.judge as Record<string, unknown>).model;
     if (update.provider !== undefined || update.external !== undefined) delete current.chain;
     const merged = { ...current, ...update };
     for (const key of ["categories", "breaker"] as const) {

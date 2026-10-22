@@ -77,13 +77,19 @@ export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
 
 /**
  * `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge
- * off). The Permissions tab renders the judge section unconditionally, so a
+ * off, reviewer model unset) unless overridden. The Permissions tab renders the judge section unconditionally, so a
  * tab mock without it shows a read-failure status the real host never does.
  */
-export function mockJudgeGet() {
+export function mockJudgeGet(overrides: {
+  model?: { vendor: string; model: string } | null;
+  modelOptions?: Array<{ vendor: string; model: string }>;
+  chatModel?: string | null;
+  reviewerModelUnavailable?: boolean;
+} = {}) {
   return vi.fn(async () => ({
     ok: true as const,
     settings: {
+      model: overrides.model ?? null,
       chain: [],
       mode: "shadow" as const,
       categories: { shell: true, write: true, network: false },
@@ -92,7 +98,9 @@ export function mockJudgeGet() {
       breaker: { consecutive: 3, total: 20 },
     },
     issues: [],
-    modelOptions: [],
+    modelOptions: overrides.modelOptions ?? [],
+    chatModel: overrides.chatModel ?? null,
+    reviewerModelUnavailable: overrides.reviewerModelUnavailable ?? false,
   }));
 }
 

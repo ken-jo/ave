@@ -1383,10 +1383,13 @@ allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
 request/verdict types and chain semantics respectively.
 
 The model picker offers configured providers and their model options using the
-same source as chat selection. A builtin stage without `model` follows the
-current reviewer model. An explicit `<provider>/<model>` selection uses that
-exact model; an unavailable selection fails rather than switching providers or
-models. Settings read issues are visible. A rejected chain retains typed
+same source as chat selection. `permissions.judge.model` selects the permission
+reviewer model with the chat model chooser; stored `null` (unset) resolves at
+each reviewer re-wire to the active chat model, so the reviewer follows chat.
+A builtin stage without `model` follows the permission reviewer model. An
+explicit `<provider>/<model>` selection uses that exact model; an unavailable
+selection fails rather than switching providers or models, and an unavailable
+reviewer model fails each review as `unavailable` rather than degrading to rule. Settings read issues are visible. A rejected chain retains typed
 `chainRejected` metadata and uses the existing unavailable fallback, without
 becoming explicit off or an implicit builtin provider. With normalized active
 mode it asks with forced approval in the foreground and denies plus defers

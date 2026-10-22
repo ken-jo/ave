@@ -5,11 +5,11 @@ import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
   DEFAULT_JUDGE_SETTINGS,
   JudgeSettingsError,
-  judgeModelCatalogFrom,
   normalizeJudgeSettings,
   serializeJudgeSettings,
   validateJudgeSettings,
 } from "../judge-settings.js";
+import { judgeModelCatalogFrom } from "../judge-model-catalog.js";
 
 const PICKER_VENDOR = "claude" as const;
 const PICKER_MODEL = LLM_VENDOR_MODEL_OPTIONS[PICKER_VENDOR][0]!;
@@ -21,6 +21,8 @@ describe("judge settings", () => {
     expect(issues).toEqual([]);
     expect(migrated).toBe(false);
     expect(settings).toEqual({
+      // Unset reviewer model: follows the chat model, no fixed default.
+      model: null,
       chain: [],
       mode: "shadow",
       categories: { shell: true, write: true, network: false },
@@ -28,6 +30,22 @@ describe("judge settings", () => {
       chainDeadlineMs: 60_000,
       breaker: { consecutive: 3, total: 20 },
     });
+  });
+
+  it("stores the reviewer model as an explicit choice or explicit null", () => {
+    expect(normalizeJudgeSettings({ model: null }).settings.model).toBeNull();
+    const picked = validateJudgeSettings({ model: `${PICKER_VENDOR}/${PICKER_MODEL}` });
+    expect(picked.model).toEqual({ vendor: PICKER_VENDOR, model: PICKER_MODEL });
+    expect(serializeJudgeSettings(picked)).toMatchObject({ model: `${PICKER_VENDOR}/${PICKER_MODEL}` });
+    expect(serializeJudgeSettings(validateJudgeSettings({}))).toMatchObject({ model: null });
+  });
+
+  it("marks an unoffered reviewer model rejected instead of following chat", () => {
+    const read = normalizeJudgeSettings({ model: `${PICKER_VENDOR}/not-offered` });
+    expect(read.modelRejected).toBe(true);
+    expect(read.settings.model).toBeNull();
+    expect(read.issues.join()).toMatch(/permission reviewer unavailable/);
+    expect(() => validateJudgeSettings({ model: `${PICKER_VENDOR}/not-offered` })).toThrow(JudgeSettingsError);
   });
 
   it("a chain without a mode stays in shadow", () => {

@@ -774,3 +774,34 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
     expect(statuses).not.toContain("auto_approved");
   });
 });
+
+describe("unavailable selected reviewer model through real dispatch lanes", () => {
+  it.each(["foreground", "headless"] as const)("fails the %s lane clearly and never runs another model", async (lane) => {
+    const reviewer = llm("low");
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setMode("auto");
+    subject.manager.setReviewer({
+      classifier: reviewer.classifier, cache: subject.cache, deferredQueue: subject.queue,
+      unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
+    });
+    const result = await dispatch(subject, lane);
+    expect(result).toMatchObject(lane === "headless"
+      ? { decision: "deny", reviewer: { outcome: "unavailable" } }
+      : { decision: "ask", forceModal: true, reviewer: { outcome: "unavailable" } });
+    expect(result.reviewer?.verdict?.reason).toBe("Selected permission reviewer model claude/retired is unavailable");
+    expect(reviewer.calls()).toBe(0);
+  });
+
+  it("escalates a builtin judge stage on the unavailable reviewer instead of allowing", async () => {
+    const reviewer = llm("low");
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setReviewer({
+      classifier: reviewer.classifier, cache: subject.cache, deferredQueue: subject.queue,
+      unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
+    });
+    wire(subject, [builtin(subject, reviewer.classifier)]);
+    const result = await dispatch(subject, "foreground");
+    expect(result).toMatchObject({ decision: "ask", forceModal: true });
+    expect(reviewer.calls()).toBe(0);
+  });
+});

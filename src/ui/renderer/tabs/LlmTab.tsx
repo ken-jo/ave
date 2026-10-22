@@ -302,7 +302,7 @@ const CHAT_BLOCKER_MESSAGE_KEYS = {
 
 type ChatBlocker = keyof typeof CHAT_BLOCKER_MESSAGE_KEYS;
 
-const SELECT_POPUP_LAYOUT =
+export const SELECT_POPUP_LAYOUT =
   "min-w-64 max-h-[min(386px,var(--radix-select-content-available-height))]";
 
 type ModelListState =
@@ -1009,7 +1009,7 @@ function ModelSelectItemContent({
  * same kind of choice — "who answers, with what" — and the user makes exactly
  * one of them. Keeping them in two lists made the screen say otherwise.
  */
-interface UnifiedModelOption {
+export interface UnifiedModelOption {
   /** `providerId::modelId`. The Select's value, so a model id repeated by two
    *  providers still resolves to the right one. */
   value: string;
@@ -1104,15 +1104,15 @@ function apiRouteRowId(route: ConfiguredApiRoute): string {
 
 const API_PROVIDER_PREFIX = "api:";
 
-function apiProviderId(vendorId: string): string {
+export function apiProviderId(vendorId: string): string {
   return `${API_PROVIDER_PREFIX}${vendorId}`;
 }
 
-function unifiedValue(providerId: string, modelId: string): string {
+export function unifiedValue(providerId: string, modelId: string): string {
   return `${providerId}::${modelId}`;
 }
 
-function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
+export function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
   const at = value.indexOf("::");
   if (at <= 0) return null;
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
@@ -1131,26 +1131,38 @@ function parseUnifiedValue(value: string): { providerId: string; modelId: string
  * offered right now, so a model that left the catalogue, or one whose provider
  * is disconnected, simply does not appear. The stored id survives that, and the
  * pin comes back with the provider.
+ *
+ * Also the permission reviewer's model picker (Settings > Permissions): that
+ * caller passes no pin handler, so its rows carry no pin control, and adds a
+ * leading "unset" row that follows the chat model.
  */
-function UnifiedModelSelect({
+export function UnifiedModelSelect({
   options,
   value,
   onValueChange,
-  pinned,
+  pinned = [],
   onTogglePin,
   placeholder,
   popupClassName,
   disabled = false,
+  triggerId = "model-select",
+  testId = TEST_IDS.llmModelSelect,
+  leadingOption,
 }: {
   options: readonly UnifiedModelOption[];
   value: string;
   onValueChange: (value: string) => void;
-  pinned: readonly string[];
-  onTogglePin: (modelId: string) => void;
+  pinned?: readonly string[];
+  /** Absent: the chooser offers no pinning (pins belong to the chat picker). */
+  onTogglePin?: (modelId: string) => void;
   placeholder: string;
   popupClassName: string;
   /** A chat-runtime switch is already in flight; a second pick would race it. */
   disabled?: boolean;
+  triggerId?: string;
+  testId?: string;
+  /** A first row that is not a model, e.g. "follow the chat model". */
+  leadingOption?: { value: string; label: string };
 }) {
   const { t } = useTranslation();
   const pinnedSet = new Set(pinned);
@@ -1163,13 +1175,14 @@ function UnifiedModelSelect({
     else restByProvider.push({ label: option.providerLabel, items: [option] });
   }
 
+  const togglePin = onTogglePin;
   const row = (option: UnifiedModelOption) => {
     const isPinned = pinnedSet.has(option.modelId);
     return (
       <SelectItem
         key={option.value}
         value={option.value}
-        leading={
+        leading={togglePin === undefined ? undefined : (
           /* Outside ItemText so the pin stays in the row and never mirrors
              into the collapsed trigger. Radix commits a row on POINTERUP, so
              both pointer events stop here — pinning is not choosing. */
@@ -1189,12 +1202,12 @@ function UnifiedModelSelect({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              onTogglePin(option.modelId);
+              togglePin(option.modelId);
             }}
           >
             <Pin className={`h-3 w-3 ${isPinned ? "fill-current" : ""}`} aria-hidden={true} />
           </span>
-        }
+        )}
       >
         <ModelSelectItemContent
           option={option.modelId}
@@ -1217,10 +1230,13 @@ function UnifiedModelSelect({
 
   return (
     <Select value={value} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger id="model-select" className="w-full" data-testid={TEST_IDS.llmModelSelect}>
+      <SelectTrigger id={triggerId} className="w-full" data-testid={testId}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent className={popupClassName}>
+        {leadingOption && (
+          <SelectItem value={leadingOption.value}>{leadingOption.label}</SelectItem>
+        )}
         {pinnedOptions.length > 0 && (
           <SelectGroup>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">

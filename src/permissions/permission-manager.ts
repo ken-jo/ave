@@ -534,6 +534,7 @@ export class PermissionManager {
   private readonly permissionsFilePath: string;
   /** Permission policy P3 — reviewer agent dispatch components. Wired at boot. */
   private reviewerClassifier: RiskClassifier | null = null;
+  private reviewerUnavailableReason: string | undefined;
   private judgeDeps: JudgeEngineDeps | undefined;
   private readonly judgeBreaker = new JudgeCircuitBreaker(DEFAULT_JUDGE_SETTINGS.breaker);
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
@@ -623,8 +624,16 @@ export class PermissionManager {
      * non-degraded callers (rule/disabled/strict, successful llm) clear it.
      */
     degradedToRule?: boolean;
+    /**
+     * The user selected a reviewer model that cannot run (not offered, or its
+     * provider is not connected). Every review then fails as `unavailable`
+     * with this reason: the foreground asks with a modal, headless denies.
+     * No other model, and no rule-only classifier, stands in for the choice.
+     */
+    unavailableReason?: string;
   }): void {
     this.reviewerClassifier = deps.classifier;
+    this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
     this.deferredQueue = deps.deferredQueue;
     this.reviewerCacheScope = deps.cacheScope ?? {};
@@ -1853,6 +1862,14 @@ export class PermissionManager {
       issuedApprovalBases.add(basis);
       return basis;
     };
+    if (this.reviewerUnavailableReason !== undefined) {
+      return {
+        verdict: { level: "high", reason: this.reviewerUnavailableReason },
+        cacheReason: "miss-not-found",
+        outcome: "unavailable",
+        approvalBasis: approvalBasisFor(new RuleBasedRiskClassifier().classify(buildReviewerContext()).level, "unavailable"),
+      };
+    }
     if (!this.reviewerClassifier || !this.verdictCache || !this.deferredQueue) {
       return {
         verdict: { level: "high", reason: "reviewer not wired — fail-safe defer" },

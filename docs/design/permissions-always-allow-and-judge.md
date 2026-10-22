@@ -172,9 +172,19 @@ followed by the current reviewer model is configured as follows:
   separates the provider from the model; model ids may contain further slashes.
   The picker uses configured provider/model options, including the configured
   endpoint's discovered models and saved model selection, as the chat picker
-  does. Omitting `model` follows the current reviewer model.
+  does. Omitting `model` follows the permission reviewer model.
+- `permissions.judge.model` is the permission reviewer model: the model the
+  auto-mode reviewer runs on and the default for builtin stages. The user picks
+  it in Settings > Permissions with the chat model chooser, from the connected
+  API models. `null` is the stored "unset" state, not a missing default: the
+  reviewer then runs on the active chat model and follows it, because every
+  chat-model change re-wires the reviewer. No fixed default model constant is
+  the effective default.
 - A selected model must be used exactly. Missing credentials, an unavailable
-  provider or a removed model never silently selects a different model.
+  provider or a removed model never silently selects a different model. For
+  the reviewer model this fails every review as `unavailable` (foreground asks
+  with a modal, headless denies) instead of degrading to the rule classifier
+  or the chat model, and Settings marks the selection unavailable.
 - Stage ids are unique within the chain. `escalateBelow` is an external-stage
   confidence threshold in `[0, 1]`; builtin risk verdicts have no confidence and
   do not accept that field.

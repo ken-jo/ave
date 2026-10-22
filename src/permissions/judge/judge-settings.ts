@@ -18,11 +18,7 @@
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
-import { isLLMVendor, isOpenAICompatibleVendor, llmRouteModel, LLM_VENDOR_DEFAULTS, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
-import type { LlmModelListCache } from "../../shared/llm-model-list.js";
-import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
-import { resolveModelRetirement } from "../../shared/context-budget.js";
-import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
+import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { JudgeCategory } from "./judge-contract.js";
 import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 
@@ -70,7 +66,7 @@ export interface JudgeStageSettings {
    * or that reports no confidence — escalates to the next stage.
    */
   escalateBelow?: number;
-  /** builtin-llm only. Absent = the current reviewer model (the active chat model). */
+  /** builtin-llm only. Absent = the permission reviewer model (`JudgeSettings.model`, else the active chat model). */
   model?: JudgeModelRef;
   /** external only. */
   external?: JudgeExternalSettings;
@@ -84,6 +80,13 @@ export interface JudgeBreakerSettings {
 }
 
 export interface JudgeSettings {
+  /**
+   * The permission reviewer's model, picked by the user from the connected
+   * models. `null` is the explicit "unset" state: the reviewer runs on the
+   * active chat model and follows it when chat switches. Never resolved to a
+   * fixed default here; the host resolves it each time it wires the reviewer.
+   */
+  model: JudgeModelRef | null;
   /** Ordered stages; empty = off. */
   chain: JudgeStageSettings[];
   mode: JudgeMode;
@@ -96,6 +99,7 @@ export interface JudgeSettings {
 }
 
 export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
+  model: null,
   chain: Object.freeze([]) as unknown as JudgeStageSettings[],
   mode: "shadow",
   categories: Object.freeze({ shell: true, write: true, network: false }),
@@ -217,54 +221,6 @@ export interface JudgeModelCatalog {
   optionsFor(vendor: LLMVendor): readonly string[];
 }
 
-/** The subset of `llm` settings the picker's option list is derived from. */
-export interface JudgeModelCatalogSource {
-  /** Saved per-vendor blocks: the user's selected model and configured endpoint. */
-  vendors?: Partial<Record<LLMVendor, { model?: string; baseUrl?: string; presetModels?: Record<string, string> }>>;
-  /** `/models` handshake results, as the picker reads them. */
-  modelListCache?: LlmModelListCache;
-  provider?: string;
-  marketplaceProviderPresetId?: string;
-  installedProviderPresets?: readonly Pick<MarketplaceInstalledProviderPreset,
-    "providerId" | "baseUrl" | "defaultModel" | "modelOptions" | "modelDiscoveryPolicy" | "requiresApiKey">[];
-}
-
-/**
- * The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`):
- * the current route's listing or seeded policy, its saved selection, and the
- * same retirement filter. A model identity selects each vendor's current route;
- * inactive presets do not add alternative credential routes to this catalog.
- */
-export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
-  return {
-    optionsFor(vendor) {
-      const block = source.vendors?.[vendor];
-      const presetId = vendor === "openai-compatible" && source.provider === vendor
-        ? source.marketplaceProviderPresetId?.trim() : undefined;
-      const preset = presetId ? source.installedProviderPresets?.find((entry) => entry.providerId === presetId) : undefined;
-      if (presetId && !preset) return [];
-      const vendors = preset ? { ...source.vendors, [vendor]: { ...block, baseUrl: preset.baseUrl } } : source.vendors;
-      const baseUrl = (preset?.baseUrl ?? block?.baseUrl ?? LLM_VENDOR_DEFAULTS[vendor].baseUrl)?.trim() || undefined;
-      const seeded = modelDiscoveryPolicyUsesSeededOptions(preset?.modelDiscoveryPolicy);
-      const listings = Object.entries(source.modelListCache ?? {}).filter(([key, entry]) => {
-        if (entry.vendor !== vendor) return false;
-        const scope = entry.credentialScope ?? key.split("\n")[2] ?? "";
-        return scope === (presetId ?? "") && isDefaultModelListEndpoint(vendors, vendor, entry.endpoint);
-      });
-      const listing = listings.sort((a, b) => (Date.parse(b[1].fetchedAt) || 0) - (Date.parse(a[1].fetchedAt) || 0))[0]?.[1];
-      const synced = seeded ? undefined : listing?.models;
-      const hasSynced = Boolean(synced?.length);
-      const handshakeOnly = !hasSynced && (isOpenAICompatibleVendor(vendor) || vendor === "openai") && !seeded;
-      const options = [...new Set<string>(hasSynced ? synced : handshakeOnly ? [] : preset?.modelOptions ?? LLM_VENDOR_MODEL_OPTIONS[vendor])];
-      const defaultModel = preset?.defaultModel ?? LLM_VENDOR_DEFAULTS[vendor].model;
-      if (!handshakeOnly && defaultModel.trim() && !options.includes(defaultModel.trim())) options.unshift(defaultModel.trim());
-      const saved = llmRouteModel({ model: block?.model ?? "", presetModels: block?.presetModels }, presetId).trim();
-      if (saved && !options.includes(saved)) options.unshift(saved);
-      return options.filter((model) => resolveModelRetirement({ vendor, model, baseUrl, listing }) === undefined);
-    },
-  };
-}
-
 /** Static-only catalog, for callers that have no live `llm` settings (tests, schema checks). */
 const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = {
   optionsFor: (vendor) => LLM_VENDOR_MODEL_OPTIONS[vendor],
@@ -364,6 +320,7 @@ function migrateLegacyProvider(obj: Record<string, unknown>, catalog: JudgeModel
 
 function defaults(): JudgeSettings {
   return {
+    model: null,
     chain: [],
     mode: DEFAULT_JUDGE_SETTINGS.mode,
     categories: { ...DEFAULT_JUDGE_SETTINGS.categories },
@@ -380,6 +337,12 @@ export interface NormalizedJudgeSettings {
   chainRejected?: true;
   /** True when the legacy single-provider form was read; the caller persists the chain form. */
   migrated: boolean;
+  /**
+   * A reviewer model is configured but is not one the connected providers
+   * offer. The reviewer must then fail as unavailable; it never substitutes
+   * the chat model or any other model for the user's choice.
+   */
+  modelRejected?: true;
 }
 
 /**
@@ -420,6 +383,16 @@ export function normalizeJudgeSettings(
       migrated = hasLegacy;
     }
   }
+  let modelRejected = false;
+  if (obj.model !== undefined && obj.model !== null) {
+    const { value, error } = parseJudgeModel(obj.model, catalog);
+    if (error || !value) {
+      issues.push(`${error ?? "model invalid"}; permission reviewer unavailable`);
+      modelRejected = true;
+    } else {
+      settings.model = value;
+    }
+  }
   if (obj.mode !== undefined) {
     if ((JUDGE_MODES as readonly unknown[]).includes(obj.mode)) settings.mode = obj.mode as JudgeMode;
     else issues.push(`mode invalid: '${String(obj.mode)}'`);
@@ -456,7 +429,11 @@ export function normalizeJudgeSettings(
       settings.breaker = { consecutive, total };
     }
   }
-  return { settings, issues, migrated, ...(chainRejected ? { chainRejected: true as const } : {}) };
+  return {
+    settings, issues, migrated,
+    ...(chainRejected ? { chainRejected: true as const } : {}),
+    ...(modelRejected ? { modelRejected: true as const } : {}),
+  };
 }
 
 /**

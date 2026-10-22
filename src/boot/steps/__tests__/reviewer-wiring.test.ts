@@ -1367,3 +1367,61 @@ describe("Permission policy P4 LlmReviewerProviderAdapter", () => {
     ).rejects.toThrow(/aborted/);
   });
 });
+
+describe("user-selected permission reviewer model", () => {
+  const llmSettings = () => ({
+    mode: "llm" as const,
+    provider: "openai" as const,
+    model: "gpt-4o-mini",
+    fallbackOnError: "rule" as const,
+    interactive: { autoApprove: "medium" as const },
+    parentAdjudication: PARENT_ADJUDICATION,
+  });
+
+  it.each([
+    ["its provider is not connected", { label: "claude/selected", available: true }],
+    ["it is not offered", { label: "claude/retired", available: false }],
+  ])("fails as unavailable when %s, never degrading to rule or the chat model", (_case, selectedModel) => {
+    const pm = new PermissionManager(join(tmpDir, "permissions.json"));
+    const setReviewer = vi.spyOn(pm, "setReviewer");
+    const streamProviderFor = vi.fn(() => null);
+    const result = wireReviewerAgent({
+      networkFetch: unusedNetworkFetch,
+      permissionManager: pm,
+      readSettings: llmSettings,
+      readActiveLlm: () => ({ provider: "claude", model: selectedModel.label.slice("claude/".length) }),
+      streamProviderFor,
+      selectedModel,
+      verdictCachePath: join(tmpDir, "cache-selected.jsonl"),
+      deferredQueuePath: join(tmpDir, "queue-selected.jsonl"),
+    });
+    expect(result.runtimeMode).toBe("llm-model-unavailable");
+    expect(pm.isReviewerDegradedToRule()).toBe(false);
+    expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
+    expect(result.parentAdjudicator).toBeInstanceOf(UnavailableParentAdjudicator);
+    expect(setReviewer.mock.lastCall?.[0].unavailableReason).toBe(
+      `Selected permission reviewer model ${selectedModel.label} is unavailable`,
+    );
+    expect(streamProviderFor).toHaveBeenCalledTimes(selectedModel.available ? 1 : 0);
+  });
+
+  it("wires the selected model as the reviewer when it can run", () => {
+    const pm = new PermissionManager(join(tmpDir, "permissions.json"));
+    const setReviewer = vi.spyOn(pm, "setReviewer");
+    const result = wireReviewerAgent({
+      networkFetch: unusedNetworkFetch,
+      permissionManager: pm,
+      readSettings: llmSettings,
+      readActiveLlm: () => ({ provider: "claude", model: "selected-model" }),
+      streamProviderFor: () => stubProvider([{ type: "message_complete", stopReason: "end_turn" }]),
+      selectedModel: { label: "claude/selected-model", available: true },
+      verdictCachePath: join(tmpDir, "cache-selected-ok.jsonl"),
+      deferredQueuePath: join(tmpDir, "queue-selected-ok.jsonl"),
+    });
+    expect(result.runtimeMode).toBe("llm");
+    expect(result.classifier).toBeInstanceOf(LlmRiskClassifier);
+    expect(result.effectiveSettings).toMatchObject({ provider: "claude", model: "selected-model" });
+    expect(setReviewer.mock.lastCall?.[0]).not.toHaveProperty("unavailableReason");
+    expect(setReviewer.mock.lastCall?.[0].cacheScope).toMatchObject({ provider: "claude", model: "selected-model" });
+  });
+});

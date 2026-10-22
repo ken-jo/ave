@@ -681,8 +681,12 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
   });
 
-  it("does not expose legacy reviewer provider/model controls", async () => {
+  it("offers the reviewer model through the chat model chooser, not legacy provider/model controls", async () => {
     const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
 
     await act(async () => {
       render(<PermissionsTab />);
@@ -691,14 +695,75 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    // Unset is a stored choice that names what it follows: the chat model.
+    expect(picker).toHaveTextContent(t("permissionJudge.followChatModelNamed", { model: "openai/chat-model" }));
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-model-input")).toBeNull();
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith(
       expect.stringMatching(/^(provider|model)\b/),
     );
+  });
+
+  it("saves a picked reviewer model, and unset again, through the judge settings", async () => {
+    const api = installApi([[]]);
+    const judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
+    const judgeSet = vi.fn(async (settings: { model: unknown }) => ({
+      ...(await judgeGet()), settings: { ...(await judgeGet()).settings, model: settings.model },
+    }));
+    Object.assign(api.permission, { judgeGet, judgeSet });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    const pick = async (label: RegExp) => {
+      fireEvent.keyDown(picker, { key: "ArrowDown" });
+      const option = await waitFor(() => {
+        const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+          .find((row) => label.test(row.textContent ?? ""));
+        if (!found) throw new Error("chooser not open yet");
+        return found;
+      });
+      option.focus();
+      fireEvent.keyDown(option, { key: "Enter" });
+    };
+    const save = async () => {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") }));
+      });
+    };
+
+    await pick(/claude-reviewer/);
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: { vendor: "claude", model: "claude-reviewer" },
+    }));
+
+    await pick(new RegExp(t("permissionJudge.followChatModel")));
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({ model: null }));
+  });
+
+  it("says so when the selected reviewer model is unavailable", async () => {
+    const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      model: { vendor: "claude", model: "retired-reviewer" },
+      reviewerModelUnavailable: true,
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(await screen.findByTestId("permission-reviewer-model-unavailable"))
+      .toHaveTextContent(t("permissionJudge.reviewerModelUnavailable"));
+    expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
   it("renders the off/low/medium threshold control when the stored mode is auto", async () => {

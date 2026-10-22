@@ -8,6 +8,7 @@ import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stu
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { JudgeModelRef, JudgeSettings } from "../../../permissions/judge/judge-settings.js";
 import type { LLMProvider } from "../../../engine/llm/types.js";
+import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
 
 describe("judge configured provider wiring", () => {
   it("constructs an explicitly selected configured model independently of the active reviewer transport", async () => {
@@ -157,6 +158,83 @@ describe("judge configured provider wiring", () => {
       vertexBlock.vertexProject = "sample-project";
       vertexBlock.vertexLocation = "region-two";
       expect(judgeDeps.selectedModelCacheScope(vertexModel)).not.toEqual(vertexScope);
+    } finally {
+      vi.doUnmock("../../../engine/llm/provider-factory.js");
+      vi.doUnmock("../reviewer-wiring.js");
+      vi.doUnmock("../judge-wiring.js");
+      vi.doUnmock("../../../permissions/permission-settings-store.js");
+      vi.resetModules();
+      await cleanupTmpDir(directory);
+    }
+  });
+
+  it("resolves an unset reviewer model to the chat model on every re-wire, and a selected one to itself", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "reviewer-model-wiring-"));
+    vi.resetModules();
+    const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
+    const createProvider = vi.fn((_options: unknown) => provider);
+    const wireReviewerAgent = vi.fn((_deps: unknown) => ({}));
+    const wireJudgeAgent = vi.fn((_input: unknown) => undefined);
+    vi.doMock("../../../engine/llm/provider-factory.js", () => ({
+      createProvider, secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
+    }));
+    vi.doMock("../reviewer-wiring.js", () => ({ wireReviewerAgent }));
+    vi.doMock("../judge-wiring.js", () => ({ wireJudgeAgent }));
+    const settingsPath = join(directory, "settings.json");
+    const writeReviewerModel = (model: string | null) =>
+      writeFileSync(settingsPath, JSON.stringify({ permissions: { judge: { model } } }));
+    vi.doMock("../../../permissions/permission-settings-store.js", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>();
+      return {
+        ...actual,
+        readJudgeSettings: (_path: string | undefined, catalog: Parameters<typeof actual.readJudgeSettings>[1]) =>
+          actual.readJudgeSettings(settingsPath, catalog),
+      };
+    });
+    try {
+      const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+      const offered = LLM_VENDOR_MODEL_OPTIONS.claude[0]!;
+      const vendors: Record<string, { model: string }> = { openai: { model: "chat-a" } };
+      const settingsService = {
+        get: (key: string) => key === "llm" ? { provider: "openai", vendors } : key === "marketplace" ? {} : {},
+        getSecret: vi.fn((): string | null => "configured-key"),
+      };
+      const context = {
+        host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() },
+        permissionManager: new PermissionManager(join(directory, "permissions.json")),
+        settingsService, llmFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
+        getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
+        subscriptionProviderFactory: vi.fn(() => provider),
+      };
+      type ReviewerDeps = {
+        readActiveLlm: () => { provider: string; model: string };
+        streamProviderFor: (vendor: string) => LLMProvider | null;
+        selectedModel?: { label: string; available: boolean };
+      };
+      const rewire = () => (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      const lastReviewerDeps = () => wireReviewerAgent.mock.lastCall![0] as ReviewerDeps;
+
+      writeReviewerModel(null);
+      wireReviewerAndPermissions(context as never);
+      expect(lastReviewerDeps().selectedModel).toBeUndefined();
+      expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "openai", model: "chat-a" });
+      vendors.openai = { model: "chat-b" };
+      rewire();
+      expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "openai", model: "chat-b" });
+
+      writeReviewerModel(`claude/${offered}`);
+      rewire();
+      expect(lastReviewerDeps().selectedModel).toEqual({ label: `claude/${offered}`, available: true });
+      expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "claude", model: offered });
+      expect(lastReviewerDeps().streamProviderFor("claude")).toBe(provider);
+      expect(createProvider).toHaveBeenLastCalledWith(expect.objectContaining({ vendor: "claude", model: offered }));
+      vendors.openai = { model: "chat-c" };
+      rewire();
+      expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "claude", model: offered });
+
+      writeReviewerModel("claude/not-offered-model");
+      rewire();
+      expect(lastReviewerDeps().selectedModel).toEqual({ label: "configured in Settings", available: false });
     } finally {
       vi.doUnmock("../../../engine/llm/provider-factory.js");
       vi.doUnmock("../reviewer-wiring.js");

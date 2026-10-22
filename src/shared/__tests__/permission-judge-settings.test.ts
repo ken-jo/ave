@@ -12,6 +12,7 @@ describe("judge settings renderer encoding", () => {
       ],
     };
     expect(serializePermissionJudgeSettings(settings)).toEqual({
+      model: null,
       chain: [
         { provider: "external", id: "local", external: { command: ["/opt/judge", "--json"], env: ["JUDGE_MODEL"] }, escalateBelow: 0.8 },
         { provider: "builtin-llm", id: "review", model: "openai-compatible/team/model" },
@@ -23,6 +24,8 @@ describe("judge settings renderer encoding", () => {
       breaker: { consecutive: 3, total: 20 },
     });
     expect(serializeJudgeSettings).toBe(serializePermissionJudgeSettings);
+    expect(serializePermissionJudgeSettings({ ...settings, model: { vendor: "claude", model: "picked" } }))
+      .toMatchObject({ model: "claude/picked" });
     expect(settings.chain[1]?.model).toEqual({ vendor: "openai-compatible", model: "team/model" });
   });
 });

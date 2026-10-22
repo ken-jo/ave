@@ -164,6 +164,14 @@ export interface WireReviewerDeps {
    */
   readActiveLlm?: () => ActiveReviewerLlmIdentity;
   /**
+   * Present when the user picked the reviewer model in Settings; absent means
+   * "unset", and the reviewer follows {@link readActiveLlm}'s chat model. The
+   * caller then points `readActiveLlm`/`streamProviderFor` at that model. When
+   * it cannot run, the reviewer fails as unavailable instead of degrading to
+   * the rule classifier or to any other model.
+   */
+  selectedModel?: { label: string; available: boolean };
+  /**
    * Provider factory for `mode: "llm"` stream-based host providers. Legacy
    * reviewer names (`openai | anthropic | google`) and active LLM vendor names
    * (`claude | openai | gemini | azure-foundry | vertex-ai`) can
@@ -214,7 +222,8 @@ export type RuntimeReviewerMode =
   | "rule"
   | "llm"
   | "strict"
-  | "llm-degraded-to-rule";
+  | "llm-degraded-to-rule"
+  | "llm-model-unavailable";
 
 export interface WireReviewerResult {
   classifier: RiskClassifier;
@@ -326,6 +335,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   // the llm-degraded-to-rule path below.
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
+  let unavailableReason: string | undefined;
   if (settings.mode === "disabled" || settings.mode === "strict" || settings.mode === "rule") {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
@@ -356,7 +366,14 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     // than being silently swallowed as a degrade. No-Fallback strictness:
     // only the documented external boundary is caught.
     let adapter: LlmReviewerProvider | undefined;
-    try {
+    const selectedModelUnavailable = (): void => {
+      runtimeMode = "llm-model-unavailable";
+      unavailableReason = `Selected permission reviewer model ${deps.selectedModel?.label} is unavailable`;
+      log.warn({ model: deps.selectedModel?.label }, "boot: selected permission reviewer model is unavailable");
+    };
+    if (deps.selectedModel?.available === false) {
+      selectedModelUnavailable();
+    } else try {
       adapter = resolveReviewerAdapter(effectiveSettings.provider, deps);
     } catch (err) {
       // Discriminate the two failure classes resolveReviewerAdapter can
@@ -366,14 +383,20 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       // streamProviderFor — a plain Error) is a caller bug and must crash
       // boot loudly, never silently degrade.
       if (!(err instanceof ReviewerProviderUnconfiguredError)) throw err;
-      degradedToRule = true;
-      runtimeMode = "llm-degraded-to-rule";
-      log.warn(
-        { provider: effectiveSettings.provider, error: (err as Error).message },
-        "boot: reviewer mode=llm requested but provider could not be wired — " +
-          "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
-          "provider/API key is configured (login or Intelligence settings re-fires wiring).",
-      );
+      if (deps.selectedModel) {
+        // The user's explicit choice is not an external "not logged in yet"
+        // state the rule degrade was written for: honor it or fail clearly.
+        selectedModelUnavailable();
+      } else {
+        degradedToRule = true;
+        runtimeMode = "llm-degraded-to-rule";
+        log.warn(
+          { provider: effectiveSettings.provider, error: (err as Error).message },
+          "boot: reviewer mode=llm requested but provider could not be wired — " +
+            "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
+            "provider/API key is configured (login or Intelligence settings re-fires wiring).",
+        );
+      }
     }
     if (adapter) {
       const reviewerSettings: ReviewerSettings = {
@@ -411,6 +434,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     cache,
     deferredQueue,
     degradedToRule,
+    ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     cacheScope: {
       // Use the *runtime* mode so verdicts produced by the degraded rule
       // classifier are not reused once wiring heals back to a real "llm"

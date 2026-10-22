@@ -7,6 +7,7 @@ import type { PermissionJudgeSettings, PermissionJudgeSnapshot, PermissionJudgeW
 
 function settings(): PermissionJudgeSettings {
   return {
+    model: null,
     chain: [],
     mode: "shadow",
     categories: { shell: true, write: true, network: false },
@@ -22,6 +23,8 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
     settings: settings(),
     issues: [],
     modelOptions: [{ vendor: "openai-compatible", model: "team/reviewer" }],
+    chatModel: "openai/chat-model",
+    reviewerModelUnavailable: false,
     ...overrides,
   };
   const judgeGet = vi.fn(async () => ({ ok: true as const, ...snapshot }));
@@ -32,6 +35,19 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
   window.ave = { permission: { judgeGet, judgeSet, onConfigChanged } } as unknown as typeof window.ave;
   const rendered = render(<PermissionJudgeContent />);
   return { ...rendered, judgeGet, judgeSet, notify: () => listener?.(), restore: () => { window.ave = previous; } };
+}
+
+/** Pick a row of the shared model chooser by its visible text. */
+async function pickModel(trigger: HTMLElement, label: RegExp) {
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  const option = await waitFor(() => {
+    const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+      .find((row) => label.test(row.textContent ?? ""));
+    if (!found) throw new Error("chooser not open yet");
+    return found;
+  });
+  option.focus();
+  fireEvent.keyDown(option, { key: "Enter" });
 }
 
 afterEach(() => {
@@ -47,13 +63,15 @@ describe("approval judge settings", () => {
       expect(screen.getByLabelText("Judge mode")).toHaveValue("off");
       fireEvent.click(screen.getByRole("button", { name: "Add judge stage" }));
       expect(screen.getByLabelText("Judge mode")).toHaveValue("shadow");
-      expect(screen.getByLabelText("Judge model")).toHaveValue("");
+      // Unset stage model: the stage runs on the permission reviewer model.
+      expect(screen.getByLabelText("Judge model")).toHaveTextContent("Permission reviewer model");
       expect(view.judgeSet).not.toHaveBeenCalled();
-      fireEvent.change(screen.getByLabelText("Judge model"), { target: { value: "openai-compatible/team/reviewer" } });
+      await pickModel(screen.getByLabelText("Judge model"), /team\/reviewer/);
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await screen.findByText("Judge settings saved.");
       expect(view.judgeSet).toHaveBeenCalledWith(expect.objectContaining({
         mode: "shadow",
+        model: null,
         chain: [{ id: "stage-1", provider: "builtin-llm", model: { vendor: "openai-compatible", model: "team/reviewer" } }],
       }));
     } finally { view.restore(); }
@@ -115,7 +133,7 @@ describe("approval judge settings", () => {
       await screen.findByLabelText("Judge mode");
       const current = settings();
       current.chain = [{ id: "saved-review", provider: "builtin-llm" }];
-      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [] });
+      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false });
       await act(async () => { view.notify(); });
       await waitFor(() => expect(screen.getByLabelText("Stage identifier")).toHaveValue("saved-review"));
       fireEvent.change(screen.getByLabelText("Stage identifier"), { target: { value: "unsaved-review" } });
@@ -124,7 +142,7 @@ describe("approval judge settings", () => {
       expect(view.judgeGet).toHaveBeenCalledTimes(reads);
       expect(screen.getByLabelText("Stage identifier")).toHaveValue("unsaved-review");
       await screen.findByText("Judge settings changed in another window. Reload to replace your unsaved edits with the saved settings.");
-      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [] });
+      view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false });
       fireEvent.click(screen.getByRole("button", { name: "Reload saved settings" }));
       await waitFor(() => expect(screen.getByLabelText("Stage identifier")).toHaveValue("saved-review"));
     } finally { view.restore(); }

@@ -25,7 +25,8 @@ import {
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { LlmReviewerProviderAdapter, wireReviewerAgent } from "./reviewer-wiring.js";
 import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
-import { judgeModelCatalogFrom, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
+import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
+import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
 import type { ParentAdjudicationTarget } from "../../permissions/parent-adjudicator.js";
@@ -163,6 +164,19 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
     };
   };
+  /** A user-selected model's route, shaped like the chat identity it replaces. */
+  const selectedReviewerIdentity = (model: JudgeModelRef) => {
+    const scope = selectedModelCacheScope(model);
+    return {
+      provider: model.vendor,
+      model: model.model,
+      ...(typeof scope.marketplaceProviderPresetId === "string"
+        ? { marketplaceProviderPresetId: scope.marketplaceProviderPresetId } : {}),
+      ...(typeof scope.baseUrl === "string" ? { baseUrl: scope.baseUrl } : {}),
+      ...(typeof scope.vertexProject === "string" ? { vertexProject: scope.vertexProject } : {}),
+      ...(typeof scope.vertexLocation === "string" ? { vertexLocation: scope.vertexLocation } : {}),
+    };
+  };
   const selectedModelCacheScope = (model: JudgeModelRef): Record<string, unknown> => {
     const llm = settingsService.get("llm");
     const block = getLlmVendorSettings(llm.vendors, model.vendor);
@@ -226,11 +240,34 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     permissionManager.setBlockReadsOutsideWorkingDirectories(
       readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories,
     );
+    const judgeSettings = readJudgeSettings(
+      undefined,
+      judgeModelCatalogFrom({
+        ...settingsService.get("llm"),
+        installedProviderPresets: settingsService.get("marketplace").installedProviderPresets ?? [],
+      }),
+    );
+    for (const issue of judgeSettings.issues) {
+      log.warn({ issue }, "Permission judge configuration warning");
+    }
+    // The reviewer model the user picked, resolved now and on every re-wire.
+    // Unset (null) follows the chat model: chat-model changes re-wire this.
+    const selectedReviewerModel = judgeSettings.settings.model;
+    const reviewerModelSelection = judgeSettings.modelRejected === true
+      ? { label: "configured in Settings", available: false }
+      : selectedReviewerModel
+        ? { label: formatJudgeModel(selectedReviewerModel), available: true }
+        : undefined;
     const reviewerResult = wireReviewerAgent({
       permissionManager,
       networkFetch: singleHopNetworkFetch,
-      readActiveLlm: readActiveReviewerLlm,
-      streamProviderFor: reviewerStreamProviderFor,
+      readActiveLlm: selectedReviewerModel
+        ? () => selectedReviewerIdentity(selectedReviewerModel)
+        : readActiveReviewerLlm,
+      streamProviderFor: selectedReviewerModel
+        ? (vendor) => reviewerStreamProviderFor(vendor, selectedReviewerModel.model)
+        : reviewerStreamProviderFor,
+      ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       resolveParentSessionAdjudicationTarget,
       // Key inheritance — Foundry reads llm.apiKey.azure-foundry,
       // GCP playground reads llm.apiKey.gemini. Both use the same secret
@@ -247,16 +284,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         sendToWindow(getMainWindow(), PERMISSIONS.deferredPending, summary, log);
       },
     });
-    const judgeSettings = readJudgeSettings(
-      undefined,
-      judgeModelCatalogFrom({
-        ...settingsService.get("llm"),
-        installedProviderPresets: settingsService.get("marketplace").installedProviderPresets ?? [],
-      }),
-    );
-    for (const issue of judgeSettings.issues) {
-      log.warn({ issue }, "Permission judge configuration warning");
-    }
     wireJudgeAgent({
       permissionManager,
       reviewer: reviewerResult,

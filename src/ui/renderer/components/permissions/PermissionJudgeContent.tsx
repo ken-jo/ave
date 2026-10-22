@@ -5,6 +5,15 @@ import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { MAX_PERMISSION_JUDGE_STAGES, type PermissionJudgeSettings, type PermissionJudgeSnapshot } from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
+import { getVendorOption } from "../../constants.js";
+import {
+  apiProviderId,
+  parseUnifiedValue,
+  SELECT_POPUP_LAYOUT,
+  unifiedValue,
+  UnifiedModelSelect,
+  type UnifiedModelOption,
+} from "../../tabs/LlmTab.js";
 
 type JudgeStage = PermissionJudgeSettings["chain"][number];
 type JudgeTransport = "builtin-llm" | "command" | "url";
@@ -16,6 +25,61 @@ function nextStage(chain: readonly JudgeStage[]): JudgeStage {
   let number = 1;
   while (chain.some((stage) => stage.id === `stage-${number}`)) number++;
   return { id: `stage-${number}`, provider: "builtin-llm" };
+}
+
+type JudgeModel = NonNullable<PermissionJudgeSettings["model"]>;
+
+/** The non-model row: no choice stored, so the reviewer follows its fallback. */
+const UNSET_MODEL_VALUE = "unset::";
+
+/**
+ * The chat model chooser, offering the models the host can run the reviewer
+ * on (`snapshot.modelOptions`, the connected API routes). A stored model the
+ * host no longer offers stays visible, marked, so the choice is not hidden.
+ */
+function JudgeModelSelect({ id, snapshot, value, unsetLabel, placeholder, unavailableLabel, onChange }: {
+  id: string;
+  snapshot: PermissionJudgeSnapshot | null;
+  value: JudgeModel | undefined;
+  unsetLabel: string;
+  placeholder: string;
+  unavailableLabel: string;
+  onChange: (model: JudgeModel | undefined) => void;
+}) {
+  const offered = snapshot?.modelOptions ?? [];
+  const toOption = (model: JudgeModel, unlisted = false): UnifiedModelOption => {
+    const label = getVendorOption(model.vendor).label;
+    return {
+      value: unifiedValue(apiProviderId(model.vendor), model.model),
+      providerId: apiProviderId(model.vendor),
+      providerLabel: label,
+      vendorLabel: label,
+      modelId: model.model,
+      ...(unlisted ? { unlisted: true, facts: unavailableLabel } : {}),
+    };
+  };
+  const options = offered.map((model) => toOption(model));
+  if (value && !offered.some((model) => model.vendor === value.vendor && model.model === value.model)) {
+    options.unshift(toOption(value, true));
+  }
+  return (
+    <UnifiedModelSelect
+      triggerId={id}
+      testId={id}
+      options={options}
+      value={value ? unifiedValue(apiProviderId(value.vendor), value.model) : UNSET_MODEL_VALUE}
+      leadingOption={{ value: UNSET_MODEL_VALUE, label: unsetLabel }}
+      placeholder={placeholder}
+      popupClassName={SELECT_POPUP_LAYOUT}
+      onValueChange={(picked) => {
+        if (picked === UNSET_MODEL_VALUE) return onChange(undefined);
+        const parsed = parseUnifiedValue(picked);
+        const model = parsed && offered.find((option) =>
+          apiProviderId(option.vendor) === parsed.providerId && option.model === parsed.modelId);
+        if (model) onChange({ vendor: model.vendor, model: model.model });
+      }}
+    />
+  );
 }
 
 function transportFor(stage: JudgeStage): JudgeTransport {
@@ -156,6 +220,26 @@ export function PermissionJudgeContent() {
         <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-4">
           <fieldset disabled={busy} className="space-y-4">
             <div className="space-y-1.5">
+              <Label htmlFor="permission-reviewer-model">{t("permissionJudge.reviewerModel")}</Label>
+              <JudgeModelSelect
+                id="permission-reviewer-model"
+                snapshot={snapshot}
+                value={draft.model ?? undefined}
+                unsetLabel={snapshot?.chatModel
+                  ? t("permissionJudge.followChatModelNamed", { model: snapshot.chatModel })
+                  : t("permissionJudge.followChatModel")}
+                placeholder={t("permissionJudge.followChatModel")}
+                unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
+                onChange={(model) => update({ ...draft, model: model ?? null })}
+              />
+              <p className="text-xs text-muted-foreground">{t("permissionJudge.reviewerModelHelp")}</p>
+              {snapshot?.reviewerModelUnavailable === true && !dirtyRef.current && (
+                <p role="alert" data-testid="permission-reviewer-model-unavailable" className="text-sm text-destructive">
+                  {t("permissionJudge.reviewerModelUnavailable")}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="permission-judge-mode">{t("permissionJudge.mode")}</Label>
               <select id="permission-judge-mode" className={SELECT_CLASS} value={draft.chain.length === 0 ? "off" : draft.mode} onChange={(event) => {
                 const mode = event.target.value;
@@ -184,9 +268,6 @@ export function PermissionJudgeContent() {
                   {draft.chain.map((stage, index) => {
                     const transport = transportFor(stage);
                     const prefix = `permission-judge-stage-${index}`;
-                    const selectedModel = stage.model ? `${stage.model.vendor}/${stage.model.model}` : "";
-                    const options = snapshot?.modelOptions ?? [];
-                    const unavailableModel = stage.model && !options.some((option) => option.vendor === stage.model?.vendor && option.model === stage.model.model);
                     return (
                       <li key={index} className="space-y-3 rounded-md border p-3" aria-label={t("permissionJudge.stage", { number: index + 1 })}>
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -217,15 +298,18 @@ export function PermissionJudgeContent() {
                         {transport === "builtin-llm" ? (
                           <div className="space-y-1.5">
                             <Label htmlFor={`${prefix}-model`}>{t("permissionJudge.model")}</Label>
-                            <select id={`${prefix}-model`} className={SELECT_CLASS} value={selectedModel} onChange={(event) => {
-                              const model = options.find((option) => `${option.vendor}/${option.model}` === event.target.value);
-                              const { model: _previousModel, ...rest } = stage;
-                              updateStage(index, model ? { ...rest, model } : rest);
-                            }}>
-                              <option value="">{t("permissionJudge.currentReviewer")}</option>
-                              {unavailableModel && <option value={selectedModel} disabled>{t("permissionJudge.unavailableModel", { model: selectedModel })}</option>}
-                              {options.map((option) => <option key={`${option.vendor}/${option.model}`} value={`${option.vendor}/${option.model}`}>{option.vendor} / {option.model}</option>)}
-                            </select>
+                            <JudgeModelSelect
+                              id={`${prefix}-model`}
+                              snapshot={snapshot}
+                              value={stage.model}
+                              unsetLabel={t("permissionJudge.currentReviewer")}
+                              placeholder={t("permissionJudge.currentReviewer")}
+                              unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
+                              onChange={(model) => {
+                                const { model: _previousModel, ...rest } = stage;
+                                updateStage(index, model ? { ...rest, model } : rest);
+                              }}
+                            />
                           </div>
                         ) : (
                           <>

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirFile } from "../../__tests__/test-helpers.js";
-import { judgeModelCatalogFrom } from "../judge/judge-settings.js";
+import { judgeModelCatalogFrom } from "../judge/judge-model-catalog.js";
 import { readJudgeSettings, readPermissionSettings, setJudgeSettingsPersist } from "../permission-settings-store.js";
 
 const fixture = useTempDirFile("ave-judge-settings-", "settings.json");
@@ -46,6 +46,25 @@ describe("judge settings persistence", () => {
     expect(settings.chain[0]?.model).toEqual({ vendor: "openai-compatible", model: "team/model" });
     expect(readFileSync(path, "utf8")).toContain('"model": "openai-compatible/team/model"');
     expect(readJudgeSettings(path, catalog).settings).toEqual(settings);
+  });
+
+  it("persists the reviewer model and its unset state explicitly", async () => {
+    const { path } = fixture();
+    const catalog = judgeModelCatalogFrom({ vendors: { "openai-compatible": { model: "team/reviewer", baseUrl: "http://localhost:8000/v1" } } });
+    const picked = await setJudgeSettingsPersist({ model: "openai-compatible/team/reviewer" }, path, catalog);
+    expect(picked.settings.model).toEqual({ vendor: "openai-compatible", model: "team/reviewer" });
+    await setJudgeSettingsPersist({ model: null }, path, catalog);
+    expect(JSON.parse(readFileSync(path, "utf8")).permissions.judge.model).toBeNull();
+  });
+
+  it("keeps an unavailable reviewer model through a save that does not replace it", async () => {
+    const { path } = fixture();
+    writeFileSync(path, JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
+    expect(readJudgeSettings(path)).toMatchObject({ modelRejected: true, settings: { model: null } });
+    await expect(setJudgeSettingsPersist({ mode: "active" }, path)).rejects.toThrow(/not offered/);
+    expect(JSON.parse(readFileSync(path, "utf8")).permissions.judge.model).toBe("claude/removed-model");
+    await setJudgeSettingsPersist({ model: null, mode: "active" }, path);
+    expect(readJudgeSettings(path)).not.toHaveProperty("modelRejected");
   });
 
   it("rejects invalid updates without altering bytes", async () => {
