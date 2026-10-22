@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand, wrapTerminalCommand, grantWindowsWorkerFilesystemAccess } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, initializeAsrtSandbox, isAsrtSandboxActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapWorkerCommand, wrapTerminalCommand, grantWindowsWorkerFilesystemAccess } from "../asrt-sandbox.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import { readAsrtWindowsStatus } from "../asrt-windows-support.js";
 
 const runtime = vi.hoisted(() => ({ initialize: vi.fn(), wrap: vi.fn() }));
@@ -20,12 +21,12 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 
 const ORIGINAL_PLATFORM = process.platform;
 const OWNER_SID = "S-1-5-21-100-200-300-1001";
-const OWNER_DACL = `D:P(A;OICI;FA;;;${OWNER_SID})`;
 const home = useTempPaths("ave-home-confinement-", ".ave");
 
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   _resetAveHomePrivacyForTest();
+  __resetSandboxRequestedAtBootForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
 });
@@ -59,14 +60,10 @@ describe("private-directory confinement gate", () => {
     const path = failure.startsWith("secrets") ? join(dir, "secrets") : dir;
     const privacy = ensureAveHomePrivate(dir, {
       platform: "win32",
-      run: (file, args) => {
-        if (file.endsWith("whoami.exe")) return `"example","${OWNER_SID}"`;
-        if (args[0] === path && failure.endsWith("command")) throw new Error("command failed");
-        return "";
-      },
-      readDacls: (paths) => paths.map((target) => target === path && failure.endsWith("read")
-        ? { path: target, error: "read failed" }
-        : { path: target, sddl: OWNER_DACL }),
+      readDacls: (paths) => paths.map((target) => target === path
+        ? { path: target, error: "failed", category: failure.endsWith("command") ? "icacls-failed" as const : "read-back-failed" as const }
+        : { path: target, currentUserSid: OWNER_SID, ownerSid: OWNER_SID, protected: true,
+          rules: [{ sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: false }] }),
     });
     expect(privacy.enforcement).toBe("none");
     setAveHomePrivacyAtBoot(privacy);
@@ -93,5 +90,57 @@ describe("private-directory confinement gate", () => {
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(isAsrtSandboxActive()).toBe(true);
     expect(await readAsrtWindowsStatus()).toMatchObject({ applicable: false });
+  });
+
+  it("keeps headless starts refused, reports each refusal, and grants nothing automatically", () => {
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "read-back-failed", reason: "fixture" });
+    const report = vi.fn();
+    setAveHomePrivacyRefusalReporter(report);
+    for (let attempt = 0; attempt < 3; attempt++) expect(() => assertExtensionStartAllowed()).toThrow("Settings > Permissions");
+    expect(report).toHaveBeenCalledTimes(3);
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+  });
+
+  it("keeps approval only until a new boot or a changed privacy observation", async () => {
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    const dir = home();
+    const privacy = { enforcement: "none" as const, home: dir, category: "read-back-failed" as const, reason: "fixture" };
+    setAveHomePrivacyAtBoot(privacy);
+    expect(() => assertExtensionStartAllowed()).toThrow(dir);
+    approveExtensionsWithoutIsolation();
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+    expect(await readAsrtWindowsStatus()).toMatchObject({ ready: false, homePrivacyError: { approvedForSession: true } });
+    setAveHomePrivacyAtBoot(privacy);
+    expect(areExtensionsWithoutIsolationApproved()).toBe(true);
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+    expect(() => assertExtensionStartAllowed()).toThrow("Restart Ave");
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(isPluginWorkerConfinementActive()).toBe(true);
+    setAveHomePrivacyAtBoot(privacy);
+    expect(() => assertExtensionStartAllowed()).toThrow(dir);
+    approveExtensionsWithoutIsolation();
+    _resetAveHomePrivacyForTest();
+    setAveHomePrivacyAtBoot(privacy);
+    expect(() => assertExtensionStartAllowed()).toThrow(dir);
+  });
+
+  it("reports inactive confinement without throwing or auditing a refused status query", async () => {
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "read-back-failed", reason: "fixture" });
+    const report = vi.fn();
+    setAveHomePrivacyRefusalReporter(report);
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+    approveExtensionsWithoutIsolation();
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+    expect(() => assertExtensionStartAllowed()).not.toThrow();
+    expect(report).not.toHaveBeenCalled();
   });
 });

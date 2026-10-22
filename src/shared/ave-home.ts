@@ -80,6 +80,7 @@ export type AveHomePrivacy =
   };
 
 export type AveHomePrivacyFailureCategory =
+  | "system-root-missing"
   | "directory-failed"
   | "identity-failed"
   | "icacls-failed"
@@ -95,73 +96,125 @@ export interface AveHomePrincipal {
 
 export interface WindowsDirectoryDacl {
   path: string;
-  sddl?: string;
-  principals?: AveHomePrincipal[];
+  currentUserSid?: string;
+  elevated?: boolean;
+  ownerSid?: string;
+  protected?: boolean;
+  child?: boolean;
+  rules?: WindowsAccessRule[];
+  category?: AveHomePrivacyFailureCategory;
   error?: string;
+}
+
+export interface WindowsAccessRule extends AveHomePrincipal {
+  accessControlType: number;
+  fileSystemRights: number;
+  inheritanceFlags: number;
+  propagationFlags: number;
+  isInherited: boolean;
 }
 
 /** Seam for the Windows ACL commands, so the argv can be asserted anywhere. */
 export interface AveHomePrivacyRuntime {
   platform: NodeJS.Platform;
-  run(file: string, args: readonly string[]): string;
-  readDacls(paths: readonly string[]): WindowsDirectoryDacl[];
+  readDacls(paths: readonly string[], protect?: boolean): WindowsDirectoryDacl[];
 }
 
 const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
   platform: process.platform,
-  run: (file, args) =>
-    execFileSync(file, [...args], { encoding: "utf-8", windowsHide: true }),
   readDacls: readWindowsDirectoryDacls,
 };
 
-/** Read the access descriptor in its SID-based form. */
-export function readWindowsDirectoryDacl(path: string): string {
-  const result = readWindowsDirectoryDacls([path])[0];
-  if (result?.sddl === undefined) throw new Error(result?.error ?? "Directory DACL read-back missing");
-  return result.sddl;
-}
-
 /** One read-back process for all directories; a read failure keeps its path. */
-export function readWindowsDirectoryDacls(paths: readonly string[]): WindowsDirectoryDacl[] {
-  const literals = paths.map((path) => `'${path.replace(/'/g, "''")}'`).join(",");
+export function readWindowsDirectoryDacls(paths: readonly string[], protect = false): WindowsDirectoryDacl[] {
+  if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
+    return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
+  }
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-    `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $results = @(foreach ($path in @(${literals})) {
+    `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+    $request = ConvertFrom-Json $env:AVE_DACL_PATHS;
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
+    $sid = $identity.User.Value;
+    $elevated = ([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
+    function Read-Dacl($path, $child) {
       try {
         $acl = Get-Acl -LiteralPath $path;
-        $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access);
-        $principals = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
-          $principal = @{ sid = $_.IdentityReference.Value };
+        $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
+          $principal = @{ sid = $_.IdentityReference.Value; accessControlType = [int]$_.AccessControlType;
+            fileSystemRights = [int]$_.FileSystemRights; inheritanceFlags = [int]$_.InheritanceFlags;
+            propagationFlags = [int]$_.PropagationFlags; isInherited = $_.IsInherited };
           try { $principal.account = $_.IdentityReference.Translate([System.Security.Principal.NTAccount]).Value } catch {}
           $principal
         });
-        @{ path = $path; sddl = $sddl; principals = $principals }
+        @{ path = $path; currentUserSid = $sid; elevated = $elevated;
+          ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
+          protected = $acl.AreAccessRulesProtected; child = $child; rules = $rules }
       } catch { @{ path = $path; error = $_.Exception.Message } }
-    }); ConvertTo-Json -InputObject $results -Depth 4 -Compress`,
-  ], { encoding: "utf-8", windowsHide: true });
+    }
+    $results = @(foreach ($path in $request.paths) {
+      if ($request.protect) {
+        & (Join-Path $env:AVE_DACL_SYSTEM_ROOT 'System32/icacls.exe') $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/q' | Out-Null;
+        if ($LASTEXITCODE -ne 0) { @{ path = $path; category = 'icacls-failed'; error = 'Directory permission command failed' }; continue }
+      }
+      Read-Dacl $path $false
+    });
+    if ($request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
+      try {
+        $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
+      } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
+    }
+    ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
+  ], { encoding: "utf-8", windowsHide: true, env: { ...process.env,
+    AVE_DACL_PATHS: JSON.stringify({ paths, protect }), AVE_DACL_SYSTEM_ROOT: process.env.SystemRoot ?? process.env.windir } });
   const results: unknown = JSON.parse(output);
-  if (!Array.isArray(results) || results.length !== paths.length) {
+  if (!Array.isArray(results) || results.length < paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");
   }
-  return paths.map((path, index) => {
-    const result = results[index];
-    if (result?.path !== path || (typeof result.sddl !== "string" && typeof result.error !== "string")) {
-      return { path, error: "Directory DACL read-back returned an invalid descriptor" };
-    }
-    return result;
-  });
+  return results;
 }
 
-function isOwnerOnlyDacl(sddl: string, sid: string): boolean {
-  const match = /^D:((?:P|AI|AR)*)\(A;(OICI|CIOI);(FA|0x001f01ff|0x1f01ff);;;(S-1-[0-9-]+)\)$/.exec(sddl.trim());
-  return match !== null && match[1].includes("P") && match[4] === sid;
+function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
+  // An elevated token may create an Administrators-owned object. The grant
+  // still belongs only to the token user; group Allow entries are never accepted.
+  const ownerValid = descriptor.ownerSid === sid ||
+    (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
+  const rule = descriptor.rules?.[0];
+  return ownerValid && descriptor.rules?.length === 1 && rule?.sid === sid &&
+    rule.accessControlType === 0 && rule.fileSystemRights === 2032127 &&
+    rule.inheritanceFlags === 3 && rule.propagationFlags === 0 && rule.isInherited === false;
 }
 
 let bootHomePrivacy: AveHomePrivacy | undefined;
+let extensionsWithoutIsolationApproved = false;
+let privacyRecovered = false;
+let reportPrivacyRefusal: ((message: string) => void) | undefined;
+
+/** Main-process audit wiring; no renderer or extension owns this state. */
+export function setAveHomePrivacyRefusalReporter(reporter: (message: string) => void): void {
+  reportPrivacyRefusal = reporter;
+}
+
+export function areExtensionsWithoutIsolationApproved(): boolean {
+  return getAveHomePrivacyFailure() !== undefined && extensionsWithoutIsolationApproved;
+}
+
+/** A repaired home requires the backend to be live again before spawning. */
+export function hasAveHomePrivacyRecovered(): boolean {
+  return process.platform === "win32" && privacyRecovered;
+}
+
+/** Called only by the trusted, gesture-checked permissions IPC handler. */
+export function approveExtensionsWithoutIsolation(): void {
+  if (getAveHomePrivacyFailure() === undefined) throw new Error("Home privacy approval is not applicable");
+  extensionsWithoutIsolationApproved = true;
+}
 
 /** Boot publishes this before any confinement backend can start. */
 export function setAveHomePrivacyAtBoot(privacy: AveHomePrivacy): void {
-  bootHomePrivacy = Object.freeze({ ...privacy });
+  if (JSON.stringify(bootHomePrivacy) !== JSON.stringify(privacy)) extensionsWithoutIsolationApproved = false;
+  if (bootHomePrivacy?.enforcement === "none" && privacy.enforcement === "win32-dacl") privacyRecovered = true;
+  bootHomePrivacy = Object.freeze(structuredClone(privacy));
 }
 
 /** The failed path is safe to show; command diagnostics stay in the host log. */
@@ -180,13 +233,18 @@ export function assertAveHomePrivacyForConfinement(): void {
   const failure = getAveHomePrivacyFailure();
   if (failure !== undefined) {
     const principals = failure.extraPrincipals?.map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", ");
-    throw new Error(`Extension confinement refused: owner-only directory protection could not be verified for ${failure.failedPath ?? failure.home} (${failure.category})${principals ? `; remove these entries: ${principals}, or move AVE_HOME` : "; repair directory permissions or move AVE_HOME"}`);
+    const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}, ${failure.failedPath ?? failure.home}). Approve running without isolation in Settings > Permissions, or fix the folder permissions.${principals ? ` Extra principals: ${principals}.` : ""}`;
+    reportPrivacyRefusal?.(message);
+    throw new Error(message);
   }
 }
 
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
   bootHomePrivacy = undefined;
+  extensionsWithoutIsolationApproved = false;
+  privacyRecovered = false;
+  reportPrivacyRefusal = undefined;
 }
 
 /**
@@ -212,18 +270,6 @@ export function win32SystemBinary(
 ): string {
   const root = env.SystemRoot ?? env.windir;
   return root ? join(root, "System32", `${name}.exe`) : name;
-}
-
-/**
- * Parse the current account's SID out of `whoami /user /fo csv /nh`, whose one
- * line is `"DOMAIN\\user","S-1-5-21-…"`. The SID is used rather than the name
- * because account names are localized and domain-qualified, and `icacls`
- * resolves a wrong name into a wrong ACE instead of an error.
- */
-function parseCurrentUserSid(whoamiCsv: string): string {
-  const match = /"(S-1-[0-9-]+)"\s*$/m.exec(whoamiCsv.trim());
-  if (!match) throw new Error(`could not read the current user SID from: ${whoamiCsv.trim()}`);
-  return match[1];
 }
 
 /**
@@ -261,48 +307,53 @@ export function ensureAveHomePrivate(
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
     mkdirSync(home, { recursive: true, mode: 0o700 });
-    category = "identity-failed";
-    const sid = parseCurrentUserSid(
-      runtime.run(win32SystemBinary("whoami"), ["/user", "/fo", "csv", "/nh"]),
-    );
     for (path of [home, join(home, "secrets")]) {
       category = "directory-failed";
       mkdirSync(path, { recursive: true, mode: 0o700 });
-      category = "icacls-failed";
-      runtime.run(win32SystemBinary("icacls"), [
-        path,
-        "/inheritance:r",
-        "/grant:r",
-        `*${sid}:(OI)(CI)F`,
-        "/q",
-      ]);
     }
     category = "read-back-failed";
     path = home;
     const paths = [home, join(home, "secrets")];
-    const descriptors = runtime.readDacls(paths);
-    for (path of paths) {
-      const descriptor = descriptors.find((entry) => entry.path === path);
-      if (descriptor?.sddl === undefined || descriptor.error !== undefined) {
+    const descriptors = runtime.readDacls(paths, true);
+    const sid = descriptors[0]?.currentUserSid;
+    for (const target of paths) {
+      if (!descriptors.some((entry) => entry.path === target && !entry.child)) {
+        throw new Error("Directory DACL read-back missing");
+      }
+    }
+    for (const descriptor of descriptors) {
+      path = descriptor.path;
+      if (descriptor.error !== undefined) {
+        category = descriptor.category ?? "read-back-failed";
         throw new Error(descriptor?.error ?? "Directory DACL read-back missing");
       }
-      const { sddl } = descriptor;
-      const principals = new Map((descriptor.principals ?? []).map((principal) => [principal.sid, principal]));
-      for (const match of sddl.matchAll(/;;;(S-1-[0-9-]+)\)/g)) {
-        if (!principals.has(match[1])) principals.set(match[1], { sid: match[1] });
+      if (typeof sid !== "string" || !/^S-1-[0-9-]+$/.test(sid) || descriptor.currentUserSid !== sid) {
+        category = "identity-failed";
+        throw new Error("Current account SID read-back is invalid");
       }
-      const extraPrincipals = [...principals.values()].filter((principal) => principal.sid !== sid);
+      if (!Array.isArray(descriptor.rules) || descriptor.rules.some((rule) =>
+        typeof rule.sid !== "string" || !/^S-1-[0-9-]+$/.test(rule.sid) ||
+        ![0, 1].includes(rule.accessControlType) || !Number.isInteger(rule.fileSystemRights) ||
+        !Number.isInteger(rule.inheritanceFlags) || !Number.isInteger(rule.propagationFlags) ||
+        typeof rule.isInherited !== "boolean")) {
+        throw new Error("Directory DACL rules read-back is invalid");
+      }
+      const extraPrincipals = [...new Map(descriptor.rules
+        .filter((rule) => rule.sid !== sid && (!descriptor.child || (rule.accessControlType === 0 && !rule.isInherited)))
+        .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
           reason: "Remove the extra principal entries or move AVE_HOME" };
       }
-      if (!/^D:(?:AI|AR)*P/.test(sddl.trim())) {
+      if (descriptor.child) continue;
+      if (descriptor.protected !== true) {
         return { enforcement: "none", home, failedPath: path, category: "not-protected", reason: "Directory DACL is not protected against inheritance" };
       }
-      if (!isOwnerOnlyDacl(sddl, sid)) {
+      if (!isOwnerOnlyDacl(descriptor, sid)) {
         return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory DACL is not owner-only FullControl with object and container inheritance" };
       }
     }
+    if (!sid) throw new Error("Current account SID read-back missing");
     return { enforcement: "win32-dacl", home, sid };
   } catch (err) {
     return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message };

@@ -380,7 +380,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     };
   }
 
-  const { getAveHomePrivacyFailure } = await import("../shared/ave-home.js");
+  const { getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } = await import("../shared/ave-home.js");
   const failure = getAveHomePrivacyFailure();
   if (failure !== undefined) {
     return {
@@ -388,7 +388,8 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
       userState: null,
       wfpState: null,
       ready: false,
-      homePrivacyError: { path: failure.failedPath ?? failure.home, category: failure.category, extraPrincipals: failure.extraPrincipals },
+      homePrivacyError: { path: failure.failedPath ?? failure.home, category: failure.category, extraPrincipals: failure.extraPrincipals,
+        approvedForSession: areExtensionsWithoutIsolationApproved() },
       instructions: "",
     };
   }

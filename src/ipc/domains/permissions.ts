@@ -18,6 +18,7 @@ import {
 /** The destination the Settings diagnostic line resolves. */
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
@@ -346,6 +347,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       });
       shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
     }
+    const privacyFailure = getAveHomePrivacyFailure();
     return {
       platform,
       enabled,
@@ -355,6 +357,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       potentialReason,
       runtime,
       workerRuntime,
+      ...(privacyFailure ? { homePrivacyError: {
+        path: privacyFailure.failedPath ?? privacyFailure.home,
+        category: privacyFailure.category,
+        extraPrincipals: privacyFailure.extraPrincipals,
+        approvedForSession: areExtensionsWithoutIsolationApproved(),
+      } } : {}),
       // What the gate decided THIS boot. The runtime snapshot cannot stand in
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
@@ -591,6 +599,21 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "not-applicable", message: "Windows sandbox install is only available on win32" };
     }
     return installAsrtWindowsSandbox();
+  });
+
+  ipcMain.handle(PERMISSIONS.approveExtensionsWithoutIsolation, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approveExtensionsWithoutIsolation, e); return UNAUTHORIZED_FRAME; }
+    const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
+    if (!intent.ok) return intent;
+    const failure = getAveHomePrivacyFailure();
+    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    if (!areExtensionsWithoutIsolationApproved()) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",
+          category: failure.category, path: failure.failedPath ?? failure.home }) });
+      approveExtensionsWithoutIsolation();
+    }
+    return { ok: true };
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {

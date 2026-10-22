@@ -22,11 +22,17 @@ import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
+import { getAveHomePrivacyFailure, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 
 const log = createLogger("ave");
 
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
+  setAveHomePrivacyRefusalReporter((message) => {
+    log.warn(message);
+    bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
+      output: `[ave_home_privacy_refused] ${message}` });
+  });
 
   // Platform policy (ALL platforms share the SAME gate — there is no separate
   // Windows opt-in):
@@ -220,7 +226,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               depsOk: deps.errors.length === 0,
             });
 
-      if (decision.action === "abort") {
+      const privacyFailure = getAveHomePrivacyFailure();
+      if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
+        const path = privacyFailure.failedPath ?? privacyFailure.home;
+        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). Extensions require session approval in Settings > Permissions.", privacyFailure.category, path);
+        recordWindows("none", true);
+        recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
+      } else if (decision.action === "abort") {
         // EXPLICIT opt-in (AVE_SANDBOX_ENABLED=1 or AVE_PLUGIN_WORKER_CONFINEMENT=1)
         // on mac/linux + the sandbox
         // cannot activate (bwrap/socat/ripgrep missing). The operator demanded

@@ -104,7 +104,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("refuses the extension backend on a failed private-directory check while retaining the proxy-only route", async () => {
+it("degrades before initializing the extension backend when private-directory protection fails", async () => {
   const path = "D:/private-state/secrets";
   setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category: "read-back-failed", reason: "read-back failed" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
@@ -113,12 +113,17 @@ it("refuses the extension backend on a failed private-directory check while reta
     if (settings.windows?.externalConfinement !== true) assertAveHomePrivacyForConfinement();
   });
 
-  await initSandboxGate(harness.context(true, true));
+  const context = harness.context(true, true);
+  const logRefusal = vi.fn();
+  context.bootAuditLogger.log = logRefusal;
+  await initSandboxGate(context);
 
-  expect(h.initialize).toHaveBeenCalledTimes(2);
-  expect(h.initialize.mock.calls[1]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
+  expect(h.initialize).not.toHaveBeenCalled();
+  expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed", causes: ["ave-home-privacy-failed"] });
   expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining(path));
+  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), "read-back-failed", path);
+  expect(() => assertAveHomePrivacyForConfinement()).toThrow("Settings > Permissions");
+  expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
 

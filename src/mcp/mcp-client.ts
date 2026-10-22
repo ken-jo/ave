@@ -59,6 +59,7 @@ import {
 } from "../main/managed-child-processes.js";
 import {
   isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
 import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
@@ -2167,6 +2168,7 @@ class StdioTransport implements McpTransport {
     // hands the server to the host's stdio relay under a held ACL grant
     // (openWrappedWindows).
     // Gate OFF ⇒ the plain spawn below is UNCHANGED.
+    assertExtensionStartAllowed();
     if (isPluginWorkerConfinementActive()) {
       try {
         await this.openWrapped(spawnCommand, baseEnv);

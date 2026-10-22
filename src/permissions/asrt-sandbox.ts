@@ -9,7 +9,7 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { aveHome, assertAveHomePrivacyForConfinement } from "../shared/ave-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved, hasAveHomePrivacyRecovered } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -1095,13 +1095,24 @@ export function isShellSandboxActive(): boolean {
 }
 
 /**
- * Extension spawn gate (plugin workers, out-of-process plugin children, plugin
- * script hooks, external MCP stdio servers): ASRT is active AND plugin-worker
+ * Extension confinement status: ASRT is active AND plugin-worker
  * confinement (`features.pluginWorkerConfinement`) was requested at boot. The
  * shell sandbox setting never decides this.
  */
 export function isPluginWorkerConfinementActive(): boolean {
+  if (getAveHomePrivacyFailure() !== undefined) return false;
   return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+}
+
+/** Refuse extension starts until private storage or session approval is established. */
+export function assertExtensionStartAllowed(): void {
+  if (process.platform === "win32" && isPluginWorkerConfinementRequestedAtBoot()) {
+    if (areExtensionsWithoutIsolationApproved()) return;
+    assertAveHomePrivacyForConfinement();
+    if (hasAveHomePrivacyRecovered() && (!active || windowsExternalConfinement)) {
+      throw new Error("Extension isolation must be restored after AVE_HOME privacy recovery. Restart Ave to initialize isolation.");
+    }
+  }
 }
 
 /**

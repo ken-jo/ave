@@ -42,6 +42,7 @@ const PRINCIPAL = { kind: "plugin", id: "x" } as const;
 const TEMP_DIR = `${TEMP_ROOT}/plugin-78`;
 
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  assertExtensionStartAllowed: (await importOriginal<typeof import("../asrt-sandbox.js")>()).assertExtensionStartAllowed,
   // The real launcher, so the command line asserted below is the one ASRT gets.
   sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
   ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({

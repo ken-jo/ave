@@ -12,10 +12,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { setAveHomePrivacyAtBoot, areExtensionsWithoutIsolationApproved, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { readdirSync } from "node:fs";
 import {
   foreignFrameEvent,
   hostFrameEvent,
   makeRegisteredHandlerInvoker,
+  useTempDirs,
 } from "../../../__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -150,6 +153,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _resetAveHomePrivacyForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
 });
 
@@ -164,6 +168,57 @@ function readyUserStatus(): typeof asrtState.userStatus {
     credPresent: true,
   };
 }
+
+describe("extension isolation session approval", () => {
+  const home = useTempDirs("ave-home-session-approval-");
+  function failPrivacy() {
+    setProcessPlatform("win32");
+    const path = home();
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: path, category: "extra-principals", reason: "fixture",
+      extraPrincipals: [{ sid: "S-1-5-18" }] });
+    return path;
+  }
+  it.each([undefined, foreignFrameEvent("https://evil.example"), foreignFrameEvent("file:///app/plugin-ui-shell.html")])("rejects an untrusted sender %j", async (event) => {
+    failPrivacy(); await setup();
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, event, { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+  });
+  it("rejects headless and synthetic calls without a user gesture", async () => {
+    failPrivacy(); await setup();
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), {}))
+      .toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+  });
+  it("approves only in main memory, audits once, survives renderer reload and asks again next boot", async () => {
+    const path = failPrivacy();
+    const { registerPermissionsHandlers } = await import("../permissions.js");
+    const deps = { ...makeDeps({ pluginWorkerConfinement: true }), settingsService: { get: vi.fn(() => ({ pluginWorkerConfinement: true })), set: vi.fn() } };
+    registerPermissionsHandlers(deps as never);
+    const files = readdirSync(path).sort();
+    const approve = () => invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), { intent: USER_INTENT });
+    expect(await approve()).toEqual({ ok: true });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(true);
+    expect(await approve()).toEqual({ ok: true });
+    expect(deps.auditLogger.log).toHaveBeenCalledTimes(1);
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "approval", timestamp: expect.any(String),
+      output: expect.stringContaining('"who":"user-ui"') }));
+    const entry = JSON.parse(deps.auditLogger.log.mock.calls[0][0].output);
+    expect(entry).toMatchObject({ category: "extra-principals", path });
+    expect(deps.settingsService.set).not.toHaveBeenCalled();
+    expect(readdirSync(path).sort()).toEqual(files);
+    await setup({ pluginWorkerConfinement: true });
+    expect(await invoke(PERMISSIONS.sandboxWindowsStatus, hostFrameEvent())).toMatchObject({ ready: false,
+      homePrivacyError: { path, category: "extra-principals", approvedForSession: true } });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ homePrivacyError: { approvedForSession: true } });
+    _resetAveHomePrivacyForTest(); failPrivacy();
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+  });
+  it("cannot approve when the home is protected", async () => {
+    setProcessPlatform("win32"); await setup();
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), { intent: USER_INTENT }))
+      .toMatchObject({ ok: false, error: "not-applicable" });
+  });
+});
 
 describe("sandboxWindowsStatus", () => {
   it("returns a not-applicable shape off win32 (no ASRT call)", async () => {

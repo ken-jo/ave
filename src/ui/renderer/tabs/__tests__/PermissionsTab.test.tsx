@@ -1401,6 +1401,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(notice).toHaveAttribute("role", "alert");
       expect(notice).toHaveTextContent(path);
       expect(notice).toHaveTextContent("AVE_HOME");
+      expect(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeInTheDocument();
       if (category === "extra-principals") {
         expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
         expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
@@ -1413,6 +1414,25 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } finally {
       setLocale(previousLocale);
     }
+  });
+
+  it("requests a session approval once and reads the main-owned OFF status again after a reload", async () => {
+    const status = { applicable: true, userState: null, wfpState: null, ready: false, instructions: "",
+      homePrivacyError: { path: "D:/private-state/secrets", category: "read-back-failed", approvedForSession: false } };
+    const readStatus = vi.fn(async () => structuredClone(status));
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: readStatus });
+    const approve = vi.fn(async () => { status.homePrivacyError.approvedForSession = true; return { ok: true }; });
+    Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+    cleanup();
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
   });
 
   it("says the container check is still running instead of claiming MXC or a failure", async () => {
