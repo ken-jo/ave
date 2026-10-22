@@ -241,7 +241,8 @@ async function createManager(fixture: WireFixture) {
   const document = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption: createEncryption() });
   const secrets = { getSecret: (key: string) => document.getEncrypted(key),
     setSecret: (key: string, value: string) => document.set(key, value),
-    deleteSecret: async (key: string) => { await document.delete(key); } };
+    deleteSecret: async (key: string) => { await document.delete(key); },
+    canStoreEncrypted: () => document.canStoreEncrypted() };
   const registry = new ToolRegistry();
   const egressPaths: string[] = [];
   const networkFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -251,6 +252,7 @@ async function createManager(fixture: WireFixture) {
   let browserOpens = 0;
   const manager = new McpManager(new McpGovernance(policyPath), registry, networkFetch, configPath,
     undefined, undefined, undefined, undefined, secrets, {
+      secrets,
       redirectCatchers: new AuthRedirectCatchers(),
       openAuthorizationUrl: async (url) => {
         browserOpens += 1;

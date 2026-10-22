@@ -9,13 +9,32 @@ import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coo
 
 const disconnect = vi.fn(async () => undefined);
 const constructedConfigs: Array<Record<string, unknown>> = [];
+const constructedFetches: unknown[] = [];
+const oauth = vi.hoisted(() => ({ sessions: [] as Array<{ config: { id: string }; status: string; fetch: unknown; authenticate: () => Promise<void> }> }));
+vi.mock("../mcp-oauth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../mcp-oauth.js")>()),
+  McpOAuthSession: class {
+    status = "required";
+    readonly credentialKey: string;
+    readonly fetch = vi.fn();
+    constructor(readonly config: { id: string; url: string }) {
+      this.credentialKey = `mcp.oauth.${config.id}`;
+      oauth.sessions.push(this);
+    }
+    authenticate = vi.fn(async () => { this.status = "authenticated"; });
+    getStatus() { return this.status; }
+    getBlockedCode() { return undefined; }
+    dispose() { this.status = "required"; }
+  },
+}));
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
     constructor(
       private readonly config: { id: string },
       _governance: unknown,
       private readonly registry: ToolRegistry,
-    ) { constructedConfigs.push(config); }
+      networkFetch: unknown,
+    ) { constructedConfigs.push(config); constructedFetches.push(networkFetch); }
     async connect() {
       this.registry.register(createDynamicTool({
         name: "mcp_sampleportal_portal_read",
@@ -45,7 +64,8 @@ function preparePluginMcpGeneration(generation: ActivePluginGeneration, root: st
   return prepareWithDigests(generation, root, new Map(generation.contributions.map((contribution) => [contribution.localId, "d".repeat(64)])));
 }
 import { SecretDocumentStore } from "../../data/secret-document-store.js";
-import { bundledCredentialDeclaration, bundledCredentialKey, readBoundBundledCredential } from "../bundled-credential.js";
+import { bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, readBoundBundledCredential } from "../bundled-credential.js";
+import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-mcp-generation-"));
@@ -80,21 +100,45 @@ beforeEach(() => {
   disconnect.mockReset();
   disconnect.mockResolvedValue(undefined);
   constructedConfigs.length = 0;
+  constructedFetches.length = 0;
+  oauth.sessions.length = 0;
 });
 
 describe("McpManager bundled generation", () => {
-  it("refuses unconfigured remote authorization before any bundled client connection", async () => {
-    const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch);
+  it("withholds a bundled OAuth server until the Authenticate action, then connects it through its session", async () => {
+    const secrets = { getSecret: () => null, setSecret: async () => {}, deleteSecret: async () => {}, canStoreEncrypted: () => true };
+    const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch,
+      join(root, "servers-oauth.json"), undefined, undefined, undefined, undefined, secrets,
+      { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/remote-kit", pluginVersion: "1.0.0",
       generationId: "a".repeat(64), activationId: "run-oauth", localId: "remote", fingerprint: "b".repeat(64) },
     { transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }, "d".repeat(64));
     const trust = new PluginMcpTrustStore();
     trust.approve(projection);
-    const prepared = await manager.prepareBundledGeneration({ pluginId: "agent-plugin/remote-kit", generationId: "run-oauth" }, [projection], trust);
-    expect(prepared.degraded).toMatchObject([{ code: "credential_required", retryable: false }]);
+    const owner = { pluginId: "agent-plugin/remote-kit", generationId: "run-oauth" };
+    const prepared = await manager.prepareBundledGeneration(owner, [projection], trust);
+    expect(prepared.degraded).toMatchObject([{ code: "credential_required", retryable: true }]);
     expect(prepared.records).toHaveLength(0);
     expect(constructedConfigs).toHaveLength(0);
     await manager.discardBundledGeneration(prepared);
+    const stableId = bundledConfigId({ kind: "agent-plugin", name: "remote-kit" }, "remote");
+    expect(oauth.sessions).toHaveLength(1);
+    expect(oauth.sessions[0].config.id).toBe(stableId);
+    expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
+    manager.registerBundledCredentialSource("agent-plugin", {
+      list: () => [{ packageName: "remote-kit", serverName: "remote", transport: "http", url: "https://example.test/mcp", auth: "oauth" }],
+      reconnect: async () => {
+        manager.publishBundledGeneration(await manager.prepareBundledGeneration(owner, [projection], trust));
+      },
+    });
+    expect((await manager.getConfigs()).find((row) => row.id === stableId)).toMatchObject({ auth: "oauth", bundled: { name: "remote-kit" } });
+    expect(await manager.authenticate(stableId)).toEqual({ connected: true });
+    expect(oauth.sessions).toHaveLength(1);
+    expect(constructedFetches).toEqual([oauth.sessions[0].fetch]);
+    expect(manager.listServers()).toMatchObject([{ id: projection.serverId, status: "connected", authStatus: "authenticated" }]);
+    // The running server's own id resolves to the same session.
+    expect(await manager.authenticate(projection.serverId)).toEqual({ connected: true });
+    expect(oauth.sessions).toHaveLength(1);
   });
 
   it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {

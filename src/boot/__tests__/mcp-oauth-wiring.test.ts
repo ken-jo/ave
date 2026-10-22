@@ -18,8 +18,9 @@ import type { BootContext } from "../context.js";
 
 beforeEach(() => { capture.args = []; });
 
-async function wiring(available = true, backend = "unknown") {
+async function wiring(encrypted = true) {
   const settings = {
+    isSecretStorageEncrypted: vi.fn(() => encrypted),
     getSecret: vi.fn(() => "development-plaintext"),
     getEncryptedSecret: vi.fn(() => "encrypted-record"),
     setSecret: vi.fn(async () => {}),
@@ -29,7 +30,7 @@ async function wiring(available = true, backend = "unknown") {
   const shellOpenExternal = vi.fn(async () => {});
   const context = {
     settingsService: settings, singleHopNetworkFetch: hostFetch,
-    host: { encryption: { isEncryptionAvailable: () => available, getSelectedStorageBackend: () => backend }, desktop: { shellOpenExternal } },
+    host: { desktop: { shellOpenExternal } },
   } as unknown as BootContext;
   await setupMcp(context);
   return { settings, hostFetch, shellOpenExternal, oauth: capture.args[9] as McpOAuthDependencies };
@@ -44,8 +45,15 @@ describe("remote authorization boot boundaries", () => {
     expect(settings.getSecret).not.toHaveBeenCalled();
   });
 
-  it.each([[false, "unknown"], [true, "basic_text"]])("refuses credential writes when encryption is unavailable (%s, %s)", async (available, backend) => {
-    const { settings, oauth } = await wiring(available as boolean, backend as string);
+  it("answers encrypted-storage availability from the settings store, the single source of truth", async () => {
+    const { settings, oauth } = await wiring(false);
+    expect(oauth.secrets.canStoreEncrypted()).toBe(false);
+    expect(settings.isSecretStorageEncrypted).toHaveBeenCalled();
+    expect((await wiring(true)).oauth.secrets.canStoreEncrypted()).toBe(true);
+  });
+
+  it("refuses credential writes when the settings store cannot encrypt", async () => {
+    const { settings, oauth } = await wiring(false);
     await expect(oauth.secrets.setSecret("mcp.oauth.record", "throwaway-secret")).rejects.toThrow("MCP authorization requires encrypted storage");
     expect(settings.setSecret).not.toHaveBeenCalled();
   });

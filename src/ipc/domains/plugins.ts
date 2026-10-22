@@ -62,7 +62,20 @@ import {
   createExternalToolCallSource,
   createLoopbackToolCallSource,
 } from "../../mcp/mcp-ui-tool-call.js";
-import type { McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+
+/** A settings-row id for a plugin-bundled server that is not running (see `bundledConfigId`). */
+function isBundledMcpConfigId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 1024) return false;
+  try { return parseBundledConfigId(value) !== null; }
+  catch { return false; }
+}
+
+/** Authorization outcomes the renderer may see; anything else collapses to a generic failure. */
+const MCP_AUTH_ERROR_CODES: ReadonlySet<McpAuthErrorCode> = new Set<McpAuthErrorCode>([
+  "mcp-auth-required", "mcp-auth-failed", "mcp-auth-storage-unavailable",
+  "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported",
+]);
 import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import { parseMcpAppDownload, type McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
@@ -79,6 +92,7 @@ import {
   MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS,
 } from "../../shared/mcp-resource-template-bounds.js";
 import { isUsableMcpServerId } from "../../shared/mcp-app-partition.js";
+import { parseBundledConfigId } from "../../mcp/bundled-credential.js";
 import { scrubShortError } from "../../shared/dlp.js";
 import {
   isUsablePromptName,
@@ -1031,18 +1045,15 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return deps.mcpManager.killSwitch(serverId);
   });
   ipcMain.handle(CHANNELS.mcp.authenticate, async (e, serverId: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e);
-      return { connected: false, errorCode: "mcp-auth-failed" };
-    }
-    if (!isUsableMcpServerId(serverId)) {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e); return UNAUTHORIZED_FRAME; }
+    if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) {
       return { connected: false, errorCode: "mcp-auth-failed" };
     }
     try {
       const result = await deps.mcpManager.authenticate(serverId);
-      return result.connected
-        ? { connected: true }
-        : { connected: false, errorCode: result.errorCode === "mcp-auth-required" ? "mcp-auth-required" : "mcp-auth-failed" };
+      if (result.connected) return { connected: true };
+      const errorCode = MCP_AUTH_ERROR_CODES.has(result.errorCode as McpAuthErrorCode) ? result.errorCode : "mcp-auth-failed";
+      return { connected: false, errorCode };
     } catch {
       return { connected: false, errorCode: "mcp-auth-failed" };
     }

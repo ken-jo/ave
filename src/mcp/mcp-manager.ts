@@ -6,7 +6,10 @@ import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  McpAuthErrorCode,
+  McpAuthStatus,
   McpAuthenticationResult,
+  McpHttpServerConfig,
   McpConfigMutationResult,
   McpResourceSummary,
   McpResourceTemplateSummary,
@@ -19,7 +22,7 @@ import type {
 } from "./types.js";
 import { McpGovernance } from "./mcp-governance.js";
 import { McpClient, scrubSecrets } from "./mcp-client.js";
-import { McpOAuthSession, type McpOAuthDependencies } from "./mcp-oauth.js";
+import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
 import type { PermissionManager } from "../permissions/permission-manager.js";
@@ -45,7 +48,7 @@ interface BundledCredentialDeclaration {
   transport: "stdio" | "http";
   command?: string;
   url?: string;
-  auth?: "api-key";
+  auth?: "api-key" | "oauth";
   apiKeyEnv?: string;
   apiKeyHeader?: string;
   args?: string[];
@@ -61,6 +64,14 @@ export interface BundledSecretStore {
   getSecret(key: string): string | null;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
+}
+
+/** Encrypted-store record naming each external server's OAuth credential key (keys only, no tokens). */
+const OAUTH_CREDENTIAL_INDEX_KEY = "mcp.oauth.index";
+
+function oauthErrorCode(error: unknown, status: McpAuthStatus | undefined): McpAuthErrorCode {
+  if (error instanceof McpOAuthError) return error.code;
+  return status === "required" ? "mcp-auth-required" : "mcp-auth-failed";
 }
 
 const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
@@ -115,6 +126,11 @@ export interface PreparedBundledMcpGeneration {
 export class McpManager {
   private clients = new Map<string, McpClient>();
   private readonly oauthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
+  /** Plugin-bundled OAuth sessions, keyed by the generation-independent bundled config id. */
+  private readonly bundledOAuthSessions = new Map<string, { fingerprint: string; session: McpOAuthSession }>();
+  /** Generation-specific bundled server id → its stable OAuth session id. */
+  private readonly bundledOAuthRuntimeIds = new Map<string, string>();
+  private oauthStoreWork: Promise<void> = Promise.resolve();
   private readonly authentications = new Map<string, Promise<McpAuthenticationResult>>();
   private readonly oauthRetirements = new Map<string, number>();
   private readonly serverLifecycleLocks = new Map<string, Promise<void>>();
@@ -179,7 +195,7 @@ export class McpManager {
      */
     private readonly onServerDisconnected?: (serverId: string) => void,
     private readonly bundledSecrets?: BundledSecretStore,
-    private readonly oauthPresentation?: Pick<McpOAuthDependencies, "redirectCatchers" | "openAuthorizationUrl"> & { secrets?: McpOAuthDependencies["secrets"] },
+    private readonly oauthPresentation?: Omit<McpOAuthDependencies, "networkFetch">,
   ) {
     this.configPath = configPath ?? defaultConfigPath();
     this.configLockPath = `${this.configPath}.guard`;
@@ -313,6 +329,7 @@ export class McpManager {
   /** 설정된 모든 승인 서버에 연결 (병렬) */
   async connectAll(): Promise<{ connected: string[]; failed: Array<{ id: string; error: string }> }> {
     const configs = await this.loadFromConfig();
+    await this.reconcileOAuthCredentials(configs);
 
     const results = await Promise.allSettled(
       configs.map((config) => this.connectServer(config).then(() => config.id)),
@@ -368,7 +385,7 @@ export class McpManager {
         ? { ...managedConfig, sandboxRoot: await this.ensureStdioSandboxRoot(config.id) }
         : managedConfig;
 
-    const oauthSession = await this.oauthSessionFor(config);
+    const oauthSession = this.oauthSessionFor(config);
     if (epoch !== this.oauthEpoch(config.id)) {
       if (oauthSession) this.discardOAuthSession(config.id, oauthSession);
       throw new Error("MCP connection retired");
@@ -433,29 +450,100 @@ export class McpManager {
     }
   }
 
-  private async oauthSessionFor(config: McpServerConfig): Promise<McpOAuthSession | undefined> {
-    const epoch = this.oauthEpoch(config.id);
+  /**
+   * The session for an external OAuth server. Decided synchronously so every
+   * concurrent caller for one id shares a single session (and so a single
+   * refresh): two sessions would each spend the same refresh token.
+   */
+  private oauthSessionFor(config: McpServerConfig): McpOAuthSession | undefined {
     const previous = this.oauthSessions.get(config.id);
     if (config.transport !== "http" || config.auth !== "oauth") {
-      await previous?.session.clear();
-      if (this.oauthSessions.get(config.id) === previous) this.oauthSessions.delete(config.id);
+      if (previous) {
+        this.oauthSessions.delete(config.id);
+        previous.session.dispose();
+        void this.queueOAuthIndexUpdate(config.id, undefined, previous.session.credentialKey);
+      }
       return undefined;
     }
-    if (!this.bundledSecrets || !this.oauthPresentation) throw new Error("MCP authorization is unavailable");
+    if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
     const fingerprint = JSON.stringify(config);
     if (previous?.fingerprint === fingerprint) return previous.session;
-    await previous?.session.clear();
-    if (epoch !== this.oauthEpoch(config.id)) {
-      if (previous) this.discardOAuthSession(config.id, previous.session);
-      throw new Error("MCP connection retired");
-    }
-    const session = new McpOAuthSession(config, {
-      ...this.oauthPresentation,
-      secrets: this.oauthPresentation.secrets ?? this.bundledSecrets,
-      networkFetch: this.networkFetch,
-    });
+    const session = new McpOAuthSession(config, { ...this.oauthPresentation, networkFetch: this.networkFetch });
     this.oauthSessions.set(config.id, { fingerprint, session });
+    // Only a change to the credential identity (id, URL, OAuth settings) retires the stored grant;
+    // any other edit keeps it and the new session reads it back.
+    previous?.session.dispose();
+    void this.queueOAuthIndexUpdate(config.id, session.credentialKey,
+      previous && previous.session.credentialKey !== session.credentialKey ? previous.session.credentialKey : undefined);
     return session;
+  }
+
+  /** Serialized work on the credential store, so index updates and deletions never interleave. */
+  private queueOAuthStoreWork(work: (secrets: McpOAuthSecrets) => Promise<void>): Promise<void> {
+    const secrets = this.oauthPresentation?.secrets;
+    if (!secrets) return Promise.resolve();
+    const next = this.oauthStoreWork.then(() => work(secrets)).catch((error: unknown) => {
+      log.warn("MCP authorization credential index update failed: %s", errorMessage(error));
+    });
+    this.oauthStoreWork = next;
+    return next;
+  }
+
+  private readOAuthIndex(secrets: McpOAuthSecrets): Record<string, string> {
+    const raw = secrets.getSecret(OAUTH_CREDENTIAL_INDEX_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      Object.values(parsed).some((value) => typeof value !== "string" || !value.startsWith("mcp.oauth."))) {
+      throw new Error("MCP authorization credential index is malformed");
+    }
+    return { ...(parsed as Record<string, string>) };
+  }
+
+  /**
+   * Record which credential key each server owns, deleting a key it no longer
+   * owns. The encrypted store cannot be enumerated, so this index is how a
+   * record left under an old key (an edited URL or OAuth setting) is found.
+   */
+  private queueOAuthIndexUpdate(serverId: string, key: string | undefined, retiredKey?: string): Promise<void> {
+    return this.queueOAuthStoreWork(async (secrets) => {
+      if (retiredKey) await secrets.deleteSecret(retiredKey);
+      if (!secrets.canStoreEncrypted()) return;
+      const index = this.readOAuthIndex(secrets);
+      const recorded = index[serverId];
+      if (recorded === key) return;
+      if (recorded) await secrets.deleteSecret(recorded);
+      if (key) index[serverId] = key;
+      else delete index[serverId];
+      await secrets.setSecret(OAUTH_CREDENTIAL_INDEX_KEY, JSON.stringify(index));
+    });
+  }
+
+  /** At load: delete records under keys the current configuration no longer names. */
+  private reconcileOAuthCredentials(configs: readonly McpServerConfig[]): Promise<void> {
+    const desired = new Map<string, string>();
+    for (const config of configs) {
+      if (config.transport !== "http" || config.auth !== "oauth") continue;
+      const key = tryMcpOAuthCredentialKey(config);
+      if (key) desired.set(config.id, key);
+    }
+    return this.queueOAuthStoreWork(async (secrets) => {
+      if (!secrets.canStoreEncrypted()) return;
+      const index = this.readOAuthIndex(secrets);
+      let changed = false;
+      for (const [serverId, key] of Object.entries(index)) {
+        if (desired.get(serverId) === key) continue;
+        await secrets.deleteSecret(key);
+        delete index[serverId];
+        changed = true;
+      }
+      for (const [serverId, key] of desired) {
+        if (index[serverId] === key) continue;
+        index[serverId] = key;
+        changed = true;
+      }
+      if (changed) await secrets.setSecret(OAUTH_CREDENTIAL_INDEX_KEY, JSON.stringify(index));
+    });
   }
 
   private discardOAuthSession(serverId: string, session: McpOAuthSession): void {
@@ -486,7 +574,8 @@ export class McpManager {
   authenticate(serverId: string): Promise<McpAuthenticationResult> {
     const pending = this.authentications.get(serverId);
     if (pending) return pending;
-    const operation = this.authenticateServer(serverId).finally(() => {
+    const bundledId = this.bundledOAuthStableId(serverId);
+    const operation = (bundledId ? this.authenticateBundled(bundledId) : this.authenticateServer(serverId)).finally(() => {
       if (this.authentications.get(serverId) === operation) this.authentications.delete(serverId);
     });
     this.authentications.set(serverId, operation);
@@ -500,8 +589,7 @@ export class McpManager {
       if (!config || config.transport !== "http" || config.auth !== "oauth") return { connected: false, errorCode: "mcp-auth-failed" };
       if (!this.governance.validateServer(config).valid) return { connected: false, errorCode: "mcp-auth-failed" };
       if (epoch !== this.oauthEpoch(serverId)) return { connected: false, errorCode: "mcp-auth-failed" };
-      const session = (await this.oauthSessionFor(config))!;
-      if (epoch !== this.oauthEpoch(serverId)) { this.discardOAuthSession(serverId, session); return { connected: false, errorCode: "mcp-auth-failed" }; }
+      const session = this.oauthSessionFor(config)!;
       await session.authenticate();
       return await this.withConfigLock(() => this.withServerLifecycleLock(serverId, async (): Promise<McpAuthenticationResult> => {
         const current = (await this.loadFromConfig()).find((item) => item.id === serverId);
@@ -519,7 +607,7 @@ export class McpManager {
         }
         return { connected: true };
       }));
-    } catch {
+    } catch (error) {
       const status = this.oauthSessions.get(serverId)?.session.getStatus();
       if (status === "required" || status === "error") {
         const client = this.clients.get(serverId);
@@ -528,8 +616,56 @@ export class McpManager {
         await client?.disconnect().catch(() => undefined);
         if (connected) this.onServerDisconnected?.(serverId);
       }
-      return { connected: false, errorCode: status === "required" ? "mcp-auth-required" : "mcp-auth-failed" };
+      return { connected: false, errorCode: oauthErrorCode(error, status) };
     }
+  }
+
+  /** The stable (generation-independent) id under which a bundled OAuth server keeps its session. */
+  private bundledOAuthStableId(serverId: string): string | undefined {
+    if (this.bundledOAuthSessions.has(serverId)) return serverId;
+    return this.bundledOAuthRuntimeIds.get(serverId);
+  }
+
+  private bundledOAuthSessionFor(projection: PreparedPluginMcpProjection): McpOAuthSession {
+    if (projection.config.transport !== "http") throw new Error("bundled MCP OAuth requires an HTTP server");
+    const bundled = projection.approval.bundled;
+    if (!bundled) throw new Error("bundled MCP approval is missing its package identity");
+    if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
+    // Keyed by package and server, not generation, so a grant survives plugin updates.
+    const stableId = bundledConfigId(this.packageRefFromApproval(bundled.package), bundled.server);
+    this.bundledOAuthRuntimeIds.set(projection.serverId, stableId);
+    const config: McpHttpServerConfig = { ...projection.config, id: stableId };
+    const fingerprint = JSON.stringify(config);
+    const previous = this.bundledOAuthSessions.get(stableId);
+    if (previous?.fingerprint === fingerprint) return previous.session;
+    const session = new McpOAuthSession(config, { ...this.oauthPresentation, networkFetch: this.networkFetch });
+    this.bundledOAuthSessions.set(stableId, { fingerprint, session });
+    previous?.session.dispose();
+    if (previous && previous.session.credentialKey !== session.credentialKey) {
+      void this.queueOAuthStoreWork((secrets) => secrets.deleteSecret(previous.session.credentialKey));
+    }
+    return session;
+  }
+
+  /** Authenticate a plugin-bundled server, then re-prepare it through its package's normal reconnect. */
+  private async authenticateBundled(stableId: string): Promise<McpAuthenticationResult> {
+    const entry = this.bundledOAuthSessions.get(stableId);
+    const ref = parseBundledConfigId(stableId);
+    const source = ref ? this.bundledCredentialSources.get(ref.packageRef.kind) : undefined;
+    if (!entry || !ref || !source) return { connected: false, errorCode: "mcp-auth-failed" };
+    try {
+      await entry.session.authenticate();
+    } catch (error) {
+      return { connected: false, errorCode: oauthErrorCode(error, entry.session.getStatus()) };
+    }
+    const isThisServer = (serverId: string): boolean => this.bundledOAuthRuntimeIds.get(serverId) === stableId;
+    for (const serverId of [...this.activeBundledServerIds]) {
+      if (isThisServer(serverId)) await this.disconnectBundledServer(serverId);
+    }
+    try { await source.reconnect(ref.packageRef.name, ref.server); }
+    catch { return { connected: false, errorCode: "mcp-auth-failed" }; }
+    const connected = [...this.activeBundledServerIds].some(isThisServer);
+    return connected ? { connected: true } : { connected: false, errorCode: "mcp-auth-failed" };
   }
 
   /** Prepare trusted bundled servers against an isolated registry. */
@@ -571,12 +707,18 @@ export class McpManager {
             retryable: false, lastAttemptAt: new Date().toISOString() }));
           continue;
         }
+        let oauthSession: McpOAuthSession | undefined;
         if (projection.config.auth === "oauth") {
-          degraded.push(Object.freeze({ pluginId: owner.pluginId, generationId: owner.generationId,
-            localId: projection.owner.localId, code: "credential_required",
-            message: "Configure this remote endpoint in MCP settings to authenticate",
-            retryable: false, lastAttemptAt: new Date().toISOString() }));
-          continue;
+          oauthSession = this.bundledOAuthSessionFor(projection);
+          const authStatus = oauthSession.getStatus();
+          // Preparation never opens a browser; the settings row's Authenticate action does, then reconnects.
+          if (authStatus !== "authenticated" && authStatus !== "insufficient_scope") {
+            degraded.push(Object.freeze({ pluginId: owner.pluginId, generationId: owner.generationId,
+              localId: projection.owner.localId, code: "credential_required",
+              message: "Authenticate this server in MCP settings",
+              retryable: true, lastAttemptAt: new Date().toISOString() }));
+            continue;
+          }
         }
         let credential: string | null = null;
         if (projection.config.auth === "api-key") {
@@ -616,7 +758,7 @@ export class McpManager {
           connectConfig,
           scopedGovernance,
           stagingRegistry,
-          this.networkFetch,
+          oauthSession ? oauthSession.fetch : this.networkFetch,
           undefined,
           undefined,
           this.inputResolverFactory?.(projection.serverId),
@@ -863,12 +1005,18 @@ export class McpManager {
   async disconnectAll(): Promise<void> {
     this.oauthShutdownGeneration++;
     for (const { session } of this.oauthSessions.values()) session.dispose();
+    for (const { session } of this.bundledOAuthSessions.values()) session.dispose();
     await Promise.all(this.serverLifecycleLocks.values());
+    // Credential index writes are queued without a caller awaiting them; finish
+    // them before shutdown so none lands after the store is closed or removed.
+    await this.oauthStoreWork;
     return this.disconnectAllLocked();
   }
 
   private async disconnectAllLocked(): Promise<void> {
     this.oauthSessions.clear();
+    this.bundledOAuthSessions.clear();
+    this.bundledOAuthRuntimeIds.clear();
     let pendingCleanupError: Error | undefined;
     try {
       await this.retryPendingBundledCandidateCleanup("manager shutdown");
@@ -982,11 +1130,26 @@ export class McpManager {
     for (const serverId of this.oauthSessions.keys()) {
       if (!this.clients.has(serverId)) states.push(this.withAuthState(serverId, { id: serverId, status: "disconnected", registeredTools: [] }));
     }
+    // A bundled OAuth server that is not running is listed under its stable id, as its settings row is.
+    const running = new Set(states.flatMap((state) => {
+      const stableId = this.bundledOAuthStableId(state.id);
+      return stableId ? [stableId] : [];
+    }));
+    for (const stableId of this.bundledOAuthSessions.keys()) {
+      if (!running.has(stableId)) states.push(this.withAuthState(stableId, { id: stableId, status: "disconnected", registeredTools: [] }));
+    }
     return states;
   }
 
+  private oauthSessionForState(serverId: string): McpOAuthSession | undefined {
+    const external = this.oauthSessions.get(serverId)?.session;
+    if (external) return external;
+    const stableId = this.bundledOAuthStableId(serverId);
+    return stableId ? this.bundledOAuthSessions.get(stableId)?.session : undefined;
+  }
+
   private withAuthState(serverId: string, state: McpServerState): McpServerState {
-    const authStatus = this.oauthSessions.get(serverId)?.session.getStatus();
+    const authStatus = this.oauthSessionForState(serverId)?.getStatus();
     if (!authStatus) return state;
     if (authStatus === "required" || authStatus === "error") {
       return { id: serverId, status: "disconnected", registeredTools: [], authStatus };
@@ -999,7 +1162,9 @@ export class McpManager {
     if (this.bundledOwners.has(serverId) && !this.activeBundledServerIds.has(serverId)) return undefined;
     const state = this.clients.get(serverId)?.getState();
     if (state) return this.withAuthState(serverId, state);
-    if (this.oauthSessions.has(serverId)) return this.withAuthState(serverId, { id: serverId, status: "disconnected", registeredTools: [] });
+    if (this.oauthSessions.has(serverId) || this.bundledOAuthSessions.has(serverId)) {
+      return this.withAuthState(serverId, { id: serverId, status: "disconnected", registeredTools: [] });
+    }
     return undefined;
   }
 
@@ -1193,8 +1358,8 @@ export class McpManager {
         return { connected: true };
       } catch (err) {
         if (normalizedConfig.transport === "http" && normalizedConfig.auth === "oauth") {
-          return { connected: false, errorCode: this.oauthSessions.get(normalizedId)?.session.getStatus() === "required"
-            ? "mcp-auth-required" : "mcp-auth-failed" };
+          const session = this.oauthSessions.get(normalizedId)?.session;
+          return { connected: false, errorCode: session?.getBlockedCode() ?? oauthErrorCode(err, session?.getStatus()) };
         }
         const warning = errorMessage(err);
       log.warn(`Connection after server add failed (${normalizedId}): %s`, err);
@@ -1336,10 +1501,14 @@ export class McpManager {
   async removeConfig(serverId: string): Promise<void> {
     this.retireOAuth(serverId);
     return this.withConfigLock(async () => {
-      let removedConfig: McpServerConfig | undefined;
+      let removedKey: string | undefined;
       await this.withConfigFileLock(async () => {
         const existing = await this.loadFromConfigUnlocked();
-        removedConfig = existing.find((config) => config.id === serverId);
+        const removedConfig = existing.find((config) => config.id === serverId);
+        // Resolved before the file is rewritten. An endpoint that is not a valid OAuth target
+        // can never have stored credentials, so it has no key to clear.
+        removedKey = removedConfig?.transport === "http" && removedConfig.auth === "oauth"
+          ? tryMcpOAuthCredentialKey(removedConfig) : undefined;
         const updated = existing.filter((s) => s.id !== serverId);
         if (updated.length === existing.length) {
           // Server not present in the effective config — nothing to persist.
@@ -1362,10 +1531,8 @@ export class McpManager {
       // b3 — teardown path (permanent retirement).
       this.onServerDisconnected?.(serverId);
       if (session) await session.clear();
-      else if (removedConfig?.transport === "http" && removedConfig.auth === "oauth") {
-        const secrets = this.oauthPresentation?.secrets ?? this.bundledSecrets;
-        if (secrets) await McpOAuthSession.clearStoredCredentials(removedConfig, secrets);
-      }
+      else if (removedKey) await this.oauthPresentation?.secrets.deleteSecret(removedKey);
+      await this.queueOAuthIndexUpdate(serverId, undefined);
     });
   }
 

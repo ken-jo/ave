@@ -18,10 +18,14 @@ const harness = vi.hoisted(() => ({
   connect: async () => {},
 }));
 
-vi.mock("../mcp-oauth.js", () => ({
+vi.mock("../mcp-oauth.js", async (importOriginal) => ({
+  McpOAuthError: (await importOriginal<typeof import("../mcp-oauth.js")>()).McpOAuthError,
+  tryMcpOAuthCredentialKey: (value: McpHttpServerConfig) => value.url.startsWith("https://")
+    ? `mcp.oauth.${JSON.stringify([value.id, value.url, value.oauth])}` : undefined,
   McpOAuthSession: class {
     static clearStoredCredentials = harness.clearStoredCredentials;
     status: McpAuthStatus = "required";
+    readonly credentialKey: string;
     authenticate = vi.fn(async () => {
       this.status = "authenticating";
       try {
@@ -39,7 +43,11 @@ vi.mock("../mcp-oauth.js", () => ({
       throw new Error("MCP authentication required");
     });
     getStatus() { return this.status; }
-    constructor() { harness.sessions.push(this); }
+    getBlockedCode() { return undefined; }
+    constructor(value: McpHttpServerConfig) {
+      this.credentialKey = `mcp.oauth.${JSON.stringify([value.id, value.url, value.oauth])}`;
+      harness.sessions.push(this);
+    }
   },
 }));
 
@@ -67,7 +75,14 @@ let path: string;
 const config: McpHttpServerConfig = { id: "team", transport: "http", url: "https://mcp.example.test/mcp", auth: "oauth" };
 const validateServer = vi.fn(() => ({ valid: true }));
 const unregisterByMcp = vi.fn();
-const secrets = { getSecret: vi.fn(() => null), setSecret: vi.fn(async () => {}), deleteSecret: vi.fn(async () => {}) };
+const secretStore = new Map<string, string>();
+const secrets = {
+  getSecret: vi.fn((key: string) => secretStore.get(key) ?? null),
+  setSecret: vi.fn(async (key: string, value: string) => { secretStore.set(key, value); }),
+  deleteSecret: vi.fn(async (key: string) => { secretStore.delete(key); }),
+  canStoreEncrypted: vi.fn(() => true),
+};
+const keyOf = (value: McpHttpServerConfig) => `mcp.oauth.${JSON.stringify([value.id, value.url, value.oauth])}`;
 const hostFetch = vi.fn(async () => new Response(null, { status: 200 }));
 
 function manager(onDisconnected?: (serverId: string) => void) {
@@ -75,12 +90,14 @@ function manager(onDisconnected?: (serverId: string) => void) {
     { validateServer } as unknown as McpGovernance,
     { unregisterByMcp } as unknown as ToolRegistry,
     hostFetch as typeof fetch, path, undefined, undefined, undefined, onDisconnected, secrets,
-    { redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} },
+    { redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {}, secrets },
   );
 }
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  secretStore.clear();
+  secrets.canStoreEncrypted.mockReturnValue(true);
   validateServer.mockReturnValue({ valid: true });
   harness.sessions.length = 0;
   harness.clients.length = 0;
@@ -179,28 +196,92 @@ describe("remote authorization lifecycle", () => {
     expect(await authentication).toEqual({ connected: true });
   });
 
-  it("deletes the previous configuration's credential record before creating a replacement", async () => {
+  it("deletes the previous credential record only when the credential identity changes", async () => {
     const owner = manager();
     await owner.authenticate(config.id);
     const previous = harness.sessions[0];
-    await expect(owner.connectServer({ ...config, url: "https://other.example.test/mcp" }, { force: true })).rejects.toThrow("MCP authentication required");
-    expect(previous.clear).toHaveBeenCalledTimes(1);
+    secretStore.set(keyOf(config), "grant");
+    // A non-identity edit (headers) keeps the stored grant for the new session.
+    await owner.connectServer({ ...config, headers: { "x-team": "a" } }, { force: true }).catch(() => undefined);
+    await vi.waitFor(() => expect(secretStore.get("mcp.oauth.index")).toBeDefined());
     expect(harness.sessions).toHaveLength(2);
+    expect(previous.dispose).toHaveBeenCalled();
+    expect(previous.clear).not.toHaveBeenCalled();
+    expect(secretStore.get(keyOf(config))).toBe("grant");
+    // A new URL is a different credential identity: the old record goes.
+    const moved = { ...config, url: "https://other.example.test/mcp" };
+    await expect(owner.connectServer(moved, { force: true })).rejects.toThrow("MCP authentication required");
+    await vi.waitFor(() => expect(secretStore.has(keyOf(config))).toBe(false));
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(moved) });
   });
 
-  it.each(["kill", "shutdown"])("does not restore a session when %s completes during credential replacement", async (retirement) => {
+  it("finishes queued credential index writes before shutdown completes", async () => {
+    let release!: () => void;
+    vi.mocked(secrets.setSecret).mockImplementationOnce(async (key: string, value: string) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      secretStore.set(key, value);
+    });
+    const owner = manager();
+    await owner.connectServer(config).catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    let finished = false;
+    const shutdown = owner.disconnectAll().then(() => { finished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(finished).toBe(false);
+    release();
+    await shutdown;
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(config) });
+  });
+
+  it("deletes records left under keys the configuration no longer names when it loads", async () => {
+    secretStore.set("mcp.oauth.index", JSON.stringify({ [config.id]: "mcp.oauth.edited-offline", gone: "mcp.oauth.removed-offline" }));
+    secretStore.set("mcp.oauth.edited-offline", "old grant");
+    secretStore.set("mcp.oauth.removed-offline", "old grant");
+    secretStore.set(keyOf(config), "current grant");
+    const owner = manager();
+    await owner.connectAll();
+    expect(secretStore.has("mcp.oauth.edited-offline")).toBe(false);
+    expect(secretStore.has("mcp.oauth.removed-offline")).toBe(false);
+    expect(secretStore.get(keyOf(config))).toBe("current grant");
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(config) });
+  });
+
+  it("shares one session between concurrent connections and authentication for the same server", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    harness.connect = () => gate;
+    const owner = manager();
+    const connections = [owner.connectServer(config, { force: true }), owner.connectServer(config, { force: true })];
+    const authentication = owner.authenticate(config.id);
+    await vi.waitFor(() => expect(harness.clients.length).toBeGreaterThan(0));
+    finish();
+    await Promise.allSettled(connections);
+    await authentication;
+    expect(harness.sessions).toHaveLength(1);
+  });
+
+  it("removes a configuration that can never hold credentials without failing after the file is rewritten", async () => {
+    const insecure = { id: "insecure", transport: "http" as const, url: "http://intranet.example.test/mcp", auth: "oauth" as const };
+    await writeFile(path, JSON.stringify({ servers: [config, insecure] }));
+    const owner = manager();
+    await expect(owner.removeConfig(insecure.id)).resolves.toBeUndefined();
+    expect(await owner.getConfigs()).toEqual([config]);
+    expect(secrets.deleteSecret).not.toHaveBeenCalledWith(expect.stringContaining("insecure"));
+  });
+
+  it("keeps tools and a connected state while a server asks for step-up", async () => {
     const owner = manager();
     await owner.authenticate(config.id);
-    let finish!: () => void;
-    harness.sessions[0].clear.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
-    const replacement = owner.connectServer({ ...config, url: "https://other.example.test/mcp" }, { force: true });
-    await vi.waitFor(() => expect(harness.sessions[0].clear).toHaveBeenCalledTimes(1));
-    await (retirement === "kill" ? owner.killSwitch(config.id) : owner.disconnectAll());
-    finish();
-    await expect(replacement).rejects.toThrow("MCP connection retired");
-    expect(harness.sessions).toHaveLength(1);
-    expect(owner.listServers()).toEqual([]);
+    harness.sessions[0].status = "insufficient_scope";
+    expect(owner.getServerState(config.id)).toMatchObject({ status: "connected", authStatus: "insufficient_scope", registeredTools: ["mcp_team_read"] });
   });
+
+  it.each(["mcp-auth-storage-unavailable", "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported"] as const)(
+    "reports %s distinctly", async (code) => {
+      const { McpOAuthError } = await vi.importActual<typeof import("../mcp-oauth.js")>("../mcp-oauth.js");
+      harness.login = async () => { throw new McpOAuthError(code); };
+      expect(await manager().authenticate(config.id)).toEqual({ connected: false, errorCode: code });
+    });
 
   it("withholds tools until an explicitly authorized server has a grant", async () => {
     const owner = manager();
@@ -226,10 +307,11 @@ describe("remote authorization lifecycle", () => {
   });
 
   it("clears stored credentials even when removing a server before its first connection", async () => {
+    secretStore.set(keyOf(config), "grant");
     const owner = manager();
     await owner.removeConfig(config.id);
     expect(harness.sessions).toHaveLength(0);
-    expect(harness.clearStoredCredentials).toHaveBeenCalledWith(config, secrets);
+    expect(secretStore.has(keyOf(config))).toBe(false);
     expect(await owner.getConfigs()).toEqual([]);
   });
 

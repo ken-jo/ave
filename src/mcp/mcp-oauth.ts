@@ -21,13 +21,15 @@ import { ensurePublicHttpUrl } from "../core/network-guard.js";
 import type { AuthRedirectCatchers } from "../main/auth-redirect-catcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
-import type { McpAuthStatus, McpHttpServerConfig } from "./types.js";
+import type { McpAuthErrorCode, McpAuthStatus, McpHttpServerConfig } from "./types.js";
 import { MCP_PROTOCOL_VERSION } from "./protocol-constants.js";
 
 export interface McpOAuthSecrets {
   getSecret(key: string): string | null;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
+  /** Whether a secret written now is encrypted at rest (the settings store's single answer). */
+  canStoreEncrypted(): boolean;
 }
 
 export interface McpOAuthDependencies {
@@ -37,10 +39,14 @@ export interface McpOAuthDependencies {
   openAuthorizationUrl(url: string): Promise<void>;
 }
 
+type ClientSource = "dynamic";
+
 interface Discovery {
   issuer: string;
+  /** Canonical RFC 8707 resource identifier sent on the wire. */
   resource: string;
   resourceMetadataUrl?: string;
+  resourceMetadataFromChallenge: boolean;
   metadata: AuthorizationServerMetadata;
   requireIssuerResponse: boolean;
   scope?: string;
@@ -51,15 +57,34 @@ interface Credentials {
   issuer: string;
   resource: string;
   resourceMetadataUrl?: string;
+  resourceMetadataFromChallenge?: boolean;
   client: OAuthClientInformationFull;
+  clientSource: ClientSource;
   tokens?: OAuthTokens;
   expiresAt?: number;
   grantedScope?: string;
 }
 
-const AUTH_FAILED = "MCP authentication failed";
-const AUTH_REQUIRED = "MCP authentication required";
+const MESSAGES: Record<McpAuthErrorCode, string> = {
+  "mcp-auth-required": "MCP authentication required",
+  "mcp-auth-failed": "MCP authentication failed",
+  "mcp-auth-storage-unavailable": "MCP authorization requires encrypted storage",
+  "mcp-auth-storage-unreadable": "MCP authorization storage cannot be read",
+  "mcp-auth-registration-unsupported": "MCP client registration mode is not supported",
+};
+const AUTH_FAILED = MESSAGES["mcp-auth-failed"];
+const AUTH_REQUIRED = MESSAGES["mcp-auth-required"];
 const MAX_AUTH_RESPONSE_BYTES = 1024 * 1024;
+/** Spec step-up guidance: retry "no more than a few times" per scope challenge. */
+const MAX_STEP_UP_ATTEMPTS = 2;
+
+/** A typed authorization failure whose message is a fixed string (never provider text). */
+export class McpOAuthError extends Error {
+  constructor(readonly code: McpAuthErrorCode) {
+    super(MESSAGES[code]);
+    this.name = "McpOAuthError";
+  }
+}
 
 class McpOAuthBindingChangedError extends Error {
   constructor() { super(AUTH_REQUIRED); }
@@ -79,33 +104,65 @@ function secureUrl(raw: string, allowLoopback: boolean): URL {
   }
 }
 
+/** RFC 8707 canonical form: no trailing slash for an origin-only resource. */
+function canonicalResource(url: URL): string {
+  return url.pathname === "/" && !url.search ? url.origin : url.href;
+}
+
 /** SDK path-boundary containment, narrowed so a resource carrying a query only matches the exact endpoint. */
 function resourceContainsEndpoint(resource: URL, endpoint: URL): boolean {
   return resource.href === endpoint.href ||
     (!resource.search && checkResourceAllowed({ requestedResource: endpoint, configuredResource: resource }));
 }
 
-function credentialKey(config: McpHttpServerConfig): string {
+function scopeSet(...values: Array<string | undefined>): string[] {
+  return [...new Set(values.join(" ").split(/\s+/u).filter(Boolean))];
+}
+
+/** The fields that identify one credential record; any other config edit keeps the grant. */
+function credentialKeyInputs(config: McpHttpServerConfig): string {
   const serverUrl = secureUrl(config.url, config.allowPrivateNetworks === true).href;
-  return `mcp.oauth.${createHash("sha256").update(JSON.stringify([config.id, serverUrl, config.oauth])).digest("hex")}`;
+  return JSON.stringify([config.id, serverUrl, config.oauth]);
+}
+
+/** Encrypted-store key for this endpoint's credentials; throws when the endpoint can never hold any. */
+function mcpOAuthCredentialKey(config: McpHttpServerConfig): string {
+  return `mcp.oauth.${createHash("sha256").update(credentialKeyInputs(config)).digest("hex")}`;
+}
+
+/** Credential key, or undefined for an endpoint that is not a valid OAuth target (so it cannot have stored credentials). */
+export function tryMcpOAuthCredentialKey(config: McpHttpServerConfig): string | undefined {
+  try { return mcpOAuthCredentialKey(config); }
+  catch { return undefined; }
+}
+
+function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | undefined {
+  const mode = config.oauth?.clientRegistration;
+  return mode === undefined || mode === "dynamic" ? undefined : "mcp-auth-registration-unsupported";
 }
 
 /** Host-owned credentials and browser flow for one exact remote endpoint. */
 export class McpOAuthSession {
   static async clearStoredCredentials(config: McpHttpServerConfig, secrets: McpOAuthSecrets): Promise<void> {
-    try { await secrets.deleteSecret(credentialKey(config)); }
+    const key = tryMcpOAuthCredentialKey(config);
+    if (!key) return;
+    try { await secrets.deleteSecret(key); }
     catch { throw new Error(AUTH_FAILED); }
   }
 
   readonly fetch: typeof fetch;
+  readonly credentialKey: string;
   private readonly serverUrl: string;
-  private readonly secretKey: string;
+  private readonly endpointResource: string;
   private readonly ownerKey = `mcp-oauth:${randomBytes(16).toString("hex")}`;
   private readonly controller = new AbortController();
   private status: McpAuthStatus = "required";
+  private blocked?: McpAuthErrorCode;
   private credentials?: Credentials;
   private challengeMetadataUrl?: URL;
   private challengeScope?: string;
+  private pendingStepUp?: string;
+  private readonly stepUpAttempts = new Map<string, number>();
   private login?: Promise<void>;
   private refresh?: Promise<boolean>;
   private pendingWrite: Promise<void> = Promise.resolve();
@@ -113,41 +170,63 @@ export class McpOAuthSession {
   private challengeProbeAvailable = true;
 
   constructor(private readonly config: McpHttpServerConfig, private readonly dependencies: McpOAuthDependencies) {
-    if (config.oauth?.clientRegistration && config.oauth.clientRegistration !== "dynamic") throw new Error(AUTH_FAILED);
     this.serverUrl = secureUrl(config.url, config.allowPrivateNetworks === true).href;
-    this.secretKey = credentialKey(config);
-    let raw: string | null;
-    try { raw = dependencies.secrets.getSecret(this.secretKey); }
-    catch { throw new Error(AUTH_FAILED); }
-    try {
-      if (raw) {
-        const saved = JSON.parse(raw) as Credentials;
-        if (saved.serverUrl === this.serverUrl && typeof saved.issuer === "string" && typeof saved.resource === "string") {
-          if (secureUrl(saved.issuer, config.allowPrivateNetworks === true).search ||
-            (config.oauth?.authorizationServers?.length && !config.oauth.authorizationServers.includes(saved.issuer))) throw new Error(AUTH_FAILED);
-          const resource = secureUrl(saved.resource, config.allowPrivateNetworks === true);
-          if (!resourceContainsEndpoint(resource, new URL(this.serverUrl)) ||
-            (config.oauth?.resource && resource.href !== secureUrl(config.oauth.resource, config.allowPrivateNetworks === true).href)) throw new Error(AUTH_FAILED);
-          this.credentials = {
-            serverUrl: saved.serverUrl, issuer: saved.issuer, resource: saved.resource,
-            client: OAuthClientInformationFullSchema.parse(saved.client),
-            tokens: saved.tokens ? OAuthTokensSchema.parse(saved.tokens) : undefined,
-            expiresAt: typeof saved.expiresAt === "number" && Number.isFinite(saved.expiresAt) ? saved.expiresAt : undefined,
-            resourceMetadataUrl: typeof saved.resourceMetadataUrl === "string"
-              ? secureUrl(saved.resourceMetadataUrl, config.allowPrivateNetworks === true).href : undefined,
-          };
-          this.credentials.grantedScope = typeof saved.grantedScope === "string" ? saved.grantedScope : this.credentials.tokens?.scope;
-          if (this.credentials.tokens) {
-            this.status = "authenticated";
-            this.challengeProbeAvailable = false;
-          }
-        }
-      }
-    } catch { /* Invalid encrypted state requires a new interactive grant. */ }
+    this.endpointResource = canonicalResource(new URL(this.serverUrl));
+    this.credentialKey = mcpOAuthCredentialKey(config);
+    this.blocked = registrationBlock(config);
+    if (this.blocked) this.status = "error";
+    else this.loadStored();
     this.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => this.fetchResource(input, init)) as typeof fetch;
   }
 
   getStatus(): McpAuthStatus { return this.status; }
+
+  /** The renderer-safe reason this session cannot authenticate, if any. */
+  getBlockedCode(): McpAuthErrorCode | undefined { return this.blocked; }
+
+  private loadStored(): void {
+    let raw: string | null;
+    try { raw = this.dependencies.secrets.getSecret(this.credentialKey); }
+    catch {
+      this.blocked = "mcp-auth-storage-unreadable";
+      this.status = "error";
+      return;
+    }
+    if (this.blocked === "mcp-auth-storage-unreadable") {
+      this.blocked = undefined;
+      this.status = "required";
+    }
+    const allowPrivate = this.config.allowPrivateNetworks === true;
+    try {
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Credentials;
+      if (saved.serverUrl !== this.serverUrl || typeof saved.issuer !== "string" || typeof saved.resource !== "string" ||
+        saved.clientSource !== "dynamic") return;
+      if (secureUrl(saved.issuer, allowPrivate).search ||
+        (this.config.oauth?.authorizationServers?.length && !this.config.oauth.authorizationServers.includes(saved.issuer))) return;
+      const resource = secureUrl(saved.resource, allowPrivate);
+      const resourceId = canonicalResource(resource);
+      if (!resourceContainsEndpoint(resource, new URL(this.serverUrl)) ||
+        (saved.resourceMetadataFromChallenge === true && resourceId !== this.endpointResource) ||
+        (this.config.oauth?.resource && resourceId !== canonicalResource(secureUrl(this.config.oauth.resource, allowPrivate)))) return;
+      const credentials: Credentials = {
+        serverUrl: saved.serverUrl, issuer: saved.issuer, resource: resourceId,
+        client: OAuthClientInformationFullSchema.parse(saved.client),
+        clientSource: saved.clientSource,
+        tokens: saved.tokens ? OAuthTokensSchema.parse(saved.tokens) : undefined,
+        expiresAt: typeof saved.expiresAt === "number" && Number.isFinite(saved.expiresAt) ? saved.expiresAt : undefined,
+        resourceMetadataUrl: typeof saved.resourceMetadataUrl === "string"
+          ? secureUrl(saved.resourceMetadataUrl, allowPrivate).href : undefined,
+        resourceMetadataFromChallenge: saved.resourceMetadataFromChallenge === true,
+      };
+      credentials.grantedScope = typeof saved.grantedScope === "string" ? saved.grantedScope : credentials.tokens?.scope;
+      this.credentials = credentials;
+      if (credentials.tokens) {
+        this.status = "authenticated";
+        this.challengeProbeAvailable = false;
+      }
+    } catch { /* An invalid record requires a new interactive grant. */ }
+  }
 
   authenticate(): Promise<void> {
     if (!this.login) {
@@ -167,7 +246,7 @@ export class McpOAuthSession {
   async clear(): Promise<void> {
     this.dispose();
     await this.pendingWrite.catch(() => {});
-    try { await this.dependencies.secrets.deleteSecret(this.secretKey); }
+    try { await this.dependencies.secrets.deleteSecret(this.credentialKey); }
     catch { throw new Error(AUTH_FAILED); }
   }
 
@@ -180,7 +259,7 @@ export class McpOAuthSession {
     const serialized = JSON.stringify(this.credentials);
     this.pendingWrite = this.pendingWrite.catch(() => {}).then(async () => {
       this.assertActive();
-      await this.dependencies.secrets.setSecret(this.secretKey, serialized);
+      await this.dependencies.secrets.setSecret(this.credentialKey, serialized);
     });
     await this.pendingWrite;
     this.assertActive();
@@ -230,20 +309,47 @@ export class McpOAuthSession {
     return outcome.value;
   }) as typeof fetch;
 
+  /**
+   * Token-endpoint fetch that carries the canonical RFC 8707 resource. The SDK
+   * serializes a `URL` (which always gains a trailing slash for an origin), so
+   * the resource is set on the form body here instead.
+   */
+  private tokenFetch(resource: string): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (!(init?.body instanceof URLSearchParams)) throw new Error(AUTH_FAILED);
+      init.body.set("resource", resource);
+      return this.authFetch(input, init);
+    }) as typeof fetch;
+  }
+
   private async discover(interactive = false): Promise<Discovery> {
-    const metadataHint = this.config.oauth?.resourceMetadataUrl ?? this.credentials?.resourceMetadataUrl;
-    const resourceMetadataUrl = this.challengeMetadataUrl ?? (metadataHint
-      ? secureUrl(metadataHint, this.config.allowPrivateNetworks === true) : undefined);
+    const allowPrivate = this.config.allowPrivateNetworks === true;
+    let resourceMetadataUrl: URL | undefined;
+    let resourceMetadataFromChallenge = false;
+    if (this.challengeMetadataUrl) {
+      resourceMetadataUrl = this.challengeMetadataUrl;
+      resourceMetadataFromChallenge = true;
+    } else if (this.config.oauth?.resourceMetadataUrl) {
+      resourceMetadataUrl = secureUrl(this.config.oauth.resourceMetadataUrl, allowPrivate);
+    } else if (this.credentials?.resourceMetadataUrl) {
+      resourceMetadataUrl = secureUrl(this.credentials.resourceMetadataUrl, allowPrivate);
+      resourceMetadataFromChallenge = this.credentials.resourceMetadataFromChallenge === true;
+    }
     const resource = await discoverOAuthProtectedResourceMetadata(this.serverUrl, { resourceMetadataUrl, protocolVersion: MCP_PROTOCOL_VERSION }, this.authFetch);
-    const resourceUrl = secureUrl(resource.resource, this.config.allowPrivateNetworks === true);
-    const expected = this.config.oauth?.resource ? secureUrl(this.config.oauth.resource, this.config.allowPrivateNetworks === true).href : this.serverUrl;
-    // Metadata may name a containing resource path, but never an unrelated origin or sibling.
-    const server = new URL(this.serverUrl);
-    if (!resourceContainsEndpoint(resourceUrl, server) || (this.config.oauth?.resource && resourceUrl.href !== expected)) throw new Error(AUTH_FAILED);
+    const resourceUrl = secureUrl(resource.resource, allowPrivate);
+    const resourceId = canonicalResource(resourceUrl);
+    // RFC 9728 §3.3: metadata named by the resource's own challenge must describe exactly that resource.
+    // Otherwise it may name a containing resource path, but never an unrelated origin or sibling.
+    if (resourceMetadataFromChallenge
+      ? resourceId !== this.endpointResource
+      : !resourceContainsEndpoint(resourceUrl, new URL(this.serverUrl))) throw new Error(AUTH_FAILED);
+    if (this.config.oauth?.resource && resourceId !== canonicalResource(secureUrl(this.config.oauth.resource, allowPrivate))) {
+      throw new Error(AUTH_FAILED);
+    }
     const configuredIssuers = this.config.oauth?.authorizationServers;
     const issuer = resource.authorization_servers?.find((candidate) => !configuredIssuers?.length || configuredIssuers.includes(candidate));
     if (!issuer) throw new Error(AUTH_FAILED);
-    if (secureUrl(issuer, this.config.allowPrivateNetworks === true).search) throw new Error(AUTH_FAILED);
+    if (secureUrl(issuer, allowPrivate).search) throw new Error(AUTH_FAILED);
     // Discovery parsing may strip extension fields, so retain this security capability before parsing.
     let requireIssuerResponse = false;
     const metadataFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -258,59 +364,75 @@ export class McpOAuthSession {
     }) as typeof fetch;
     const metadata = await discoverAuthorizationServerMetadata(issuer, { fetchFn: metadataFetch, protocolVersion: MCP_PROTOCOL_VERSION });
     if (!metadata || metadata.issuer !== issuer || !metadata.code_challenge_methods_supported?.includes("S256")) throw new Error(AUTH_FAILED);
-    secureUrl(metadata.authorization_endpoint, this.config.allowPrivateNetworks === true);
+    secureUrl(metadata.authorization_endpoint, allowPrivate);
     if (!metadata.token_endpoint) throw new Error(AUTH_FAILED);
-    secureUrl(metadata.token_endpoint, this.config.allowPrivateNetworks === true);
-    if (metadata.registration_endpoint) secureUrl(metadata.registration_endpoint, this.config.allowPrivateNetworks === true);
-    if (this.credentials && (this.credentials.resource !== resourceUrl.href || this.credentials.issuer !== issuer)) {
+    secureUrl(metadata.token_endpoint, allowPrivate);
+    if (metadata.registration_endpoint) secureUrl(metadata.registration_endpoint, allowPrivate);
+    if (this.credentials && (this.credentials.resource !== resourceId || this.credentials.issuer !== issuer)) {
       if (!interactive) throw new McpOAuthBindingChangedError();
       this.credentials = undefined;
       const generation = ++this.credentialGeneration;
       await this.removeStoredCredentials(generation);
     }
     const selectedScope = this.challengeScope || this.config.oauth?.scopes?.join(" ") || resource.scopes_supported?.join(" ");
-    const scope = [...new Set(`${selectedScope ?? ""} ${this.credentials?.grantedScope ?? ""}`.split(/\s+/u).filter(Boolean))].join(" ") || undefined;
-    return { issuer, resource: resourceUrl.href, resourceMetadataUrl: resourceMetadataUrl?.href, metadata, requireIssuerResponse, scope };
+    const scope = scopeSet(selectedScope, this.credentials?.grantedScope).join(" ") || undefined;
+    return { issuer, resource: resourceId, resourceMetadataUrl: resourceMetadataUrl?.href, resourceMetadataFromChallenge,
+      metadata, requireIssuerResponse, scope };
+  }
+
+  /**
+   * The client for this interactive flow. A registered client is reused only
+   * when it already lists this flow's loopback redirect URI: the catcher binds
+   * a fresh port each time, and a strict authorization server rejects any
+   * redirect_uri the client did not register.
+   */
+  private async selectClient(discovery: Discovery, redirectUri: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
+    const stored = this.credentials;
+    const secretExpiresAt = stored?.client.client_secret_expires_at;
+    const storedUsable = stored && stored.issuer === discovery.issuer &&
+      !(secretExpiresAt && secretExpiresAt <= Date.now() / 1000) &&
+      stored.client.redirect_uris.includes(redirectUri);
+    if (storedUsable) return { client: stored.client, source: stored.clientSource };
+    if (!discovery.metadata.registration_endpoint) throw new McpOAuthError("mcp-auth-registration-unsupported");
+    const clientMetadata = { client_name: "Ave", redirect_uris: [redirectUri], application_type: "native",
+      grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
+    const client = await registerClient(discovery.issuer, {
+      metadata: discovery.metadata,
+      clientMetadata,
+      scope: discovery.scope, fetchFn: this.authFetch,
+    });
+    const method = client.token_endpoint_auth_method;
+    if (method && (!["none", "client_secret_basic", "client_secret_post"].includes(method) ||
+      (method !== "none" && !client.client_secret) ||
+      (discovery.metadata.token_endpoint_auth_methods_supported && !discovery.metadata.token_endpoint_auth_methods_supported.includes(method)))) {
+      throw new Error(AUTH_FAILED);
+    }
+    if (!client.redirect_uris.includes(redirectUri)) throw new Error(AUTH_FAILED);
+    return { client, source: "dynamic" };
   }
 
   private async authenticateOnce(): Promise<void> {
-    this.credentialGeneration += 1;
-    this.status = "authenticating";
+    const previousStatus = this.status;
+    const stepUp = this.pendingStepUp;
     let handle: string | undefined;
     try {
       this.assertActive();
+      if (this.blocked === "mcp-auth-storage-unreadable") this.loadStored();
+      if (this.blocked) throw new McpOAuthError(this.blocked);
+      // Refuse before any network activity, browser, or registration that could not be persisted.
+      if (!this.dependencies.secrets.canStoreEncrypted()) throw new McpOAuthError("mcp-auth-storage-unavailable");
+      this.credentialGeneration += 1;
+      this.status = "authenticating";
       const discovery = await this.discover(true);
       const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey);
       handle = catcher.handle;
       this.assertActive();
-      const secretExpiresAt = this.credentials?.client.client_secret_expires_at;
-      if (secretExpiresAt && secretExpiresAt <= Date.now() / 1000) {
-        this.credentials = undefined;
-        await this.dependencies.secrets.deleteSecret(this.secretKey);
-      }
-      let client = this.credentials?.client;
-      if (!client) {
-        if (!discovery.metadata.registration_endpoint) throw new Error(AUTH_FAILED);
-        const clientMetadata = { client_name: "Ave", redirect_uris: [catcher.redirectUri], application_type: "native",
-          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
-        client = await registerClient(discovery.issuer, {
-          metadata: discovery.metadata,
-          clientMetadata,
-          scope: discovery.scope, fetchFn: this.authFetch,
-        });
-        const method = client.token_endpoint_auth_method;
-        if (method && (!["none", "client_secret_basic", "client_secret_post"].includes(method) ||
-          (method !== "none" && !client.client_secret) ||
-          (discovery.metadata.token_endpoint_auth_methods_supported && !discovery.metadata.token_endpoint_auth_methods_supported.includes(method)))) {
-          throw new Error(AUTH_FAILED);
-        }
-        this.credentials = { serverUrl: this.serverUrl, resource: discovery.resource, issuer: discovery.issuer, client };
-        await this.save();
-      }
-      this.credentials!.resourceMetadataUrl = discovery.resourceMetadataUrl;
+      const { client, source } = await this.selectClient(discovery, catcher.redirectUri);
+      this.assertActive();
       const state = randomBytes(32).toString("base64url");
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
-        redirectUrl: catcher.redirectUri, state, scope: discovery.scope, resource: new URL(discovery.resource) });
+        redirectUrl: catcher.redirectUri, state, scope: discovery.scope });
+      authorization.authorizationUrl.searchParams.set("resource", discovery.resource);
       await ensurePublicHttpUrl(authorization.authorizationUrl.href, {
         allowPrivateNetworks: this.config.allowPrivateNetworks === true,
         allowLoopback: this.config.allowPrivateNetworks === true,
@@ -328,10 +450,28 @@ export class McpOAuthSession {
         (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);
       const tokens = await exchangeAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         authorizationCode: params.code, codeVerifier: authorization.codeVerifier, redirectUri: catcher.redirectUri,
-        resource: new URL(discovery.resource), fetchFn: this.authFetch });
+        fetchFn: this.tokenFetch(discovery.resource) });
+      this.assertActive();
+      // The grant belongs to this client; only now does it replace the stored binding.
+      this.credentials = {
+        serverUrl: this.serverUrl, issuer: discovery.issuer, resource: discovery.resource,
+        resourceMetadataUrl: discovery.resourceMetadataUrl, resourceMetadataFromChallenge: discovery.resourceMetadataFromChallenge,
+        client, clientSource: source,
+        grantedScope: this.credentials?.issuer === discovery.issuer ? this.credentials.grantedScope : undefined,
+      };
+      if (stepUp) {
+        // Count the attempt before accepting, so the new grant is not reported as still needing step-up.
+        this.stepUpAttempts.set(stepUp, (this.stepUpAttempts.get(stepUp) ?? 0) + 1);
+        if (this.pendingStepUp === stepUp) this.pendingStepUp = undefined;
+      }
       await this.acceptTokens(tokens, discovery.scope);
-    } catch {
-      this.status = this.controller.signal.aborted ? "required" : "error";
+    } catch (error) {
+      if (this.controller.signal.aborted) this.status = "required";
+      else if (this.credentials?.tokens && (previousStatus === "authenticated" || previousStatus === "insufficient_scope")) {
+        // A cancelled or failed step-up leaves the working grant (and its tools) in place.
+        this.status = previousStatus;
+      } else this.status = "error";
+      if (error instanceof McpOAuthError && error.code !== "mcp-auth-required" && error.code !== "mcp-auth-failed") throw error;
       throw new Error(AUTH_FAILED);
     } finally {
       if (handle) this.dependencies.redirectCatchers.close(this.ownerKey, handle);
@@ -348,7 +488,7 @@ export class McpOAuthSession {
     this.credentials.tokens = tokens;
     this.credentials.expiresAt = tokens.expires_in === undefined ? undefined : Date.now() + tokens.expires_in * 1000;
     await this.save();
-    if (this.credentialGeneration === generation) this.status = "authenticated";
+    if (this.credentialGeneration === generation) this.status = this.pendingStepUp ? "insufficient_scope" : "authenticated";
   }
 
   private refreshTokens(): Promise<boolean> {
@@ -371,8 +511,9 @@ export class McpOAuthSession {
       const discovery = await this.discover();
       if (!isCurrent()) return Boolean(this.credentials?.tokens);
       credentials.resourceMetadataUrl = discovery.resourceMetadataUrl;
+      credentials.resourceMetadataFromChallenge = discovery.resourceMetadataFromChallenge;
       const tokens = await refreshAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: credentials.client,
-        refreshToken, resource: new URL(discovery.resource), fetchFn: this.authFetch });
+        refreshToken, fetchFn: this.tokenFetch(discovery.resource) });
       if (!isCurrent()) return Boolean(this.credentials?.tokens);
       const accepted = this.acceptTokens(tokens);
       acceptedGeneration = this.credentialGeneration;
@@ -401,7 +542,7 @@ export class McpOAuthSession {
 
   private async removeStoredCredentials(generation: number): Promise<void> {
     this.pendingWrite = this.pendingWrite.catch(() => {}).then(async () => {
-      if (this.credentialGeneration === generation) await this.dependencies.secrets.deleteSecret(this.secretKey);
+      if (this.credentialGeneration === generation) await this.dependencies.secrets.deleteSecret(this.credentialKey);
     });
     await this.pendingWrite;
     this.assertActive();
@@ -410,6 +551,7 @@ export class McpOAuthSession {
   private async fetchResource(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     try {
       this.assertActive();
+      if (this.blocked) throw new McpOAuthError(this.blocked);
       const request = new Request(input, init);
       if (new URL(request.url).href !== this.serverUrl) throw new Error(AUTH_FAILED);
       let refreshed = false;
@@ -418,6 +560,7 @@ export class McpOAuthSession {
         if (!await this.refreshTokens()) throw new Error(AUTH_REQUIRED);
       }
       let sentGeneration = this.credentialGeneration;
+      let sentToken = false;
       const send = async (): Promise<Response> => {
         this.assertActive();
         sentGeneration = this.credentialGeneration;
@@ -425,6 +568,7 @@ export class McpOAuthSession {
         const accessToken = this.credentials?.tokens?.access_token;
         if (!accessToken && !this.challengeProbeAvailable) throw new Error(AUTH_REQUIRED);
         this.challengeProbeAvailable = false;
+        sentToken = Boolean(accessToken);
         const headers = new Headers(request.headers);
         headers.delete("authorization");
         if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
@@ -443,21 +587,25 @@ export class McpOAuthSession {
         }
         return response;
       };
+      const settle = async (response: Response): Promise<Response> => {
+        if (response.status === 403 && sentToken) this.captureStepUp(response);
+        return this.sanitizedResourceResponse(response);
+      };
       let response = await send();
-      if (response.status !== 401) return await this.sanitizedResourceResponse(response);
+      if (response.status !== 401) return await settle(response);
       this.captureChallenge(response);
       await response.body?.cancel();
       if (!refreshed && this.credentials?.tokens && sentGeneration !== this.credentialGeneration) {
         refreshed = true;
         response = await send();
-        if (response.status !== 401) return await this.sanitizedResourceResponse(response);
+        if (response.status !== 401) return await settle(response);
         this.captureChallenge(response);
         await response.body?.cancel();
       }
       if (!refreshed && this.credentials?.tokens?.refresh_token) {
         if (!await this.refreshTokens()) throw new Error(AUTH_REQUIRED);
         response = await send();
-        if (response.status !== 401) return await this.sanitizedResourceResponse(response);
+        if (response.status !== 401) return await settle(response);
         this.captureChallenge(response);
         await response.body?.cancel();
       }
@@ -479,6 +627,24 @@ export class McpOAuthSession {
     const challenge = extractWWWAuthenticateParams(response);
     this.challengeMetadataUrl = challenge.resourceMetadataUrl;
     this.challengeScope = challenge.scope;
+  }
+
+  /**
+   * A 403 `insufficient_scope` keeps the working grant and marks the session
+   * as needing step-up; the explicit Authenticate action then requests the
+   * union of granted and challenged scopes. The browser never opens here. A
+   * challenge whose scope set has already been stepped up the maximum number
+   * of times is a permanent failure of that request, not another prompt.
+   */
+  private captureStepUp(response: Response): void {
+    const challenge = extractWWWAuthenticateParams(response);
+    if (challenge.error !== "insufficient_scope" || !challenge.scope) return;
+    const key = scopeSet(challenge.scope).sort().join(" ");
+    if ((this.stepUpAttempts.get(key) ?? 0) >= MAX_STEP_UP_ATTEMPTS) return;
+    if (challenge.resourceMetadataUrl) this.challengeMetadataUrl = challenge.resourceMetadataUrl;
+    this.challengeScope = challenge.scope;
+    this.pendingStepUp = key;
+    if (this.status === "authenticated") this.status = "insufficient_scope";
   }
 
   private async sanitizedResourceResponse(response: Response): Promise<Response> {

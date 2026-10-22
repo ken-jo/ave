@@ -34,11 +34,27 @@ describe("McpTab browser authentication", () => {
     expect(screen.queryByRole("button", { name: "인증하기" })).toBeNull();
   });
 
-  it("does not offer authentication for a bundled server", async () => {
-    setup([{ id: 'bundled:["agent-plugin","meeting-kit","notes"]', transport: "http", url: "https://example.test/mcp", auth: "oauth",
+  it("offers authentication for a plugin-bundled OAuth server under its settings-row id", async () => {
+    const id = 'bundled:["agent-plugin","meeting-kit","notes"]';
+    const mcp = setup([{ id, transport: "http", url: "https://example.test/mcp", auth: "oauth",
+      bundled: { kind: "agent-plugin", name: "meeting-kit", server: "notes" } }],
+    [{ id, status: "disconnected", registeredTools: [], authStatus: "required" }]);
+    await screen.findByText("플러그인: meeting-kit/notes");
+    fireEvent.click(await screen.findByRole("button", { name: "인증하기" }));
+    expect(mcp.authenticate).toHaveBeenCalledWith(id);
+  });
+
+  it("does not offer authentication for a bundled API-key server", async () => {
+    setup([{ id: 'bundled:["agent-plugin","meeting-kit","notes"]', transport: "http", url: "https://example.test/mcp", auth: "api-key",
       bundled: { kind: "agent-plugin", name: "meeting-kit", server: "notes" } }], []);
     await screen.findByText("플러그인: meeting-kit/notes");
     expect(screen.queryByRole("button", { name: "인증하기" })).toBeNull();
+  });
+
+  it("labels a step-up request and keeps the Authenticate action available", async () => {
+    setup(undefined, [{ id: "remote-a", status: "connected", registeredTools: ["mcp_remote_read"], authStatus: "insufficient_scope" }]);
+    expect(await screen.findByRole("status")).toHaveTextContent("추가 권한 필요");
+    expect(screen.getByRole("button", { name: "인증하기" })).toBeEnabled();
   });
 
   it("shows required status and prevents duplicate actions while authentication is pending", async () => {
@@ -60,6 +76,9 @@ describe("McpTab browser authentication", () => {
   it.each([
     ["mcp-auth-required", "서버에 연결하려면 다시 인증하세요."],
     ["mcp-auth-failed", "인증 또는 연결에 실패했습니다. 다시 시도하세요."],
+    ["mcp-auth-storage-unavailable", "이 기기에서는 자격 증명을 암호화해 저장할 수 없어 인증을 사용할 수 없습니다."],
+    ["mcp-auth-storage-unreadable", "저장된 인증 정보를 읽을 수 없습니다. 다시 시도하고, 계속되면 서버를 삭제한 뒤 다시 추가하세요."],
+    ["mcp-auth-registration-unsupported", "이 서버의 인증 설정은 Ave가 완료할 수 없는 클라이언트 등록 방식을 사용합니다. 클라이언트 ID 또는 등록 설정을 확인하세요."],
   ])("localizes %s without showing provider text", async (errorCode, message) => {
     const mcp = setup();
     mcp.authenticate.mockResolvedValueOnce({ connected: false, errorCode });

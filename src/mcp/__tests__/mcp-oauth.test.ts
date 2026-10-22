@@ -41,6 +41,18 @@ interface Fixture {
   tokenScope?: string;
   challengeScope: string;
   allowAnonymous?: boolean;
+  /** Path the MCP endpoint is served at ("/" for an origin-only resource). */
+  endpointPath: string;
+  /** Overrides the `resource` the protected resource metadata declares. */
+  declaredResource?: string;
+  /** Scope a resource request needs beyond the grant (answered with 403 insufficient_scope). */
+  requiredScope?: string;
+  /** Scopes the authorization server never grants. */
+  deniedScopes: string[];
+  /** Registered clients and their redirect URIs; authorize and token requests are checked against them. */
+  clients: Map<string, string[]>;
+  authorizedRedirects: string[];
+  tokenScopes: Map<string, string>;
 }
 
 const sessions: McpOAuthSession[] = [];
@@ -58,24 +70,33 @@ async function fixture(): Promise<Fixture> {
     base: "", resource: "", issuer: "", challengePath: "/metadata", pkce: [], registrations: [], grants: [], bearer: [],
     authorizations: [], refreshRevoked: false, rejectAccess: false, expiresIn: 3600, methods: ["S256"],
     dcr: true, redirectMetadata: false, resourceMetadataAvailable: true, tokenRedirect: false, oidc: false, discoveryVersions: [], challengeScope: "tools",
+    endpointPath: "/mcp", deniedScopes: [], clients: new Map(), authorizedRedirects: [], tokenScopes: new Map(),
   } as unknown as Fixture;
+  let lastAuthorizedScope = "";
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", state.base);
     const json = (body: unknown, status = 200): void => {
       response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body));
     };
-    if (url.pathname === "/mcp") {
+    if (url.pathname === state.endpointPath) {
       state.bearer.push(request.headers.authorization);
       if (state.resourceFailure) { json({ error: "access-secret-1" }, state.resourceFailure); return; }
+      const bearer = request.headers.authorization?.replace(/^Bearer /u, "");
+      if (bearer && !state.rejectAccess && state.requiredScope &&
+        !(state.tokenScopes.get(bearer) ?? "").split(" ").includes(state.requiredScope)) {
+        response.writeHead(403, { "www-authenticate": `Bearer error="insufficient_scope", scope="${state.requiredScope}", resource_metadata="${state.base}${state.challengePath}"` });
+        response.end("upstream credential-bearing diagnostic"); return;
+      }
       if (state.allowAnonymous || (request.headers.authorization && !state.rejectAccess)) { json({ ok: true }); return; }
       response.writeHead(401, { "www-authenticate": `Bearer resource_metadata="${state.base}${state.challengePath}", scope="${state.challengeScope}"` });
       response.end("upstream credential-bearing diagnostic"); return;
     }
-    if (url.pathname === "/metadata" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+    const wellKnownResource = state.endpointPath === "/" ? "/.well-known/oauth-protected-resource" : `/.well-known/oauth-protected-resource${state.endpointPath}`;
+    if (url.pathname === "/metadata" || url.pathname === wellKnownResource) {
       state.discoveryVersions.push(request.headers["mcp-protocol-version"] as string | undefined);
       if (!state.resourceMetadataAvailable || (state.wellKnownMetadataUnavailable && url.pathname.startsWith("/.well-known/"))) { json({}, 404); return; }
       if (state.redirectMetadata) { response.writeHead(302, { location: `${state.base}/untrusted` }); response.end(); return; }
-      json({ resource: state.resource, authorization_servers: [state.authorizationServer ?? state.base], scopes_supported: ["tools"] }); return;
+      json({ resource: state.declaredResource ?? state.resource, authorization_servers: [state.authorizationServer ?? state.base], scopes_supported: ["tools"] }); return;
     }
     if (state.oidc && url.pathname === "/.well-known/oauth-authorization-server") { json({}, 404); return; }
     if (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration") {
@@ -91,10 +112,17 @@ async function fixture(): Promise<Fixture> {
     if (url.pathname === "/register") {
       const registration = JSON.parse(body) as Record<string, unknown>;
       state.registrations.push(registration);
-      json({ ...registration, client_id: "native-client", token_endpoint_auth_method: "none" }, 201); return;
+      const clientId = `native-client-${state.registrations.length}`;
+      state.clients.set(clientId, registration.redirect_uris as string[]);
+      json({ ...registration, client_id: clientId, token_endpoint_auth_method: "none" }, 201); return;
     }
     if (url.pathname === "/authorize") {
       state.authorizations.push(url);
+      // Strict: the redirect URI must be one the client registered, compared exactly.
+      const registered = state.clients.get(url.searchParams.get("client_id") ?? "");
+      if (!registered?.includes(url.searchParams.get("redirect_uri") ?? "")) { json({ error: "invalid_request" }, 400); return; }
+      state.authorizedRedirects.push(url.searchParams.get("redirect_uri") ?? "");
+      lastAuthorizedScope = (url.searchParams.get("scope") ?? "").split(" ").filter((scope) => !state.deniedScopes.includes(scope)).join(" ");
       state.pkce.push(url.searchParams.get("code_challenge") ?? "");
       const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
       redirect.searchParams.set("state", state.callbackState ?? url.searchParams.get("state") ?? "");
@@ -114,14 +142,19 @@ async function fixture(): Promise<Fixture> {
       }
       if (state.tokenRedirect) { response.writeHead(302, { location: `${state.base}/untrusted` }); response.end(); return; }
       if (state.tokenResponseBody) { response.end(state.tokenResponseBody); return; }
-      if (grant.get("resource") !== state.resource) { json({ error: "invalid_target" }, 400); return; }
+      if (grant.get("resource") !== (state.declaredResource ?? state.resource)) { json({ error: "invalid_target" }, 400); return; }
       if (grant.get("grant_type") === "refresh_token" && state.refreshRevoked) {
         json({ error: "invalid_grant", error_description: "secret-refresh-credential" }, 400); return;
       }
+      if (!state.clients.has(grant.get("client_id") ?? "")) { json({ error: "invalid_client" }, 401); return; }
       if (grant.get("grant_type") === "authorization_code") {
         const challenge = createHash("sha256").update(grant.get("code_verifier") ?? "").digest("base64url");
         if (!state.pkce.includes(challenge)) { json({ error: "invalid_grant" }, 400); return; }
+        if (grant.get("redirect_uri") !== state.authorizedRedirects.at(-1)) { json({ error: "invalid_grant" }, 400); return; }
       }
+      const refreshedIndex = grant.get("refresh_token")?.replace(/^refresh-secret-/u, "");
+      const previousScope = state.tokenScopes.get(`access-secret-${refreshedIndex}`) ?? "";
+      state.tokenScopes.set(`access-secret-${tokenIndex}`, grant.get("grant_type") === "authorization_code" ? lastAuthorizedScope : previousScope);
       json({ access_token: `access-secret-${tokenIndex}`, refresh_token: `refresh-secret-${tokenIndex}`,
         token_type: "Bearer", expires_in: state.expiresIn, scope: state.tokenScope }); return;
     }
@@ -136,12 +169,13 @@ async function fixture(): Promise<Fixture> {
   return state;
 }
 
-function createSession(state: Fixture, options: { store?: Map<string, string>; config?: Partial<McpHttpServerConfig>; getSecret?: McpOAuthSecrets["getSecret"] } = {}) {
+function createSession(state: Fixture, options: { store?: Map<string, string>; config?: Partial<McpHttpServerConfig>; getSecret?: McpOAuthSecrets["getSecret"]; canStoreEncrypted?: McpOAuthSecrets["canStoreEncrypted"] } = {}) {
   const store = options.store ?? new Map<string, string>();
   const secrets: McpOAuthSecrets = {
     getSecret: options.getSecret ?? ((key) => store.get(key) ?? null),
     setSecret: async (key, value) => { store.set(key, value); },
     deleteSecret: async (key) => { store.delete(key); },
+    canStoreEncrypted: options.canStoreEncrypted ?? (() => true),
   };
   const catchers = new AuthRedirectCatchers();
   const openAuthorizationUrl = vi.fn(async (url: string) => {
@@ -299,7 +333,9 @@ describe("remote authorization", () => {
     if (kind === "registration") state.dcr = false;
     if (kind === "redirect") state.redirectMetadata = true;
     const { session, openAuthorizationUrl } = createSession(state, { config: { url: `${state.base}/mcp` } });
-    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    // No usable registration is its own, renderer-visible outcome; every other case is a generic failure.
+    await expect(session.authenticate()).rejects.toThrow(kind === "registration"
+      ? /^MCP client registration mode is not supported$/u : /^MCP authentication failed$/u);
     expect(openAuthorizationUrl).not.toHaveBeenCalled();
     expect(state.registrations).toHaveLength(0);
     expect(state.grants).toHaveLength(0);
@@ -384,7 +420,13 @@ describe("remote authorization", () => {
 
   it.each(["client-id-metadata-document", "preregistration", "manual"] as const)("rejects unsupported %s registration before network activity", async (clientRegistration) => {
     const state = await fixture();
-    expect(() => createSession(state, { config: { oauth: { clientRegistration } } })).toThrow(/^MCP authentication failed$/u);
+    const { session, openAuthorizationUrl } = createSession(state, { config: { oauth: { clientRegistration } } });
+    expect(session.getStatus()).toBe("error");
+    expect(session.getBlockedCode()).toBe("mcp-auth-registration-unsupported");
+    await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-registration-unsupported" });
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(openAuthorizationUrl).not.toHaveBeenCalled();
+    expect(state.bearer).toHaveLength(0);
     expect(state.discoveryVersions).toHaveLength(0);
     expect(state.authorizations).toHaveLength(0);
     expect(state.registrations).toHaveLength(0);
@@ -498,15 +540,150 @@ describe("remote authorization", () => {
     expect(session.getStatus()).toBe("authenticated");
   });
 
-  it("blocks authentication when encrypted storage cannot be read and permits a healthy retry", async () => {
+  it("blocks authentication with a distinct code when encrypted storage cannot be read and permits a healthy retry", async () => {
     const state = await fixture();
-    expect(() => createSession(state, { getSecret: () => { throw new Error("private-storage-diagnostic"); } })).toThrow(/^MCP authentication failed$/u);
+    let readable = false;
+    const store = new Map<string, string>();
+    const { session } = createSession(state, { store, getSecret: (key) => {
+      if (!readable) throw new Error("private-storage-diagnostic");
+      return store.get(key) ?? null;
+    } });
+    expect(session.getStatus()).toBe("error");
+    const failure = await session.authenticate().catch((error: unknown) => error as Error & { code?: string });
+    expect(failure).toMatchObject({ code: "mcp-auth-storage-unreadable", message: "MCP authorization storage cannot be read" });
+    expect(String(failure)).not.toContain("private-storage-diagnostic");
     expect(state.discoveryVersions).toHaveLength(0);
     expect(state.registrations).toHaveLength(0);
     expect(state.authorizations).toHaveLength(0);
-    const { session } = createSession(state);
+    readable = true;
     await session.authenticate();
     expect(session.getStatus()).toBe("authenticated");
+  });
+
+  it("refuses before discovery, the redirect listener or registration when encrypted storage is unavailable", async () => {
+    const state = await fixture();
+    const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: () => false });
+    const open = vi.spyOn(catchers, "open");
+    await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-storage-unavailable" });
+    expect(open).not.toHaveBeenCalled();
+    expect(openAuthorizationUrl).not.toHaveBeenCalled();
+    expect(state.discoveryVersions).toHaveLength(0);
+    expect(state.registrations).toHaveLength(0);
+    expect(session.getStatus()).toBe("error");
+  });
+
+  it("registers again for a new loopback port after revocation and completes a second strict flow", async () => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl } = createSession(state);
+    await session.authenticate();
+    state.rejectAccess = true;
+    state.refreshRevoked = true;
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    expect(session.getStatus()).toBe("required");
+    state.rejectAccess = false;
+    state.refreshRevoked = false;
+    await session.authenticate();
+    expect(session.getStatus()).toBe("authenticated");
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(2);
+    expect(state.registrations).toHaveLength(2);
+    const [first, second] = state.authorizations.map((url) => url.searchParams.get("redirect_uri"));
+    expect(second).not.toBe(first);
+    expect(state.authorizations[1].searchParams.get("client_id")).toBe("native-client-2");
+    expect(state.grants.at(-1)?.get("client_id")).toBe("native-client-2");
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+  });
+
+  it("reuses a registered client only when it lists the live redirect URI", async () => {
+    const state = await fixture();
+    const { session, catchers } = createSession(state);
+    await session.authenticate();
+    const registeredRedirect = state.authorizations[0].searchParams.get("redirect_uri")!;
+    vi.spyOn(catchers, "open").mockImplementationOnce(async function (this: typeof catchers, ownerKey: string) {
+      const opened = await (Object.getPrototypeOf(catchers) as typeof catchers).open.call(catchers, ownerKey);
+      return { ...opened, redirectUri: registeredRedirect };
+    });
+    state.rejectAccess = true;
+    state.refreshRevoked = true;
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    state.rejectAccess = false;
+    state.refreshRevoked = false;
+    await session.authenticate().catch(() => undefined);
+    expect(state.registrations).toHaveLength(1);
+    expect(state.authorizations[1].searchParams.get("client_id")).toBe("native-client-1");
+  });
+
+  it("marks a 403 insufficient_scope as step-up without opening the browser, then requests the scope union", async () => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl } = createSession(state);
+    await session.authenticate();
+    expect(state.authorizations[0].searchParams.get("scope")).toBe("tools");
+    state.requiredScope = "write";
+    const denied = await session.fetch(state.resource);
+    expect(denied.status).toBe(403);
+    expect(await denied.text()).toBe("MCP request failed");
+    expect(session.getStatus()).toBe("insufficient_scope");
+    expect((await session.fetch(state.resource)).status).toBe(403);
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(1);
+    await session.authenticate();
+    expect(state.authorizations[1].searchParams.get("scope")?.split(" ").sort()).toEqual(["tools", "write"]);
+    expect(session.getStatus()).toBe("authenticated");
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+  });
+
+  it("keeps the working grant when a step-up attempt fails", async () => {
+    const state = await fixture();
+    const { session } = createSession(state);
+    await session.authenticate();
+    state.requiredScope = "write";
+    await session.fetch(state.resource);
+    expect(session.getStatus()).toBe("insufficient_scope");
+    state.callbackState = "wrong-state";
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(session.getStatus()).toBe("insufficient_scope");
+    state.requiredScope = undefined;
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+  });
+
+  it("stops offering step-up for a scope after the retry limit", async () => {
+    const state = await fixture();
+    state.deniedScopes = ["admin"];
+    const { session, openAuthorizationUrl } = createSession(state);
+    await session.authenticate();
+    state.requiredScope = "admin";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect((await session.fetch(state.resource)).status).toBe(403);
+      expect(session.getStatus()).toBe("insufficient_scope");
+      await session.authenticate();
+    }
+    expect((await session.fetch(state.resource)).status).toBe(403);
+    expect(session.getStatus()).toBe("authenticated");
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends an origin-only resource without a trailing slash", async () => {
+    const state = await fixture();
+    state.endpointPath = "/";
+    state.resource = state.base;
+    const { session } = createSession(state, { config: { url: state.base } });
+    await expect(session.fetch(`${state.base}/`)).rejects.toThrow(/^MCP authentication required$/u);
+    await session.authenticate();
+    expect(state.authorizations[0].searchParams.get("resource")).toBe(state.base);
+    expect(state.grants[0].get("resource")).toBe(state.base);
+    expect(state.base.endsWith("/")).toBe(false);
+    expect((await session.fetch(`${state.base}/`)).ok).toBe(true);
+  });
+
+  it("requires metadata named by a challenge to describe exactly the challenged resource", async () => {
+    const state = await fixture();
+    state.declaredResource = state.base;
+    const challenged = createSession(state);
+    await expect(challenged.session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    await expect(challenged.session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(state.registrations).toHaveLength(0);
+    // Found at the well-known location instead, a containing resource remains acceptable.
+    const discovered = createSession(state);
+    await discovered.session.authenticate();
+    expect(state.authorizations[0].searchParams.get("resource")).toBe(state.base);
   });
 
   it("deletes stored credentials without reading or decrypting them", async () => {

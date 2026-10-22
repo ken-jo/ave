@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { MAX_SERVER_ID_LEN } from "../../../shared/mcp-app-partition.js";
+import { UNAUTHORIZED_FRAME } from "../../gated.js";
+import { bundledConfigId } from "../../../mcp/bundled-credential.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -38,12 +40,12 @@ describe("remote authentication IPC", () => {
     const { authenticate, auditLogger } = await setup();
     expect(isPublicChannel(CHANNELS.mcp.authenticate)).toBe(false);
     const result = await handlers.get(CHANNELS.mcp.authenticate)!({ senderFrame: { url: "https://untrusted.test" } }, "remote-a");
-    expect(result).toEqual({ connected: false, errorCode: "mcp-auth-failed" });
+    expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(authenticate).not.toHaveBeenCalled();
     expect(auditLogger.log).toHaveBeenCalled();
   });
 
-  it.each([undefined, null, {}, "", "../other", "server\nsecret", "s".repeat(MAX_SERVER_ID_LEN + 1)])("rejects malformed server ids before authentication: %j", async (id) => {
+  it.each([undefined, null, {}, "", "../other", "server\nsecret", "s".repeat(MAX_SERVER_ID_LEN + 1), "bundled:not-json", 'bundled:["other","a","b"]'])("rejects malformed server ids before authentication: %j", async (id) => {
     const { authenticate } = await setup();
     expect(await invoke(CHANNELS.mcp.authenticate, id)).toEqual({ connected: false, errorCode: "mcp-auth-failed" });
     expect(authenticate).not.toHaveBeenCalled();
@@ -60,6 +62,20 @@ describe("remote authentication IPC", () => {
     const { authenticate } = await setup();
     authenticate.mockResolvedValueOnce({ connected: false, errorCode: "mcp-auth-required", refresh_token: "private-value" });
     expect(await invoke(CHANNELS.mcp.authenticate, "remote-a")).toEqual({ connected: false, errorCode: "mcp-auth-required" });
+  });
+
+  it.each(["mcp-auth-storage-unavailable", "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported"] as const)(
+    "passes the distinct %s outcome through", async (errorCode) => {
+      const { authenticate } = await setup();
+      authenticate.mockResolvedValueOnce({ connected: false, errorCode });
+      expect(await invoke(CHANNELS.mcp.authenticate, "remote-a")).toEqual({ connected: false, errorCode });
+    });
+
+  it("accepts the settings-row id of a bundled server that is not running", async () => {
+    const { authenticate } = await setup();
+    const id = bundledConfigId({ kind: "agent-plugin", name: "remote-tools" }, "remote");
+    expect(await invoke(CHANNELS.mcp.authenticate, id)).toEqual({ connected: true });
+    expect(authenticate).toHaveBeenCalledWith(id);
   });
 
   it("sanitizes unknown failure results and thrown provider text", async () => {

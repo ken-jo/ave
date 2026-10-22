@@ -8,7 +8,7 @@ import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Separator } from "../../../components/ui/separator.js";
 import { Textarea } from "../../../components/ui/textarea.js";
-import type { McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
+import type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
 import { LONG_TOAST_TTL_MS } from "../constants.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
@@ -46,9 +46,21 @@ function getAuthStatusLabel(status: NonNullable<McpServerState["authStatus"]>): 
     required: t("mcpTab.authRequired"),
     authenticating: t("mcpTab.authenticating"),
     authenticated: t("mcpTab.authenticated"),
+    insufficient_scope: t("mcpTab.authStepUpRequired"),
     error: t("mcpTab.authError"),
   };
   return labels[status];
+}
+
+/** Localized guidance for a host authorization failure code; never provider text. */
+function getAuthErrorMessage(code: McpAuthErrorCode | undefined): string {
+  switch (code) {
+    case "mcp-auth-required": return t("mcpTab.authRequiredMessage");
+    case "mcp-auth-storage-unavailable": return t("mcpTab.authStorageUnavailableMessage");
+    case "mcp-auth-storage-unreadable": return t("mcpTab.authStorageUnreadableMessage");
+    case "mcp-auth-registration-unsupported": return t("mcpTab.authRegistrationUnsupportedMessage");
+    default: return t("mcpTab.authFailedMessage");
+  }
 }
 
 const EMPTY_FORM = {
@@ -262,7 +274,7 @@ export function McpTab() {
     void fetchAll();
   }, [fetchAll]);
 
-  const hasOAuthServer = configs.some((config) => config.transport === "http" && !config.bundled && config.auth === "oauth")
+  const hasOAuthServer = configs.some((config) => config.transport === "http" && config.auth === "oauth")
     || states.some((state) => state.authStatus !== undefined);
   useEffect(() => {
     if (!hasOAuthServer) return;
@@ -305,11 +317,7 @@ export function McpTab() {
       const result = await window.ave.mcp.authenticate(id);
       showBanner(
         result.connected ? "success" : "error",
-        result.connected
-          ? t("mcpTab.authSuccess", { id })
-          : result.errorCode === "mcp-auth-required"
-            ? t("mcpTab.authRequiredMessage")
-            : t("mcpTab.authFailedMessage"),
+        result.connected ? t("mcpTab.authSuccess", { id }) : getAuthErrorMessage(result.errorCode),
       );
       await fetchAll();
     } catch {
@@ -437,8 +445,8 @@ export function McpTab() {
           ? t("mcpTab.serverAddedConnected", { id: config.id })
           : result.errorCode === "mcp-auth-required"
             ? t("mcpTab.serverSavedAuthRequired", { id: config.id })
-            : result.errorCode === "mcp-auth-failed"
-              ? t("mcpTab.authFailedMessage")
+            : result.errorCode
+              ? getAuthErrorMessage(result.errorCode)
               : t("mcpTab.serverAddedNotConnected", { id: config.id, warning: result.warning ?? t("mcpTab.unknownCause") }),
       );
       notifySaved();
@@ -519,7 +527,7 @@ export function McpTab() {
                 const cfg = getConfig(id);
                 const status = st?.status ?? "disconnected";
                 const authStatus = authenticatingId === id ? "authenticating" : st?.authStatus;
-                const canAuthenticate = cfg?.transport === "http" && !cfg.bundled && (cfg.auth === "oauth" || authStatus !== undefined);
+                const canAuthenticate = cfg?.transport === "http" && (cfg.auth === "oauth" || authStatus !== undefined);
                 return (
                   <div key={id} data-mcp-server-id={id} className="rounded-md border bg-card p-3">
                     <div className="flex items-start justify-between gap-2">

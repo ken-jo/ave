@@ -47,13 +47,13 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
       openAuthorizationUrl: (url) => requireDesktopHost(ctx.host).shellOpenExternal(url),
       secrets: {
         getSecret: (key) => ctx.settingsService.getEncryptedSecret(key),
+        // The session checks canStoreEncrypted() before any flow starts; this guard keeps a write fail-closed.
         setSecret: async (key, value) => {
-          if (!ctx.host.encryption.isEncryptionAvailable() || ctx.host.encryption.getSelectedStorageBackend() === "basic_text") {
-            throw new Error("MCP authorization requires encrypted storage");
-          }
+          if (!ctx.settingsService.isSecretStorageEncrypted()) throw new Error("MCP authorization requires encrypted storage");
           await ctx.settingsService.setSecret(key, value);
         },
         deleteSecret: (key) => ctx.settingsService.deleteSecret(key),
+        canStoreEncrypted: () => ctx.settingsService.isSecretStorageEncrypted(),
       },
     },
   );

@@ -352,11 +352,24 @@ export interface McpResourceTemplateSummary {
   variables: string[];
 }
 
-export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "error";
+/**
+ * Host-owned authorization state. `insufficient_scope` means the current grant
+ * still works but the server asked for more scope (403 step-up); only the
+ * explicit Authenticate action requests it.
+ */
+export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "insufficient_scope" | "error";
+
+/** Stable, renderer-safe authorization failure codes. */
+export type McpAuthErrorCode =
+  | "mcp-auth-required"
+  | "mcp-auth-failed"
+  | "mcp-auth-storage-unavailable"
+  | "mcp-auth-storage-unreadable"
+  | "mcp-auth-registration-unsupported";
 
 export interface McpAuthenticationResult {
   connected: boolean;
-  errorCode?: "mcp-auth-required" | "mcp-auth-failed";
+  errorCode?: McpAuthErrorCode;
 }
 
 export interface McpConfigMutationResult extends McpAuthenticationResult {
