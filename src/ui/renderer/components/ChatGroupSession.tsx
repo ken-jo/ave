@@ -534,8 +534,8 @@ export function ChatGroupSession({
     await sessionFork(target.messageId, entryIdx, truncateToEntry);
   }, [entries, sessionFork, truncateToEntry]);
 
-  // Rewind: the message's own input goes back to the composer and everything
-  // from it onward is discarded, in this session.
+  // Conversation rewind returns the message's own input to the composer and
+  // discards everything from it onward. Code-only keeps the transcript intact.
   //
   // The host is asked FIRST and hands back the input to restore. It owns that
   // text because the transcript entry only ever held a flattened rendering of

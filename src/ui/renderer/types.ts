@@ -798,9 +798,10 @@ export type AveApi = {
    */
   chatEditResend: (messageId: string, newText: string) => Promise<{ ok: boolean; error?: string }>;
   /**
-   * Discard the conversation from this user message onward, in place. The
-   * message itself goes too — the caller owns putting its text back in the
-   * composer, which is what makes this a rewind rather than a delete.
+   * Restore conversation, native file-tool edits, or both before this user
+   * message. Omitted mode restores conversation only: the message and later
+   * rows are discarded and its input is returned for the composer. Code-only
+   * restore keeps the conversation intact.
    */
   chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */

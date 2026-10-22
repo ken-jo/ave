@@ -1499,14 +1499,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  // Rewind-only counterpart of `editResend`: same read → ordinal-resolve →
-  // truncate sequence, then it stops. The renderer puts the message text back
-  // in the composer, so replaying it is the user's next keystroke, not ours.
-  //
-  // The truncated history is written to disk here because nothing else will:
-  // `editResend` leaves persistence to the turn it starts, and this path
-  // starts no turn. Without the write, the discarded turns would come back on
-  // the next session load.
+  // Return-here never resends. Code restore must pass before conversation is
+  // changed; code-only leaves it intact. Conversation restore persists its
+  // truncation here because no follow-up turn will save it.
   ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown, mode: unknown = "conversation") => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.rewindTo, e); return UNAUTHORIZED_FRAME; }
     if (!isRewindMode(mode)) return { ok: false, error: "invalid-rewind-mode" };

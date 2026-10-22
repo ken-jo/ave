@@ -82,9 +82,9 @@ export interface ChatViewProps {
   onEditSave: (idx: number, text: string) => void | Promise<void>;
   onFork: (idx: number) => void | Promise<void>;
   /**
-   * Rewind to just before this user message: discard the conversation from it
-   * onward and put its text back in the composer, unsent. Reports whether the
-   * host accepted, because a refusal must leave everything as it was.
+   * Apply the chosen restore mode before this user message. Conversation
+   * restore returns its text to the composer, unsent; code-only keeps history.
+   * Report host acceptance so refusals preserve the current conversation.
    */
   onReturnHere: (idx: number, mode?: RewindMode) => Promise<{ ok: boolean }>;
   onToggleStar: (idx: number) => void | Promise<void>;
@@ -667,7 +667,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   });
 
   // Queued messages were written to be said AFTER the point being rewound to,
-  // so a rewind discards them with everything else that came after it. The
+  // so conversation rewind discards them with everything after it. The
   // queue lives here, so the clear happens here — and only once the host has
   // confirmed the conversation was actually cut.
   const [rewindEntryIdx, setRewindEntryIdx] = useState<number | null>(null);
