@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect } from "./fixtures.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/ui/renderer/hooks/use-container-narrow.js";
 
@@ -38,7 +38,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   // Read the durable settings through the same public bridge the renderer uses.
   await expect.poll(() => page.evaluate(async () => {
     const settings = await window.aveApi.getSettings();
-    return { thumbnails: settings.system.mainLayout?.thumbnailOpenIds, panels: settings.system.mainLayout?.panelOpenIds };
+    return { thumbnails: settings.system?.mainLayout?.thumbnailOpenIds, panels: settings.system?.mainLayout?.panelOpenIds };
   })).toEqual({ thumbnails: ["main"], panels: [] });
   await page.reload();
   await expect(thumbnailsToggle).toHaveAttribute("aria-pressed", "true");
