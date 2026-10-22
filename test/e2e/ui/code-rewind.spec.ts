@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron";
@@ -7,7 +8,18 @@ import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownS
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 const MESSAGE_ID = "rewind-user-row";
 let ctx: SeededElectronContext;
-test.afterEach(async () => { if (ctx) await teardownSeededElectron(ctx); });
+test.afterEach(async () => {
+  if (!ctx) return;
+  // These assertions cover rewind, not application shutdown. End only this
+  // isolated fixture process before the shared helper removes its directories.
+  const child = ctx.app.process();
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, "exit");
+    child.kill("SIGKILL");
+    await exited;
+  }
+  await teardownSeededElectron(ctx);
+});
 
 async function setup() {
   ctx = await launchSeededElectron({
