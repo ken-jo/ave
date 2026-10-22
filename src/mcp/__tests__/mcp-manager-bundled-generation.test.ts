@@ -83,6 +83,20 @@ beforeEach(() => {
 });
 
 describe("McpManager bundled generation", () => {
+  it("refuses unconfigured remote authorization before any bundled client connection", async () => {
+    const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch);
+    const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/remote-kit", pluginVersion: "1.0.0",
+      generationId: "a".repeat(64), activationId: "run-oauth", localId: "remote", fingerprint: "b".repeat(64) },
+    { transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }, "d".repeat(64));
+    const trust = new PluginMcpTrustStore();
+    trust.approve(projection);
+    const prepared = await manager.prepareBundledGeneration({ pluginId: "agent-plugin/remote-kit", generationId: "run-oauth" }, [projection], trust);
+    expect(prepared.degraded).toMatchObject([{ code: "credential_required", retryable: false }]);
+    expect(prepared.records).toHaveLength(0);
+    expect(constructedConfigs).toHaveLength(0);
+    await manager.discardBundledGeneration(prepared);
+  });
+
   it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {
     const secretPath = join(root, "bundled-secrets.json");
     const encryption = {

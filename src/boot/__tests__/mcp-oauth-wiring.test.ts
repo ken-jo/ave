@@ -1,0 +1,62 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { McpOAuthDependencies } from "../../mcp/mcp-oauth.js";
+
+const capture = vi.hoisted(() => ({ args: [] as unknown[] }));
+vi.mock("../../mcp/mcp-manager.js", () => ({
+  McpManager: class {
+    constructor(...args: unknown[]) { capture.args = args; }
+    async loadFromConfig() { return []; }
+    async handlePolicyWithdrawal() {}
+  },
+}));
+vi.mock("../../mcp/mcp-governance.js", () => ({ McpGovernance: class { startPolicyRefresh() {} } }));
+vi.mock("../../mcp/mcp-elicitation-resolver.js", () => ({ createElicitationResolverFactory: () => undefined }));
+vi.mock("../../mcp/mcp-server-disconnect-sink.js", () => ({ createMcpServerDisconnectedSink: () => undefined }));
+
+import { setupMcp } from "../steps/mcp-setup.js";
+import type { BootContext } from "../context.js";
+
+beforeEach(() => { capture.args = []; });
+
+async function wiring(available = true, backend = "unknown") {
+  const settings = {
+    getSecret: vi.fn(() => "development-plaintext"),
+    getEncryptedSecret: vi.fn(() => "encrypted-record"),
+    setSecret: vi.fn(async () => {}),
+    deleteSecret: vi.fn(async () => {}),
+  };
+  const hostFetch = vi.fn();
+  const shellOpenExternal = vi.fn(async () => {});
+  const context = {
+    settingsService: settings, singleHopNetworkFetch: hostFetch,
+    host: { encryption: { isEncryptionAvailable: () => available, getSelectedStorageBackend: () => backend }, desktop: { shellOpenExternal } },
+  } as unknown as BootContext;
+  await setupMcp(context);
+  return { settings, hostFetch, shellOpenExternal, oauth: capture.args[9] as McpOAuthDependencies };
+}
+
+describe("remote authorization boot boundaries", () => {
+  it("uses the host egress transport and rejects legacy plaintext secret reads", async () => {
+    const { settings, hostFetch, oauth } = await wiring();
+    expect(capture.args[2]).toBe(hostFetch);
+    expect(oauth.secrets.getSecret("mcp.oauth.record")).toBe("encrypted-record");
+    expect(settings.getEncryptedSecret).toHaveBeenCalledWith("mcp.oauth.record");
+    expect(settings.getSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([[false, "unknown"], [true, "basic_text"]])("refuses credential writes when encryption is unavailable (%s, %s)", async (available, backend) => {
+    const { settings, oauth } = await wiring(available as boolean, backend as string);
+    await expect(oauth.secrets.setSecret("mcp.oauth.record", "throwaway-secret")).rejects.toThrow("MCP authorization requires encrypted storage");
+    expect(settings.setSecret).not.toHaveBeenCalled();
+  });
+
+  it("stores credentials through the existing secret store and opens only the host browser surface", async () => {
+    const { settings, shellOpenExternal, oauth } = await wiring();
+    await oauth.secrets.setSecret("mcp.oauth.record", "throwaway-secret");
+    expect(settings.setSecret).toHaveBeenCalledWith("mcp.oauth.record", "throwaway-secret");
+    await oauth.secrets.deleteSecret("mcp.oauth.record");
+    expect(settings.deleteSecret).toHaveBeenCalledWith("mcp.oauth.record");
+    await oauth.openAuthorizationUrl("https://auth.example.test/authorize");
+    expect(shellOpenExternal).toHaveBeenCalledWith("https://auth.example.test/authorize");
+  });
+});
