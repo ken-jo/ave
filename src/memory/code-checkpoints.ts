@@ -5,6 +5,7 @@ import { chmod, lstat, open, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 
 const namespace = openFeatureNamespace("code-checkpoints");
@@ -56,13 +57,18 @@ async function verifyNamespace(): Promise<void> {
 async function load(): Promise<Turn[]> {
   await verifyNamespace();
   let handle;
+  let pathInfo;
   try {
-    handle = await open(join(namespace.dir, FILE_NAME), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const path = join(namespace.dir, FILE_NAME);
+    pathInfo = await lstat(path, { bigint: true });
+    if (!pathInfo.isFile() || pathInfo.isSymbolicLink()) throw new Error("Code checkpoint storage is invalid");
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
   try {
+    if (!sameFileIdentity(pathInfo, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint storage identity changed");
     const info = await handle.stat();
     if (!info.isFile() || info.nlink !== 1 || info.size > CODE_CHECKPOINT_POLICY.maxStorageBytes
       || (typeof process.getuid === "function" && info.uid !== process.getuid())
@@ -100,18 +106,18 @@ async function canonicalPath(path: string): Promise<string> {
 async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: number }> {
   // Refuse changed parent links, file links and special files, including dangling links.
   if (await canonicalPath(path) !== path) throw new Error("Code checkpoint path changed");
-  let handle;
-  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  let pathInfo;
+  try { pathInfo = await lstat(path, { bigint: true }); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      try { await lstat(path); } catch (missing) {
-        if ((missing as NodeJS.ErrnoException).code === "ENOENT") return { bytes: null, mode: 0o600 };
-        throw missing;
-      }
-    }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { bytes: null, mode: 0o600 };
     throw error;
   }
+  if (!pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.nlink !== 1n) {
+    throw new Error("Code checkpoint requires an unlinked regular file");
+  }
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    if (!sameFileIdentity(pathInfo, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint file identity changed");
     const info = await handle.stat();
     if (!info.isFile() || info.nlink !== 1 || info.size > CODE_CHECKPOINT_POLICY.maxFileBytes) {
       throw new Error("Code checkpoint requires a regular file within the size limit");
@@ -125,8 +131,12 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
       length += read.bytesRead;
     }
     const after = await handle.stat();
+    const pathAfter = await lstat(path, { bigint: true });
     if (length !== info.size || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) {
       throw new Error("Code checkpoint file changed during capture");
+    }
+    if (!pathAfter.isFile() || pathAfter.isSymbolicLink() || pathAfter.nlink !== 1n || !sameFileIdentity(pathInfo, pathAfter)) {
+      throw new Error("Code checkpoint file identity changed");
     }
     return { bytes: Buffer.from(bytes.subarray(0, length)), mode: info.mode & 0o777 };
   } finally { await handle.close(); }

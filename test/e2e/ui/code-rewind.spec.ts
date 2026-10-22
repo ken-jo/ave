@@ -31,6 +31,7 @@ async function setup() {
     ],
   }]), { mode: 0o600 });
   await expect(ctx.page.getByText("The source file is updated.", { exact: true })).toBeVisible();
+  await ctx.page.getByText("Update the source file.", { exact: true }).hover();
   await ctx.page.getByTitle("Return here", { exact: true }).click();
   return { source, created, original, page: ctx.page };
 }
@@ -60,6 +61,7 @@ test("combined restore refuses external changes and conversation-only remains av
   expect(existsSync(created)).toBe(true);
   await expect(page.getByText("The source file is updated.", { exact: true })).toBeVisible();
   await expect(dialog).toBeHidden();
+  await page.getByText("Update the source file.", { exact: true }).hover();
   await page.getByTitle("Return here", { exact: true }).click();
   await dialog.getByRole("button", { name: "Restore conversation only", exact: true }).click();
   await expect(dialog).toBeHidden();

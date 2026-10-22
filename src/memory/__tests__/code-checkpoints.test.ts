@@ -38,7 +38,7 @@ describe("native file-tool code checkpoints", () => {
     await turn("second", async () => { await read(); await write("latest\n"); });
     // Restore reads persisted state rather than requiring an active turn.
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
-    expect(await readFile(file)).toEqual(original);
+    expect((await readFile(file)).equals(original)).toBe(true);
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
   });
 
@@ -166,14 +166,14 @@ describe("native file-tool code checkpoints", () => {
     expect((await readFile(file))[0]).toBe(4);
     expect((await stat(join(root, "state/code-checkpoints/turns.json"))).size).toBeLessThanOrEqual(CODE_CHECKPOINT_POLICY.maxStorageBytes);
     expect(await restoreCodeCheckpoint(sessionId, "byte-cap")).toEqual({ ok: true });
-    expect(await readFile(file)).toEqual(original);
+    expect((await readFile(file)).equals(original)).toBe(true);
   }, 60_000);
 
   it("refuses an oversized before-image and keeps the existing file", async () => {
     const bytes = Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1, 65);
     await writeFile(file, bytes);
     await expect(turn("large-before", () => new DeleteFileTool().execute({ path: file }, ctx))).rejects.toThrow("size limit");
-    expect(await readFile(file)).toEqual(bytes);
+    expect((await readFile(file)).equals(bytes)).toBe(true);
   });
 
   it("does not retain a failed no-op move as a file change", async () => {
