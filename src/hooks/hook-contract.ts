@@ -90,14 +90,15 @@ export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonIn
     case "SessionStart":
       return { ...common, hook_event_name: payload.hookType, session_meta: payload.sessionMeta };
     case "SessionEnd":
-      return { ...common, hook_event_name: payload.hookType, session_meta: payload.sessionMeta, stop_reason: payload.stopReason };
+      return { ...common, hook_event_name: payload.hookType, reason: payload.reason,
+        session_meta: payload.sessionMeta, stop_reason: payload.stopReason };
     case "Notification":
-      return { ...common, hook_event_name: payload.hookType };
+      return { ...common, hook_event_name: payload.hookType, message: payload.message };
     case "Stop":
       return { ...common, hook_event_name: payload.hookType, stop_reason: payload.stopReason,
         tool_count: payload.toolCount, duration_ms: payload.durationMs };
     case "PreCompact":
-      return { ...common, hook_event_name: payload.hookType, token_estimate: payload.tokenEstimate };
+      return { ...common, hook_event_name: payload.hookType, reason: payload.reason, token_estimate: payload.tokenEstimate };
     case "PostCompact":
       return { ...common, hook_event_name: payload.hookType, messages_before: payload.messagesBefore,
         messages_after: payload.messagesAfter, tokens_before: payload.tokensBefore, tokens_after: payload.tokensAfter };

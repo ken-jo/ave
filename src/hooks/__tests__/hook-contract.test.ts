@@ -19,7 +19,7 @@ const EVENT_CASES: Array<{ name: HookEventName; event: HookEvent; payload: Lifec
   { name: "PostToolUseFailure", event: "PostToolUseFailure", payload: { toolName: "write_file", errorMessage: "disk full", durationMs: 10 }, expected: { tool_name: "write_file", error: "disk full", duration_ms: 10 } },
   { name: "PermissionDenied", event: "PermissionDenied", payload: { toolName: "write_file", denyReason: { layer: 3, source: "policy", reason: "outside scope" } }, expected: { tool_name: "write_file", deny_reason: { layer: 3, source: "policy", reason: "outside scope" } } },
   { name: "SessionStart", event: "SessionStart", payload: { sessionMeta: { persona: "default" } }, expected: { session_meta: { persona: "default" } } },
-  { name: "SessionEnd", event: "SessionEnd", payload: { stopReason: "reset" }, expected: { stop_reason: "reset" } },
+  { name: "SessionEnd", event: "SessionEnd", payload: { reason: "new-conversation", stopReason: "reset" }, expected: { reason: "new-conversation", stop_reason: "reset" } },
   { name: "Notification", event: "Notification", payload: { message: "Turn complete" }, expected: { message: "Turn complete" } },
   { name: "Stop", event: "Stop", payload: { stopReason: "complete", toolCount: 2, durationMs: 10 }, expected: { stop_reason: "complete", tool_count: 2, duration_ms: 10 } },
   { name: "PreCompact", event: "PreCompact", payload: { reason: "manual", tokenEstimate: 42 }, expected: { reason: "manual", token_estimate: 42 } },
