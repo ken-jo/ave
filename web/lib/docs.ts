@@ -103,7 +103,7 @@ const ko: Record<DocSlug, DocPage> = {
         h: "구독으로 연결",
         blocks: [
           { dl: [
-            ["ChatGPT 요금제", "격리된 로컬 Codex 런타임을 통해 로그인합니다."],
+            ["ChatGPT 요금제", "내가 설치한 codex CLI를 Ave 전용 격리 폴더에서 실행해 로그인합니다. Ave에는 codex CLI가 들어 있지 않으며, 찾지 못하면 설정에서 공식 설치 방법을 안내합니다."],
             ["Claude 구독", "Ave가 자동으로 찾은 공식 claude CLI를 실행합니다. 앱 전용 설정 폴더를 쓰고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 쓰입니다. 이 경로에서는 모델 선택과 이미지 첨부가 없습니다."],
           ] },
           { p: "구독 자격 증명은 API 키가 되지 않고, 경로 사이에서 몰래 다른 경로로 넘어가지 않습니다." },
@@ -558,7 +558,7 @@ const en: Record<DocSlug, DocPage> = {
         h: "Using a subscription",
         blocks: [
           { dl: [
-            ["ChatGPT plan", "Sign in through an isolated local Codex runtime."],
+            ["ChatGPT plan", "Sign in through the codex CLI you installed, run in an Ave-only isolated folder. Ave does not ship the CLI; if it is not found, Settings shows the official install methods."],
             ["Claude subscription", "Ave launches the official claude CLI Ave discovers automatically. It uses an app-owned config folder and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments."],
           ] },
           { p: "Subscription credentials never become API keys, and there is no silent fallback from one route to another." },

@@ -226,7 +226,7 @@ const ko: Pages = {
       items: [
         { tag: "API 키", title: "제공자 키로", points: ["기본 제공: OpenAI, Claude, Gemini, OpenRouter", "그 밖의 제공자는 마켓플레이스의 제공자 패키지로", "OpenAI는 API 키 채팅으로도 연결"] },
         { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", points: ["로컬이나 사내 서버를 주소로 연결", "모델 목록은 엔드포인트에서 동기화", "이미지 입력 지원 여부를 직접 지정 가능"] },
-        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
+        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 내가 설치한 codex CLI를 격리해 실행", "Claude: Ave가 자동으로 찾은 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
       ],
     },
     first: {
@@ -671,7 +671,7 @@ const en: Pages = {
       items: [
         { tag: "API key", title: "With a provider key", points: ["Built in: OpenAI, Claude, Gemini, OpenRouter", "Other providers as marketplace provider packages", "OpenAI also through API-key chat"] },
         { tag: "Your own server", title: "An OpenAI-compatible endpoint", points: ["A local or company server, by address", "The model list syncs from the endpoint", "Declare image input support yourself if needed"] },
-        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI Ave discovers automatically, with an app-owned config folder", "Subscription credentials never become API keys"] },
+        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through the codex CLI you installed, run in isolation", "Claude: the official claude CLI Ave discovers automatically, with an app-owned config folder", "Subscription credentials never become API keys"] },
       ],
     },
     first: {
