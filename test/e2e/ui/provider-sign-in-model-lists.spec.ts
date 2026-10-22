@@ -3,7 +3,7 @@ import { openInlineSettings } from './inline-settings.js';
 
 test.use({ seedApiKey: false });
 
-test('first-run model setup keeps credential fields behind the sign-in method', async ({ app, mainWindow }, testInfo) => {
+test('first-run model setup reveals credentials only after an explicit choice', async ({ app, mainWindow }, testInfo) => {
   await expect(mainWindow.getByTestId('iab-status-model-setup')).toBeVisible();
   await expect(mainWindow.getByTestId('iab-status-model')).toHaveCount(0);
   const settings = await openInlineSettings(app, mainWindow, 'llm');
@@ -26,4 +26,18 @@ test('first-run model setup keeps credential fields behind the sign-in method', 
     }
     await settings.screenshot({ path: testInfo.outputPath(`${provider}-sign-in.png`) });
   }
+
+  await settings.getByTestId('llm-tab:add-provider').click();
+  await settings.getByTestId('llm-tab:add-provider-item:gemini').click();
+  const apiCard = settings.getByTestId('llm-tab:connection:gemini');
+  const apiKey = apiCard.getByTestId('llm-api-key-input');
+  await expect(apiKey).toHaveCount(0);
+  await apiCard.getByTestId('llm-tab:api-key-reveal').click();
+  await expect(apiKey).toBeFocused();
+  await apiKey.fill('discarded-draft');
+  await apiCard.getByTestId('llm-tab:save-providers-cancel').click();
+  await expect(apiKey).toHaveCount(0);
+  await apiCard.getByTestId('llm-tab:api-key-reveal').click();
+  await expect(apiKey).toHaveValue('');
+  await settings.screenshot({ path: testInfo.outputPath('api-key-reveal.png') });
 });
