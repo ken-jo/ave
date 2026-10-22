@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron";
+import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron.js";
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 const MESSAGE_ID = "rewind-user-row";

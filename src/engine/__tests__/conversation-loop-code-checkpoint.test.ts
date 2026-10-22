@@ -3,7 +3,7 @@ import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { LLMProvider, StreamEvent } from "../llm/types.js";
+import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -50,6 +50,6 @@ describe("turn-owned code checkpoint integration", () => {
     expect(await readFile(file, "utf8")).toBe("created\r\n");
     expect(await restoreCodeCheckpoint(loop.getSessionId(), first)).toEqual({ ok: true });
     await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(memoryManager.loadSession(loop.getSessionId())?.filter((message) => message.role === "user").map((message) => message.meta?.messageId)).toEqual([first, second]);
+    expect((memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null)?.filter((message) => message.role === "user").map((message) => message.meta?.messageId)).toEqual([first, second]);
   });
 });
