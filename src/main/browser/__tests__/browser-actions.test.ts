@@ -1198,6 +1198,47 @@ describe("typed page actions", () => {
 });
 
 describe("file-input effect guard", () => {
+  it("replaces a thirty-megabyte selection on the same input", async () => {
+    const { promises: fs } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "ave-upload-capacity-")));
+    const previousHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(dir, "home");
+    const cdp = new FakeCdp();
+    try {
+      const originals = [join(dir, "first.txt"), join(dir, "second.txt")];
+      for (const path of originals) { await fs.writeFile(path, ""); await fs.truncate(path, 15 * 1024 * 1024); }
+      cdp.attributes.set(11, { type: "file", multiple: "" });
+      cdp.nodes = page([ax("file", "button", "File", { backendDOMNodeId: 11 })]);
+      const refs = new BrowserRefTable();
+      await snapshot(target(cdp), {}, refs);
+      const send = cdp.send.bind(cdp);
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getDocument"
+        ? { root: { nodeName: "#document", children: [{ nodeName: "INPUT", backendNodeId: 11 }] } }
+        : send(method, params));
+      const options = {
+        windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443",
+        documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal,
+        pickFiles: async () => originals,
+      };
+      for (let index = 0; index < 3; index++) {
+        await expect(upload(target(cdp), "e1", options, refs)).resolves.toMatchObject({ status: "selected", count: 2, bytes: 30 * 1024 * 1024 });
+        const assignments = cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles");
+        expect(assignments).toHaveLength(index + 1);
+        const paths = assignments.at(-1)!.params!.files as string[];
+        for (const path of paths) expect((await fs.stat(path)).size).toBe(15 * 1024 * 1024);
+        if (index > 0) {
+          for (const path of assignments[index - 1]!.params!.files as string[]) await expect(fs.stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      }
+    } finally {
+      cdp.events.emit("message", "DOM.documentUpdated", {});
+      await vi.waitFor(async () => expect(await fs.readdir(join(dir, "home", "browser-uploads"))).toEqual([]));
+      if (previousHome === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = previousHome;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a staging replacement untouched and reports refusal before page assignment", async () => {
     const { promises: fs } = await import("node:fs");
     const { join } = await import("node:path");
@@ -1232,7 +1273,7 @@ describe("file-input effect guard", () => {
         windowId: 1, sessionId: "conversation", tabId: "tab-1", origin: "https://a.example:443",
         documentId: 1, controlGeneration: 1, ref: "e1", signal: new AbortController().signal,
         pickFiles: async () => { picked = true; return [original]; },
-      }, refs)).rejects.toMatchObject({ code: "upload-refused" });
+      }, refs)).rejects.toMatchObject({ code: "upload-refused", message: expect.stringContaining("within the upload limits"), cause: { code: "upload-cleanup-failed" } });
       expect(cdp.calls.filter((call) => call.method === "DOM.setFileInputFiles")).toEqual([]);
       expect(replacement).not.toBe("");
       expect(await fs.readFile(replacement, "utf8")).toBe("replaced bytes");

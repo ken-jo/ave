@@ -683,6 +683,7 @@ export async function upload(
         catch (cleanupError) {
           // Preserve the refusal when cleanup also refuses an unowned replacement.
           if (!(error instanceof BrowserActionError) || error.code !== "upload-refused") throw cleanupError;
+          error.cause = cleanupError;
         }
       }
       throw error;

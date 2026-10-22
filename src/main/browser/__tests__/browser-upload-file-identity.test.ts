@@ -118,11 +118,34 @@ describe("browser upload exact file identity", () => {
       expect(await fs.readFile(stagedPath, "utf8")).toBe(change === "replacement" ? "replaced bytes" : "resized");
       expect((await fs.stat(stagedPath, { bigint: true })).mode).toBe(before.mode);
     } finally {
-      await selection!.release().catch(() => {});
+      if (change === "replacement") await expect(selection!.release()).rejects.toMatchObject({ code: "upload-cleanup-failed" });
+      else await expect(selection!.release()).resolves.toBeUndefined();
     }
     if (change === "replacement") {
       expect(await fs.readFile(stagedPath, "utf8")).toBe("replaced bytes");
       expect((await fs.stat(stagedPath, { bigint: true })).mode).toBe(before.mode);
+    }
+  });
+
+  it("refuses a same-size in-place staging edit before dispatch", async () => {
+    const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+    const root = join(dir, "home", "browser-uploads");
+    const selectionDir = join(root, (await fs.readdir(root))[0]!);
+    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    const before = await fs.stat(stagedPath, { bigint: true });
+    await fs.chmod(stagedPath, 0o600);
+    await fs.writeFile(stagedPath, "modified bytes");
+    await fs.utimes(stagedPath, 1, 1);
+    await fs.chmod(stagedPath, 0o400);
+    const edited = await fs.stat(stagedPath, { bigint: true });
+    expect({ dev: edited.dev, ino: edited.ino, size: edited.size }).toEqual({ dev: before.dev, ino: before.ino, size: before.size });
+    expect(edited.mtimeNs).not.toBe(before.mtimeNs);
+    const send = vi.fn(async (_paths: readonly string[]) => {});
+    try {
+      await expect(selection!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await expect(selection!.release()).resolves.toBeUndefined();
     }
   });
 
@@ -136,16 +159,39 @@ describe("browser upload exact file identity", () => {
     await expect(selection!.release()).rejects.toMatchObject({ code: "upload-cleanup-failed" });
   });
 
+  it.each(["mtimeNs", "ctimeNs"] as const)("refuses changed staged %s before dispatch", async (field) => {
+    const selection = await stageBrowserUpload(destination, async () => [original], () => {});
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const stat = handle.stat.bind(handle);
+      handle.stat = (async (options?: StatOptions) => {
+        const observed = await stat(options);
+        return options?.bigint ? Object.assign(observed, { [field]: (observed as BigIntStats)[field] + 1n }) : observed;
+      }) as typeof handle.stat;
+      return handle;
+    });
+    const send = vi.fn(async (_paths: readonly string[]) => {});
+    try {
+      await expect(selection!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await expect(selection!.release()).resolves.toBeUndefined();
+    }
+  });
+
   it("delivers bytes read through the verified staging descriptor", async () => {
     const selection = await stageBrowserUpload(destination, async () => [original], () => {});
     const root = join(dir, "home", "browser-uploads");
     const selectionDir = join(root, (await fs.readdir(root))[0]!);
     const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
     const open = fs.open.bind(fs);
+    let observedSource = false;
     let assertDescriptorRead: () => void = () => { throw new Error("Staging descriptor was not opened"); };
     vi.spyOn(fs, "open").mockImplementation(async (...args) => {
       const handle = await open(...args);
-      if (String(args[0]) === stagedPath) {
+      if (String(args[0]) === stagedPath && !observedSource) {
+        observedSource = true;
         const stat = vi.spyOn(handle, "stat");
         const read = vi.spyOn(handle, "read");
         assertDescriptorRead = () => {
@@ -161,6 +207,7 @@ describe("browser upload exact file identity", () => {
         assertDescriptorRead();
         expect(paths[0]).not.toBe(stagedPath);
         expect(await fs.readFile(paths[0]!, "utf8")).toBe("approved bytes");
+        await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: "ENOENT" });
       });
     } finally {
       await selection!.release();
@@ -168,7 +215,7 @@ describe("browser upload exact file identity", () => {
     expect(await fs.readdir(root)).toEqual([]);
   });
 
-  it("counts retained dispatch copies against the process storage ceiling", async () => {
+  it("retains only one generation within the process storage ceiling", async () => {
     await fs.truncate(original, BROWSER_UPLOAD_LIMITS.fileBytes - 1024 * 1024);
     const selections: NonNullable<Awaited<ReturnType<typeof stageBrowserUpload>>>[] = [];
     try {
@@ -179,9 +226,11 @@ describe("browser upload exact file identity", () => {
       }
       await selections[0]!.dispatch(destination, async () => {});
       await selections[1]!.dispatch(destination, async () => {});
-      const send = vi.fn(async (_paths: readonly string[]) => {});
-      await expect(selections[2]!.dispatch(destination, send)).rejects.toMatchObject({ code: "upload-refused" });
-      expect(send).not.toHaveBeenCalled();
+      await expect(selections[2]!.dispatch(destination, async () => {})).resolves.toBeUndefined();
+      const fourth = await stageBrowserUpload(destination, async () => [original], () => {});
+      selections.push(fourth!);
+      await expect(fourth!.dispatch(destination, async () => {})).resolves.toBeUndefined();
+      await expect(stageBrowserUpload(destination, async () => [original], () => {})).rejects.toMatchObject({ code: "upload-refused" });
     } finally {
       await Promise.all(selections.map((selection) => selection.release()));
     }
