@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
+import { BACKGROUND_ATTEMPTS, RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
+import { sleep } from "../shared/abortable-deadline.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 
 const namespace = openFeatureNamespace("code-checkpoints");
@@ -97,6 +99,19 @@ async function save(turns: Turn[], retained?: Turn): Promise<void> {
   }
   await verifyNamespace();
   await namespace.writeJson(FILE_NAME, turns);
+}
+
+/** Retry only Windows file locks, matching the ledger's staged rename; POSIX fails at once. */
+async function retryFileLock(op: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await op(); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || code === undefined || !RENAME_FILE_LOCK_CODES.has(code)
+        || attempt >= BACKGROUND_ATTEMPTS) throw error;
+      await sleep(transientFsLockDelayMs(attempt));
+    }
+  }
 }
 
 /** Resolve an absent leaf through its existing ancestors without following it later. */
@@ -283,11 +298,12 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
           if (!file || hash(file.bytes) !== change.afterHash) conflicts.add(path);
         }
         if (conflicts.size) return { ok: false, error: "code-restore-conflict", conflictingFiles: [...conflicts].sort() };
+        // A scanner briefly holding a target on Windows must not leave a partial restore.
         for (const [path, change] of plan) {
           if (!changed.has(path)) continue;
           if (change.before === null) {
-            if (present.has(path)) await unlink(path);
-          } else await rename(staged.get(path)!, path);
+            if (present.has(path)) await retryFileLock(() => unlink(path));
+          } else await retryFileLock(() => rename(staged.get(path)!, path));
         }
         // Keep the restored baseline guarded on repeat calls. Later points no
         // longer describe the current code and cannot act as forward restores.
