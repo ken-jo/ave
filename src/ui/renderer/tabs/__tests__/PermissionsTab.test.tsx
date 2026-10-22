@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +64,7 @@ function installApi(
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
+      judgeGet: mockJudgeGet(),
       listRules: vi.fn(async () => []),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),

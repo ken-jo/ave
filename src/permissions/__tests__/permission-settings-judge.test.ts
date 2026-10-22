@@ -156,7 +156,7 @@ describe("judge settings persistence", () => {
     for (const content of ["", " \n\t "]) {
       writeFileSync(path, content);
       expect(readPermissionSettings(path).permissions.additionalDirectories).toEqual([]);
-      expect(readPermissionSettings(path)).not.toHaveProperty("fault");
+      expect(readPermissionSettings(path).fault).toBeNull();
       expect(readJudgeSettings(path)).toHaveProperty("unreadable", true);
     }
   });

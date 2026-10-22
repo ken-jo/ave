@@ -318,6 +318,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "provider-not-installed": "formatIpcError.providerNotInstalled",
   "unknown-provider": "formatIpcError.unknownProvider",
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
+  // Judge settings save (ave:permissions:judge-set); same text as the Settings section.
+  "invalid-judge-settings": "permissionJudge.invalidSettings",
+  "judge-save-failed": "permissionJudge.saveFailed",
+  "judge-rewire-failed": "permissionJudge.rewireFailed",
+  "judge-rollback-failed": "permissionJudge.rollbackFailed",
   // The preset change is saved; the provider refresh that applies it failed.
   "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──

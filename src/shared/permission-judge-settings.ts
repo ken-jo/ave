@@ -11,7 +11,7 @@ export interface PermissionJudgeSnapshot {
   modelOptions: Array<{ vendor: LLMVendor; model: string }>;
 }
 
-export type PermissionJudgeErrorCode =
+type PermissionJudgeErrorCode =
   | "unauthorized-frame"
   | "user-keyboard-required"
   | "invalid-judge-settings"

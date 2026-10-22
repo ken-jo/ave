@@ -113,7 +113,7 @@ describe("judge settings host boundary", () => {
     deps.getAppWindows = () => sends.map((send) => ({
       isDestroyed: () => false,
       webContents: { isDestroyed: () => false, send },
-    })) as ReturnType<NonNullable<IpcDeps["getAppWindows"]>>;
+    })) as unknown as ReturnType<NonNullable<IpcDeps["getAppWindows"]>>;
     const result = await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), { intent, settings: { chain: [] } });
     expect(result).toMatchObject({ ok: true });
     for (const send of sends) expect(send).toHaveBeenCalledWith(PERMISSIONS.configChanged, {});

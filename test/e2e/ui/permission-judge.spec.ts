@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 
 test('judge stages preserve mode and order when settings reopen', async ({ app, mainWindow, t }, testInfo) => {

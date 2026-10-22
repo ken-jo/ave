@@ -75,6 +75,27 @@ export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
   model: "reviewer",
 } as const;
 
+/**
+ * `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge
+ * off). The Permissions tab renders the judge section unconditionally, so a
+ * tab mock without it shows a read-failure status the real host never does.
+ */
+export function mockJudgeGet() {
+  return vi.fn(async () => ({
+    ok: true as const,
+    settings: {
+      chain: [],
+      mode: "shadow" as const,
+      categories: { shell: true, write: true, network: false },
+      timeoutMs: 15_000,
+      chainDeadlineMs: 60_000,
+      breaker: { consecutive: 3, total: 20 },
+    },
+    issues: [],
+    modelOptions: [],
+  }));
+}
+
 type HistoryMock = {
   sessionId?: string;
   sessionTitle?: string;
@@ -522,6 +543,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       onDeferredPending: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
       dirDispatch: vi.fn(async () => ({ ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] })),
+      judgeGet: mockJudgeGet(),
       reviewerDispatch: vi.fn(async () => ({
         ok: true,
         verb: "show",

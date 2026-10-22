@@ -182,9 +182,13 @@ describe("judge approval-path placement", () => {
     const subject = makeSubject();
     const provider = external(subject, { decision: "allow", rationale: "permitted" });
     expect((await checkAndDispatch(subject, { decisionOverride: "ask" }, "meta")).decision).toBe("ask");
-    expect((await checkAndDispatch(subject, {
-      remoteControllerAuthority: { kind: "tailnet-controller", actorId: "tailnet:controller" },
-    })).decision).toBe("ask");
+    const remoteControllerAuthority = { kind: "tailnet-controller", actorId: "tailnet:controller" } as const;
+    // Remote-controller shell stays on its host-owned layer-2 refusal.
+    expect(await checkAndDispatch(subject, { remoteControllerAuthority })).toMatchObject({ decision: "deny", layer: 2 });
+    // A permitted remote write keeps its local allow-once modal; no judge route.
+    const remoteWrite = subject.manager.checkDetailed("write_file", "builtin", "write", null, { remoteControllerAuthority });
+    expect(remoteWrite).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(remoteWrite.reviewer).toBeUndefined();
     expect(provider.requests).toHaveLength(0);
   });
 
@@ -229,6 +233,22 @@ describe("judge approval-path placement", () => {
     expect(results[0]?.is_error).toBe(true);
     expect(results[0]?.content).toContain("sensitive-paths/**/.ave/settings.json");
     expect(readFileSync(filePath, "utf8")).toBe(original);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it.each(["default", "auto", "allow"] as const)("keeps shell writes to the judge settings file on the floor in %s mode", async (mode) => {
+    const subject = makeSubject();
+    const provider = external(subject, { decision: "allow", rationale: "permitted" });
+    subject.manager.setMode(mode);
+    subject.manager.setRules([{ pattern: "bash", action: "allow" }]);
+    const filePath = join(subject.root, ".ave", "settings.json");
+    for (const command of [
+      `printf '{}' > ${filePath}`,
+      `cp /dev/null ${filePath}`,
+    ]) {
+      const result = await checkAndDispatch(subject, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: subject.root } });
+      expect(result).toMatchObject({ decision: "ask", forceModal: true });
+    }
     expect(provider.requests).toHaveLength(0);
   });
 });
