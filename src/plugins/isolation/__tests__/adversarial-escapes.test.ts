@@ -112,6 +112,40 @@ const CHILD_BUNDLE_CACHE = "plugin-child-adversarial";
 /** Escapes 1, 2 and 4 are measured where a wrap substrate exists (§9.8 A2 Gates). */
 const WRAP_PLATFORM = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 
+/** A shared temporary directory need not give new roots a private DACL. */
+function protectWindowsTestRoot(root: string): void {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot) throw new Error("Cannot resolve the native system utilities directory");
+  const system32 = join(systemRoot, "System32");
+  const identity = execFileSync(join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf-8", windowsHide: true });
+  const sids = identity.match(/\bS-\d-\d+(?:-\d+)+\b/g);
+  if (sids?.length !== 1) throw new Error("Cannot resolve the test root owner's SID");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$sid = New-Object System.Security.Principal.SecurityIdentifier($env:AVE_ADVERSARIAL_ROOT_SID)",
+    "$acl = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
+    "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Test root owner mismatch' }",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "foreach ($entry in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($entry) }",
+    "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
+    "$acl.AddAccessRule($rule)",
+    "Set-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT -AclObject $acl",
+    "$check = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
+    "$sddl = $check.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)",
+    "$entries = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+    "if (!$check.AreAccessRulesProtected -or $entries.Count -ne 1) { throw ('Test root DACL is not owner-only: ' + $sddl) }",
+    "$entry = $entries[0]",
+    "if ($entry.IdentityReference -ne $sid -or $entry.IsInherited -or $entry.AccessControlType -ne 'Allow' -or $entry.FileSystemRights -ne 'FullControl' -or $entry.InheritanceFlags -ne 'ContainerInherit,ObjectInherit' -or $entry.PropagationFlags -ne 'None') { throw ('Test root DACL grant mismatch: ' + $sddl) }",
+    "$sddl",
+  ].join("; ");
+  const sddl = execFileSync(join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf-8",
+    windowsHide: true,
+    env: { ...process.env, AVE_ADVERSARIAL_ROOT: root, AVE_ADVERSARIAL_ROOT_SID: sids[0] },
+  }).trim();
+  console.info(`[adversarial] private root ${root}: ${sddl}`);
+}
+
 /** The filesystem error each substrate answers a denied read with (table row 1a). */
 function deniedReadCodes(): readonly string[] {
   if (process.platform === "linux") return ["ENOENT"];
@@ -159,6 +193,7 @@ interface Staged {
 }
 
 let staged: Staged;
+let stagedRoot: string | undefined;
 let previousAveHome: string | undefined;
 let listener: Server;
 let listenerPort = 0;
@@ -172,6 +207,7 @@ const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | un
 };
 
 beforeAll(async () => {
+  previousAveHome = process.env.AVE_HOME;
   // The harness confines plugin children and workers, which are wrapped only
   // while plugin-worker confinement was requested at boot.
   setPluginWorkerConfinementRequestedAtBoot(true);
@@ -179,6 +215,8 @@ beforeAll(async () => {
   // control socket under `<AVE_HOME>/plugins/<id>/run/<worker>/`, and a path
   // past `sun_path` is refused before any worker starts.
   const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "adv-"));
+  stagedRoot = root;
+  if (process.platform === "win32") protectWindowsTestRoot(root);
   const aveHome = join(root, ".ave");
   const secretsDir = join(aveHome, "secrets");
   const neighbourDataDir = join(aveHome, "plugins", NEIGHBOUR_ID, "data");
@@ -213,7 +251,6 @@ beforeAll(async () => {
   };
   // The deny floor is derived from `aveHome()`: pointing it here is what makes
   // `<AVE_HOME>/secrets` a real denied path with a real file in it.
-  previousAveHome = process.env.AVE_HOME;
   process.env.AVE_HOME = aveHome;
   listener = createServer((socket) => {
     listenerConnections.push(socket.remoteAddress ?? "unknown");
@@ -227,10 +264,10 @@ afterAll(async () => {
   __resetSandboxRequestedAtBootForTest();
   if (liveControl !== undefined) killControl(liveControl.child, liveControl.group);
   await controlExit;
-  await new Promise<void>((resolve) => listener.close(() => resolve()));
+  if (listener !== undefined) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
-  rmSync(staged.root, { recursive: true, force: true });
+  if (stagedRoot !== undefined) rmSync(stagedRoot, { recursive: true, force: true });
   rmSync(childBundleDir(CHILD_BUNDLE_CACHE), { recursive: true, force: true });
 });
 
