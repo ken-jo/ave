@@ -1226,7 +1226,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 });
 
 describe("custom endpoint request protocol", () => {
-  it("retains effort with tools on the responses wire at a custom endpoint", async () => {
+  it("retains effort with tools without inferring a custom endpoint's protocol from catalog identity", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -1282,7 +1282,7 @@ describe("custom endpoint request protocol", () => {
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.model).toMatchObject({ __mock: "responses" });
+    expect(callArg.model).toMatchObject({ __mock: "chat" });
     expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "high", reasoningSummary: "detailed" } });
 
     vi.doUnmock("ai");

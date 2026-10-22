@@ -471,7 +471,7 @@ describe("subscription account and credential disclosure", () => {
     };
     render(<SubscriptionProvidersSection providers={[claude, connectedCodex()]} actions={{}} />);
     expect(screen.getByTestId("subscription-provider:claude-code:billing-disclosure")).toHaveTextContent(
-      "Uses your own Claude subscription through the Claude Code CLI you installed; Ave never sees or stores your Claude credentials.",
+      "Uses your own Claude subscription through the sign-in tool on this computer; Ave never sees or stores your Claude credentials.",
     );
     // Only the runtime reached through the user's own CLI carries it.
     expect(screen.queryByTestId("subscription-provider:codex:billing-disclosure")).toBeNull();

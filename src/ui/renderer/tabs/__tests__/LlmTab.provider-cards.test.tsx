@@ -3020,7 +3020,8 @@ describe("LlmTab OpenAI model catalogue", () => {
     });
     fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
     expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
-    expect(screen.getByTestId("llm-tab:api-key-reveal")).toHaveTextContent(t("llmTab.replaceApiKey"));
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("llm-tab:api-key-reveal")).toBeNull();
     expect(screen.getByTestId("llm-tab:manual-section")).toHaveTextContent(/삭제|Delete|Remove/);
   });
 

@@ -150,7 +150,9 @@ describe("request fields the catalog decides", () => {
       outputTokenLimit: sent,
       ...(thinking?.budget_tokens === undefined ? {} : { thinkingBudgetTokens: thinking.budget_tokens }),
     });
-    if (enableThinking) expect(thinking?.budget_tokens).toBeLessThan(sent);
+    // Neither the unknown identity nor the limit-only entry declares
+    // reasoning. Enabling it does not manufacture a numeric control.
+    expect(thinking).toBeUndefined();
   });
 
   it("does not infer a public output ceiling from a gateway alias", async () => {
@@ -160,25 +162,29 @@ describe("request fields the catalog decides", () => {
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(32_000);
   });
 
-  it("preserves effort on a tool request sent over the responses wire at a custom endpoint", async () => {
+  it("preserves declared effort on a tool request without guessing the custom endpoint's protocol", async () => {
     // The custom host does not establish the model; the named entry states its levels.
     const body = await sentBody("openai", "gpt-5.4", {
       baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true, catalogModel: "openai/gpt-5.4",
     });
-    expect(body.input).toBeDefined();
-    expect(body.reasoning).toMatchObject({ effort: "high" });
+    expect(body.messages).toBeDefined();
+    expect(body.input).toBeUndefined();
+    expect(body.reasoning_effort).toBe("high");
+    expect(body.reasoning).toBeUndefined();
     expect(planReasoning({ vendor: "openai", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000,
       baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-5.4", request: { hasTools: true } }))
       .toMatchObject({ kind: "openai-effort", effort: "high", source: "model-catalog" });
   });
 
   it("sends no effort at a custom endpoint whose model nobody names", async () => {
-    // The responses wire is still chosen (request shape), but the levels are not guessed from the name.
+    // Neither protocol nor reasoning levels are guessed from the model name.
     const body = await sentBody("openai", "gpt-5.4", {
       baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true,
     });
-    expect(body.input).toBeDefined();
+    expect(body.messages).toBeDefined();
+    expect(body.input).toBeUndefined();
     expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
     expect(planReasoning({ vendor: "openai", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000,
       baseUrl: "https://gateway.invalid/v1", request: { hasTools: true } }))
       .toEqual({ kind: "none", requestedEffort: "high", source: "host-fallback" });
@@ -458,10 +464,12 @@ describe("the output limit a chat round records is the one it sends", () => {
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
     expect(plan).toMatchObject({ kind: "openai-effort", effort: "low", source: "model-catalog" });
-    expect(body.reasoning).toMatchObject({ effort: plan?.effort });
+    expect(body.messages).toBeDefined();
+    expect(body.reasoning_effort).toBe(plan?.effort);
+    expect(body.reasoning).toBeUndefined();
   });
 
-  it("sends an explicitly identified deployment alias over Responses with its effort on a tool turn", async () => {
+  it("preserves a deployment alias and its declared effort on a custom chat tool turn", async () => {
     const model = "deployment-alias";
     const catalogModel = "openai/gpt-5.4";
     const baseUrl = "https://gateway.invalid/v1";
@@ -478,10 +486,12 @@ describe("the output limit a chat round records is the one it sends", () => {
       llmSettings: round });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // The declaration names a reasoning model served with tools
-    // with effort only over Responses.
-    expect(body.input).toBeDefined();
-    expect(body.reasoning).toMatchObject({ effort: "high" });
+    // The declaration names the model's levels, not the endpoint's protocol.
+    expect(body.messages).toBeDefined();
+    expect(body.input).toBeUndefined();
+    expect(body.model).toBe(model);
+    expect(body.reasoning_effort).toBe("high");
+    expect(body.reasoning).toBeUndefined();
     expect(plan).toMatchObject({ kind: "openai-effort", effort: "high" });
   });
 

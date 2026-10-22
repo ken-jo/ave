@@ -394,9 +394,8 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Which reasoning control and level: the catalog's accepted effort
       // levels where it states them, no effort where nobody does
       // (reasoning-plan.ts). The turn summary records this same answer.
-      // The plan also drops the effort on a GPT-5.x tool turn over Chat
-      // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
-      // turn's record is planned with.
+      // Explicitly declared effort remains available on tool turns; the
+      // selected protocol determines its field on the wire.
       const reasoningPlan = planReasoning({
         vendor: this.vendor,
         model: params.model,
