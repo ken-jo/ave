@@ -1,5 +1,6 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
   // Reviewer interactive options
   "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",
   "permissionsTab.interactiveOffLabel": "Off",
@@ -361,6 +362,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
   "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
   "permissionsTab.interactiveOffLabel": "끔",
   "permissionsTab.interactiveOffDescription": "도구가 실행되기 전 항상 전경 승인 도크를 표시합니다.",

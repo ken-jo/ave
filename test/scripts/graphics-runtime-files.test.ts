@@ -51,6 +51,10 @@ function createPackage(platform: keyof typeof RUNTIME_FILES) {
       platform === "linux" ? "seccomp" : "srt-win", "x64",
       platform === "linux" ? "apply-seccomp" : "srt-win.exe");
     putFile(vendorPath);
+    if (platform === "win32") {
+      const runtimeRoot = dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
+      putFile(vendorPath, readFileSync(join(runtimeRoot, "vendor", "srt-win", "x64", "srt-win.exe")));
+    }
     chmodSync(vendorPath, 0o755);
   }
   for (const file of platform === "win32"
@@ -112,6 +116,15 @@ describe("packaged graphics runtime", () => {
     rmSync(jar);
     mkdirSync(jar);
     await expect(afterPack(context)).rejects.toThrow("packaged JVM proxy agent missing or invalid");
+  });
+
+  it("rejects a mismatching win32 sandbox helper at package creation", async () => {
+    const { context, vendorDirectory } = createPackage("win32");
+    const helper = join(vendorDirectory, "srt-win", "x64", "srt-win.exe");
+    const bytes = readFileSync(helper);
+    bytes[0x20] ^= 1;
+    writeFileSync(helper, bytes);
+    await expect(afterPack(context)).rejects.toThrow("srt-win-integrity-mismatch: x64");
   });
 
   it("rejects empty files and directories in place of runtime libraries", () => {

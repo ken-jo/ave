@@ -41,6 +41,7 @@ import type {
 import type { SrtWinSpawn } from "@anthropic-ai/sandbox-runtime";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { prepareSrtWinExecutable, SrtWinIntegrityError } from "./srt-win-integrity.js";
 import { createRequire } from "node:module";
 import { dirname, win32 as win32Path } from "node:path";
 import {
@@ -140,7 +141,7 @@ async function loadSrtWin(runtime?: typeof import("@anthropic-ai/sandbox-runtime
   srtWin: SrtWinSpawn;
 }> {
   const mod = runtime ?? await import("@anthropic-ai/sandbox-runtime");
-  const srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+  const srtWin = mod.resolveSrtWin({ path: prepareSrtWinExecutable(getVendoredSrtWinExePath()) });
   return { mod, srtWin };
 }
 
@@ -385,7 +386,8 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
   try {
     ({ srtWin } = await loadSrtWin(mod));
   } catch (error) {
-    if (!(error instanceof mod.WindowsSandboxError) || error.code !== "srt_win_not_found") {
+    if (!(error instanceof SrtWinIntegrityError) &&
+        (!(error instanceof mod.WindowsSandboxError) || error.code !== "srt_win_not_found")) {
       throw error;
     }
     // Missing external helper/configuration is expected in proxy-only mode.
@@ -395,7 +397,7 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
       userState: null,
       wfpState: null,
       ready: false,
-      helperError: "srt-win-not-found",
+      helperError: error instanceof SrtWinIntegrityError ? error.code : "srt-win-not-found",
       instructions: mod.windowsInstallInstructions(undefined),
     };
   }
@@ -456,7 +458,7 @@ export async function installAsrtWindowsSandbox(
     ({ mod, srtWin } = await loadSrtWin());
     runtime = dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
   } catch (error) {
-    return failedInstall(error, "unexpected");
+    return failedInstall(error, error instanceof SrtWinIntegrityError ? error.code : "unexpected");
   }
 
   // ASRT 0.0.80: the install is ASYNC — the modal UAC prompt is still shown, but

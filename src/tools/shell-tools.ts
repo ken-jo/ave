@@ -16,6 +16,7 @@ import type {
  */
 
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import { assertSrtWinSpawnIntegrity } from "../permissions/srt-win-integrity.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve as pathResolve, win32 as win32Path } from "node:path";
@@ -2117,6 +2118,7 @@ export async function spawnWithSandbox(
     let child: PipedChild;
     try {
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
+      assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -3259,6 +3261,7 @@ async function spawnPowerShellWithSandbox(
     let child: PipedChild;
     try {
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
+      assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
         windowsHide: true,
         detached: process.platform !== "win32",

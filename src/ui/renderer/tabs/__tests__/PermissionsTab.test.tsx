@@ -1218,6 +1218,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   function installApiWithWindows(overrides: {
     sandboxWindowsInstall?: ReturnType<typeof vi.fn>;
     sandboxWindowsStatus?: ReturnType<typeof vi.fn>;
+    togglesOff?: boolean;
   } = {}) {
     const windowsStatus = {
       applicable: true,
@@ -1286,7 +1287,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     };
     (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
     // osToolSandbox=true so the component loads into the Windows consent state
-    const api = installMockAveApi({ settings: { features: { osToolSandbox: true } } });
+    const api = installMockAveApi({ settings: { features: { osToolSandbox: overrides.togglesOff !== true } } });
     return { ave, updateSettings: api.updateSettings! };
   }
 
@@ -1340,10 +1341,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
-  it("keeps MXC and policy sections usable when the helper is missing, and restores setup actions on a fresh status", async () => {
+  it.each([
+    ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
+    ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+  ] as const)("shows %s and restores setup actions on a fresh status", async (helperError, messageKey) => {
     const sandboxWindowsStatus = vi.fn().mockResolvedValueOnce({
       applicable: true, userState: null, wfpState: null, ready: false,
-      helperError: "srt-win-not-found", instructions: "",
+      helperError, instructions: "",
     }).mockResolvedValueOnce({
       applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "",
     });
@@ -1360,9 +1364,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
-      .toHaveAttribute("data-error-code", "srt-win-not-found");
+      .toHaveAttribute("data-error-code", helperError);
     expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
-      .toHaveTextContent(t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"));
+      .toHaveTextContent(t(messageKey));
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
       .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsMxc"));
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions"))
@@ -1378,6 +1382,36 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-helper-unavailable")).toBeNull();
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeInTheDocument();
     expect(screen.getByTestId("os-sandbox-windows-install")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("shows %s from a boot opt-in while the toggles are off", async (helperError, cause) => {
+    const { ave } = installApiWithWindows({
+      togglesOff: true,
+      sandboxWindowsStatus: vi.fn(async () => ({
+        applicable: true, userState: null, wfpState: null, ready: false, helperError, instructions: "",
+      })),
+    });
+    const capability = {
+      platform: "win32", enabled: false, available: false, kind: "none", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: false, process: false, network: false },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "explicit-env", causes: [cause] },
+    };
+    ave.permission.sandboxCapability.mockResolvedValue(capability as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeInTheDocument();
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveAttribute("data-error-code", helperError);
+
+    // Without a helper cause at boot, toggles off keep the notice hidden.
+    cleanup();
+    ave.permission.sandboxCapability.mockResolvedValue({ ...capability, boot: null } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.queryByTestId("os-sandbox-windows-helper-unavailable")).toBeNull();
   });
 
   it("says the container check is still running instead of claiming MXC or a failure", async () => {

@@ -27,6 +27,7 @@ export const en = {
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows shells run outside the sandbox (path ACL grants are not safe)",
   "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells, so shell commands are blocked",
   "inputActionBar.sandboxCauseWindowsSandboxMissing": "the Windows sandbox (srt-win) is missing from this installation — reinstall Ave",
+  "inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed": "the Windows sandbox helper (srt-win) failed its integrity check — reinstall Ave",
   "inputActionBar.sandboxStateError": "Status error — Ave could not determine the sandbox state. See the log.",
   "inputActionBar.sandboxOpenWindowsSetup": "Open Windows sandbox setup in Settings",
 } as const;
@@ -58,6 +59,7 @@ export const ko: Record<keyof typeof en, string> = {
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)",
   "inputActionBar.sandboxCauseShellNotContained": "활성 샌드박스가 셸을 격리하지 못해 셸 명령이 차단됨",
   "inputActionBar.sandboxCauseWindowsSandboxMissing": "이 설치본에 Windows 샌드박스(srt-win)가 없음 — Ave를 다시 설치하세요",
+  "inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed": "Windows 샌드박스 헬퍼(srt-win)의 무결성 검사가 실패함 — Ave를 다시 설치하세요",
   "inputActionBar.sandboxStateError": "상태 오류 — Ave가 샌드박스 상태를 판단하지 못했습니다. 로그를 확인하세요.",
   "inputActionBar.sandboxOpenWindowsSetup": "설정에서 Windows 샌드박스 설정 열기",
 };
