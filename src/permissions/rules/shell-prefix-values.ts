@@ -75,7 +75,108 @@ export function runnerName(token: string): string {
   return name.replace(/@[^@]+$/, "");
 }
 
+/**
+ * Programs that delete or overwrite data whatever their arguments look like
+ * at suggestion time. Never an allow prefix at any length: `Bash(rm *)` saved
+ * from `rm notes.txt` would also cover `rm --recursive --force ~`.
+ */
+const DESTRUCTIVE_PROGRAMS = new Set(["rm", "shred", "srm", "wipefs", "dd", "mkfs", "newfs", "diskutil", "format"]);
+/** Ownership and mode changers: destructive when recursive or world-writable. */
+const PERMISSION_CHANGERS = new Set(["chmod", "chown", "chgrp"]);
+/**
+ * Network-egress clients. Their prefixes are not offered as reusable allows
+ * until host-scoped network rules can bound where they connect.
+ */
+export const NETWORK_EGRESS_PROGRAMS: ReadonlySet<string> = new Set([
+  "curl", "wget", "nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "tftp",
+  "rsync", "http", "https", "xh", "aria2c", "httpie",
+]);
+
+function isDestructiveProgram(program: string): boolean {
+  return DESTRUCTIVE_PROGRAMS.has(program) || program.startsWith("mkfs.") || program.startsWith("newfs_");
+}
+
+/** Options before `--` (GNU tools permute, so position does not matter); `undefined` is a dynamic word. */
+function optionWords(args: readonly (string | undefined)[]): { options: (string | undefined)[]; operands: (string | undefined)[] } {
+  const options: (string | undefined)[] = [];
+  const operands: (string | undefined)[] = [];
+  let delimited = false;
+  for (const arg of args) {
+    if (arg === undefined) {
+      // A dynamic word may expand to an option.
+      if (!delimited) options.push(undefined);
+      operands.push(undefined);
+    } else if (!delimited && arg === "--") {
+      delimited = true;
+    } else if (!delimited && arg.startsWith("-") && arg !== "-") {
+      options.push(arg);
+    } else {
+      operands.push(arg);
+    }
+  }
+  return { options, operands };
+}
+
+function hasShortFlag(options: readonly (string | undefined)[], letters: string): boolean {
+  return options.some((option) => option !== undefined && /^-[^-]/.test(option)
+    && [...option.slice(1)].some((letter) => letters.includes(letter)));
+}
+
+/** GNU long options accept any unambiguous abbreviation (`--rec`, `--forc`). */
+function hasLongFlag(options: readonly (string | undefined)[], names: readonly string[]): boolean {
+  return options.some((option) => {
+    if (option === undefined || !option.startsWith("--") || option.length < 3) return false;
+    const name = option.slice(2).split("=")[0]!.toLowerCase();
+    return names.some((candidate) => candidate.startsWith(name));
+  });
+}
+
+/** A mode that makes the target writable by everyone (`777`, `o+w`, `a=rwx`, `+w`). */
+function worldWritableMode(mode: string | undefined): boolean {
+  if (mode === undefined) return true;
+  if (/^[0-7]{3,4}$/.test(mode)) return ["2", "3", "6", "7"].includes(mode[mode.length - 1]!);
+  return mode.split(",").some((clause) => {
+    const symbolic = /^([ugoa]*)([+=])([rwxXst]*)$/.exec(clause);
+    return symbolic !== null && (symbolic[1] === "" || /[oa]/.test(symbolic[1]!)) && symbolic[3]!.includes("w");
+  });
+}
+
+/**
+ * Argument-aware destructive floor for one static command: recursive or
+ * forced deletion in any option order or spelling, recursive or world-writable
+ * permission changes, raw disk writers and `find -delete`. A dynamic word in
+ * an option position counts as the worst case.
+ */
+export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): boolean {
+  const head = argv[0];
+  if (head === undefined) return false;
+  const program = programName(head);
+  const { options, operands } = optionWords(argv.slice(1));
+  const dynamicOption = options.includes(undefined);
+  if (program === "rm") {
+    return dynamicOption || hasShortFlag(options, "rRf") || hasLongFlag(options, ["recursive", "force", "no-preserve-root"]);
+  }
+  if (isDestructiveProgram(program)) return program !== "dd" || argv.slice(1).some((arg) => arg === undefined || /^of=/i.test(arg));
+  if (PERMISSION_CHANGERS.has(program)) {
+    if (dynamicOption || hasShortFlag(options, "R") || hasLongFlag(options, ["recursive"])) return true;
+    return program === "chmod" && worldWritableMode(operands[0]);
+  }
+  if (program === "find") {
+    const args = argv.slice(1);
+    return args.some((arg, index) => arg === undefined || arg === "-delete"
+      || (["-exec", "-execdir", "-ok", "-okdir"].includes(arg) && isDestructiveShellArgv(execArgv(args, index + 1))));
+  }
+  return false;
+}
+
+/** The command a `find -exec` runs, up to its `;` or `+` terminator. */
+function execArgv(args: readonly (string | undefined)[], start: number): (string | undefined)[] {
+  const end = args.findIndex((arg, index) => index >= start && (arg === ";" || arg === "+"));
+  return args.slice(start, end < 0 ? undefined : end);
+}
+
 export type RefusedPrefixReason =
+  | "destructive"
   | "empty"
   | "config-writer"
   | "shell"
@@ -103,6 +204,10 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
   if (tokens.length === 0) return "empty";
   const program = programName(tokens[0]!);
   if (WRAPPER_SET.has(program)) return "wrapper";
+  if (isDestructiveProgram(program)) return "destructive";
+  // A bare or recursive permission-changer prefix covers `chmod -R 777 /`.
+  if (PERMISSION_CHANGERS.has(program)
+    && (tokens.length === 1 || isDestructiveShellArgv(tokens))) return "destructive";
   if (SHELL_SET.has(program)) return "shell";
   const runner = runnerName(tokens[0]!);
   if (RUNNER_SET.has(runner)) {

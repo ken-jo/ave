@@ -1692,7 +1692,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
 describe("command rules recorded from live approvals", () => {
   const rule = { pattern: "Bash(git status *)", scope: "project" };
   const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule };
-  const shellRule = { suggestedPattern: rule.pattern, projectCwd: "/srv/project", persistentAllowed: true, sessionAllowed: true };
+  const shellRule = { suggestedPattern: rule.pattern, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
 
   it("writes only the host project rule and never also records an exact decision", async () => {
     const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
@@ -1721,6 +1721,23 @@ describe("command rules recorded from live approvals", () => {
     const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: true });
     expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: saved, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+  });
+
+  it.each([
+    ["rm notes.txt", "Bash(rm *)"],
+    ["chmod +x build.sh", "Bash(chmod *)"],
+    ["chown -R me src", "Bash(chown -R *)"],
+  ])("refuses a forged destructive allow prefix for %s", async (command, pattern) => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  });
+
+  it("reports a storage failure apart from an invalid rule", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    deps.conversationLoop.permissionManager.addRulePersist.mockRejectedValueOnce(new Error("permissions.json is corrupt"));
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-save-failed", message: "permissions.json is corrupt" });
+    expect(deps.auditLogger.log).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval" }));
   });
 
   it("refuses a rule that is empty after normalization", async () => {
@@ -1754,7 +1771,7 @@ describe("command rules recorded from live approvals", () => {
 describe("shell persistence cannot fall back to exact input", () => {
   const body = { requestId: "live-shell", args: "{}", verdictAtApproval: "medium", nlJustification: null };
   it("refuses a persistent exact allow when a refused prefix is offered only session scope", async () => {
-    const { deps } = await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", persistentAllowed: false, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
+    const { deps } = await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "persistent" })).toMatchObject({ ok: false, error: "command-rule-required" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session" })).toMatchObject({ ok: true });
@@ -1765,21 +1782,22 @@ describe("shell persistence cannot fall back to exact input", () => {
     }));
   });
   it.each(["session", "persistent"])("refuses omitted rule persistence for a floor in %s scope", async (scope) => {
-    await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
+    await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false });
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 });
 
 describe("scoped rule removal authority", () => {
-  const row = { pattern: "Bash(ls *)", action: "allow" as const, scope: "project" as const, projectCwd: "/srv/project" };
+  const row = { pattern: "Bash(ls *)", action: "allow" as const, scope: "project" as const, projectCwd: "/srv/project", storedFile: "a".repeat(64) };
   it("accepts an enumerated stored identity and rejects a renderer-retargeted row", async () => {
     const { permissionManager } = await setup();
     permissionManager.listScopedRules.mockResolvedValue({ rules: [row], errors: [] });
     expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, projectCwd: "/srv/other", intent: USER_INTENT })).toMatchObject({ ok: false, error: "invalid-rule" });
     expect(permissionManager.removeRulePersist).not.toHaveBeenCalled();
+    expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, storedFile: "b".repeat(64), intent: USER_INTENT })).toMatchObject({ ok: false, error: "invalid-rule" });
     expect(await invoke(PERMISSIONS.removeScopedRule, { ...row, intent: USER_INTENT })).toMatchObject({ ok: true });
-    expect(permissionManager.removeRulePersist).toHaveBeenCalledWith(row, { kind: "project", projectCwd: "/srv/project", storedIdentity: true });
+    expect(permissionManager.removeRulePersist).toHaveBeenCalledWith(row, { kind: "project", projectCwd: "/srv/project", storedFile: "a".repeat(64) });
   });
   it("requires current user intent for revoke", async () => {
     const { permissionManager } = await setup();
@@ -1827,7 +1845,7 @@ it("rejects edited rule values detected by the existing DLP filter without echoi
   const { maskSensitiveData } = await import("../../../audit/dlp-filter.js");
   expect(maskSensitiveData(pattern).masked).not.toBe(pattern);
   const { permissionManager, deps } = await setup({
-    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/srv/project", persistentAllowed: true, sessionAllowed: true },
+    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true },
     snapshotArgs: { command: `git status ${secret}` },
   });
   const result = await invoke(PERMISSIONS.userApprovalRecord, {

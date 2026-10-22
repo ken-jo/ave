@@ -12,7 +12,7 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rule-files.js";
-import { projectRulesLocation, storedProjectRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
+import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import type { ShellCommandInput } from "./shell-prefix-policy.js";
 
@@ -95,8 +95,11 @@ export class ProjectRuleScopes {
     this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 
-  async removeRule(projectCwd: string, pattern: string, action: PermissionRule["action"], storedIdentity = false): Promise<void> {
-    const location = storedIdentity ? storedProjectRulesLocation(this.baseDir, projectCwd) : projectRulesLocation(this.baseDir, projectCwd);
+  /** `storedFile` names a listed file by its stored identity; `projectCwd` is then that file's stored root. */
+  async removeRule(projectCwd: string, pattern: string, action: PermissionRule["action"], storedFile?: string): Promise<void> {
+    const location = storedFile === undefined
+      ? projectRulesLocation(this.baseDir, projectCwd)
+      : storedFileRulesLocation(this.baseDir, storedFile, projectCwd);
     const file = await updateProjectRulesFile(location, (current) => {
       current.rules = current.rules.filter((r) => !(r.pattern === pattern && r.action === action));
     });

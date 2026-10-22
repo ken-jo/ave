@@ -37,6 +37,7 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
       shellRule: {
         suggestedPattern: input.persistentAllowed ? "Bash(npm test *)" : null,
         projectCwd: "/workspace/project",
+        projectRoot: "/workspace/project",
         sessionAllowed: input.persistentAllowed,
         persistentAllowed: input.persistentAllowed,
       },

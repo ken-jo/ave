@@ -29,6 +29,7 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
+import { isDestructiveShellArgv } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
@@ -328,7 +329,8 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   // Floor: destructive text anywhere is never covered by an allow rule.
-  if (isDestructiveShellText(command) || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))) {
+  if (isDestructiveShellText(command)
+    || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
   const exfiltration = shellExfiltrationSignal(parsed, cwd);

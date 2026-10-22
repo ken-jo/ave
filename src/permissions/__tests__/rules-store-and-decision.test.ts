@@ -6,7 +6,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "ave-rules-home-"));
 process.env.AVE_HOME = TEST_HOME;
@@ -424,9 +424,31 @@ describe("scoped rule management", () => {
       expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: project }),
     ]));
     expect(listed.errors).toEqual([{ filePath: corrupt.filePath, errorCode: "rules-file-unavailable" }]);
-    await fresh.removeRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "project", projectCwd: project, storedIdentity: true });
+    const projectRow = listed.rules.find((rule) => rule.scope === "project")!;
+    expect(projectRow.storedFile).toBe(projectRulesLocation(dir, project).identity);
+    await fresh.removeRulePersist(projectRow, { kind: "project", projectCwd: project, storedFile: projectRow.storedFile! });
     expect((await fresh.listScopedRules()).rules).toHaveLength(1);
     expect(readFileSync(corrupt.filePath, "utf8")).toBe("{broken");
+  });
+
+  it("lists and revokes rules from a stale file by its stored identity without rewriting its root", async () => {
+    const elsewhere = join(dir, "moved-project");
+    mkdirSync(elsewhere);
+    // A file whose stored root no longer derives its own name (the project moved).
+    const stale = projectRulesLocation(dir, elsewhere);
+    mkdirSync(dirname(stale.filePath), { recursive: true });
+    writeFileSync(stale.filePath, JSON.stringify({
+      version: 1, projectRoot: project, updatedAt: "", rules: [{ pattern: "Bash(ls *)", action: "allow" }, { pattern: "Bash(pwd *)", action: "allow" }],
+    }));
+    const manager = new PermissionManager(permissionsFile);
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([{ filePath: stale.filePath, errorCode: "rules-file-unavailable" }]);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(ls *)")!;
+    expect(row).toMatchObject({ scope: "project", projectCwd: project, storedFile: stale.identity });
+    await manager.removeRulePersist(row, { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! });
+    const after = JSON.parse(readFileSync(stale.filePath, "utf8"));
+    expect(after.projectRoot).toBe(project);
+    expect(after.rules).toEqual([{ pattern: "Bash(pwd *)", action: "allow" }]);
   });
 
   it("preserves live user rules when a corrupt file prevents revoke", async () => {
@@ -476,6 +498,18 @@ describe("host shell-rule suggestions", () => {
 
   it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it.each(["rm notes.txt", "chmod +x build.sh", "shred old.log"])("offers no reusable prefix for a destructive tool: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+  });
+
+  it.each(["rm -v -r ~/work", "rm --recursive --force ~", "rm -i -rf ~", "rm -d -R /tmp/x", "chmod -R 777 /"])("treats argv-level destruction as a floor: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it.each(["curl https://example.test/status", "wget https://example.test/file", "ssh host uptime"])("defers network clients to host-scoped rules: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
   });
 
   it("does not derive a session grant without a conversation or widen a sealed one-shot", () => {

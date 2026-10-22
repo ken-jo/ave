@@ -64,6 +64,7 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
 import { terminalCommandLookalikes } from "../../../shared/terminal-command-lookalikes.js";
+import { formatIpcError, resolveIpcErrorKey } from "../format-ipc-error.js";
 
 type ElicitationFieldKind = ElicitationSchemaFieldKind;
 type ElicitationFormValue = string | boolean;
@@ -663,6 +664,18 @@ function isSessionOnlyRemember(request: Pick<ApprovalRequest, "approvalMemory"> 
   return memory?.kind === "key" && isSessionOnlyApprovalMemoryScope(memory.scope);
 }
 
+/**
+ * The dock's message for a refused shell-rule save: the mapped reason for the
+ * host's error code, plus the host's detail for a rejected rule or a storage
+ * failure so the user can tell an invalid rule from an unwritable file.
+ */
+function shellRuleSaveError(result: { error?: string; message?: string } | undefined, fallback: string): string {
+  const code = result?.error;
+  const reason = resolveIpcErrorKey(code) ? formatIpcError(code, undefined) : fallback;
+  const detail = (code === "invalid-rule" || code === "rule-save-failed") && result?.message ? result.message : null;
+  return detail ? `${reason} (${detail})` : reason;
+}
+
 export function ToolApprovalContent({
   open,
   request,
@@ -982,7 +995,9 @@ export function ToolApprovalContent({
         });
         if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
-            setRecordError(tHook(shellRule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed"));
+            setRecordError(shellRule
+              ? shellRuleSaveError(result, tHook("toolApprovalDialog.ruleDecisionSaveFailed"))
+              : tHook("toolApprovalDialog.exactDecisionSaveFailed"));
           }
           return;
         }
@@ -1568,7 +1583,7 @@ export function ToolApprovalContent({
                   <NativeSelectOption value="project">{tHook("toolApprovalDialog.shellScopeProject")}</NativeSelectOption>
                   <NativeSelectOption value="user">{tHook("toolApprovalDialog.shellScopeUser")}</NativeSelectOption>
                 </NativeSelect>
-                <p className="break-all text-[10px] text-muted-foreground">{shellScope === "project" ? shellRule.projectCwd : tHook("toolApprovalDialog.shellScopeUserHelp")}</p>
+                <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">{shellScope === "project" ? shellRule.projectRoot : tHook("toolApprovalDialog.shellScopeUserHelp")}</p>
                 <div className="flex flex-wrap gap-2">
                   {shellRule.sessionAllowed ? <Button type="button" variant="outline" size="sm" data-testid="approval-allow-session"
                     disabled={approveDisabled || recordingDecision || interactionLocked}

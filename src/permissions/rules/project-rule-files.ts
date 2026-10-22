@@ -121,6 +121,11 @@ function projectRootFor(projectCwd: string): string {
   return start;
 }
 
+/** The directory a project rule saved from `projectCwd` applies to; shown in the dock before saving. */
+export function projectRuleRoot(projectCwd: string): string {
+  return captureApprovalWorkingDirectory(projectRootFor(projectCwd)).path;
+}
+
 export function projectRulesLocation(baseDir: string, projectCwd: string): ProjectRulesLocation {
   const { path, identity } = captureApprovalWorkingDirectory(projectRootFor(projectCwd));
   return {
@@ -185,7 +190,7 @@ export async function updateProjectRulesFile(
 }
 
 /** Exact stored identity; listing and revoke must not repeat repository discovery. */
-export function storedProjectRulesLocation(baseDir: string, projectRoot: string): ProjectRulesLocation {
+function storedProjectRulesLocation(baseDir: string, projectRoot: string): ProjectRulesLocation {
   const captured = captureApprovalWorkingDirectory(projectRoot);
   return {
     filePath: resolve(baseDir, "permissions", "project-rules", captured.identity + ".json"),
@@ -194,9 +199,26 @@ export function storedProjectRulesLocation(baseDir: string, projectRoot: string)
   };
 }
 
-/** Enumerate stored projects, retaining independent corruption errors. */
+/**
+ * The rules file named by a stored identity, for revoking from a row the
+ * listing produced. It never re-runs discovery, so a file whose project root no
+ * longer resolves to its name can still be edited in place.
+ */
+export function storedFileRulesLocation(baseDir: string, identity: string, projectRoot: string): ProjectRulesLocation {
+  if (!/^[a-f0-9]{64}$/.test(identity)) throw new Error("Invalid project rules file identity");
+  return { filePath: resolve(baseDir, "permissions", "project-rules", `${identity}.json`), projectRoot, identity };
+}
+
+/** A listed project rules file with the identity its name stores. */
+export type StoredProjectRulesFile = ProjectRulesFile & { identity: string };
+
+/**
+ * Enumerate stored projects, retaining independent corruption errors. A file
+ * whose root no longer derives its own name is reported as an error and its
+ * rules are still listed, so they stay revocable by that stored identity.
+ */
 export async function listStoredProjectRules(baseDir: string): Promise<{
-  files: ProjectRulesFile[];
+  files: StoredProjectRulesFile[];
   errors: ScopedPermissionRuleError[];
 }> {
   const directory = resolve(baseDir, "permissions", "project-rules");
@@ -207,13 +229,14 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
     if (isMissingPathError(error)) return { files: [], errors: [] };
     throw error;
   }
-  const files: ProjectRulesFile[] = [];
+  const files: StoredProjectRulesFile[] = [];
   const errors: ScopedPermissionRuleError[] = [];
   for (const name of names.sort()) {
     if (!name.endsWith(".json")) continue;
     const filePath = resolve(directory, name);
     try {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new PermissionRulesFileCorruptError(filePath, "invalid file identity");
+      const identity = name.slice(0, -".json".length);
       const raw = await readFile(filePath, "utf8");
       if (!raw.trim()) continue;
       let parsed: unknown;
@@ -222,10 +245,14 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
       }
       const projectRoot = parsed && typeof parsed === "object" ? (parsed as { projectRoot?: unknown }).projectRoot : undefined;
       if (typeof projectRoot !== "string" || !isAbsolute(projectRoot)) throw new PermissionRulesFileCorruptError(filePath, "invalid project root");
+      const file = await readProjectRulesFile(storedFileRulesLocation(baseDir, identity, projectRoot));
+      if (!file) continue;
+      files.push({ ...file, identity });
       const location = storedProjectRulesLocation(baseDir, projectRoot);
-      if (location.filePath !== filePath || location.projectRoot !== projectRoot) throw new PermissionRulesFileCorruptError(filePath, "projectRoot does not match the file identity");
-      const file = await readProjectRulesFile(location);
-      if (file) files.push(file);
+      if (location.filePath !== filePath || location.projectRoot !== projectRoot) {
+        console.error("[permission]", new PermissionRulesFileCorruptError(filePath, "projectRoot does not match the file identity"));
+        errors.push({ filePath, errorCode: "rules-file-unavailable" });
+      }
     } catch (error) {
       console.error("[permission]", error);
       errors.push({ filePath, errorCode: "rules-file-unavailable" });

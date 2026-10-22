@@ -120,6 +120,54 @@ describe("hand-edited rule normalization (dock preview and host save)", () => {
   });
 });
 
+describe("argv-aware destructive floor (review of PR #77)", () => {
+  // Each case was allowed under a stored prefix rule before the floor read argv.
+  it.each([
+    ["Bash(rm *)", "rm -v -r ~/work"],
+    ["Bash(rm *)", "rm --recursive --force ~"],
+    ["Bash(rm *)", "rm --rec ~/work"],
+    ["Bash(rm *)", "rm -i -rf ~"],
+    ["Bash(rm *)", "rm -d -R /tmp/x"],
+    ["Bash(rm *)", "rm notes.txt -r"],
+    ["Bash(rm *)", "rm $FLAGS notes.txt"],
+    ["Bash(chmod *)", "chmod -R 777 /"],
+    ["Bash(chmod *)", "chmod --recursive u+w /srv"],
+    ["Bash(chmod *)", "chmod o+w /etc/hosts"],
+    ["Bash(chmod *)", "chmod 0666 shared.txt"],
+    ["Bash(chown *)", "chown -R nobody /"],
+    ["Bash(chown user *)", "chown user -R /"],
+    ["Bash(find *)", "find . -name x -delete"],
+    ["Bash(find *)", "find . -exec rm -r {} +"],
+    ["Bash(dd *)", "dd if=/dev/zero of=/dev/disk2"],
+  ])("%s never allows %s", (pattern, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBeNull();
+  });
+
+  it.each([
+    ["Bash(rm *)", "rm notes.txt"],
+    ["Bash(chmod +x *)", "chmod +x build.sh"],
+    ["Bash(find *)", "find . -name x"],
+    ["Bash(rm *)", "rm -- -r"],
+  ])("%s still matches the non-destructive %s", (pattern, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+  });
+
+  it.each([
+    [["rm"], "destructive"], [["rm", "notes.txt"], "destructive"], [["/bin/rm", "-f"], "destructive"],
+    [["shred"], "destructive"], [["dd"], "destructive"], [["mkfs.ext4"], "destructive"], [["wipefs"], "destructive"],
+    [["chmod"], "destructive"], [["chmod", "-R"], "destructive"], [["chmod", "777"], "destructive"],
+    [["chown"], "destructive"], [["chown", "-R"], "destructive"], [["chgrp", "--recursive"], "destructive"],
+    [["chmod", "+x"], null], [["chown", "user"], null],
+  ])("refuses destructive prefix %j as %s", (tokens, reason) => {
+    expect(refusedShellPrefix(tokens)).toBe(reason);
+  });
+
+  it("never suggests a destructive prefix", () => {
+    expect(suggestShellPrefix(["rm", "notes.txt"])).toBeNull();
+    expect(suggestShellPrefix(["chmod", "-R", "u+w", "src"])).toBeNull();
+  });
+});
+
 describe("refused prefixes (single shared list)", () => {
   it.each([
     [[], "empty"],

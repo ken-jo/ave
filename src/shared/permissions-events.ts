@@ -31,11 +31,16 @@ export interface ScopedPermissionRule {
   source?: string;
   scope: "user" | "project";
   projectCwd?: string;
+  /** Stored identity of the project rules file a project row was read from. */
+  storedFile?: string;
 }
 
 export interface ShellRuleApproval {
   suggestedPattern: string | null;
+  /** Execution directory the host matches and saves against. */
   projectCwd: string;
+  /** Directory a project rule applies to (the repository root when one is found); display only. */
+  projectRoot: string;
   sessionAllowed: boolean;
   persistentAllowed: boolean;
 }

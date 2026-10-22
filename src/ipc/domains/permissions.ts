@@ -382,10 +382,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // Only a row enumerated by this host can name a stored project identity.
       const listed = await pm.listScopedRules();
       const row = listed.rules.find((rule) => rule.pattern === body.pattern && rule.action === body.action &&
-        rule.scope === body.scope && rule.projectCwd === body.projectCwd && rule.source === body.source);
+        rule.scope === body.scope && rule.projectCwd === body.projectCwd && rule.source === body.source &&
+        rule.storedFile === body.storedFile);
       if (!row) return { ok: false, error: "invalid-rule" };
       await pm.removeRulePersist(row, row.scope === "project"
-        ? { kind: "project", projectCwd: row.projectCwd!, storedIdentity: true } : { kind: "user" });
+        ? { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! } : { kind: "user" });
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       return { ok: true };
     } catch (error) {
@@ -1162,27 +1163,32 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
       const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
+      // Same normalization as the dock preview; the store itself stays strict.
+      const pattern = normalizeRuleSpecifierInput(rule.pattern);
       try {
-        // Same normalization as the dock preview; the store itself stays strict.
-        const pattern = normalizeRuleSpecifierInput(rule.pattern);
         if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
           return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
         }
-        const pm = conversationLoop.permissionManager;
-        if (!pm) return { ok: false, error: "no-permission-manager" };
-        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
-          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
-        });
-        broadcastPermissionConfigChanged(deps);
-        return { ok: true };
       } catch (error) {
         return { ok: false, error: "invalid-rule", message: errorMessage(error) };
       }
+      const pm = conversationLoop.permissionManager;
+      if (!pm) return { ok: false, error: "no-permission-manager" };
+      try {
+        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
+          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+      } catch (error) {
+        // A rule that validated but could not be stored: corrupt file, lock or I/O.
+        return { ok: false, error: "rule-save-failed", message: errorMessage(error) };
+      }
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+      });
+      broadcastPermissionConfigChanged(deps);
+      return { ok: true };
     }
     if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {
       return { ok: false, error: "command-rule-required", message: "A persistent shell allow must record the offered command rule" };

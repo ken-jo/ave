@@ -14,7 +14,7 @@ function shellRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
     reason: "Review shell command", createdAt: Date.now(), requireExplicit: false,
     reviewerVerdict: { level: "medium", reason: "Review shell command" },
     persistentAllowAllowed: true, persistentApprovalCwd: "/workspace/project",
-    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
+    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
     ...overrides,
   };
 }
@@ -54,6 +54,16 @@ describe("shell approval rule controls", () => {
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { pattern: saved, scope: "project" } }));
+  });
+
+  it("names the directory a project rule will apply to", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({
+      shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project/packages/app", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
+    })} onDecide={vi.fn()} />);
+    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(/^\/workspace\/project$/);
+    fireEvent.change(screen.getByTestId("approval-shell-rule-scope"), { target: { value: "user" } });
+    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeUserHelp"));
   });
 
   it("shows no preview for an already canonical rule", () => {
@@ -99,7 +109,7 @@ describe("shell approval rule controls", () => {
 
   it("keeps a refused prefix session-eligible without offering always allow", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", sessionAllowed: true, persistentAllowed: false } })} onDecide={vi.fn()} />);
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: false } })} onDecide={vi.fn()} />);
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.getByTestId("approval-allow-session")).toBeEnabled();
   });
@@ -115,7 +125,7 @@ describe("shell approval rule controls", () => {
 
   it("never widens a one-shot floor into session or persistent allow", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", sessionAllowed: false, persistentAllowed: false } })} onDecide={vi.fn()} />);
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } })} onDecide={vi.fn()} />);
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.queryByTestId("approval-allow-session")).toBeNull();
   });
@@ -129,6 +139,17 @@ describe("shell approval rule controls", () => {
     expect(onDecide).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
+  });
+
+  it.each([
+    { error: "invalid-rule", message: "refused prefix", key: "formatIpcError.invalidRule" },
+    { error: "rule-save-failed", message: "permissions.json is corrupt", key: "formatIpcError.ruleSaveFailed" },
+  ])("tells a $error apart in the dock", async ({ error, message, key }) => {
+    const record = vi.fn().mockResolvedValue({ ok: false, error, message });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toHaveTextContent(`${t(key)} (${message})`));
   });
 
   it.each(["en", "ko"] as const)("localizes the editable rule controls in %s", (locale) => {

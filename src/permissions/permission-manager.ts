@@ -1115,10 +1115,10 @@ export class PermissionManager {
   /** Issue #28 — remove a rules-language rule from the user-global or a project scope. */
   async removeRulePersist(
     rule: { pattern: string; action: PermissionRule["action"]; source?: string },
-    scope: { kind: "user" } | { kind: "project"; projectCwd: string; storedIdentity?: boolean },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string; storedFile?: string },
   ): Promise<void> {
     if (scope.kind === "project") {
-      await this.projectRuleScopes.removeRule(scope.projectCwd, rule.pattern, rule.action, scope.storedIdentity);
+      await this.projectRuleScopes.removeRule(scope.projectCwd, rule.pattern, rule.action, scope.storedFile);
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
       this.revokeAllPluginAccess(`rule-removed:${rule.action}:${rule.pattern}`);
@@ -1158,7 +1158,7 @@ export class PermissionManager {
       const projects = await listStoredProjectRules(dirname(this.permissionsFilePath));
       errors.push(...projects.errors);
       for (const file of projects.files) {
-        for (const rule of file.rules) rules.push({ ...rule, scope: "project", projectCwd: file.projectRoot });
+        for (const rule of file.rules) rules.push({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity });
       }
     } catch (error) {
       console.error("[permission]", error);
