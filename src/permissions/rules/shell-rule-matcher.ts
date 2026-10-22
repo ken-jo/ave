@@ -29,7 +29,7 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
-import { isDestructiveShellArgv } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, isIrreversibleShellArgv } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
@@ -332,6 +332,10 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (isDestructiveShellText(command)
     || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
+  }
+  // Irreversible forms (`git clean -f`, `kubectl delete`, `mv`) are never covered by an allow rule.
+  if (shape.commands.some((cmd) => isIrreversibleShellArgv(cmd.argv))) {
+    return { decision: null, reason: "irreversible command (no allow rule covers it)" };
   }
   const exfiltration = shellExfiltrationSignal(parsed, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };

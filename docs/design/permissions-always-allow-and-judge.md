@@ -96,6 +96,18 @@ does not prove that the command or task contents are read-only.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
 - Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Existing entries keep their original identities.
 - Destructive tools are refused as allow prefixes at every length (`rm`, `shred`, `dd`, `mkfs`, `wipefs`), as are bare or recursive `chmod`/`chown`/`chgrp` prefixes. The matcher's destructive floor also reads each command's argv, so recursive or forced deletion in any option order or spelling (`rm -v -r`, `rm --recursive --force`), recursive or world-writable permission changes and `find -delete` are never covered by an allow rule.
+- Irreversible commands never become allow rules (owner decision 2026-10-23). The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. Once and session approvals stay available, and deny rules may still name them. The list:
+  - Always refused: `mv`, `tee` (any file operand without `-a`), `truncate`, `unlink`.
+  - `git clean`: refused unless `-n`/`--dry-run`.
+  - `git reset`: refused with `--hard`, `--merge` or `--keep`.
+  - `git checkout`: refused for path forms (`--`, `.`, `./…`, `:…`, a tree-ish followed by paths) and with `-f`, `-p`, `--ours` or `--theirs`.
+  - `git restore`: refused unless it only touches the index (`--staged` without `--worktree`).
+  - `git stash drop` and `git stash clear`.
+  - `docker`/`podman` `prune`, `rm` and `rmi`, under any object group.
+  - `kubectl delete`.
+
+  A wildcard prefix that can reach one of these forms is refused: `Bash(git clean *)`, `Bash(git checkout *)`, `Bash(git reset *)`, `Bash(git restore *)`, `Bash(git stash *)`, `Bash(docker image *)` and similar. A harmless form stays storable only as a narrower rule that cannot cover a destructive spelling, such as the exact `Bash(git checkout main)` or `Bash(git stash list *)`. The matcher also never lets an allow rule cover an irreversible argv, and any dynamic word counts as the worst case.
+- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), when the grammar cannot read them, and with `--reference=`.
 - Network clients (`curl`, `wget`, `ssh`, `rsync` and similar) get no reusable allow suggestion until host-scoped network rules exist; they keep once and session choices.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.

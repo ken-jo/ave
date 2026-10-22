@@ -1727,6 +1727,10 @@ describe("command rules recorded from live approvals", () => {
     ["rm notes.txt", "Bash(rm *)"],
     ["chmod +x build.sh", "Bash(chmod *)"],
     ["chown -R me src", "Bash(chown -R *)"],
+    ["git clean -n", "Bash(git clean *)"],
+    ["truncate -s 1M data.bin", "Bash(truncate *)"],
+    ["git checkout main", "Bash(git checkout *)"],
+    ["git clean -fdx", "Bash(git clean -fdx)"],
   ])("refuses a forged destructive allow prefix for %s", async (command, pattern) => {
     const { deps } = await setup({ shellRule, snapshotArgs: { command } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: false, error: "invalid-rule" });

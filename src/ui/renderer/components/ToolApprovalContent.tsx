@@ -850,7 +850,7 @@ export function ToolApprovalContent({
     }
   }, [shellPattern]);
   const canonicalShellPattern = parsedShellPattern ? formatRuleSpecifier(parsedShellPattern) : null;
-  const shellPrefixRefused = parsedShellPattern !== null && refusedShellPrefix(parsedShellPattern.tokens) !== null;
+  const shellPrefixRefused = parsedShellPattern !== null && refusedShellPrefix(parsedShellPattern.tokens, parsedShellPattern.wildcard) !== null;
   const alwaysAllowUnavailable = shellRule
     ? !shellRule.persistentAllowed || !shellRule.suggestedPattern || !canonicalShellPattern || shellPrefixRefused
     : outOfDirScopes

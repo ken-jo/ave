@@ -6,7 +6,7 @@ import { parseShellCommand, suggestShellPrefix } from "./shell-prefix-policy.js"
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import { validatePermissionRule } from "./rule-files.js";
-import { isDestructiveShellArgv, NETWORK_EGRESS_PROGRAMS, programName } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, isIrreversibleShellArgv, NETWORK_EGRESS_PROGRAMS, programName } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
 
 /** Derive display suggestions only from the host's original shell input. */
@@ -20,8 +20,10 @@ export function buildShellRuleApproval(command: string, projectCwd: string, reme
   // Network clients wait for host-scoped network rules before they get a reusable allow.
   const networkEgress = shape.ok && shape.commands.some((cmd) =>
     cmd.argv[0] !== undefined && NETWORK_EGRESS_PROGRAMS.has(programName(cmd.argv[0])));
+  // Irreversible commands keep once and session choices but never become rules.
+  const irreversible = shape.ok && shape.commands.some((cmd) => isIrreversibleShellArgv(cmd.argv));
   let suggestedPattern: string | null = null;
-  if (reusable && !networkEgress) {
+  if (reusable && !networkEgress && !irreversible) {
     const prefix = shape.ok && shape.commands[0] ? suggestShellPrefix(shape.commands[0].argv) : null;
     if (prefix) {
       const pattern = formatRuleSpecifier({ kind: "bash", tokens: prefix, wildcard: true });

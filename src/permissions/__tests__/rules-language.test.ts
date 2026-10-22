@@ -168,6 +168,94 @@ describe("argv-aware destructive floor (review of PR #77)", () => {
   });
 });
 
+describe("irreversible commands never become allow rules (owner decision 2026-10-23)", () => {
+  // Each pattern is evaluated as if it had been stored; the store also refuses it (below).
+  it.each([
+    ["Bash(git clean *)", "git clean -fdx"],
+    ["Bash(git clean *)", "git clean -f"],
+    ["Bash(git reset *)", "git reset --hard HEAD~1"],
+    ["Bash(git reset *)", "git reset --merge"],
+    ["Bash(git checkout *)", "git checkout -- ."],
+    ["Bash(git checkout *)", "git checkout ."],
+    ["Bash(git checkout *)", "git checkout main -- src/app.ts"],
+    ["Bash(git checkout *)", "git checkout -f main"],
+    ["Bash(git restore *)", "git restore src/app.ts"],
+    ["Bash(git restore *)", "git restore --staged --worktree src/app.ts"],
+    ["Bash(git stash *)", "git stash drop"],
+    ["Bash(git stash *)", "git stash clear"],
+    ["Bash(docker system *)", "docker system prune -af"],
+    ["Bash(docker volume *)", "docker volume prune"],
+    ["Bash(docker volume *)", "docker volume rm data"],
+    ["Bash(docker image *)", "docker image prune -a"],
+    ["Bash(kubectl delete *)", "kubectl delete pod web"],
+    ["Bash(truncate *)", "truncate -s 0 important.db"],
+    ["Bash(mv *)", "mv draft.txt final.txt"],
+    ["Bash(tee *)", "tee out.txt"],
+    ["Bash(unlink *)", "unlink stale.lock"],
+    ["Bash(chmod 00777 *)", "chmod 00777 shared"],
+    ["Bash(chmod o=u *)", "chmod o=u shared"],
+    ["Bash(chmod o=g *)", "chmod o=g shared"],
+    ["Bash(chmod *)", "chmod --reference=template shared"],
+    ["Bash(chmod u+r,o=u *)", "chmod u+r,o=u shared"],
+  ])("%s never allows %s", (pattern, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBeNull();
+  });
+
+  it.each([
+    ["Bash(git checkout main)", "git checkout main"],
+    ["Bash(git checkout -b *)", "git checkout -b feature"],
+    ["Bash(git clean -n *)", "git clean -n"],
+    ["Bash(git restore --staged *)", "git restore --staged src/app.ts"],
+    ["Bash(git reset HEAD)", "git reset HEAD"],
+    ["Bash(git stash list *)", "git stash list"],
+    ["Bash(git stash push *)", "git stash push -m wip"],
+    ["Bash(docker image ls *)", "docker image ls"],
+    ["Bash(kubectl get *)", "kubectl get pods"],
+    ["Bash(chmod 0755 *)", "chmod 0755 build.sh"],
+    ["Bash(chmod go-w *)", "chmod go-w shared"],
+    ["Bash(chmod u+x *)", "chmod u+x build.sh"],
+  ])("control: %s still matches the harmless %s", (pattern, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+  });
+
+  it.each([
+    [["git", "clean"]], [["git", "clean", "-n"]], [["git", "reset"]], [["git", "reset", "HEAD"]],
+    [["git", "checkout"]], [["git", "checkout", "main"]], [["git", "restore"]], [["git", "restore", "--staged"]],
+    [["git", "stash"]], [["git", "stash", "drop"]], [["git", "stash", "clear"]],
+    [["docker", "system"]], [["docker", "volume"]], [["docker", "image"]], [["docker", "image", "prune"]],
+    [["docker", "volume", "rm"]], [["kubectl", "delete"]],
+    [["truncate"]], [["truncate", "-s"]], [["mv"]], [["tee"]], [["tee", "-a"]], [["unlink"]],
+    [["chmod", "00777"]], [["chmod", "o=u"]], [["chmod", "--reference=template"]],
+  ])("refuses the wildcard prefix %j", (tokens) => {
+    expect(refusedShellPrefix(tokens)).toBe("destructive");
+  });
+
+  it.each([
+    [["git", "clean", "-fdx"]], [["git", "reset", "--hard"]], [["git", "checkout", "--", "."]], [["git", "restore", "src/app.ts"]],
+    [["git", "stash", "drop"]], [["docker", "system", "prune", "-af"]], [["kubectl", "delete", "pod", "web"]],
+    [["truncate", "-s", "1M", "data.bin"]], [["mv", "a", "b"]], [["tee", "out.txt"]], [["unlink", "stale.lock"]],
+  ])("refuses the exact rule %j", (tokens) => {
+    expect(refusedShellPrefix(tokens, false)).toBe("destructive");
+  });
+
+  it.each([
+    [["git", "stash", "list"], true], [["git", "stash", "push"], true], [["docker", "image", "ls"], true],
+    [["kubectl", "get"], true], [["git", "status"], true],
+    [["git", "checkout", "main"], false], [["git", "clean", "-n"], false], [["git", "restore", "--staged", "src/app.ts"], false],
+    [["git", "reset", "HEAD"], false],
+  ])("control: keeps %j storable (wildcard %s)", (tokens, wildcard) => {
+    expect(refusedShellPrefix(tokens, wildcard)).toBeNull();
+  });
+
+  it("never suggests a prefix that reaches an irreversible form", () => {
+    expect(suggestShellPrefix(["git", "clean", "-n"])).toBeNull();
+    expect(suggestShellPrefix(["truncate", "-s", "1M", "data.bin"])).toBeNull();
+    expect(suggestShellPrefix(["git", "checkout", "main"])).toBeNull();
+    expect(suggestShellPrefix(["docker", "image", "prune"])).toBeNull();
+    expect(suggestShellPrefix(["git", "stash", "list"])).toBeNull();
+  });
+});
+
 describe("refused prefixes (single shared list)", () => {
   it.each([
     [[], "empty"],

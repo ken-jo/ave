@@ -60,7 +60,7 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
     throw new RuleSpecifierError(pattern, `${spec.kind} rules are not enforced yet`);
   }
   if (spec.kind === "bash" && action === "allow") {
-    const refused = refusedShellPrefix(spec.tokens);
+    const refused = refusedShellPrefix(spec.tokens, spec.wildcard);
     if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (${refused}); approve it once or for the session instead`);
   }
 }

@@ -1158,13 +1158,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (!context || typeof rule.pattern !== "string" || (rule.scope !== "project" && rule.scope !== "user") || scope !== "persistent") {
         return { ok: false, error: "invalid-rule", message: "A command rule requires a live shell request" };
       }
-      if (decision === "allow" && !context.persistentAllowed) {
-        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
-      }
-      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
       const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
       // Same normalization as the dock preview; the store itself stays strict.
       const pattern = normalizeRuleSpecifierInput(rule.pattern);
+      // A rule the store refuses or that cannot cover the live command is
+      // invalid whatever the request allows, so it is checked first.
       try {
         if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
           return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
@@ -1172,6 +1170,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       } catch (error) {
         return { ok: false, error: "invalid-rule", message: errorMessage(error) };
       }
+      if (decision === "allow" && !context.persistentAllowed) {
+        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
+      }
+      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
       const pm = conversationLoop.permissionManager;
       if (!pm) return { ok: false, error: "no-permission-manager" };
       try {
