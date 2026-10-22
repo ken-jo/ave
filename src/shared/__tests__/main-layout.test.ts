@@ -28,6 +28,15 @@ function refused(mutate: (raw: Record<string, any>) => void): string {
 }
 
 describe("parseMainLayout", () => {
+  it("round-trips creator and pane-chat facts without storing live control", () => {
+    const saved = layout();
+    saved.sideTabs.main![0]!.binding = { owner: { sessionId: "creator", directParentSessionId: "parent" }, paneSessionId: "pane-chat" };
+    saved.surfaces["group-3"]!.binding = { paneSessionId: "terminal-chat" };
+    expect(parseMainLayout(saved)).toEqual({ ok: true, layout: saved });
+    expect(refused((raw) => { raw.sideTabs.main[0].binding = { owner: { sessionId: "x", directParentSessionId: "x" } }; })).toMatch(/binding.owner is invalid/);
+    expect(refused((raw) => { raw.sideTabs.main[0].binding = { lease: {} }; })).toMatch(/binding is invalid/);
+    expect(refused((raw) => { raw.surfaces["group-3"].binding = { owner: { sessionId: "x" } }; })).toMatch(/binding.owner is invalid/);
+  });
   it("accepts a well-formed layout as it is", () => {
     expect(parseMainLayout(layout())).toEqual({ ok: true, layout: layout() });
   });

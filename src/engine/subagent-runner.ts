@@ -2398,6 +2398,11 @@ export class SubAgentRunner {
     return this.deps.subAgentMemoryManager.listSubAgentSessionsForOrigin(originSessionId);
   }
 
+  /** Transcript existence, independent of row metadata and current run state. */
+  hasPersistedSession(sessionId: string): boolean {
+    return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
+  }
+
   /**
    * The sub-agent sessions work-board items spawned, newest first — the rows
    * the sidebar's conversation list shows beside the main sessions.

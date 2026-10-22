@@ -22,6 +22,7 @@
 
 import { isRecord } from "./is-record.js";
 import { parseTabId } from "./tab-id.js";
+import { parseBrowserSessionActor, type SessionTabBindingMetadata } from "./browser-surface.js";
 
 export const MAIN_LAYOUT_VERSION = 1;
 
@@ -37,6 +38,8 @@ export interface SavedSurface {
   cwd: string | null;
   /** A page's last http(s) address, or null. Always null for a terminal. */
   url: string | null;
+  /** Main-owned facts, never control authority. Empty means cleared; absence is the legacy format. */
+  binding?: SessionTabBindingMetadata;
 }
 
 export type SavedPaneNode =
@@ -113,7 +116,16 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
     }
     if (protocol !== "http:" && protocol !== "https:") refuse(`${path}.url must be http or https`);
   }
-  return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null };
+  let binding: SessionTabBindingMetadata | undefined;
+  if (raw.binding !== undefined) {
+    if (!isRecord(raw.binding) || Object.keys(raw.binding).some((key) => key !== "owner" && key !== "paneSessionId")) refuse(`${path}.binding is invalid`);
+    const owner = raw.binding.owner === undefined ? undefined : parseBrowserSessionActor(raw.binding.owner);
+    if (owner === null || (owner !== undefined && kind !== "browser")) refuse(`${path}.binding.owner is invalid`);
+    const paneSessionId = raw.binding.paneSessionId;
+    if (paneSessionId !== undefined && (typeof paneSessionId !== "string" || paneSessionId.length === 0)) refuse(`${path}.binding.paneSessionId is invalid`);
+    binding = { ...(owner === undefined ? {} : { owner }), ...(paneSessionId === undefined ? {} : { paneSessionId: paneSessionId as string }) };
+  }
+  return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
 }
 
 /**
