@@ -201,6 +201,8 @@ export interface LifecycleEventPayload {
   agentType?: string;
   /** Notification — the message body shown to the user. */
   message?: string;
+  /** Stop / SubagentStop — true while a previous stop hook block is continuing the run. */
+  stopHookActive?: boolean;
 }
 
 /**
@@ -243,6 +245,8 @@ export interface LifecycleHookStdin extends LifecycleEventPayload, Partial<UserP
 export interface ScriptHookStdout {
   action: "allow" | "deny";
   reason: string;
+  /** Structured `decision: "block"` without `continue: false`; a deliberate block, not a failure. */
+  block?: true;
 }
 
 /**
@@ -271,6 +275,12 @@ export interface ScriptHookInvocationResult {
   timedOut: boolean;
   /** Wall-clock execution time in ms. */
   durationMs: number;
+  /**
+   * Set only for a deliberate block — exit 2 (its stderr) or structured
+   * `decision: "block"` (its reason) — never for a failure. Stop and
+   * SubagentStop feed it back to the model to continue the run.
+   */
+  blockFeedback?: string;
   /**
    * Origin discriminant — a legacy `.sh` hook vs a declarative `hooks.json`
    * `command` entry. Surfaced by the runner from the {@link RunnableHook} so the

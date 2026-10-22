@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { parseHookConfig } from "../hook-config.js";
-import { hookJsonInput, type HookEventName } from "../hook-contract.js";
+import { hookJsonInput, stopHookBlockFeedback, type HookEventName } from "../hook-contract.js";
 import { parseHookStdout, runOneHookScript } from "../script-hook-runner.js";
 import type { HookEvent, LifecycleEventPayload, ScriptHookStdin } from "../script-hook-types.js";
 
@@ -21,11 +21,11 @@ const EVENT_CASES: Array<{ name: HookEventName; event: HookEvent; payload: Lifec
   { name: "SessionStart", event: "SessionStart", payload: { sessionMeta: { persona: "default" } }, expected: { session_meta: { persona: "default" } } },
   { name: "SessionEnd", event: "SessionEnd", payload: { reason: "new-conversation", stopReason: "reset" }, expected: { reason: "new-conversation", stop_reason: "reset" } },
   { name: "Notification", event: "Notification", payload: { message: "Turn complete" }, expected: { message: "Turn complete" } },
-  { name: "Stop", event: "Stop", payload: { stopReason: "complete", toolCount: 2, durationMs: 10 }, expected: { stop_reason: "complete", tool_count: 2, duration_ms: 10 } },
+  { name: "Stop", event: "Stop", payload: { stopReason: "complete", toolCount: 2, durationMs: 10, stopHookActive: true }, expected: { stop_reason: "complete", tool_count: 2, duration_ms: 10, stop_hook_active: true } },
   { name: "PreCompact", event: "PreCompact", payload: { reason: "manual", tokenEstimate: 42 }, expected: { reason: "manual", token_estimate: 42 } },
   { name: "PostCompact", event: "PostCompact", payload: { messagesBefore: 4, messagesAfter: 2, tokensBefore: 42, tokensAfter: 20 }, expected: { messages_before: 4, messages_after: 2, tokens_before: 42, tokens_after: 20 } },
   { name: "SubagentStart", event: "SubagentStart", payload: { agentId: "child", agentType: "worker" }, expected: { agent_id: "child", agent_type: "worker" } },
-  { name: "SubagentStop", event: "SubagentStop", payload: { agentId: "child", agentType: "worker", stopReason: "complete" }, expected: { agent_id: "child", agent_type: "worker", stop_reason: "complete" } },
+  { name: "SubagentStop", event: "SubagentStop", payload: { agentId: "child", agentType: "worker", stopReason: "complete", stopHookActive: false }, expected: { agent_id: "child", agent_type: "worker", stop_reason: "complete", stop_hook_active: false } },
 ];
 
 async function dispatch(entry: typeof EVENT_CASES[number], mode: string, denied = false) {
@@ -79,6 +79,10 @@ describe("user hook event contract", () => {
       if (mode === "slow") expect(invocation).toMatchObject({ timedOut: true, reason: "hook timed out after 100ms" });
       if (mode === "decision") expect(invocation.reason).toBe("Review required");
       if (mode === "spawn-failure") expect(invocation.reason).toContain("hook spawn error");
+      // Only a deliberate block may continue a stopped run; failures never do.
+      const feedback = ({ block: "Policy requires a focused correction before proceeding.", decision: "Review required" } as Record<string, string>)[mode];
+      expect(invocation.blockFeedback).toBe(feedback);
+      expect(stopHookBlockFeedback(result)).toBe(feedback);
     });
   }
 
@@ -127,9 +131,14 @@ describe("structured hook decisions", () => {
     expect(parseHookStdout("{}", "pre")).toEqual({ action: "allow", reason: "hook completed" });
     expect(parseHookStdout("log message {}", "pre")).toBeNull();
     expect(parseHookStdout('```json\n{"decision":"block","reason":"policy"}\n```', "pre"))
-      .toEqual({ action: "deny", reason: "policy" });
+      .toEqual({ action: "deny", reason: "policy", block: true });
     expect(parseHookStdout('{"continue":false,"stopReason":"halt","decision":"allow"}', "pre"))
       .toEqual({ action: "deny", reason: "halt" });
+  });
+  it("does not mark a block that also stops outright, or a legacy deny, as continuable", () => {
+    expect(parseHookStdout('{"continue":false,"stopReason":"halt","decision":"block","reason":"policy"}', "Stop"))
+      .toEqual({ action: "deny", reason: "policy" });
+    expect(parseHookStdout('{"action":"deny","reason":"legacy"}', "Stop")).toEqual({ action: "deny", reason: "legacy" });
   });
   it.each(["stopReason", "updatedPermissions", "permissionDecision", "additionalContext", "suppressOutput", "systemMessage", "async", "asyncTimeout"])("rejects legacy output mixed with unsupported %s control", (key) => {
     expect(parseHookStdout(JSON.stringify({ action: "allow", reason: "legacy", [key]: "unsupported" }), "pre")).toBeNull();

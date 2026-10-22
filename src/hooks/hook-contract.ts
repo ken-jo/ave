@@ -1,4 +1,17 @@
-import type { HookEvent, ScriptHookStdin } from "./script-hook-types.js";
+import type { HookEvent, ScriptHookInvocationResult, ScriptHookStdin } from "./script-hook-types.js";
+
+/**
+ * The feedback a Stop/SubagentStop chain asks the run to continue with, or
+ * undefined. The chain stops at its first denial, so only that last result can
+ * carry a deliberate block; failures never continue the run.
+ */
+export function stopHookBlockFeedback(result: {
+  decision: "allow" | "deny";
+  results: readonly Pick<ScriptHookInvocationResult, "blockFeedback">[];
+}): string | undefined {
+  if (result.decision !== "deny") return undefined;
+  return result.results.at(-1)?.blockFeedback;
+}
 
 /** Public configuration keys; internal tool aliases remain stable for audit readers. */
 export const HOOK_EVENT_TYPES = {
@@ -45,11 +58,11 @@ interface HookJsonFields {
   SessionStart: { session_meta?: Record<string, unknown> };
   SessionEnd: { reason?: string; session_meta?: Record<string, unknown>; stop_reason?: string };
   Notification: { message?: string };
-  Stop: { stop_reason?: string; tool_count?: number; duration_ms?: number };
+  Stop: { stop_reason?: string; tool_count?: number; duration_ms?: number; stop_hook_active?: boolean };
   PreCompact: { reason?: string; token_estimate?: number };
   PostCompact: { messages_before?: number; messages_after?: number; tokens_before?: number; tokens_after?: number };
   SubagentStart: { agent_id?: string; agent_type?: string };
-  SubagentStop: { agent_id?: string; agent_type?: string; stop_reason?: string };
+  SubagentStop: { agent_id?: string; agent_type?: string; stop_reason?: string; stop_hook_active?: boolean };
 }
 
 export type HookJsonInput = {
@@ -96,7 +109,7 @@ export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonIn
       return { ...common, hook_event_name: payload.hookType, message: payload.message };
     case "Stop":
       return { ...common, hook_event_name: payload.hookType, stop_reason: payload.stopReason,
-        tool_count: payload.toolCount, duration_ms: payload.durationMs };
+        tool_count: payload.toolCount, duration_ms: payload.durationMs, stop_hook_active: payload.stopHookActive };
     case "PreCompact":
       return { ...common, hook_event_name: payload.hookType, reason: payload.reason, token_estimate: payload.tokenEstimate };
     case "PostCompact":
@@ -106,6 +119,6 @@ export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonIn
       return { ...common, hook_event_name: "SubagentStart", agent_id: payload.agentId, agent_type: payload.agentType };
     case "SubagentStop":
       return { ...common, hook_event_name: "SubagentStop", agent_id: payload.agentId,
-        agent_type: payload.agentType, stop_reason: payload.stopReason };
+        agent_type: payload.agentType, stop_reason: payload.stopReason, stop_hook_active: payload.stopHookActive };
   }
 }

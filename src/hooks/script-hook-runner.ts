@@ -488,6 +488,7 @@ export async function runOneHookScript(
           exitCode: code ?? undefined,
           timedOut: false,
           durationMs,
+          ...(code === 2 ? { blockFeedback: tail } : {}),
         });
         return;
       }
@@ -513,6 +514,7 @@ export async function runOneHookScript(
         exitCode: code,
         timedOut: false,
         durationMs,
+        ...(parsed.block ? { blockFeedback: parsed.reason } : {}),
       });
     };
 
@@ -645,7 +647,9 @@ export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookSt
       }
     } else return null;
   }
-  return { action: blocked ? "deny" : "allow", reason: String(reason) };
+  // `continue: false` stops outright, so only a bare block can ask a stop hook to continue the run.
+  const block = parsed.decision === "block" && parsed.continue !== false;
+  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}) };
 }
 
 /**

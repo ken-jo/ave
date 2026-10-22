@@ -352,6 +352,7 @@ export class ScriptHookManager {
         ...(payload.message !== undefined
           ? { message: redactForLLM(payload.message).redacted }
           : {}),
+        ...(payload.stopHookActive !== undefined ? { stopHookActive: payload.stopHookActive } : {}),
       };
       // runHookChain stops at the first deny — but for a non-blocking event the
       // decision is OBSERVE-ONLY, so the caller ignores it. (Chain-stop just
