@@ -8,7 +8,6 @@ import {
 } from "../model-complexity-map.js";
 import {
   LLM_VENDORS,
-  llmVendorModelOptions,
   type LLMVendor,
 } from "../llm-vendor-defaults.js";
 
