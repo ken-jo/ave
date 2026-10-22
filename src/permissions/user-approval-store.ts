@@ -65,7 +65,7 @@ let persistentWrites = createSerialQueue();
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface UserApprovalEntry {
-  /** Conversation identity for newly recorded session decisions. */
+  /** Root conversation identity for newly recorded session decisions. */
   sessionId?: string;
   /** Host-captured directory for display; never an authority supplied by the UI. */
   projectCwd?: string;
@@ -276,9 +276,32 @@ function memoryEntryKey(
   })), workingDirectoryIdentity);
 }
 
-function conversationEntryKey(key: string, sessionId: string): string {
+/**
+ * Maps a session to the root conversation that owns its session approvals.
+ * A session allow belongs to the root conversation: every agent in that tree
+ * (the conversation and the sub-agents it spawned, at any depth) shares it,
+ * and separate root conversations never do. Boot registers the sub-agent
+ * runner's live origin walk. Without a runner no session is a child, so each
+ * session is its own root; the identity resolver is that exact answer.
+ */
+type ApprovalConversationRootResolver = (sessionId: string) => string;
+const identityConversationRoot: ApprovalConversationRootResolver = (sessionId) => sessionId;
+let resolveConversationRoot: ApprovalConversationRootResolver = identityConversationRoot;
+
+export function setApprovalConversationRootResolver(resolver: ApprovalConversationRootResolver): void {
+  resolveConversationRoot = resolver;
+}
+
+/** The root conversation a session approval is keyed and listed under. */
+function approvalConversationRoot(sessionId: string): string {
   if (!sessionId.trim()) throw new Error("Approval session identity must be non-empty");
-  return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId }));
+  const root = resolveConversationRoot(sessionId);
+  if (!root.trim()) throw new Error("Approval root session identity must be non-empty");
+  return root;
+}
+
+function conversationEntryKey(key: string, rootSessionId: string): string {
+  return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId: rootSessionId }));
 }
 
 function entryKey(
@@ -407,9 +430,10 @@ export async function recordApproval(
   }
   const baseKey = entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
-  const key = entry.sessionId === undefined ? baseKey : conversationEntryKey(baseKey, entry.sessionId);
+  const rootSessionId = entry.sessionId === undefined ? undefined : approvalConversationRoot(entry.sessionId);
+  const key = rootSessionId === undefined ? baseKey : conversationEntryKey(baseKey, rootSessionId);
   const full: UserApprovalEntry = {
-    ...(entry.sessionId === undefined ? {} : { sessionId: entry.sessionId }),
+    ...(rootSessionId === undefined ? {} : { sessionId: rootSessionId }),
     ...(entry.projectCwd === undefined ? {} : { projectCwd: entry.projectCwd }),
     decision: entry.decision ?? "allow",
     approvedAt: entry.approvedAt ?? new Date().toISOString(),
@@ -483,7 +507,7 @@ export async function lookupUserDecision(
       denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity));
     }
   }
-  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, sessionId);
+  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
   const keys = [...denyOnlyKeys, key];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
   const readActive = (candidate: string): UserApprovalEntry | null => {
@@ -865,5 +889,6 @@ export async function migrateCanonicalization(): Promise<void> {
 export function __resetSessionStoreForTest(): void {
   if (sessionStore.size > 0) approvalGeneration += 1;
   sessionStore.clear();
+  resolveConversationRoot = identityConversationRoot;
   persistentWrites = createSerialQueue();
 }

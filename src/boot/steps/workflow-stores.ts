@@ -37,6 +37,8 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
+import { resolveRootSessionId } from "../../tools/session-window-scope.js";
+import { setApprovalConversationRootResolver } from "../../permissions/user-approval-store.js";
 
 const log = createLogger("ave");
 
@@ -252,5 +254,8 @@ export async function setupWorkflowStores(
   ctx.skillApprovalsStore = skillApprovalsStore;
   ctx.askUserQuestionGate = askUserQuestionGate;
   ctx.subAgentRunnerRef = subAgentRunnerRef;
+  // Session approvals belong to the root conversation, shared by its sub-agents.
+  setApprovalConversationRootResolver((sessionId) =>
+    resolveRootSessionId(sessionId, (id) => subAgentRunnerRef.fn?.liveOriginSessionId(id)));
   ctx.idleScheduler = idleScheduler;
 }

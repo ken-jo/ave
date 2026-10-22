@@ -36,7 +36,9 @@ import {
   recordApproval,
   __resetSessionStoreForTest,
   captureApprovalWorkingDirectory,
+  setApprovalConversationRootResolver,
 } from "../../permissions/user-approval-store.js";
+import { resolveRootSessionId } from "../session-window-scope.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
@@ -316,6 +318,57 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     expect(execute).toHaveBeenCalledTimes(permitted ? 1 : 0);
     expect(requestAndWait).toHaveBeenCalledTimes(permitted ? 0 : 1);
     expect(Boolean(result[0].is_error)).toBe(!permitted);
+  });
+
+  // Rule: a session allow belongs to the root conversation. Every agent in
+  // that tree (the conversation and the sub-agents spawned from it, at any
+  // depth) shares it; separate root conversations never do.
+  it.each([
+    { name: "a parent allow covers its sub-agent", recordedBy: "root-a", calledBy: "child-a1", permitted: true },
+    { name: "a nested sub-agent allow covers the root conversation", recordedBy: "grandchild-a1", calledBy: "root-a", permitted: true },
+    { name: "a sub-agent allow covers its sibling within the same root", recordedBy: "child-a1", calledBy: "child-a2", permitted: true },
+    { name: "a sub-agent allow never reaches another root conversation", recordedBy: "child-a1", calledBy: "child-b1", permitted: false },
+    { name: "another root's allow never reaches this conversation", recordedBy: "root-b", calledBy: "root-a", permitted: false },
+  ])("session approvals are keyed by root conversation: $name", async ({ recordedBy, calledBy, permitted }) => {
+    const origins: Record<string, string> = {
+      "child-a1": "root-a", "child-a2": "root-a", "grandchild-a1": "child-a1", "child-b1": "root-b",
+    };
+    setApprovalConversationRootResolver((sessionId) => resolveRootSessionId(sessionId, (id) => origins[id]));
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    const input = { path: join(dir, "subagent.txt") };
+    await recordApproval("write_probe", canonicalStringify(input), "builtin", {
+      scope: "session",
+      sessionId: recordedBy,
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    });
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
+    const result = await executor.executeAll(
+      [{ id: "subagent-write", name: "write_probe", input }],
+      { sessionId: calledBy, executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }) },
+    );
+    expect(execute).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(requestAndWait).toHaveBeenCalledTimes(permitted ? 0 : 1);
+    expect(Boolean(result[0].is_error)).toBe(!permitted);
+  });
+
+  it("refuses to key a session approval through a cyclic sub-agent origin chain", async () => {
+    setApprovalConversationRootResolver((sessionId) =>
+      resolveRootSessionId(sessionId, (id) => ({ loop1: "loop2", loop2: "loop1" } as Record<string, string>)[id]));
+    await expect(recordApproval("write_probe", canonicalStringify({ path: join(dir, "x.txt") }), "builtin", {
+      scope: "session",
+      sessionId: "loop1",
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    })).rejects.toThrow(/cyclic or deeper/);
   });
 
   it("(d) approval under a different (trustOrigin, approvalCacheKey) does NOT match — modal shown", async () => {
