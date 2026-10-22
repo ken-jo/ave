@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, writeFile, rm, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { checkpointFileMutation, withCodeCheckpoint } from "../../../memory/code-checkpoints.js";
 /**
  * Tiled chat groups at the IPC boundary: every per-conversation channel names
  * its group, each group runs on its own loop, and a closed tile's group is
@@ -7,7 +11,7 @@
  * the primary loop would pass every other chat test — those only ever speak
  * to "main" — while four tiles quietly shared one conversation.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -289,6 +293,62 @@ describe("ave:chat:* with chat groups", () => {
     // an edit of another.
     expect(main.getHistory().getMessages()).toHaveLength(2);
     expect(memoryManager.saveSession).toHaveBeenCalledWith(sessionUuid("session-of-group-2"), []);
+  });
+
+  describe("code rewind at the conversation mutation boundary", () => {
+    let root: string;
+    beforeEach(async () => {
+      root = await realpath(await mkdtemp(join(tmpdir(), "ave-rewind-ipc-")));
+      vi.stubEnv("AVE_HOME", join(root, "state"));
+    });
+    afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+    async function setup() {
+      const registered = await registerWithGroups(undefined, [
+        { role: "user", content: "tile question", meta: { messageId: "tile-q1" } },
+        { role: "assistant", content: "tile answer", meta: { messageId: "tile-a1" } },
+      ]);
+      registered.invoke(CHANNELS.chat.hasProvider, "group-2");
+      const tile = registered.groups.get("group-2")!;
+      const file = join(root, "code.txt");
+      await writeFile(file, "before");
+      await withCodeCheckpoint({ sessionId: tile.getSessionId(), messageId: "tile-q1" }, () =>
+        checkpointFileMutation([{ path: file, content: "agent" }], () => writeFile(file, "agent")));
+      return { ...registered, tile, file };
+    }
+    it("restores code without truncating or persisting the conversation", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "code")).toMatchObject({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("before");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    });
+    it("restores both files and persisted conversation", async () => {
+      const { invoke, tile, file, main, memoryManager } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({ ok: true, text: "tile question" });
+      expect(await readFile(file, "utf8")).toBe("before");
+      expect(tile.getHistory().getMessages()).toEqual([]);
+      expect(main.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).toHaveBeenCalledWith(tile.getSessionId(), []);
+    });
+    it("lists conflicts and keeps history and code unchanged on refusal", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      await writeFile(file, "external");
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({ ok: false, error: "code-restore-conflict", conflictingFiles: [file] });
+      expect(await readFile(file, "utf8")).toBe("external");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    });
+    it("leaves code untouched for conversation-only rewind", async () => {
+      const { invoke, file } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "conversation")).toMatchObject({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("agent");
+    });
+    it("rejects invalid restore modes without changing anything", async () => {
+      const { invoke, tile, file } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "force")).toEqual({ ok: false, error: "invalid-rewind-mode" });
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+    });
   });
 
   it("refuses a rewind while that tile is mid-turn", async () => {

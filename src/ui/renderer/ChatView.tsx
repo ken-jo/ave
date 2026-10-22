@@ -1,3 +1,5 @@
+import type { RewindMode } from "../../shared/code-rewind.js";
+import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { ChevronDown } from "lucide-react";
@@ -84,7 +86,7 @@ export interface ChatViewProps {
    * onward and put its text back in the composer, unsent. Reports whether the
    * host accepted, because a refusal must leave everything as it was.
    */
-  onReturnHere: (idx: number) => Promise<{ ok: boolean }>;
+  onReturnHere: (idx: number, mode?: RewindMode) => Promise<{ ok: boolean }>;
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
   /**
@@ -668,11 +670,22 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // so a rewind discards them with everything else that came after it. The
   // queue lives here, so the clear happens here — and only once the host has
   // confirmed the conversation was actually cut.
+  const [rewindEntryIdx, setRewindEntryIdx] = useState<number | null>(null);
   const handleReturnHere = useCallback(async (idx: number) => {
-    const result = await onReturnHere(idx);
-    if (result.ok) messageQueueStore.clear();
+    setRewindEntryIdx(idx);
+    return { ok: false };
+  }, []);
+  const handleRestore = useCallback(async (mode: RewindMode) => {
+    if (rewindEntryIdx === null || streaming) return { ok: false };
+    const result = await onReturnHere(rewindEntryIdx, mode);
+    if (result.ok) {
+      if (mode !== "code") messageQueueStore.clear();
+    }
+    // Refusals are rendered in this tile's transcript, outside the modal.
+    setRewindEntryIdx(null);
     return result;
-  }, [onReturnHere, messageQueueStore]);
+  }, [onReturnHere, messageQueueStore, rewindEntryIdx, streaming]);
+  useEffect(() => { setRewindEntryIdx(null); }, [currentSessionId]);
 
   const handleInsertSlashCommand = useCallback((cmd: string) => {
     setQuestion((prev) => (prev ? `${prev}${cmd} ` : `${cmd} `));
@@ -1033,6 +1046,11 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       {/* This conversation's approval card, floating over its own composer.
           The pane frame around this view is the dock's scope: the composer it
           covers goes inert, the tile next door does not. */}
+      <RewindDialog
+        open={rewindEntryIdx !== null}
+        onCancel={() => setRewindEntryIdx(null)}
+        onRestore={handleRestore}
+      />
       <ApprovalDock
         queue={pendingApprovals}
         conversationLabel={currentSessionTitle ?? t("mainToolbar.newChat")}

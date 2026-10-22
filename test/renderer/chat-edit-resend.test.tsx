@@ -12,7 +12,7 @@
  */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "./render-app.js";
 import { clearQueueStoreHandle, deferred, getQueueStore, submitChatMessage } from "./helpers.js";
@@ -310,10 +310,11 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     // Main truncates at the message's own history index — the message goes too.
-    await waitFor(() => expect(api.chatRewindTo).toHaveBeenCalledWith("seed-msg-0"));
+    await waitFor(() => expect(api.chatRewindTo).toHaveBeenCalledWith("seed-msg-0", "conversation"));
     await waitFor(() => {
       expect(container.textContent).not.toContain("an answer to be discarded");
       // The bubble goes too — its text is only in the composer now, which is
@@ -328,6 +329,7 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     await waitFor(() => expect(composer(container).value).toBe("the question I want back"));
@@ -342,6 +344,7 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     // formatIpcError turns the wire code into the shared refusal sentence.
@@ -359,6 +362,7 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     await waitFor(() => expect(composer(container).value).toBe("the row's own text"));
@@ -371,6 +375,7 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     await waitFor(() =>
@@ -405,9 +410,45 @@ describe("Return here — rewind without resending", () => {
 
     await act(async () => {
       fireEvent.click(await returnHereButton(container));
+      fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
     await waitFor(() => expect(getQueueStore()!.size()).toBe(0));
+  });
+
+  it("offers three modes and discloses shell limits before restoring", async () => {
+    const { container, api } = await renderApp({ history: answeredTurn });
+    await waitFor(() => expect(container.textContent).toContain("an answer to be discarded"));
+    fireEvent.click(await returnHereButton(container));
+    expect((await screen.findByRole("dialog")).textContent).toContain("Bash");
+    expect(screen.getByRole("button", { name: "대화만 복원" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "코드만 복원" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "대화와 코드 복원" })).toBeTruthy();
+    expect(api.chatRewindTo).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "취소" }));
+    expect(api.chatRewindTo).not.toHaveBeenCalled();
+  });
+
+  it("keeps the transcript and composer after code-only restoration", async () => {
+    const { container, api } = await renderApp({ history: answeredTurn });
+    await waitFor(() => expect(container.textContent).toContain("an answer to be discarded"));
+    fireEvent.click(await returnHereButton(container));
+    fireEvent.click(await screen.findByRole("button", { name: "코드만 복원" }));
+    await waitFor(() => expect(api.chatRewindTo).toHaveBeenCalledWith("seed-msg-0", "code"));
+    expect(container.textContent).toContain("an answer to be discarded");
+    expect(composer(container).value).toBe("");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("lists conflicting paths and keeps the conversation on combined refusal", async () => {
+    const { container, api } = await renderApp({ history: answeredTurn });
+    await waitFor(() => expect(container.textContent).toContain("an answer to be discarded"));
+    api.chatRewindTo.mockResolvedValueOnce({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/src/changed.ts"] });
+    fireEvent.click(await returnHereButton(container));
+    fireEvent.click(await screen.findByRole("button", { name: "대화와 코드 복원" }));
+    await waitFor(() => expect(container.textContent).toContain("/workspace/src/changed.ts"));
+    expect(container.textContent).toContain("an answer to be discarded");
+    expect(composer(container).value).toBe("");
   });
 
   it("is unavailable while a turn is streaming", async () => {

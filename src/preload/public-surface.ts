@@ -1,3 +1,4 @@
+import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
 // public-surface.ts — the externally-parity-safe portion of `window.aveApi`
 // (#1409 + #1411 C11): chat/session interaction + starred, plugin-status +
 // marketplace list reads, and usage observability. Chat send mints/consumes the
@@ -158,11 +159,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     }>,
   chatEditResend: async (messageId: string, newText: string) =>
     ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId),
-  chatRewindTo: async (messageId: string) =>
-    ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId) as Promise<
-      | { ok: true; text: string; personaPromptId?: string }
-      | { ok: false; error: string }
-    >,
+  chatRewindTo: async (messageId: string, mode: RewindMode = "conversation") =>
+    ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId, mode) as Promise<RewindResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
   chatContinueLastUser: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.continueLastUser, { sessionId }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,

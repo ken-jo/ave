@@ -1,3 +1,4 @@
+import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -801,10 +802,7 @@ export type AveApi = {
    * message itself goes too — the caller owns putting its text back in the
    * composer, which is what makes this a rewind rather than a delete.
    */
-  chatRewindTo: (messageId: string) => Promise<
-    | { ok: true; text: string; personaPromptId?: string }
-    | { ok: false; error: string }
-  >;
+  chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
