@@ -66,8 +66,26 @@ function refuse(message: string): never {
   throw new TableDocumentError("corrupt-document", message);
 }
 
-const ATTRIBUTE_PATTERN = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/y;
-const TRAILING_SPACE = /\s*$/y;
+const NO_ATTRIBUTES: ReadonlyMap<string, string> = new Map();
+
+/** End of an ASCII `[A-Za-z_][\w.:-]*` name at `start`, or `start` when none begins there. */
+function nameEnd(xml: string, start: number): number {
+  let position = start;
+  for (;; position += 1) {
+    const code = xml.charCodeAt(position);
+    const letter = (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f;
+    if (letter || (position > start && ((code >= 0x30 && code <= 0x39) || code === 0x2e || code === 0x3a || code === 0x2d))) continue;
+    return position;
+  }
+}
+
+/** End of the XML whitespace run at `start`. */
+function spaceEnd(xml: string, start: number): number {
+  let position = start;
+  let code = xml.charCodeAt(position);
+  while (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) code = xml.charCodeAt(++position);
+  return position;
+}
 
 /** Scans tags without expanding entities or allocating any document objects. */
 function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
@@ -81,13 +99,14 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
   let offset = 0;
   const stack: string[] = [];
   while ((offset = xml.indexOf("<", offset)) >= 0) {
-    if (xml.startsWith("<!--", offset)) {
+    const marker = xml.charCodeAt(offset + 1);
+    if (marker === 0x21 && xml.startsWith("<!--", offset)) {
       const end = xml.indexOf("-->", offset + 4);
       if (end < 0) refuse("Unterminated XML comment");
       offset = end + 3;
       continue;
     }
-    if (xml.startsWith("<?", offset)) {
+    if (marker === 0x3f) {
       const end = xml.indexOf("?>", offset + 2);
       if (end < 0 || xml.slice(offset + 2, end).includes("<")) refuse("Invalid XML processing instruction");
       const declaration = xml.slice(offset, end);
@@ -98,47 +117,50 @@ function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
     }
     // Text sections and declarations can expose a different tag stream to a
     // permissive decoder, so this boundary accepts ordinary XML tags only.
-    if (xml.startsWith("<!", offset)) refuse("Package XML declarations and text sections are unsupported");
-    let end = offset + 1;
-    let quote = "";
-    for (; end < xml.length; end += 1) {
-      const character = xml[end]!;
-      if (character === "<") refuse("Invalid XML tag contents");
-      if (quote) {
-        if (character === quote) quote = "";
-      } else if (character === '"' || character === "'") quote = character;
-      else if (character === ">") break;
-    }
-    if (end === xml.length || quote) refuse("Unterminated XML tag");
-    const body = xml.slice(offset + 1, end);
-    const match = /^(\/?)([A-Za-z_][\w.:-]*)([\s\S]*?)(\/?)\s*$/.exec(body);
-    if (!match) refuse("Invalid XML tag name");
-    const name = match[2]!;
+    if (marker === 0x21) refuse("Package XML declarations and text sections are unsupported");
+    // Character codes read the tag in place: worksheet-sized parts reach this
+    // loop, and per-tag substrings and regex matches dominated its cost.
+    let position = offset + 1;
+    const closing = xml.charCodeAt(position) === 0x2f;
+    if (closing) position += 1;
+    const nameStart = position;
+    position = nameEnd(xml, position);
+    if (position === nameStart) refuse("Invalid XML tag name");
+    const name = xml.slice(nameStart, position);
     const localName = name.slice(name.lastIndexOf(":") + 1);
-    const closing = match[1] === "/";
-    const selfClosing = match[4] === "/";
-    const attributes = new Map<string, string>();
-    const remainder = match[3]!;
-    let position = 0;
-    while (position < remainder.length) {
-      TRAILING_SPACE.lastIndex = position;
-      if (TRAILING_SPACE.test(remainder)) break;
-      ATTRIBUTE_PATTERN.lastIndex = position;
-      const attribute = ATTRIBUTE_PATTERN.exec(remainder);
-      if (!attribute) refuse("Invalid XML attribute");
-      const key = attribute[1]!;
+    let attributes: Map<string, string> | undefined;
+    for (;;) {
+      const spaceStart = position;
+      position = spaceEnd(xml, position);
+      const keyStart = position;
+      // Each attribute needs leading whitespace; anything else must end the tag.
+      if (position === spaceStart || (position = nameEnd(xml, position)) === keyStart) break;
+      const key = xml.slice(keyStart, position);
+      position = spaceEnd(xml, position);
+      if (xml.charCodeAt(position) !== 0x3d) refuse("Invalid XML attribute");
+      position = spaceEnd(xml, position + 1);
+      const quote = xml.charCodeAt(position);
+      if (quote !== 0x22 && quote !== 0x27) refuse("Invalid XML attribute");
+      const valueEnd = xml.indexOf(quote === 0x22 ? '"' : "'", position + 1);
+      if (valueEnd < 0) refuse("Unterminated XML tag");
+      const value = xml.slice(position + 1, valueEnd);
+      if (value.includes("<")) refuse("Invalid XML tag contents");
+      position = valueEnd + 1;
+      attributes ??= new Map();
       // Attribute namespaces do not separate expansion controls for the
       // decoder; reject duplicate effective names before inspecting values.
       const effectiveName = key.slice(key.lastIndexOf(":") + 1).toLowerCase();
       if (attributes.has(effectiveName)) refuse("Duplicate XML attribute name");
-      attributes.set(effectiveName, attribute[2]!.slice(1, -1));
-      position = ATTRIBUTE_PATTERN.lastIndex;
+      attributes.set(effectiveName, value);
     }
+    const selfClosing = xml.charCodeAt(position) === 0x2f;
+    if (selfClosing) position = spaceEnd(xml, position + 1);
+    if (xml.charCodeAt(position) !== 0x3e) refuse("Invalid or unterminated XML tag");
     if (closing) {
-      if (selfClosing || attributes.size > 0 || stack.pop() !== name) refuse("Unbalanced XML tags");
+      if (selfClosing || attributes || stack.pop() !== name) refuse("Unbalanced XML tags");
     } else if (!selfClosing) stack.push(name);
-    onTag({ name, localName, closing, selfClosing, attributes });
-    offset = end + 1;
+    onTag({ name, localName, closing, selfClosing, attributes: attributes ?? NO_ATTRIBUTES });
+    offset = position + 1;
   }
   if (stack.length > 0) refuse("Unclosed XML tags");
 }
