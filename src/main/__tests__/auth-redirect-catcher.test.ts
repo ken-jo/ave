@@ -84,6 +84,17 @@ describe("the listener it binds", () => {
     expect(Number(new URL(redirectUri).port)).toBeGreaterThan(0);
   });
 
+  it("can name the listener by the RFC 8252 loopback IP literal and still catch the redirect there", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const result = await catchers.open(OWNER, { redirectHost: "127.0.0.1" });
+    openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
+    expect(result.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+    const waiting = catchers.wait(OWNER, result.handle);
+    const response = await hit(result.redirectUri, "/?code=abc123&state=xyz");
+    expect(response.location).toBe(result.redirectUri);
+    await expect(waiting).resolves.toEqual({ code: "abc123", state: "xyz" });
+  });
+
   it("refuses a second open for the same plugin rather than replacing the first", async () => {
     const catchers = new AuthRedirectCatchers();
     const first = await open(catchers);

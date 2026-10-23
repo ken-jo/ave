@@ -132,6 +132,7 @@ export type GitMarketplacePort = Pick<
   | "appliedState"
   | "callsInFlight"
   | "approveComponents"
+  | "packageTransactionsIdle"
 >;
 
 /** The settings secret each host's token is stored under (design §2.1). */
@@ -720,6 +721,8 @@ export interface GitMarketplaceRegistration {
   startBackground(): Promise<void>;
   /** `marketplace` settings were written: republish the updates under the new notice and skip settings, and run a due check. */
   settingsChanged(): void;
+  /** No package transaction is open; true before the service is built, when none can be. */
+  packageTransactionsIdle(): boolean;
 }
 
 export function registerGitMarketplaceHandlers(
@@ -744,12 +747,16 @@ export function registerGitMarketplaceHandlers(
   // What is installed or offered changed: the update pill follows without waiting for the next sync.
   const build = create ?? (() => createGitMarketplaceService(deps, content, home, shutdown.signal, () => void background?.recheck()));
   let ready: Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> | null = null;
+  let current: GitMarketplacePort | null = null;
   const loaded = () => {
     ready ??= (async () => {
       const built = await build();
+      // Readable at once: an install that runs during onBuilt already holds its package lock.
+      current = built.service;
       try {
         await onBuilt(built.close);
       } catch (error) {
+        current = null;
         // Nothing would close a service no one can reach: close it here, then build afresh next time.
         await built.close().catch((closeError: unknown) => log.warn({ err: errorMessage(closeError) }, "git marketplace close after a failed start failed"));
         throw error;
@@ -920,6 +927,7 @@ export function registerGitMarketplaceHandlers(
 
   return {
     getService: async () => (await loaded()).service,
+    packageTransactionsIdle: () => current?.packageTransactionsIdle ?? true,
     settingsChanged: () => {
       // Never rejects for a stop (the scheduler ends quietly); anything else is logged, not left unhandled.
       void background?.settingsChanged().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace settings recheck failed"));

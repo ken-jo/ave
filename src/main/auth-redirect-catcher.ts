@@ -182,7 +182,14 @@ export class AuthRedirectCatchers {
   private readonly byHandle = new Map<string, LiveCatcher>();
   private readonly byOwner = new Map<string, string>();
 
-  async open(ownerKey: string): Promise<AuthRedirectOpenResult> {
+  /**
+   * `redirectHost` chooses how the redirect URI names the loopback listener.
+   * The default `localhost` matches what identity providers such as MSAL
+   * register. `127.0.0.1` is the RFC 8252 §7.3 loopback IP literal: for it an
+   * authorization server MUST accept any port, which a published client
+   * metadata document relies on. The listener is bound to 127.0.0.1 either way.
+   */
+  async open(ownerKey: string, options: { redirectHost?: "localhost" | "127.0.0.1" } = {}): Promise<AuthRedirectOpenResult> {
     if (this.byOwner.has(ownerKey)) {
       throw new Error(
         "authRedirect.open: a redirect catcher is already open for this plugin; close it before opening another",
@@ -205,7 +212,7 @@ export class AuthRedirectCatchers {
           resolve(address.port);
         });
       });
-      const redirectUri = `http://localhost:${port}`;
+      const redirectUri = `http://${options.redirectHost ?? "localhost"}:${port}`;
       const catcher: LiveCatcher = {
         handle,
         ownerKey,

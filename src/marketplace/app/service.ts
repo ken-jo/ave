@@ -597,6 +597,15 @@ export class MarketplaceService implements RetirementEntryLookup {
    * runs another install or uninstall of it passes its lease down (§18.6).
    */
   private readonly packageLocks = new KeyedMutex();
+
+  /**
+   * No install, update or uninstall holds or waits for a package lock. A
+   * reader that must not act on a half-finished package change (pruning a
+   * stored sign-in of a package that seems gone) checks this first.
+   */
+  get packageTransactionsIdle(): boolean {
+    return this.packageLocks.idle;
+  }
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
   /**

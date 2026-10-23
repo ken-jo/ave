@@ -288,7 +288,7 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
 }
 
 /** Apply the loaded content to this process: locales, theme ids, and the skill and agent stores. */
-async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): Promise<void> {
+async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, transactionsIdle: () => boolean, mcpRuntime: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): Promise<void> {
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
   setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
@@ -300,21 +300,23 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
   deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
-  if (service.installedAgentPluginRuntime().some((item) => Object.keys(item.content.components.mcpServers).length > 0)) {
-    deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
-      list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
-        packageName: item.name, serverName, transport: server.transport,
-        ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
-          apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
-        ...(server.auth ? { auth: server.auth } : {}),
-      }))),
-      reconnect: async (packageName, serverName) => {
-        const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
-        if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
-        await mcpRuntime.reconnect(item);
-      },
-    });
-  }
+  // Registered even with no MCP-bearing plugin installed: the complete list is what lets the
+  // manager retire stored sign-ins of servers whose plugin was uninstalled. It is complete only
+  // when no package failed to load and no package transaction is open (evaluated when pruning runs).
+  deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
+    complete: () => view.broken.length === 0 && transactionsIdle(),
+    list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
+      packageName: item.name, serverName, transport: server.transport,
+      ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
+        apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
+      ...(server.auth ? { auth: server.auth } : {}),
+    }))),
+    reconnect: async (packageName, serverName) => {
+      const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
+      if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
+      await mcpRuntime.reconnect(item);
+    },
+  });
   await mcpRuntime.sync(service.installedAgentPluginRuntime());
   if (service.installedAgentPluginRuntime().some((item) => item.content.components.hooks.length > 0) && !hookRuntime) {
     throw new Error("installed agent plugin hooks require the hook runner");
@@ -328,7 +330,7 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
  * cannot be read leaves every installed package unapplied (and logged)
  * rather than stopping the app.
  */
-export async function loadInstalledContent(deps: IpcDeps, assetToken: string, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
+export async function loadInstalledContent(deps: IpcDeps, assetToken: string, transactionsIdle: () => boolean, root: string = contentPackagesRoot()): Promise<InstalledContentRuntime> {
   const mcpRuntime = new AgentPluginMcpRuntime(deps.mcpManager);
   const hookRuntime = deps.scriptHookManager ? new AgentPluginHookRuntime(deps.scriptHookManager) : undefined;
   const store = await ContentStore.open({
@@ -343,14 +345,14 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     const decision = revocationRegistry.evaluate(kind, name, version);
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
   });
-  await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
+  await applyInMain(deps, service, await service.reload(), transactionsIdle, mcpRuntime, hookRuntime);
   // Settings were read before the ledger: apply an installed language the user selected.
   await applyBootLocale(deps.settingsService);
   return {
     store,
     service,
     async reload() {
-      await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
+      await applyInMain(deps, service, await service.reload(), transactionsIdle, mcpRuntime, hookRuntime);
     },
     async removeAgentPluginData(name, serverNames) {
       await removeAgentPluginData(deps.settingsService, name, serverNames);
@@ -375,9 +377,11 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
  */
 export function registerMarketplaceContentHandlers(
   deps: IpcDeps,
+  /** Whether no marketplace package transaction is open (see MarketplaceService.packageTransactionsIdle). */
+  transactionsIdle: () => boolean,
   // Drawn once per launch: the host of every `ave-content:` URL (see content-asset-protocol.ts).
   assetToken: string = `t${randomBytes(16).toString("hex")}`,
-  load: () => Promise<InstalledContentRuntime> = () => loadInstalledContent(deps, assetToken),
+  load: () => Promise<InstalledContentRuntime> = () => loadInstalledContent(deps, assetToken, transactionsIdle),
 ): () => Promise<InstalledContentRuntime | null> {
   let ready: Promise<InstalledContentRuntime | null> | null = null;
   const loaded = () =>
