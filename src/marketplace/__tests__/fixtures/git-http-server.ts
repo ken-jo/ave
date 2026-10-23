@@ -9,7 +9,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -83,6 +83,23 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   hostGit(["config", "user.email", "fixture@example.invalid"], work);
   hostGit(["config", "user.name", "Fixture"], work);
   hostGit(["remote", "add", "origin", bare], work);
+  return fixtureRepo(bare, work, branch);
+}
+
+/**
+ * Copy a read-only seed made by createFixtureRepo, on the same branch.
+ * Copies own their refs, index and objects; callers clean work and bare trees.
+ */
+export function copyFixtureRepo(root: string, name: string, seed: FixtureRepo, branch = "main"): FixtureRepo {
+  const bare = join(root, name);
+  const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
+  cpSync(seed.bare, bare, { recursive: true });
+  cpSync(seed.work, work, { recursive: true });
+  hostGit(["remote", "set-url", "origin", bare], work);
+  return fixtureRepo(bare, work, branch);
+}
+
+function fixtureRepo(bare: string, work: string, branch: string): FixtureRepo {
   return {
     bare,
     work,

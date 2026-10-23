@@ -14,7 +14,7 @@ import { descriptorText as descriptor, jsonText as text } from "../../__tests__/
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
-import { createFixtureRepo, type FixtureRepo, type GitHttpServer, removeFixtureRepo, startGitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
+import { copyFixtureRepo, createFixtureRepo, type FixtureRepo, type GitHttpServer, removeFixtureRepo, startGitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 import type { GitRunner } from "../../git/run-git.js";
@@ -81,6 +81,8 @@ describe("MarketplaceService", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let emptyRepo: FixtureRepo;
+  const marketSeeds = new Map<string, FixtureRepo>();
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
@@ -124,6 +126,7 @@ describe("MarketplaceService", () => {
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
   });
@@ -131,6 +134,8 @@ describe("MarketplaceService", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    for (const seed of marketSeeds.values()) await removeFixtureRepo(seed);
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -351,34 +356,38 @@ describe("MarketplaceService", () => {
   function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { theme?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const files = (version: string) => ({
+      "marketplace.json": text({
+        schemaVersion: 2,
+        name: indexName,
+        displayName: "Acme Tools",
+        packages: [
+          { kind: "skill", name: "review", path: "skills/review" },
+          { kind: "mcp", name: "notes", path: "mcp/notes" },
+          ...(options.theme ? [{ kind: "theme", name: "harbor", path: "themes/harbor" }] : []),
+        ],
+      }),
+      ...(options.theme
+        ? {
+            "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
+            "themes/harbor/theme.json": text({ name: "Harbor", description: "Harbor theme.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES }),
+          }
+        : {}),
+      "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
+      "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
+      "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
+    });
+    const key = JSON.stringify([skillVersion, indexName, options.theme ?? false]);
+    let seed = marketSeeds.get(key);
+    if (!seed) {
+      seed = copyFixtureRepo(serverRoot, `seed-${counter}`, emptyRepo);
+      seed.commit(files(skillVersion), `publish ${skillVersion}`);
+      marketSeeds.set(key, seed);
+    }
+    // The seed is read-only; every test publishes into its own copied history.
+    const repo = copyFixtureRepo(serverRoot, name, seed);
     repos.push(repo);
-    const publish = (version: string) =>
-      repo.commit(
-        {
-          "marketplace.json": text({
-            schemaVersion: 2,
-            name: indexName,
-            displayName: "Acme Tools",
-            packages: [
-              { kind: "skill", name: "review", path: "skills/review" },
-              { kind: "mcp", name: "notes", path: "mcp/notes" },
-              ...(options.theme ? [{ kind: "theme", name: "harbor", path: "themes/harbor" }] : []),
-            ],
-          }),
-          ...(options.theme
-            ? {
-                "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-                "themes/harbor/theme.json": text({ name: "Harbor", description: "Harbor theme.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES }),
-              }
-            : {}),
-          "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
-          "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
-          "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
-        },
-        `publish ${version}`,
-      );
-    publish(skillVersion);
+    const publish = (version: string) => repo.commit(files(version), `publish ${version}`);
     return { name, url: server.url(name), publish, repo };
   }
 
@@ -1378,7 +1387,7 @@ describe("MarketplaceService", () => {
   it("adds a repository holding one SKILL.md as a direct source with a commit-named version", async () => {
     counter += 1;
     const name = `direct-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     const first = repo.commit({ "SKILL.md": skill("summarize", "Summarize the thread.") }, "skill");
     const preview = await service.previewSource({ input: server.url(name), auth: "none" });
@@ -1399,7 +1408,7 @@ describe("MarketplaceService", () => {
   it("refuses a repository with neither a marketplace nor a package, and removes its preview clone", async () => {
     counter += 1;
     const name = `empty-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     repo.commit({ "README.md": "nothing here\n" }, "readme");
     await expect(service.previewSource({ input: server.url(name), auth: "none" })).rejects.toMatchObject({ code: "SOURCE_NOT_A_MARKETPLACE" });

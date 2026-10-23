@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -47,6 +48,7 @@ describe("content package store", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
@@ -71,6 +73,7 @@ describe("content package store", () => {
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-content-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
   });
@@ -78,6 +81,7 @@ describe("content package store", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -98,7 +102,7 @@ describe("content package store", () => {
   function market(packages: Array<{ kind: string; name: string; path: string }>, files: Record<string, string | Buffer>) {
     counter += 1;
     const name = `content-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     const commit = (patch: Record<string, string | Buffer>) =>
       repo.commit({ "marketplace.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
@@ -170,7 +174,7 @@ describe("content package store", () => {
       { path: "server/hook.sh", data: Buffer.from(program), executable: true },
     ]);
     const name = `content-${++counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     repo.commit({}, "seed");
     repo.commitEntries([
@@ -558,7 +562,7 @@ describe("content package store", () => {
       ];
       const components = deriveAgentPluginComponents(files);
       const name = `content-${++counter}`;
-      const repo = createFixtureRepo(serverRoot, name);
+      const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
       repos.push(repo);
       repo.commit({}, "seed");
       repo.commitEntries([

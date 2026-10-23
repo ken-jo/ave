@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
@@ -11,12 +11,11 @@ const NULL_SHA = "0".repeat(40);
 const NOTES = "docs/notes/checkout.md";
 const FULL_TIER_FOR_TAGS = "[checks] tier=full pre-push: running typecheck, full test, build, and gate-core (non-branch updates require full checks)";
 
-function fixture() {
+let seed: { repo: string; base: string; head: string };
+
+beforeAll(() => {
   const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
-  // The full tier takes a host lock; the fixture keeps it out of the shared one.
-  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime"), AVE_PREPUSH_LOCK_DIR: join(repo, "locks") };
-  delete env.AVE_PREPUSH_FULL;
-  delete env.AVE_PREPUSH_LOCK_TIMEOUT_S;
+  const env = gitFixtureEnv(repo);
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
   git(["init", "-q"]);
   git(["config", "user.name", "Fixture"]);
@@ -40,6 +39,20 @@ function fixture() {
   writeFileSync(join(repo, NOTES), "Updated notes.\n");
   git(["commit", "-qam", "update notes"]);
   const head = git(["rev-parse", "HEAD"]);
+  seed = { repo, base, head };
+});
+
+afterAll(async () => cleanupTmpDir(seed.repo));
+
+function fixture() {
+  const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
+  cpSync(seed.repo, repo, { recursive: true });
+  const { base, head } = seed;
+  // The full tier takes a host lock; the fixture keeps it out of the shared one.
+  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime"), AVE_PREPUSH_LOCK_DIR: join(repo, "locks") };
+  delete env.AVE_PREPUSH_FULL;
+  delete env.AVE_PREPUSH_LOCK_TIMEOUT_S;
+  const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
   const pushInput = (input: string, extraEnv: NodeJS.ProcessEnv = {}) =>
     spawnSync("node", [HOOK, "--repo", repo, "--stage", "pre-push"], {
       env: { ...env, ...extraEnv }, encoding: "utf8", input, timeout: 15_000,
