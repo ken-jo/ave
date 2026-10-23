@@ -514,10 +514,10 @@ describe("permissions IPC handlers", () => {
     expect(result).toMatchObject({ ok: false, error: "user-keyboard-required" });
   });
 
-  it("refuses a hand-typed wildcard outside the allowlist as invalid-rule before persisting", async () => {
+  it("refuses broad or irreversible allow rules before persisting", async () => {
     const { permissionManager } = await setup();
-    expect(await invoke(PERMISSIONS.addRule, { pattern: "Bash(make *)", action: "allow", intent: USER_INTENT }))
-      .toMatchObject({ ok: false, error: "invalid-rule", message: expect.stringContaining("wildcard allowlist") });
+    expect(await invoke(PERMISSIONS.addRule, { pattern: "Bash(git *)", action: "allow", intent: USER_INTENT }))
+      .toMatchObject({ ok: false, error: "invalid-rule", message: expect.stringContaining("refused allow prefix") });
     expect(await invoke(PERMISSIONS.addRule, { pattern: "Bash(git push --force)", action: "allow", intent: USER_INTENT }))
       .toMatchObject({ ok: false, error: "invalid-rule" });
     expect(permissionManager.addRulePersist).not.toHaveBeenCalled();
@@ -1655,7 +1655,7 @@ describe("command rules recorded from live approvals", () => {
 
   it.each([
     ["rm notes.txt", "Bash(rm *)"],
-    ["chmod +x build.sh", "Bash(chmod *)"],
+    ["chmod -R u+w src", "Bash(chmod -R *)"],
     ["chown -R me src", "Bash(chown -R *)"],
     ["git clean -n", "Bash(git clean *)"],
     ["truncate -s 1M data.bin", "Bash(truncate *)"],

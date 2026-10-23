@@ -603,7 +603,7 @@ describe("configured judge dispatch lanes", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
-  it("keeps the headless explicit-approval denial in allow mode under a shadow chain", async () => {
+  it("keeps the headless plain-shell reviewer path under a shadow chain", async () => {
     const reviewer = llm("low");
     const command = "echo 'unterminated";
     const context = { headless: true, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: "/" } };
@@ -614,10 +614,10 @@ describe("configured judge dispatch lanes", () => {
     subject.manager.setMode("allow");
     const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
     const after = await checkAndDispatch(subject, { ...context, ruleSubject: { ...context.ruleSubject, cwd: subject.root } });
-    expect(before.decision).not.toBe("allow");
+    expect(before.decision).toBe("allow");
     expect(after).toMatchObject({ decision: before.decision, reason: before.reason });
-    expect(provider.requests).toHaveLength(0);
-    expect(reviewer.calls()).toBe(0);
+    expect(provider.requests).toHaveLength(1);
+    expect(reviewer.calls()).toBe(2);
   });
 
   it.each(["default", "allow"] as const)("adds no reviewer call or deferred entry to %s foreground layer-6 asks under shadow", async (mode) => {

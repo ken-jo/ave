@@ -72,7 +72,7 @@ export async function readPermissionsFile(filePath: string): Promise<Permissions
   }
   const file = parsed as PermissionsFile;
   if (file.version !== 1) throw new PermissionRulesFileCorruptError(filePath, `unsupported version ${String(file.version)}`);
-  file.rules = validateRuleList(filePath, file.rules, { sourceText: raw, keepNotAllowlisted: "all" });
+  file.rules = validateRuleList(filePath, file.rules, { sourceText: raw, keepInertWildcards: "all" });
   return file;
 }
 
@@ -93,7 +93,7 @@ export async function updatePermissionsFile(
       };
       const inert = inertRulePatterns(existing?.rules);
       await mutator(file);
-      validateRuleList(filePath, file.rules, { keepNotAllowlisted: inert });
+      validateRuleList(filePath, file.rules, { keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
       writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
     });

@@ -9,9 +9,8 @@
  * {@link PermissionRulesFileCorruptError}. Nothing is silently dropped, and the
  * writers refuse to overwrite a corrupt file (they read before they write).
  *
- * One kind of rule is kept but inert instead: an allow wildcard outside the
- * wildcard allowlist (owner decision 2026-10-23). Files written before the
- * allowlist may hold one. It loads, is listed in Settings with its
+ * A stored broad wildcard is kept but inert instead. Files written before
+ * prefix restrictions may hold one. It loads, is listed in Settings with its
  * {@link StoredRuleInvalidReason} and a working Remove, survives other writes
  * unchanged, and never matches ({@link storedRuleInvalidReason}). No rule is
  * migrated or rewritten, and a new one is still refused at save.
@@ -28,17 +27,17 @@ import {
 import { refusedShellPrefix } from "./shell-prefix-values.js";
 import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js";
 
-/** An allow wildcard outside the allowlist: refused at save, inert when already stored. */
-class WildcardNotAllowlistedError extends RuleSpecifierError {}
+/** A broad allow wildcard is refused at save but retained inert when already stored. */
+class BroadShellWildcardError extends RuleSpecifierError {}
 
 /**
  * The reason a stored rule is inert, or null for a rule in force. Decisions
  * skip such a rule and Settings lists it with this reason.
  */
 export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }): StoredRuleInvalidReason | null {
-  if (rule.action !== "allow" || rule.source || !isRuleSpecifier(rule.pattern)) return null;
+  if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
   const spec = parseRuleSpecifier(rule.pattern);
-  return spec.kind === "bash" && refusedShellPrefix(spec.tokens, spec.wildcard) === "not-allowlisted"
+  return spec.kind === "bash" && refusedShellPrefix(spec.tokens, spec.wildcard) === "broad-prefix"
     ? "wildcard-not-allowlisted"
     : null;
 }
@@ -74,8 +73,8 @@ export function validatePermissionRule(rule: unknown): PermissionRule {
   if (source !== undefined && typeof source !== "string") throw new RuleSpecifierError(pattern, "source must be a string");
   if (isRuleSpecifier(pattern)) {
     const spec = parseRuleSpecifier(pattern);
-    assertStorableSpecifier(pattern, spec, action as PermissionRuleAction);
     if (source !== undefined) throw new RuleSpecifierError(pattern, "specifier rules do not take a source");
+    assertStorableSpecifier(pattern, spec, action as PermissionRuleAction);
   }
   return candidate as unknown as PermissionRule;
 }
@@ -89,8 +88,8 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   }
   if (spec.kind === "bash" && action === "allow") {
     const refused = refusedShellPrefix(spec.tokens, spec.wildcard);
-    if (refused === "not-allowlisted") {
-      throw new WildcardNotAllowlistedError(pattern, `"${spec.tokens.join(" ")}" is not on the wildcard allowlist; only known-safe commands may end in " *", so save the exact command instead`);
+    if (refused === "broad-prefix") {
+      throw new BroadShellWildcardError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (broad-prefix); save a narrower prefix or exact command instead`);
     }
     if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (${refused}); approve it once or for the session instead`);
   }
@@ -154,23 +153,23 @@ export function validateRuleList(
     specifiersOnly?: boolean;
     sourceText?: string;
     /**
-     * Inert allow wildcards outside the allowlist that may stay in the file:
+     * Inert broad allow wildcards that may stay in the file:
      * `"all"` when reading what is stored, or the patterns the file already
      * held when writing, so a write keeps them but cannot add one.
      */
-    keepNotAllowlisted?: "all" | ReadonlySet<string>;
+    keepInertWildcards?: "all" | ReadonlySet<string>;
   } = {},
 ): PermissionRule[] {
   if (!Array.isArray(rules)) throw new PermissionRulesFileCorruptError(filePath, "rules is not an array");
   return rules.map((rule, index) => {
     try {
-      const keep = options.keepNotAllowlisted;
+      const keep = options.keepInertWildcards;
       if (keep !== undefined && rule && typeof rule === "object" && !Array.isArray(rule)) {
         try {
           validatePermissionRule(rule);
         } catch (error) {
           const pattern = (rule as { pattern?: unknown }).pattern;
-          if (error instanceof WildcardNotAllowlistedError && typeof pattern === "string" && (keep === "all" || keep.has(pattern))) {
+          if (error instanceof BroadShellWildcardError && typeof pattern === "string" && (keep === "all" || keep.has(pattern))) {
             return { ...(rule as PermissionRule) };
           }
         }

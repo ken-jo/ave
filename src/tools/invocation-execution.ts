@@ -633,7 +633,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPermit === undefined
   ) {
     const msg =
-      "Requested-sandbox shell execution blocked: no host-verified allow-once receipt was available for this action.";
+      "Requested-sandbox shell execution blocked: no host policy authorization or verified approval receipt was available for this action.";
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);

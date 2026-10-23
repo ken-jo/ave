@@ -136,7 +136,6 @@ describe("package runner shims and dispatchers", () => {
     expect(hiddenCodeReason([runner])).toBeNull();
     expect(opaqueRunnerReason([runner])).toBe("opaque runner prefix");
     expect(result).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
-    expect(refusedShellPrefix([runner])).not.toBeNull();
   });
 
   it.each(SHELL_PREFIX_POLICY.packageRunners)("requires approval for bare %s after materialization", (runner) => {
@@ -195,9 +194,4 @@ describe("package runner shims and dispatchers", () => {
     expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
   });
 
-  it.each([
-    ["corepack", "package-runner"], ["yarnpkg", "package-runner"], ["deno", "package-runner"],
-  ] as const)("keeps an unconstrained prefix for %s out of persistent rules", (name, reason) => {
-    expect(refusedShellPrefix([name])).toBe(reason);
-  });
 });

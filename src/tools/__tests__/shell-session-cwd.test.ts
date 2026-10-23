@@ -241,7 +241,10 @@ describe.skipIf(process.platform === "win32")("executor session working director
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissions = new PermissionManager(join(root, "permissions.json"));
-    permissions.setMode("allow");
+    permissions.setRules([
+      { pattern: "Bash(cd sub)", action: "allow" },
+      { pattern: "Bash(pwd)", action: "allow" },
+    ]);
     const hooks = new HookRunner();
     const preHookInputs = vi.spyOn(hooks, "runPreHooks");
     const executor = new ToolExecutor(

@@ -78,7 +78,8 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, refusedShellPrefix, runnerCodeContext, runnerCommandIndexes, SHELL_PREFIX_POLICY, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName } from "./shell-prefix-values.js";
+import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -1640,24 +1641,21 @@ function hasMemberInvocation(cmd: PsCommand): boolean {
 function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) {
   const values = nativeArguments(args, ctx);
   const argv = [name, ...values];
-  const staticArgv = argv.every((value) => value !== undefined) ? argv as string[] : undefined;
-  const prefix = staticArgv ? refusedShellPrefix(staticArgv) : undefined;
   const informational = values.length === 1 && POWERSHELL_COMMAND_POLICIES[name]?.argv?.info?.includes(values[0]!);
   const reason = informational ? null : hiddenCodeReason(argv);
   // A literal script-file operand is ordinary native argv; explicit code options,
   // shells, wrappers and command-running verbs retain their launcher identity.
-  const script = prefix === "interpreter" && args.length > 0 && values.every((value) => value !== undefined)
+  const script = INTERPRETER_SET.has(programName(name)) && !RUNNER_SET.has(runnerName(name)) && args.length > 0 && values.every((value) => value !== undefined)
     && argv[1] !== "-" && !argv[1]!.startsWith("-") && reason?.startsWith("code passed to ");
-  return { prefix, reason, values, scriptPath: script ? argv[1] : undefined,
+  return { reason, values, scriptPath: script ? argv[1] : undefined,
     ordinaryAsk: wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined };
 }
 
 /** Static native interpreter text has its own language, not cmdlet semantics. */
 function genericInterpreter(name: string): boolean {
   if (isPowerShell(name) || POWERSHELL_COMMAND_POLICIES[name]?.native === "cmd") return false;
-  const prefix = refusedShellPrefix([name]);
-  const leaf = (name.split(/[\\/]/).pop() ?? name).replace(/\.exe$/i, "");
-  return prefix === "interpreter" || prefix === "shell" || SHELL_PREFIX_POLICY.interpreters.includes(leaf);
+  const program = programName(name);
+  return (SHELL_SET.has(program) && !WRAPPER_SET.has(program)) || INTERPRETER_SET.has(program);
 }
 
 function genericTextSignals(text: string, ctx: Context): FloorSignals {
@@ -1739,9 +1737,9 @@ function hasNativeLauncher(cmd: PsCommand, ctx: Context): boolean {
   const { name, args } = headOf(cmd, ctx);
   if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.native) return !knownNativeData(name, args, ctx);
   if (name === undefined || isPowerShell(name) || POWERSHELL_COMMAND_POLICIES[name] || /^[\[$@]/.test(name)) return false;
-  const { prefix, reason, scriptPath, ordinaryAsk } = nativeInvocation(name, args, ctx);
+  const { reason, scriptPath, ordinaryAsk, values } = nativeInvocation(name, args, ctx);
   if (ordinaryAsk) return false;
-  return prefix === "config-writer" || (reason !== null && scriptPath === undefined);
+  return (programName(name) === "git" && values.every((value) => value !== undefined) && values[0]?.toLowerCase() === "config") || (reason !== null && scriptPath === undefined);
 }
 
 function nativeCommandData(stage: PsCommand, ctx: Context, args = headOf(stage, ctx).args): boolean {

@@ -36,7 +36,7 @@ export interface ScopedPermissionRule {
   projectCwd?: string;
   /** Stored identity of the project rules file a project row was read from. */
   storedFile?: string;
-  /** Set when the stored rule is inert: listed with this reason and removable, never matched. */
+  /** Listed with this reason and removable, never matched. */
   invalidReason?: StoredRuleInvalidReason;
 }
 

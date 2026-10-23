@@ -29,6 +29,7 @@ describe("shell approval rule controls", () => {
     const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
     expect(screen.getByTestId("approval-shell-rule-pattern")).toHaveValue("Bash(git status *)");
     expect(screen.getByTestId("approval-shell-rule-scope")).toHaveValue("project");
     fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: "Bash( git status )" } });

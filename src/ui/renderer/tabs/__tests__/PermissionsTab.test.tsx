@@ -49,7 +49,6 @@ function policyGetPayload(loaded: {
   return { version: 1 as const, updatedAt: "2026-01-01T00:00:00.000Z", ...loaded, editable: isPolicyUserEditable(loaded) };
 }
 
-
 function installApi(
   disabledBatches: HookTrustRow[][],
   envForcedSettings: readonly string[] = [],
@@ -2038,9 +2037,10 @@ describe("PermissionsTab unified permission rules", () => {
     await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith("exact-session"));
   });
 
-  it("shows an inert stored wildcard with its reason and removes it in one click", async () => {
+  it.each(["en", "ko"] as const)("shows an inert wildcard reason and one-click removal in %s", async (locale) => {
+    setLocale(locale);
     const api = installApi([[]]);
-    const inert = { pattern: "Bash(make *)", action: "allow", scope: "user", invalidReason: "wildcard-not-allowlisted" };
+    const inert = { pattern: "Bash(npm run *)", action: "allow", scope: "user", invalidReason: "wildcard-not-allowlisted" };
     const healthy = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
     const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
     list.mockResolvedValueOnce({ rules: [inert, healthy], errors: [] }).mockResolvedValue({ rules: [healthy], errors: [] });

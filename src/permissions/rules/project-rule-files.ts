@@ -164,7 +164,7 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
   if (file.projectRoot !== location.projectRoot) {
     throw new PermissionRulesFileCorruptError(location.filePath, "projectRoot does not match the file identity");
   }
-  const rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, sourceText: raw, keepNotAllowlisted: "all" });
+  const rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, sourceText: raw, keepInertWildcards: "all" });
   return {
     version: 1,
     projectRoot: location.projectRoot,
@@ -188,7 +188,7 @@ export async function updateProjectRulesFile(
     };
     const inert = inertRulePatterns(existing?.rules);
     mutator(file);
-    file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepNotAllowlisted: inert });
+    file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepInertWildcards: inert });
     file.updatedAt = new Date().toISOString();
     writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
     return file;

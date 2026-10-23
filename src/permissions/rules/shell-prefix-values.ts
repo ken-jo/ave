@@ -1,6 +1,6 @@
 import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
 
-/** Programs that run arbitrary code given any argument (prefix of 1 token is refused). */
+/** Shell executable identities used for hidden-code and floor inspection. */
 export const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
 /**
  * Interpreters run code the matcher cannot read. Runners retain their own
@@ -13,8 +13,8 @@ export const INTERPRETERS = [
   "erl", "escript", "runghc", "swift", "sqlite3", "psql", "mysql", "dc", "gdb", "lldb",
 ];
 /**
- * Wrappers execute another command. They are never stripped when matching an
- * allow rule, so they are refused at every length (`env FOO=1 ls *` included).
+ * Wrappers execute another command. Inspection follows that command while
+ * allow-rule matching retains the complete wrapper argv.
  */
 export const WRAPPERS = [
   "env", "xargs", "sudo", "doas", "su", "eval", "exec", "source", ".", "command", "builtin", "nohup",
@@ -44,81 +44,111 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
   return token !== undefined && prefixes.some((prefix) => (typeof prefix === "string" ? prefix : prefix[0]) === token.toLowerCase());
 }
 
-/**
- * The wildcard allowlist (owner decision 2026-10-23). Only a `Bash(<prefix> *)`
- * rule that starts with one of these keys, and keeps at least the listed
- * number of tokens, may be stored or suggested as "always allow". The number
- * is also how many leading tokens a suggestion keeps, so `git branch --list`
- * suggests `Bash(git branch --list *)` and `Bash(git branch *)` is refused.
- * Every other command can be saved only as an exact rule for its full argv.
- *
- * An entry must not be widenable: whatever a trailing `*` can append must stay
- * read-only and local. Not in the catalog, by rule (owner decision
- * 2026-10-23, round 3):
- * - package-script runners (`npm test`, `npm run <script>`): a script body or
- *   test file is agent-editable code, the reason interpreters are refused;
- * - network clients and fetchers (`git fetch`): egress to any URL;
- * - content searchers (`grep`, `rg`, round 5): their exec, decompression,
- *   config and symlink options are too many to bound (`rg --pre`,
- *   `--hostname-bin`, `-z`, `-L`, `-uuu`, `RIPGREP_CONFIG_PATH`);
- * - cluster clients (`kubectl`, round 4): its flag grammar re-targets the
- *   cluster, reads Secrets through manifests or writes files in too many
- *   spellings for a denylist to bound.
- * Those get exact rules only.
- *
- * Accepted limit: the `git` entries honour the repository's `.git/config`
- * (`core.fsmonitor`, textconv drivers, `core.pager`). A config planted by an
- * earlier write is the stated limit in `reviewer/risk-classifier.ts`; the
- * command-line forms (`git -c`, `--ext-diff`, `--textconv`) never match.
- *
- * To add an entry, confirm that no argument a trailing `*` can append reaches
- * a destructive, irreversible or unreusable form (`isDestructiveShellArgv`,
- * `noReusableRuleReason`), and that its writing or code-running options are
- * caught by `shellOptionEffect`. Add a hit and a miss test in
- * `rules-language.test.ts`.
- */
-export const WILDCARD_PREFIX_CATALOG: ReadonlyMap<string, number> = new Map([
-  // Read-only file and text inspection.
-  ["ls", 1], ["cat", 1], ["head", 1], ["tail", 1], ["wc", 1], ["find", 1],
-  ["pwd", 1], ["du", 1], ["df", 1], ["which", 1], ["stat", 1],
-  // Repository inspection.
-  ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2],
-  ["git rev-parse", 2], ["git ls-files", 2], ["git blame", 2], ["git branch --list", 3],
-  // Container inspection.
-  ["docker ps", 2], ["docker images", 2], ["docker logs", 2],
-]);
-
-function catalogKeyMatches(key: string, tokens: readonly string[]): boolean {
-  const keyTokens = key.split(" ");
-  return keyTokens.length <= tokens.length && programName(tokens[0]!) === keyTokens[0]
-    && keyTokens.every((token, index) => index === 0 || tokens[index] === token);
-}
-
-/** The catalog key a static argv starts with (longest first), or null. */
-export function wildcardCatalogKey(argv: readonly string[]): string | null {
-  let best: string | null = null;
-  for (const key of WILDCARD_PREFIX_CATALOG.keys()) {
-    if (catalogKeyMatches(key, argv) && (best === null || key.split(" ").length > best.split(" ").length)) best = key;
-  }
-  return best;
-}
-
-/** Whether a wildcard prefix stays inside one catalog entry. */
-function wildcardCatalogCovers(tokens: readonly string[]): boolean {
-  const key = wildcardCatalogKey(tokens);
-  return key !== null && tokens.length >= WILDCARD_PREFIX_CATALOG.get(key)!;
-}
-const MULTI_VERB_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "docker", "kubectl", "bun"]);
+/** Broad argv prefixes that cannot be suggested or saved as wildcard allows. */
+export const BANNED_PREFIX_SUGGESTIONS: readonly (readonly string[])[] = [
+  ["/bin/bash"],
+  ["/bin/bash", "-c"],
+  ["/bin/bash", "-lc"],
+  ["/bin/sh"],
+  ["/bin/sh", "-c"],
+  ["/bin/sh", "-lc"],
+  ["/bin/zsh"],
+  ["/bin/zsh", "-c"],
+  ["/bin/zsh", "-lc"],
+  ["Rscript"],
+  ["bash"],
+  ["bash", "-c"],
+  ["bash", "-lc"],
+  ["bun"],
+  ["bun", "-e"],
+  ["bun", "run"],
+  ["cmd"],
+  ["cmd", "/c"],
+  ["cmd", "/k"],
+  ["cmd.exe"],
+  ["cmd.exe", "/c"],
+  ["cmd.exe", "/k"],
+  ["dash"],
+  ["dash", "-c"],
+  ["deno"],
+  ["deno", "eval"],
+  ["env"],
+  ["fish"],
+  ["fish", "-c"],
+  ["git"],
+  ["julia"],
+  ["julia", "-e"],
+  ["ksh"],
+  ["ksh", "-c"],
+  ["lua"],
+  ["lua", "-e"],
+  ["node"],
+  ["node", "-e"],
+  ["nodejs"],
+  ["nodejs", "-e"],
+  ["npm", "run"],
+  ["osascript"],
+  ["perl"],
+  ["perl", "-e"],
+  ["php"],
+  ["php", "-r"],
+  ["pnpm", "run"],
+  ["powershell"],
+  ["powershell", "-Command"],
+  ["powershell", "-EncodedCommand"],
+  ["powershell", "-File"],
+  ["powershell", "-c"],
+  ["powershell.exe"],
+  ["powershell.exe", "-Command"],
+  ["powershell.exe", "-EncodedCommand"],
+  ["powershell.exe", "-File"],
+  ["powershell.exe", "-c"],
+  ["pwsh"],
+  ["pwsh", "-Command"],
+  ["pwsh", "-EncodedCommand"],
+  ["pwsh", "-File"],
+  ["pwsh", "-c"],
+  ["pwsh", "-e"],
+  ["pwsh", "-ec"],
+  ["pwsh", "-f"],
+  ["py"],
+  ["py", "-3"],
+  ["pypy"],
+  ["pypy3"],
+  ["python"],
+  ["python", "-"],
+  ["python", "-c"],
+  ["python3"],
+  ["python3", "-"],
+  ["python3", "-c"],
+  ["pythonw"],
+  ["pyw"],
+  ["rm"],
+  ["ruby"],
+  ["ruby", "-e"],
+  ["sh"],
+  ["sh", "-c"],
+  ["sh", "-lc"],
+  ["sudo"],
+  ["yarn", "run"],
+  ["zsh"],
+  ["zsh", "-c"],
+  ["zsh", "-lc"],
+];
 
 export const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
 export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
 export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 
-/** Program name with any directory and a trailing version suffix removed (`/usr/bin/python3.12` → `python3`). */
+/** Canonical executable identity, including path and interpreter-version aliases. */
 export function programName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase();
-  return base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
+  const name = base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
+  if (INTERPRETER_SET.has(name) || SHELL_SET.has(name)) return name;
+  const versioned = /^(.+?)(?:\d+(?:\.\d+)*|x)$/.exec(name);
+  const stem = versioned?.[1];
+  return stem && (INTERPRETER_SET.has(stem) || SHELL_SET.has(stem)) ? stem : name;
 }
 
 /** Runner shims share the executable/script suffixes and retain versioned identity. */
@@ -130,29 +160,12 @@ export function runnerName(token: string): string {
   return name.replace(/@[^@]+$/, "");
 }
 
-/**
- * Programs that delete or overwrite data whatever their arguments look like
- * at suggestion time. Never an allow prefix at any length: `Bash(rm *)` saved
- * from `rm notes.txt` would also cover `rm --recursive --force ~`.
- */
+/** Program identities used by the argument-aware destructive floor below. */
 const DESTRUCTIVE_PROGRAMS = new Set(["rm", "shred", "srm", "wipefs", "dd", "mkfs", "newfs", "diskutil", "format"]);
-/**
- * Programs that irreversibly overwrite or remove their file operands in
- * ordinary use. Refused as allow prefixes at every length; unlike the
- * destructive floor they keep once and session choices.
- */
+/** Programs whose ordinary file operands can irreversibly overwrite or remove data. */
 const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "cp", "tee", "dropdb", "install"]);
 /** Ownership and mode changers: destructive when recursive or world-writable. */
 const PERMISSION_CHANGERS = new Set(["chmod", "chown", "chgrp"]);
-/**
- * Network-egress clients. Their prefixes are not offered as reusable allows
- * until host-scoped network rules can bound where they connect.
- */
-export const NETWORK_EGRESS_PROGRAMS: ReadonlySet<string> = new Set([
-  "curl", "wget", "nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "lftp", "tftp",
-  "rsync", "http", "https", "xh", "aria2c", "httpie",
-]);
-
 function isDestructiveProgram(program: string): boolean {
   return DESTRUCTIVE_PROGRAMS.has(program) || program.startsWith("mkfs.") || program.startsWith("newfs_");
 }
@@ -244,79 +257,9 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
   return false;
 }
 
-/**
- * `kubectl` options that switch credentials or cluster (`--kubeconfig`,
- * `--token`, `--as`, `-s`/`--server`, `--tls-server-name`, …), reach the raw
- * API (`--raw`) or write files (`--profile-output`, `--cache-dir`). No rule,
- * exact or wildcard, covers them, wherever they appear.
- */
-const KUBECTL_RETARGETING_OPTIONS = new Set([
-  "kubeconfig", "server", "token", "context", "cluster", "user", "as", "as-group", "as-uid",
-  "certificate-authority", "insecure-skip-tls-verify", "tls-server-name", "username", "password", "raw",
-  "profile", "profile-output", "cache-dir",
-]);
-
-function kubectlRetargets(argv: readonly (string | undefined)[]): boolean {
-  return argv.slice(1).some((word) => {
-    if (word === undefined) return true;
-    // pflag joins short flags and values (`-As https://x`, `-Ashttps://x`),
-    // so any single-dash cluster holding `s` may be `--server`.
-    if (/^-[A-Za-z]*s/.test(word)) return true;
-    if (!word.startsWith("--")) return false;
-    const name = word.slice(2).split("=")[0]!.toLowerCase();
-    return KUBECTL_RETARGETING_OPTIONS.has(name) || name.startsWith("client-");
-  });
-}
-
-/** `get`/`describe -f creds.yaml` or `-k ./overlay` reads whatever objects a manifest names, Secrets included. */
-function kubectlReadsManifest(argv: readonly (string | undefined)[]): boolean {
-  const verb = verbWords(argv, KUBECTL_VALUED_OPTIONS)[0];
-  if (verb !== "get" && verb !== "describe" && verb !== undefined) return false;
-  return argv.slice(1).some((word) => word === undefined || /^-[A-Za-z]*[fk]/.test(word)
-    || /^--(?:filename|kustomize)(?:=|$)/i.test(word));
-}
-
-/** `secret`, `secrets`, `secret/<name>`, `secrets.v1`, or one of a comma list. */
-function kubectlNamesSecrets(argv: readonly (string | undefined)[]): boolean {
-  return verbWords(argv, KUBECTL_VALUED_OPTIONS).slice(1).some((word) => word === undefined
-    || word.toLowerCase().split(",").some((part) => /^secrets?(?:$|[./])/.test(part)));
-}
-
-/**
- * Package-script runner options that load other code or switch the project:
- * `--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`,
- * `--filter`, `-r`/`--recursive`, `-w`/`--workspace`.
- */
-const RUNNER_CODE_OPTIONS = ["script-shell", "node-options", "preload", "prefix", "cwd", "filter", "recursive", "workspace", "workspaces"];
-
-function runnerLoadsOtherCode(argv: readonly (string | undefined)[]): boolean {
-  const { options } = optionWords(argv.slice(1));
-  return options.includes(undefined) || hasShortFlag(options, "rw")
-    || options.some((option) => option !== undefined && option.startsWith("--")
-      && RUNNER_CODE_OPTIONS.includes(option.slice(2).split("=")[0]!.toLowerCase()))
-    || hasLongFlag(options, RUNNER_CODE_OPTIONS);
-}
-
-/**
- * Why no allow rule, exact or wildcard, may cover this static command, or
- * null. Once and session approvals stay available. The matcher, the dock and
- * the store share it:
- * - irreversible forms ({@link isIrreversibleShellArgv});
- * - `kubectl` with credential or cluster re-targeting options, or naming
- *   secrets;
- * - a package-script runner with options that load other code or switch the
- *   project (`npm run build --script-shell=./x.sh`, `bun test --preload x`).
- */
+/** Irreversible commands retain per-call consent, regardless of allow rules. */
 export function noReusableRuleReason(argv: readonly (string | undefined)[]): string | null {
-  if (isIrreversibleShellArgv(argv)) return "irreversible command";
-  const head = argv[0];
-  if (head === undefined) return null;
-  const program = programName(head);
-  if (program === "kubectl" && kubectlRetargets(argv)) return "kubectl credential or cluster option";
-  if (program === "kubectl" && kubectlNamesSecrets(argv)) return "kubectl secrets";
-  if (program === "kubectl" && kubectlReadsManifest(argv)) return "kubectl manifest read";
-  if (["npm", "pnpm", "yarn", "bun"].includes(runnerName(head)) && runnerLoadsOtherCode(argv)) return "runner option that loads other code";
-  return null;
+  return isIrreversibleShellArgv(argv) ? "irreversible command" : null;
 }
 
 /** The first word after a tool's leading options (`git -C dir clean` → `clean`); options that take a value skip it. */
@@ -364,11 +307,10 @@ const GH_VALUED_OPTIONS = new Set(["-R", "--repo", "-X", "--method", "-H", "--he
 const AWS_VALUED_OPTIONS = new Set(["--profile", "--region", "--endpoint-url", "--output", "--query"]);
 
 /**
- * Irreversible forms that are not floors: they discard work or data the user
+ * Irreversible forms included in the per-call floor: they discard work or data the user
  * cannot get back (`git clean -f`, `git reset --hard`, `git checkout -- .`,
  * `git restore`, `git stash drop`, `docker … prune`, `kubectl delete`, `mv`,
- * `tee`, `truncate`, `unlink`). No allow rule covers them; once and session
- * approvals stay available. A dynamic word counts as the worst case.
+ * `tee`, `truncate`, `unlink`). No allow rule covers them; each invocation needs user consent. A dynamic word counts as the worst case.
  */
 function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
@@ -509,16 +451,7 @@ function execArgv(args: readonly (string | undefined)[], start: number): (string
   return args.slice(start, end < 0 ? undefined : end);
 }
 
-export type RefusedPrefixReason =
-  | "destructive"
-  | "not-allowlisted"
-  | "empty"
-  | "config-writer"
-  | "shell"
-  | "interpreter"
-  | "wrapper"
-  | "package-runner"
-  | "multi-verb-tool";
+export type RefusedPrefixReason = "destructive" | "empty" | "broad-prefix";
 
 /** An option leaves the command boundary unknown until a literal delimiter. */
 export function literalCommandAfterPrefix(tokens: readonly (string | undefined)[], start: number): number | undefined {
@@ -530,58 +463,13 @@ export function literalCommandAfterPrefix(tokens: readonly (string | undefined)[
   return command !== undefined && command.length > 0 && !command.startsWith("-") ? delimiter + 1 : undefined;
 }
 
-/**
- * The single refused-prefix check. `tokens` is the static prefix of a
- * `Bash(<tokens> *)` rule, or with `wildcard: false` the whole argv of an
- * exact `Bash(<tokens>)` rule. Returns the reason when it may not become a
- * persistent allow rule. A wildcard must also stay inside
- * {@link WILDCARD_PREFIX_CATALOG}; exact rules need only pass the structural
- * refusals (destructive, irreversible, wrappers, shells, interpreters, …).
- */
+/** Exact rules may name a broad program; wildcard rules must name a bounded prefix. */
 export function refusedShellPrefix(tokens: readonly string[], wildcard = true): RefusedPrefixReason | null {
-  const structural = structuralRefusal(tokens, wildcard);
-  if (structural !== null) return structural;
-  return wildcard && !wildcardCatalogCovers(tokens) ? "not-allowlisted" : null;
-}
-
-function structuralRefusal(tokens: readonly string[], wildcard: boolean): RefusedPrefixReason | null {
   if (tokens.length === 0) return "empty";
-  const program = programName(tokens[0]!);
-  if (WRAPPER_SET.has(program)) return "wrapper";
-  if (isDestructiveProgram(program) || OVERWRITING_PROGRAMS.has(program)) return "destructive";
-  if (noReusableRuleReason(tokens) !== null) return "destructive";
-  // A bare or recursive permission-changer prefix covers `chmod -R 777 /`;
-  // a mode the grammar cannot read is refused here, never floored.
-  if (PERMISSION_CHANGERS.has(program) && (tokens.length === 1 || isDestructiveShellArgv(tokens)
-    || (program === "chmod" && worldWritableMode(optionWords(tokens.slice(1), (arg) => CHMOD_REMOVAL_MODE.test(arg)).operands[0], true)))) {
-    return "destructive";
-  }
-  if (SHELL_SET.has(program)) return "shell";
-  const runner = runnerName(tokens[0]!);
-  if (RUNNER_SET.has(runner)) {
-    const commandPrefix = RUNNER_COMMAND_PREFIXES[runner]!;
-    const commandIndex = literalCommandAfterPrefix(tokens, 1);
-    if (commandIndex === undefined) return "package-runner";
-    const command = tokens[commandIndex]!;
-    // A delegate specifier does not prove its delegated command boundary.
-    if (runner === "corepack" && command.includes("@")) return "package-runner";
-    if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return structuralRefusal(tokens.slice(commandIndex), wildcard);
-    if (commandPrefix !== true && runnerHasPrefix(commandPrefix, command)
-      && literalCommandAfterPrefix(tokens, commandIndex + 1) === undefined) return "package-runner";
-    return null;
-  }
-  if (INTERPRETER_SET.has(program)) {
-    // Any other interpreter prefix runs code the rules cannot read
-    // (`node scripts/build.mjs`, `python -m x`), so it never persists.
-    return "interpreter";
-  }
-  if (MULTI_VERB_TOOLS.has(program) && tokens.length === 1) return "multi-verb-tool";
-  // `git -c …`, `docker --host …`: an option before the verb re-targets the tool.
-  if (MULTI_VERB_TOOLS.has(program) && tokens[1]!.startsWith("-")) return "multi-verb-tool";
-  // `git config` writes settings that run code later (`core.fsmonitor`,
-  // `core.pager`, aliases).
-  if (program === "git" && tokens[1]?.toLowerCase() === "config") {
-    return "config-writer";
-  }
+  if (isDestructiveShellArgv(tokens) || noReusableRuleReason(tokens) !== null) return "destructive";
+  if (wildcard && BANNED_PREFIX_SUGGESTIONS.some((banned) =>
+    banned.length <= tokens.length && banned.every((token, index) =>
+      index === 0 ? programName(token) === programName(tokens[0]!) : token === tokens[index])
+    && tokens.slice(banned.length).every((token) => token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_.]*=/.test(token)))) return "broad-prefix";
   return null;
 }

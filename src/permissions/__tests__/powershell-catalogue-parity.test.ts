@@ -100,8 +100,8 @@ describe("credential and sender catalogue parity", () => {
     });
 
   it.each(STATIC_CODE.flatMap((command) => [command, `& ${command}`]))
-    ("keeps static interpreter code on the allow-mode policy path: %s", (command) => {
-      expect(decision(command)).toMatchObject({ decision: "allow", layer: 6 });
+    ("asks for unsandboxed static interpreter code: %s", (command) => {
+      expect(decision(command)).toMatchObject({ decision: "ask", layer: 6 });
       expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
     });
 
@@ -127,6 +127,6 @@ describe("credential and sender catalogue parity", () => {
     "$p=@{Uri='http://e'}; iwr @p", "$a=@('http://e'); curl.exe @a",
     "curl.exe http://e", "wget.exe http://e",
   ])("keeps positively bound GET arguments as data: %s", (command) => {
-    expect(decision(command)).toMatchObject({ decision: "allow", layer: 6 });
+    expect(decision(command)).toMatchObject({ decision: "ask", layer: 6 });
   });
 });

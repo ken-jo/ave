@@ -864,9 +864,7 @@ export function ToolApprovalContent({
       (finalVerdict === "high" && request?.persistentAllowAllowed !== true);
   const persistentUnavailableReason = alwaysAllowUnavailable
     ? shellRule
-      ? shellPrefixRefusal === "not-allowlisted"
-        ? tHook("toolApprovalDialog.shellWildcardNotAllowlisted")
-        : shellPrefixRefused || (!shellRule.suggestedPattern && shellRule.sessionAllowed)
+      ? shellPrefixRefused || (!shellRule.suggestedPattern && shellRule.sessionAllowed)
         ? tHook("toolApprovalDialog.shellPrefixUnavailable")
         : !shellRule.persistentAllowed
           ? tHook("toolApprovalDialog.persistentUnavailableOneShot")
@@ -1580,6 +1578,7 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-2" data-testid="approval-shell-rule-editor">
+                <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 <Label htmlFor={`shell-rule-${request.id}`} className="text-[11px]">{tHook("toolApprovalDialog.shellRulePattern")}</Label>
                 <Input id={`shell-rule-${request.id}`} data-testid="approval-shell-rule-pattern" className="h-8 font-mono text-xs"
                   value={shellPattern} onChange={(event) => setShellPattern(event.target.value)}

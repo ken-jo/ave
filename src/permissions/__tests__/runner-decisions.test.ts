@@ -9,7 +9,7 @@ import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
-import { SHELL_PREFIX_POLICY, refusedShellPrefix, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
+import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -43,14 +43,20 @@ function runnerManager(permissionsPath = join(directory, `${managerSequence++}.j
   return manager;
 }
 
+function actionKey(dialect: ShellDialect, command: string): string {
+  return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
+}
+
 function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command, cwd: CWD },
+    shellExecution: { runsSandboxed: false, sandboxAvailable: true },
+    approvalCacheKey: actionKey(dialect, command),
   });
 }
 
 function expectBucket(result: ReturnType<typeof checkCommand>, bucket: DecisionBucket): void {
-  expect(result.decision).toBe(bucket === "normal" ? "allow" : "ask");
+  expect(result.decision).toBe("ask");
   expect(result.forceModal === true).toBe(bucket === "floor");
   expect(result.layer).toBe(bucket === "floor" ? 2 : 6);
 }
@@ -139,7 +145,8 @@ describe("shared runner decisions", () => {
   });
 
   it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
-    expectBucket(checkCommand(runnerManager(), dialect, command), bucket);
+    // Privilege elevation remains a human floor regardless of runner visibility.
+    expectBucket(checkCommand(runnerManager(), dialect, command), /^(?:& )?sudo /.test(command) ? "floor" : bucket);
   });
 
   it("keeps runner identities separate from transparent wrappers", () => {
@@ -150,7 +157,7 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, incomplete }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
     const command = argv.join(" ");
     const shape = analyzeShellForRules(command);
     expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
@@ -158,19 +165,13 @@ describe("shared runner decisions", () => {
       expect(shape.commands).toHaveLength(1);
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(refusedShellPrefix(incomplete.split(" "))).toBe("package-runner");
-    // Structurally bounded, so the exact rule is storable; the wildcard is not
-    // on the allowlist (owner decision 2026-10-23) and the store refuses it.
-    expect(refusedShellPrefix(prefix.split(" "), false)).toBeNull();
-    expect(refusedShellPrefix(prefix.split(" "))).toBe("not-allowlisted");
     expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    await expect(manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" }))
-      .rejects.toThrow(/wildcard allowlist/);
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
+    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
@@ -186,17 +187,17 @@ describe("shared runner decisions", () => {
     ...ORDINARY_CONTROLS.flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect, bucket: "ordinary" as const }))),
     { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
     { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
-  ])("honors saved grants and tool allow rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
+  ])("honors saved exact-action grants and rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
     expectBucket(checkCommand(saved, dialect, command), bucket);
-    await saved.addAlwaysAllowedPersist(dialect);
+    await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
     expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
     expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
     const ruled = runnerManager();
-    ruled.setRules([{ pattern: dialect, action: "allow" }]);
+    ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
     expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
@@ -205,8 +206,8 @@ describe("shared runner decisions", () => {
     ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
   ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
     const manager = runnerManager();
-    await manager.addAlwaysAllowedPersist(dialect);
-    manager.setRules([{ pattern: dialect, action: "allow" }]);
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    manager.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
     expectBucket(checkCommand(manager, dialect, command), "floor");
   });
 
@@ -250,7 +251,7 @@ describe("shared runner decisions", () => {
     const result = checkCommand(manager, dialect, command);
     expectBucket(result, "ordinary");
     if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
-    await manager.addAlwaysAllowedPersist(dialect);
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
   });
 
