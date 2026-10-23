@@ -8,9 +8,10 @@ import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js
 import { CodexAppServerError, type CodexAppServerClient, type CodexAppServerClientOptions } from "../codex-app-server-client.js";
 import { CodexUserRuntimeError } from "../codex-user-runtime.js";
 import { ClaudeCodeSubscriptionError } from "../claude-code-subscription-client.js";
-import type {
-  CodexConversationRuntime,
-  CodexConversationRuntimeOptions,
+import {
+  CodexConversationRuntimeError,
+  type CodexConversationRuntime,
+  type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { AcpSubscriptionSessionError } from "../acp-subscription-session-client.js";
@@ -1138,6 +1139,32 @@ describe("SubscriptionRuntimeService", () => {
       }
     },
   );
+
+  it("keeps sandbox readiness detail out of renderer-facing verification errors", async () => {
+    const runtime = {
+      verifyIsolation: vi.fn(async () => {
+        throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+          "Windows sandbox readiness: notConfigured");
+      }),
+      stop: vi.fn(),
+    } as unknown as CodexConversationRuntime;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(),
+      codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      createCodexConversationRuntime: () => runtime,
+    });
+    try {
+      const error = await service.verify("codex").catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ code: "subscription-runtime-unavailable", message: "subscription-runtime-unavailable" });
+      expect(JSON.stringify(error)).not.toContain("notConfigured");
+      expect(error).not.toHaveProperty("detail");
+      expect(error).not.toHaveProperty("providerError", expect.anything());
+      expect(runtime.stop).toHaveBeenCalledOnce();
+    } finally {
+      await service.stop();
+    }
+  });
 
   it("gives each user-CLI failure its own renderer-safe code", () => {
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
