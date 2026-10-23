@@ -26,8 +26,10 @@ type ShellEnvironmentTransition =
  */
 export function stripCommandPath(word: string): string {
   if (sep !== "\\") return word.slice(word.lastIndexOf("/") + 1);
-  const leaf = word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1).toLowerCase();
-  return leaf.length > 4 && leaf.endsWith(".exe") ? leaf.slice(0, -4) : leaf;
+  if (word === ":" || word === ".") return word;
+  const leaf = word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1)
+    .toLowerCase().split(":", 1)[0]!.replace(/[. ]+$/, "");
+  return leaf.replace(/\.(?:exe|com|bat|cmd)$/, "");
 }
 
 /** A command word the shell runs as a path rather than through PATH. */

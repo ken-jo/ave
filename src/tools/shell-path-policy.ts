@@ -129,6 +129,8 @@ const SHELL_TRAVERSAL_GUIDANCE: Readonly<Record<string, {
  * a leading @ or turns a filename containing = into another filename.
  */
 interface NonPathOperandSpec {
+  /** Execution uses a command language this analysis cannot inspect safely. */
+  unsupportedExecution?: true;
   /** Options whose value — next token, or `--opt=value` — is code/pattern/format. */
   valueOptions?: ReadonlySet<string>;
   /**
@@ -196,6 +198,10 @@ const DEBUGGER_PATH_OPTIONS = new Set([
 ]);
 
 const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<string, NonPathOperandSpec>([
+  ...(["pwsh", "powershell", "cmd"] as const).map((verb) => [verb, {
+    unsupportedExecution: true,
+  }] as [string, NonPathOperandSpec]),
+  ["sort", { pathValueOptions: new Set(["-o", "--output", "-T", "--temporary-directory"]) }],
   ["gdb", {
     valueOptions: DEBUGGER_CODE_OPTIONS,
     pathValueOptions: DEBUGGER_PATH_OPTIONS,
@@ -694,6 +700,10 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   const head = argv[verbIndex];
   if (head === undefined) return empty;
   const verb = stripCommandPath(head).toLowerCase();
+  // A short filename alias cannot prove which executable's grammar applies.
+  if (process.platform === "win32" && /~[0-9]/.test(verb)) {
+    return { ...empty, dynamicExecution: "unresolved short command name" };
+  }
   if (verb === "uv") {
     const uvRun = classifyUvRunOperandSlots(argv);
     if (uvRun) return uvRun;
@@ -720,6 +730,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   }
   const spec = NON_PATH_OPERAND_SPECS.get(verb);
   if (!spec) return empty;
+  if (spec.unsupportedExecution) return { ...empty, dynamicExecution: "nested shell dialect is not supported" };
   const isSed = verb === "sed";
 
   /**
@@ -1048,6 +1059,8 @@ export function findShellPathPolicyViolation(
     // These exact public standard-stream operands name the child descriptors;
     // resolving them in the host process would inspect different descriptors.
     if (SHELL_DEVICE_PATHS.has(path)) return;
+    // Drive-relative targets depend on a per-drive cwd that was not captured.
+    if (process.platform === "win32" && /^[A-Za-z]:(?![\\/])/.test(path)) decline("drive-relative command operand is unresolved");
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");
     let absolute: string;
     try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot); }
@@ -1157,6 +1170,9 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   }
   if (value === "-" && ["cat", "sed", "awk", "head", "tail", "sort", "diff", "tee"].includes(verb)) return [];
   if (option && value.startsWith("-") && value.length > 1) {
+    const pathOptions = NON_PATH_OPERAND_SPECS.get(verb)?.pathValueOptions;
+    const carried = pathOptions && readOptionValue([value], 0, pathOptions);
+    if (carried) return [carried.value];
     const equals = value.indexOf("=");
     if (equals > 0) return [value.slice(equals + 1)];
     // A Windows target starts at a drive letter (`-oC:/x`, `-o'C:\x'`) or a

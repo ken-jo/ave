@@ -101,6 +101,65 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it("preserves the exact no-op builtin when normalizing command names", () => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(": ../outside.txt", root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "sort -o_/../../outside.txt f",
+    "sort -o1/../../outside.txt f",
+    "sort -oX:../../../outside.txt f",
+  ])("checks the whole attached output path: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).not.toBeNull();
+    });
+  });
+
+  it.runIf(process.platform === "win32")("checks an attached drive-relative output path", () => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(String.raw`sort '-oC:..\..\x' f`, root, root, [])).not.toBeNull();
+    });
+  });
+
+  it.each(["sort -o inside.txt f", "sort -oinside.txt f", "sort -r f"])("allows contained output and valueless flags: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "pwsh -c 'Set-Content ../outside.txt hi'",
+    "pwsh -Command 'Set-Content ../outside.txt hi'",
+    "pwsh -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==",
+    "pwsh -File inside.ps1",
+    "powershell -c 'Set-Content ../outside.txt hi'",
+    "powershell -Command 'Set-Content ../outside.txt hi'",
+    "powershell -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==",
+    "powershell -File inside.ps1",
+    "cmd /c 'echo hi > ../outside.txt'",
+    "cmd /k 'echo hi > ../outside.txt'",
+  ])("declines an unsupported command language: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toContain("nested shell dialect is not supported");
+    });
+  });
+
+  it.runIf(process.platform === "win32").each([
+    ["cmd //c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["bash.exe. -c 'echo hi > ../outside.txt'", "Sandbox:"],
+    ["'bash.exe::$DATA' -c 'echo hi > ../outside.txt'", "Sandbox:"],
+    ["cmd.com /c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["cmd.bat /c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["cmd.cmd /k 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["POWERSH~1.EXE -EncodedCommand UwBlAHQA", "unresolved short command name"],
+  ])("refuses execution through an alternate command spelling: %s", (command, reason) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toContain(reason);
+    });
+  });
+
   it.each([
     "cc -Iinclude/sub -c source.c",
     "gcc -Lbuild/lib source.c -ooutput/tool",
