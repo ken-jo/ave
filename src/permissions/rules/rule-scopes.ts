@@ -11,7 +11,7 @@ import { stat } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
-import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
+import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import type { ShellCommandInput } from "./shell-prefix-policy.js";
@@ -118,9 +118,6 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
       if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
       const spec = parseRuleSpecifier(rule.pattern);
       if (spec.kind !== "bash") continue;
-      // An inert stored rule (allow wildcard outside the allowlist) is listed
-      // in Settings but never decides anything.
-      if (storedRuleInvalidReason(rule) !== null) continue;
       (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec });
     }
   }
@@ -128,8 +125,10 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
 }
 
 export function evaluateShellSubject(
-  subject: { command: ShellCommandInput; cwd?: string },
+  subject: { command: ShellCommandInput; cwd?: string; exactAllowOnly?: boolean },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
-  return evaluateShellRules(subject.command, collectShellRuleSet(...scopes), subject.cwd);
+  const rules = collectShellRuleSet(...scopes);
+  if (subject.exactAllowOnly) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
+  return evaluateShellRules(subject.command, rules, subject.cwd);
 }

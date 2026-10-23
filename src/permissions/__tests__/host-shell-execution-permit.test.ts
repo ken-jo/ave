@@ -8,6 +8,7 @@ import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import {
   consumeHostShellExecutionPermit,
   mintHostShellExecutionPermit,
+  recordHostShellPolicyAuthorization,
   type HostShellExecutionPermitBinding,
 } from "../host-shell-execution-permit.js";
 
@@ -108,6 +109,17 @@ function permitInput(
 }
 
 describe("Windows partial-shell execution permit", () => {
+  it("binds host policy authorization to one action and consumes it once", () => {
+    const binding = makeBinding();
+    recordHostShellPolicyAuthorization(binding);
+    const mint = (candidate = binding) => mintHostShellExecutionPermit({ plan: candidate.plan, binding: candidate, approvalDecision: undefined });
+    expect(mint({ ...binding, command: "echo changed" })).toBeUndefined();
+    const permit = mint();
+    expect(permit).toBeDefined();
+    expect(mint()).toBeUndefined();
+    expect(consumeHostShellExecutionPermit({ ...permitInput(binding, permit), command: "echo changed" })).toBe(false);
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
   it("accepts exactly its Gate-approved bound action once", async () => {
     const binding = makeBinding();
     const decision = await issueHostApprovedDecision(binding);

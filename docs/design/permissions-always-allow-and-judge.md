@@ -29,11 +29,19 @@ design must be reported explicitly.
 - Storage uses one canonical spelling.
 - Legacy Store A glob patterns (`web_fetch`, `write_file:path:/abs`) never start with `Name(`. They are classified by shape and keep their glob semantics unchanged.
 
-**2. Precedence.** deny, then mandatory per-call gates, then explicit ask rules,
-then allow. Session allows count as allow.
+**2. Shell decision order.** A persistent shell allow rule authorizes execution outside the sandbox. The host evaluates the actual per-invocation execution plan, rather than a remembered approval or a global setting alone:
 
-- The first match within a class decides.
-- Specificity never beats class.
+1. Explicit deny rules deny. The destructive/irreversible and sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Credential-exfiltration floors have the same behavior.
+2. Explicit ask rules ask. A restriction whose command cannot be inspected also asks.
+3. A command that will actually run sandboxed is allowed without asking.
+4. A command that will run outside the sandbox needs a covering allow rule; otherwise it asks. This includes sandbox-off/unavailable execution, excluded commands and an unsandboxed retry. In automatic mode, unresolved asks use the existing reviewer/judge path first; ambiguous or failed review escalates to the dock.
+5. When the sandbox is off or unavailable, only exact command allow rules count. Prefix rules authorize an escape only while a full shell sandbox is otherwise active. This restriction is checked at evaluation time; stored prefixes remain visible and revocable.
+
+Existing exact Store A action rules retain their sealed command/cwd/execution-plan identity. Broad tool or glob allows cannot authorize a plain-shell invocation.
+
+Deny wins over every allow, regardless of specificity or scope. Existing strict-mode and untrusted-origin gates remain before automatic lanes. A session approval never changes the execution plan or switches off the sandbox for later commands. Unsandboxed calls do not consume session or persistent exact-tuple approval memory from Store B: each retry asks afresh unless covered by an exact action or command allow rule in Store A (or decided by the configured automatic reviewer).
+
+For canonical builtin shells, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed, sandboxAvailable }`. The host invocation authorization pipeline derives this input from the sealed execution plan and the active full-shell capability; the sandbox producer can supply its per-invocation answer at this single boundary. `sandboxAvailable` means a full shell sandbox is currently active on the host, even if this call is excluded or explicitly retries outside it. A merely installed or disabled backend is false. Native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
 
 **3. Bash command-rule matching** runs on the host's shell AST (`src/shared/shell-analysis.ts`, the mvdan/sh grammar). Implemented in `src/permissions/rules/shell-rule-matcher.ts`.
 - Every simple command must be covered by some allow rule. Different rules may cover different parts.
@@ -51,34 +59,9 @@ then allow. Session allows count as allow.
   Opaque runner identity or an unknown runner option alone adds no hidden-code
   blocker. The persistent-prefix boundary is checked separately below.
 
-**4. Prefix suggestion** uses the wildcard allowlist `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`), described under decision 7.
-- An allowlisted entry keeps its listed token count: `git status` keeps 2, and `npm run <script>` keeps 3.
-- Past the entry's own tokens, options and paths end the prefix.
-- A command outside the catalog gets an exact rule for its full argv.
+**4. Prefix suggestions and validation.** `BANNED_PREFIX_SUGGESTIONS` in `src/permissions/rules/shell-prefix-values.ts` owns the broad-prefix refusals shared by the dock and the store. Comparison uses the full token vector at the same length, so `node` and `node -e` are refused wildcard prefixes while `node scripts/build.mjs` may be saved. An exact rule can name an otherwise broad program. Empty prefixes remain refused; identified destructive/irreversible commands are refused as both exact and prefix allow rules. Deny and ask rules may still name them.
 
-Suggestion length selects a candidate; the refused-prefix check must still
-accept it. An edited persistent rule uses that same validation.
-
-**4a. Refused prefixes** come from one shared list, which validates both suggestions and edited values:
-- an empty prefix or bare `*`;
-- shells;
-- non-runner interpreters at any length (`python -c`, `node scripts/build.mjs`, `python -m x`);
-- wrappers at any length (`env`, `xargs`, `sudo`, `eval`, `exec`, `source`, `timeout`, `nice`, `unbuffer`, …);
-- code-executing runner prefixes without a proven literal command (`npx`, `npm`, `npm exec`, `bun x`);
-- runner prefixes with option-shaped words before that command unless a literal `--` establishes its boundary;
-- non-runner multi-verb tools alone or with a leading option (`git`, `git -c`, `docker`).
-
-Prefix refusal rejects that persistent command rule. Once/session approval and
-existing exact-input saved approvals retain their own requirements.
-
-Runner prefix validation uses structural command/delegation boundaries, not an
-option-arity or known-safe task table. `npx tsc`, `npm test`, `pnpm dlx tsc` and
-`corepack pnpm install` can become persistent prefixes because their literal
-command words are established. Options before the command require a literal
-`--` boundary; validation does not guess which option consumes the next word.
-Ambiguous forms keep their ordinary ask and can be covered by an applicable
-exact-input saved grant, subject to the other permission gates. A valid prefix
-does not prove that the command or task contents are read-only.
+Suggestions select the shortest static, spellable prefix that is not refused. When the sandbox is unavailable, the dock instead suggests an exact rule for the full static argv, so saving it can authorize the next identical call. The host still proves that the candidate covers the whole invocation. There is no read-only program catalog or option-level safety model: search, repository, cluster and runner options do not invalidate a rule merely for loading code, writing files or changing a target. Such a rule is an outside-sandbox permission, not proof of a command's effects. Structural argv matching, explicit restrictions and the floors remain authoritative.
 
 **5. Shell verdict.** The blanket `shell → high` in `resolveUserApprovalVerdict` is no longer the first answer.
 - An unreviewed shell ask carries the host's rule-classifier verdict (`ApprovalRequest.ruleVerdict`): read-only is LOW, ordinary is MEDIUM, destructive is HIGH.
@@ -89,30 +72,13 @@ does not prove that the command or task contents are read-only.
 - "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. Identity, repository discovery, the home boundary, and retained legacy rules follow [Project Rule Scope](../architecture/permission-policy-design.md#project-rule-scope). The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
 - "Everywhere" writes the user-global scope, which is Store A (`<ave home>/permissions.json`) extended in place.
 - Deny-always uses the same files.
-- Every session approval (shell, browser, terminal and any other exact tool approval) is held in memory under the root conversation: the conversation and every sub-agent spawned from it, at any depth, share it, and separate root conversations never do. A session approval without a conversation is refused (`missing-session`), and the dock disables "Allow for session" for such a request and says why. The root comes from one resolver, `createRootSessionResolver` over the sub-agent runner's recorded origins (live and restored children), which the judge also uses. An app restart clears all session approvals.
+- Session approvals, including retained shell entries and eligible browser, terminal and other exact tool approvals, are held in memory under the root conversation: the conversation and every sub-agent spawned from it, at any depth, share it, and separate root conversations never do. A session approval without a conversation is refused (`missing-session`), and the dock disables "Allow for session" for such a request and says why. The root comes from one resolver, `createRootSessionResolver` over the sub-agent runner's recorded origins (live and restored children), which the judge also uses. An app restart clears all session approvals.
 
-**7. Existing Store B entries** (exact tuples) keep matching unchanged and are never converted to prefixes.
+**7. Approval storage and retained floors.** Existing Store B entries are never converted to command rules. Non-shell matching remains unchanged; plain-shell execution does not reuse them.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
-- Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Existing entries keep their original identities.
-- Destructive tools are refused as allow prefixes at every length (`rm`, `shred`, `dd`, `mkfs`, `wipefs`), as are bare or recursive `chmod`/`chown`/`chgrp` prefixes. The matcher's destructive floor also reads each command's argv, so recursive or forced deletion in any option order or spelling (`rm -v -r`, `rm --recursive --force`), recursive or world-writable permission changes and `find -delete` are never covered by an allow rule.
-- **Wildcard allowlist (owner decision 2026-10-23).** A `Bash(<prefix> *)` allow rule may be suggested or stored only when the prefix starts with an entry of `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`) and keeps at least that entry's token count.
-  - The catalog replaces the earlier arity table. It lists read-only inspection (`ls`, `cat`, `head`, `tail`, `wc`, `find`, `pwd`, `du`, `df`, `which`, `stat`), repository inspection (`git status/log/diff/show/rev-parse/ls-files/blame`, `git branch --list`), and container inspection (`docker ps/images/logs`).
-  - An entry must not be widenable. Package-script runners (`npm/pnpm/yarn/bun test`, `… run <script>`) are not in the catalog, because a script body or test file is agent-editable code, the same reason interpreters are refused. `git fetch` is not in the catalog, because it is network egress to any URL. Both get exact rules only, so `npm test` and `npm run build` stay one click as `Bash(npm test)` and `Bash(npm run build)` (round 3, 2026-10-23).
-  - Accepted limit: `git status/log/diff/show/blame` honour the repository's `.git/config` (`core.fsmonitor`, a `diff.*.textconv` driver, `core.pager`), so a config planted by an earlier write runs code under these rules. The stated limit in `src/permissions/reviewer/risk-classifier.ts` (and `permission-policy-design.md`) already covers this: a config file such as `.git/config` planted by an earlier guest write is not detected. The matcher still refuses the command-line forms (`git -c`, `--ext-diff`, `--textconv`).
-  - `grep` and `rg` are not in the catalog (round 5). Their exec, decompression, config and symlink options are too many for a reliable denylist (`rg --pre`, `--hostname-bin`, `-z`, `--follow`, `-uuu`, `RIPGREP_CONFIG_PATH`), so they get exact rules only. `rg --pre` and `--hostname-bin` keep any rule from matching and get no suggestion.
-  - `kubectl` is not in the catalog (round 4). Like other network and credential clients it gets exact rules only: its flag grammar re-targets the cluster through combined short flags (`-As https://…`), reads Secrets through manifests (`-f creds.yaml`, `-k ./overlay`) and writes files (`--profile-output`) in more spellings than a denylist can bound.
-  - Exact `kubectl` rules are still refused for the following, wherever they appear:
-    - credential or cluster re-targeting: any single-dash cluster containing `s`, `--kubeconfig`, `--server`, `--token`, `--context`, `--cluster`, `--user`, `--as`, `--as-group`, `--as-uid`, `--certificate-authority`, `--client-*`, `--insecure-skip-tls-verify`, `--tls-server-name`, `--username`, `--password`;
-    - `--raw`, and the file writers `--profile`, `--profile-output` and `--cache-dir`;
-    - manifest reads with `get`/`describe` (`-f`/`--filename`, `-k`/`--kustomize`);
-    - secrets (`secret`, `secrets`, `secret/<name>`, `secrets.v1`, or one item of a comma list).
-  - Accepted risk: runner configuration flags (`--userconfig`, `--globalconfig`, `pnpm --config.*`, `--dir`, `bun -c`/`--config`) are not refused on exact runner rules. An exact `npm test` or `npm run build` rule already runs agent-editable code, the package scripts and test files, so such a flag does not widen what the user approved. The flags that load code from outside the project or switch it (`--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`, `--filter`, `-r`, `-w`) stay refused.
-  - No rule, exact or wildcard, covers a package-script runner (`npm`, `pnpm`, `yarn`, `bun`) with options that load other code or switch the project: `--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`, `--filter`, `-r`/`--recursive` or `-w`/`--workspace`.
-  - Every other command is suggested only as an exact rule for its full argv, with nothing appended, and only when that argv spells back unchanged. A hand-typed wildcard outside the catalog is refused at the store with `invalid-rule`.
-  - To add an entry, confirm that no argument a trailing `*` can append reaches a destructive or irreversible form, and that its writing and code-running options are caught by `shellOptionEffect`. Then add a hit test and a miss test.
-  - Structural refusals (wrappers, shells, interpreters, runners, destructive and irreversible argv) still apply first, to exact rules as well.
-  - A file written before the allowlist may already hold such an allow rule. It is not migrated or rewritten. It loads inert: Settings lists it with the reason "not on the known-safe list" (en/ko) and a working Remove, other writes keep it as stored, and decisions never match it (`storedRuleInvalidReason`). Any other refused stored rule still makes the whole file corrupt.
-- **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. Once and session approvals stay available, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
+- For eligible requests, Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Plain-shell calls disable this control and ignore retained entries. Existing entries keep their original identities.
+- The destructive floor reads each command's argv: recursive or forced deletion in any option order, recursive or world-writable permission changes, raw disk writers and `find -delete` ask on every invocation.
+- **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. These commands require per-call consent, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
   - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
   - `git clean` unless `-n`/`--dry-run`; `git reset --hard/--merge/--keep`; `git restore` unless index-only (`--staged` without `--worktree`); `git stash drop/clear`.
   - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The exception is `-b <new> [<start>]` without `--` or paths; use `git switch <branch>` for a storable exact rule. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
@@ -123,11 +89,11 @@ does not prove that the command or task contents are read-only.
   - `gh … delete`, `gh api -X/--method DELETE`; `helm uninstall/delete`; `terraform`/`tofu` `destroy`, `apply -destroy` and `state rm`; `aws` `rm`/`rb`/`delete-*`/`terminate-*`/`remove-*` operations and `--delete`.
   - `rsync --delete*`/`--remove-source-files`; `ln -f`; `redis-cli flushall/flushdb`; `npm`/`pnpm`/`yarn` `unpublish`; `xattr -c/-d`.
   - A dynamic word counts as the worst case.
-- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), and with `--reference=`. A leading removal such as `-x` or `go-w` is the mode operand, not an option. A mode the grammar cannot read refuses a stored rule but never triggers the floor, so once and session choices remain.
+- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), and with `--reference=`. A leading removal such as `-x` or `go-w` is the mode operand, not an option. An unreadable mode is not guessed to be world-writable.
 - The sensitive-path floor also covers what a search reads, not only its literal arguments (rounds 5 and 6).
   - A recursive content search whose root is at or above a secret-holding directory is floored: `grep` (`-r`, `-R`, `--recursive`, `-d recurse`, `--directories recurse` or `=recurse`) and `rg`, which always recurses. Secret-holding directories include the home, `/`, `~/.config`, `~/Library/Application Support`, the Ave home and `/proc`.
   - A search that follows symlinks is floored when a followed link resolves into a sensitive path, or when the walk passes 5000 entries without ruling that out:
-    - GNU `grep -R`/`--dereference-recursive`;
+    - GNU `grep -R` and `grep --dereference-recursive` on every platform;
     - BSD `grep -S` on macOS, where `-R` alone does not follow;
     - `rg -L`/`--follow`;
     - `find -L`/`-follow` for links below the root, and `-H` for root links.
@@ -136,7 +102,7 @@ does not prove that the command or task contents are read-only.
   - A dynamic root is an ordinary ask.
 - Known limits of the floor (accepted, round 6):
   - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
-  - A secret committed to the repository is reachable through the `git log -p`, `git show` and `git diff` catalog wildcards. The floor checks paths, not the content of history.
+  - A secret committed to the repository is reachable through the `git log -p`, `git show` and `git diff` prefix rules. The floor checks paths, not the content of history.
   - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
   - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
@@ -145,7 +111,6 @@ does not prove that the command or task contents are read-only.
   - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
   - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
 - `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` stay storable. Only `git remote remove/rm/rename/set-url/prune` is refused.
-- Network clients (`curl`, `wget`, `ssh`, `rsync` and similar) get no reusable allow suggestion until host-scoped network rules exist; they keep once and session choices.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
@@ -369,7 +334,7 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 ### Where the code is
 
 - `src/permissions/rules/rule-specifier.ts`: the grammar, plus the pure host and MCP matchers that P1c will wire in.
-- `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused list and the wildcard allowlist.
+- `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused-prefix list and destructive/irreversible classification.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
 - `src/permissions/rules/project-rule-files.ts`: per-project files in Ave home.
@@ -421,18 +386,17 @@ blockers without becoming a credential/sink floor:
 - a non-runner shell or interpreter given code by any route: `-c`/`-e`, a stdin pipe (`echo … | bash`), a here-string, a here-document, `-s`, `-`, a script file or module (`bash x.sh`, `perl x.pl`, `python -m x`); informational-only `--version`/`--help` forms do not supply code;
 - code carriers: `eval`, `source`/`.`, `trap`, `hash -p`, `alias`, `enable -f`, `bind -x`, `mapfile -C`, `complete -C`, `fc`, `at`, `crontab`, `tmux`, editors, string-joining wrappers (`watch`, `flock -c`, `su -c`, `env -S`);
 - code-carrying variables (`GIT_SSH_COMMAND=… git fetch`, `PAGER`, `LESSOPEN`, `BASH_ENV`, `PATH`, …);
-- options that run a command: `find -exec`, `sed` `e` / `s///e` / `-f`, `rg --pre`, `tar --to-command`/`-I`/`--use-compress-program`, `less +!`, `git -c`/`--ext-diff`/`--textconv`/`-O`/`--upload-pack`, `man -P`, `rsync -e`, `ssh -o ProxyCommand`, `fd -x`, …;
 - unsupported syntax.
 
-A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a per-call `forceModal` ask before allow rules and saved grants, even in `allow` mode. Hidden code is never covered by an allow rule. Options that write (`sed -i`/`w`, `tar -x`, `less -o`, `--output`, `find -delete`) also keep an allow rule from matching.
+A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a per-call `forceModal` ask before allow rules and saved grants, even in `allow` mode. Without a deny/ask visibility conflict, an escape rule may cover visible static argv, including a script invocation. Program options alone do not invalidate a rule. `find -delete` still reaches the destructive floor.
 
-Hidden code alone adds no `ordinaryAsk`. Without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance, statically bound direct interpreter forms such as `python -c`, `perl -e`, `node -e`, `node x.js`, `python x.py`, `bash -c ls` and `pwsh -c Get-Date` follow normal handling in allow mode. Their rule-visibility limits do not prove that their contents are read-only.
+Hidden code alone adds no `ordinaryAsk`. Without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance, statically bound direct interpreter forms such as `python -c`, `perl -e`, `node -e`, `node x.js`, `python x.py`, `bash -c ls` and `pwsh -c Get-Date` follow the actual-route shell decision order above. Their rule-visibility limits do not prove that their contents are read-only.
 
 An opaque runner prefix alone is not hidden code for rule matching. Runner
 argv remains available to raw command rules regardless of task or subcommand
 spelling. That visibility does not inspect package or script contents. Option
-spelling does not add a hidden-code blocker; the structural persistent-prefix
-check still rejects an ambiguous command boundary. The inner command is not a
+spelling does not add a hidden-code blocker; rule coverage still requires
+matching static argv and the shared broad-prefix check. The inner command is not a
 transparent alias.
 
 ### Not yet enforced
@@ -619,11 +583,10 @@ anchor-free matching under `C:/Users/<name>/`.
 ### Egress and verification boundary
 
 The sink catalogue remains necessary until a separate egress boundary exists.
-The OS tool sandbox is opt-in. Its current network policy is a strict shared
-allowlist, with no per-domain approval callback or denial UI. Windows host-shell
-execution remains a plain child. This classifier change does not introduce a
-proxy, change sandbox defaults, delegate all egress to isolation, or make all
-sandbox-off calls ask. Shell URLs and remote package/registry sources alone do
+Sandbox defaults, platform availability and network enforcement belong to the
+[architecture contract](../architecture/architecture.md#os-execution-sandbox-and-plugin-workers).
+This rule-model change does not introduce a proxy or delegate credential/sink
+analysis to isolation. Plain-shell approval follows the decision order above. Shell URLs and remote package/registry sources alone do
 not replace credential/sink evidence.
 
 The decision-table and classifier checks establish policy-analysis behavior.
@@ -636,10 +599,11 @@ Settings accepts canonical `Bash(...)` rules, including whitespace inside their 
 
 ## Tests
 
+- `src/permissions/__tests__/shell-sandbox-rules.test.ts` covers actual-route auto-allow, exact-only unavailable matching, floors, deny/ask precedence, repeated native host retries, unchanged subsequent sandbox plans and reviewer escalation.
 - `src/permissions/__tests__/rules-language.test.ts` covers:
   - the grammar;
   - the refused list;
-  - the wildcard allowlist, exact-only suggestions and irreversible commands;
+  - bounded prefix suggestions and irreversible commands;
   - compound commands, substitutions, wrappers and floors;
   - the `ls *` vs `lsof` case.
 - `src/permissions/__tests__/rules-store-and-decision.test.ts` covers:

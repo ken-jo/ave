@@ -249,24 +249,6 @@ describe("credential-exfiltration signal", () => {
 });
 
 describe("ambiguous runner prefix approvals", () => {
-  it.each([
-    ["Bash(npx *)", "npx helper"], ["Bash(npx --yes *)", "npx --yes helper"],
-    ["Bash(npm --registry *)", "npm --registry registry.test"], ["Bash(corepack --help *)", "corepack --help"],
-  ])("does not let an injected %s bypass ordinary approval", (pattern, command) => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-runner-prefix-"));
-    try {
-      const manager = new PermissionManager(join(dir, "permissions.json"));
-      manager.setMode("allow");
-      manager.setRules([{ pattern, action: "allow" }]);
-      const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
-        ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir },
-      });
-      expect(decision).toMatchObject({ decision: "ask", layer: 6, reason: "opaque runner prefix" });
-      expect(decision.forceModal).not.toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 
   it.each(["npx --yes", "npm --registry registry.test", "corepack --help", "corepack pnpm@9 install"])
     ("keeps exact-input saved approvals available for %j", async (command) => {

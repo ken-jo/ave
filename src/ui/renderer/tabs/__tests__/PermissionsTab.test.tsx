@@ -49,7 +49,6 @@ function policyGetPayload(loaded: {
   return { version: 1 as const, updatedAt: "2026-01-01T00:00:00.000Z", ...loaded, editable: isPolicyUserEditable(loaded) };
 }
 
-
 function installApi(
   disabledBatches: HookTrustRow[][],
   envForcedSettings: readonly string[] = [],
@@ -2034,24 +2033,6 @@ describe("PermissionsTab unified permission rules", () => {
     const exactRow = Array.from(table.querySelectorAll('tr[data-rule-store="exact"]')).find((row) => row.textContent?.includes("conversation-session"));
     fireEvent.click(exactRow!.querySelector("button")!);
     await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith("exact-session"));
-  });
-
-  it("shows an inert stored wildcard with its reason and removes it in one click", async () => {
-    const api = installApi([[]]);
-    const inert = { pattern: "Bash(make *)", action: "allow", scope: "user", invalidReason: "wildcard-not-allowlisted" };
-    const healthy = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
-    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
-    list.mockResolvedValueOnce({ rules: [inert, healthy], errors: [] }).mockResolvedValue({ rules: [healthy], errors: [] });
-    await act(async () => { render(<PermissionsTab />); });
-    const table = await screen.findByTestId("permissions-rules-table");
-    const reasons = screen.getAllByTestId("permissions-rule-invalid");
-    expect(reasons).toHaveLength(1);
-    expect(reasons[0]).toHaveTextContent(t("permissionsTab.ruleInvalidWildcardNotAllowlisted"));
-    expect(reasons[0].closest("tr")).toHaveTextContent(inert.pattern);
-    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: inert.pattern }) }));
-    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(inert));
-    await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
-    expect(table).toHaveTextContent(healthy.pattern);
   });
 
   it("refreshes the scoped list after adding or revoking a rule", async () => {

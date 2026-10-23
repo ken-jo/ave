@@ -284,13 +284,13 @@ export const en = {
   "permissionsTab.auditLogHelp": "Open the audit log panel to view permission events from the last 7 days.",
   "permissionsTab.savedApprovalsFile": "Saved approvals file (user-approvals.json)",
   "permissionsTab.unifiedRulesTitle": "Permission rules",
+  "permissionsTab.shellOutsideSandbox": "An allow rule permits this command to run outside the sandbox. Prefix rules apply only while the sandbox is active.",
   "permissionsTab.unifiedRulesDescription": "Project and user rules, plus exact persistent and session approvals. Revoke any entry to stop applying it.",
   "permissionsTab.unifiedRulesLoadError": "Some permission entries could not be loaded. Existing files have not been replaced.",
   "permissionsTab.actionAsk": "Ask",
   "permissionsTab.scopeProject": "Project",
   "permissionsTab.scopeUser": "Everywhere",
   "permissionsTab.revokeNamedRule": "Revoke {pattern}",
-  "permissionsTab.ruleInvalidWildcardNotAllowlisted": "Not in force: this command is not on the list of known-safe commands that an \"always allow\" rule ending in \" *\" may name. Remove it and approve the exact command instead.",
   "permissionsTab.exactApprovalLabel": "Exact approval",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -546,12 +546,12 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.auditLogHelp": "감사 로그 패널을 열어 최근 7일간의 권한 이벤트를 확인하세요.",
   "permissionsTab.savedApprovalsFile": "저장된 승인 파일(user-approvals.json)",
   "permissionsTab.unifiedRulesTitle": "권한 규칙",
+  "permissionsTab.shellOutsideSandbox": "허용 규칙은 이 명령의 샌드박스 밖 실행을 허가합니다. 접두사 규칙은 샌드박스가 켜져 있을 때만 적용됩니다.",
   "permissionsTab.unifiedRulesDescription": "프로젝트·사용자 규칙과 정확히 일치하는 영구·세션 승인을 함께 표시합니다. 철회하면 해당 항목의 적용이 중단됩니다.",
   "permissionsTab.unifiedRulesLoadError": "일부 권한 항목을 불러오지 못했습니다. 기존 파일은 덮어쓰지 않았습니다.",
   "permissionsTab.actionAsk": "확인 요청",
   "permissionsTab.scopeProject": "프로젝트",
   "permissionsTab.scopeUser": "모든 프로젝트",
   "permissionsTab.revokeNamedRule": "{pattern} 철회",
-  "permissionsTab.ruleInvalidWildcardNotAllowlisted": "적용되지 않음: \" *\"로 끝나는 \"항상 허용\" 규칙은 안전하다고 알려진 명령에만 쓸 수 있습니다. 이 규칙을 삭제하고 정확한 명령을 승인하세요.",
   "permissionsTab.exactApprovalLabel": "정확히 일치하는 승인",
 };

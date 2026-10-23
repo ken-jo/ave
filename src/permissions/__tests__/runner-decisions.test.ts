@@ -9,7 +9,7 @@ import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
-import { SHELL_PREFIX_POLICY, refusedShellPrefix, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
+import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -150,7 +150,7 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, incomplete }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
     const command = argv.join(" ");
     const shape = analyzeShellForRules(command);
     expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
@@ -158,19 +158,13 @@ describe("shared runner decisions", () => {
       expect(shape.commands).toHaveLength(1);
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(refusedShellPrefix(incomplete.split(" "))).toBe("package-runner");
-    // Structurally bounded, so the exact rule is storable; the wildcard is not
-    // on the allowlist (owner decision 2026-10-23) and the store refuses it.
-    expect(refusedShellPrefix(prefix.split(" "), false)).toBeNull();
-    expect(refusedShellPrefix(prefix.split(" "))).toBe("not-allowlisted");
     expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    await expect(manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" }))
-      .rejects.toThrow(/wildcard allowlist/);
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
+    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");

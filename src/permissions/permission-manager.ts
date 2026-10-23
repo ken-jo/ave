@@ -12,7 +12,7 @@ import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } 
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
-import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
+import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
@@ -20,6 +20,7 @@ import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
+import { isDestructiveShellArgv, noReusableRuleReason } from "./rules/shell-prefix-values.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -30,6 +31,7 @@ import {
   LlmRiskClassifier,
   RuleBasedRiskClassifier,
   maxVerdict,
+  isDestructiveShellText,
   type LlmRiskClassificationTrace,
   type RiskClassifier,
   type RiskVerdict,
@@ -309,6 +311,8 @@ export interface PermissionCheckContext {
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
    */
   projectRulesCwd?: string;
+  /** Host-only per-invocation route; absent for terminals and noncanonical tools. */
+  shellExecution?: { runsSandboxed: boolean; sandboxAvailable: boolean };
   /**
    * Host-detected corruption of the exact-approval store (Store B) for this
    * invocation, naming the file. Treated like a corrupt rule file: non-read
@@ -515,12 +519,6 @@ function sameReviewerSandboxCacheState(
 // LLM caller retry wiring lives in conversation-loop.ts scope.
 // Tracked in follow-up issue for "LLM caller retry wiring" with
 // max 2 retry / counter scope / args-change-reset contract.
-
-/** A Settings row, marked when its stored rule is inert (listed and removable, never matched). */
-function withInvalidReason(row: ScopedPermissionRule): ScopedPermissionRule {
-  const reason = storedRuleInvalidReason(row);
-  return reason === null ? row : { ...row, invalidReason: reason };
-}
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -1190,7 +1188,7 @@ export class PermissionManager {
     const rules: ScopedPermissionRule[] = [];
     const errors: ScopedPermissionRuleError[] = [];
     try {
-      for (const rule of await this.listPersistedRules()) rules.push(withInvalidReason({ ...rule, scope: "user" }));
+      for (const rule of await this.listPersistedRules()) rules.push({ ...rule, scope: "user" });
     } catch (error) {
       console.error("[permission]", error);
       errors.push({ filePath: this.permissionsFilePath, errorCode: "rules-file-unavailable" });
@@ -1200,7 +1198,7 @@ export class PermissionManager {
       errors.push(...projects.errors);
       for (const file of projects.files) {
         for (const rule of file.rules) {
-          rules.push(withInvalidReason({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity }));
+          rules.push({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity });
         }
       }
     } catch (error) {
@@ -1542,13 +1540,19 @@ export class PermissionManager {
     const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     const shellSubject = ruleSubject?.dialect === "bash"
-      ? { command: parsedSubject!, cwd: ruleSubject.cwd }
+      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: context.shellExecution?.sandboxAvailable === false }
       : undefined;
     // `Bash(...)` rules match bash only; PowerShell has no rule language.
     const shellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules)
       : undefined;
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
+    // Route-aware shell consent includes known irreversible forms. An opaque
+    // word alone does not prove one; reusable-rule matching remains stricter.
+    const shellDestructive = context.shellExecution !== undefined && ruleSubject !== undefined && (
+      isDestructiveShellText(ruleSubject.command) ||
+      (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
+    );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in
     // any mode, for every host shell (rules/shell-exfiltration.ts,
@@ -1638,6 +1642,9 @@ export class PermissionManager {
     if (rulesFileError && resolvedCategory !== "read") {
       return { decision: "ask", reason: rulesFileError, layer: 1, forceModal: true };
     }
+    if (shellDestructive) {
+      return { decision: "ask", reason: t("be_permissionManager.shellDestructiveFloorReason"), layer: 2, forceModal: true };
+    }
     if (shellExfiltration) {
       return {
         decision: "ask",
@@ -1703,6 +1710,12 @@ export class PermissionManager {
       };
     }
 
+    const plainShell = ruleSubject !== undefined && context.shellExecution?.runsSandboxed === false;
+    // Actual confinement, not a remembered approval, opens the automatic shell lane.
+    if (ruleSubject && context.shellExecution?.runsSandboxed === true) {
+      return { decision: "allow", reason: t("be_permissionManager.shellSandboxedReason"), layer: 3 };
+    }
+
     // Local durable memory is an app-owned, user-requested capability. It
     // needs no normal approval prompt, but the hard gates above must still
     // win so an explicit deny, strict session, or staged/untrusted origin
@@ -1719,7 +1732,7 @@ export class PermissionManager {
       };
     }
 
-    if (context.headless === true && isMutating && context.ownerUnattended !== true) {
+    if (context.headless === true && isMutating && context.ownerUnattended !== true && !plainShell) {
       const category = this.categoryBasedDecision(trust, resolvedCategory, context);
       return this.routeJudge(ordinaryShellAsk && category.decision === "allow"
         ? { decision: "ask", reason: ordinaryShellAsk, layer: 6 } : category, resolvedCategory, context, trust);
@@ -1740,6 +1753,9 @@ export class PermissionManager {
       if (rule.action !== "allow") continue;
       if (rule.source && rule.source !== source) continue;
       if (isRuleSpecifier(rule.pattern)) continue;
+      // A legacy exact action rule retains its sealed command/cwd/plan identity.
+      // Tool-wide and glob allows never grant plain-shell execution.
+      if (plainShell && (approvalCacheKey === undefined || rule.pattern !== approvalCacheKey)) continue;
       if (globMatch(allowTarget, rule.pattern)) {
         // P2 tier gate — a read-tier grant must not cover a
         // write/shell/network/meta invocation. Untiered/legacy rules default to
@@ -1758,7 +1774,7 @@ export class PermissionManager {
 
     // 5. Always-allowed (previous user approval)
     let storedDockGrant = false;
-    if (result === undefined) {
+    if (result === undefined && (!plainShell || approvalCacheKey !== undefined)) {
       const grantTier = this.alwaysAllowed.get(allowTarget);
       // P2 tier gate — see the layer-3 mirror above. A read-tier grant covers
       // only read invocations; write-tier covers everything.
@@ -1775,7 +1791,13 @@ export class PermissionManager {
 
     // 6. Category × Source × Trust via registry descriptor
     if (result === undefined) {
-      result = this.categoryBasedDecision(trust, resolvedCategory, context);
+      result = plainShell ? {
+        decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6,
+        ...(context.headless === true
+          ? { reviewer: { route: "headless" as const } }
+          : this.shouldRouteForegroundReviewer(resolvedCategory, context)
+            ? { reviewer: { route: "foreground-auto" as const } } : {}),
+      } : this.categoryBasedDecision(trust, resolvedCategory, context);
       if (ordinaryShellAsk && result.decision === "allow") result = { decision: "ask", reason: ordinaryShellAsk, layer: 6 };
     }
 
@@ -1961,7 +1983,7 @@ export class PermissionManager {
     // internal contract violation and must surface, not read as a miss.
     const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemory);
     const userApprovalArgs = canonicalStringify(cacheIdentityInput);
-    const rememberedDecision = await lookupApproval(
+    const rememberedDecision = input.hostShellExecutionPlan?.mode === "plain" ? undefined : await lookupApproval(
       toolName,
       userApprovalArgs,
       input.source,

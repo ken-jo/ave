@@ -2,7 +2,7 @@
  * One-shot execution permit for explicit host requests and sandbox fallbacks.
  *
  * The execution plan says which substrate is honest for a shell invocation;
- * it is not itself proof that the user approved that invocation. This module
+ * it is not itself proof that the invocation is authorized. This module
  * keeps the proof in a module-private WeakMap, binds it to one final action,
  * and consumes it before the plain child may spawn.
  */
@@ -117,10 +117,18 @@ export function buildHostShellExecutionPermitBinding(input: {
   });
 }
 
+// Only the host authorization pipeline records these after its policy/reviewer
+// gates pass. Bind to the exact in-process action, never renderer-supplied data.
+const policyAuthorizations = new WeakSet<HostShellExecutionPermitBinding>();
+
+/** Record one host-policy authorization; it does not change any sandbox plan. */
+export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding): void {
+  policyAuthorizations.add(binding);
+}
+
 /**
- * Minted only after ApprovalGate consumes its HMAC-verified allow-once receipt.
- * Calling this public helper with a structural decision or an unrelated approval
- * fails closed; the receipt is private to ApprovalGate and action-bound.
+ * Minted after either the authenticated dock receipt or the host policy lane.
+ * Both authorities are action-bound and consumed once.
  */
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
@@ -132,17 +140,13 @@ export function mintHostShellExecutionPermit(input: {
   // compiled caller. Treat any incomplete input as an unauthorised request
   // instead of throwing before the fail-closed decision.
   if (
-    input.approvalDecision === undefined ||
     input.binding === undefined
   ) {
     return undefined;
   }
-  if (
-    !consumeHostApprovedOneShotExecutionBinding(
-      input.approvalDecision,
-      input.binding,
-    )
-  ) return undefined;
+  const policyApproved = policyAuthorizations.delete(input.binding);
+  const userApproved = consumeHostApprovedOneShotExecutionBinding(input.approvalDecision, input.binding);
+  if (!policyApproved && !userApproved) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking
   // plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan)) return undefined;
