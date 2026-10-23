@@ -268,7 +268,11 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
   });
 
   it("is refused without the read floor restated, which a per-command deny replaces", () => {
+    // Where the flag is honoured at all; Windows refuses it before this check.
+    setProcessPlatform("linux");
     expect(() => buildPerCommandSandboxCustomConfig({ denyPluginsRoot: true })).toThrow(/needs denyRead restated/);
+    setProcessPlatform("win32");
+    expect(() => buildPerCommandSandboxCustomConfig({ denyPluginsRoot: true })).toThrow(/refused on Windows/);
   });
 });
 
