@@ -57,7 +57,10 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
  * 2026-10-23, round 3):
  * - package-script runners (`npm test`, `npm run <script>`): a script body or
  *   test file is agent-editable code, the reason interpreters are refused;
- * - network clients and fetchers (`git fetch`): egress to any URL.
+ * - network clients and fetchers (`git fetch`): egress to any URL;
+ * - cluster clients (`kubectl`, round 4): its flag grammar re-targets the
+ *   cluster, reads Secrets through manifests or writes files in too many
+ *   spellings for a denylist to bound.
  * Those get exact rules only.
  *
  * To add an entry, confirm that no argument a trailing `*` can append reaches
@@ -73,9 +76,7 @@ export const WILDCARD_PREFIX_CATALOG: ReadonlyMap<string, number> = new Map([
   // Repository inspection.
   ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2],
   ["git rev-parse", 2], ["git ls-files", 2], ["git blame", 2], ["git branch --list", 3],
-  // Cluster and container inspection. `kubectl` credentials, cluster
-  // re-targeting and secrets are kept out by `noReusableRuleReason`.
-  ["kubectl get", 2], ["kubectl describe", 2], ["kubectl logs", 2],
+  // Container inspection.
   ["docker ps", 2], ["docker images", 2], ["docker logs", 2],
 ]);
 
@@ -237,22 +238,34 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
 
 /**
  * `kubectl` options that switch credentials or cluster (`--kubeconfig`,
- * `--token`, `--as`, `-s`/`--server`, …) or reach the raw API (`--raw`).
- * A reusable rule never covers them, wherever they appear.
+ * `--token`, `--as`, `-s`/`--server`, `--tls-server-name`, …), reach the raw
+ * API (`--raw`) or write files (`--profile-output`, `--cache-dir`). No rule,
+ * exact or wildcard, covers them, wherever they appear.
  */
 const KUBECTL_RETARGETING_OPTIONS = new Set([
   "kubeconfig", "server", "token", "context", "cluster", "user", "as", "as-group", "as-uid",
-  "certificate-authority", "insecure-skip-tls-verify", "raw",
+  "certificate-authority", "insecure-skip-tls-verify", "tls-server-name", "username", "password", "raw",
+  "profile", "profile-output", "cache-dir",
 ]);
 
 function kubectlRetargets(argv: readonly (string | undefined)[]): boolean {
   return argv.slice(1).some((word) => {
     if (word === undefined) return true;
-    if (/^-s(?:$|=|.)/.test(word) && !word.startsWith("--")) return true;
+    // pflag joins short flags and values (`-As https://x`, `-Ashttps://x`),
+    // so any single-dash cluster holding `s` may be `--server`.
+    if (/^-[A-Za-z]*s/.test(word)) return true;
     if (!word.startsWith("--")) return false;
     const name = word.slice(2).split("=")[0]!.toLowerCase();
     return KUBECTL_RETARGETING_OPTIONS.has(name) || name.startsWith("client-");
   });
+}
+
+/** `get`/`describe -f creds.yaml` or `-k ./overlay` reads whatever objects a manifest names, Secrets included. */
+function kubectlReadsManifest(argv: readonly (string | undefined)[]): boolean {
+  const verb = verbWords(argv, KUBECTL_VALUED_OPTIONS)[0];
+  if (verb !== "get" && verb !== "describe" && verb !== undefined) return false;
+  return argv.slice(1).some((word) => word === undefined || /^-[A-Za-z]*[fk]/.test(word)
+    || /^--(?:filename|kustomize)(?:=|$)/i.test(word));
 }
 
 /** `secret`, `secrets`, `secret/<name>`, `secrets.v1`, or one of a comma list. */
@@ -293,6 +306,7 @@ export function noReusableRuleReason(argv: readonly (string | undefined)[]): str
   const program = programName(head);
   if (program === "kubectl" && kubectlRetargets(argv)) return "kubectl credential or cluster option";
   if (program === "kubectl" && kubectlNamesSecrets(argv)) return "kubectl secrets";
+  if (program === "kubectl" && kubectlReadsManifest(argv)) return "kubectl manifest read";
   if (["npm", "pnpm", "yarn", "bun"].includes(runnerName(head)) && runnerLoadsOtherCode(argv)) return "runner option that loads other code";
   return null;
 }
@@ -398,6 +412,14 @@ function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean
       case "worktree":
         if (operands[0] === undefined) return argv.length > at + 1;
         return operands[0] === "prune" || (operands[0] === "remove" && (dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"])));
+      case "prune":
+        return true;
+      case "tag":
+        return dynamic || hasShortFlag(options, "d") || hasLongFlag(options, ["delete"]);
+      case "remote":
+        return operands[0] === undefined ? argv.length > at + 1 : operands[0] === "remove" || operands[0] === "rm";
+      case "pull":
+        return dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"]);
       case "update-ref":
         return dynamic || hasShortFlag(options, "d") || hasLongFlag(options, ["stdin"]);
       case "fetch":

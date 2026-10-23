@@ -240,7 +240,7 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
   });
 
   it.each([
-    [["kubectl", "get"], true], [["git", "status"], true], [["docker", "ps"], true], [["npm", "run", "build"], false],
+    [["kubectl", "get"], false], [["git", "status"], true], [["docker", "ps"], true], [["npm", "run", "build"], false],
     [["git", "stash", "list"], false], [["git", "stash", "push"], false], [["docker", "image", "ls"], false],
     [["git", "switch", "main"], false], [["git", "checkout", "-b", "feature"], false], [["git", "clean", "-n"], false],
     [["git", "restore", "--staged", "src/app.ts"], false], [["git", "reset", "HEAD"], false],
@@ -260,7 +260,7 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
 describe("wildcard allowlist (owner decision 2026-10-23)", () => {
   it.each([
     [["ls"]], [["ls", "-la"]], [["cat"]], [["rg"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
-    [["git", "branch", "--list"]], [["kubectl", "logs"]], [["docker", "ps"]],
+    [["git", "branch", "--list"]], [["docker", "ps"]],
   ])("allows the catalog wildcard %j", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBeNull();
   });
@@ -269,7 +269,7 @@ describe("wildcard allowlist (owner decision 2026-10-23)", () => {
     [["make"]], [["make", "build"]], [["cargo", "test"]], [["git", "branch"]], [["git", "push"]], [["git", "switch"]],
     [["npm", "run"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
     [["git", "fetch"]], [["git", "fetch", "origin"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
-    [["kubectl", "apply"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
+    [["kubectl", "apply"]], [["kubectl", "get"]], [["kubectl", "logs"]], [["kubectl", "describe"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
   ])("refuses the wildcard %j outside the catalog", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
   });
@@ -284,14 +284,13 @@ describe("wildcard allowlist (owner decision 2026-10-23)", () => {
     [["git", "status", "--short"], ["git", "status"]],
     [["ls", "-la", "src"], ["ls"]],
     [["git", "branch", "--list", "feat/*"], ["git", "branch", "--list"]],
-    [["kubectl", "get", "pods", "-n", "web"], ["kubectl", "get"]],
   ])("suggests the catalog prefix for %j", (argv, prefix) => {
     expect(suggestShellPrefix(argv)).toEqual(prefix);
   });
 
   it.each([
     [["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]],
-    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
+    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["kubectl", "get", "pods", "-n", "web"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
   ])("offers no wildcard for %j", (argv) => {
     expect(suggestShellPrefix(argv)).toBeNull();
   });

