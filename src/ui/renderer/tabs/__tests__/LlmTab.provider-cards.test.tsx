@@ -14,6 +14,7 @@ import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.j
 import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
+import { getVendorOption } from "../../constants.js";
 import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
@@ -151,6 +152,7 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
+  pinnedModels?: string[];
   vendors?: Record<string, unknown>;
   installedProviderIds?: string[];
   installedProviderPresets?: readonly MarketplaceInstalledProviderPreset[];
@@ -168,7 +170,7 @@ interface Profile {
 function profileApi(profile: Profile, rest: MockApi = {}) {
   let settings: { llm: Record<string, unknown>; marketplace: Record<string, unknown> } = {
     llm: {
-      pinnedModels: [],
+      pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
     },
@@ -421,7 +423,8 @@ function chooserOption(modelId: string): HTMLElement {
 
 /** The provider group a chooser row sits under, label included. */
 function chooserGroupText(modelId: string): string {
-  return chooserOption(modelId).closest("[role='group']")?.textContent ?? "";
+  const option = chooserOption(modelId);
+  return (option.closest("[data-model-provider]") ?? option.closest("[role='group']"))?.textContent ?? "";
 }
 
 /** Radix commits a chooser row on Enter, and only for the focused one. */
@@ -1404,6 +1407,161 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
     expect(screen.getByTestId("llm-tab:api-key-status"))
       .toHaveTextContent(t("llmTab.apiKeyNotSet"));
+  });
+});
+
+describe("LlmTab grouped model search", () => {
+  const routedEntries = [
+    { id: "google/gemini-fixture:free" },
+    { id: "openai/gpt-paid" },
+    { id: "anthropic/claude-fixture" },
+    { id: "openai/gpt-tagged", tags: { free: true } },
+    { id: "openrouter/free" },
+    { id: "acme/freeform-x" },
+    { id: "plain-model", name: "Display name fixture" },
+    { id: "openai/gpt-fixture:free" },
+    { id: "acme/custom-fixture" },
+  ];
+
+  async function openSearchCatalogue(crossVendor = false, pinnedModels: string[] = []) {
+    const { api } = profileApi({
+      installedProviderIds: crossVendor ? ["openrouter", "requesty"] : ["openrouter"],
+      pinnedModels,
+    }, {
+      hasApiKey: storedKeysFor(...(crossVendor ? ["openrouter", "openai", "requesty"] : ["openrouter"])),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => {
+        const entries = vendor === "openrouter" ? routedEntries
+          : vendor === "openai" ? [{ id: "gpt-direct-fixture" }]
+            : [{ id: "openai/gpt-gateway-fixture" }, { id: "google/gemini-gateway-fixture" }];
+        return {
+          ok: true,
+          vendor,
+          endpoint: "https://catalogue.invalid/models",
+          models: entries.map((entry) => entry.id),
+          modelEntries: entries,
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        };
+      }),
+    });
+    const result = await renderTab(api, {
+      vendor: "openrouter", model: "openai/gpt-paid",
+      baseUrl: getVendorOption("openrouter").baseUrlPlaceholder!,
+    });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toContain("plain-model");
+    const input = screen.getByRole("textbox", { name: t("llmTab.modelSearchAriaLabel") });
+    const list = screen.getByRole("listbox");
+    const ids = () => within(screen.getByRole("listbox")).queryAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"));
+    const search = (query: string) => fireEvent.change(input, { target: { value: query } });
+    return { ...result, input, list, ids, search };
+  }
+
+  it("groups upstream prefixes by readable labels, preserving order within each group", async () => {
+    const { list } = await openSearchCatalogue();
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    for (const [vendorId, modelId] of [
+      ["claude", "anthropic/claude-fixture"],
+      ["gemini", "google/gemini-fixture:free"],
+      ["openai", "openai/gpt-paid"],
+    ]) {
+      const group = within(provider).getByRole("group", { name: getVendorOption(vendorId!).label });
+      expect(within(group).getAllByRole("option").some((option) =>
+        option.querySelector(`[data-model-id="${modelId}"]`))).toBe(true);
+    }
+    const labels = [...provider.querySelectorAll("[data-slot='select-label']")]
+      .slice(1).map((label) => label.textContent!);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+    const group = within(provider).getByRole("group", { name: getVendorOption("openai").label });
+    expect(within(group).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id")))
+      .toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    expect(within(provider).getByRole("group", { name: "acme" })).toBeInTheDocument();
+    expect(chooserOption("plain-model").closest("[data-model-provider]")).toBe(provider);
+    expect(chooserOption("openrouter/free").closest("[data-model-provider]")).toBe(provider);
+  });
+
+  it.each(["free", "무료"])("filters the free keyword %s by metadata and route identity", async (query) => {
+    const { search, ids } = await openSearchCatalogue();
+    search(query);
+    const freeIds = ["openai/gpt-tagged", "google/gemini-fixture:free", "openrouter/free", "openai/gpt-fixture:free"];
+    expect(ids().sort()).toEqual(freeIds.sort());
+    for (const id of freeIds) {
+      expect(chooserOption(id)).toHaveTextContent(t("llmTab.openRouterFreeBadge"));
+    }
+  });
+
+  it("searches models across direct and gateway providers and keeps both grouping levels", async () => {
+    const { search, ids, list, hooks } = await openSearchCatalogue(true);
+    search("  GPT  ");
+    expect(ids()).toEqual(expect.arrayContaining([
+      "gpt-direct-fixture", "openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-gateway-fixture",
+    ]));
+    expect(ids().every((id) => id?.toLowerCase().includes("gpt"))).toBe(true);
+    for (const vendor of ["openai", "openrouter", "requesty"]) {
+      expect(list.querySelector(`[data-model-provider="api:${vendor}"]`)).toHaveAccessibleName(getVendorOption(vendor).label);
+    }
+    const gateway = within(list).getByRole("group", { name: getVendorOption("requesty").label });
+    expect(within(gateway).getByRole("group", { name: getVendorOption("openai").label })).toBeInTheDocument();
+    pickChooserOption("openai/gpt-gateway-fixture");
+    await waitFor(() => expect(hooks.selectApiVendorModel).toHaveBeenCalledWith("requesty", "openai/gpt-gateway-fixture"));
+  });
+
+  it("intersects terms, reports no matches, restores cleared results, and preserves the selection", async () => {
+    const { search, ids, hooks } = await openSearchCatalogue();
+    const allIds = ids();
+    search("free gpt");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    search("무료 GPT");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    search("no-such-model");
+    expect(ids()).toEqual([]);
+    expect(screen.getByTestId("llm-tab:model-no-results")).toHaveTextContent(t("llmTab.modelNoResults"));
+    expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent("openai/gpt-paid");
+    expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    search("");
+    expect(ids()).toEqual(allIds);
+    expect(chooserOption("openai/gpt-paid")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("matches display names, upstream labels, unknown prefixes, and gateway labels", async () => {
+    const { search, ids } = await openSearchCatalogue();
+    search("display name");
+    expect(ids()).toEqual(["plain-model"]);
+    search("GOOGLE gemini");
+    expect(ids()).toEqual(["google/gemini-fixture:free"]);
+    search("acme");
+    expect(ids()).toEqual(["acme/freeform-x", "acme/custom-fixture"]);
+    search("OpenRouter gpt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+  });
+
+  it("keeps typing focus in the search input and resets search when closed", async () => {
+    const { input, search, ids } = await openSearchCatalogue();
+    input.focus();
+    for (const key of ["g", "p", "t", " "]) {
+      fireEvent.keyDown(input, { key });
+      expect(input).toHaveFocus();
+    }
+    search("gpt");
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: "a" });
+    expect(input).toHaveFocus();
+    pickChooserOption("openai/gpt-tagged");
+    await chooserModelIds();
+    expect(screen.getByTestId("llm-tab:model-search")).toHaveValue("");
+    expect(ids()).toContain("plain-model");
+  });
+
+  it("keeps matching pins first without duplicating them in provider groups", async () => {
+    const { list, search, ids } = await openSearchCatalogue(false, ["openai/gpt-tagged"]);
+    const pins = within(list).getByRole("group", { name: t("llmTab.modelPinnedGroup") });
+    expect(within(pins).getAllByRole("option")).toHaveLength(1);
+    search("free gpt");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    expect(ids().filter((id) => id === "openai/gpt-tagged")).toHaveLength(1);
+    search("google");
+    expect(within(list).queryByRole("group", { name: t("llmTab.modelPinnedGroup") })).toBeNull();
   });
 });
 
