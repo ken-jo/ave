@@ -228,7 +228,8 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
         // Keep this real: terminal echo, tty access and job control require
         // the confined shell and its actual foreground process group.
         await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
-        await shell.type("stty -a >/dev/null && echo STTY_OK\r", (out) => lines(out, "STTY_OK") === 1);
+        await shell.type("stty -a >/dev/null && echo STTY_OK || echo STTY_DENIED\r", (out) => lines(out, "STTY_OK") + lines(out, "STTY_DENIED") === 1);
+        expect(lines(shell.output(), "STTY_OK"), shell.output()).toBe(1);
         await shell.type("sleep 30\r");
         await shell.type("\x1a", (out) => /suspended/.test(out));
         await shell.type("fg\r", 800);
@@ -258,7 +259,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       try {
         const otherTty = ownPtySlavePath(other);
         expect(otherTty).not.toBe(shell.ownTty);
-        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, (out) => lines(out, "OTHER_DENIED") === 1);
+        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, (out) => lines(out, "OTHER_DENIED") + lines(out, "OTHER_SET") === 1);
         const out = shell.output();
         expect(lines(out, "OTHER_DENIED"), out).toBe(1);
         expect(lines(out, "OTHER_SET"), out).toBe(0);

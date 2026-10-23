@@ -151,13 +151,47 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
     }, 30_000);
 
-    it.each([["an ESC", "\u001b"], ["a Ctrl-X", "\u0018"]])("clears %s prefix typed ahead during the last command, so the line still runs as approved", async (_label, prefix) => {
+    it.each([
+      { label: "an ESC", prefix: "\u001b", state: "pending" },
+      { label: "a Ctrl-X", prefix: "\u0018", state: "pending" },
+      { label: "an ESC", prefix: "\u001b", state: "consumed" },
+      { label: "a Ctrl-X", prefix: "\u0018", state: "consumed" },
+    ])("clears $label prefix typed ahead during the last command ($state), so the line still runs as approved", async ({ prefix, state }) => {
       const shell = await startShell(path!);
+      const zsh = basename(path!) === "zsh";
+      const key = prefix === "\u001b" ? "^[" : "^X";
+      const readlineKey = prefix === "\u001b" ? "\\e" : "\\C-x";
+      const consumed = join(shell.home, "prefix-consumed");
+      if (state === "consumed") {
+        // Give the shorter binding an observable completion while retaining
+        // longer sequences, including bracketed paste. Wait for that binding,
+        // rather than guessing when the line editor's key timeout has elapsed.
+        const setup = zsh
+          ? `observe_prefix() { : > "$HOME/prefix-consumed"; }; zle -N observe-prefix observe_prefix; bindkey '${key}' observe-prefix`
+          : `bind -x '"${readlineKey}": : > "$HOME/prefix-consumed"'`;
+        await ranCommand(shell, await shell.type(setup));
+      } else {
+        // An unbound shorter key has no ambiguous-binding timeout. Verify the
+        // native keymap so this case keeps the prefix pending until the reset.
+        const longerKey = prefix === "\u001b" ? "^[[200~" : "^X^X";
+        const bindings = await shell.type(zsh ? `bindkey '${key}'; bindkey '${longerKey}'` : "bind -p; bind -s; bind -X");
+        await ranCommand(shell, bindings);
+        const output = shell.tracker.get((bindings as { firstBlockId: number }).firstBlockId)!.output;
+        if (zsh) {
+          const action = prefix === "\u001b" ? "bracketed-paste" : "exchange-point-and-mark";
+          expect(output).toBe(`"${key}" undefined-key\n"${longerKey}" ${action}\n`);
+        } else {
+          expect(output.split("\n").some((line) => line.startsWith(`"${readlineKey}":`))).toBe(false);
+          expect(output).toContain(prefix === "\u001b" ? '"\\e[200~": bracketed-paste-begin' : '"\\C-x\\C-x": exchange-point-and-mark');
+        }
+      }
+      await until(() => shell.tracker.promptState() === "ready");
       const running = await shell.type("sleep 1");
       await until(() => shell.tracker.promptState() === "command-running");
       // A key pressed while the command runs reaches the line editor at the next prompt.
       shell.press(prefix);
       await ranCommand(shell, running);
+      if (state === "consumed") await until(() => existsSync(consumed));
       shell.elapse(USER_INPUT_QUIET_MS + 200);
       await until(() => shell.tracker.promptState() === "ready");
       const result = await shell.type("echo SAFE-RUN");
@@ -192,13 +226,17 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       expect(shell.tracker.promptEndCount()).toBe(ready + 1);
     }, 30_000);
 
-    it("stays ready when the line editor redraws its prompt (resize, Ctrl-L)", async () => {
+    it("keeps resize ready and Ctrl-L redraw pending after user input goes quiet", async () => {
       const shell = await startShell(path!);
+      const promptEnd = /\u001b\]133;B;[0-9a-f]{32}\u0007/u;
+      const beforeResize = shell.output().length;
       shell.pty.resize(100, 30);
-      await sleep(500);
+      await until(() => promptEnd.test(shell.output().slice(beforeResize)));
       expect(shell.tracker.promptState()).toBe("ready");
       // Ctrl-L is the user's key: it counts as typing until it goes quiet.
+      const beforeClear = shell.output().length;
       shell.press("\u000c");
+      await until(() => promptEnd.test(shell.output().slice(beforeClear)));
       shell.elapse(USER_INPUT_QUIET_MS + 300);
       expect(shell.tracker.promptState()).toBe("pending-input");
     }, 30_000);
