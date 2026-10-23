@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { systemProcessProbe } from "../../src/__tests__/support/test-run-dirs.js";
 
 const APP_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const GOLDEN_PLUGINS = join(APP_ROOT, "src/plugins/isolation/__tests__/fixtures/host-protocol/3/plugins");
@@ -118,16 +119,6 @@ export const createPlugin = async () => {
 
 const descendantPids: number[] = [];
 
-/** Whether `pid` still names a live process. */
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 afterAll(async () => {
   for (const pid of descendantPids) {
     try {
@@ -141,7 +132,7 @@ afterAll(async () => {
   // gone, and its handles close a moment after it reports an exit code, so
   // the removal waits for both.
   const deadline = Date.now() + 10_000;
-  while (descendantPids.some(alive) && Date.now() < deadline) {
+  while (descendantPids.some((pid) => systemProcessProbe.exists(pid)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   // The links go first, one by one and never recursively: a recursive removal
