@@ -143,6 +143,11 @@ export interface McpOAuthConfig {
   authorizationServers?: string[];
   scopes?: string[];
   clientRegistration?: "client-id-metadata-document" | "dynamic" | "preregistration" | "manual";
+  /**
+   * Public client ID the authorization server pre-registered for Ave. When set it is
+   * used before any metadata document or dynamic registration. No secret is stored.
+   */
+  clientId?: string;
 }
 
 export interface McpStdioServerConfig extends McpServerConfigBase {

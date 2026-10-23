@@ -61,6 +61,8 @@ interface Fixture {
   /** Metadata documents the fake server fetched, and an optional replacement document. */
   cimdFetches: string[];
   cimdDocument?: Record<string, unknown>;
+  /** Clients the operator registered out of band, with their registered redirect URIs. */
+  preregistered: Map<string, string[]>;
 }
 
 /** The document the web site publishes; the fake server "fetches" it from the repository. */
@@ -76,8 +78,13 @@ const PUBLISHED_CLIENT_DOCUMENT = join(__dirname, "..", "..", "..", "web", "publ
 function validateClientDocument(clientId: string, redirectUri: string, document: Record<string, unknown>): boolean {
   if (document.client_id !== clientId || typeof document.client_name !== "string" ||
     !Array.isArray(document.redirect_uris) || document.redirect_uris.length === 0) return false;
+  return redirectMatches(document.redirect_uris, redirectUri);
+}
+
+/** Exact redirect matching, except that a loopback IP literal ignores the port (RFC 8252 §7.3). */
+function redirectMatches(registered: unknown[], redirectUri: string): boolean {
   const requested = new URL(redirectUri);
-  return document.redirect_uris.some((candidate) => {
+  return registered.some((candidate) => {
     if (typeof candidate !== "string") return false;
     const listed = new URL(candidate);
     const loopbackIp = listed.protocol === "http:" && (listed.hostname === "127.0.0.1" || listed.hostname === "[::1]");
@@ -103,7 +110,7 @@ async function fixture(): Promise<Fixture> {
     authorizations: [], refreshRevoked: false, rejectAccess: false, expiresIn: 3600, methods: ["S256"],
     dcr: true, redirectMetadata: false, resourceMetadataAvailable: true, tokenRedirect: false, oidc: false, discoveryVersions: [], challengeScope: "tools",
     endpointPath: "/mcp", deniedScopes: [], clients: new Map(), authorizedRedirects: [], tokenScopes: new Map(),
-    cimd: false, tokenAuthMethods: ["none"], cimdFetches: [],
+    cimd: false, tokenAuthMethods: ["none"], cimdFetches: [], preregistered: new Map(),
   } as unknown as Fixture;
   let lastAuthorizedScope = "";
   const server = createServer(async (request, response) => {
@@ -160,6 +167,12 @@ async function fixture(): Promise<Fixture> {
           ? JSON.parse(readFileSync(PUBLISHED_CLIENT_DOCUMENT, "utf8")) as Record<string, unknown> : undefined);
         const redirectUri = url.searchParams.get("redirect_uri") ?? "";
         if (!document || !validateClientDocument(requestedClient, redirectUri, document)) { json({ error: "invalid_client" }, 400); return; }
+        state.clients.set(requestedClient, [redirectUri]);
+      }
+      const preregistered = state.preregistered.get(requestedClient);
+      if (preregistered) {
+        const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+        if (!redirectMatches(preregistered, redirectUri)) { json({ error: "invalid_request" }, 400); return; }
         state.clients.set(requestedClient, [redirectUri]);
       }
       // Strict: the redirect URI must be one the client registered, compared exactly.
@@ -716,6 +729,79 @@ describe("remote authorization", () => {
     await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-registration-unsupported" });
     expect(state.registrations).toHaveLength(0);
     expect(openAuthorizationUrl).not.toHaveBeenCalled();
+  });
+
+  it("uses a pre-registered client before a metadata document or registration, on every new port", async () => {
+    const state = await fixture();
+    state.cimd = true;
+    state.preregistered.set("ave-operator-client", ["http://127.0.0.1/"]);
+    const { session } = createSession(state, { config: { oauth: { clientId: "ave-operator-client" } } });
+    await session.authenticate();
+    expect(state.registrations).toHaveLength(0);
+    expect(state.cimdFetches).toHaveLength(0);
+    expect(state.authorizations[0].searchParams.get("client_id")).toBe("ave-operator-client");
+    expect(state.grants[0].get("client_id")).toBe("ave-operator-client");
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+    state.rejectAccess = true;
+    state.refreshRevoked = true;
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    state.rejectAccess = false;
+    state.refreshRevoked = false;
+    await session.authenticate();
+    const [first, second] = state.authorizations.map((url) => url.searchParams.get("redirect_uri"));
+    expect(second).not.toBe(first);
+    expect(state.authorizations[1].searchParams.get("client_id")).toBe("ave-operator-client");
+    expect(state.registrations).toHaveLength(0);
+    expect(session.getStatus()).toBe("authenticated");
+  });
+
+  it("restores a pre-registered client after restart without registering", async () => {
+    const state = await fixture();
+    state.preregistered.set("ave-operator-client", ["http://127.0.0.1/"]);
+    const config = { oauth: { clientId: "ave-operator-client" } };
+    const first = createSession(state, { config });
+    await first.session.authenticate();
+    first.session.dispose();
+    const restored = createSession(state, { store: first.store, config });
+    expect(restored.session.getStatus()).toBe("authenticated");
+    expect((await restored.session.fetch(state.resource)).ok).toBe(true);
+    expect(state.registrations).toHaveLength(0);
+  });
+
+  it("is rejected by a strict server when the pre-registered client lacks the loopback redirect", async () => {
+    const state = await fixture();
+    state.preregistered.set("ave-operator-client", ["http://localhost/"]);
+    const { session } = createSession(state, { config: { oauth: { clientId: "ave-operator-client" } } });
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(state.grants).toHaveLength(0);
+    expect(state.registrations).toHaveLength(0);
+  });
+
+  it.each([
+    ["an empty client ID", { clientId: "" }],
+    ["a client ID with spaces", { clientId: "ave operator" }],
+    ["a client ID that is too long", { clientId: "a".repeat(257) }],
+    ["a client ID with dynamic registration", { clientId: "ave-operator-client", clientRegistration: "dynamic" as const }],
+    ["a client ID with a metadata document", { clientId: "ave-operator-client", clientRegistration: "client-id-metadata-document" as const }],
+  ])("fails clearly before any browser or registration step for %s", async (_label, oauth) => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl, catchers } = createSession(state, { config: { oauth } });
+    const open = vi.spyOn(catchers, "open");
+    expect(session.getStatus()).toBe("error");
+    expect(session.getBlockedCode()).toBe("mcp-auth-registration-unsupported");
+    await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-registration-unsupported" });
+    expect(open).not.toHaveBeenCalled();
+    expect(openAuthorizationUrl).not.toHaveBeenCalled();
+    expect(state.registrations).toHaveLength(0);
+  });
+
+  it.each(["preregistration", "manual"] as const)("accepts the %s registration mode with a client ID", async (clientRegistration) => {
+    const state = await fixture();
+    state.preregistered.set("ave-operator-client", ["http://127.0.0.1/"]);
+    const { session } = createSession(state, { config: { oauth: { clientId: "ave-operator-client", clientRegistration } } });
+    await session.authenticate();
+    expect(state.registrations).toHaveLength(0);
+    expect(session.getStatus()).toBe("authenticated");
   });
 
   it("marks a 403 insufficient_scope as step-up without opening the browser, then requests the scope union", async () => {

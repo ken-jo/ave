@@ -24,6 +24,7 @@ import type { AuthRedirectCatchers } from "../main/auth-redirect-catcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import type { McpAuthErrorCode, McpAuthStatus, McpHttpServerConfig } from "./types.js";
+import { isValidOAuthClientId } from "./safe-names.js";
 import { MCP_PROTOCOL_VERSION } from "./protocol-constants.js";
 
 export interface McpOAuthSecrets {
@@ -41,7 +42,7 @@ export interface McpOAuthDependencies {
   openAuthorizationUrl(url: string): Promise<void>;
 }
 
-type ClientSource = "metadata-document" | "dynamic";
+type ClientSource = "preregistered" | "metadata-document" | "dynamic";
 
 /**
  * Ave's OAuth Client ID Metadata Document, published by the web site from
@@ -145,8 +146,18 @@ export function tryMcpOAuthCredentialKey(config: McpHttpServerConfig): string | 
   catch { return undefined; }
 }
 
+/**
+ * Whether the configured registration can ever complete. A client ID goes with
+ * no mode or a pre-registration mode; those modes need one; any malformed or
+ * contradictory combination fails clearly instead of picking a mode silently.
+ */
 function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | undefined {
   const mode = config.oauth?.clientRegistration;
+  const clientId = config.oauth?.clientId;
+  if (clientId !== undefined) {
+    return isValidOAuthClientId(clientId) && (mode === undefined || mode === "preregistration" || mode === "manual")
+      ? undefined : "mcp-auth-registration-unsupported";
+  }
   return mode === undefined || mode === "dynamic" || mode === "client-id-metadata-document"
     ? undefined : "mcp-auth-registration-unsupported";
 }
@@ -211,7 +222,7 @@ export class McpOAuthSession {
       if (!raw) return;
       const saved = JSON.parse(raw) as Credentials;
       if (saved.serverUrl !== this.serverUrl || typeof saved.issuer !== "string" || typeof saved.resource !== "string" ||
-        (saved.clientSource !== "dynamic" && saved.clientSource !== "metadata-document")) return;
+        !["preregistered", "metadata-document", "dynamic"].includes(saved.clientSource)) return;
       if (secureUrl(saved.issuer, allowPrivate).search ||
         (this.config.oauth?.authorizationServers?.length && !this.config.oauth.authorizationServers.includes(saved.issuer))) return;
       const resource = secureUrl(saved.resource, allowPrivate);
@@ -398,7 +409,12 @@ export class McpOAuthSession {
    */
   private async selectClient(discovery: Discovery, redirectUri: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
     const mode = this.config.oauth?.clientRegistration;
-    // Spec order: Client ID Metadata Document when the server advertises it, then dynamic registration.
+    // Spec order: a pre-registered client, then a Client ID Metadata Document when the server
+    // advertises it, then dynamic registration. registrationBlock() already vetted the combination.
+    const clientId = this.config.oauth?.clientId;
+    if (clientId !== undefined) {
+      return { source: "preregistered", client: { client_id: clientId, redirect_uris: [redirectUri], token_endpoint_auth_method: "none" } };
+    }
     const metadataDocumentUsable = discovery.metadata.client_id_metadata_document_supported === true &&
       (!discovery.metadata.token_endpoint_auth_methods_supported || discovery.metadata.token_endpoint_auth_methods_supported.includes("none"));
     if ((mode === undefined || mode === "client-id-metadata-document") && metadataDocumentUsable) {

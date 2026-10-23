@@ -16,6 +16,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
 // ─── Helper types re-exported from renderer/types.ts ─
 
@@ -71,6 +72,7 @@ const EMPTY_FORM = {
   url: "",
   auth: "none" as "none" | "sso" | "api-key" | "oauth",
   apiKey: "",
+  oauthClientId: "",
   headers: "",
   env: "",
   allowPrivateNetworks: false,
@@ -207,6 +209,7 @@ export function McpTab() {
     transport: `${formIdPrefix}-transport`,
     auth: `${formIdPrefix}-auth`,
     apiKey: `${formIdPrefix}-api-key`,
+    oauthClientId: `${formIdPrefix}-oauth-client-id`,
     command: `${formIdPrefix}-command`,
     args: `${formIdPrefix}-args`,
     env: `${formIdPrefix}-env`,
@@ -393,6 +396,11 @@ export function McpTab() {
     }
     const authError = validateAuthApiKey(form.auth, form.apiKey);
     if (authError) { showBanner("error", authError); return; }
+    const oauthClientId = form.oauthClientId.trim();
+    if (form.auth === "oauth" && oauthClientId && !isValidOAuthClientId(oauthClientId)) {
+      showBanner("error", t("mcpTab.oauthClientIdInvalid", { max: String(MAX_OAUTH_CLIENT_ID_LEN) }));
+      return;
+    }
 
     let config: McpServerConfig;
     try {
@@ -425,7 +433,7 @@ export function McpTab() {
           transport: "http",
           url: form.url.trim(),
           allowPrivateNetworks: form.allowPrivateNetworks,
-          ...(form.auth === "oauth" ? { oauth: {} } : {}),
+          ...(form.auth === "oauth" ? { oauth: oauthClientId ? { clientId: oauthClientId } : {} } : {}),
           ...(headers ? { headers } : {}),
         };
       }
@@ -743,6 +751,24 @@ export function McpTab() {
                   />
                 </div>
               </div>
+
+              {form.transport === "http" && form.auth === "oauth" && (
+                <div className="space-y-1">
+                  <Label htmlFor={formIds.oauthClientId} className="text-xs">
+                    {t("mcpTab.oauthClientIdLabel")}
+                  </Label>
+                  <Input
+                    id={formIds.oauthClientId}
+                    className="h-7 text-xs font-mono"
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={MAX_OAUTH_CLIENT_ID_LEN}
+                    value={form.oauthClientId}
+                    onChange={(e) => setForm((f) => ({ ...f, oauthClientId: e.target.value }))}
+                  />
+                  <p className="text-[10px] text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
+                </div>
+              )}
 
               {form.transport === "stdio" ? (
                 <>

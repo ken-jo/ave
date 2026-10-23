@@ -148,4 +148,32 @@ describe("McpTab browser authentication", () => {
     expect(await screen.findByText(message)).toBeInTheDocument();
     expect(mcp.authenticate).not.toHaveBeenCalled();
   });
+
+  async function openOAuthForm() {
+    const mcp = setup();
+    await screen.findByRole("button", { name: "인증하기" });
+    fireEvent.click(screen.getByRole("button", { name: "+ 서버 추가" }));
+    expect(screen.queryByLabelText("클라이언트 ID (선택)")).toBeNull();
+    fireEvent.change(screen.getByLabelText("전송 방식 *"), { target: { value: "http" } });
+    fireEvent.change(screen.getByLabelText("서버 ID *"), { target: { value: "remote-b" } });
+    fireEvent.change(screen.getByLabelText("URL *"), { target: { value: "https://example.test/other" } });
+    fireEvent.change(screen.getByLabelText("인증"), { target: { value: "oauth" } });
+    return mcp;
+  }
+
+  it("sends a pre-registered client ID with the OAuth configuration", async () => {
+    const mcp = await openOAuthForm();
+    fireEvent.change(screen.getByLabelText("클라이언트 ID (선택)"), { target: { value: "  ave-operator-client  " } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    await waitFor(() => expect(mcp.addConfig).toHaveBeenCalledWith({ id: "remote-b", transport: "http", auth: "oauth",
+      oauth: { clientId: "ave-operator-client" }, url: "https://example.test/other", allowPrivateNetworks: false }));
+  });
+
+  it("rejects a client ID with spaces before saving", async () => {
+    const mcp = await openOAuthForm();
+    fireEvent.change(screen.getByLabelText("클라이언트 ID (선택)"), { target: { value: "ave operator" } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    expect(await screen.findByText("클라이언트 ID는 공백 없이 보이는 문자 1~256자여야 합니다.")).toBeInTheDocument();
+    expect(mcp.addConfig).not.toHaveBeenCalled();
+  });
 });
