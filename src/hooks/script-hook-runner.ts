@@ -33,7 +33,7 @@
  * DLP applied at the *caller* — input is already redacted before this module
  * sees it.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import {
   resolveShell,
@@ -61,6 +61,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import {
   bundledWrappedEnv,
   spawnWindowsBundledProcess,
@@ -270,6 +271,7 @@ export async function runOneHookScript(
 
   assertManagedChildProcessAdmissionOpen("hook:script");
   let cleanupWrap: (() => void) | undefined;
+  let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   if (confinement && isAsrtSandboxActive() && process.platform === "win32") {
     // srt-win: the hook runs through the stdio relay with an ACL grant on its
@@ -284,6 +286,7 @@ export async function runOneHookScript(
         cwd,
         allowRead: [confinement.generationRoot],
         allowWrite: [confinement.dataDir],
+        egressOwner: { kind: "worker", role: "hook", pluginId: confinement.pluginId },
       });
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
@@ -302,9 +305,11 @@ export async function runOneHookScript(
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome, allowWrite: [confinement.dataDir], ownPluginReads: [confinement.generationRoot],
-        tempPrincipal: { kind: "plugin", id: confinement.pluginId } });
+        tempPrincipal: { kind: "plugin", id: confinement.pluginId },
+        egressOwner: { kind: "worker", role: "hook", pluginId: confinement.pluginId } });
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
+      wrappedEgress = wrapped.egress;
       let cleaned = false;
       cleanupWrap = () => {
         if (cleaned) return;
@@ -319,23 +324,41 @@ export async function runOneHookScript(
   }
 
   return new Promise<ScriptHookInvocationResult>((resolve) => {
-    const child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
-      cwd,
-      // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
-      // etc. to hook scripts. The hook receives only the AVE_HOOK_* vars.
-      env: spawnEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Run in a new process group so SIGKILL on timeout reaps the
-      // entire descendant tree (sh → script → sleep). Without this the
-      // child shell dies but its descendants keep running.
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcess;
+    try {
+      child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+        cwd,
+        // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
+        // etc. to hook scripts. The hook receives only the AVE_HOOK_* vars.
+        env: spawnEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        // Run in a new process group so SIGKILL on timeout reaps the
+        // entire descendant tree (sh → script → sleep). Without this the
+        // child shell dies but its descendants keep running.
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      wrappedEgress?.release();
+      cleanupWrap?.();
+      throw error;
+    }
+    if (wrappedEgress !== undefined) {
+      const egress = wrappedEgress;
+      child.once("exit", () => egress.release());
+      child.once("close", () => egress.release());
+      child.once("error", () => { if (child.pid === undefined) egress.release(); });
+    }
     // A Windows sandboxed hook is registered by `spawnConfinedChild`.
     if (windowsSpawn === undefined) {
       trackManagedChildProcess(child, {
         label: "hook:script",
         killProcessGroup: process.platform !== "win32",
       });
+    }
+    // Detached (POSIX), the hook leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
+      wrappedEgress.noteProcessGroup(child.pid);
     }
     // Through the relay the hook's input and output are the relay's streams,
     // not the child's own pipes (`spawnWindowsBundledProcess`).

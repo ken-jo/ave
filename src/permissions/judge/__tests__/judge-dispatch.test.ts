@@ -8,7 +8,12 @@ import { DeferredQueue } from "../../reviewer/deferred-queue.js";
 import { LlmRiskClassifier, RuleBasedRiskClassifier, type LlmReviewerProvider, type RiskClassifier, type RiskVerdict } from "../../reviewer/risk-classifier.js";
 import { buildPermissionEvaluationContext } from "../../evaluation-context.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../../sensitive-paths.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setActiveSandboxCapability,
+  setSandboxRequestedAtBoot,
+} from "../../sandbox-capability.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "../../../tools/pipeline/reviewer-dispatch.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -23,6 +28,7 @@ const resources = new PermissionTestResources();
 afterEach(async () => {
   vi.restoreAllMocks();
   __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
   await resources.cleanup();
 });
 
@@ -432,6 +438,7 @@ describe("configured judge dispatch lanes", () => {
 
   it.each(["foreground", "headless"] as const)("rejects a stale external allow after confinement changes in %s", async (lane) => {
     const subject = makeSubject();
+    setSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: "linux", reason: "filesystem confined",
       confines: { filesystem: true, process: true, network: true },

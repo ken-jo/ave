@@ -13,7 +13,7 @@ const log = createLogger("policy-store");
 
 
 
-const defaultUserPolicyPath = (): string => resolve(aveHome(), "policy.json");
+export const userPolicyPath = (): string => resolve(aveHome(), "policy.json");
 
 
 
@@ -172,7 +172,7 @@ async function readPolicyFile(filePath: string): Promise<PolicyFileRead> {
  * @param adminPath Admin policy file path (default: getAdminPolicyPath())
  */
 export async function loadPolicy(
-  userPath = defaultUserPolicyPath(),
+  userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<LoadedPolicy> {
   const [userRead, adminRead] = await Promise.all([
@@ -239,7 +239,7 @@ export async function loadPolicy(
  */
 export async function savePolicy(
   patch: Partial<Omit<PolicyFile, "version" | "managed" | "updatedAt">>,
-  userPath = defaultUserPolicyPath(),
+  userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<PolicyFile> {
   return withPolicyLock(userPath, async () => {

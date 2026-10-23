@@ -66,6 +66,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
         run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
+      # Native confinement cases run in the main suite, including integration
+      # pull requests that do not run the dedicated platform jobs.
+      - uses: ./ave/.github/actions/setup-linux-sandbox
+        if: steps.docs-impact.outputs.docs_only != 'true'
       # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
       # the owner's own bun home on a self-hosted runner; on Windows it is a
       # checksum-verified release download (see the action).
@@ -144,19 +148,6 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
-      # The terminal's real-shell tests (typing, and the differential check of
-      # what zsh and bash run against what the permission rules read) need zsh,
-      # which the Ubuntu image lacks. A runner without passwordless sudo keeps
-      # its own shells and those tests skip zsh.
-      - name: Install zsh for the real-shell terminal tests
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        run: |
-          if command -v zsh >/dev/null; then exit 0; fi
-          if sudo -n true 2>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
-          else
-            echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
-          fi
       - name: Run the suite and its coverage gate
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
@@ -181,6 +172,7 @@ jobs:
         # scheduling periods were throttled with four workers plus their
         # subprocesses.
         env:
+          AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
         run: bun run test:ci
@@ -520,13 +512,8 @@ jobs:
       # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
       # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
       # `--managed-python`, so no step relies on the machine's own python3.
-      # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
-      # runs the whole suite has no bubblewrap — so there they return early and
-      # pass without measuring anything. macOS needs no backend install; Linux
-      # gets its own job below, which installs the backend first.
-      # `AVE_REQUIRE_SANDBOX_CASES=1` is what stops that from being a silent
-      # arrangement: if the sandbox cannot initialize here, the cases FAIL
-      # instead of reporting a measurement they never took.
+      # Native confinement cases require a live backend. The legacy cases also
+      # use this flag to fail when initialization cannot establish isolation.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -538,6 +525,10 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/permissions/__tests__/sandbox-control-writes.integration.test.ts
+          src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
+          src/permissions/__tests__/sandbox-git-controls.integration.test.ts
+          src/permissions/__tests__/egress-terminal-background.integration.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -579,47 +570,8 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # ASRT's Linux backend checks for `bwrap` and `socat` and scans deny paths
-      # with `rg`; its README lists all three. `xvfb` is for the adversarial
-      # suite's Electron control: a full Electron main process needs a display
-      # driver, and `xvfb-run -a` is Electron's documented answer on a headless
-      # CI host ("Testing on Headless CI Systems").
-      - name: Install the Linux sandbox backend
+      - uses: ./ave/.github/actions/setup-linux-sandbox
         if: steps.docs-impact.outputs.docs_only != 'true'
-        # A self-hosted runner has no sudo and is provisioned with these
-        # already; install only what is missing so both runner kinds pass.
-        run: |
-          missing=0
-          for tool in bwrap socat rg xvfb-run bash zsh; do
-            command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
-          done
-          if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
-          else
-            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
-          fi
-      # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
-      # strips what bubblewrap needs (ASRT README, "Platform-Specific
-      # Dependencies"). A runner setting, not a product change: the app never
-      # changes a user's sysctl, and on such a host the sandbox fails to
-      # initialise and a `process` entry is refused `process-entry-unconfined`.
-      - name: Allow unprivileged user namespaces
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        # Only when the knob exists and is not already 0 (a self-hosted runner
-        # has it set at provisioning and has no sudo). The next step proves
-        # the namespace either way.
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          else
-            echo "unprivileged user namespaces already allowed"
-          fi
-      # Fails here, with its own message, on a runner that cannot create the
-      # namespace — rather than inside a test.
-      - name: Prove the sandbox backend
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
       # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
       # the owner's own bun home on a self-hosted runner; on Windows it is a
       # checksum-verified release download (see the action).
@@ -673,3 +625,7 @@ jobs:
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
+          src/permissions/__tests__/sandbox-control-writes.integration.test.ts
+          src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
+          src/permissions/__tests__/sandbox-git-controls.integration.test.ts
+          src/permissions/__tests__/egress-terminal-background.integration.test.ts

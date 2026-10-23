@@ -319,7 +319,7 @@ function removeSeededElectronDirectories(userDataDir: string, tempHome: string):
   rmSync(tempHome, { recursive: true, force: true });
 }
 
-function makeTreeWritableSync(root: string): void {
+export function makeTreeWritableSync(root: string): void {
   try {
     chmodSync(root, 0o700);
   } catch {

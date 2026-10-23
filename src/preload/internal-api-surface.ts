@@ -1,3 +1,4 @@
+import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
@@ -842,6 +843,8 @@ export function buildInternalApiSurface() {
     sandboxCapability: async () => ipcRenderer.invoke(PERMISSIONS.sandboxCapability),
     /** Read-only: Windows srt-win install readiness (group + WFP + instructions). */
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
+    egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
+    egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /**
      * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
      * UAC prompt). The ONLY user-consented privilege-escalation entry point —

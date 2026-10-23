@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 /**
  * ASRT (Anthropic sandbox-runtime) host adapter — wiring tests.
  *
@@ -181,9 +182,9 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
 
       const { argv, env } = await wrapToolCommand(
         "echo asrt-ok",
-        process.platform === "win32"
+        { ...(process.platform === "win32"
           ? {}
-          : { filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
+          : { filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } }), commandId: TEST_COMMAND_ID },
       );
 
       // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
@@ -206,7 +207,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   });
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "finds an admitted executable beneath the denied home without exposing its siblings",
+    "finds an admitted executable while allowing broad sibling reads",
     async (context) => {
       if (!(await asrtCanInitialize())) return context.skip();
       const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-executable-")));
@@ -228,7 +229,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
         const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepared);
         expect(result.output).toContain(executable);
         expect(result.output).toContain("executable-visible");
-        expect(result.output).not.toContain("sibling-must-stay-private");
+        expect(result.output).toContain("sibling-must-stay-private");
         expect(result.isError).toBe(true);
         expect(result.metadata.sandboxed).toBe(true);
         expect(readFileSync(executable, "utf8")).toBe("#!/bin/sh\nprintf 'executable-visible\\n'\n");
@@ -240,7 +241,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   );
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "runs git with a disposable HOME instead of probing the denied real .gitconfig",
+    "reads a pre-created git repository with a disposable HOME and isolated fixture config",
     async () => {
       if (!(await asrtCanInitialize())) return;
 
@@ -249,6 +250,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       // disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
       const gitEnv = gitFixtureEnv(cwd);
+      const fixtureGitConfig = gitEnv.GIT_CONFIG_GLOBAL;
+      if (typeof fixtureGitConfig !== "string") throw new Error("Git fixture config path is missing");
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [
@@ -256,7 +259,9 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "fixture",
         ], { cwd, env: gitEnv });
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-        const command = `printf '%s\\n' "$HOME"; git -C '${cwd.replace(/'/g, `'\\''`)}' log --oneline -n 1`;
+        // Absent control files are protected placeholders on some backends;
+        // point Git at this fixture's separate config rather than reading one.
+        const command = `printf '%s\\n' "$HOME"; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(fixtureGitConfig)} git -C ${shellQuote(cwd)} log --oneline -n 1`;
         const result = await spawnWithSandbox(
           command,
           cwd,
@@ -295,7 +300,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       if (!(await asrtCanInitialize())) return;
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      const { argv } = await wrapToolCommand("true");
+      const { argv } = await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
       try {
         expect(argv[1]).toBe("-c");
         const renderedWrapper = argv[2] ?? "";
@@ -319,7 +324,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const helper = getVendoredApplySeccompPath()!;
       const checkout = checkoutRootAbove(helper);
-      const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
+      const { argv } = await wrapToolCommand("true", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [checkout], allowRead: [] } });
       try {
         const words = execFileSync("/bin/bash", ["-c", `set -- ${argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
         expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === checkout)).toBe(true);
@@ -413,7 +418,7 @@ describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
     // is no `customConfig` / network / weakening channel — a call attempting to
     // smuggle `allowAppleEvents` etc. is a compile error, so the runtime call
     // simply succeeds with only the filesystem slice applied.
-    const { argv } = await wrapToolCommand("echo trust-ok", {
+    const { argv } = await wrapToolCommand("echo trust-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
@@ -423,12 +428,12 @@ describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
 describe("asrt-sandbox — self-enforcing gate (PR #1356 NIT)", () => {
   it("wrapToolCommand throws when the sandbox is not active", async () => {
     expect(isAsrtSandboxActive()).toBe(false);
-    await expect(wrapToolCommand("echo nope")).rejects.toThrow(/not active/i);
+    await expect(wrapToolCommand("echo nope", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/i);
   });
 
   it("wrapWorkerCommand throws when the sandbox is not active", async () => {
     expect(isAsrtSandboxActive()).toBe(false);
-    await expect(wrapWorkerCommand("echo nope")).rejects.toThrow(/not active/i);
+    await expect(wrapWorkerCommand("echo nope", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/i);
   });
 });
 
@@ -453,7 +458,7 @@ describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
       _resetConfinedProcessPhaseForTests();
       expect(confinedProcessesMayBeRunning()).toBe(false);
       const wrap = kind === "tool" ? wrapToolCommand : wrapWorkerCommand;
-      await wrap("true", { filesystem: { allowWrite: [], allowRead: [] } });
+      await wrap("true", { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [], allowRead: [] } });
       expect(confinedProcessesMayBeRunning()).toBe(true);
     });
   }
@@ -466,7 +471,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
     // WrapOptions exposes only `filesystem` + `abortSignal` — there is no
     // `network` channel (it would be INERT per command; enforcement is the
     // shared config). The wrap succeeds with the filesystem slice only.
-    const { argv } = await wrapWorkerCommand("echo worker-ok", {
+    const { argv } = await wrapWorkerCommand("echo worker-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
@@ -513,7 +518,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   const curlProbe = async (host: string) => {
     const { argv, env } = await wrapWorkerCommand(
       `curl -sS -o /dev/null -w '%{http_code}' --max-time 20 --noproxy '' http://${host}:${port}/`,
-      { filesystem: { allowWrite: [], allowRead: [] } },
+      { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [], allowRead: [] } },
     );
     const res = await runArgv(argv, env);
     cleanupAsrtSandboxAfterCommand();
@@ -634,7 +639,7 @@ describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () =
     process.env.HTTP_PROXY = HOST_PROXY;
     try {
       await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
-      const { env } = await wrapWorkerCommand("echo proxy-check", {
+      const { env } = await wrapWorkerCommand("echo proxy-check", { commandId: TEST_COMMAND_ID,
         filesystem: { allowWrite: [], allowRead: [] },
       });
       const childEnv = buildSandboxedChildEnv(env);
@@ -1127,7 +1132,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       denyRead: [join(FAKE_AVE_HOME, "secrets")],
     });
     const occurrences = dupConfig.filesystem.denyRead.filter(
-      (p: string) => p === join(FAKE_AVE_HOME, "secrets"),
+      (p) => p === join(FAKE_AVE_HOME, "secrets"),
     ).length;
     expect(occurrences).toBe(1);
   });
@@ -1150,7 +1155,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });
-    expect(dupConfig.filesystem.denyWrite.filter((p: string) => p === dup)).toHaveLength(1);
+    expect(dupConfig.filesystem.denyWrite.filter((p) => p === dup)).toHaveLength(1);
   });
 
   it("default-OFF: computing the deny-list / config does NOT activate the sandbox gate", () => {
@@ -1354,20 +1359,20 @@ describe("runtime write defaults", () => {
 });
 
 describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
-  it("shares explicitly granted temp writes with the host and later commands", async () => {
+  it("retains an explicitly granted temp directory for the host and later commands", async () => {
     expect(await asrtCanInitialize()).toBe(true);
     const root = mkdtempSync("/tmp/ave-ordinary-temp-");
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp", root] });
       const target = join(root, "shared.txt");
-      const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`);
+      const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`, { commandId: TEST_COMMAND_ID });
       expect(first.argv[1]).toBe("-c");
       expect(/--tmpfs'?\s+'?\/tmp\/claude(?:'|\s|$)/u.test(first.argv[2] ?? "")).toBe(false);
       const written = await runArgv(first.argv, first.env, process.cwd());
       cleanupAsrtSandboxAfterCommand();
       expect(written.code, written.stderr).toBe(0);
       expect(readFileSync(target, "utf8")).toBe("shared");
-      const next = await wrapToolCommand(`cat ${shellQuote(target)}`);
+      const next = await wrapToolCommand(`cat ${shellQuote(target)}`, { commandId: TEST_COMMAND_ID });
       const read = await runArgv(next.argv, next.env, process.cwd());
       cleanupAsrtSandboxAfterCommand();
       expect(read.code, read.stderr).toBe(0);

@@ -2,6 +2,7 @@ import { type ElectronApplication, type Page,
 } from "playwright";
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +10,7 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
   launchElectron,
+  makeTreeWritableSync,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
 
@@ -26,20 +28,20 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 type LaunchEnv = Record<string, string | undefined>;
 
 async function seedE2ePlugins(
-  aveHomeForTest: string,
+  aveHome: string,
   seedTogglePlugin: boolean,
   seedViewFixturePlugin: boolean,
   seedAlertPlugin: boolean,
 ): Promise<void> {
   const entries: FixtureRegistryEntry[] = [];
   if (seedAlertPlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, {
+    entries.push(await writeFixturePlugin(aveHome, {
       manifest: ALERT_FIXTURE_MANIFEST,
       files: { [ALERT_FIXTURE_MANIFEST.entry]: ALERT_FIXTURE_SOURCE },
     }));
   }
   if (seedTogglePlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, {
+    entries.push(await writeFixturePlugin(aveHome, {
       manifest: {
         id: "e2e-toggle-plugin",
         name: "E2E Toggle Plugin",
@@ -75,9 +77,9 @@ async function seedE2ePlugins(
     }));
   }
   if (seedViewFixturePlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, VIEW_FIXTURE));
+    entries.push(await writeFixturePlugin(aveHome, VIEW_FIXTURE));
   }
-  writeFixtureRegistry(aveHomeForTest, entries);
+  writeFixtureRegistry(aveHome, entries);
 }
 
 /**
@@ -88,6 +90,8 @@ export type ElectronFixtures = {
   app: ElectronApplication;
   mainWindow: Page;
   userDataDir: string;
+  tempHome: string;
+  aveHome: string;
   /** i18n catalog binding for locale-agnostic assertions (see ./i18n.ts). */
   t: TestT;
 };
@@ -102,6 +106,8 @@ export type ElectronOptions = {
   /** Raw persisted provider id, including an id a newer build has retired. */
   seedLlmProvider: string;
   seedLocale: "ko" | "en";
+  /** Explicit saved sandbox preference; undefined exercises production defaults. */
+  seedOsToolSandbox: boolean | undefined;
   /**
    * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
    * build asks for (an http or loopback marketplace's confirmations, design
@@ -129,10 +135,11 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   // Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own
   // harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
+  seedOsToolSandbox: [undefined, { option: true }],
   devFlag: [true, { option: true }],
 
   userDataDir: async ({}, use) => {
-    const dir = fs.mkdtempSync(path.join("/tmp", "ave-e2e-"));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), "ave-e2e-"));
     await use(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -141,9 +148,24 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     }
   },
 
+  tempHome: async ({}, use) => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), "ave-e2e-home-"));
+    await use(dir);
+    makeTreeWritableSync(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  },
+
+  aveHome: async ({ tempHome }, use) => {
+    const dir = path.join(tempHome, ".ave");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    await use(dir);
+  },
+
   app: async (
     {
       userDataDir,
+      tempHome,
+      aveHome,
       launchEnv,
       onboardingCompleted,
       seedTogglePlugin,
@@ -153,6 +175,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedApiKey,
       seedLlmProvider,
       seedLocale,
+      seedOsToolSandbox,
       devFlag,
     },
     use,
@@ -168,8 +191,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
        secret blobs from a previous dev run on `~/.ave/secrets/` do not bleed
        into the test (their Keychain key may have rotated, decryption fails,
        bootstrap dies). Resolved via the shared `aveHome()` helper. */
-    const aveHomeForTest = path.join(userDataDir, "ave-state");
-    fs.mkdirSync(aveHomeForTest, { recursive: true, mode: 0o700 });
     // Permission mode for the profile. The default is `default`, under which a
     // real model's first path-bearing tool call parks the turn on an approval
     // card — nobody answers it headlessly, so a live spec that needs tools to
@@ -182,7 +203,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       // file silently falls back to `default` — so a partial seed looks like
       // it worked while the app never leaves the default mode.
       fs.writeFileSync(
-        path.join(aveHomeForTest, "permissions.json"),
+        path.join(aveHome, "permissions.json"),
         JSON.stringify(
           { version: 1, rules: [], mode: permissionMode, updatedAt: new Date().toISOString() },
           null,
@@ -192,6 +213,9 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     const baseSettings = buildE2eBaseSettings(onboardingCompleted, seedLocale);
+    if (seedOsToolSandbox !== undefined) {
+      baseSettings.features = { ...(baseSettings.features as object), osToolSandbox: seedOsToolSandbox };
+    }
     const initialSettings = seedLlmProvider
       ? { ...baseSettings, llm: { provider: seedLlmProvider } }
       : baseSettings;
@@ -250,7 +274,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     await seedE2ePlugins(
-      aveHomeForTest,
+      aveHome,
       seedTogglePlugin,
       seedViewFixturePlugin,
       seedAlertPlugin,
@@ -259,11 +283,11 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         ...launchEnv,
-        HOME: userDataDir,
-        USERPROFILE: userDataDir,
+        HOME: tempHome,
+        USERPROFILE: tempHome,
         ...(devFlag ? { AVE_DEV: "1" } : {}),
         AVE_E2E: "1",
-        AVE_HOME: aveHomeForTest,
+        AVE_HOME: aveHome,
         NODE_ENV: "test",
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
       }),

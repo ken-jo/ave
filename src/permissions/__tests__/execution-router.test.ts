@@ -243,7 +243,7 @@ describe("execution router", () => {
     expect(JSON.stringify(plan)).not.toContain("disposable-container");
   });
 
-  it("does not call an ASRT plan workspace-confined unless both dimensions are explicit", () => {
+  it("does not call a sandbox plan workspace-confined unless all confinement dimensions are explicit", () => {
     resetSandbox();
     setSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
@@ -253,7 +253,7 @@ describe("execution router", () => {
       reason: "legacy fixture without declared confinement",
     });
     const legacyPlan = getHostShellExecutionPlan();
-    expect(legacyPlan.mode).toBe("asrt");
+    expect(legacyPlan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "active-sandbox-not-shell-contained" });
     expect(executionRouteForHostShellPlan(legacyPlan)).toBeNull();
 
     expect(buildHostShellExecutionRouteProjection({
@@ -266,7 +266,7 @@ describe("execution router", () => {
     })).toMatchObject({
       decision: "blocked",
       route: null,
-      fallback: "route-unavailable",
+      fallback: "active-sandbox-not-shell-contained",
     });
   });
 

@@ -206,6 +206,7 @@ describe("executor broker shell route", () => {
       layer: 5,
       reviewer: { route: "headless" },
     });
+    const checkDetailed = vi.spyOn(permissionManager, "checkDetailed");
     permissionManager.hasReviewer = () => true;
     const dispatched: unknown[] = [];
     permissionManager.dispatchReviewer = vi.fn(async (_toolName, input) => {
@@ -252,6 +253,10 @@ describe("executor broker shell route", () => {
     expect(result?.is_error).toBeUndefined();
     expect(dispatched[0]).toMatchObject({
       disposableSubstrate: { authority: "workload-broker", id: "1".repeat(64) },
+    });
+    expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
+      hostShellExecutionPlan: { sandboxed: false },
+      shellExecution: { runsSandboxed: true, sandboxAvailable: false },
     });
     expect(localSpawn).not.toHaveBeenCalled();
   });

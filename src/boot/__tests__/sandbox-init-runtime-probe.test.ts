@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
+  isMacProbeError: vi.fn(),
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -50,8 +51,10 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     },
     useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
     initializeAsrtSandbox: h.initialize,
+    subscribeAsrtViolations: async () => () => undefined,
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
+    isAsrtMacRuntimeProbeError: h.isMacProbeError,
   };
 });
 
@@ -76,6 +79,8 @@ beforeEach(() => {
   h.initialize.mockReset();
   h.checkDeps.mockReset();
   h.isProbeError.mockReset();
+  h.isMacProbeError.mockReset();
+  h.isMacProbeError.mockReturnValue(false);
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
 });
@@ -153,5 +158,23 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
     expect(harness.logSandboxGate.mock.invocationCallOrder[0]).toBeLessThan(
       harness.flush.mock.invocationCallOrder[0],
     );
+  });
+});
+
+ describe("macOS sandbox runtime probe failure", () => {
+  it.each([false, true])("records its unavailable reason with explicit override %s", async (explicit) => {
+    setProcessPlatform("darwin");
+    const probeError = new Error("configured wrapper denied");
+    h.initialize.mockRejectedValue(probeError);
+    h.isMacProbeError.mockImplementation((error: unknown) => error === probeError);
+    vi.stubEnv("AVE_SANDBOX_ENABLED", explicit ? "1" : "");
+    const boot = initSandboxGate(harness.context(true));
+    if (explicit) await expect(boot).rejects.toBe(probeError);
+    else await expect(boot).resolves.toBeUndefined();
+    expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
+    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
+      platform: "darwin", outcome: explicit ? "abort" : "degrade",
+      reason: explicit ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed",
+    }));
   });
 });

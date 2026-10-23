@@ -22,6 +22,8 @@ import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       // The reviewer config (and its degrade banner) only renders under the
       // auto-verification mode now that the permission UI has a single axis.
       getMode: vi.fn(async () => ({ mode: "auto" })),

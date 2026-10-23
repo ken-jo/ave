@@ -142,11 +142,18 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     });
     gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
     const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
+    const checkDetailed = vi.spyOn(pm, "checkDetailed");
     const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "explicit-host", permissionContext: permissionContext() });
     expect(sentApprovalCards({ send })).toHaveLength(1);
     expect(executed).toHaveBeenCalledOnce();
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
+    const checkedContext = checkDetailed.mock.calls[0]?.[4];
+    expect(checkedContext?.hostShellExecutionPlan).toBe(executed.mock.calls[0][0].hostShellExecutionPlan);
+    expect(checkedContext?.shellExecution).toEqual({
+      runsSandboxed: false,
+      sandboxAvailable: sandbox === "active",
+    });
     expect(result[0].is_error).toBeUndefined();
   });
 
@@ -200,6 +207,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       layer: 6,
       reviewer: { route: "foreground-auto" },
     });
+    const checkDetailed = vi.spyOn(pm, "checkDetailed");
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
       reviewerInput = input;
@@ -225,8 +233,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       capability: { kind: "asrt", confines: { filesystem: true, process: true, network: true } },
     });
     expect(reviewerInput?.hostShellExecutionPlan).toBe(executedPlan);
+    expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
+      hostShellExecutionPlan: executedPlan,
+      shellExecution: { runsSandboxed: true, sandboxAvailable: true },
+    });
     expect(reviewerInput?.approvalCacheKey).toContain(
-      "host-shell-execution-plan-cache/v3:",
+      "host-shell-execution-plan-cache/v4:",
     );
   });
 
@@ -585,10 +597,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const registry = new ToolRegistry();
       registry.register(shellProbe(execute));
       const requestAndWait = vi.fn();
+      const pm = pmReturning({ decision: "allow", reason: "ordinary explicit-off path", layer: 6 });
+      const checkDetailed = vi.spyOn(pm, "checkDetailed");
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "allow", reason: "ordinary explicit-off path", layer: 6 }),
+        pm,
         undefined,
         { requestAndWait } as never,
       ).executeAll(
@@ -598,11 +612,15 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
 
       expect(requestAndWait).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledTimes(1);
+      expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
+        hostShellExecutionPlan: observedPlan,
+        shellExecution: { runsSandboxed: false, sandboxAvailable: false },
+      });
       expect(observedPlan).toMatchObject({
         platform,
         requestedSandbox: false,
         mode: "plain",
-        fallbackReason: "none",
+        fallbackReason: "disabled-by-setting",
         requiresExplicitUserApproval: false,
       });
       expect(result[0]?.is_error).toBeUndefined();

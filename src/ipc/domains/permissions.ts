@@ -1,3 +1,6 @@
+import { canonicalEgressHost, isValidEgressPort } from "../../permissions/egress-grants.js";
+import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 /**
  * Permissions domain IPC handlers.
  * Covers: ave:permission:*, ave:approval:*, ave:policy:*
@@ -60,6 +63,7 @@ import type {
 import {
   detectSandboxCapability,
   getSandboxBootOutcome,
+  getHostShellExecutionPlan,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -70,6 +74,8 @@ import {
   handleGetMode,
   handleSetPermissionMode,
 } from "../handlers/permissions.js";
+
+import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 
 const log = createLogger("ave");
 
@@ -245,7 +251,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // current platform. `available`/`kind` report the PLATFORM's potential
   // (macOS/Linux can fully confine, Windows can partially confine filesystem +
   // network, others cannot), NOT whether a runner is currently registered —
-  // registration is boot-time + opt-in, so reporting the platform potential
+  // registration is verified at boot, so reporting the platform potential
   // lets the toggle show "not available on this platform" rather than reading
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
@@ -271,7 +277,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     //
     // The gate (enabled) only controls whether the ASRT sandbox initializes at
     // boot, not what the platform is capable of, so report the platform's
-    // potential even when off — the toggle text stays honest before opt-in.
+    // potential even when off — the toggle text stays honest before activation.
     const kind: "full" | "partial" | "none" =
       platform === "linux" || platform === "darwin"
         ? "full"
@@ -281,7 +287,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const available = kind !== "none";
     // Meaningful, platform-honest reason surfaced to the UI alongside the
     // capability. This describes PLATFORM POTENTIAL only. Runtime registration
-    // is boot-time + opt-in, so it is reported separately below. On Windows the
+    // is boot-time, so it is reported separately below. On Windows the
     // filesystem confinement is against the host only: every confined process
     // runs as the one `srt-sandbox` account, so plugins are not isolated from
     // each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md
@@ -308,6 +314,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
       boot: getSandboxBootOutcome(),
+      shellExecutionPlan: getHostShellExecutionPlanAuditProjection(getHostShellExecutionPlan()),
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });
@@ -317,6 +324,73 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // because Windows support is moving quickly upstream. Non-win32 → a clean
   // "not-applicable" shape. Non-mutating: no UAC/install; a `cannot-read` WFP
   // enum may run ASRT's local behavioral egress verifier.
+  // read-only, sender-frame-guarded — the shell egress grants that outlive a
+  // call (conversation, terminal tab, workspace, always), for Settings →
+  // Permissions → Network.
+  ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
+    try {
+      return { ok: true as const, grants: await listEgressGrants() };
+    } catch (error) {
+      log.warn("Domain grant operation failed: %s", errorMessage(error));
+      return { ok: false as const, error: "egress-grant-store-unreadable", message: "Unable to access domain grants" };
+    }
+  });
+
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell
+  // egress grant. The payload names it exactly; anything else is refused.
+  ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    if (network !== undefined && !isEgressGrantNetwork(network)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
+    }
+    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
+    }
+    if (typeof host !== "string" || canonicalEgressHost(host) !== host || !isValidEgressPort(port)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
+    }
+    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
+    }
+    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    }
+    if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
+    }
+    const persistent = scope === "workspace" || scope === "always";
+    if (persistent
+      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      : origin !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+    }
+    const destination = { host, port, ...(network === undefined ? {} : { network }) };
+    const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
+    try {
+      const { removed, closed } = await revokeEgressGrant(
+        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : { scope, origin: origin as "shell" | "terminal", ...destination },
+      );
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "settings",
+        type: "approval",
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+      });
+      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+    } catch (error) {
+      return { ok: false, error: "egress-grant-store-unreadable", message: "Unable to access domain grants" };
+    }
+  });
+
   ipcMain.handle(PERMISSIONS.sandboxWindowsStatus, async (): Promise<SandboxWindowsStatusInfo> => {
     return readAsrtWindowsStatus();
   });

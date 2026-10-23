@@ -126,10 +126,15 @@ export function projectRuleRoot(projectCwd: string): string {
   return captureApprovalWorkingDirectory(projectRootFor(projectCwd)).path;
 }
 
+/** Canonical directory shared by rule persistence and sandbox write protection. */
+export function projectRulesDirectory(baseDir: string): string {
+  return resolve(baseDir, "permissions", "project-rules");
+}
+
 export function projectRulesLocation(baseDir: string, projectCwd: string): ProjectRulesLocation {
   const { path, identity } = captureApprovalWorkingDirectory(projectRootFor(projectCwd));
   return {
-    filePath: resolve(baseDir, "permissions", "project-rules", `${identity}.json`),
+    filePath: resolve(projectRulesDirectory(baseDir), `${identity}.json`),
     projectRoot: path,
     identity,
   };
@@ -222,7 +227,7 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
   files: StoredProjectRulesFile[];
   errors: ScopedPermissionRuleError[];
 }> {
-  const directory = resolve(baseDir, "permissions", "project-rules");
+  const directory = projectRulesDirectory(baseDir);
   let names: string[];
   try {
     names = await readdir(directory);

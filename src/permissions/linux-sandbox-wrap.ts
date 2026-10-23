@@ -9,7 +9,9 @@ const BWRAP_OPTION_ARITY = {
   "--unshare-net": 0,
   "--unshare-pid": 0,
   "--unshare-user": 0,
+  "--disable-userns": 0,
   "--cap-drop": 1,
+  "--cap-add": 1,
   "--unsetenv": 1,
   "--setenv": 2,
   "--ro-bind": 2,
@@ -104,6 +106,24 @@ interface WrapperOption {
   readonly identity?: string;
 }
 
+interface BwrapCapabilityState {
+  unsharedUserNamespace: boolean;
+  allCapabilitiesDropped: boolean;
+}
+
+/** Permit only the capability mapping sequence emitted by the pinned helper. */
+function assertBwrapCapabilityOption(option: string, operands: readonly string[], state: BwrapCapabilityState): void {
+  if (option === "--unshare-user") state.unsharedUserNamespace = true;
+  if (option === "--cap-drop" && operands[0] === "ALL") state.allCapabilitiesDropped = true;
+  if (option !== "--cap-add") return;
+  if (operands[0] !== "CAP_SETFCAP") {
+    throw new Error("Linux sandbox wrapper has an unsupported capability addition");
+  }
+  if (!state.unsharedUserNamespace || !state.allCapabilitiesDropped) {
+    throw new Error("Linux sandbox wrapper capability addition requires an isolated user namespace and dropped capabilities");
+  }
+}
+
 function isAtOrUnder(path: string, ancestor: string): boolean {
   return path === ancestor || path.startsWith(ancestor === "/" ? "/" : `${ancestor}/`);
 }
@@ -156,6 +176,7 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
   }
   const options: WrapperOption[] = [];
+  const capabilities: BwrapCapabilityState = { unsharedUserNamespace: false, allCapabilitiesDropped: false };
   let index = 1;
   while (index < words.length && words[index]?.value !== "--") {
     const option = words[index]!.value;
@@ -167,6 +188,7 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
       throw new Error(`Linux sandbox wrapper has a missing operand: ${option}`);
     }
     const operands = words.slice(index + 1, index + arity + 1).map((word) => word.value);
+    assertBwrapCapabilityOption(option, operands, capabilities);
     const mounts = ["--tmpfs", "--bind", "--ro-bind", "--dev", "--proc"].includes(option);
     const target = operands.at(-1);
     if (mounts && (target === undefined || !isAbsolute(target))) {
@@ -207,6 +229,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   }
   const maskedDirectories = new Map<string, string>();
   const finalMounts = new Map<string, "mask" | "write" | "read" | "special">();
+  const capabilities: BwrapCapabilityState = { unsharedUserNamespace: false, allCapabilitiesDropped: false };
   let index = 1;
   while (index < words.length && words[index]?.value !== "--") {
     const option = words[index]!.value;
@@ -217,6 +240,8 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     if (index + arity >= words.length || words.slice(index + 1, index + arity + 1).some((word) => word.value === "--")) {
       throw new Error(`Linux sandbox wrapper has a missing operand: ${option}`);
     }
+    const operands = words.slice(index + 1, index + arity + 1).map((word) => word.value);
+    assertBwrapCapabilityOption(option, operands, capabilities);
     if (["--tmpfs", "--bind", "--ro-bind", "--dev", "--proc"].includes(option)) {
       const target = words[index + arity]!.value;
       if (!isAbsolute(target)) throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);

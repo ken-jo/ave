@@ -59,6 +59,8 @@ function installApi(
   });
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "default" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),

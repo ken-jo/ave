@@ -148,7 +148,7 @@ export function getUserApprovalGeneration(): string {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function filePath(): string {
+export function userApprovalFilePath(): string {
   return resolve(aveHome(), "permissions", "user-approvals.json");
 }
 
@@ -341,7 +341,7 @@ export class UserApprovalStoreCorruptError extends Error {
 }
 
 async function readApprovalsFile(): Promise<ApprovalsFile> {
-  const path = filePath();
+  const path = userApprovalFilePath();
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -366,7 +366,7 @@ async function readApprovalsFile(): Promise<ApprovalsFile> {
 }
 
 async function atomicWrite(data: ApprovalsFile): Promise<void> {
-  const path = filePath();
+  const path = userApprovalFilePath();
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
 

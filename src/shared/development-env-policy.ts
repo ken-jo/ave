@@ -47,6 +47,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_SERVICE_BASE_URL", lifecycle: "active", packaged: "scrub" },
   // The interpreter CI provisioned for the cross-language smoke's harness (§9.7 P5).
   { name: "AVE_SMOKE_PYTHON", lifecycle: "active", packaged: "scrub" },
+  // Explicit local test opt-out; ignored when CI is detected.
+  { name: "AVE_SKIP_NATIVE_SANDBOX_TESTS", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },
   // Explicitly source/test-only; packaged builds do not accept this env switch.
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },

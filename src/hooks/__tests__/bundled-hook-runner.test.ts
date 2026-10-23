@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -103,6 +104,9 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const result = await runOneHookScript(runnable(), payload);
     expect(result.decision).toBe("allow");
     const [cmdline, raw] = wrap.mock.calls[0]!;
+    const token = (raw as { commandId: string }).commandId;
+    expect(token).toMatch(/^[a-f0-9]{32}$/);
+    expect(egressInvocationOwner(token)).toBeUndefined();
     const options = raw as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
     expect(options.filesystem.allowWrite).toContain(dataDir);
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);

@@ -5,7 +5,7 @@
  * Constructs the PluginMarketplaceService — the plugin install/uninstall
  * transactions the git marketplace drives (design §16.2) — and wires the
  * live-refresh closures the settings IPC handlers invoke: the active-LLM
- * wildcard config push and the ASRT sandbox network allow-list rebuild.
+ * wildcard config push and the sandbox network-policy refresh.
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -104,13 +104,8 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   });
   refreshActiveLlmWildcard();
 
-  // ── ASRT shared network-config union builder + live refresh ──────────────
-  // The shared strict-union allow-list ASRT enforces = the UNION of every
-  // loaded plugin's manifest `networkAccess.allowedDomains` PLUS the host-
-  // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls a
-  // sandboxed worker actually reaches — e.g. local-indexer's Azure OpenAI
-  // resource). Both the boot init block (below) and the live-refresh closure
-  // (here) build the union the SAME way so they never drift.
+  // Refresh the callback-owned plugin/model destinations. Shell grants remain
+  // independent of this union; egress-runtime owns destination policy.
   const buildSandboxUnionDomains = async (): Promise<string[]> => {
     const { computeUnionAllowedDomains, normalizeUnionForAsrt, computeDynamicEndpointHosts } =
       await import("../../permissions/asrt-sandbox.js");
@@ -118,19 +113,18 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
       .listPluginIds()
       .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
     const dynamicEndpointHosts = computeDynamicEndpointHosts(settingsService.getAll());
+    const { setWorkerEgressAllowlists } = await import("../../permissions/egress-runtime.js");
+    setWorkerEgressAllowlists({
+      byExtension: new Map(pluginRuntime.listPluginIds().map((id) => [id, pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []])),
+      modelEndpointHosts: dynamicEndpointHosts,
+    });
     return normalizeUnionForAsrt(
       computeUnionAllowedDomains([...manifestAllowLists, dynamicEndpointHosts], []),
     );
   };
 
-  // Closure invoked by the settings IPC handler when a vendor/embedding
-  // endpoint changes. Recomputes the dynamic-endpoint union and LIVE-SWAPS the
-  // shared ASRT network config so a reconfigured endpoint is enforced/allowed
-  // without an app restart. The network config is a SAFE, GLOBAL live swap
-  // (filterNetworkRequest reads the shared config; updateConfig replaces it).
-  // GATED: no-op when ASRT is not active (gate OFF, or deps-missing/Windows-
-  // not-ready paths where the sandbox was never initialized) — there is no live
-  // config to update, and we must not initialize one outside the boot gate.
+  // Endpoint changes replace callback-owned worker destinations before the next
+  // proxy decision. Keep every connection on the callback, including after refresh.
   const refreshSandboxNetworkConfig = (): Promise<void> =>
     (async () => {
       const {
@@ -141,13 +135,10 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
       );
       if (!isAsrtSandboxActive()) return;
       const allowedDomains = await buildSandboxUnionDomains();
-      // Same trusted shape boot init uses: enforced allow-list + strict, no
-      // weakening flags. Plugin-worker filesystem grants are not kept in the
-      // shared config; Windows worker spawn remains fail-closed until ASRT can
-      // scope allow grants per worker/plugin.
+      // The shared allowlist stays empty so it cannot bypass invocation policy.
       await updateAsrtSandboxConfig({
-        allowedDomains,
-        strictAllowlist: true,
+        allowedDomains: [],
+        strictAllowlist: false,
         userDataDir: ctx.host.userDataPath,
       });
       log.info(

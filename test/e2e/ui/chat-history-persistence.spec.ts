@@ -1,5 +1,5 @@
-import { test, expect } from './fixtures';
-import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron';
+import { test, expect } from './fixtures.js';
+import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron.js';
 
 /**
  * Chat history persistence — send a message, restart the app (reusing the
@@ -10,6 +10,8 @@ test('chat history persists across app restart, or skips cleanly', async ({
   app,
   mainWindow,
   userDataDir,
+  tempHome,
+  aveHome,
 }) => {
   const input = mainWindow
     .locator('textarea, input[type="text"], [contenteditable="true"]')
@@ -38,9 +40,9 @@ test('chat history persists across app restart, or skips cleanly', async ({
   const app2 = await launchElectron({
     args: [mainEntry, `--user-data-dir=${userDataDir}`],
     env: buildIsolatedElectronEnv({
-      HOME: userDataDir,
-      USERPROFILE: userDataDir,
-      AVE_HOME: path.join(userDataDir, 'ave-state'),
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+      AVE_HOME: aveHome,
       AVE_DEV: '1',
       AVE_E2E: '1',
       AVE_MAIN_ENTRY: mainEntry,

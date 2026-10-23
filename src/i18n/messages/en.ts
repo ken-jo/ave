@@ -11,6 +11,13 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "sandboxStatus.retry": "Retry status query",
+  "sandboxStatus.queryFailed": "Sandbox status unknown · could not query the host",
+  "sandboxStatus.off": "Sandbox off · {reason}",
+  "sandboxStatus.disabled": "disabled in settings",
+  "sandboxStatus.unsupported": "platform not supported",
+  "sandboxStatus.shellUnavailable": "shell isolation unavailable",
+  "sandboxStatus.unavailable": "isolation could not start",
   "permissionJudge.retry": "Retry",
   "permissionJudge.rollbackFailed": "Judge settings and runtime could not be restored. Restart the app before relying on automation.",
   "permissionJudge.externalChange": "Judge settings changed in another window. Reload to replace your unsaved edits with the saved settings.",

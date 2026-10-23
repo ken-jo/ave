@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
+import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
@@ -36,29 +36,37 @@ it.runIf(process.platform !== "win32")("makes the generated Linux secrets mask r
   expect(config.filesystem.denyRead).toContain(secrets);
   expect(config.filesystem.denyWrite).toContain(secrets);
 
+  const filesystem = { allowRead: [pluginData], denyWrite: [secrets] };
   const generated = await wrapCommandWithSandboxLinux({
     command: "printf 'plugin command'",
     needsNetworkRestriction: false,
-    readConfig: { denyOnly: [secrets, aveHome], allowWithinDeny: [pluginData] },
-    writeConfig: { allowOnly: [pluginData], denyWithinAllow: [secrets] },
+    readConfig: { denyOnly: [secrets, aveHome], allowWithinDeny: filesystem.allowRead },
+    writeConfig: { allowOnly: [pluginData], denyWithinAllow: filesystem.denyWrite },
     allowAllUnixSockets: true,
   });
   try {
     const wrapped = hardenLinuxSandboxWrap({
       argv: ["/bin/bash", "-c", generated],
       env: {},
-    });
+    }, filesystem);
     // Ask a shell to parse the generated command as data; never execute bwrap.
     const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
       encoding: "utf8",
     }).trimEnd().split("\n");
-    const mask = words.findIndex((word, index) => word === "--tmpfs" && words[index + 1] === mountedSecrets);
-    const remount = words.findIndex((word, index) => word === "--remount-ro" && words[index + 1] === mountedSecrets);
-    const nestedWrite = words.findIndex((word, index) => word === "--bind" && words[index + 2] === mountedPluginData);
+    // A nested deny may share its ancestor's mask. Check the final covering
+    // mount, so a later bind exposing secrets cannot satisfy this assertion.
+    const coveringMask = finalMountCovering(words, mountedSecrets);
+    expect(coveringMask?.[0]).toBe("--tmpfs");
+    const covering = coveringMask?.[1];
+    const mask = words.findIndex((word, index) => word === "--tmpfs" && words[index + 1] === covering);
+    const remount = words.findIndex((word, index) => word === "--remount-ro" && words[index + 1] === covering);
+    const nestedWrite = words.findLastIndex((word, index) => word === "--bind" && words[index + 1] === mountedPluginData && words[index + 2] === mountedPluginData);
     const command = words.lastIndexOf("--");
     expect(mask).toBeGreaterThan(0);
     expect(remount).toBeGreaterThan(mask);
     expect(remount).toBeGreaterThan(nestedWrite);
+    expect(nestedWrite).toBeGreaterThan(mask);
+    expect(finalMountCovering(words, mountedPluginData)).toEqual(["--bind", mountedPluginData, mountedPluginData]);
     expect(command).toBeGreaterThan(remount);
     expect(words[command + 1]).toMatch(/\/bash$/);
     expect(words[command + 2]).toBe("-c");
@@ -77,13 +85,15 @@ it.runIf(process.platform !== "win32")("keeps a generated same-path workspace wr
   const read = getBuiltinShellReadPolicy([home], home);
   const write = deriveSandboxWritePaths({ allowedDirectories: [home] });
   expect(read.allowRead).toContain(home);
-  expect(read.denyRead).toContain(home);
+  expect(read.denyRead).not.toContain(home);
   expect(write).toContain(home);
 
   const generated = await wrapCommandWithSandboxLinux({
     command: "printf 'workspace command'",
     needsNetworkRestriction: false,
-    readConfig: { denyOnly: [...read.denyRead], allowWithinDeny: [...read.allowRead] },
+    // Broad shell reads do not mask HOME. Keep an explicit mask here to test
+    // that a same-path write grant still replaces a configured read mask.
+    readConfig: { denyOnly: [...read.denyRead, home], allowWithinDeny: [...read.allowRead] },
     writeConfig: { allowOnly: write, denyWithinAllow: [] },
     allowAllUnixSockets: true,
   });
@@ -138,13 +148,16 @@ it.skipIf(process.platform === "win32").each([
       const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
         encoding: "utf8",
       }).trimEnd().split("\n");
-      for (const mask of masks) {
-        expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === mask)).toBe(true);
-      }
-      const lastMask = words.findLastIndex((word, index) => word === "--tmpfs" && masks.includes(words[index + 1]));
+      // Both names resolve to one mount target; the runtime emits one mask.
+      const maskIdentities = new Set(masks.map((mask) => realpathSync(mask)));
+      const isMask = (target: string | undefined) => target !== undefined && maskIdentities.has(realpathSync(target));
+      const emittedMaskIdentities = new Set(words.flatMap((word, index) =>
+        word === "--tmpfs" && isMask(words[index + 1]) ? [realpathSync(words[index + 1]!)] : []));
+      expect(emittedMaskIdentities).toEqual(maskIdentities);
+      const lastMask = words.findLastIndex((word, index) => word === "--tmpfs" && isMask(words[index + 1]));
       const writeBind = words.findLastIndex((word, index) => word === "--bind" && words[index + 2] === write);
       expect(writeBind).toBeGreaterThan(lastMask);
-      expect(words.some((word, index) => word === "--remount-ro" && masks.includes(words[index + 1]))).toBe(false);
+      expect(words.some((word, index) => word === "--remount-ro" && isMask(words[index + 1]))).toBe(false);
     } finally {
       cleanupBwrapMountPoints();
     }
@@ -162,7 +175,8 @@ it.skipIf(process.platform === "win32").each([
       const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
         encoding: "utf8",
       }).trimEnd().split("\n");
-      expect(words.some((word, index) => word === "--remount-ro" && secrets.includes(words[index + 1]))).toBe(true);
+      const secretIdentities = new Set(secrets.map((secret) => realpathSync(secret)));
+      expect(words.some((word, index) => word === "--remount-ro" && secretIdentities.has(realpathSync(words[index + 1]!)))).toBe(true);
     } finally {
       cleanupBwrapMountPoints();
     }
@@ -386,4 +400,54 @@ it.runIf(process.platform === "linux")("shares newly created temp entries with t
   const third = await run(`cat ${shellQuote(target)}`);
   expect(third.status, third.stderr).toBe(0);
   expect(third.stdout).toBe("host update");
+});
+
+
+it.runIf(process.platform !== "win32")("accepts a generated namespace-limiting worker wrapper", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-userns-option-")));
+  temporaryRoots.push(root);
+  const bwrap = join(root, "bwrap");
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  writeFileSync(bwrap, "#!/bin/sh\necho 'usage: bwrap [OPTIONS...] [--] COMMAND\n    --disable-userns  Disable further use of user namespaces'\n");
+  chmodSync(bwrap, 0o755);
+  const generated = await wrapCommandWithSandboxLinux({
+    command: "printf worker-ready", needsNetworkRestriction: false,
+    readConfig: { denyOnly: [root], allowWithinDeny: [workspace] },
+    writeConfig: { allowOnly: [workspace], denyWithinAllow: [] },
+    allowAllUnixSockets: true, bwrapPath: bwrap,
+  });
+  try {
+    expect(generated).toMatch(/(^|\s)'?--disable-userns'?(\s|$)/u);
+    for (const filesystem of [{}, { allowRead: [workspace], denyWrite: [] }]) {
+      const hardened = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} }, filesystem);
+      expect(hardened.argv[2]).toContain("--disable-userns");
+    }
+  } finally {
+    cleanupBwrapMountPoints();
+  }
+});
+
+it("accepts only the pinned root-user capability mapping sequence", () => {
+  const capabilities = capabilityArgs({ euid: 0, hasSetfcap: true, usesSeccompHelper: true });
+  expect(capabilities).toEqual(["--cap-drop", "ALL", "--cap-add", "CAP_SETFCAP"]);
+  const command = `bwrap --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
+  for (const filesystem of [{}, { allowRead: ["/tmp"] }]) {
+    expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, filesystem)).not.toThrow();
+  }
+});
+
+it.each(["CAP_SYS_ADMIN", "ALL"])("refuses a broader capability addition: %s", (capability) => {
+  const command = `bwrap --unshare-user --cap-drop ALL --cap-add ${capability} -- /bin/sh -c 'true'`;
+  for (const filesystem of [{}, { allowRead: ["/tmp"] }]) {
+    expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, filesystem)).toThrow(/unsupported capability/u);
+  }
+});
+
+it.each([
+  "--cap-drop ALL --cap-add CAP_SETFCAP",
+  "--unshare-user --cap-add CAP_SETFCAP",
+])("refuses capability restoration without its confinement preconditions: %s", (options) => {
+  const command = `bwrap ${options} -- /bin/sh -c 'true'`;
+  expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} })).toThrow(/requires an isolated user namespace and dropped capabilities/u);
 });

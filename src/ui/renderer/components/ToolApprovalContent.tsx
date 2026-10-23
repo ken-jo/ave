@@ -1,3 +1,4 @@
+import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import {
   useCallback,
   useEffect,
@@ -1130,6 +1131,10 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
+
+  if (request.kind === "egress-host") {
+    return <EgressHostApprovalCard request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
+  }
 
   // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed,
   // insertion-order keys). The IPC approval record uses canonicalStringify (#828)

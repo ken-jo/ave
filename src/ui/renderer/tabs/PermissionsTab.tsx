@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
+import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
+import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
+import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -35,7 +38,6 @@ import type {
   ScopedPermissionRuleError,
 } from "../types.js";
 import type {
-  SandboxCapabilityInfo,
   SandboxWindowsStatusInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import {
@@ -378,7 +380,8 @@ export function PermissionsTab({
   const [reviewer, setReviewer] = useState<PermissionReviewerSettings>(DEFAULT_REVIEWER_SETTINGS);
 
   // ── OS Tool Sandbox ───────────────────────────────
-  const [sandboxCapability, setSandboxCapability] = useState<SandboxCapabilityInfo | null>(null);
+  const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
+    useSandboxCapability(window.ave?.permission, getApi().onSettingsUpdated);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the
   // variable set the toggle cannot turn the sandbox off for this run. The
@@ -425,7 +428,7 @@ export function PermissionsTab({
       setError(null);
     }
     try {
-      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, sandboxRes, settingsRes] =
+      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, settingsRes] =
         await Promise.all([
           window.ave.permission.getMode(),
           window.ave.policy.get(),
@@ -433,7 +436,6 @@ export function PermissionsTab({
           window.ave.permission.hookTrustList(),
           window.ave.permission.dirDispatch("list"),
           window.ave.permission.reviewerDispatch("show"),
-          window.ave.permission.sandboxCapability(),
           getApi().getSettings(),
         ]);
       if (!reviewerRes.ok) {
@@ -451,24 +453,11 @@ export function PermissionsTab({
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
-      setSandboxCapability(sandboxRes);
-      console.warn("[ave] permissions: sandbox diagnostics:",
-        sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
-        sandboxRes.boot?.dependencyErrors);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       // Mirrors the store default (ON) for a settings file written before the
       // flag existed — normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
-      // On win32 with the setting already ON, surface the consent/setup state
-      // on tab entry so the panel persists across navigations until ready.
-      if (sandboxRes.platform === "win32" && osSandboxOn) {
-        const status = await window.ave.permission.sandboxWindowsStatus();
-        if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
-        setWindowsStatus(status);
-      } else {
-        setWindowsStatus(null);
-      }
     } catch (e) {
       console.warn("[ave] permissions: load failed:", errorMessage(e));
       const message = t("permissionsTab.errorLoadFailed");
@@ -484,6 +473,18 @@ export function PermissionsTab({
   }, [showBanner]);
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
+
+  useEffect(() => {
+    if (sandboxCapability?.platform !== "win32" || !sandboxEnabled) {
+      setWindowsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ave.permission.sandboxWindowsStatus().then((status) => {
+      if (!cancelled) setWindowsStatus(status);
+    }).catch(() => { /* The explicit setup action reports repair errors. */ });
+    return () => { cancelled = true; };
+  }, [sandboxCapability?.platform, sandboxEnabled]);
 
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
@@ -793,21 +794,7 @@ export function PermissionsTab({
         return;
       }
       // Re-read capability so the activation note reflects the new state.
-      const capability = await window.ave.permission.sandboxCapability();
-      setSandboxCapability(capability);
-      // Windows: enabling the setting alone does NOT confine anything — srt-win
-      // must be provisioned (normally at app-install time via NSIS customInstall).
-      // When the user flips the toggle ON on win32, fetch the readiness snapshot;
-      // if provisioning did not complete, the panel guides the (explicit,
-      // non-auto) re-provision/repair. Turning OFF clears the panel.
-      if (capability.platform === "win32") {
-        if (next) {
-          const status = await window.ave.permission.sandboxWindowsStatus();
-          setWindowsStatus(status);
-        } else {
-          setWindowsStatus(null);
-        }
-      }
+      await refreshSandboxCapability();
     } catch (e) {
       setSandboxEnabled(!next);
       showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
@@ -1273,6 +1260,7 @@ export function PermissionsTab({
           title={t("permissionsTab.osSandboxTitle")}
           description={t("permissionsTab.osSandboxDescription")}
         >
+          <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <div className="flex items-center gap-3">
             <Checkbox
               checked={sandboxEnabled}
@@ -1422,6 +1410,14 @@ export function PermissionsTab({
               </div>
             )
           ) : null}
+        </SettingsSection>
+
+        <SettingsSection
+          data-settings-section="permissions-network"
+          title={t("permissionsTab.networkTitle")}
+          description={t("permissionsTab.networkDescription")}
+        >
+          <EgressGrantsList />
         </SettingsSection>
 
         {/* ── Sub-agent parent adjudication (tier 2 of the approval chain) ── */}

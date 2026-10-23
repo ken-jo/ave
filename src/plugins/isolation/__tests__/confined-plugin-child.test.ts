@@ -60,31 +60,18 @@
  *    something different on each platform" turned out to be the finding rather
  *    than the objection, because one plugin's admission depended on which
  *    thing each platform proves.
- *  - Anything at all, on a machine where the sandbox backend cannot
- *    initialize — for the cases that need a live one. Where
- *    `asrtCanInitialize()` answers false they return before measuring. That is
- *    not a hypothetical machine: the Linux runner that runs the whole suite on
- *    every pull request has no bubblewrap — ASRT vendors only seccomp and
- *    srt-win — so on that runner those cases return without spawning anything.
- *    To see what that looks like, make `asrtCanInitialize()` return false and
- *    run this file: on darwin/arm64 all 48 cases that run there pass, with no
- *    skip mark and no warning, where the 22 that need the backend take
- *    hundreds of milliseconds each when it is there.
- *    `sandboxCasesRun()` (`sandbox-cases.ts`) is what stops that from being invisible: an
- *    environment that is SUPPOSED to run them sets
- *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
- *    pass. Two jobs in `ci.yml` set it: the macOS job, because the macOS
- *    backend needs no install, and the Linux confinement job, which installs
- *    bubblewrap, socat and ripgrep, opens unprivileged user namespaces and
- *    proves `bwrap` runs before it runs this file. The whole-suite Linux job
- *    sets neither, and there these cases still return without measuring.
+ *  - Native enforcement on a local machine whose backend cannot initialize.
+ *    The live-backend cases require `asrtCanInitialize()` through
+ *    `sandboxCasesRun()` (`sandbox-cases.ts`). Without
+ *    `AVE_REQUIRE_SANDBOX_CASES=1`, an unavailable local backend returns before
+ *    those cases measure anything. Envelope decisions and spawn refusal paths
+ *    that precede wrapping still run without a native backend.
  *
- *    The OTHER 26 cases need no sandbox: they drive `derivePluginChildEnvelope`
- *    directly, or they drive the spawn's refusal paths, which run ahead of the
- *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    26 passed and 22 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
- *    envelope decisions this file pins keep being measured on a machine that
- *    cannot sandbox; what stops being measured there is the kernel half.
+ *    All relevant Linux and macOS CI jobs, including the whole-suite Linux
+ *    job, set `AVE_REQUIRE_SANDBOX_CASES=1`, so an unavailable backend fails.
+ *    Linux CI installs bubblewrap, socat and ripgrep, enables unprivileged user
+ *    namespaces and proves the backend runs before these tests. The macOS
+ *    backend needs no separate installation.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -99,6 +86,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -133,6 +121,7 @@ import {
   appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
   cleanupAsrtSandboxAfterCommand,
+  ensureSandboxTempPrincipalDir,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
   isGrantPathWithin,
@@ -141,6 +130,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
+import { buildMandatorySandboxWritePolicy } from "../../../permissions/sandbox-write-policy.js";
 import { sandboxCasesRun } from "./sandbox-cases.js";
 import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
@@ -3567,22 +3557,23 @@ process.stdin.on("end", () => process.exit(0));
       const fx = fixture!;
       const plugin = installInertPlugin(fx);
       const outside = mkdtempSync(join(fx.root, "root-swap-outside-"));
-      // An empty root, so `rmdir` measures the pin and not what was inside.
       for (const item of readdirSync(plugin.pluginDataDir)) {
         rmSync(join(plugin.pluginDataDir, item), { recursive: true, force: true });
       }
-      const before = lstatSync(plugin.pluginDataDir);
+      const before = emptyRemovableRoot(plugin.pluginDataDir);
       // The socket directory is another write root of the same child.
       const elsewhere = resolvePluginSocketDir(plugin.pluginDataDir);
       const report = join(elsewhere, "root-swap-report");
+      const inventoryReport = join(elsewhere, "root-entries.json");
       writeFileSync(
         join(plugin.pluginRoot, "bin", "plugin"),
         rootSwapScript("", "printf '%s\\n' \"$result\" > \"$REPORT\""),
         "utf-8",
       );
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      await spawnBelowHardening(plugin, { ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: report });
-      expectRootHeld(readFileSync(report, "utf-8"), plugin.pluginDataDir, before, elsewhere, outside);
+      await spawnBelowHardening(plugin, { ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: report, ROOT_ENTRIES_REPORT: inventoryReport });
+      await resetAsrtSandbox();
+      expectRootHeld(readFileSync(report, "utf-8"), inventoryReport, plugin.pluginDataDir, before, elsewhere, outside);
     },
     120_000,
   );
@@ -3600,22 +3591,24 @@ process.stdin.on("end", () => process.exit(0));
         const dataDir = join(pluginRoot, "data");
         const elsewhere = join(pluginRoot, "scratch");
         const outside = join(home, "outside");
+        const inventoryReport = join(elsewhere, "root-entries.json");
         for (const dir of [dataDir, elsewhere, outside, join(pluginRoot, "bin")]) mkdirSync(dir, { recursive: true });
         const script = join(pluginRoot, "bin", "swap.sh");
         writeFileSync(script, rootSwapScript("", "printf '%s\\n' \"$result\" > \"$REPORT\""), "utf-8");
-        const before = lstatSync(dataDir);
+        const before = emptyRemovableRoot(dataDir);
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
         const worker = await spawnWorker({
           pluginId: "rs",
           workerId: "w",
           command: "/bin/sh",
           args: [script],
-          env: { PLUGIN_DATA: dataDir, ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: join(elsewhere, "report") },
+          env: { PLUGIN_DATA: dataDir, ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: join(elsewhere, "report"), ROOT_ENTRIES_REPORT: inventoryReport },
           allowReadPaths: [join(pluginRoot, "bin")],
           allowWritePaths: [dataDir, elsewhere],
         });
         await new Promise<void>((resolve) => worker.onExit(() => resolve()));
-        expectRootHeld(readFileSync(join(elsewhere, "report"), "utf-8"), dataDir, before, elsewhere, outside);
+        await resetAsrtSandbox();
+        expectRootHeld(readFileSync(join(elsewhere, "report"), "utf-8"), inventoryReport, dataDir, before, elsewhere, outside);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -3631,17 +3624,18 @@ process.stdin.on("end", () => process.exit(0));
       const generationRoot = mkdtempSync(join(fx.root, "hook-generation-"));
       const dataDir = mkdtempSync(join(fx.root, "hook-data-"));
       const outside = mkdtempSync(join(fx.root, "hook-outside-"));
+      const inventoryReport = join(tempDirOf({ kind: "plugin", id: "swap-plugin" }), "root-entries.json");
       const script = join(generationRoot, "swap.sh");
       // The hook's other write root is its process HOME.
       writeFileSync(
         script,
         rootSwapScript(
-          `ELSEWHERE="$HOME"\nOUTSIDE=${JSON.stringify(outside)}\n`,
+          `ELSEWHERE="$HOME"\nROOT_ENTRIES_REPORT="$TMPDIR/root-entries.json"\nOUTSIDE=${JSON.stringify(outside)}\n`,
           "printf '{\"action\":\"allow\",\"reason\":\"%s\"}' \"$result\"",
         ),
         "utf-8",
       );
-      const before = lstatSync(dataDir);
+      const before = emptyRemovableRoot(dataDir);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const result = await runOneHookScript(
         { id: "swap", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
@@ -3651,7 +3645,8 @@ process.stdin.on("end", () => process.exit(0));
         { timeoutMs: 10_000 },
       );
       expect(result.decision, result.reason).toBe("allow");
-      expectRootHeld(result.reason, dataDir, before, undefined, outside);
+      await resetAsrtSandbox();
+      expectRootHeld(result.reason, inventoryReport, dataDir, before, undefined, outside);
     },
     120_000,
   );
@@ -4143,23 +4138,27 @@ describe("the sandbox temp directories", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const tempDir = join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: "tmp-plugin" }));
+      ensureSandboxTempPrincipalDir({ kind: "plugin", id: "tmp-plugin" });
+      const before = emptyRemovableRoot(tempDir);
       const generationRoot = mkdtempSync(join(fx.root, "hook-generation-"));
       const dataDir = mkdtempSync(join(fx.root, "hook-data-"));
       const script = join(generationRoot, "tmp.sh");
+      const inventoryReport = join(dataDir, "root-entries.json");
       const node = `'${process.execPath.replace(/'/g, "'\\''")}'`;
       writeFileSync(
         script,
         "#!/bin/sh\n"
           + `NODE=${node}\n`
+          + 'ROOT_ENTRIES_REPORT="$PLUGIN_DATA/root-entries.json"\n'
           + "echo probe > \"$TMPDIR/hook-tmp-probe\" 2>/dev/null\nwrote=$?\n"
           + "/bin/rm -f \"$TMPDIR/hook-tmp-probe\"\n"
-          + "entries=$(/bin/ls -A \"$TMPDIR\" | /usr/bin/wc -l | /usr/bin/tr -d ' ')\n"
+          + rootEntriesScript("$TMPDIR")
           + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'process.exit(0)' 2>/dev/null\nnode=$?\n"
           + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'require(\"fs\").renameSync(process.argv[1], process.argv[2])' "
           + "\"$TMPDIR\" \"$HOME/moved-tmp\" 2>/dev/null\nrenamed=$?\n"
-          + "/bin/rmdir \"$TMPDIR\" 2>/dev/null\nremoved=$?\n"
-          + "printf '{\"action\":\"allow\",\"reason\":\"%s %s %s %s %s %s\"}' "
-          + "\"$wrote\" \"$entries\" \"$node\" \"$renamed\" \"$removed\" \"$TMPDIR\"\n",
+          + rootRemovalScript("$TMPDIR")
+          + "printf '{\"action\":\"allow\",\"reason\":\"%s %s %s %s %s\"}' "
+          + "\"$wrote\" \"$entries\" \"$node\" \"$renamed\" \"$removed\"\n",
         "utf-8",
       );
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
@@ -4171,17 +4170,19 @@ describe("the sandbox temp directories", () => {
         { timeoutMs: 10_000 },
       );
       expect(result.decision, result.reason).toBe("allow");
-      const before = lstatSync(tempDir);
-      const [wrote, entries, node_, renamed, removed, tmpdirSeen] = result.reason.split(" ");
-      expect(realpathSync(tmpdirSeen!), "the hook's TMPDIR is not its plugin's temp directory").toBe(realpathSync(tempDir));
+      const [wrote, entries, node_, renamed, removed] = result.reason.split(" ");
       expect(wrote, "the hook could not write under its TMPDIR").toBe("0");
-      expect(entries, "the temp directory was not empty, so rmdir would measure nothing").toBe("0");
+      expect(entries, "the hook could not report its temp directory inventory").toBe("0");
+      expectProtectedRootEntries(inventoryReport, tempDir);
       expect(node_, "Node did not run under the wrap, so the rename measured nothing").toBe("0");
       expect(renamed, "the hook renamed its temp directory").not.toBe("0");
-      expect(removed, "the hook removed its temp directory").not.toBe("0");
+      expectRootRemovalRefused(removed!);
+      await resetAsrtSandbox();
       const after = lstatSync(tempDir);
       expect(after.isDirectory()).toBe(true);
       expect(after.ino).toBe(before.ino);
+      expect(after.dev).toBe(before.dev);
+      expect(readdirSync(tempDir), "runtime-owned placeholders survived cleanup").toEqual([]);
     },
     120_000,
   );
@@ -4387,7 +4388,8 @@ async function runBundledWrapToExit(
 ): Promise<void> {
   const sandboxHome = home ?? createSandboxProcessHome();
   try {
-    const { argv, env } = await wrapBundledCommand({
+    const { argv, env, egress } = await wrapBundledCommand({
+      egressOwner: { kind: "worker", role: principal.kind === "mcp" ? "mcp-server" : "hook", pluginId: principal.kind === "plugin" ? principal.id : undefined, instanceId: principal.id },
       command: process.execPath,
       args: [probe],
       sandboxHome,
@@ -4405,6 +4407,7 @@ async function runBundledWrapToExit(
         child.once("error", reject);
       });
     } finally {
+      egress.release();
       await cleanupAsrtSandboxAfterCommand();
     }
   } finally {
@@ -4414,10 +4417,11 @@ async function runBundledWrapToExit(
 
 /**
  * What plugin-owned code tries against its own data root, as a shell script.
- * It writes inside the root, counts what is there, renames the root into
+ * It writes inside the root, inventories what is there, renames the root into
  * `$ELSEWHERE` (another of its write roots), removes it if it is still there,
  * and, if the root is gone, puts a link to `$OUTSIDE` in its place. `$result`
- * is "<inside> <entries> <node> <renamed> <removed>"; `emit` reports it.
+ * is "<inside> <inventory-status> <node> <renamed> <remove-errno>"; `emit` reports it.
+ * The complete inventory goes to `$ROOT_ENTRIES_REPORT`, outside the target root.
  *
  * The rename is the `rename` syscall through this test's own Node binary, not
  * `mv`: across two bind mounts GNU `mv` gets EXDEV and falls back to copy then
@@ -4432,12 +4436,12 @@ function rootSwapScript(preamble: string, emit: string): string {
   return "#!/bin/sh\n" + preamble
     + `NODE=${node}\n`
     + "/bin/mkdir \"$PLUGIN_DATA/inside\" && /bin/rmdir \"$PLUGIN_DATA/inside\"\ninside=$?\n"
-    + "entries=$(/bin/ls -A \"$PLUGIN_DATA\" | /usr/bin/wc -l | /usr/bin/tr -d ' ')\n"
+    + rootEntriesScript("$PLUGIN_DATA")
     + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'process.exit(0)' 2>/dev/null\nnode=$?\n"
     + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'require(\"fs\").renameSync(process.argv[1], process.argv[2])' "
     + "\"$PLUGIN_DATA\" \"$ELSEWHERE/moved-root\" 2>/dev/null\nrenamed=$?\n"
     + "removed=skipped\n"
-    + "if [ -d \"$PLUGIN_DATA\" ]; then /bin/rmdir \"$PLUGIN_DATA\" 2>/dev/null; removed=$?; fi\n"
+    + `if [ -d "$PLUGIN_DATA" ]; then ${rootRemovalScript("$PLUGIN_DATA")}fi\n`
     + "[ -e \"$PLUGIN_DATA\" ] || /bin/ln -s \"$OUTSIDE\" \"$PLUGIN_DATA\"\n"
     + `result="$inside $entries $node $renamed $removed"\n${emit}\nexit 0\n`;
 }
@@ -4445,22 +4449,75 @@ function rootSwapScript(preamble: string, emit: string): string {
 /** The root is where and what it was, and nothing reached past it. */
 function expectRootHeld(
   result: string,
+  inventoryReport: string,
   dataDir: string,
   before: Stats,
   elsewhere: string | undefined,
   outside: string,
 ): void {
   const [inside, entries, node, renamed, removed] = result.trim().split(" ");
-  expect({ inside, entries }, "the code could not write inside its root, or the root was not empty")
-    .toEqual({ inside: "0", entries: "0" });
+  expect(inside, "the code could not write inside its root").toBe("0");
+  expect(entries, "the code could not report its root inventory").toBe("0");
+  expectProtectedRootEntries(inventoryReport, dataDir);
   expect(node, "Node did not run under the wrap, so the rename below measured nothing").toBe("0");
   expect(renamed, "the code renamed its data root into another write root").not.toBe("0");
-  expect(removed, "the code removed its data root").not.toBe("0");
-  expect(removed, "the root was gone before rmdir could be measured").not.toBe("skipped");
+  expectRootRemovalRefused(removed!);
   const after = lstatSync(dataDir);
   expect(after.isSymbolicLink()).toBe(false);
   expect(after.isDirectory()).toBe(true);
   expect(after.ino).toBe(before.ino);
+  expect(after.dev).toBe(before.dev);
+  expect(readdirSync(dataDir), "runtime-owned placeholders survived cleanup").toEqual([]);
   if (elsewhere !== undefined) expect(existsSync(join(elsewhere, "moved-root"))).toBe(false);
   expect(readdirSync(outside)).toEqual([]);
+}
+
+/** Prove the fixture root is empty and removable before native mounts exist. */
+function emptyRemovableRoot(root: string): Stats {
+  expect(readdirSync(root), "the fixture root was not empty before wrapping").toEqual([]);
+  const before = lstatSync(root);
+  expect(before.isSymbolicLink()).toBe(false);
+  expect(before.isDirectory()).toBe(true);
+  rmdirSync(root);
+  mkdirSync(root, { mode: before.mode & 0o777 });
+  return lstatSync(root);
+}
+
+/** Write every mounted entry outside the target root, beyond any hook output limit. */
+function rootEntriesScript(root: string): string {
+  const inspect = 'const fs=require("fs"),path=require("path"),root=process.argv[1]; '
+    + 'const entries=fs.readdirSync(root).sort().map(name=>{const entry=path.join(root,name),stat=fs.lstatSync(entry); '
+    + 'return {name,kind:stat.isDirectory()?"directory":stat.isCharacterDevice()?"device":"other",'
+    + 'empty:stat.isDirectory()?fs.readdirSync(entry).length===0:stat.size===0};}); '
+    + 'fs.writeFileSync(process.argv[2],JSON.stringify({root,entries}),{mode:0o600});';
+  return `ELECTRON_RUN_AS_NODE=1 "$NODE" -e '${inspect}' "${root}" "$ROOT_ENTRIES_REPORT"\nentries=$?\n`;
+}
+
+/** Capture the syscall error: a non-empty-directory refusal proves no root pin. */
+function rootRemovalScript(root: string): string {
+  const remove = 'try{require("fs").rmdirSync(process.argv[1]);process.stdout.write("removed");}'
+    + 'catch(error){process.stdout.write(error.code??error.name);}';
+  return `removed=$(ELECTRON_RUN_AS_NODE=1 "$NODE" -e '${remove}' "${root}")\n`;
+}
+
+function expectRootRemovalRefused(code: string): void {
+  // A mounted target or its read-only parent can refuse before inspecting contents.
+  const expected = process.platform === "linux" ? ["EBUSY", "EROFS"] : ["EPERM", "EACCES"];
+  expect(expected, `root removal returned ${code}; directory contents are not proof of a pinned root`).toContain(code);
+}
+
+/** Empty before wrapping; inside Linux only the policy's typed deny mounts may appear. */
+function expectProtectedRootEntries(reportPath: string, root: string): void {
+  const report = JSON.parse(readFileSync(reportPath, "utf8")) as { root: string; entries: unknown };
+  const canonicalRoot = realpathSync(root);
+  expect(realpathSync(reportPath).startsWith(`${canonicalRoot}/`), "the inventory report polluted the measured root").toBe(false);
+  expect(realpathSync(report.root), "the inventory came from another sandbox directory").toBe(canonicalRoot);
+  const mandatory = buildMandatorySandboxWritePolicy([canonicalRoot]).denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
+  const names = [...new Set(mandatory.filter(path => dirname(path) === canonicalRoot).map(path => basename(path)))].sort();
+  const expected = process.platform === "linux" ? names.map(name => ({
+    name,
+    kind: mandatory.some(path => path.startsWith(join(canonicalRoot, name) + "/")) ? "directory" : "device",
+    empty: true,
+  })) : [];
+  expect(report.entries, "only mandatory runtime-created empty deny mounts may occupy the fixture root").toEqual(expected);
 }

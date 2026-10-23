@@ -18,6 +18,7 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
  *     NOT spawn a second shell.
  *   - kill / killAll tear down + decrement ASRT state.
  */
+import { egressInvocationOwner, egressInvocationAbortSignal } from "../../../permissions/egress-invocations.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -318,6 +319,20 @@ describe("pty-manager fail-closed", () => {
 });
 
 describe("pty-manager happy path (fs-contained)", () => {
+  it("retains its invocation identity while closing and cancels pending network approval", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const token = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
+    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
+    expect(wrapWorkerCommandMock.mock.calls[0]![1]).toMatchObject({ denyUnixSockets: true });
+    const signal = egressInvocationAbortSignal(token);
+    expect(signal?.aborted).toBe(false);
+    killTerminal("terminal:0000000a-1");
+    expect(signal?.aborted).toBe(true);
+    expect(egressInvocationOwner(token)).toBeDefined();
+    lastPty?.emitExit(0);
+    expect(egressInvocationOwner(token)).toBeUndefined();
+  });
+
   it("wraps with the restated read+write sensitive floors + a workspace-anchored cwd jail and spawns the wrapped argv", async () => {
     // No cwd supplied (the production renderer path) → default = workspace root.
     const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cols: 120, rows: 40 });
@@ -1436,8 +1451,9 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(wrapTerminalCommandMock).toHaveBeenCalledTimes(1);
-    const wrapOpts = wrapTerminalCommandMock.mock.calls[0][1] as { ownTty: string; filesystem: { denyRead: string[] } };
+    const wrapOpts = wrapTerminalCommandMock.mock.calls[0][1] as { ownTty: string; denyUnixSockets: boolean; filesystem: { denyRead: string[] } };
     expect(wrapOpts.ownTty).toBe("/dev/ttys012");
+    expect(wrapOpts.denyUnixSockets).toBe(true);
     expect(wrapOpts.filesystem.denyRead).toContain("/home/u/.ssh");
 
     expect(deliverMock).toHaveBeenCalledTimes(1);

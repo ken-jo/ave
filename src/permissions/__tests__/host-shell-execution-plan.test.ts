@@ -33,6 +33,42 @@ const NONE = {
 };
 
 describe("host shell execution plan", () => {
+  it.each(["darwin", "linux"] as const)("reports the actual %s route in the existing plan and projection", (platform) => {
+    for (const requestedSandbox of [false, true]) {
+      for (const executionMode of ["default", "host"] as const) {
+        const plan = buildHostShellExecutionPlan({ platform, requestedSandbox, executionMode, activeCapability: { ...FULL_ASRT, platform } });
+        const sandboxed = requestedSandbox && executionMode === "default";
+        expect(plan.sandboxed).toBe(sandboxed);
+        expect(plan.mode === "asrt").toBe(sandboxed);
+        expect(getHostShellExecutionPlanAuditProjection(plan).sandboxed).toBe(sandboxed);
+      }
+    }
+  });
+
+  it.each(["assumed", "policy-best-effort"] as const)("never reports %s capability as a sandboxed command", (confidence) => {
+    const plan = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform: "linux", confidence } });
+    expect(plan.sandboxed).toBe(false);
+    expect(plan.fallbackReason).toBe("active-sandbox-not-shell-contained");
+  });
+
+  it("distinguishes unsupported platforms from a disabled setting", () => {
+    const plan = buildHostShellExecutionPlan({ platform: "freebsd", requestedSandbox: false, activeCapability: { ...NONE, platform: "freebsd" } });
+    expect(plan.sandboxed).toBe(false);
+    expect(plan.fallbackReason).toBe("platform-unsupported");
+  });
+
+  it("requires evidence for every confinement dimension", () => {
+    for (const confines of [undefined,
+      { filesystem: false, process: true, network: true },
+      { filesystem: true, process: false, network: true },
+      { filesystem: true, process: true, network: false }]) {
+      const plan = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true,
+        activeCapability: { ...FULL_ASRT, platform: "linux", confines } });
+      expect(plan.sandboxed).toBe(false);
+      expect(plan.mode).toBe("blocked");
+    }
+  });
+
   it("uses Windows Plan B for requested partial ASRT without calling it a sandbox", () => {
     const plan = buildHostShellExecutionPlan({
       platform: "win32",
@@ -84,7 +120,7 @@ describe("host shell execution plan", () => {
       expect(off).toMatchObject({
         requestedSandbox: false,
         mode: "plain",
-        fallbackReason: "none",
+        fallbackReason: "disabled-by-setting",
         requiresExplicitUserApproval: false,
       });
       expect(requiresExplicitHostShellApproval(off)).toBe(false);

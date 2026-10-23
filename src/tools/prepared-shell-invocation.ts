@@ -89,6 +89,8 @@ export function matchesPreparedShellInvocation(handle: PreparedShellInvocation, 
     && original.resolvedCwd === identity.resolvedCwd && original.toolUseId === identity.toolUseId;
 }
 
+export function preparedShellToolUseId(handle: PreparedShellInvocation): string | undefined { return stateOf(handle).identity.toolUseId; }
+
 export function preparedShellFacts(handle: PreparedShellInvocation): Readonly<ShellExecutionFacts> { return stateOf(handle).facts; }
 
 /** Bind only after command policy accepts the final source, before approval. */

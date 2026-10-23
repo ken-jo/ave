@@ -23,7 +23,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { utcDateKey } from "../shared/local-date.js";
-import type { SandboxAuditEntry } from "./sandbox-audit.js";
+import type { SandboxAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressDecisionAuditEntry } from "./sandbox-audit.js";
 
 // ─── Sink path ────────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ function sinkPath(date = new Date()): string {
  * or surface the error. Production call-sites in `permission-manager.ts` wrap
  * this in a try/catch and log the error without blocking the tool execution.
  */
-export async function emitSandboxAudit(entry: SandboxAuditEntry): Promise<void> {
+export async function emitSandboxAudit(entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry): Promise<void> {
   const path = sinkPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });

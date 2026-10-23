@@ -11,7 +11,7 @@ import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
-import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
+import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
@@ -50,7 +50,6 @@ import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import type { VerdictCache } from "./reviewer/verdict-cache.js";
 import type { DeferredEntry, DeferredQueue } from "./reviewer/deferred-queue.js";
 import { globMatch } from "../lib/glob-matcher.js";
-import { aveHome } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import {
   approvalCacheKeyIdentity,
@@ -268,6 +267,8 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  /** Host-issued per-invocation substrate, sealed before permission evaluation. */
+  hostShellExecutionPlan?: HostShellExecutionPlan;
   /**
    * Background/routine turns are not direct user gestures. Mutating tools must
    * still ask even when an allow rule or auto mode would otherwise permit them.
@@ -615,7 +616,7 @@ export class PermissionManager {
 
   constructor(permissionsFilePath?: string) {
     this.permissionsFilePath =
-      permissionsFilePath ?? resolve(aveHome(), "permissions.json");
+      permissionsFilePath ?? defaultPermissionsFilePath();
     this.projectRuleScopes = new ProjectRuleScopes(dirname(this.permissionsFilePath));
   }
 

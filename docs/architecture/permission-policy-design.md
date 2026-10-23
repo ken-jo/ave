@@ -279,17 +279,191 @@ language or project command-rule scope today. Existing tool allow rules and
 saved grants can satisfy its ordinary asks; no new command-rule grammar is
 implied.
 
-The sink catalogue is retained because shell egress has not been delegated to a
-proxy. The OS tool sandbox remains opt-in; its current network allowlist is
-shared and strict, without per-domain approval or denial UI. Windows host-shell
-execution remains a plain child. This classification contract changes neither
-sandbox/proxy behavior nor the normal sandbox-off approval path. Native shell
-execution and egress behavior are outside the classifier validation evidence.
+The sink catalogue remains a host policy floor, including for unsandboxed
+commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
+boundary and proxy approval contract. Classification evidence alone does not
+prove native confinement or egress enforcement.
 The [implementation design](../design/permissions-always-allow-and-judge.md#shell-classification-buckets)
 records the retained credential and sink coverage. The guest risk grading below
 is a separate contract.
 
 ## Shell Execution And Explicit Host Approval
+
+### OS shell sandbox policy
+
+This policy applies to builtin Bash and PowerShell tool invocations. Workspace
+PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
+including their own attributed domain approvals and socket policy.
+The user terminal's host shell is a separate lane.
+
+`features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
+explicitly default-off until its shell confinement gate is enabled. Loading
+settings preserves an explicit stored `true` or `false`; the platform default
+applies only when the value is absent. A setting expresses activation intent,
+while successful capability probing establishes availability. Unavailability
+has a machine-readable reason and is logged once for the activation attempt.
+An explicit `AVE_SANDBOX_ENABLED=1` request aborts startup on macOS and Linux
+if activation fails. Settings/default activation instead warns and continues
+without OS isolation; Windows also warns and continues when unavailable.
+
+The existing host-issued
+[`HostShellExecutionPlan`](../../src/permissions/host-shell-execution-plan.ts)
+is the invocation's source of execution state. Its `sandboxed` field is true
+only when the sandbox is enabled, the capability probe passed and the selected
+command will use the verified confined shell route. `executionMode: "host"`
+requests and unavailable confinement carry `sandboxed: false`; any excluded
+command or retry that runs outside confinement must use that same state.
+The field participates in the plan's audit projection and
+cache identity. Permission consumers receive the plan before deciding; neither
+a renderer flag nor a process-wide capability can establish that a particular
+command will run sandboxed. This state contract does not redefine command-rule
+matching or approval precedence.
+
+Sandbox writes are limited to the invocation's admitted project roots and
+temporary directories. Mandatory write denies protect these entries beneath
+each admitted write root, taking precedence over grants:
+
+- `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
+- `.gitconfig` and the entire `.git` entry, whether a file, directory or absent,
+  including `.git/config`, `.git/hooks/**` and `.git/modules/**`;
+- `.vscode/**`;
+- Ave settings, permission settings, rules, policies and approval grants, with
+  paths derived from their owning stores rather than copied filenames.
+
+The existing sensitive-write floor owns real-home startup-file protection; the
+root-relative policy does not maintain a second real-home filename list.
+Denies cover creation when a protected path does not yet exist, as well as
+modification of existing content. The
+[write policy](../../src/permissions/sandbox-write-policy.ts) retains both a
+protected entry and its canonical target when it is a link. A `.git` pointer
+also protects its resolved metadata directory and linked worktree common
+directory, including the `gitdir` and `commondir` control files that could
+redirect later discovery. These controls remain protected even when their
+targets are outside the current write grants. Metadata discovery reads regular
+files without executing a command. Symbolic `.git` markers refuse preparation;
+directory-link traversal stays within the admitted root's canonical tree.
+Derived metadata paths containing pattern characters remain literal denies,
+including absent targets. Reads have limits of 64 KiB per file and 1 MiB
+across the invocation. Exceeding either metadata limit refuses preparation.
+Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
+so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
+follows links before parent components and preserves filesystem spelling.
+Metadata routing inspects at most 64 components; missing-path resolution is
+bounded at 64 ancestors. On macOS, existing routing links receive literal
+entry pins.
+On Linux, the same bounded inspection covers mandatory control paths and
+the existing sensitive-write floor, whose paths still come from their owning stores.
+A bind mount follows the link instead of protecting its directory
+entry, so every write grant containing the routing link's parent is removed.
+Independent child and sibling grants remain; an ordinary write grant on that
+same parent cannot coexist with this protection. A missing target also protects
+its first missing component. An unresolved
+parent component beyond a missing ancestor refuses preparation.
+Linux does not replay routing links as deny binds; target denies remain with
+their existing owners so a link cannot mask an unrelated target subtree.
+Symbolic `.git` marker entries refuse preparation; linked worktrees use
+regular pointer files.
+Unexpected discovery failures fail closed, either by refusing preparation or
+removing the affected root's write grant rather than trusting partial results.
+`buildMandatorySandboxWritePolicy` returns the retained `allowWrite` roots and
+mandatory `denyWrite` entries in the existing filesystem configuration. The
+[sandbox wrapper](../../src/permissions/asrt-sandbox.ts) composes these denies
+with the existing sensitive write floor for each invocation. Store-owned paths
+come from the [application settings store](../../src/data/settings-store.ts),
+[permission settings store](../../src/permissions/permission-settings-store.ts),
+[global rule store](../../src/permissions/rules/rule-files.ts) and
+[project rule store](../../src/permissions/rules/project-rule-files.ts).
+The same boundary covers policy files and saved permission and egress grants.
+Relocation of a store must relocate its protection too. A command cannot
+rewrite its own settings, rules or exclusions through a broader grant.
+
+The whole `.git` entry, resolved metadata directory and common directory are
+read-only, including their descendants and ordinary index and ref updates.
+Commands that write this
+metadata, including commits, require a
+[host-side execution route](#shell-execution-and-explicit-host-approval)
+through the existing permission and approval gates. Metadata protection neither
+grants that route nor changes command-rule interpretation.
+
+On Linux, preparing a deny for an absent path can create a temporary empty file
+or directory on the host as a read-only mount point. Concurrent repository
+tools and editors can observe these placeholders, including an otherwise
+absent `.git` entry. Normal cleanup is limited to ownership-checked empty
+mount points. Abrupt host termination, including SIGKILL or OOM termination,
+can leave residue; successful normal cleanup does
+not prove crash cleanup. Recovery may remove an entry only when ownership can
+be established and must preserve unrelated, replaced or nonempty paths. An
+empty path named `.git` is not sufficient ownership evidence.
+
+Nested repositories are discovered beneath admitted roots when the wrapper is
+prepared, through directory depth three with the root at depth zero:
+`a/b/c/.git` is included. Each root's own protected entries are denied
+independently of this scan. Discovery ignores ignore-file rules and skips
+`node_modules`, `.git`, `.hg`, `.svn`, `.venv`, `venv`, `vendor`, `dist`,
+`build` and `.cache` trees. All roots share one invocation budget of 16,384
+directory entries. Canonical roots are scanned from narrower roots to their
+ancestors. Root bindings are captured once and retained grants use those
+canonical identities, so retargeting an alias cannot grant an unscanned target.
+Actual grants preserve physical Unicode and POSIX backslash spellings; matching
+normalization cannot grant or deny a different physical sibling.
+Incomplete enumeration, an exhausted entry budget or more than
+16 KiB of discovered metadata and routing-pin path bytes for that root removes
+its write grant.
+Containing ancestor grants are also removed so they cannot reopen a failed
+child; independently scanned narrower roots keep their grants when a broader
+root is removed. Required metadata denies remain explicit outside the roots
+and above retained child grants. If the final serialized write-deny
+policy cannot fit within 32 KiB, preparation fails clearly.
+On macOS, subtree glob denies additionally protect future nested `.git`
+entries, including those beyond the scan depth. Linux uses literal discovered
+paths; repositories created after preparation or beneath deliberately skipped
+or deeper directories are not covered by that scan. This distinction must
+remain explicit in validation.
+
+A very large ambient root, such as the shared temporary directory, may
+therefore lose its broad write grant. An explicitly admitted working directory
+or private invocation temporary directory remains writable when its narrower
+scan succeeds. These bounds do not change command-rule or approval semantics.
+
+Native control-write, repository-metadata and socket regression tests require
+working isolation on macOS and Linux, with ordinary write or connection
+positive controls. Missing dependencies or failed initialization fail those
+tests. Windows skips explicitly. Local runs may explicitly opt out with
+`AVE_SKIP_NATIVE_SANDBOX_TESTS=1`; CI does not honor that opt-out. Generated
+wrapper arguments alone do not establish native enforcement.
+
+Reads remain broad. This policy adds no sandbox read denies and preserves
+existing read protections, including the [saved-session projection](#saved-session-reads).
+The host sensitive-path floor and other mandatory host gates retain authority
+even for a sandboxed command.
+
+Sandboxed shell network traffic must pass through the local egress proxy.
+The shell domain allowlist starts empty; plugin-declared domains do not seed
+it. An unknown destination invokes the host approval callback and the existing
+approval dock, offering allow once, always for this destination, or deny when
+the destination can hold a persistent grant. Allow once covers that host and
+port for the current shell invocation. Always persists the destination through the
+[egress grant store](../../src/permissions/egress-grants.ts), so later matching
+requests can proceed without another ask. Grants retain the destination's
+network class and shell origin; they do not authorize plugin or terminal
+traffic. Persistent scopes require verified public destinations and sufficient
+invocation attribution. Local or private-network and unverified destinations
+offer only allow once or deny; reserved destinations remain denied. The store
+retains other scopes for its existing consumers, but builtin shell prompts
+offer only once and always.
+Deny, approval failure and timeout return a clear network access error to the
+command without opening egress.
+Headless and auto-mode requests use the same configured permission reviewer
+and escalation path as other asks. Direct sockets cannot bypass the proxy.
+Unix-domain sockets are denied for shell commands by default; plugin worker
+control channels do not grant shell access to those sockets.
+
+When shell confinement is inactive because the setting is off, the runtime is
+unavailable or the platform is unsupported, the chat header and Settings show
+a persistent, non-dismissable sandbox-off status and localized reason. The
+status reports effective shell confinement, including a platform that can
+confine plugins but cannot confine shell commands. Session approval does not
+change sandbox activation for later commands.
 
 ### Route-neutral execution foundation
 
@@ -700,8 +874,18 @@ separate permission category. The checks in this section apply to Agent:
 - The reviewer sees the Agent companion's active containment. Execution
   requires filesystem and process confinement for that exact incarnation;
   an unavailable or changed capability fails closed. Its write paths, deny
-  floors, and egress allow-list were fixed at spawn, so later configuration
-  changes do not reach that running companion.
+  floors and initial egress allow-list are fixed at spawn. Egress approvals
+  and revocations still apply through the live proxy and grant store.
+
+Agent terminal egress starts with an empty domain allowlist. Plugin manifests
+and model endpoint domains authorize worker traffic only; they do not grant
+terminal access. Unknown destinations use the existing tab banner and approval
+reviewer, with allow once, this tab, always for this destination, or deny where
+the destination is eligible for those scopes. Allow once covers one connection;
+tab and persistent grants retain their existing attribution and revocation
+rules. A background descendant keeps its terminal's attributed proxy identity
+and follows the same approval path. Closing the terminal releases its pending
+asks and tab grants. These approvals do not change Manual's host shell.
 
 The target terminal is resolved once, before any decision, and sealed into the
 approval scope: an explicit `tabId`, then the terminal the conversation's pane
@@ -1068,10 +1252,9 @@ Only the builtin shell wrapper receives that root through
 floor still protects sessions from confined plugin, MCP and terminal processes.
 The builtin projection retains other sensitive paths, nested exclusions and
 trusted custom read denies; a conflicting protected ancestor suppresses the
-session grant. `getBuiltinShellReadPolicy` composes invocation reads for both
-shell dialects. It omits redundant read grants strictly above HOME, which
-otherwise cause the native runtime to reapply the HOME deny after narrower
-grants. Surviving read candidates cannot reopen another protected deny; write
+session grant. `getBuiltinShellReadPolicy` composes broad invocation reads for
+both shell dialects without denying the real home as a whole. Read candidates
+cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone
 does not establish this contract: both the file gates and actual sandboxed reads

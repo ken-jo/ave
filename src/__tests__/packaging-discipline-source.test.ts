@@ -1060,6 +1060,62 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("provisions a verified backend before both Linux test lanes", () => {
+    type Step = { uses?: string; run?: string; if?: string; env?: Record<string, string> };
+    const ci = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      jobs: Record<string, { steps: Step[] }>;
+    };
+    const mustRun = JSON.parse(readRepoFile("config/ci-must-run-tests.json")) as {
+      groups: Record<string, string[]>;
+    };
+    expect(mustRun.groups.permissions).toContain("src/permissions/");
+    for (const [job, command] of [
+      ["build-and-test", "bun run test:ci"],
+      ["linux-confinement-tests", "bun run test --"],
+    ] as const) {
+      const steps = ci.jobs[job]!.steps;
+      const setup = steps.findIndex((step) => step.uses === "./ave/.github/actions/setup-linux-sandbox");
+      const tests = steps.findIndex((step) => step.run?.includes(command));
+      expect(setup, `${job} needs the shared Linux backend setup`).toBeGreaterThanOrEqual(0);
+      expect(tests, `${job} needs its test invocation`).toBeGreaterThan(setup);
+      expect(steps[setup]!.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+      expect(steps[tests]!.env?.AVE_REQUIRE_SANDBOX_CASES).toBe("1");
+      expect(steps.some((step) => step.run?.includes("sudo apt-get"))).toBe(false);
+    }
+    const setup = parseYaml(readRepoFile(".github/actions/setup-linux-sandbox/action.yml")) as {
+      runs: { using: string; steps: Array<{ shell: string; run: string; "continue-on-error"?: boolean }> };
+    };
+    expect(setup.runs.using).toBe("composite");
+    expect(setup.runs.steps).toHaveLength(3);
+    expect(setup.runs.steps[0]!.run).toContain("for tool in bwrap socat rg xvfb-run bash zsh");
+    expect(setup.runs.steps[1]!.run).toContain("kernel.apparmor_restrict_unprivileged_userns=0");
+    expect(setup.runs.steps[2]!.run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
+    for (const step of setup.runs.steps) {
+      expect(step.shell).toBe("bash");
+      expect(step["continue-on-error"]).not.toBe(true);
+      expect(step.run).toContain("set -euo pipefail");
+      const syntax = spawnSync("bash", ["-n"], { input: step.run, encoding: "utf8" });
+      expect(syntax.status, syntax.stderr || String(syntax.error ?? "")).toBe(0);
+    }
+  });
+
+  it("runs the native control boundaries in both platform regression jobs", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
+    for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {
+      const commands = jobRunCommands(jobs.get(job) as string);
+      const tests = commands.find((command) => command.includes("bun run test --"));
+      expect(tests, `${job} has no native regression invocation`).toBeDefined();
+      for (const suite of [
+        "sandbox-control-writes.integration.test.ts",
+        "sandbox-shell-sockets.integration.test.ts",
+        "sandbox-git-controls.integration.test.ts",
+        "egress-terminal-background.integration.test.ts",
+      ]) {
+        expect(tests, `${job} omits ${suite}`).toContain(`src/permissions/__tests__/${suite}`);
+      }
+    }
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
@@ -1509,9 +1565,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox is opt-in on every platform");
-    expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L237-L254");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("per `osToolSandbox`");
+    expect(agents).toContain("src/data/settings-defaults.ts");
     expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1`");
     expect(agents).toContain("aborts startup; settings activation warns and continues without OS isolation");
     expect(agents).toContain("Windows always warns and continues when unavailable");

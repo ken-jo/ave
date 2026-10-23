@@ -237,7 +237,7 @@ describe("ApprovalGate", () => {
     });
     const binding: HostShellExecutionPermitBinding = Object.freeze({
       plan,
-      planIdentity: "host-shell-execution-plan/v3:win32:windows-partial-shell-acl-unsafe",
+      planIdentity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe",
       toolName: "bash",
       toolUseId: "receipt-tool-use",
       command: "echo receipt",

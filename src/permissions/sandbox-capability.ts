@@ -19,13 +19,13 @@
  *   purely on intent."
  *
  * How the capability is resolved:
- *   OS isolation is now backed by the Anthropic Sandbox Runtime (ASRT) —
+ *   OS isolation is backed by the configured sandbox runtime —
  *   see asrt-sandbox.ts. The legacy per-OS runner registry
  *   (bwrap / sandbox-exec / AppContainer) was removed; ASRT provides the
- *   host-tool filesystem jail + global strict-union network enforcement. When
+ *   host-tool filesystem jail and invocation-attributed proxy enforcement. When
  *   the ASRT path is active it reports `kind: "asrt"`; the SOT falls back to
  *   `kind: "none"` (confidence: "verified") when the sandbox gate is off
- *   (DEFAULT) — the reviewer + UI then correctly report the absence of OS
+ *   — the reviewer + UI then correctly report the absence of OS
  *   isolation. The active capability is published via
  *   `setActiveSandboxCapability`. The audit chain currently stores the reviewer
  *   verdict derived from this value, not the full SandboxCapability snapshot.
@@ -254,7 +254,7 @@ export function __resetActiveSandboxCapabilityForTest(): void {
  *
  * Returns the capability stored by {@link setActiveSandboxCapability} when the
  * ASRT sandbox path was initialized at boot. Falls back to kind="none" when no
- * sandbox is active (the gate is DEFAULT-OFF; isolation=none).
+ * sandbox is active (isolation=none).
  *
  * This is the single SOT the reviewer and UI consult — all callers automatically
  * see the correct kind once ASRT is active without re-probing the OS.

@@ -444,8 +444,8 @@ export async function authorizeToolInvocation(
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
-          runsSandboxed: hostShellExecutionPlan.mode === "asrt" || invocationPermissionContext.disposableSubstrate !== undefined,
-          sandboxAvailable: getHostShellExecutionPlan().mode === "asrt",
+          runsSandboxed: hostShellExecutionPlan.sandboxed || invocationPermissionContext.disposableSubstrate !== undefined,
+          sandboxAvailable: getHostShellExecutionPlan().sandboxed,
         } : terminalScope !== undefined ? { runsSandboxed: false, sandboxAvailable: false } : undefined;
     const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
     if (services.permissionManager && projectRulesCwd !== undefined) {
@@ -461,6 +461,7 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...(shellExecution === undefined ? {} : { shellExecution }),
             ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },

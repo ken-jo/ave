@@ -14,7 +14,7 @@ import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../types
 import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope">;
 
 /**
  * Which surface draws the card for a session.
@@ -261,6 +261,7 @@ export function useApproval(): ApprovalQueueApi {
           // and are forcibly downgraded to deny-once.
           nonce: current.nonce,
           hmac: current.hmac,
+          ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),

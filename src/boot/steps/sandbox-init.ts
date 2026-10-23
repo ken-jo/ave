@@ -15,7 +15,7 @@ import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 const log = createLogger("ave");
 
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
-  const { settingsService, bootAuditLogger, pluginRuntime, buildSandboxUnionDomains } = ctx;
+  const { settingsService, bootAuditLogger, buildSandboxUnionDomains } = ctx;
 
   // Platform policy (ALL platforms share the SAME gate — there is no separate
   // Windows opt-in):
@@ -39,13 +39,15 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   {
     const {
       initializeAsrtSandbox,
+      subscribeAsrtViolations,
       appOwnedSandboxHomeRoot,
       ensureSandboxPrivateRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
+      isAsrtMacRuntimeProbeError,
     } = await import("../../permissions/asrt-sandbox.js");
-    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome } =
+    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome, detectSandboxCapability } =
       await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
@@ -56,7 +58,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
 
     // Two independent on-signals. `explicitEnv` (AVE_SANDBOX_ENABLED=1) is the
     // deliberate "I really mean it" override; `settingOn` is the Settings toggle
-    // (off by default). The DISTINCTION drives degrade-vs-abort: see
+    // (on by default on macOS/Linux). The distinction drives degrade-vs-abort: see
     // decideSandboxGate.
     const explicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
     const settingOn = settingsService.get("features")?.osToolSandbox ?? false;
@@ -172,53 +174,19 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           if (deps.warnings.length > 0) {
             log.warn("boot: ASRT dependency warnings: %s", deps.warnings.join("; "));
           }
-          // ENFORCED network model (corrects WIRING-A #1356 — see asrt-sandbox.ts
-          // NETWORK ENFORCEMENT MODEL header). ASRT's filterNetworkRequest
-          // reads ONLY the SHARED config; the per-command customConfig.network is
-          // inert for allow/deny. So we set the SHARED config here to:
-          //   strictAllowlist: true  ⇒ GLOBAL hard-deny on any out-of-allow-list
-          //                            host, with NO askCb fallthrough (strict
-          //                            bypasses the callback entirely). The
-          //                            WIRING-A interactive askCb prompt cannot
-          //                            coexist with strict and is removed.
-          //   allowedDomains: UNION  ⇒ every loaded, host-validated plugin's
-          //                            manifest.networkAccess.allowedDomains
-          //                            (∪ an optional trusted host baseline,
-          //                            empty by default). Computed from the
-          //                            trusted plugin-runtime seam.
-          // Because filterNetworkRequest reads this shared config, egress is
-          // genuinely ENFORCED for BOTH workers and host tools.
-          //
-          // TRADE-OFF (honest): this is a UNION allow-list, not per-worker
-          // isolation — a sandboxed process may reach any domain declared by ANY
-          // loaded plugin. Acceptable under Ave's 1st-party plugin trust model;
-          // true per-worker isolation needs a future ASRT with per-process
-          // proxies. See asrt-sandbox.ts header.
-          //
-          // This gate now runs BEFORE startPlugins() (factories spawn
-          // confined children during startAll and need ASRT active), so the
-          // manifest half of the union is EMPTY here — startPluginsOnce
-          // re-derives it via the same builder right after load() and
-          // live-swaps the shared config before startAll().
-          //
-          // Build the enforced allow-list via the SAME builder the live-refresh
-          // closure uses (buildSandboxUnionDomains): manifest UNION ∪ host-
-          // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls
-          // a worker reaches — e.g. local-indexer's Azure OpenAI resource, whose
-          // null manifest networkAccess contributes nothing static and would be
-          // hard-denied without this). Trusted host baseline stays empty.
-          // normalizeUnionForAsrt (inside the builder) emits both `d` and `*.d`
-          // so the sandbox enforces the SAME hosts the hostFetch path advertises.
-          // Plugin count for the log — buildSandboxUnionDomains computes the
-          // actual union internally; this one-liner only supplies the count.
-          const manifestAllowLists = pluginRuntime
-            .listPluginIds()
-            .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-          const unionAllowedDomains = await buildSandboxUnionDomains();
+          // The proxy routes every connection through the host-owned invocation
+          // identity. Shells and agent terminals start with no allowed
+          // destinations; the live allowlist builder supplies worker policy only.
+          await buildSandboxUnionDomains();
+          const { createEgressAskRuntimeCallback } = await import("../../permissions/egress-runtime.js");
+          const askNetwork = createEgressAskRuntimeCallback({
+            approvalGate: ctx.approvalGate,
+            permissionManager: ctx.permissionManager,
+          });
           // Trust boundary: WEAKENING flags are NOT set here (deny-by-default,
           // no Apple events / weaker isolation / unix-socket opening). Only the
-          // enforced allow-list + strict flag. Per-command filesystem scoping
-          // (write-jail + HOME read-deny) is applied at the call site via the
+          // empty allowlist and host approval callback. Filesystem scoping
+          // is applied at the call site via the
           // narrow `filesystem` option, never here as a weakening channel.
           // Before the first wrap, because ASRT reads the variable this sets
           // from THIS process's environment at wrap time — a value published
@@ -236,14 +204,21 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           // would be visible to every process wrapped before it.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
+          const [{ startEgressDenyMonitor }, { emitSandboxAudit }] = await Promise.all([
+            import("../../permissions/egress-deny-monitor.js"),
+            import("../../audit/sandbox-audit-sink.js"),
+          ]);
+          await startEgressDenyMonitor({
+            subscribe: subscribeAsrtViolations, emit: emitSandboxAudit, capability: detectSandboxCapability,
+          });
           await initializeAsrtSandbox({
-            allowedDomains: unionAllowedDomains,
-            strictAllowlist: true,
+            allowedDomains: [],
+            strictAllowlist: false,
             // Thread the REAL Electron userData path so the deny-list is exact
             // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
             // Safe: boot.ts is main-process only and already imports electron.
             userDataDir: ctx.host.userDataPath,
-          });
+          }, askNetwork);
           // Publish the active capability to the SOT now that ASRT is
           // genuinely initialized (gate ON, deps present). detectSandboxCapability
           // + the reviewer/UI consumers read this; the reviewer's per-category
@@ -281,11 +256,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             confines,
           });
           log.info(
-            "boot: ASRT OS tool sandbox initialized (%s, %s, strict allow-list enforced, %d union domains at init across %d plugins; manifest union refreshed after plugin load; confined temp root %s)",
+            "boot: OS tool sandbox initialized (%s, %s, invocation-scoped domain approval; confined temp root %s)",
             process.platform,
             asrtBackend,
-            unionAllowedDomains.length,
-            manifestAllowLists.length,
             sandboxTempRoot,
           );
           sandboxActive = true;
@@ -302,9 +275,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             platform: process.platform,
             depsOk: false,
           });
+          const macRuntimeProbeFailed = process.platform === "darwin" && isAsrtMacRuntimeProbeError(initErr);
           const runtimeProbeFailed =
             process.platform === "linux" && isAsrtLinuxRuntimeProbeError(initErr);
-          const failureReason: SandboxGateReason = runtimeProbeFailed
+          const failureReason: SandboxGateReason = macRuntimeProbeFailed
+            ? failDecision.action === "abort" ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed"
+            : runtimeProbeFailed
             ? failDecision.action === "abort"
               ? "abort-linux-runtime-probe-failed"
               : "degrade-linux-runtime-probe-failed"
@@ -328,15 +304,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               `Cause: ${cause}`,
           );
           recordGate("degrade", failureReason, [cause]);
-          // sandboxActive stays false: a Linux runtime-probe failure never
+          // sandboxActive stays false: a runtime-probe failure never
           // publishes a verified capability, so UI/reviewer remain kind="none".
         }
       }
     } else {
-      // Gate OFF (neither on-signal set) → skip. On the staged rollout this is
-      // the Linux/Windows default-off path. Log the enable hint on darwin (where
-      // off is now a deliberate opt-out); emit the skip telemetry on EVERY
-      // platform so the off-rate is monitorable alongside activate/degrade/abort.
+      // A deliberate opt-out, or a platform whose default remains gated off.
       if (process.platform === "darwin") {
         log.info(
     "boot: OS tool sandbox gated off (enable via Settings → Permissions 'OS tool sandbox' or AVE_SANDBOX_ENABLED=1)",
