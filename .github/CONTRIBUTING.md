@@ -63,8 +63,8 @@ test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 CI's `build-and-test` always runs typecheck and the build. A category merge
-(a pull request from `integration/*` into `main`) runs the full suite with
-coverage, as the multi-stage flow requires. Any other pull request to `main`
+(a pull request from `integration/*` into `main`) runs the full suite, as the
+multi-stage flow requires. Any other pull request to `main`
 or to an `integration/*` branch runs only the affected Vitest
 tests (`bun run test:ci`, `scripts/run-ci-suite.mjs`): the changed tests, every
 test `vitest related` reaches from a changed module, the triggered lock suites,
@@ -73,10 +73,11 @@ sandbox, contract, IPC, naming, and every test that runs repository code in a
 tsx child process or an esbuild bundle). It runs the full suite whenever that
 selection cannot be trusted: the hook's global inputs, message catalogs,
 deleted or renamed modules, a module that computes its imports, a module no
-test reaches, failed discovery, or more than 600 selected files. An affected
-run skips coverage. Global coverage thresholds describe the whole suite, so
-they are enforced on full runs only: every push to `main`, every `v*` tag, and
-the nightly schedule. A red full run there fails the check on that commit. Do not duplicate
+test reaches, failed discovery, or more than 600 selected files. Coverage is
+periodic: instrumentation and the global thresholds (`check:test-coverage`)
+run only on the nightly schedule and a manual dispatch. Every other run, full
+or affected, skips coverage. A change that lowers coverage turns the next
+nightly run on `main` red. Do not duplicate
 the trio around a successful push. If a check fails, fix it and rerun
 only the failed or invalidated checks before pushing again. No CI workflow and no release
 gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and self-contained:

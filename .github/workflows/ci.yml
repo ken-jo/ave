@@ -1,9 +1,10 @@
 name: CI
 # Pull requests (to main and to integration/* category branches) run the
 # affected Vitest tests unless the selection cannot be trusted. A category
-# merge (integration/* into main) and every other event run the full suite
-# with its coverage gate: a push to main after a merge, a release tag, the
-# nightly schedule and a manual dispatch. See
+# merge (integration/* into main) and every other event run the full suite: a
+# push to main after a merge, a release tag, the nightly schedule and a manual
+# dispatch. Coverage is periodic: only the nightly schedule and a manual
+# dispatch instrument it and enforce its thresholds. See
 # scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
 on:
   pull_request:
@@ -157,17 +158,18 @@ jobs:
           else
             echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
           fi
-      - name: Run the suite and its coverage gate
+      - name: Run the suite (coverage gate on nightly and dispatch)
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # `test:ci` (scripts/run-ci-suite.mjs) runs `check:test-coverage`, the
-        # full suite and every global coverage threshold, on every event but a
-        # pull request, and on a pull request whose selection it cannot trust.
-        # Otherwise it runs the pull request's affected tests plus the
-        # must-run set (config/ci-must-run-tests.json) without coverage; the
-        # step summary names the mode and the reason.
+        # `test:ci` (scripts/run-ci-suite.mjs) runs the full suite on every
+        # event but a pull request, and on a pull request whose selection it
+        # cannot trust; otherwise the pull request's affected tests plus the
+        # must-run set (config/ci-must-run-tests.json). Coverage is periodic:
+        # only the nightly schedule and a manual dispatch run
+        # `check:test-coverage` (instrumentation and every global threshold).
+        # The step summary names the mode and the reason.
         #
         # `check:test-coverage`, not `check:test-quality`: that composite runs
         # `check:test-duplicates` first, so a duplicated test helper would end

@@ -18,7 +18,9 @@ import {
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
+  ciSuiteArguments,
   planCiSuite,
+  runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
   testRunsRepoCodeOutOfProcess,
@@ -207,6 +209,20 @@ describe("CI test selection fallbacks", () => {
       expect(planCiSuite(event)).toEqual({ mode: "full", reason: `${event} runs the full suite`, tests: [] });
     }
     expect(() => planCiSuite(undefined)).toThrow("GITHUB_EVENT_NAME is unset");
+  });
+
+  it("instruments coverage only on the nightly schedule and a manual dispatch", () => {
+    expect(runsCoverage("schedule")).toBe(true);
+    expect(runsCoverage("workflow_dispatch")).toBe(true);
+    for (const event of ["push", "pull_request", undefined]) expect(runsCoverage(event)).toBe(false);
+  });
+
+  it("runs the coverage gate only when instrumenting, and the whole suite on a plain full run", () => {
+    const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
+    const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
+    expect(ciSuiteArguments(fullPlan, true)).toEqual([join("scripts", "run-test-coverage-gate.mjs")]);
+    expect(ciSuiteArguments(fullPlan, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true"]);
+    expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
   });
 
   it("runs the full suite for a category merge to main, and refuses a pull request without its refs", () => {
