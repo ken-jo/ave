@@ -147,7 +147,8 @@ export function registerIpcHandlers(
   registerUsageHandlers(deps);
   registerGitRuntimeHandlers(deps);
   // Bundled sign-in pruning waits while a package install, update or uninstall is open.
-  const installedContent = registerMarketplaceContentHandlers(deps, () => gitMarketplaceRegistration?.packageTransactionsIdle() ?? true);
+  deps.mcpManager.setPackageTransactionProbe(() => gitMarketplaceRegistration?.packageTransactionsIdle() ?? true);
+  const installedContent = registerMarketplaceContentHandlers(deps);
   registerPluginStudioHandlers(deps, installedContent);
   const gitMarketplace = registerGitMarketplaceHandlers(deps, installedContent);
   gitMarketplaceRegistration = gitMarketplace;

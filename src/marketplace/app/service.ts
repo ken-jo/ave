@@ -367,6 +367,8 @@ export interface MarketplaceServiceOptions {
   /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
   onCatalogChanged?: () => void;
   onInstallProgress?: (progress: InstallProgressView) => void;
+  /** Called when a package lock is released and none is held or asked for (see `packageTransactionsIdle`). */
+  onPackageTransactionsIdle?: () => void;
   /** The first-boot migration of existing installs (design §16.3), run before the boot installs. */
   legacyMigration: {
     markerPath: string;
@@ -669,14 +671,20 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** Take every package lock in `keys` as one request (see {@link KeyedMutex}). */
   private async withPackages<T>(keys: readonly string[], fn: (lease: PackageLease) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    return this.packageLocks.run(keys, fn, {
-      ...(signal ? { signal } : {}),
-      beforeAcquire: (wanted) => {
-        if (holdsAnyPluginInstallLock()) {
-          throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
-        }
-      },
-    });
+    try {
+      return await this.packageLocks.run(keys, fn, {
+        ...(signal ? { signal } : {}),
+        beforeAcquire: (wanted) => {
+          if (holdsAnyPluginInstallLock()) {
+            throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
+          }
+        },
+      });
+    } finally {
+      const settled = this.options.onPackageTransactionsIdle;
+      // Told outside this operation and lease, as a catalog change is: what it starts is not part of either.
+      if (settled && this.packageLocks.idle) this.inOperation.exit(() => this.packageLocks.detached(settled));
+    }
   }
 
   private async operation<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {

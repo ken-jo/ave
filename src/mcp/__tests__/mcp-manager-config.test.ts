@@ -102,7 +102,7 @@ describe("McpManager — getConfigs()", () => {
   it("previews an installed plugin connector through the Studio projection", async () => {
     const mgr = await makeManager();
     const id = bundledConfigId({ kind: "agent-plugin", name: "team-kit" }, "sample");
-    mgr.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [{ packageName: "team-kit", serverName: "sample",
+    mgr.registerBundledCredentialSource("agent-plugin", { installedPackages: async () => undefined, list: () => [{ packageName: "team-kit", serverName: "sample",
       transport: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env: { SAMPLE: "visible-env" },
       auth: "api-key", apiKeyEnv: "SAMPLE_KEY" }], reconnect: async () => undefined });
     const settings = await mgr.getConfigs();
@@ -178,7 +178,7 @@ describe("McpManager — getConfigs()", () => {
     const identity = bundledCredentialKey(ref, "sample");
     const stored = boundBundledCredential(bundledCredentialDeclaration(declaration), key);
     const mgr = await makeManager({ getSecret: (name) => name === identity ? stored : null });
-    mgr.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [declaration], reconnect: async () => undefined });
+    mgr.registerBundledCredentialSource("agent-plugin", { installedPackages: async () => undefined, list: () => [declaration], reconnect: async () => undefined });
     const id = bundledConfigId(ref, "sample");
     await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
     expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
@@ -224,7 +224,7 @@ describe("McpManager — getConfigs()", () => {
         await mgr.setApiKey(id, item.key);
       } else {
         await writeFile(testConfigPath, JSON.stringify({ servers: [] }));
-        mgr.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [declaration], reconnect: async () => undefined });
+        mgr.registerBundledCredentialSource("agent-plugin", { installedPackages: async () => undefined, list: () => [declaration], reconnect: async () => undefined });
         await mgr.setBundledApiKey(ref, "sample", item.key);
         id = bundledConfigId(ref, "sample");
       }
@@ -344,6 +344,26 @@ describe("McpManager — getConfigs()", () => {
     expect(result).toEqual([
       { id: "backup-srv", transport: "http", url: "https://example.com/mcp" },
     ]);
+  });
+
+  it.each([
+    ["unparsable JSON", "{not-json"],
+    ["another app's mcpServers map", JSON.stringify({ mcpServers: { local: { command: "node" } } })],
+    ["a bare array", "[]"],
+  ])("refuses to add, update or remove servers over a configuration file with %s, leaving it untouched", async (_label, content) => {
+    await writeFile(testConfigPath, content, "utf-8");
+    // A legacy .bak can still be read, but it is no licence to overwrite the user's file.
+    await writeFile(`${testConfigPath}.bak`, JSON.stringify({ servers: [{ id: "backup-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key" }] }), "utf-8");
+    const mgr = await makeManager();
+    const refused = async (write: Promise<unknown>) => {
+      const error = await write.then(() => undefined, (reason: unknown) => reason);
+      expect(error).toMatchObject({ name: "McpConfigFileInvalidError", code: "mcp-config-invalid" });
+      expect((error as Error).message).toBe(`[mcp-manager] MCP 서버 설정 파일 ${testConfigPath}이(가) "servers" 목록을 가진 올바른 JSON이 아닙니다. 파일을 고치거나 옮기세요. Ave는 이 파일을 덮어쓰지 않습니다.`);
+    };
+    await refused(mgr.addConfig({ id: "new-srv", transport: "http", url: "https://example.com/new" }));
+    await refused(mgr.removeConfig("backup-srv"));
+    await refused(mgr.setApiKey("backup-srv", "replacement"));
+    expect(await readFile(testConfigPath, "utf-8")).toBe(content);
   });
 
   it("returns the resolved config path for renderer empty-state messaging", async () => {

@@ -401,6 +401,8 @@ export function pluginLifecycleServices(deps: IpcDeps) {
         drainPluginInstallLockOperations,
       refreshPluginEventBridge,
       emitHostEvent,
+      // Its MCP sign-ins go the moment the registry stops naming it, whatever is reinstalled under the same id later.
+      onRegistryRemovalCommitted: (removed) => void deps.mcpManager.reconcileBundledCredentials("plugin", { removed }),
       log,
     }, retain);
   return { ensureInstallStateReady, uninstall, retirement };
