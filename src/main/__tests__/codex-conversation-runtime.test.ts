@@ -70,7 +70,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));

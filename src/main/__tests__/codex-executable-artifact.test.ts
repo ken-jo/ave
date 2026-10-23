@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // A test may leave its sealed read-only copy behind; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function fixture(platform: NodeJS.Platform = process.platform) {

@@ -108,7 +108,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(
   handler: RequestHandler,
