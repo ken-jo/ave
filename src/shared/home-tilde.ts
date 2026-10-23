@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
 import { resolve as pathResolve } from "node:path";
+import { getPolicyHome } from "./policy-home.js";
 
 /**
  * Single source of truth for expanding a leading `~` in a path argument.
@@ -42,10 +42,10 @@ import { resolve as pathResolve } from "node:path";
  * are reachable from tests on a single OS.
  */
 export function expandLeadingTilde(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return pathResolve(homedir(), path.slice(2));
+  if (path === "~") return getPolicyHome();
+  if (path.startsWith("~/")) return pathResolve(getPolicyHome(), path.slice(2));
   if (process.platform === "win32" && path.startsWith("~\\")) {
-    return pathResolve(homedir(), path.slice(2));
+    return pathResolve(getPolicyHome(), path.slice(2));
   }
   return path;
 }

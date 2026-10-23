@@ -65,7 +65,7 @@ function hostDeniesAsSensitive(absPath: string, allowedRoot: string): boolean {
 function sandboxDenies(absPath: string): boolean {
   const folded = caseFoldForMatch(absPath).replace(/\\/g, "/");
   return getDefaultSensitiveReadDenyPaths().some((denied) => {
-    const foldedDeny = caseFoldForMatch(denied).replace(/\\/g, "/");
+    const foldedDeny = caseFoldForMatch(denied).replace(/\\/g, "/").replace(/\/$/, "");
     return folded === foldedDeny || folded.startsWith(foldedDeny + "/");
   });
 }

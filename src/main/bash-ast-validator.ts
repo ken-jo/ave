@@ -1,4 +1,5 @@
 import { resolve as resolvePath } from "node:path";
+import { getPolicyHome } from "../shared/policy-home.js";
 import { t } from "../i18n/index.js";
 import { staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
@@ -72,7 +73,8 @@ export class BashAstValidator {
                 const target = argv[index];
                 const word = words[index]!;
                 return target !== undefined && /^\/+$/u.test(target)
-                  || target !== undefined && environment.HOME !== undefined && resolvePath(projectedCwd ?? cwd, target) === resolvePath(environment.HOME)
+                  || !environment.HOME && word.parts.some((part) => part.kind === "parameter" && part.name === "HOME")
+                  || target !== undefined && resolvePath(projectedCwd ?? cwd, target) === resolvePath(getPolicyHome(environment))
                   || word.parts.some((part) => part.kind === "pattern" && part.value === "*");
               });
               if (recursive && force && (dangerous !== undefined || event.backquote)) {

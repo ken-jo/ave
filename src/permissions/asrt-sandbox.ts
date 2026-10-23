@@ -7,8 +7,8 @@ import { spawn } from "node:child_process";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getPolicyHome } from "../shared/policy-home.js";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1166,11 +1166,11 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
 }
 
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
-  const home = homedir();
+  const home = getPolicyHome();
   const ave = aveHome();
   // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
+  // otherwise derived from the policy home and platform layout, without a
+  // desktop runtime import — safe for any non-renderer context.
   // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
   // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
   const electronUserData =
@@ -1195,17 +1195,21 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
       const entryPath = canonicalizePathForMatch(join(ave, ...entry.segments));
       return caseFoldForMatch(entryPath) !== caseFoldForMatch(readablePrimarySessionRoot);
     }).map((entry) => {
+      let path: string;
       switch (entry.anchor) {
         case "ave-home":
-          return join(ave, ...entry.segments);
+          path = join(ave, ...entry.segments);
+          break;
         case "home":
-          return join(home, ...entry.segments);
+          path = join(home, ...entry.segments);
+          break;
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
           // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
           // path that does not exist is harmless to list).
-          return "/" + entry.segments.join("/");
+          path = "/" + entry.segments.join("/");
+          break;
         default: {
           // Fail closed: an unrecognised anchor must not silently push
           // `undefined` into the deny list ASRT is configured from.
@@ -1215,6 +1219,8 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
           );
         }
       }
+      // A missing directory leaf needs its separator to avoid a file placeholder.
+      return process.platform === "win32" && entry.kind === "dir" ? path + sep : path;
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
@@ -1281,7 +1287,7 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
 export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
-  const home = homedir();
+  const home = getPolicyHome();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
   const writePersistence = [

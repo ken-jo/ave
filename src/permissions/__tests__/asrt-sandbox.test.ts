@@ -31,7 +31,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
@@ -86,6 +86,7 @@ import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
+let originalHome: string | undefined;
 let isolatedWindowsHome: string | undefined;
 
 beforeAll(() => {
@@ -93,13 +94,18 @@ beforeAll(() => {
 
   originalAsrtTestHome = process.env.AVE_ASRT_TEST_HOME;
   originalAveHome = process.env.AVE_HOME;
+  originalHome = process.env.HOME;
   isolatedWindowsHome = mkdtempSync(join(tmpdir(), "ave-asrt-test-home-"));
   process.env.AVE_ASRT_TEST_HOME = isolatedWindowsHome;
   process.env.AVE_HOME = join(isolatedWindowsHome, ".ave");
+  process.env.HOME = isolatedWindowsHome;
 });
 
 afterAll(async () => {
   if (process.platform !== "win32" || isolatedWindowsHome === undefined) return;
+
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
 
   if (originalAsrtTestHome === undefined) {
     delete process.env.AVE_ASRT_TEST_HOME;
@@ -958,7 +964,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   });
 
   it("returns the expected absolute sensitive paths (Ave namespaces + standard credential stores)", () => {
-    const paths = getDefaultSensitiveReadDenyPaths();
+    const paths = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
     const home = homedir();
 
     // Every entry is an absolute path with NO glob char (literal — works on both
@@ -971,7 +977,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Ave host-domain sensitive namespaces, derived from the (overridden) aveHome.
     expect(paths).toContain(join(FAKE_AVE_HOME, "secrets"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions") + (process.platform === "win32" ? sep : ""));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
@@ -1036,7 +1042,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
     process.env.AVE_HOME = profile;
-    const runtime = join(profile, "subscription-runtimes");
+    const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
     expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
@@ -1114,7 +1120,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(config.filesystem.denyRead).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig keeps a caller-supplied denyRead AND adds the sensitive floor (union, deduped)", () => {
@@ -1123,14 +1129,14 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Caller entry survives.
     expect(config.filesystem.denyRead).toContain(extra);
     // Sensitive floor is still present.
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""));
     // Passing a path already on the floor does not duplicate it.
     const dupConfig = buildSandboxConfig({
       allowedDomains: [],
-      denyRead: [join(FAKE_AVE_HOME, "secrets")],
+      denyRead: [join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : "")],
     });
     const occurrences = dupConfig.filesystem.denyRead.filter(
-      (p: string) => p === join(FAKE_AVE_HOME, "secrets"),
+      (p: string) => p === join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""),
     ).length;
     expect(occurrences).toBe(1);
   });
@@ -1142,7 +1148,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(config.filesystem.denyWrite).toContain(p);
     }
     expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh"));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh") + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig keeps caller-supplied denyWrite AND adds the sensitive write floor", () => {
