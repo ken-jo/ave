@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import {
@@ -194,7 +195,7 @@ describe("shell-path-policy", () => {
   it("rejects path operands outside the sandbox", () => {
     withRoot((root) => {
       const outside = realpathSync(tmpdir());
-      const result = validateShellCommandPathPolicy(`cp ./staged ${outside}/ave-outside.txt`, root, root, []);
+      const result = validateShellCommandPathPolicy(`cp ./staged ${shellQuote(outside)}/ave-outside.txt`, root, root, []);
       expect(result).toContain("Sandbox:");
     });
   });
@@ -597,8 +598,8 @@ describe("shell-path-policy", () => {
   it("allows explicit extra directories but still applies sensitive-path policy", () => {
     withRoot((root) => {
       const outside = realpathSync(tmpdir());
-      expect(validateShellCommandPathPolicy(`cat ${outside}/allowed.txt`, root, root, [outside])).toBeNull();
-      expect(validateShellCommandPathPolicy(`cat ${outside}/.env`, root, root, [outside])).toContain("Sensitive path:");
+      expect(validateShellCommandPathPolicy(`cat ${shellQuote(outside)}/allowed.txt`, root, root, [outside])).toBeNull();
+      expect(validateShellCommandPathPolicy(`cat ${shellQuote(outside)}/.env`, root, root, [outside])).toContain("Sensitive path:");
     });
   });
 
@@ -762,9 +763,9 @@ describe("shell-path-policy", () => {
   it("still applies the sensitive-path rule through an exempted verb", () => {
     withRoot((root) => {
       const key = join(homedir(), ".ssh", "id_rsa");
-      expect(validateShellCommandPathPolicy(`echo pwned > ${key}`, root, root, []))
+      expect(validateShellCommandPathPolicy(`echo pwned > ${shellQuote(key)}`, root, root, []))
         .toContain("Sensitive path:");
-      expect(validateShellCommandPathPolicy(`awk '{print $1}' ${key}`, root, root, []))
+      expect(validateShellCommandPathPolicy(`awk '{print $1}' ${shellQuote(key)}`, root, root, []))
         .toContain("Sensitive path:");
     });
   });
@@ -774,9 +775,9 @@ describe("shell-path-policy", () => {
       // Before the substitution pass this reported an unresolved variable and
       // never judged the path at all.
       const key = join(homedir(), ".ssh", "id_rsa");
-      expect(validateShellCommandPathPolicy(`echo "count: $(wc -l < ${key})"`, root, root, []))
+      expect(validateShellCommandPathPolicy(`echo "count: $(wc -l < ${shellQuote(key)})"`, root, root, []))
         .toContain("Sensitive path:");
-      expect(validateShellCommandPathPolicy(`echo "count: \`wc -l < ${key}\`"`, root, root, []))
+      expect(validateShellCommandPathPolicy(`echo "count: \`wc -l < ${shellQuote(key)}\`"`, root, root, []))
         .toContain("Sensitive path:");
     });
   });
@@ -824,15 +825,15 @@ describe("shell-path-policy", () => {
       expect(validateShellCommandPathPolicy(`sed -e "/def sample/,/return Fit/p" file.py`, root, root, []))
         .toBeNull();
       // `-f` names a script FILE, so its value is judged like any other path.
-      expect(validateShellCommandPathPolicy(`sed -f ${key} file.py`, root, root, []))
+      expect(validateShellCommandPathPolicy(`sed -f ${shellQuote(key)} file.py`, root, root, []))
         .toContain("Sensitive path:");
       // With the script supplied by an option, the first positional is a path.
-      expect(validateShellCommandPathPolicy(`sed -e 's/a/b/' ${key}`, root, root, []))
+      expect(validateShellCommandPathPolicy(`sed -e 's/a/b/' ${shellQuote(key)}`, root, root, []))
         .toContain("Sensitive path:");
-      expect(validateShellCommandPathPolicy(`sed -f ./prog.sed ${key}`, root, root, []))
+      expect(validateShellCommandPathPolicy(`sed -f ./prog.sed ${shellQuote(key)}`, root, root, []))
         .toContain("Sensitive path:");
       // And the operand after a plain script is still the file being read.
-      expect(validateShellCommandPathPolicy(`sed -n '1p' ${key}`, root, root, []))
+      expect(validateShellCommandPathPolicy(`sed -n '1p' ${shellQuote(key)}`, root, root, []))
         .toContain("Sensitive path:");
     });
   });
@@ -840,7 +841,7 @@ describe("shell-path-policy", () => {
   it("does not exempt an awk variable, which the program can open as a file", () => {
     withRoot((root) => {
       const key = join(homedir(), ".ssh", "id_rsa");
-      expect(validateShellCommandPathPolicy(`awk -v f=${key} 'BEGIN{while((getline l < f)>0) print l}'`, root, root, []))
+      expect(validateShellCommandPathPolicy(`awk -v f=${shellQuote(key)} 'BEGIN{while((getline l < f)>0) print l}'`, root, root, []))
         .toContain("Sensitive path:");
     });
   });
@@ -848,9 +849,9 @@ describe("shell-path-policy", () => {
   it("does not exempt an option value carrying the @-file sigil", () => {
     withRoot((root) => {
       const key = join(homedir(), ".ssh", "id_rsa");
-      expect(validateShellCommandPathPolicy(`curl -w @${key} https://example.test/`, root, root, []))
+      expect(validateShellCommandPathPolicy(`curl -w @${shellQuote(key)} https://example.test/`, root, root, []))
         .toContain("Sensitive path:");
-      expect(validateShellCommandPathPolicy(`curl --write-out=@${key} https://example.test/`, root, root, []))
+      expect(validateShellCommandPathPolicy(`curl --write-out=@${shellQuote(key)} https://example.test/`, root, root, []))
         .toContain("Sensitive path:");
     });
   });
@@ -891,7 +892,7 @@ describe("shell-path-policy", () => {
     it("checks the source of an input redirect, which appears in no argv slot", () => {
       withRoot((root) => {
         const key = join(homedir(), ".ssh", "id_rsa");
-        expect(validateShellCommandPathPolicy(`tr -d x < ${key}`, root, root, []))
+        expect(validateShellCommandPathPolicy(`tr -d x < ${shellQuote(key)}`, root, root, []))
           .toContain("Sensitive path:");
         expect(validateShellCommandPathPolicy("echo x < /etc/shadow", root, root, []))
           .toContain("Sensitive path:");
@@ -907,7 +908,7 @@ describe("shell-path-policy", () => {
         // and this policy cannot follow a stream to its consumer.
         expect(validateShellCommandPathPolicy("echo /etc/shadow | xargs cat", root, root, []))
           .toContain("Unsupported stream or string execution wrapper");
-        expect(validateShellCommandPathPolicy(`echo ${key} | xargs cat`, root, root, []))
+        expect(validateShellCommandPathPolicy(`echo ${shellQuote(key)} | xargs cat`, root, root, []))
           .toContain("Unsupported stream or string execution wrapper");
         expect(validateShellCommandPathPolicy("LC_ALL=C echo /etc/shadow", root, root, []))
           .toBeNull();
@@ -1145,9 +1146,9 @@ describe("shell-path-policy", () => {
         withRoot((root) => {
           const sensitiveUv = join(homedir(), ".ssh", "uv");
           for (const command of [
-            `${sensitiveUv} run python3 -c 'print(1)'`,
-            `uv run ${sensitiveUv} run python3 -c 'print(1)'`,
-            `uv run uv run ${sensitiveUv} run python3 -c 'print(1)'`,
+            `${shellQuote(sensitiveUv)} run python3 -c 'print(1)'`,
+            `uv run ${shellQuote(sensitiveUv)} run python3 -c 'print(1)'`,
+            `uv run uv run ${shellQuote(sensitiveUv)} run python3 -c 'print(1)'`,
           ]) {
             expect(validateShellCommandPathPolicy(command, root, root, []), command)
               .toContain("Sensitive path:");
@@ -1502,7 +1503,7 @@ describe("shell-path-policy", () => {
         roots.push(grant);
         // The read half was never the obstacle; granting the directory the
         // WRITE lands in is what clears the command.
-        expect(validateShellCommandPathPolicy(`cat /etc/hosts > ${grant}/out`, root, root, [grant]))
+        expect(validateShellCommandPathPolicy(`cat /etc/hosts > ${shellQuote(grant)}/out`, root, root, [grant]))
           .toBeNull();
       });
     });
@@ -1514,11 +1515,11 @@ describe("shell-path-policy", () => {
         symlinkSync("/etc", join(grant, "to-etc"));
         // Canonicalization resolves the link before the boundary compare, so
         // the grant covers the directory and not what it points at.
-        expect(validateShellCommandPathPolicy(`echo hi > ${grant}/to-etc/x`, root, root, [grant]))
+        expect(validateShellCommandPathPolicy(`echo hi > ${shellQuote(grant)}/to-etc/x`, root, root, [grant]))
           .toContain("Sandbox:");
         // …and the read through the same link is admitted, which is the whole
         // asymmetry in one pair of assertions.
-        expect(validateShellCommandPathPolicy(`cat ${grant}/to-etc/hosts`, root, root, [grant]))
+        expect(validateShellCommandPathPolicy(`cat ${shellQuote(grant)}/to-etc/hosts`, root, root, [grant]))
           .toBeNull();
       });
     });
