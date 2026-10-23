@@ -473,7 +473,11 @@ describe("Electron Node-mode Vitest runner", () => {
       module,
       sync: () => {},
     });
-    const spawn = vi.spyOn(childProcess.ChildProcess.prototype, "spawn");
+    // `spawn` is internal to ChildProcess, so the public type does not declare it.
+    const spawn = vi.spyOn(
+      childProcess.ChildProcess.prototype as unknown as { spawn(options: object): void },
+      "spawn",
+    );
     try {
       let child!: import("node:child_process").ChildProcess;
       expect(() => {
