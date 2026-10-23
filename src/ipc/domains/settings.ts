@@ -78,7 +78,7 @@ import {
   type SubscriptionRuntimeService,
 } from "../../main/subscription-runtime-service.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { readJudgeReviewerModel } from "../../permissions/permission-settings-store.js";
+import { readJudgeStoredModels, type StoredJudgeModelRef } from "../../permissions/permission-settings-store.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 
@@ -324,7 +324,8 @@ function shortcutStartupSignature(
  * (`permissions.judge.model`) — whether that model is in its provider's
  * catalogue, and the route of that provider when it is not the chat one. A
  * synced catalogue can add or drop the selected model without the chat route
- * changing, whichever provider it is on.
+ * changing, whichever provider it is on. Each chain stage's own model is
+ * tracked the same way, so a catalogue change re-evaluates a rejected chain.
  */
 function activeLlmIdentity(
   llm: LLMSettings,
@@ -332,13 +333,16 @@ function activeLlmIdentity(
 ): string {
   const provider = llm.provider;
   const block = llm.vendors?.[provider];
-  const reviewerModel = readJudgeReviewerModel();
+  const stored = readJudgeStoredModels();
+  const reviewerModel = stored.reviewer;
   const reviewerVendor = reviewerModel?.vendor;
   const reviewerBlock = reviewerVendor && reviewerVendor !== provider ? llm.vendors?.[reviewerVendor] : undefined;
+  const catalog = judgeModelCatalogFrom({ ...llm, installedProviderPresets: installedProviderPresets ?? [] });
+  const offered = (ref: StoredJudgeModelRef) => catalog.optionsFor(ref.vendor).includes(ref.model);
   return JSON.stringify({
-    ...(reviewerModel ? {
-      reviewerModelAvailable: judgeModelCatalogFrom({ ...llm, installedProviderPresets: installedProviderPresets ?? [] })
-        .optionsFor(reviewerModel.vendor).includes(reviewerModel.model),
+    ...(reviewerModel ? { reviewerModelAvailable: offered(reviewerModel) } : {}),
+    ...(stored.stages.some((stage) => stage !== null) ? {
+      stageModelsAvailable: stored.stages.map((stage) => stage === null ? null : offered(stage)),
     } : {}),
     ...(reviewerVendor && reviewerVendor !== provider ? {
       reviewerRoute: {

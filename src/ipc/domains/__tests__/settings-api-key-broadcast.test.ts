@@ -453,6 +453,53 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   });
 
   it.each([
+    ["adds the stage model", null, ["team-stage"], 1],
+    ["removes the stage model", ["team-stage", "other-model"], ["other-model"], 1],
+    ["changes an unrelated entry", ["other-model"], ["other-model", "another-model"], 0],
+  ] as const)("re-wires on a catalogue sync that %s for a chain stage's own model (listing %j -> %j, rewires %i)", async (_label, before, after, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "stage-catalogue-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({
+      permissions: { judge: { model: null, chain: [{ id: "stage", provider: "builtin-llm", model: "openai/team-stage" }] } },
+    }));
+    try {
+      const rewire = vi.fn();
+      const llm = (models: readonly string[] | null) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" } },
+        ...(models ? {
+          modelListCache: {
+            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
+          },
+        } : {}),
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? before : after);
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      await invoke("ave:settings:update", { llm: { modelListCache: llm(after).modelListCache } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     ["rewires", ["team-reviewer"], 1],
     ["does not rewire", ["other-model"], 0],
   ] as const)("%s when the chat provider's synced catalogue changes a same-provider reviewer model's availability (listing %j)", async (_label, listed, rewires) => {
