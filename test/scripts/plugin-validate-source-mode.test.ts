@@ -118,7 +118,17 @@ export const createPlugin = async () => {
 
 const descendantPids: number[] = [];
 
-afterAll(() => {
+/** Whether `pid` still names a live process. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+afterAll(async () => {
   for (const pid of descendantPids) {
     try {
       process.kill(pid, "SIGKILL");
@@ -126,10 +136,26 @@ afterAll(() => {
       // Already gone.
     }
   }
+  // A live descendant keeps the checkout open, and Windows refuses to remove a
+  // directory a process still holds. The kill returns before the process is
+  // gone, and its handles close a moment after it reports an exit code, so
+  // the removal waits for both.
+  const deadline = Date.now() + 10_000;
+  while (descendantPids.some(alive) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   // The links go first, one by one and never recursively: a recursive removal
   // follows a Windows junction into the checkout it points at.
   for (const name of LINKED) unlinkSync(join(checkout, name));
-  rmSync(scratch, { recursive: true, force: true });
+  for (;;) {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM" || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 });
 
 function validate(pluginDir: string, env: NodeJS.ProcessEnv, timeout = 60_000) {
