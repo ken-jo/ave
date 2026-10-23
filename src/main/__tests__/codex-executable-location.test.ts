@@ -717,6 +717,33 @@ describe("native access-rule admission", () => {
     }
   });
 
+  it.each([null, "", "S-1-5-21-10-20", "S-1-5-32", "not-a-sid"])("refuses the whole managed group when the machine domain is %j", async (machineDomainSid) => {
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    const admit = async (domain: unknown) => {
+      const fixture = windowsFixture();
+      Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+        sid: groupSid, members: [memberSid] });
+      fixture.probe.machineDomainSid = domain;
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid: memberSid, mask: 2, flags: 0, type: 0 }); });
+      return assertCodexExecutableLocation(fixture.candidate);
+    };
+    // The same group is trusted under the real machine domain, so the refusal below is the domain's doing.
+    await expect(admit(MACHINE_DOMAIN_SID)).resolves.toBeUndefined();
+    await expect(admit(machineDomainSid)).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["group", "member"])("refuses a %s SID whose domain only starts with the machine domain", async (part) => {
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    const longer = `${MACHINE_DOMAIN_SID}-5-100`;
+    const fixture = windowsFixture();
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: part === "group" ? longer : groupSid, members: part === "group" ? [memberSid] : [memberSid, longer] });
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid: memberSid, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
   it("pins the group lookup locally without a machine-name environment input", async () => {
     const fixture = windowsFixture();
     process.env.COMPUTERNAME = "untrusted-host";
