@@ -124,7 +124,22 @@ export function trackManagedChildProcess(
   child.once("close", onSettled);
   child.once("error", onError);
   if (managedChildProcessAdmissionSealed && isKillable(entry)) {
-    void forceKillManagedChildProcess(child, "registered after admission seal");
+    if (process.platform === "win32") {
+      void forceKillManagedChildProcess(child, "registered after admission seal");
+    } else {
+      try {
+        forceKillProcessTreeSync(child, entry.killProcessGroup, entry.processGroupId);
+        log.warn(
+          { pid: child.pid ?? null, label: entry.label },
+          "shutdown: force killed child registered after admission seal",
+        );
+      } catch (err) {
+        log.warn(
+          { pid: child.pid ?? null, label: entry.label, err: errorMessage(err) },
+          "shutdown: failed to kill child registered after admission seal",
+        );
+      }
+    }
   }
   return dispose;
 }
@@ -154,6 +169,10 @@ function resolveProcessGroupId(
 // depend on another event-loop turn; ordinary cancellation uses the async path.
 export function forceKillManagedChildProcesses(reason: string): number {
   let killed = 0;
+  let directChildCount = 0;
+  const treeKillDeadline = process.platform === "win32"
+    ? Date.now() + TOOL_TIMEOUT_POLICY.windowsEmergencyProcessSweepMs
+    : undefined;
 
   for (const entry of [...managedChildren]) {
     const { child, label, killProcessGroup } = entry;
@@ -164,7 +183,13 @@ export function forceKillManagedChildProcesses(reason: string): number {
 
     try {
       const pid = child.pid;
-      forceKillProcessTreeSync(child, killProcessGroup, entry.processGroupId);
+      const remainingMs = treeKillDeadline === undefined ? undefined : Math.max(0, treeKillDeadline - Date.now());
+      if (remainingMs === 0) {
+        directChildCount += 1;
+        child.kill("SIGKILL");
+      } else {
+        forceKillProcessTreeSync(child, killProcessGroup, entry.processGroupId, remainingMs);
+      }
       killed += 1;
       log.warn({ pid: pid ?? null, label, killProcessGroup, reason }, "shutdown: force killed managed child process");
     } catch (err) {
@@ -194,6 +219,9 @@ export function forceKillManagedChildProcesses(reason: string): number {
     }
   }
 
+  if (directChildCount > 0) {
+    log.warn({ reason, directChildCount }, "shutdown: managed child tree-kill budget exhausted");
+  }
   return killed;
 }
 
@@ -216,22 +244,23 @@ export async function forceKillAndDrainManagedChildProcesses(
   const targets = [...managedChildren];
   let killedCount = 0;
 
-  await Promise.all(targets.map(async (entry) => {
+  const completions: Promise<void>[] = [];
+  for (const entry of targets) {
     const { child, label, killProcessGroup } = entry;
     if (!isKillable(entry) && !pendingTreeKills.has(child)) {
       entry.dispose();
-      return;
+      continue;
     }
-    try {
-      const pid = child.pid;
-      await forceKillProcessTree(child, killProcessGroup, entry.processGroupId);
-      if (!isKillable(entry)) entry.dispose();
+    const pid = child.pid;
+    const finish = (): void => {
+      if (process.platform === "win32" && !isKillable(entry)) entry.dispose();
       killedCount += 1;
       log.warn(
         { pid: pid ?? null, label, killProcessGroup, reason },
         "shutdown: force killed managed child process before drain",
       );
-    } catch (err) {
+    };
+    const handleError = (err: unknown): void => {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ESRCH") {
         killedCount += 1;
@@ -251,8 +280,17 @@ export async function forceKillAndDrainManagedChildProcesses(
           log.warn(fields, "shutdown: managed child process drain kill failed");
         }
       }
+    };
+    try {
+      const completion = forceKillProcessTree(child, killProcessGroup, entry.processGroupId);
+      if (completion) completions.push(completion.then(finish, handleError));
+      else finish();
+    } catch (err) {
+      handleError(err);
     }
-  }));
+  }
+  // POSIX kills and accounting remain sequential without yielding between them.
+  if (completions.length > 0) await Promise.all(completions);
 
   const pending = (): ManagedChildProcess[] =>
     targets.filter((entry) => managedChildren.has(entry));
@@ -290,6 +328,8 @@ export async function forceKillAndDrainManagedChildProcesses(
 /**
  * Terminate one tracked child and its descendants/process group. On Windows,
  * await the returned completion before releasing resources owned by the tree.
+ * An abort or cancel resolves when tree termination settles, taking up to about
+ * 2 × `TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs` in the worst case.
  *
  * Long-running authentication processes are cancelled independently of app
  * shutdown, so relying on the global shutdown sweep would leave a provider
@@ -468,13 +508,14 @@ function forceKillProcessTree(
     // No runtime Windows descendant snapshot is available. Retry the full tree
     // before terminating the root, which would lose its ancestry information.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
       const result = await runWindowsTreeKill(pid);
       if (result.exitCode === 0) return;
       // 128: the root is already gone, so no /T pass can reach its tree again.
       if (result.exitCode === TASKKILL_PROCESS_NOT_FOUND) break;
       log.warn({ pid, attempt, ...result }, "managed-child: taskkill /T /F failed");
     }
-    child.kill("SIGKILL");
+    if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL");
   })();
   pendingTreeKills.set(child, completion);
   const release = (): void => {
@@ -488,6 +529,7 @@ function forceKillProcessTreeSync(
   child: ChildProcess,
   killProcessGroup: boolean,
   processGroupId?: number,
+  windowsTimeoutMs: number = TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs,
 ): void {
   const pid = child.pid;
 
@@ -502,12 +544,11 @@ function forceKillProcessTreeSync(
   }
 
   if (process.platform === "win32") {
-    // One pass only: this blocks the emergency sweep, which runs per child
-    // after the shutdown deadline has already expired.
+    // One pass only, within the remaining emergency sweep budget.
     const startedAt = Date.now();
     const result = spawnSync(windowsTaskkillPath(), ["/PID", String(pid), "/T", "/F"], {
       stdio: "ignore", windowsHide: true, shell: false,
-      timeout: TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs,
+      timeout: windowsTimeoutMs,
     });
     if (result.status === 0) return;
     log.warn({
@@ -525,7 +566,9 @@ function forceKillProcessTreeSync(
     }
   }
 
-  child.kill("SIGKILL");
+  if (process.platform !== "win32" || (child.exitCode == null && child.signalCode == null)) {
+    child.kill("SIGKILL");
+  }
 }
 
 function collectDescendantPids(rootPid: number): number[] {

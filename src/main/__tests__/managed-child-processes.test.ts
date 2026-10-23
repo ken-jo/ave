@@ -51,8 +51,11 @@ function makeChild(): ChildProcess & FakeChildProcess {
   return new FakeChildProcess() as ChildProcess & FakeChildProcess;
 }
 
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
 afterEach(() => {
   __resetManagedChildProcessesForTest();
+  Object.defineProperty(process, "platform", originalPlatform);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -115,6 +118,75 @@ describe("managed child process tracking", () => {
     child.exitCode = 137;
     child.emit("exit", 137, "SIGKILL");
     expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  describe.each(["linux", "darwin"])("%s lifecycle semantics", (platform) => {
+    it.each([undefined, "EPERM", "ESRCH"])("retains a late child until exit after kill result %s", (code) => {
+      Object.defineProperty(process, "platform", { value: platform });
+      const child = makeChild();
+      child.pid = 5432;
+      if (code) child.kill.mockImplementation(() => { throw Object.assign(new Error("kill failed"), { code }); });
+      sealManagedChildProcessAdmission("before-quit");
+
+      trackManagedChildProcess(child);
+
+      expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+      expect(getManagedChildProcessCount()).toBe(1);
+      child.exitCode = 137;
+      child.emit("exit", 137, "SIGKILL");
+      expect(getManagedChildProcessCount()).toBe(0);
+    });
+
+    it("retains a late group leader until exit after its group disappears", () => {
+      Object.defineProperty(process, "platform", { value: platform });
+      const child = makeChild();
+      child.pid = 5432;
+      let groupAlive = true;
+      vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+        if (!groupAlive) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        if (signal === "SIGKILL") groupAlive = false;
+        return true;
+      });
+      sealManagedChildProcessAdmission("before-quit");
+
+      trackManagedChildProcess(child, { killProcessGroup: true });
+
+      expect(groupAlive).toBe(false);
+      expect(getManagedChildProcessCount()).toBe(1);
+      child.exitCode = 137;
+      child.emit("exit", 137, "SIGKILL");
+      expect(getManagedChildProcessCount()).toBe(0);
+    });
+
+    it("drains in synchronous order and retains children until their lifecycle events", async () => {
+      Object.defineProperty(process, "platform", { value: platform });
+      const first = makeChild();
+      const second = makeChild();
+      const order: string[] = [];
+      vi.spyOn(console, "warn").mockImplementation(() => { order.push("logged"); });
+      first.kill.mockImplementation(() => {
+        order.push("first");
+        first.exitCode = 137;
+        queueMicrotask(() => { order.push("microtask"); });
+        return true;
+      });
+      second.kill.mockImplementation(() => {
+        order.push("second");
+        second.exitCode = 137;
+        return true;
+      });
+      trackManagedChildProcess(first);
+      trackManagedChildProcess(second);
+
+      const drain = forceKillAndDrainManagedChildProcesses("shutdown");
+      expect(order).toEqual(["first", "logged", "second", "logged"]);
+      await Promise.resolve();
+      expect(getManagedChildProcessCount()).toBe(2);
+      first.emit("close", 137, "SIGKILL");
+      second.emit("close", 137, "SIGKILL");
+      await expect(drain).resolves.toEqual({ killedCount: 2, unresolvedCount: 0 });
+      expect(getManagedChildProcessCount()).toBe(0);
+    });
   });
 
   it("force kills tracked running child processes", () => {

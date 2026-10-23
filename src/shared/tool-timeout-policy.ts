@@ -214,6 +214,9 @@ export const TOOL_TIMEOUT_POLICY = {
   processTreeKillMs: 1_000,
   // Loaded Windows hosts can take several seconds to enumerate and kill a tree.
   windowsProcessTreeKillMs: 10_000,
+  // The whole emergency sweep shares one budget, sized for a single slow
+  // tree pass on a loaded host (1 s is what taskkill lost to under load).
+  windowsEmergencyProcessSweepMs: 10_000,
   // Give an ACP prompt cancellation time to acknowledge before closing transport.
   acpAbortGraceMs: 1_000,
   // Unreferenced polling retains detached groups until absence is observed.

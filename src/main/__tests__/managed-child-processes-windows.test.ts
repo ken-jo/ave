@@ -104,6 +104,28 @@ describe("Windows managed process tree termination", () => {
     expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
   });
 
+  it.each(["exitCode", "signalCode"])("does not reuse a root pid after %s is set between tree passes", async (field) => {
+    const child = makeChild();
+    const completion = forceKillManagedChildProcess(child, "cancelled");
+    Object.assign(child, { [field]: field === "exitCode" ? 1 : "SIGTERM" });
+    runners[0]!.emit("exit", 5, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runners).toHaveLength(1);
+    await completion;
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not directly kill a root that exits during the final tree pass", async () => {
+    const child = makeChild();
+    const completion = forceKillManagedChildProcess(child, "cancelled");
+    runners[0]!.emit("exit", 5, null);
+    await vi.advanceTimersByTimeAsync(0);
+    Object.assign(child, { exitCode: 1 });
+    runners[1]!.emit("exit", 5, null);
+    await completion;
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   it("drains only after asynchronous tree termination finishes", async () => {
     const child = makeChild();
     trackManagedChildProcess(child);
@@ -128,6 +150,57 @@ describe("Windows managed process tree termination", () => {
     // The sweep runs per child after the shutdown deadline, so it gets one pass.
     expect(spawnSync).toHaveBeenCalledTimes(1);
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("shares one emergency tree-kill budget and directly kills the remaining children", () => {
+    const children = [makeChild(), makeChild(), makeChild()];
+    children.forEach((child, index) => {
+      Object.assign(child, { pid: 4321 + index });
+      trackManagedChildProcess(child);
+    });
+    const timeouts: number[] = [];
+    vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
+      const timeout = options?.timeout ?? 0;
+      timeouts.push(timeout);
+      vi.setSystemTime(Date.now() + timeout);
+      return { status: 1, signal: null } as ReturnType<typeof spawnSync>;
+    });
+
+    expect(forceKillManagedChildProcesses("emergency")).toBe(3);
+
+    expect(timeouts).toEqual([TOOL_TIMEOUT_POLICY.windowsEmergencyProcessSweepMs]);
+    expect(timeouts.reduce((total, timeout) => total + timeout, 0))
+      .toBeLessThanOrEqual(TOOL_TIMEOUT_POLICY.windowsEmergencyProcessSweepMs);
+    expect(children.every((child) => vi.mocked(child.kill).mock.calls.length === 1)).toBe(true);
+    expect(getManagedChildProcessCount()).toBe(0);
+    expect(warn.mock.calls.filter(([, message]) => message === "shutdown: managed child tree-kill budget exhausted"))
+      .toEqual([[{ reason: "emergency", directChildCount: 2 }, "shutdown: managed child tree-kill budget exhausted"]]);
+  });
+
+  it("passes only the remaining emergency budget after earlier sweep work", () => {
+    const child = makeChild();
+    trackManagedChildProcess(child);
+    const clock = vi.spyOn(Date, "now");
+    clock.mockReturnValueOnce(0).mockReturnValue(250);
+    try {
+      forceKillManagedChildProcesses("emergency");
+      expect(spawnSync).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({
+        timeout: TOOL_TIMEOUT_POLICY.windowsEmergencyProcessSweepMs - 250,
+      }));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("does not directly kill a root that exits during the synchronous tree pass", () => {
+    const child = makeChild();
+    trackManagedChildProcess(child);
+    vi.mocked(spawnSync).mockImplementation(() => {
+      Object.assign(child, { exitCode: 1 });
+      return { status: 1, signal: null } as ReturnType<typeof spawnSync>;
+    });
+    expect(forceKillManagedChildProcesses("emergency")).toBe(1);
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it("bounds both attempts even when neither runner emits exit", async () => {
