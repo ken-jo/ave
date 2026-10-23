@@ -130,6 +130,73 @@ describe("shell-path-policy", () => {
   });
 
   it.each([
+    "-T ../..", "-T_/../..", "-T../..",
+    "--temporary-directory ../..", "--temporary-directory=../..",
+  ])("confines sort temporary writes with widened reads: %s", (option) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(`sort ${option} f`, root, root, [])).not.toBeNull();
+      for (const command of [
+        "sort -T inside f", "sort -Tinside f", "sort --temporary-directory=inside f",
+        "sort -t, -k2 -S10M f", "sort -n f", "sort -o inside.txt f", "sort -oinside.txt f",
+        "head -n5 f", "tail -c100 f", "grep -E 'a/b' f", "ls -la",
+      ]) expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    ["curl", "-o", "--output", "https://example.invalid/data"],
+    ["wget", "-O", "--output-document", "https://example.invalid/data"],
+    ["wget", "-P", "--directory-prefix", "https://example.invalid/data"],
+    ["shuf", "-o", "--output", "f"],
+    ["cp", "-t", "--target-directory", "f"],
+    ["install", "-t", "--target-directory", "f"],
+    ["make", "-C", "--directory", ""],
+    ["make", "-f", "--file", ""],
+  ].flatMap(([verb, short, long, tail]) => ["_", "1", "-", "@"].map((prefix) => ({ verb, short, long, tail, prefix }))))(
+    "confines attached and separate write paths: $verb $short $prefix",
+    ({ verb, short, long, tail, prefix }) => {
+      withRoot((root) => {
+        mkdirSync(join(root, prefix!));
+        for (const option of [
+          `${short}${prefix}/../../outside`, `${short} ${prefix}/../../outside`,
+          `${long}=${prefix}/../../outside`, `${long} ${prefix}/../../outside`,
+        ]) expect(validateShellCommandPathPolicy(`${verb} ${option} ${tail}`, root, root, []), option).not.toBeNull();
+        for (const option of [
+          `${short}${prefix}/inside`, `${short} ${prefix}/inside`,
+          `${long}=${prefix}/inside`, `${long} ${prefix}/inside`,
+        ]) expect(validateShellCommandPathPolicy(`${verb} ${option} ${tail}`, root, root, [])).toBeNull();
+        if (verb === "curl") {
+          // Remote-name mode takes no path value; its directory option does.
+          expect(validateShellCommandPathPolicy(`curl -O --output-dir=${prefix}/../../outside ${tail}`, root, root, [])).not.toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -O --output-dir=${prefix}/inside ${tail}`, root, root, [])).toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -O ${tail}`, root, root, [])).toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -dword/data ${tail}`, root, root, [])).toBeNull();
+        }
+      });
+    },
+  );
+
+  it.each(["_", "1", "-", "@"])("confines unknown attached short-option values: %s", (prefix) => {
+    withRoot((root) => {
+      mkdirSync(join(root, prefix));
+      expect(validateShellCommandPathPolicy(`transform -x${prefix}/../../outside f`, root, root, [])).not.toBeNull();
+      expect(validateShellCommandPathPolicy(`transform -x${prefix}/inside f`, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "", "-f 1", "-s 1", "-w 1", "-f1", "-s1", "-w1",
+    "--skip-fields 1", "--skip-chars=1", "--check-chars 1", "-cf 1", "--",
+  ])("confines uniq output after value-taking options: %s", (options) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(`uniq ${options} f ../../victim`, root, root, [])).not.toBeNull();
+      expect(validateShellCommandPathPolicy(`uniq ${options} f inside.out`, root, root, [])).toBeNull();
+      expect(validateShellCommandPathPolicy(`uniq ${options} ../input`, root, root, [])).toBeNull();
+      expect(validateShellCommandPathPolicy("uniq f", root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
     "pwsh -c 'Set-Content ../outside.txt hi'",
     "pwsh -Command 'Set-Content ../outside.txt hi'",
     "pwsh -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==",

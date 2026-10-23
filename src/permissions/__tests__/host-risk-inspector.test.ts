@@ -330,6 +330,22 @@ describe("M2 — git write-subcommand forms now classify shell", () => {
 // ---------------------------------------------------------------------------
 
 describe("M3 — MUTATING_FLAGS gap coverage", () => {
+  it.each([
+    "-T ../..", "-T_/../..", "-T../..",
+    "--temporary-directory ../..", "--temporary-directory=../..",
+  ])("classifies temporary-file selection as a write: %s", (option) => {
+    expect(isReadOnlyCommand(`sort ${option} f`)).toBe(false);
+    expect(isReadOnlyCommand("sort -t, -k2 -S10M f")).toBe(true);
+  });
+
+  it.each([
+    "", "-f 1", "-s 1", "-w 1", "-f1", "-s1", "-w1",
+    "--skip-fields 1", "--skip-chars=1", "--check-chars 1", "-cf 1", "--",
+  ])("classifies the second uniq operand as a write: %s", (options) => {
+    expect(isReadOnlyCommand(`uniq ${options} f inside.out`)).toBe(false);
+    expect(isReadOnlyCommand(`uniq ${options} f`)).toBe(true);
+  });
+
   it("sort -o FILE → shell (writes output file)", () => {
     expect(isReadOnlyCommand("sort -o out.txt input.txt")).toBe(false);
     expect(isReadOnlyCommand("sort --output=out.txt input.txt")).toBe(false);
