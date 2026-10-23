@@ -411,8 +411,3 @@ export async function assertCodexExecutableLocation(candidate: string): Promise<
 export async function assertCodexPrivateRuntimeDirectory(candidate: string): Promise<void> {
   await assertCodexLocations([{ path: candidate, kind: "private-directory" }]);
 }
-
-/** Check a package directory and every route component with the shared trust policy. */
-export async function assertExecutableDirectory(candidate: string): Promise<void> {
-  await assertCodexLocations([{ path: candidate, kind: "directory" }]);
-}
