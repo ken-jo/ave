@@ -234,8 +234,20 @@ function spawnedNonce(env: Record<string, string>): string {
   return readFileSync(join(env.ZDOTDIR ?? env.HOME!, SHELL_INTEGRATION_NONCE_FILE), "utf-8");
 }
 
-/** The workspace root the module anchors the write-jail to by default. */
-const ROOT = canonicalizePathForMatch(process.cwd());
+/**
+ * The workspace root the module anchors the write-jail to by default, in the
+ * canonical form of the platform the cases run as. On a Windows host that is
+ * the simulated Linux, which does not fold the drive letter.
+ */
+const ROOT = (() => {
+  if (nativePlatform !== "win32") return canonicalizePathForMatch(process.cwd());
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  try {
+    return canonicalizePathForMatch(process.cwd());
+  } finally {
+    Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+  }
+})();
 
 let emitted: Array<{ event: string; payload: unknown }> = [];
 /** The window each emitted event was addressed to, index for index with `emitted`. */
