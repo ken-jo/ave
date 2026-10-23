@@ -1,15 +1,15 @@
 /**
  * Shell prefix policy (issue #28, P1a): the single refused-prefix list and the
- * pure arity-table suggestion used by the dock and validated on every write.
+ * bounded static-argv suggestion used by the dock and validated on every write.
  *
- * A refused prefix can still be approved once or for the session; it can never
+ * A broad prefix can still receive exact one-call consent; it can never
  * become a persistent `Bash(<prefix> *)` allow rule. Deny and ask rules are not
  * restricted — `Bash(sudo *)` as a deny rule is useful.
  */
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
-import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, WILDCARD_PREFIX_CATALOG, wildcardCatalogKey, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
+import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
 
 /**
@@ -231,34 +231,12 @@ export function stripGlobalOptions(argv: readonly (string | undefined)[]): reado
   return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
-/**
- * Pure suggestion for one simple command: the arity-table prefix of its static
- * argv. Returns `null` when no persistent suggestion is allowed (dynamic
- * argv0, or the derived prefix is refused) — the dock then offers once /
- * session only.
- */
-export function suggestShellPrefix(argv: readonly (string | undefined)[]): string[] | null {
-  const statics: string[] = [];
-  for (const token of argv) {
-    if (token === undefined) break;
-    statics.push(token);
-  }
-  if (statics.length === 0) return null;
-  // Only an allowlisted program/verb gets a wildcard; anything else is exact-only.
-  const key = wildcardCatalogKey(statics);
-  if (key === null) return null;
-  const keyLength = key.split(" ").length;
-  const arity = WILDCARD_PREFIX_CATALOG.get(key)!;
-  const prefix: string[] = [];
-  for (let index = 0; index < Math.min(arity, statics.length); index += 1) {
-    const token = statics[index]!;
-    // Past the catalog key, options and paths are arguments, not verbs: stop there.
-    if (index >= keyLength && (token.startsWith("-") || /[\\/=]/.test(token))) break;
-    prefix.push(token);
-  }
-  if (prefix.length < arity) return null;
-  if (prefix.some((token) => /[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token))) return null;
-  return refusedShellPrefix(prefix) === null ? prefix : null;
+/** A proposed wildcard prefix must be the supplied complete static argv. */
+export function suggestShellPrefix(argv: readonly (string | undefined)[], wildcard = true): string[] | null {
+  if (argv.length === 0 || argv.some((token) => token === undefined || /[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token))
+    || isDestructiveShellArgv(argv) || noReusableRuleReason(argv) !== null) return null;
+  const tokens = argv as readonly string[];
+  return refusedShellPrefix(tokens, wildcard) === null ? [...tokens] : null;
 }
 
 /** Exposed for the design doc and tests; do not fork these lists elsewhere. */
@@ -267,7 +245,7 @@ export const SHELL_PREFIX_POLICY = Object.freeze({
   interpreters: Object.freeze([...INTERPRETERS]),
   wrappers: Object.freeze([...WRAPPERS]),
   packageRunners: Object.freeze([...PACKAGE_RUNNERS]),
-  wildcardCatalog: WILDCARD_PREFIX_CATALOG,
+  bannedPrefixSuggestions: BANNED_PREFIX_SUGGESTIONS,
 });
 
 /** Used by deny/ask matching to look through wrappers (it only ever widens a deny). */
@@ -275,11 +253,9 @@ export function isShellWrapperProgram(token: string): boolean {
   return WRAPPER_SET.has(programName(token));
 }
 
-// ─── Hidden code and option effects ─────────────────────────────────────
-// One program table for the rule matcher and the exfiltration floor: which
-// invocations run code the matcher cannot read, which options make an
-// otherwise read-only program execute or write, and which programs can send
-// data off the machine.
+// ─── Hidden code and credential-flow inspection ─────────────────────────
+// The matcher and the exfiltration floor share interpreter, wrapper and
+// network identities. Saved escape rules do not model program option safety.
 
 /** Arguments that make a shell or interpreter print and exit without running code. */
 const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
@@ -313,300 +289,6 @@ const NETWORK_PROGRAMS = new Set([
   "twine", "gpg", "websocat", "aria2c", "axel", "transmission-cli",
 ]);
 
-export type ShellOptionEffect = { kind: "exec" | "write"; reason: string };
-
-/**
- * Options that make an otherwise allowed program write to a path of the
- * model's choosing (`git log --output=~/.zshrc`, `curl -o`, `sort -o`).
- */
-const WRITING_LONG_OPTION = /^--(?:output(?:-file|-document|-dir)?|log-file|logfile|outfile|out-file|out|dump-header)(?:=|$)/;
-const SHORT_OUTPUT_PROGRAMS = new Set(["curl", "wget", "sort", "gcc", "g++", "cc", "clang", "clang++", "go", "rustc", "tsc", "esbuild", "pandoc", "uniq", "split", "sqlite3"]);
-const FIND_WRITING_ACTIONS = /^-(?:fprint|fprint0|fprintf|fls|delete)$/;
-const FIND_EXEC_ACTIONS = /^-(?:exec|execdir|ok|okdir)$/;
-const TAR_VALUE_SHORTS = "bCfFgHIKLNTVX";
-
-function longOptionIs(flag: string, names: readonly string[], minimum = 6): boolean {
-  return names.some((name) => name === flag || (flag.length >= minimum && name.startsWith(flag)));
-}
-
-const exec = (reason: string): ShellOptionEffect => ({ kind: "exec", reason });
-const write = (reason: string): ShellOptionEffect => ({ kind: "write", reason });
-const worse = (a: ShellOptionEffect | null, b: ShellOptionEffect | null): ShellOptionEffect | null =>
-  a?.kind === "exec" ? a : b?.kind === "exec" ? b : a ?? b;
-
-/** Index after a sed address at `index`, or `index` when there is none. */
-function skipSedAddress(script: string, index: number): number {
-  const rest = script.slice(index);
-  const simple = /^(?:\d+(?:~\d+)?|\$)/.exec(rest);
-  if (simple) return index + simple[0].length;
-  const delimiter = rest[0] === "/" ? "/" : rest[0] === "\\" && rest[1] ? rest[1] : undefined;
-  if (!delimiter) return index;
-  let cursor = index + (rest[0] === "/" ? 1 : 2);
-  while (cursor < script.length && script[cursor] !== delimiter) cursor += script[cursor] === "\\" ? 2 : 1;
-  if (cursor >= script.length) return -1;
-  cursor += 1;
-  while (script[cursor] === "I" || script[cursor] === "M") cursor += 1;
-  return cursor;
-}
-
-/**
- * Effect of a sed script. Only addresses with the print/delete/quit/hold
- * family, `s///` with plain flags and `y///` are read-only; `e`, `s///e`
- * execute; `w`/`W`/`r`/`R`, `s///w` touch files; anything else is unproven.
- */
-function sedScriptEffect(script: string): ShellOptionEffect | null {
-  const unproven = write("sed script is not provably read-only");
-  let worst: ShellOptionEffect | null = null;
-  let index = 0;
-  const skipBlank = (): void => { while (index < script.length && /[\s;]/.test(script[index]!)) index += 1; };
-  for (;;) {
-    skipBlank();
-    if (index >= script.length) return worst;
-    index = skipSedAddress(script, index);
-    if (index < 0) return worse(worst, unproven);
-    if (script[index] === ",") {
-      index += 1;
-      const step = /^[+~]\d+/.exec(script.slice(index));
-      index = step ? index + step[0].length : skipSedAddress(script, index);
-      if (index < 0) return worse(worst, unproven);
-    }
-    while (script[index] === " " || script[index] === "!") index += 1;
-    const command = script[index];
-    if (command === undefined) return worst;
-    if ("pdDqQ=nNgGhHxlzPF".includes(command)) {
-      index += 1;
-      while (/\d/.test(script[index] ?? "")) index += 1;
-      while (script[index] === " " || script[index] === "\t") index += 1;
-      if (index < script.length && !/[;\n]/.test(script[index]!)) return worse(worst, unproven);
-      continue;
-    }
-    if (command === "s" || command === "y") {
-      const delimiter = script[index + 1];
-      if (!delimiter || delimiter === "\\" || delimiter === "\n") return worse(worst, unproven);
-      let cursor = index + 2;
-      for (let part = 0; part < 2; part += 1) {
-        while (cursor < script.length && script[cursor] !== delimiter) cursor += script[cursor] === "\\" ? 2 : 1;
-        if (cursor >= script.length) return worse(worst, unproven);
-        cursor += 1;
-      }
-      index = cursor;
-      if (command === "s") {
-        while (/[A-Za-z0-9]/.test(script[index] ?? "")) {
-          const flag = script[index]!;
-          if (flag === "e") return exec("sed s///e runs the result as a command");
-          if (flag === "w") return worse(worst, write("sed s///w writes a file"));
-          if (!/[gpiImM0-9]/.test(flag)) return worse(worst, unproven);
-          index += 1;
-        }
-      }
-      continue;
-    }
-    if (command === "e") return exec("sed e runs a command");
-    if ("wWrR".includes(command)) {
-      worst = worse(worst, write(`sed ${command} reads or writes a file`));
-      while (index < script.length && script[index] !== "\n") index += 1;
-      continue;
-    }
-    return worse(worst, unproven);
-  }
-}
-
-function sedEffect(args: readonly (string | undefined)[]): ShellOptionEffect | null {
-  const scripts: (string | undefined)[] = [];
-  const positional: (string | undefined)[] = [];
-  let explicitScript = false;
-  let worst: ShellOptionEffect | null = null;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined || !arg.startsWith("-") || arg === "-") { positional.push(arg); continue; }
-    if (arg === "--") { positional.push(...args.slice(index + 1)); break; }
-    if (arg.startsWith("--")) {
-      const [name, ...value] = arg.split("=");
-      const inline = value.length > 0 ? value.join("=") : undefined;
-      if (longOptionIs(name!, ["--expression"], 3)) {
-        explicitScript = true;
-        scripts.push(inline ?? args[++index]);
-      } else if (longOptionIs(name!, ["--file"], 4)) {
-        return exec("sed script file");
-      } else if (longOptionIs(name!, ["--in-place"], 3)) {
-        worst = worse(worst, write("sed -i edits files in place"));
-      } else if (longOptionIs(name!, ["--line-length"], 3) && inline === undefined) {
-        index += 1;
-      }
-      continue;
-    }
-    for (let letter = 1; letter < arg.length; letter += 1) {
-      const flag = arg[letter]!;
-      if (flag === "i") { worst = worse(worst, write("sed -i edits files in place")); break; }
-      if (flag === "f") return exec("sed script file");
-      if (flag === "e") {
-        explicitScript = true;
-        scripts.push(letter + 1 < arg.length ? arg.slice(letter + 1) : args[++index]);
-        break;
-      }
-      if (flag === "l") { if (letter + 1 === arg.length) index += 1; break; }
-    }
-  }
-  if (!explicitScript && positional.length > 0) scripts.push(positional[0]);
-  for (const script of scripts) {
-    worst = worse(worst, script === undefined ? exec("dynamic sed script") : sedScriptEffect(script));
-    if (worst?.kind === "exec") return worst;
-  }
-  return worst;
-}
-
-function tarEffect(args: readonly (string | undefined)[]): ShellOptionEffect | null {
-  let worst: ShellOptionEffect | null = null;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined) continue;
-    if (arg.startsWith("--")) {
-      const name = arg.split("=")[0]!;
-      if (longOptionIs(name, ["--to-command", "--use-compress-program", "--checkpoint-action", "--info-script", "--new-volume-script", "--rsh-command", "--rmt-command"])) {
-        return exec(`tar ${name} runs a command`);
-      }
-      if (longOptionIs(name, ["--extract", "--get", "--create", "--append", "--update", "--delete", "--catenate", "--concatenate", "--remove-files"])) {
-        worst = worse(worst, write(`tar ${name} writes files`));
-      }
-      continue;
-    }
-    // Old-style bundled first argument (`tar xf a.tar`).
-    const letters = arg.startsWith("-") ? arg.slice(1) : index === 0 ? arg : "";
-    for (const letter of letters) {
-      if (letter === "I" || letter === "F") return exec(`tar -${letter} runs a command`);
-      if ("xcruA".includes(letter)) worst = worse(worst, write(`tar -${letter} writes files`));
-      if (TAR_VALUE_SHORTS.includes(letter)) break;
-    }
-  }
-  return worst;
-}
-
-const GIT_EXEC_LONG = ["--ext-diff", "--textconv", "--config-env", "--exec", "--upload-pack", "--receive-pack", "--extcmd", "--open-files-in-pager", "--sendmail-cmd", "--to-cmd", "--exec-path"];
-const GIT_EXEC_VERBS = new Set(["difftool", "mergetool", "filter-branch", "instaweb", "web--browse", "credential"]);
-
-function gitEffect(args: readonly (string | undefined)[]): ShellOptionEffect | null {
-  const verbArgs = stripGlobalOptions(["git", ...args]).slice(1);
-  const verb = verbArgs[0];
-  if (verb !== undefined && GIT_EXEC_VERBS.has(verb)) return exec(`git ${verb} runs configured commands`);
-  if ((verb === "submodule" && verbArgs.includes("foreach")) || (verb === "bisect" && verbArgs[1] === "run")) {
-    return exec(`git ${verb} runs a command`);
-  }
-  if (verb === "config") return write("git config changes configuration");
-  for (const arg of args) {
-    if (arg === undefined) continue;
-    if (arg === "-c" || /^-c.+=/.test(arg)) return exec("git -c sets configuration that can run commands");
-    const name = arg.split("=")[0]!;
-    if (name === "--exec-path" && !arg.includes("=")) continue;
-    if (name.startsWith("--") && !name.startsWith("--no-") && longOptionIs(name, GIT_EXEC_LONG, 7)) return exec(`git ${name} runs a command`);
-    if (arg === "-O" || /^-O./.test(arg)) return exec("git -O runs a pager command");
-    if (/^-[A-Za-z]*x/.test(arg) && (verb === "rebase" || verb === "difftool")) return exec(`git ${verb} -x runs a command`);
-    if (/^-[A-Za-z]*u/.test(arg) && (verb === "clone" || verb === "fetch" || verb === "pull" || verb === "ls-remote" || verb === "archive")) {
-      return exec(`git ${verb} -u runs an upload-pack command`);
-    }
-  }
-  return null;
-}
-
-function sshFamilyEffect(program: string, args: readonly (string | undefined)[]): ShellOptionEffect | null {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined || !arg.startsWith("-")) continue;
-    if (/^-[A-Za-z]*o/.test(arg)) {
-      const value = arg.replace(/^-[A-Za-z]*o/, "") || args[index + 1] || "";
-      if (/(?:proxy|local|knownhosts)command|permitlocalcommand/i.test(value)) return exec(`${program} -o runs a local command`);
-    }
-    if (/^-[A-Za-z]*F/.test(arg)) return exec(`${program} -F reads a config that can run commands`);
-    if (program !== "ssh" && /^-[A-Za-z]*[SD]/.test(arg)) return exec(`${program} -S runs a program`);
-  }
-  return null;
-}
-
-/**
- * Per-program code-exec and write options. `exec` options run a command the
- * matcher cannot see (deny/ask treat the call as hidden); `write` options
- * write or edit a path. An allow rule never covers either.
- */
-export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellOptionEffect | null {
-  const head = argv[0];
-  if (head === undefined) return null;
-  if (RUNNER_SET.has(runnerName(head))) return null;
-  const program = programName(head);
-  const args = argv.slice(1, opaqueRunnerReason(argv) ? wrapperPrefixLength(argv) : argv.length);
-  let effect: ShellOptionEffect | null = null;
-  switch (program) {
-    case "sed": case "gsed": effect = sedEffect(args); break;
-    case "tar": case "gtar": case "bsdtar": effect = tarEffect(args); break;
-    case "git": effect = gitEffect(args); break;
-    case "ssh": case "scp": case "sftp": effect = sshFamilyEffect(program, args); break;
-    case "rg":
-      if (args.some((arg) => arg !== undefined && /^--pre(?:-glob)?(?:=|$)/.test(arg))) effect = exec("rg --pre runs a command");
-      // `--hostname-bin` runs a program to learn the hostname for hyperlinks.
-      else if (args.some((arg) => arg !== undefined && /^--hostname-bin(?:=|$)/.test(arg))) effect = exec("rg --hostname-bin runs a command");
-      break;
-    case "less": case "more": case "most":
-      if (args.some((arg) => arg !== undefined && arg.startsWith("+") && /[!|]/.test(arg))) effect = exec(`${program} + runs a shell command`);
-      else if (args.some((arg) => arg !== undefined && (/^-[A-Za-z]*k/.test(arg) || arg.startsWith("--lesskey")))) effect = exec(`${program} lesskey file`);
-      else if (args.some((arg) => arg !== undefined && (/^-[A-Za-z]*[oO]/.test(arg) || /^--(?:log-file|LOG-FILE)/.test(arg)))) effect = write(`${program} -o writes a file`);
-      break;
-    case "find":
-      if (args.some((arg) => arg === undefined || FIND_EXEC_ACTIONS.test(arg))) effect = exec("command passed to find -exec");
-      else {
-        const action = args.find((arg) => arg !== undefined && FIND_WRITING_ACTIONS.test(arg));
-        if (action) effect = write(`find ${action} writes or deletes`);
-      }
-      break;
-    case "fd": case "fdfind":
-      if (args.some((arg) => arg !== undefined && /^(?:-[A-Za-z]*[xX]|--exec(?:-batch)?)(?:=|$)/.test(arg))) effect = exec("fd --exec runs a command");
-      break;
-    case "man":
-      if (args.some((arg) => arg !== undefined && (/^-[A-Za-z]*[PH]/.test(arg) || /^--(?:pager|html|browser)/.test(arg)))) effect = exec("man --pager runs a command");
-      break;
-    case "rsync":
-      if (args.some((arg) => arg !== undefined && (/^-[A-Za-z]*e/.test(arg) || /^--(?:rsh|rsync-path)(?:=|$)/.test(arg)))) effect = exec("rsync -e runs a command");
-      break;
-    case "zip":
-      if (args.some((arg) => arg !== undefined && (arg === "-TT" || /^--unzip-command/.test(arg)))) effect = exec("zip -TT runs a command");
-      break;
-    case "tcpdump":
-      if (args.some((arg) => arg !== undefined && /^-[A-Za-z]*z/.test(arg))) effect = exec("tcpdump -z runs a command");
-      break;
-    case "wget":
-      if (args.some((arg) => arg !== undefined && /^--use-askpass/.test(arg))) effect = exec("wget --use-askpass runs a command");
-      break;
-    case "fzf":
-      if (args.some((arg) => arg !== undefined && /^--(?:preview|bind)/.test(arg))) effect = exec("fzf runs a command");
-      break;
-    case "ack": case "ag": case "bat": case "batcat": case "delta":
-      if (args.some((arg) => arg !== undefined && /^--pager/.test(arg))) effect = exec(`${program} --pager runs a command`);
-      break;
-    case "sort": case "gsort":
-      if (args.some((arg) => arg === undefined || /^--compress-prog(?:r(?:a(?:m)?)?)?(?:=|$)/.test(arg))) effect = exec("sort --compress-program runs a program");
-      break;
-    case "xxd": {
-      // `xxd [options] [infile [outfile]]`: a second operand is written; `-r` patches it in place.
-      let operands = 0;
-      for (let index = 0; index < args.length; index += 1) {
-        const arg = args[index];
-        if (arg !== undefined && /^-(?:c|g|l|o|s|n|cols|groupsize|len|offset|seek|name)$/.test(arg)) { index += 1; continue; }
-        if (arg === undefined || !arg.startsWith("-") || arg === "-") operands += 1;
-      }
-      if (operands >= 2) effect = write("xxd writes its second operand");
-      break;
-    }
-    default:
-      break;
-  }
-  if (effect?.kind === "exec") return effect;
-  for (const token of args) {
-    if (token === undefined) continue;
-    if (WRITING_LONG_OPTION.test(token)) return worse(effect, write(`option ${token.split("=")[0]} writes to a path`));
-    if (SHORT_OUTPUT_PROGRAMS.has(program) && /^-[A-Za-z]*[oO]/.test(token)) return worse(effect, write(`option ${token.slice(0, 2)} writes to a path`));
-  }
-  return effect;
-}
-
-/** Reason the command at `argv[start]` runs code the matcher cannot read, else null. */
-/** A variable name bash takes literally: no subscript, or a constant integer one. */
 const LITERAL_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\d+\])?$/;
 
 /** Options of `read` whose value is the next word (`-a` names an array, the rest are data). */
@@ -800,8 +482,7 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   }
   const subscript = subscriptedNameReason(program, args);
   if (subscript) return subscript;
-  const effect = shellOptionEffect(argv.slice(start));
-  return effect?.kind === "exec" ? effect.reason : null;
+  return null;
 }
 
 const ARITHMETIC_TEST_OPERATORS = new Set(["-eq", "-ne", "-lt", "-le", "-gt", "-ge"]);
@@ -856,9 +537,8 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
  * Reason this argv runs code the matcher cannot read, else null: a shell or
  * interpreter given any code source (stdin, here-document, script file,
  * `-c`/`-e`/`-m`, `-s`, `-`), a code carrier (`eval`, `source`, `trap`,
- * `hash -p`, `alias`, `bind -x`, `mapfile -C`, `git -c`, editors, …), a
- * code-carrying variable, or an option in {@link shellOptionEffect} that
- * executes. Behind a wrapper every later word is tried as the program,
+ * `hash -p`, `alias`, `bind -x`, `mapfile -C`, editors, …), a
+ * code-carrying variable. Behind a wrapper every later word is tried as the program,
  * because wrapper option grammars differ too much to skip exactly.
  */
 export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {

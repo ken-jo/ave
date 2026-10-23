@@ -606,12 +606,17 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   return null;
 }
 
+function isNonFileUrlArgument(text: string): boolean {
+  const equals = text.indexOf("=");
+  // URL user-info and query values are not separate local file bindings.
+  return NON_FILE_URL.test(text.replace(/^-[A-Za-z]/, ""))
+    || (equals >= 0 && NON_FILE_URL.test(text.slice(equals + 1)));
+}
+
 /** Paths an argument can name, including attached values and a source before a destination separator. */
 function argumentCandidates(glob: string): string[] {
+  if (isNonFileUrlArgument(glob)) return [];
   const equals = glob.indexOf("=");
-  // URL user-info and query values are not separate local file bindings.
-  if (NON_FILE_URL.test(glob.replace(/^-[A-Za-z]/, ""))
-    || (equals >= 0 && NON_FILE_URL.test(glob.slice(equals + 1)))) return [];
   const attachedPath = /^-[A-Za-z](?=[~./\\]|[A-Za-z]:[\\/])/.test(glob) ? glob.slice(2) : undefined;
   if (glob.startsWith("-") && !glob.includes("=") && !glob.includes("@") && attachedPath === undefined) return [];
   const candidates = [glob];
@@ -918,7 +923,7 @@ function contentSearchShape(argv: readonly (string | undefined)[], name: string)
         if (value === undefined) index += 1;
       }
       if (grep && (option === "recursive" || option === "dereference-recursive")) recursive = true;
-      if ((grep && !bsd && option === "dereference-recursive") || (!grep && option === "follow")) follow = "all";
+      if ((grep && option === "dereference-recursive") || (!grep && option === "follow")) follow = "all";
       continue;
     }
     const cluster = word.slice(1);
@@ -1041,6 +1046,13 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       if (needsCodeTextScan(statement)) {
         state.hidden = true;
         scanCodeOf(statement, state);
+      } else {
+        // Embedded literal paths remain a floor without a program-option model.
+        // Here-document data is inspected as code only when the recipient runs it.
+        for (const word of statement.words) {
+          const text = staticShellWord(word) ?? word.source.raw;
+          if (!isNonFileUrlArgument(text)) scanCodeText(text, state);
+        }
       }
       if (statement.words.length > 0 && isNetworkProgram(commandArgv(statement))) state.network = true;
       for (const word of statement.words) checkWord(word, state);

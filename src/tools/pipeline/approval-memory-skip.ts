@@ -160,6 +160,7 @@ export async function tryUserApprovalMemorySkip(
   // an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
+  if (hostShellExecutionPlan?.mode === "plain") return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,

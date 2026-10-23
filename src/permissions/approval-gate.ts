@@ -25,7 +25,7 @@ import {
   type SandboxCapability,
 } from "./sandbox-capability.js";
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
-import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
+import { matchesReviewerApprovalBasis, type PermissionCheckContext, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import {
   isSensitivePath,
   canonicalizePathForMatch,
@@ -498,6 +498,8 @@ export type ApprovalRequestInput = Omit<
    * in the pending entry and never serialized to the renderer or audit payload.
    */
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
+  /** Host-only invocation route, shared with the permission decision; never serialized. */
+  readonly shellExecution?: PermissionCheckContext["shellExecution"];
   /**
    * Host-only marker: a remote controller's turn raised this approval, and
    * which controller it was.
@@ -2213,6 +2215,7 @@ export class ApprovalGate {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
+      shellExecution,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -2324,10 +2327,16 @@ export class ApprovalGate {
     const hasOneShotHostShellApprovalContract =
       forceExplicit === true &&
       hasOneShotApprovalChoiceContract;
+    // A regular builtin command dock may save an escape rule and then answer
+    // allow-once. Its native action still uses the same authenticated receipt.
+    const hasShellRuleApprovalContract = !forceExplicit && requestedChoices === undefined &&
+      req.source === "builtin" && req.toolName === "bash" && req.toolCategory === "shell" &&
+      req.category === "tool" && (req.kind === undefined || req.kind === "tool");
+    const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
     if (
       hostShellExecutionPermitBinding !== undefined &&
       (
-        !hasOneShotHostShellApprovalContract ||
+        !hasHostShellApprovalContract ||
         !matchesHostShellExecutionPermitBindingRequest(
           request,
           hostShellExecutionPermitBinding,
@@ -2351,7 +2360,7 @@ export class ApprovalGate {
     }
     const oneShotPermitBinding =
       hostShellExecutionPermitBinding !== undefined &&
-      hasOneShotHostShellApprovalContract
+      hasHostShellApprovalContract
         ? Object.freeze({
             ...hostShellExecutionPermitBinding,
             allowedDirectories: Object.freeze([...hostShellExecutionPermitBinding.allowedDirectories]),
@@ -2441,7 +2450,10 @@ export class ApprovalGate {
     const shellRule = req.source === "builtin" && req.toolName === "bash" &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
-      ? buildShellRuleApproval(rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId)
+      ? buildShellRuleApproval(
+          rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId,
+          shellExecution?.runsSandboxed ?? false,
+        )
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
@@ -2490,7 +2502,7 @@ export class ApprovalGate {
         req.kind === "rationale"
           ? true
           // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
-          : forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
+          : oneShotPermitBinding !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
 
     // §S1: sensitive-path hard-block — runs BEFORE anything else so that

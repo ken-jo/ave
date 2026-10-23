@@ -18,10 +18,11 @@
  *  - When the tree hides code from deny/ask (unparseable, unsupported,
  *    dynamic program name, a shell/interpreter fed code by any route — `-c`,
  *    stdin pipe, here-string, here-document, `-s`, `-`, a script file — or a
- *    code carrier / code-executing option from `shell-prefix-policy.ts`) and
+ *    code carrier from `shell-prefix-policy.ts`) and
  *    the user has any deny/ask Bash rule, the result is `ask` unless a deny
  *    rule already matched a visible command: a deny rule the matcher could not
- *    evaluate must not be bypassed by the mode. Hidden code is never allowed.
+ *    evaluate must not be bypassed by the mode. Hidden execution is never
+ *    covered by an allow rule, including an exact argv rule.
  */
 import {
   staticShellWord,
@@ -42,9 +43,7 @@ import {
   codeCarryingVariable,
   hiddenCodeReason,
   opaqueRunnerReason,
-  refusedShellPrefix,
   isShellWrapperProgram,
-  shellOptionEffect,
   stripGlobalOptions,
   wrapperCommand,
   wrapperPrefixLength,
@@ -162,21 +161,18 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           blockers.push("dynamic program name");
         } else {
           // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`,
-          // `eval "…"`, `find -exec rm`, `sed 'e …'`: the code is a string,
+          // `eval "…"`: the code is a string,
           // a file or stdin the matcher does not read, so deny/ask cannot
-          // see inside it and no allow rule covers it.
+          // see inside it. No allow rule covers that hidden execution.
           const hiddenCode = hiddenCodeReason(argv);
           if (hiddenCode) {
             hidden.push(hiddenCode);
             blockers.push(hiddenCode);
-            // A static code source stays a rule-visibility blocker. An
-            // unresolved binding still needs ordinary approval.
+            // Unresolved bindings also need ordinary approval.
             if (argv.includes(undefined)) ordinaryAsk ??= hiddenCode;
           }
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
-          const effect = shellOptionEffect(argv);
-          if (effect) blockers.push(effect.reason);
         }
         commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers });
         return;
@@ -241,16 +237,6 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   visit(analysis.program);
   ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
-}
-
-/**
- * A runner rule must name a literal command boundary. That is a structural
- * property; the wildcard allowlist is the store's write-time policy, not a
- * reason for the matcher to ignore a rule it was given.
- */
-function runnerRuleBounded(tokens: readonly string[], wildcard: boolean): boolean {
-  const refusal = refusedShellPrefix(tokens, wildcard);
-  return refusal === null || refusal === "not-allowlisted";
 }
 
 /** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */
@@ -343,9 +329,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
     || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
-  // Irreversible forms (`git clean -f`, `kubectl delete`, `mv`), kubectl
-  // re-targeting or secrets, and code-loading runner options are never
-  // covered by an allow rule.
+  // Irreversible forms remain outside reusable command permission.
   for (const cmd of shape.commands) {
     const unreusable = noReusableRuleReason(cmd.argv);
     if (unreusable) return { decision: null, reason: `${unreusable} (no allow rule covers it)` };
@@ -357,12 +341,9 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const incomplete = shellScanOrdinaryAsk(parsed, cwd);
   if (incomplete) return { decision: null, reason: incomplete };
   const patterns: string[] = [];
-  // Stored runner rules still need a literal command boundary.
-  const allowRules = rules.allow.filter((candidate) =>
-    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || runnerRuleBounded(candidate.spec.tokens, candidate.spec.wildcard));
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
-    const rule = allowRules.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
+    const rule = rules.allow.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
     if (!rule) return { decision: null, reason: "a subcommand is not covered by any allow rule" };
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }

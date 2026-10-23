@@ -32,13 +32,13 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
       requireExplicit: !input.persistentAllowed,
       persistentAllowAllowed: input.persistentAllowed,
       allowedChoices: input.persistentAllowed
-        ? ["allow-once", "allow-always", "allow-session", "deny-once", "deny-always"]
+        ? ["allow-once", "allow-always", "deny-once", "deny-always"]
         : ["allow-once", "deny-once"],
       shellRule: {
-        suggestedPattern: input.persistentAllowed ? "Bash(npm test *)" : null,
+        suggestedPattern: input.persistentAllowed ? "Bash(npm test)" : null,
         projectCwd: "/workspace/project",
         projectRoot: "/workspace/project",
-        sessionAllowed: input.persistentAllowed,
+        sessionAllowed: false,
         persistentAllowed: input.persistentAllowed,
       },
     });
@@ -53,8 +53,9 @@ for (const locale of ["en", "ko"] as const) {
       await showShellRequest(app, mainWindow, true);
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
       const pattern = dock.getByTestId("approval-shell-rule-pattern");
-      await expect(pattern).toHaveValue("Bash(npm test *)");
-      await expect(dock.getByTestId("approval-allow-session")).toBeEnabled();
+      await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖 실행" : "outside the sandbox");
+      await expect(pattern).toHaveValue("Bash(npm test)");
+      await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
       await expect(dock.getByTestId("approval-deny-always")).toBeEnabled();
       await dock.getByTestId("approval-shell-rule-scope").selectOption("user");
       await pattern.fill("Bash(npm test)");
@@ -62,7 +63,7 @@ for (const locale of ["en", "ko"] as const) {
       await mainWindow.screenshot({ path: testInfo.outputPath(`shell-rule-${locale}.png`) });
       await pattern.fill("Bash(node *)");
       await expect(dock.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-      await expect(dock.getByTestId("approval-allow-session")).toBeEnabled();
+      await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
 
       await dock.getByTestId(TEST_IDS.denyButton).click();
       await showShellRequest(app, mainWindow, false);
@@ -84,15 +85,25 @@ test("Settings loads and revokes a project rule through the real host bridge", a
   writeFileSync(file, JSON.stringify({
     version: 1,
     projectRoot: captured.path,
-    rules: [{ pattern: "Bash(npm test *)", action: "allow" }],
+    rules: [{ pattern: "Bash(npm run *)", action: "allow" }, { pattern: "Bash(npm test *)", action: "allow" }],
     updatedAt: new Date().toISOString(),
   }), { mode: 0o600 });
 
   const settings = await openInlineSettings(app, mainWindow, "permissions");
   const table = settings.getByTestId("permissions-rules-table");
   const row = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm test *)" });
+  const inert = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm run *)" });
+  await expect(inert.getByTestId("permissions-rule-invalid")).toContainText(/Not in force|적용되지 않음/);
+  await inert.scrollIntoViewIfNeeded();
+  await mainWindow.screenshot({ path: testInfo.outputPath("inert-project-rule.png") });
+  await inert.getByRole("button").click();
+  await expect(inert).toHaveCount(0);
+  expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([{ pattern: "Bash(npm test *)", action: "allow" }]);
   await expect(row).toBeVisible();
+  await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(/outside the sandbox|샌드박스 밖 실행/);
   await expect(row).toContainText(captured.path);
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
   await mainWindow.screenshot({ path: testInfo.outputPath("project-rule-settings.png") });
   await row.getByRole("button").click();
   await expect(row).toHaveCount(0);

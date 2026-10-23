@@ -1128,8 +1128,8 @@ export async function runToolInvocation(
     // Refuse unavailable host approval before even a prerequisite directory ask.
     if (hostShellRequiresExplicitApproval &&
       hostShellExecutionPlan?.executionRequest === "host" &&
-      (permissionContext.headless === true || permissionContext.remoteControllerAuthority !== undefined)) {
-      const reason = "Explicit host execution requires a local desktop approval and is unavailable to headless or remote-controller requests";
+      permissionContext.remoteControllerAuthority !== undefined) {
+      const reason = "Explicit host execution is unavailable to remote-controller requests";
       const msg = t("be_executor.permBlockDeny", { name: toolUse.name, source, trust, reason });
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
