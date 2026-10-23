@@ -29,6 +29,7 @@ import {
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 import { resolveUserApprovalVerdict } from "../../shared/permissions-events.js";
+import { canonicalStringify as canonicalJson } from "../../shared/canonical-json.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { classifyApprovalRuleVerdict } from "../../tools/pipeline/approval-memory-skip.js";
@@ -476,10 +477,130 @@ describe("conversation-scoped exact decisions", () => {
     await expect(readApprovals()).resolves.toEqual({ approvals: {} });
   });
 
-  it("retains legacy session matching without converting its key", async () => {
-    await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null });
-    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, undefined, "conversation-a")).not.toBeNull();
-    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, undefined, "conversation-b")).not.toBeNull();
+  it("refuses a session approval that names no conversation", async () => {
+    await expect(recordApproval("browser_click", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null }))
+      .rejects.toThrow(/requires its conversation session/);
+    expect(listSessionApprovals()).toEqual([]);
+  });
+});
+
+// Owner decision 2026-10-23: every session allow (not only shell) belongs to
+// the root conversation, resolved by the one resolver the judge also uses.
+describe("non-shell session approvals are keyed by the root conversation", () => {
+  const ROOT_A = "11111111-1111-4111-8111-111111111111";
+  const ROOT_B = "22222222-2222-4222-8222-222222222222";
+  const CHILD_A = "sub-aa-33333333-3333-4333-8333-333333333333";
+  const GRANDCHILD_A = "sub-ab-44444444-4444-4444-8444-444444444444";
+  const CHILD_B = "sub-ba-55555555-5555-4555-8555-555555555555";
+  const origins: Record<string, string> = { [CHILD_A]: ROOT_A, [GRANDCHILD_A]: CHILD_A, [CHILD_B]: ROOT_B };
+  const tools = [
+    { tool: "browser_click", args: canonicalJson({ selector: "#submit", tabId: "tab-1" }) },
+    { tool: "terminal_run", args: canonicalJson({ command: "make build" }) },
+    { tool: "write_file", args: canonicalJson({ path: "/tmp/out.txt" }) },
+  ];
+  beforeEach(async () => {
+    __resetSessionStoreForTest();
+    rmSync(join(TEST_HOME, "permissions", "user-approvals.json"), { force: true });
+    const { setApprovalConversationRootResolver } = await import("../user-approval-store.js");
+    const { createRootSessionResolver } = await import("../root-session-resolver.js");
+    setApprovalConversationRootResolver(createRootSessionResolver((id) => origins[id]));
+  });
+  const record = (tool: string, args: string, sessionId: string) => recordApproval(tool, args, "builtin", {
+    scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId,
+  });
+
+  it.each(tools)("shares a parent's $tool allow with its sub-agents at any depth", async ({ tool, args }) => {
+    await record(tool, args, ROOT_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toMatchObject({ sessionId: ROOT_A });
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, GRANDCHILD_A)).toMatchObject({ sessionId: ROOT_A });
+  });
+
+  it.each(tools)("shares a sub-agent's $tool allow with its root conversation", async ({ tool, args }) => {
+    await record(tool, args, GRANDCHILD_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toMatchObject({ sessionId: ROOT_A });
+  });
+
+  it.each(tools)("never lets a $tool allow reach a different root conversation", async ({ tool, args }) => {
+    await record(tool, args, CHILD_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_B)).toBeNull();
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_B)).toBeNull();
+    // No process-wide fallback: a lookup without a conversation never matches.
+    expect(await lookupApproval(tool, args, "builtin")).toBeNull();
+  });
+
+  it("clears every session approval on app restart, leaving no disk state", async () => {
+    for (const { tool, args } of tools) await record(tool, args, ROOT_A);
+    expect(listSessionApprovals()).toHaveLength(tools.length);
+    await expect(readApprovals()).resolves.toEqual({ approvals: {} });
+    // A restart loads the store module afresh: the in-memory map starts empty.
+    vi.resetModules();
+    const restarted = await import("../user-approval-store.js");
+    expect(restarted.listSessionApprovals()).toEqual([]);
+    for (const { tool, args } of tools) {
+      expect(await restarted.lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toBeNull();
+      expect(await restarted.lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toBeNull();
+    }
+  });
+});
+
+// Owner decision 2026-10-23: a stored allow wildcard outside the allowlist is
+// not migrated. It loads inert: listed with its reason, removable, never matched.
+describe("stored allow wildcards outside the allowlist", () => {
+  const writeStoreA = (rules: unknown[]) => writeFileSync(permissionsFile, JSON.stringify({ version: 1, mode: "default", updatedAt: "", rules }));
+
+  it("lists the user rule with its reason, never matches it, keeps it across writes and removes it in one step", async () => {
+    writeStoreA([{ pattern: "Bash(make *)", action: "allow" }, { pattern: "Bash(git status *)", action: "allow" }]);
+    const manager = new PermissionManager(permissionsFile);
+    await manager.loadRulesFromFile();
+    expect(manager.getRulesLoadError()).toBeUndefined();
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("make build"))).not.toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "allow", layer: 3 });
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([]);
+    expect(listed.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pattern: "Bash(make *)", scope: "user", invalidReason: "wildcard-not-allowlisted" }),
+    ]));
+    expect(listed.rules.find((rule) => rule.pattern === "Bash(git status *)")?.invalidReason).toBeUndefined();
+    // Another write keeps the inert rule as stored; it cannot add a new one.
+    await manager.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" });
+    expect((await readPermissionsFile(permissionsFile))!.rules.map((rule) => rule.pattern)).toContain("Bash(make *)");
+    await expect(manager.addRulePersist({ pattern: "Bash(cargo *)", action: "allow" }, { kind: "user" })).rejects.toThrow(/wildcard allowlist/);
+    await expect(updatePermissionsFile(permissionsFile, (file) => { file.rules.push({ pattern: "Bash(cargo *)", action: "allow" }); }))
+      .rejects.toThrow(/wildcard allowlist/);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(make *)")!;
+    await manager.removeRulePersist(row, { kind: "user" });
+    const reloaded = new PermissionManager(permissionsFile);
+    await reloaded.loadRulesFromFile();
+    expect((await reloaded.listScopedRules()).rules.map((rule) => rule.pattern)).not.toContain("Bash(make *)");
+    expect(reloaded.checkDetailed("bash", "builtin", "shell", null, shell("make build"))).not.toMatchObject({ decision: "allow", layer: 3 });
+  });
+
+  it("does the same for a project rules file", async () => {
+    const location = projectRulesLocation(dir, project);
+    mkdirSync(dirname(location.filePath), { recursive: true });
+    writeFileSync(location.filePath, JSON.stringify({
+      version: 1, projectRoot: location.projectRoot, updatedAt: "",
+      rules: [{ pattern: "Bash(make *)", action: "allow" }, { pattern: "Bash(ls *)", action: "allow" }],
+    }));
+    const manager = new PermissionManager(permissionsFile);
+    await manager.ensureProjectRulesLoaded(project);
+    const context = { ...shell("make build"), projectRulesCwd: project };
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, context)).not.toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project }))
+      .toMatchObject({ decision: "allow", layer: 3 });
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([]);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(make *)")!;
+    expect(row).toMatchObject({ scope: "project", invalidReason: "wildcard-not-allowlisted" });
+    await manager.removeRulePersist(row, { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! });
+    expect(JSON.parse(readFileSync(location.filePath, "utf8")).rules).toEqual([{ pattern: "Bash(ls *)", action: "allow" }]);
+  });
+
+  it("still treats a structurally refused stored allow as a corrupt file", async () => {
+    writeStoreA([{ pattern: "Bash(rm *)", action: "allow" }]);
+    const manager = new PermissionManager(permissionsFile);
+    await manager.loadRulesFromFile();
+    expect(manager.getRulesLoadError()).toMatch(/corrupt/);
   });
 });
 

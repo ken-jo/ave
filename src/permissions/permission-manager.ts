@@ -12,7 +12,7 @@ import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } 
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
-import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
+import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
@@ -515,6 +515,12 @@ function sameReviewerSandboxCacheState(
 // LLM caller retry wiring lives in conversation-loop.ts scope.
 // Tracked in follow-up issue for "LLM caller retry wiring" with
 // max 2 retry / counter scope / args-change-reset contract.
+
+/** A Settings row, marked when its stored rule is inert (listed and removable, never matched). */
+function withInvalidReason(row: ScopedPermissionRule): ScopedPermissionRule {
+  const reason = storedRuleInvalidReason(row);
+  return reason === null ? row : { ...row, invalidReason: reason };
+}
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -1184,7 +1190,7 @@ export class PermissionManager {
     const rules: ScopedPermissionRule[] = [];
     const errors: ScopedPermissionRuleError[] = [];
     try {
-      for (const rule of await this.listPersistedRules()) rules.push({ ...rule, scope: "user" });
+      for (const rule of await this.listPersistedRules()) rules.push(withInvalidReason({ ...rule, scope: "user" }));
     } catch (error) {
       console.error("[permission]", error);
       errors.push({ filePath: this.permissionsFilePath, errorCode: "rules-file-unavailable" });
@@ -1193,7 +1199,9 @@ export class PermissionManager {
       const projects = await listStoredProjectRules(dirname(this.permissionsFilePath));
       errors.push(...projects.errors);
       for (const file of projects.files) {
-        for (const rule of file.rules) rules.push({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity });
+        for (const rule of file.rules) {
+          rules.push(withInvalidReason({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity }));
+        }
       }
     } catch (error) {
       console.error("[permission]", error);

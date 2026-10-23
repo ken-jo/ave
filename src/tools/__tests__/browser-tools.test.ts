@@ -200,6 +200,8 @@ describe("browser tools", () => {
             await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
               decision: "allow",
               scope: "session",
+              // As the record handler does: a session allow is the root conversation's.
+              sessionId: snapshot.sessionId,
               verdictAtApproval: snapshot.verdictAtApproval,
               nlJustification: null,
               trustOrigin: snapshot.trustOrigin,

@@ -37,20 +37,6 @@ function walkLiveOrigins(
   return { chain, complete: current === undefined };
 }
 
-/**
- * The root conversation of `sessionId`: the session itself when it is not a
- * running sub-agent, else the conversation its sub-agent chain was spawned
- * from. A cycle or an over-deep chain is a broken registry and throws.
- */
-export function resolveRootSessionId(
-  sessionId: string,
-  liveOriginSessionId: SessionWindowScopeDeps["liveOriginSessionId"],
-): string {
-  const { chain, complete } = walkLiveOrigins(sessionId, liveOriginSessionId);
-  if (!complete) throw new Error(`Sub-agent origin chain for ${sessionId} is cyclic or deeper than ${MAX_SCOPE_DEPTH}`);
-  return chain[chain.length - 1]!;
-}
-
 /** The hosting window of `sessionId` (or of its nearest hosted ancestor), and that ancestor. */
 export function resolveSessionWindow(
   sessionId: string | undefined,

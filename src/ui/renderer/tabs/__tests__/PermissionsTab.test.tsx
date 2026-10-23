@@ -2036,6 +2036,24 @@ describe("PermissionsTab unified permission rules", () => {
     await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith("exact-session"));
   });
 
+  it("shows an inert stored wildcard with its reason and removes it in one click", async () => {
+    const api = installApi([[]]);
+    const inert = { pattern: "Bash(make *)", action: "allow", scope: "user", invalidReason: "wildcard-not-allowlisted" };
+    const healthy = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [inert, healthy], errors: [] }).mockResolvedValue({ rules: [healthy], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    const reasons = screen.getAllByTestId("permissions-rule-invalid");
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toHaveTextContent(t("permissionsTab.ruleInvalidWildcardNotAllowlisted"));
+    expect(reasons[0].closest("tr")).toHaveTextContent(inert.pattern);
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: inert.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(inert));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
+    expect(table).toHaveTextContent(healthy.pattern);
+  });
+
   it("refreshes the scoped list after adding or revoking a rule", async () => {
     const api = installApi([[]]);
     const rule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };

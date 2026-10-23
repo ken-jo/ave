@@ -1323,8 +1323,27 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(session).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
       expect.objectContaining({ scope: "session" }));
+    // A browser session allow belongs to the root conversation, like a shell one.
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
-      expect.not.objectContaining({ sessionId: expect.anything() }));
+      expect.objectContaining({ sessionId: "conversation-1" }));
+  });
+
+  it("refuses a non-shell session approval whose request names no conversation", async () => {
+    const browserMemory = {
+      kind: "key" as const,
+      key: "browser_click:origin-a",
+      scope: { kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const, tabId: "tab-1", documentId: 1 },
+    };
+    await setup({ snapshotApprovalCacheKey: undefined, snapshotApprovalMemory: browserMemory, snapshotSessionId: null });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-browser-no-session",
+      args: '{"command":"ls"}',
+      scope: "session",
+      verdictAtApproval: "medium",
+      nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: "missing-session" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
   it("refuses to record a host key that carries no remembered-identity mode", async () => {

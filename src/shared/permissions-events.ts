@@ -24,6 +24,9 @@ export interface ScopedPermissionRuleError {
   errorCode: "rules-file-unavailable";
 }
 
+/** Why a stored rule is listed but never matched (see `storedRuleInvalidReason`). */
+export type StoredRuleInvalidReason = "wildcard-not-allowlisted";
+
 /** Rule-store row with its host-owned persistence scope. */
 export interface ScopedPermissionRule {
   pattern: string;
@@ -33,6 +36,8 @@ export interface ScopedPermissionRule {
   projectCwd?: string;
   /** Stored identity of the project rules file a project row was read from. */
   storedFile?: string;
+  /** Set when the stored rule is inert: listed with this reason and removable, never matched. */
+  invalidReason?: StoredRuleInvalidReason;
 }
 
 export interface ShellRuleApproval {

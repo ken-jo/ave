@@ -280,9 +280,11 @@ function memoryEntryKey(
  * Maps a session to the root conversation that owns its session approvals.
  * A session allow belongs to the root conversation: every agent in that tree
  * (the conversation and the sub-agents it spawned, at any depth) shares it,
- * and separate root conversations never do. Boot registers the sub-agent
- * runner's live origin walk. Without a runner no session is a child, so each
- * session is its own root; the identity resolver is that exact answer.
+ * and separate root conversations never do. This covers every session
+ * approval, not only shell ones. Boot registers the one root-session resolver
+ * (`createRootSessionResolver`, shared with the judge). Without a runner no
+ * session is a child, so each session is its own root; the identity resolver
+ * is that exact answer.
  */
 type ApprovalConversationRootResolver = (sessionId: string) => string;
 const identityConversationRoot: ApprovalConversationRootResolver = (sessionId) => sessionId;
@@ -430,6 +432,9 @@ export async function recordApproval(
   }
   const baseKey = entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
+  // A session approval always belongs to a root conversation (owner decision
+  // 2026-10-23); an unscoped one would authorize every conversation.
+  if (entry.scope === "session" && entry.sessionId === undefined) throw new Error("A session approval requires its conversation session");
   const rootSessionId = entry.sessionId === undefined ? undefined : approvalConversationRoot(entry.sessionId);
   const key = rootSessionId === undefined ? baseKey : conversationEntryKey(baseKey, rootSessionId);
   const full: UserApprovalEntry = {

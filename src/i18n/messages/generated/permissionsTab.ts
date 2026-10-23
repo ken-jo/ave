@@ -290,6 +290,7 @@ export const en = {
   "permissionsTab.scopeProject": "Project",
   "permissionsTab.scopeUser": "Everywhere",
   "permissionsTab.revokeNamedRule": "Revoke {pattern}",
+  "permissionsTab.ruleInvalidWildcardNotAllowlisted": "Not in force: this command is not on the list of known-safe commands that an \"always allow\" rule ending in \" *\" may name. Remove it and approve the exact command instead.",
   "permissionsTab.exactApprovalLabel": "Exact approval",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
@@ -551,5 +552,6 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.scopeProject": "프로젝트",
   "permissionsTab.scopeUser": "모든 프로젝트",
   "permissionsTab.revokeNamedRule": "{pattern} 철회",
+  "permissionsTab.ruleInvalidWildcardNotAllowlisted": "적용되지 않음: \" *\"로 끝나는 \"항상 허용\" 규칙은 안전하다고 알려진 명령에만 쓸 수 있습니다. 이 규칙을 삭제하고 정확한 명령을 승인하세요.",
   "permissionsTab.exactApprovalLabel": "정확히 일치하는 승인",
 };

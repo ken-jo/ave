@@ -1678,7 +1678,14 @@ export function PermissionsTab({
                 <tbody>
                   {rules.map((rule, index) => (
                     <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
-                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">{rule.pattern}</td>
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {rule.pattern}
+                        {rule.invalidReason === "wildcard-not-allowlisted" ? (
+                          <p data-testid="permissions-rule-invalid" className="font-sans text-[10px] text-destructive">
+                            {t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
+                          </p>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-2"><Badge variant={rule.action === "allow" ? "default" : "secondary"}>
                         {rule.action === "allow" ? t("permissionsTab.actionAllow") : rule.action === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAsk")}
                       </Badge></td>

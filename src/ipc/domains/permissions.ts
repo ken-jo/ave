@@ -1186,7 +1186,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.shellRule.sessionAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create a session approval" };
     }
-    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.sessionId) {
+    // Every session approval (shell, browser, terminal, any exact tool
+    // approval) belongs to the root conversation of the request, so one
+    // without a conversation has nothing to be scoped to.
+    if (scope === "session" && !snapshot.sessionId) {
       return { ok: false, error: "missing-session", message: "This request has no conversation session" };
     }
     if (decision === "allow" && (!snapshot.persistentAllowAllowed || !snapshot.workingDirectoryIdentity)) {
@@ -1211,7 +1214,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
-        ...(scope === "session" && snapshot.shellRule ? { sessionId: snapshot.sessionId } : {}),
+        ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
         ...(snapshot.projectCwd === undefined ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,

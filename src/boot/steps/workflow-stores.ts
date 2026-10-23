@@ -37,7 +37,7 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
-import { resolveRootSessionId } from "../../tools/session-window-scope.js";
+import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
 import { setApprovalConversationRootResolver } from "../../permissions/user-approval-store.js";
 
 const log = createLogger("ave");
@@ -254,8 +254,12 @@ export async function setupWorkflowStores(
   ctx.skillApprovalsStore = skillApprovalsStore;
   ctx.askUserQuestionGate = askUserQuestionGate;
   ctx.subAgentRunnerRef = subAgentRunnerRef;
-  // Session approvals belong to the root conversation, shared by its sub-agents.
-  setApprovalConversationRootResolver((sessionId) =>
-    resolveRootSessionId(sessionId, (id) => subAgentRunnerRef.fn?.liveOriginSessionId(id)));
+  // The one root-conversation resolver: session approvals and the judge both
+  // key by it, so a conversation and every sub-agent it spawned (live or
+  // restored after restart) share one root, and separate roots never do.
+  ctx.resolveRootSessionId = createRootSessionResolver(
+    (sessionId) => subAgentRunnerRef.fn?.resolveOriginSessionId(sessionId),
+  );
+  setApprovalConversationRootResolver(ctx.resolveRootSessionId);
   ctx.idleScheduler = idleScheduler;
 }
