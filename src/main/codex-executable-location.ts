@@ -15,6 +15,7 @@ const ACL_BATCH_PATHS = 128;
 const ACL_BATCH_CHARS = 24 * 1024;
 const ACL_OUTPUT_PATHS = 16;
 const ACL_PATHS_ENV = "AVE_EXECUTABLE_ACL_PATHS";
+const ACL_CAP_SIDS_ENV = "AVE_ACL_CAP_SIDS";
 const trustedSystemSids = new Set([
   "S-1-5-18",
   "S-1-5-32-544",
@@ -24,11 +25,12 @@ const MUTATION_ACCESS_MASK = 0x000d0156 | 0x50000000;
 const FILE_ADD_SUBDIRECTORY = 0x4;
 const SID_PATTERN = /^S-1-(?:\d+-)*\d+$/;
 const CAP_SID_PATTERN = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
+const ACCOUNT_DOMAIN_SID_PATTERN = /^S-1-5-21-\d+-\d+-\d+$/;
 const PACKAGE_SID_PATTERN = /^S-1-15-2(-\d+){7}$/;
 // The owner accepts this installed package's sandbox; the publisher pins its signer.
 const CLAUDE_DESKTOP_PACKAGE = Object.freeze({ familyName: "Claude_pzs8sxrjxfjjc", publisherId: "pzs8sxrjxfjjc" });
 const PACKAGE_RESOLUTION_FAILURES = [
-  "mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "resolution-failed",
+  "mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "sid-mismatch", "resolution-failed",
 ] as const;
 type PackageResolutionFailure = typeof PACKAGE_RESOLUTION_FAILURES[number];
 type DesktopPackagePrincipals = { status: "resolved"; packageSid: string; capabilitySid: string }
@@ -109,6 +111,8 @@ interface WindowsPathSecurity {
 
 interface WindowsSecurityResult {
   currentSid: string;
+  machineDomainSid?: string;
+  capSidAccounts?: { sid: string; resolvesToAccount: boolean }[];
   paths: WindowsPathSecurity[];
   sandboxGroup?: { name: string; description: string; sid: string; members: string[] };
   desktopPackage: DesktopPackagePrincipals;
@@ -133,6 +137,17 @@ const WINDOWS_ACL_SCRIPT = [
   "  private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);",
   "  [DllImport(\"kernel32.dll\")]",
   "  private static extern IntPtr LocalFree(IntPtr memory);",
+  "  [DllImport(\"userenv.dll\", CharSet = CharSet.Unicode, ExactSpelling = true)]",
+  "  private static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);",
+  "  [DllImport(\"advapi32.dll\", ExactSpelling = true)]",
+  "  private static extern IntPtr FreeSid(IntPtr sid);",
+  "  public static string DerivePackageSid(string name) {",
+  "    IntPtr sid;",
+  "    int result = DeriveAppContainerSidFromAppContainerName(name, out sid);",
+  "    if (result != 0) Marshal.ThrowExceptionForHR(result);",
+  "    try { return new System.Security.Principal.SecurityIdentifier(sid).Value; }",
+  "    finally { FreeSid(sid); }",
+  "  }",
   "  public static byte[] Read(string path) {",
   "    using (SafeFileHandle handle = CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {",
   "      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
@@ -160,9 +175,19 @@ const WINDOWS_ACL_SCRIPT = [
   "  } })",
   "  [PSCustomObject]@{ path = $target; owner = $descriptor.Owner.Value; daclPresent = ($null -ne $descriptor.DiscretionaryAcl); entries = $entries }",
   "})",
+  "$machineDomainSid = $null",
+  "try {",
+  "  $localUser = Get-LocalUser -ErrorAction Stop | Select-Object -First 1",
+  "  $machineDomainSid = $localUser.SID.AccountDomainSid.Value",
+  "} catch {",
+  "  try {",
+  "    $localUser = ([ADSI]'WinNT://.').Children | Where-Object { $_.SchemaClassName -eq 'User' } | Select-Object -First 1",
+  "    $machineDomainSid = [System.Security.Principal.SecurityIdentifier]::new([byte[]]$localUser.psbase.InvokeGet('objectSID'), 0).AccountDomainSid.Value",
+  "  } catch { $machineDomainSid = $null }",
+  "}",
   "$sandboxGroup = $null",
   "try {",
-  "  $group = [ADSI]\"WinNT://$env:COMPUTERNAME/CodexSandboxUsers,group\"",
+  "  $group = [ADSI]'WinNT://./CodexSandboxUsers,group'",
   "  $name = [string]$group.psbase.InvokeGet('Name')",
   "  $description = [string]$group.psbase.InvokeGet('Description')",
   "  if ($name -ceq 'CodexSandboxUsers' -and $description -ceq 'Codex sandbox internal group (managed)') {",
@@ -182,6 +207,14 @@ const WINDOWS_ACL_SCRIPT = [
   "    }",
   "  } catch { $sandboxGroup = $null }",
   "}",
+  "$capCandidates = ConvertFrom-Json -InputObject $env:AVE_ACL_CAP_SIDS",
+  "$capSidAccounts = @($capCandidates | ForEach-Object {",
+  "  $capSid = [System.Security.Principal.SecurityIdentifier]::new([string]$_)",
+  "  $resolvesToAccount = $true",
+  "  try { $null = $capSid.Translate([System.Security.Principal.NTAccount]) }",
+  "  catch [System.Security.Principal.IdentityNotMappedException] { $resolvesToAccount = $false }",
+  "  [PSCustomObject]@{ sid = $capSid.Value; resolvesToAccount = $resolvesToAccount }",
+  "})",
   `$desktopPackageIdentity = @{ familyName = '${CLAUDE_DESKTOP_PACKAGE.familyName}'; publisherId = '${CLAUDE_DESKTOP_PACKAGE.publisherId}' }`,
   "if ($env:AVE_ACL_DESKTOP_PACKAGE -ceq 'skip') {",
   "  $desktopPackage = @{ status = 'skipped' }",
@@ -200,12 +233,16 @@ const WINDOWS_ACL_SCRIPT = [
   "    else {",
   "      $packageSid = [string]$mappings[0].PSChildName",
   "      if ($packageSid -cnotmatch '^S-1-15-2(-\\d+){7}$') { $desktopPackage.reason = 'malformed-sid' }",
-  "      else { $desktopPackage = @{ status = 'resolved'; packageSid = $packageSid; capabilitySid = 'S-1-15-3-' + $packageSid.Substring(9) } }",
+  "      else {",
+  "        $derivedSid = [ExecutablePathSecurity]::DerivePackageSid($desktopPackageIdentity.familyName)",
+  "        if ($packageSid -cne $derivedSid) { $desktopPackage.reason = 'sid-mismatch' }",
+  "        else { $desktopPackage = @{ status = 'resolved'; packageSid = $derivedSid; capabilitySid = 'S-1-15-3-' + $derivedSid.Substring(9) } }",
+  "      }",
   "    }",
   "  }",
   "} catch { $desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' } }",
   "}",
-  "[PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage } | ConvertTo-Json -Depth 6 -Compress",
+  "[PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage } | ConvertTo-Json -Depth 6 -Compress",
 ].join("\n");
 
 function assertAbsolutePath(candidate: string): void {
@@ -404,7 +441,7 @@ function parseWindowsSecurity(stdout: string, skippedPackage?: DesktopPackagePri
   return { ...value, desktopPackage } as unknown as WindowsSecurityResult;
 }
 
-async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise<WindowsSecurityResult> {
+async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
   // The current account's process environment is trusted; arbitrary actions
   // by that account are outside the filesystem admission boundary.
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
@@ -425,7 +462,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise
         SystemRoot: systemRoot,
         WINDIR: systemRoot,
         PATH: `${system32};${systemRoot}`,
-        COMPUTERNAME: process.env.COMPUTERNAME,
+        [ACL_CAP_SIDS_ENV]: JSON.stringify(capSids),
         ...(skippedPackage ? { AVE_ACL_DESKTOP_PACKAGE: "skip" } : {}),
         [ACL_PATHS_ENV]: JSON.stringify(inspected.map((entry) => entry.path)),
       },
@@ -452,9 +489,30 @@ function sandboxPrincipals(security: WindowsSecurityResult): string[] {
   const group = security.sandboxGroup;
   if (!isRecord(group) || group.name !== "CodexSandboxUsers"
     || group.description !== "Codex sandbox internal group (managed)"
-    || typeof group.sid !== "string" || !SID_PATTERN.test(group.sid) || !Array.isArray(group.members)
-    || !group.members.every((sid) => typeof sid === "string" && SID_PATTERN.test(sid))) return [];
+    || !isMachineAccountSid(group.sid, security.machineDomainSid) || !Array.isArray(group.members)
+    || !group.members.every((sid) => isMachineAccountSid(sid, security.machineDomainSid))) return [];
+  // Fail closed for the whole group: one foreign or broad member invalidates all trust.
   return [group.sid, ...group.members];
+}
+
+function isMachineAccountSid(sid: unknown, machineDomainSid: unknown): sid is string {
+  // Only local account SIDs qualify; well-known, built-in, logon, creator and package SIDs never do.
+  return typeof sid === "string" && CAP_SID_PATTERN.test(sid)
+    && typeof machineDomainSid === "string" && ACCOUNT_DOMAIN_SID_PATTERN.test(machineDomainSid)
+    && sid.slice(0, sid.lastIndexOf("-")) === machineDomainSid;
+}
+
+function admittedCapSids(security: WindowsSecurityResult, candidates: readonly string[]): string[] {
+  const machineDomainSid = security.machineDomainSid;
+  if (typeof machineDomainSid !== "string" || !ACCOUNT_DOMAIN_SID_PATTERN.test(machineDomainSid)
+    || !Array.isArray(security.capSidAccounts)) return [];
+  const currentDomainSid = security.currentSid.slice(0, security.currentSid.lastIndexOf("-"));
+  return candidates.filter((sid) => {
+    const domainSid = sid.slice(0, sid.lastIndexOf("-"));
+    const resolutions = security.capSidAccounts!.filter((entry) => isRecord(entry) && entry.sid === sid);
+    return domainSid !== currentDomainSid && domainSid !== machineDomainSid
+      && resolutions.length === 1 && resolutions[0]!.resolvesToAccount === false;
+  });
 }
 
 function assertWindowsSecurity(
@@ -642,9 +700,17 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
     batch.push(entry);
   }
   if (capRoute.size) batches = withCapPaths;
+  // Parse only bounded SID data before the existing probe; it grants no trust
+  // until the cap-file route passes admission without those candidates below.
+  let capCandidates: string[] = [];
+  if (capRoute.size) {
+    try { capCandidates = parseCapSids(await (trustInputs.readCapSidFile ?? readCapSidFile)(capPath)); }
+    catch { /* Unreadable cap files supply no candidates. */ }
+    if (JSON.stringify(capCandidates).length > ACL_BATCH_CHARS) capCandidates = [];
+  }
   const all = new Map([...inspected, ...capRoute]);
   const results: WindowsSecurityResult[] = [];
-  for (const batch of batches) results.push(await readWindowsSecurity(batch));
+  for (const batch of batches) results.push(await readWindowsSecurity(batch, capCandidates));
   const security = { ...results[0]!, paths: results.flatMap((result) => result.paths) };
   if (results.some((result) => result.currentSid !== security.currentSid)) {
     throw new CodexExecutableLocationError("Executable access rules are invalid");
@@ -667,7 +733,7 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
         routeKind: "native" as const, role: !entry.stat.isDirectory() || key === win32.normalize(capPath) ? "leaf" as const : "ancestor" as const,
       }]]));
       assertWindowsSecurity(security, [...capRoute.values()], capRules, new Set());
-      capSids = parseCapSids(await (trustInputs.readCapSidFile ?? readCapSidFile)(capPath));
+      capSids = capCandidates.filter((sid) => results.every((result) => admittedCapSids(result, [sid]).length === 1));
     } catch { /* Untrusted or unreadable cap files supply no principals. */ }
   }
   assertWindowsSecurity(security, [...inspected.values()], rules, privateDirectories, capSids);

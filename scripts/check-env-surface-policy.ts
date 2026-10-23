@@ -60,6 +60,8 @@ const INTERNAL: readonly string[] = [
   // Tells that same child to skip the desktop-package probe when the host
   // already knows it does not apply; the host decides it per query.
   "AVE_ACL_DESKTOP_PACKAGE",
+  // Candidate restricting SIDs for the same child's account-resolution check.
+  "AVE_ACL_CAP_SIDS",
   "AVE_HOOK_EVENT",
   "AVE_HOOK_SESSION",
   // Both halves of the subscription tool bridge. The host binds an ephemeral

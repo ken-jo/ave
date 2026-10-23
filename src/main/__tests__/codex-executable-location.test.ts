@@ -354,6 +354,8 @@ describe.skipIf(HOST === "win32")("extended access-rule admission", () => {
 
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";
 const FOREIGN_SID = "S-1-5-21-100-200-300-1002";
+const MACHINE_DOMAIN_SID = "S-1-5-21-10-20-30";
+const CAP_SID = "S-1-5-21-400-500-600-700";
 const PACKAGE_SID = "S-1-15-2-10-20-30-40-50-60-70";
 const PACKAGE_CAPABILITY_SID = "S-1-15-3-10-20-30-40-50-60-70";
 
@@ -412,7 +414,10 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
       entries: [{ sid: CURRENT_SID, mask: 0x1f01ff, flags: 0, type: 0 }],
     }));
     modify(paths);
-    callback(null, JSON.stringify({ currentSid: CURRENT_SID, paths, sandboxGroup, ...probe }), "");
+    const capSidAccounts = (JSON.parse(options.env.AVE_ACL_CAP_SIDS ?? "[]") as string[])
+      .map((sid) => ({ sid, resolvesToAccount: false }));
+    callback(null, JSON.stringify({ currentSid: CURRENT_SID, machineDomainSid: MACHINE_DOMAIN_SID,
+      capSidAccounts, paths, sandboxGroup, ...probe }), "");
     return {} as ChildProcess;
   });
   return { candidate, modify: (callback) => { modify = callback; }, links, sandboxGroup, probe };
@@ -451,7 +456,7 @@ describe("native access-rule admission", () => {
     }
   });
 
-  it.each(["mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "resolution-failed"])(
+  it.each(["mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "sid-mismatch", "resolution-failed"])(
     "keeps admission operational without an exemption after %s", async (reason) => {
       const fixture = desktopPackageFixture();
       fixture.probe.desktopPackage = { status: "unavailable", reason };
@@ -598,6 +603,7 @@ describe("native access-rule admission", () => {
     { label: "package query failure", installation: "failure", expected: "resolution-failed" },
     { label: "lookalike family", family: "Claude_otherpublisher", expected: "package-not-installed" },
     { label: "publisher mismatch", publisher: "otherpublisher", expected: "publisher-mismatch" },
+    { label: "mapping SID differs from derivation", sid: "S-1-15-2-11-21-31-41-51-61-71", expected: "sid-mismatch" },
     { label: "short well-known SID", sid: "S-1-15-2-1", expected: "malformed-sid" },
     { label: "short package SID", sid: "S-1-15-2-10-20-30-40-50-60", expected: "malformed-sid" },
     { label: "extra sub-authority", sid: "S-1-15-2-10-20-30-40-50-60-70-80", expected: "malformed-sid" },
@@ -622,6 +628,7 @@ describe("native access-rule admission", () => {
     const mockedScript = [
       "$ErrorActionPreference = 'Stop'",
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
+      `Add-Type 'public static class ExecutablePathSecurity { public static string DerivePackageSid(string name) { return "${PACKAGE_SID}"; } }'`,
       "function Get-ChildItem { param($LiteralPath, $ErrorAction); if ($fixture.failMapping) { throw 'Fixture failure' }; $fixture.mappings }",
       "function Get-ItemProperty { param($LiteralPath, $Name, $ErrorAction); if ($fixture.failMoniker) { throw 'Fixture failure' }; $fixture.mappings | Where-Object { $_.PSPath -eq $LiteralPath } | Select-Object -First 1 }",
       "function Get-AppxPackage { param($Name, $ErrorAction); if ($Name -cne 'Claude' -or $fixture.failPackage) { throw 'Fixture failure' }; $fixture.packages }",
@@ -664,13 +671,13 @@ describe("native access-rule admission", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-cap-sid-reader-")));
     roots.push(root);
     const capPath = join(root, "cap_sid");
-    writeFileSync(capPath, kind === "valid" ? JSON.stringify({ workspace: FOREIGN_SID }) : kind === "malformed" ? "{" : " ".repeat(1024 * 1024 + 1));
+    writeFileSync(capPath, kind === "valid" ? JSON.stringify({ workspace: CAP_SID }) : kind === "malformed" ? "{" : " ".repeat(1024 * 1024 + 1));
     const lstat = fs.lstat.bind(fs);
     const fixture = windowsFixture();
     const fixtureLstat = vi.mocked(fs.lstat).getMockImplementation()!;
     vi.mocked(fs.lstat).mockImplementation((async (...args: Parameters<typeof fs.lstat>) => String(args[0]) === capPath
       ? lstat(...args) : fixtureLstat(...args)) as typeof fs.lstat);
-    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 }); });
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 }); });
     const admission = assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: capPath });
     if (kind === "valid") await expect(admission).resolves.toBeUndefined();
     else await expect(admission).rejects.toThrow("writable by another account");
@@ -684,6 +691,76 @@ describe("native access-rule admission", () => {
     fixture.modify((paths) => { paths[1]!.owner = principal === "group" ? groupSid : memberSid;
       paths[1]!.entries.push({ sid: paths[1]!.owner, mask: 0x1f01ff, flags: 0, type: 0 }); });
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+  });
+
+  it.each(["group", "member"])("refuses the whole managed group with a foreign-domain %s", async (part) => {
+    const fixture = windowsFixture();
+    const localSid = `${MACHINE_DOMAIN_SID}-101`;
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: part === "group" ? FOREIGN_SID : `${MACHINE_DOMAIN_SID}-100`,
+      members: part === "group" ? [localSid] : [localSid, FOREIGN_SID] });
+    for (const sid of [localSid, FOREIGN_SID]) {
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it.each(["S-1-1-0", "S-1-5-11", "S-1-5-32-545"])("refuses every sandbox principal when membership includes %s", async (broadSid) => {
+    const fixture = windowsFixture();
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: groupSid, members: [memberSid, broadSid] });
+    for (const sid of [groupSid, memberSid, broadSid]) {
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it("pins the group lookup locally without a machine-name environment input", async () => {
+    const fixture = windowsFixture();
+    process.env.COMPUTERNAME = "untrusted-host";
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [, args, options] = vi.mocked(execFile).mock.calls[0]!;
+    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    expect(options!.env).not.toHaveProperty("COMPUTERNAME");
+    expect(script).not.toContain("$env:COMPUTERNAME");
+    expect(script).toContain("WinNT://./CodexSandboxUsers,group");
+    expect(script).toContain("AccountDomainSid");
+  });
+
+  it.each(["current domain", "machine domain", "resolved account"])("refuses cap trust for a SID from %s", async (kind) => {
+    const fixture = capFixture();
+    const sid = kind === "current domain" ? FOREIGN_SID : kind === "machine domain" ? `${MACHINE_DOMAIN_SID}-102` : CAP_SID;
+    fixture.probe.capSidAccounts = [{ sid, resolvesToAccount: kind === "resolved account" }];
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
+      readCapSidFile: async () => JSON.stringify({ workspace: sid }) })).rejects.toThrow("writable by another account");
+  });
+
+  it.runIf(HOST === "win32").each(["empty", "single", "multiple"])("probes account translation for %s cap candidates", async (kind) => {
+    const fixture = windowsFixture();
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [command, args] = vi.mocked(execFile).mock.calls[0]!;
+    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
+    const query = [
+      "$ErrorActionPreference = 'Stop'",
+      "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+      `$candidates = @(${kind === "empty" ? "" : kind === "single" ? `'${CAP_SID}'` : `$currentSid, '${CAP_SID}'`})`,
+      "$env:AVE_ACL_CAP_SIDS = ConvertTo-Json -InputObject $candidates -Compress",
+      resolver,
+      "ConvertTo-Json -InputObject @{ currentSid = $currentSid; accounts = @($capSidAccounts) } -Depth 4 -Compress",
+    ].join("\n");
+    const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const stdout = await new Promise<string>((resolve, reject) => {
+      childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(query, "utf16le").toString("base64")], {
+        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
+      }, (error, output) => error ? reject(error) : resolve(output));
+    });
+    const result = JSON.parse(stdout) as { currentSid: string; accounts: { sid: string; resolvesToAccount: boolean }[] };
+    expect(result.accounts).toEqual(kind === "empty" ? [] : kind === "single" ? [{ sid: CAP_SID, resolvesToAccount: false }]
+      : [{ sid: result.currentSid, resolvesToAccount: true }, { sid: CAP_SID, resolvesToAccount: false }]);
   });
 
   it.each(["different description", "different name", "invalid SID"])("does not trust a sandbox group with %s", async (mismatch) => {
@@ -704,11 +781,12 @@ describe("native access-rule admission", () => {
   it.each(["workspace", "readonly", "workspace_by_cwd", "writable_root_by_path"])("trusts an admitted cap SID from %s without adding a probe", async (key) => {
     const fixture = capFixture();
     fixture.modify((paths) => { const leaf = paths.find((path) => path.path === fixture.candidate)!;
-      leaf.owner = FOREIGN_SID; leaf.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 }); });
-    const contents = JSON.stringify({ [key]: key.endsWith("_cwd") || key.endsWith("_path") ? { "C:\\workspace": FOREIGN_SID } : FOREIGN_SID });
+      leaf.owner = CAP_SID; leaf.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 }); });
+    const contents = JSON.stringify({ [key]: key.endsWith("_cwd") || key.endsWith("_path") ? { "C:\\workspace": CAP_SID } : CAP_SID });
     await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
       readCapSidFile: async () => contents })).resolves.toBeUndefined();
     expect(execFile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(execFile).mock.calls[0]![2]!.env!.AVE_ACL_CAP_SIDS).toBe(JSON.stringify([CAP_SID]));
   });
 
   it.each(["bad JSON", "wrong SID", "oversized", "unreadable"])("ignores a cap file with %s", async (failure) => {
@@ -720,26 +798,27 @@ describe("native access-rule admission", () => {
     })).rejects.toThrow("writable by another account");
   });
 
-  it.each(["file", "parent"])("ignores cap SIDs when the cap %s is foreign-writable without reading it", async (component) => {
+  it.each(["file", "parent"])("ignores parsed cap SIDs when the cap %s is foreign-writable", async (component) => {
     const fixture = capFixture();
-    const read = vi.fn(async () => JSON.stringify({ workspace: FOREIGN_SID }));
+    const read = vi.fn(async () => JSON.stringify({ workspace: CAP_SID }));
     fixture.modify((paths) => {
       paths.find((path) => path.path === (component === "file" ? fixture.capPath : String.raw`C:\Fixture`))!
         .entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 });
-      paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 });
+      paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 });
     });
     await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath, readCapSidFile: read }))
       .rejects.toThrow("writable by another account");
-    expect(read).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it.each(["group", "member", "cap"])("keeps private directories private from a trusted sandbox %s", async (principal) => {
     const fixture = capFixture(true);
+    const sid = principal === "cap" ? CAP_SID : `${MACHINE_DOMAIN_SID}-101`;
     Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
-      sid: principal === "group" ? FOREIGN_SID : "S-1-5-21-10-20-30-100", members: principal === "member" ? [FOREIGN_SID] : [] });
-    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: FOREIGN_SID, mask: 1, flags: 0, type: 0 }); });
+      sid: principal === "group" ? sid : `${MACHINE_DOMAIN_SID}-100`, members: principal === "member" ? [sid] : [] });
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid, mask: 1, flags: 0, type: 0 }); });
     await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate, "native", { capSidPath: fixture.capPath,
-      readCapSidFile: async () => JSON.stringify({ workspace: FOREIGN_SID }) })).rejects.toThrow("accessible by another account");
+      readCapSidFile: async () => JSON.stringify({ workspace: CAP_SID }) })).rejects.toThrow("accessible by another account");
   });
 
   it("passes decoded paths separately to the access-query command", async () => {
