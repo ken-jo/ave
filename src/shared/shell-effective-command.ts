@@ -1,3 +1,4 @@
+import { sep } from "node:path";
 import { displayShellWord, literalWord, staticShellWord, type ShellAssignment, type ShellCommand, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 
 export interface EffectiveShellCommand {
@@ -17,7 +18,22 @@ type ShellEnvironmentTransition =
   | { kind: "unset"; name: string }
   | { kind: "set"; assignment: ShellAssignment }
   | { kind: "cwd"; path: ShellWord };
-export function stripCommandPath(word: string): string { return word.slice(word.lastIndexOf("/") + 1); }
+/**
+ * The program name a command word runs, for command-name rules. Git Bash on
+ * win32 runs `C:\...\bash.exe`, `bash.exe` and `BASH` all as bash: it
+ * splits on either separator, appends `.exe`, and looks names up without case.
+ * Builtins still match exactly; callers compare the raw head for those.
+ */
+export function stripCommandPath(word: string): string {
+  if (sep !== "\\") return word.slice(word.lastIndexOf("/") + 1);
+  const leaf = word.slice(Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\")) + 1).toLowerCase();
+  return leaf.length > 4 && leaf.endsWith(".exe") ? leaf.slice(0, -4) : leaf;
+}
+
+/** A command word the shell runs as a path rather than through PATH. */
+export function namesCommandPath(word: string): boolean {
+  return word.includes("/") || (sep === "\\" && word.includes("\\"));
+}
 
 /** Wrappers whose option grammar changes the effective executed command. */
 const SHELL_EXECUTION_WRAPPERS: ReadonlySet<string> = new Set([
@@ -45,8 +61,11 @@ export function effectiveShellWords(
     if (head === undefined) return result(words.length ? "Unresolved executed command" : undefined);
     const verb = stripCommandPath(head);
     if (!SHELL_EXECUTION_WRAPPERS.has(verb)) return result();
+    // The `command` builtin and `time` keyword match only their exact name; a
+    // win32 case or `.exe` variant names some other program.
+    if ((verb === "command" || verb === "time") && head !== verb && !namesCommandPath(head)) return result();
     if (verb === "xargs" || verb === "watch") return result(`Unsupported stream or string execution wrapper: ${verb}`);
-    if (head.includes("/")) wrapperPaths.push(words[0]!);
+    if (namesCommandPath(head)) wrapperPaths.push(words[0]!);
     wrappers.push(verb);
     let index = 1;
     let needsDuration = verb === "timeout";
