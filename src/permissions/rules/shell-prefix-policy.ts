@@ -9,7 +9,7 @@
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
-import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, ARITY, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
+import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, WILDCARD_PREFIX_CATALOG, wildcardCatalogKey, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
 
 /**
@@ -244,22 +244,19 @@ export function suggestShellPrefix(argv: readonly (string | undefined)[]): strin
     statics.push(token);
   }
   if (statics.length === 0) return null;
-  let arity = 1;
-  for (const [key, value] of ARITY) {
-    const keyTokens = key.split(" ");
-    if (keyTokens.length <= statics.length
-      && programName(statics[0]!) === keyTokens[0]
-      && keyTokens.every((token, index) => index === 0 || statics[index] === token)) {
-      arity = Math.max(arity, value);
-    }
-  }
+  // Only an allowlisted program/verb gets a wildcard; anything else is exact-only.
+  const key = wildcardCatalogKey(statics);
+  if (key === null) return null;
+  const keyLength = key.split(" ").length;
+  const arity = WILDCARD_PREFIX_CATALOG.get(key)!;
   const prefix: string[] = [];
   for (let index = 0; index < Math.min(arity, statics.length); index += 1) {
     const token = statics[index]!;
-    // Options and paths are arguments, not verbs: stop the prefix there.
-    if (index > 0 && (token.startsWith("-") || /[\\/=]/.test(token))) break;
+    // Past the catalog key, options and paths are arguments, not verbs: stop there.
+    if (index >= keyLength && (token.startsWith("-") || /[\\/=]/.test(token))) break;
     prefix.push(token);
   }
+  if (prefix.length < arity) return null;
   if (prefix.some((token) => /[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token))) return null;
   return refusedShellPrefix(prefix) === null ? prefix : null;
 }
@@ -270,7 +267,7 @@ export const SHELL_PREFIX_POLICY = Object.freeze({
   interpreters: Object.freeze([...INTERPRETERS]),
   wrappers: Object.freeze([...WRAPPERS]),
   packageRunners: Object.freeze([...PACKAGE_RUNNERS]),
-  arity: ARITY,
+  wildcardCatalog: WILDCARD_PREFIX_CATALOG,
 });
 
 /** Used by deny/ask matching to look through wrappers (it only ever widens a deny). */

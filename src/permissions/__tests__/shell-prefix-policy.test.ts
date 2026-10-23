@@ -153,7 +153,8 @@ describe("opaque runner prefixes", () => {
         expect(hiddenCodeReason([head, "helper"])).toBeNull();
         expect(refusedShellPrefix([head])).toBe("package-runner");
         expect(refusedShellPrefix([head, "--future", "helper"])).toBe("package-runner");
-        expect(refusedShellPrefix([head, "--future", "value", "--", "helper"])).toBeNull();
+        expect(refusedShellPrefix([head, "--future", "value", "--", "helper"], false)).toBeNull();
+        expect(refusedShellPrefix([head, "--future", "value", "--", "helper"])).toBe("not-allowlisted");
       }
     }
   });
@@ -244,8 +245,11 @@ describe("persistent runner command boundaries", () => {
   it.each(RUNNER_RULE_PREFIXES)("accepts a literal command boundary in %j", (...prefix) => {
     for (const suffix of [["helper"], ["helper", "--future"], ["--", "helper"], ["--future", "value", "--", "helper"]]) {
       const tokens = [...prefix, ...suffix];
-      expect(refusedShellPrefix(tokens)).toBeNull();
-      expect(validatePermissionRule({ pattern: `Bash(${tokens.join(" ")} *)`, action: "allow" }).action).toBe("allow");
+      // Bounded as an exact rule; the wildcard form is not on the allowlist.
+      expect(refusedShellPrefix(tokens, false)).toBeNull();
+      expect(validatePermissionRule({ pattern: `Bash(${tokens.join(" ")})`, action: "allow" }).action).toBe("allow");
+      expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
+      expect(() => validatePermissionRule({ pattern: `Bash(${tokens.join(" ")} *)`, action: "allow" })).toThrow(/wildcard allowlist/);
     }
     expect(refusedShellPrefix([...prefix, "--"])).toBe("package-runner");
     expect(refusedShellPrefix([...prefix, "--", "--yes"])).toBe("package-runner");
@@ -271,7 +275,7 @@ describe("persistent runner command boundaries", () => {
     ["corepack", "pnpm", "install"], ["corepack", "pnpm", "--future", "value", "--", "install"],
     ["corepack", "pnpm", "dlx", "--future", "value", "--", "helper"],
   ])("preserves named runner commands in %j", (...tokens) => {
-    expect(refusedShellPrefix(tokens)).toBeNull();
+    expect(refusedShellPrefix(tokens, false)).toBeNull();
   });
 
   it.each([

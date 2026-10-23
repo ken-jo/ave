@@ -13,7 +13,7 @@ process.env.AVE_HOME = TEST_HOME;
 
 import { PermissionManager } from "../permission-manager.js";
 import { readPermissionsFile, updatePermissionsFile } from "../permissions-store.js";
-import { PermissionRulesFileCorruptError } from "../rules/rule-files.js";
+import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rules/rule-files.js";
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
@@ -180,19 +180,19 @@ describe("decision path", () => {
 
   it("deny > ask > allow across user and project scopes; ask beats allow mode", async () => {
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(git push *)", action: "allow" }, { kind: "user" });
-    await pm.addRulePersist({ pattern: "Bash(git push --force *)", action: "deny" }, { kind: "project", projectCwd: project });
-    await pm.addRulePersist({ pattern: "Bash(git push origin main)", action: "ask" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(git log *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(git log --all *)", action: "deny" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(git log origin/main)", action: "ask" }, { kind: "project", projectCwd: project });
     await pm.ensureProjectRulesLoaded(project);
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push --force x"))).toMatchObject({ decision: "deny", layer: 1 });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin dev"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "allow", layer: 3 });
     pm.setMode("allow");
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin main"))).toMatchObject({ decision: "ask", forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git push --force x"))).toMatchObject({ decision: "deny" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
     // A deny rule that cannot see inside `bash -c` makes the call ask, even in allow mode.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git push --force x'"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", forceModal: true });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
@@ -500,11 +500,64 @@ describe("host shell-rule suggestions", () => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
   });
 
-  it.each(["rm notes.txt", "chmod +x build.sh", "shred old.log"])("offers no reusable prefix for a destructive tool: %s", (command) => {
+  it.each([
+    ["git status --short", "Bash(git status *)"],
+    ["ls -la src", "Bash(ls *)"],
+    ["npm run build", "Bash(npm run build *)"],
+    ["bun test src/app.test.ts", "Bash(bun test *)"],
+    ["kubectl get pods -n web", "Bash(kubectl get *)"],
+  ])("keeps a useful catalog wildcard for the safe workflow %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
+  });
+
+  it.each([
+    ["make build", "Bash(make build)"],
+    ["cargo test --all", "Bash(cargo test --all)"],
+    ["git switch main", "Bash(git switch main)"],
+    ["gh pr view 12", "Bash(gh pr view 12)"],
+    ["chmod +x build.sh", "Bash(chmod +x build.sh)"],
+    ["chmod -x build.sh", "Bash(chmod -x build.sh)"],
+    ["chmod -w notes.txt", "Bash(chmod -w notes.txt)"],
+  ])("offers only an exact rule outside the catalog: %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
+    expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
+    expect(shellRuleCoversCommand(pattern, "allow", `${command} extra`, project)).toBe(false);
+  });
+
+  it("offers no exact rule a token boundary would change", () => {
+    expect(buildShellRuleApproval('git commit -m "two words"', project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it.each([
+    "git branch -D feature", "git push --force origin main", "git push origin +main", "git push origin :old",
+    "docker compose down -v", "aws s3 rm s3://bucket/key --recursive", "kubectl apply --prune -f manifest.yaml",
+    "rsync --delete src dst", "ln -sf target link", "dropdb production", "redis-cli flushall",
+    "gh repo delete owner/repo --yes", "gh api -X DELETE /repos/owner/repo", "helm uninstall web", "terraform destroy",
+    "git switch -f main", "git switch --discard-changes main", "git switch -C main", "cp draft.txt final.txt",
+    "git checkout README.md",
+  ])("never offers or stores any rule covering the irreversible %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    const argv = command.split(" ");
+    expect(refusedShellPrefix(argv, false)).not.toBeNull();
+    expect(() => shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toThrow();
+  });
+
+  it("refuses a hand-typed wildcard outside the catalog at the store", () => {
+    expect(() => validatePermissionRule({ pattern: "Bash(make *)", action: "allow" })).toThrow(/wildcard allowlist/);
+    expect(validatePermissionRule({ pattern: "Bash(make *)", action: "deny" })).toMatchObject({ pattern: "Bash(make *)" });
+    expect(validatePermissionRule({ pattern: "Bash(make build)", action: "allow" })).toMatchObject({ pattern: "Bash(make build)" });
+  });
+
+  it.each(["rm notes.txt", "shred old.log"])("offers no reusable prefix for a destructive tool: %s", (command) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
   });
 
-  it.each(["git clean -n", "git clean -fdx", "truncate -s 1M data.bin", "git checkout -- .", "git reset --hard", "git stash drop", "docker system prune -af", "kubectl delete pod web", "mv draft.txt final.txt", "tee out.txt", "unlink stale.lock"])("keeps once and session but offers no rule for an irreversible command: %s", (command) => {
+  it("offers only the exact dry run for git clean -n", () => {
+    expect(buildShellRuleApproval("git clean -n", project, true, "conversation-a")).toMatchObject({ suggestedPattern: "Bash(git clean -n)", persistentAllowed: true });
+    expect(shellRuleCoversCommand("Bash(git clean -n)", "allow", "git clean -n -f", project)).toBe(false);
+  });
+
+  it.each(["git clean -fdx", "truncate -s 1M data.bin", "git checkout -- .", "git reset --hard", "git stash drop", "docker system prune -af", "kubectl delete pod web", "mv draft.txt final.txt", "tee out.txt", "unlink stale.lock"])("keeps once and session but offers no rule for an irreversible command: %s", (command) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
   });
 

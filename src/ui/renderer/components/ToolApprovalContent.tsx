@@ -850,7 +850,8 @@ export function ToolApprovalContent({
     }
   }, [shellPattern]);
   const canonicalShellPattern = parsedShellPattern ? formatRuleSpecifier(parsedShellPattern) : null;
-  const shellPrefixRefused = parsedShellPattern !== null && refusedShellPrefix(parsedShellPattern.tokens, parsedShellPattern.wildcard) !== null;
+  const shellPrefixRefusal = parsedShellPattern !== null ? refusedShellPrefix(parsedShellPattern.tokens, parsedShellPattern.wildcard) : null;
+  const shellPrefixRefused = shellPrefixRefusal !== null;
   const alwaysAllowUnavailable = shellRule
     ? !shellRule.persistentAllowed || !shellRule.suggestedPattern || !canonicalShellPattern || shellPrefixRefused
     : outOfDirScopes
@@ -859,7 +860,9 @@ export function ToolApprovalContent({
       (finalVerdict === "high" && request?.persistentAllowAllowed !== true);
   const persistentUnavailableReason = alwaysAllowUnavailable
     ? shellRule
-      ? shellPrefixRefused || (!shellRule.suggestedPattern && shellRule.sessionAllowed)
+      ? shellPrefixRefusal === "not-allowlisted"
+        ? tHook("toolApprovalDialog.shellWildcardNotAllowlisted")
+        : shellPrefixRefused || (!shellRule.suggestedPattern && shellRule.sessionAllowed)
         ? tHook("toolApprovalDialog.shellPrefixUnavailable")
         : !shellRule.persistentAllowed
           ? tHook("toolApprovalDialog.persistentUnavailableOneShot")

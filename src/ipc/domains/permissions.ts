@@ -414,6 +414,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
+    if (isRuleSpecifier(parsed.pattern)) {
+      // The store's own check: refused prefixes, irreversible argv and wildcards outside the allowlist.
+      try { validatePermissionRule({ pattern: parsed.pattern, action: parsed.action }); } catch (error) {
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
+      }
+    }
     try {
       if (isRuleSpecifier(parsed.pattern)) {
         await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });

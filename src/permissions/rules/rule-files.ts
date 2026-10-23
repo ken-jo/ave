@@ -61,6 +61,9 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   }
   if (spec.kind === "bash" && action === "allow") {
     const refused = refusedShellPrefix(spec.tokens, spec.wildcard);
+    if (refused === "not-allowlisted") {
+      throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" is not on the wildcard allowlist; only known-safe commands may end in " *", so save the exact command instead`);
+    }
     if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (${refused}); approve it once or for the session instead`);
   }
 }

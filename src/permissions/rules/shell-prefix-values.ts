@@ -45,14 +45,54 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
 }
 
 /**
- * Arity table: how many leading tokens a suggestion keeps.
- * Multi-verb tools also refuse their 1-token prefix: `git *` covers
- * `git -c core.fsmonitor=…`, and `npm *` covers `npm exec`.
+ * The wildcard allowlist (owner decision 2026-10-23). Only a `Bash(<prefix> *)`
+ * rule that starts with one of these keys, and keeps at least the listed
+ * number of tokens, may be stored or suggested as "always allow". The number
+ * is also how many leading tokens a suggestion keeps, so `npm run build`
+ * suggests `Bash(npm run build *)` and `Bash(npm run *)` is refused. Every
+ * other command can be saved only as an exact rule for its full argv.
+ *
+ * To add an entry, confirm that no argument a trailing `*` can append reaches
+ * a destructive or irreversible form (`isDestructiveShellArgv`,
+ * `isIrreversibleShellArgv`) and that its writing or code-running options are
+ * caught by `shellOptionEffect`. Add a hit and a miss test in
+ * `rules-language.test.ts`.
  */
-export const ARITY: ReadonlyMap<string, number> = new Map([
-  ["git", 2], ["npm", 2], ["pnpm", 2], ["yarn", 2], ["docker", 2], ["kubectl", 2],
+export const WILDCARD_PREFIX_CATALOG: ReadonlyMap<string, number> = new Map([
+  // Read-only file and text inspection.
+  ["ls", 1], ["cat", 1], ["head", 1], ["tail", 1], ["wc", 1], ["grep", 1], ["rg", 1], ["find", 1],
+  ["pwd", 1], ["du", 1], ["df", 1], ["which", 1], ["stat", 1],
+  // Repository inspection.
+  ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2], ["git fetch", 2],
+  ["git rev-parse", 2], ["git ls-files", 2], ["git blame", 2], ["git branch --list", 3],
+  // Project scripts, named one script at a time.
+  ["npm test", 2], ["pnpm test", 2], ["yarn test", 2], ["bun test", 2],
   ["npm run", 3], ["pnpm run", 3], ["yarn run", 3], ["bun run", 3],
+  // Cluster and container inspection.
+  ["kubectl get", 2], ["kubectl describe", 2], ["kubectl logs", 2],
+  ["docker ps", 2], ["docker images", 2], ["docker logs", 2],
 ]);
+
+function catalogKeyMatches(key: string, tokens: readonly string[]): boolean {
+  const keyTokens = key.split(" ");
+  return keyTokens.length <= tokens.length && programName(tokens[0]!) === keyTokens[0]
+    && keyTokens.every((token, index) => index === 0 || tokens[index] === token);
+}
+
+/** The catalog key a static argv starts with (longest first), or null. */
+export function wildcardCatalogKey(argv: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const key of WILDCARD_PREFIX_CATALOG.keys()) {
+    if (catalogKeyMatches(key, argv) && (best === null || key.split(" ").length > best.split(" ").length)) best = key;
+  }
+  return best;
+}
+
+/** Whether a wildcard prefix stays inside one catalog entry. */
+function wildcardCatalogCovers(tokens: readonly string[]): boolean {
+  const key = wildcardCatalogKey(tokens);
+  return key !== null && tokens.length >= WILDCARD_PREFIX_CATALOG.get(key)!;
+}
 const MULTI_VERB_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "docker", "kubectl", "bun"]);
 
 export const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
@@ -86,7 +126,7 @@ const DESTRUCTIVE_PROGRAMS = new Set(["rm", "shred", "srm", "wipefs", "dd", "mkf
  * ordinary use. Refused as allow prefixes at every length; unlike the
  * destructive floor they keep once and session choices.
  */
-const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "tee"]);
+const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "cp", "tee", "dropdb"]);
 /** Ownership and mode changers: destructive when recursive or world-writable. */
 const PERMISSION_CHANGERS = new Set(["chmod", "chown", "chgrp"]);
 /**
@@ -102,8 +142,14 @@ function isDestructiveProgram(program: string): boolean {
   return DESTRUCTIVE_PROGRAMS.has(program) || program.startsWith("mkfs.") || program.startsWith("newfs_");
 }
 
+/** `chmod -x file`: a leading mode removal reads like an option but is the mode operand. */
+const CHMOD_REMOVAL_MODE = /^[ugoa]*-[rwxXst]+$/;
+
 /** Options before `--` (GNU tools permute, so position does not matter); `undefined` is a dynamic word. */
-function optionWords(args: readonly (string | undefined)[]): { options: (string | undefined)[]; operands: (string | undefined)[] } {
+function optionWords(
+  args: readonly (string | undefined)[],
+  isOperand: (arg: string) => boolean = () => false,
+): { options: (string | undefined)[]; operands: (string | undefined)[] } {
   const options: (string | undefined)[] = [];
   const operands: (string | undefined)[] = [];
   let delimited = false;
@@ -114,7 +160,7 @@ function optionWords(args: readonly (string | undefined)[]): { options: (string 
       operands.push(undefined);
     } else if (!delimited && arg === "--") {
       delimited = true;
-    } else if (!delimited && arg.startsWith("-") && arg !== "-") {
+    } else if (!delimited && arg.startsWith("-") && arg !== "-" && !isOperand(arg)) {
       options.push(arg);
     } else {
       operands.push(arg);
@@ -140,14 +186,15 @@ function hasLongFlag(options: readonly (string | undefined)[], names: readonly s
 /**
  * A mode that may make the target writable by everyone: `777`, `00777`,
  * `o+w`, `a=rwx`, `+w`, or a copy such as `o=u` whose source may hold `w`.
- * A mode this grammar cannot read counts as world-writable.
+ * A mode this grammar cannot read counts as world-writable only where the
+ * caller asks (refusing a stored rule); the floor never guesses.
  */
-function worldWritableMode(mode: string | undefined): boolean {
-  if (mode === undefined) return true;
+function worldWritableMode(mode: string | undefined, unreadableIsWritable: boolean): boolean {
+  if (mode === undefined) return unreadableIsWritable;
   if (/^[0-7]+$/.test(mode)) return mode.length > 5 || ["2", "3", "6", "7"].includes(mode[mode.length - 1]!);
   return mode.split(",").some((clause) => {
     const symbolic = /^([ugoa]*)([-+=])([rwxXst]*|[ugo])$/.exec(clause);
-    if (symbolic === null) return true;
+    if (symbolic === null) return unreadableIsWritable;
     const [, who, operator, perms] = symbolic as unknown as [string, string, string, string];
     return operator !== "-" && (who === "" || /[oa]/.test(who)) && (perms.includes("w") || /^[ugo]$/.test(perms));
   });
@@ -163,7 +210,7 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
   const head = argv[0];
   if (head === undefined) return false;
   const program = programName(head);
-  const { options, operands } = optionWords(argv.slice(1));
+  const { options, operands } = optionWords(argv.slice(1), program === "chmod" ? (arg) => CHMOD_REMOVAL_MODE.test(arg) : undefined);
   const dynamicOption = options.includes(undefined);
   if (program === "rm") {
     return dynamicOption || hasShortFlag(options, "rRf") || hasLongFlag(options, ["recursive", "force", "no-preserve-root"]);
@@ -172,7 +219,7 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
   if (PERMISSION_CHANGERS.has(program)) {
     if (dynamicOption || hasShortFlag(options, "R") || hasLongFlag(options, ["recursive"])) return true;
     // `--reference=FILE` copies a mode the rule cannot see.
-    return program === "chmod" && (hasLongFlag(options, ["reference"]) || worldWritableMode(operands[0]));
+    return program === "chmod" && (hasLongFlag(options, ["reference"]) || worldWritableMode(operands[0], false));
   }
   if (program === "find") {
     const args = argv.slice(1);
@@ -196,7 +243,35 @@ function verbIndex(argv: readonly (string | undefined)[], valued: ReadonlySet<st
 const GIT_VALUED_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
 const DOCKER_VALUED_OPTIONS = new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level"]);
 const KUBECTL_VALUED_OPTIONS = new Set(["-n", "--namespace", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user"]);
-const DOCKER_OBJECT_GROUPS = new Set(["system", "volume", "image", "container", "network", "builder", "buildx"]);
+
+/** Non-option words after the program, in order (`gh -R o/r repo delete` → `repo`, `delete`). */
+function verbWords(argv: readonly (string | undefined)[], valued: ReadonlySet<string>): (string | undefined)[] {
+  const words: (string | undefined)[] = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const word = argv[index];
+    if (word !== undefined && word.startsWith("-")) {
+      if (valued.has(word)) index += 1;
+      continue;
+    }
+    words.push(word);
+  }
+  return words;
+}
+
+/** The value of `-X DELETE`, `-XDELETE`, `--method DELETE` or `--method=DELETE`; `undefined` when dynamic. */
+function httpMethods(argv: readonly (string | undefined)[]): (string | undefined)[] {
+  const methods: (string | undefined)[] = [];
+  argv.forEach((word, index) => {
+    if (word === undefined) return;
+    if (word === "-X" || word === "--method") methods.push(argv[index + 1]);
+    else if (/^-X./.test(word)) methods.push(word.slice(2));
+    else if (word.startsWith("--method=")) methods.push(word.slice("--method=".length));
+  });
+  return methods;
+}
+
+const GH_VALUED_OPTIONS = new Set(["-R", "--repo", "-X", "--method", "-H", "--header", "-f", "-F", "--field", "--raw-field", "--hostname", "--jq", "-q", "-t", "--template", "--input"]);
+const AWS_VALUED_OPTIONS = new Set(["--profile", "--region", "--endpoint-url", "--output", "--query"]);
 
 /**
  * Irreversible forms that are not floors: they discard work or data the user
@@ -223,14 +298,25 @@ export function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): 
     const delimited = argv.slice(at + 1).includes("--");
     const dynamic = options.includes(undefined);
     switch (verb) {
+      case "switch":
+        return dynamic || hasShortFlag(options, "fC") || hasLongFlag(options, ["force", "discard-changes", "force-create"]);
+      case "branch":
+        return dynamic || hasShortFlag(options, "dDMCf") || hasLongFlag(options, ["delete", "force"]);
+      case "push":
+        return dynamic || hasShortFlag(options, "fd") || hasLongFlag(options, ["force", "force-with-lease", "force-if-includes", "delete", "mirror", "prune"])
+          || operands.some((operand) => operand === undefined || operand.startsWith("+") || operand.startsWith(":"));
       case "clean":
         return dynamic || !(hasShortFlag(options, "n") || hasLongFlag(options, ["dry-run"]));
       case "reset":
         return dynamic || hasLongFlag(options, ["hard", "merge", "keep"]);
-      case "checkout":
-        // Path forms overwrite the working tree; `git checkout <branch>` does not.
-        return dynamic || delimited || operands.length > 1 || operands.some((operand) => operand === undefined || operand === "."
-          || operand.startsWith("./") || operand.startsWith(":")) || hasShortFlag(options, "fp") || hasLongFlag(options, ["force", "patch", "theirs", "ours", "pathspec-from-file"]);
+      case "checkout": {
+        // `git checkout <name>` restores a file of that name as readily as it
+        // switches branch, so any operand counts. Only `-b <new> [<start>]`
+        // is storable; `git switch <branch>` is the reusable spelling.
+        const creates = hasShortFlag(options, "b") && !hasShortFlag(options, "B");
+        return dynamic || delimited || hasShortFlag(options, "fpB") || hasLongFlag(options, ["force", "patch", "theirs", "ours", "pathspec-from-file"])
+          || (creates ? operands.length > 2 : operands.length > 0);
+      }
       case "restore":
         // Only `--staged` alone leaves the working tree untouched.
         return dynamic || !(hasShortFlag(options, "S") || hasLongFlag(options, ["staged"]))
@@ -241,37 +327,53 @@ export function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): 
         return false;
     }
   }
-  if (program === "docker" || program === "podman") {
-    const at = verbIndex(argv, DOCKER_VALUED_OPTIONS);
-    const words = argv.slice(at, at + 3);
-    return words.some((word) => word === undefined || word === "prune" || word === "rm" || word === "rmi");
+  if (program === "docker" || program === "podman" || program === "docker-compose") {
+    const words = verbWords(argv, DOCKER_VALUED_OPTIONS).slice(0, 3);
+    const { options } = optionWords(argv.slice(1));
+    if (words.some((word) => word === undefined || word === "prune" || word === "rm" || word === "rmi")) return true;
+    // `docker compose down -v` deletes named volumes; `--rmi` deletes images.
+    return words.includes("down") && (hasShortFlag(options, "v") || hasLongFlag(options, ["volumes", "rmi"]));
   }
   if (program === "kubectl") {
-    const at = verbIndex(argv, KUBECTL_VALUED_OPTIONS);
-    return argv[at] === undefined ? at < argv.length : argv[at] === "delete";
+    const verb = verbWords(argv, KUBECTL_VALUED_OPTIONS)[0];
+    const { options } = optionWords(argv.slice(1));
+    if (verb === undefined) return argv.length > 1;
+    if (verb === "delete" || verb === "drain") return true;
+    return (verb === "apply" || verb === "replace") && hasLongFlag(options, ["prune", "force"]);
   }
-  return false;
-}
-
-/**
- * Whether a wildcard prefix can reach an irreversible form. A prefix ending at
- * a verb whose arguments decide the damage (`git checkout`, `docker image`)
- * covers its destructive spellings, so only a narrower exact rule may name a
- * harmless form.
- */
-function wildcardReachesIrreversible(tokens: readonly string[]): boolean {
-  const program = programName(tokens[0]!);
-  if (program === "git") {
-    const verb = tokens[1];
-    if (verb === "clean" || verb === "reset" || verb === "checkout" || verb === "restore") return true;
-    if (verb === "stash") return tokens.length === 2 || tokens[2] === "drop" || tokens[2] === "clear";
-    return false;
+  if (program === "gh") {
+    const words = verbWords(argv, GH_VALUED_OPTIONS);
+    if (words.slice(0, 3).some((word) => word === undefined || word === "delete")) return true;
+    return words[0] === "api" && httpMethods(argv).some((method) => method === undefined || method.toUpperCase() === "DELETE");
   }
-  if (program === "docker" || program === "podman") {
-    if (tokens.length === 2 && DOCKER_OBJECT_GROUPS.has(tokens[1]!)) return true;
-    return tokens.slice(1).some((token) => token === "prune" || token === "rm" || token === "rmi");
+  if (program === "helm") {
+    const verb = verbWords(argv, new Set(["-n", "--namespace", "--kube-context", "--kubeconfig"]))[0];
+    return verb === undefined ? argv.length > 1 : ["uninstall", "delete", "del", "un"].includes(verb);
   }
-  if (program === "kubectl") return tokens[1] === "delete";
+  if (program === "terraform" || program === "tofu") {
+    const words = verbWords(argv, new Set(["-chdir"]));
+    if (words[0] === undefined) return argv.length > 1;
+    if (words[0] === "destroy" || (words[0] === "state" && (words[1] === "rm" || words[1] === undefined))) return true;
+    return words[0] === "apply" && argv.some((word) => word === undefined || word === "-destroy" || word === "--destroy");
+  }
+  if (program === "aws") {
+    const words = verbWords(argv, AWS_VALUED_OPTIONS);
+    const operation = words[1];
+    if (operation === undefined) return words.length > 1;
+    if (/^(?:rm|rb|delete-|terminate-|remove-|deregister-|purge-)/.test(operation)) return true;
+    return argv.some((word) => word === undefined || word === "--delete");
+  }
+  if (program === "rsync") {
+    const { options } = optionWords(argv.slice(1));
+    return options.includes(undefined) || hasLongFlag(options, ["delete", "delete-before", "delete-during", "delete-delay", "delete-after", "delete-excluded", "remove-source-files"]);
+  }
+  if (program === "ln") {
+    const { options } = optionWords(argv.slice(1));
+    return options.includes(undefined) || hasShortFlag(options, "f") || hasLongFlag(options, ["force"]);
+  }
+  if (program === "redis-cli") {
+    return argv.slice(1).some((word) => word === undefined || /^flush(?:all|db)$/i.test(word));
+  }
   return false;
 }
 
@@ -283,6 +385,7 @@ function execArgv(args: readonly (string | undefined)[], start: number): (string
 
 export type RefusedPrefixReason =
   | "destructive"
+  | "not-allowlisted"
   | "empty"
   | "config-writer"
   | "shell"
@@ -305,17 +408,28 @@ export function literalCommandAfterPrefix(tokens: readonly (string | undefined)[
  * The single refused-prefix check. `tokens` is the static prefix of a
  * `Bash(<tokens> *)` rule, or with `wildcard: false` the whole argv of an
  * exact `Bash(<tokens>)` rule. Returns the reason when it may not become a
- * persistent allow rule.
+ * persistent allow rule. A wildcard must also stay inside
+ * {@link WILDCARD_PREFIX_CATALOG}; exact rules need only pass the structural
+ * refusals (destructive, irreversible, wrappers, shells, interpreters, …).
  */
 export function refusedShellPrefix(tokens: readonly string[], wildcard = true): RefusedPrefixReason | null {
+  const structural = structuralRefusal(tokens, wildcard);
+  if (structural !== null) return structural;
+  return wildcard && !wildcardCatalogCovers(tokens) ? "not-allowlisted" : null;
+}
+
+function structuralRefusal(tokens: readonly string[], wildcard: boolean): RefusedPrefixReason | null {
   if (tokens.length === 0) return "empty";
   const program = programName(tokens[0]!);
   if (WRAPPER_SET.has(program)) return "wrapper";
   if (isDestructiveProgram(program) || OVERWRITING_PROGRAMS.has(program)) return "destructive";
-  if (isIrreversibleShellArgv(tokens) || (wildcard && wildcardReachesIrreversible(tokens))) return "destructive";
-  // A bare or recursive permission-changer prefix covers `chmod -R 777 /`.
-  if (PERMISSION_CHANGERS.has(program)
-    && (tokens.length === 1 || isDestructiveShellArgv(tokens))) return "destructive";
+  if (isIrreversibleShellArgv(tokens)) return "destructive";
+  // A bare or recursive permission-changer prefix covers `chmod -R 777 /`;
+  // a mode the grammar cannot read is refused here, never floored.
+  if (PERMISSION_CHANGERS.has(program) && (tokens.length === 1 || isDestructiveShellArgv(tokens)
+    || (program === "chmod" && worldWritableMode(optionWords(tokens.slice(1), (arg) => CHMOD_REMOVAL_MODE.test(arg)).operands[0], true)))) {
+    return "destructive";
+  }
   if (SHELL_SET.has(program)) return "shell";
   const runner = runnerName(tokens[0]!);
   if (RUNNER_SET.has(runner)) {
@@ -325,7 +439,7 @@ export function refusedShellPrefix(tokens: readonly string[], wildcard = true): 
     const command = tokens[commandIndex]!;
     // A delegate specifier does not prove its delegated command boundary.
     if (runner === "corepack" && command.includes("@")) return "package-runner";
-    if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return refusedShellPrefix(tokens.slice(commandIndex));
+    if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return structuralRefusal(tokens.slice(commandIndex), wildcard);
     if (commandPrefix !== true && runnerHasPrefix(commandPrefix, command)
       && literalCommandAfterPrefix(tokens, commandIndex + 1) === undefined) return "package-runner";
     return null;

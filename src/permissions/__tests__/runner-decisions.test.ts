@@ -159,13 +159,19 @@ describe("shared runner decisions", () => {
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
     expect(refusedShellPrefix(incomplete.split(" "))).toBe("package-runner");
-    expect(refusedShellPrefix(prefix.split(" "))).toBeNull();
+    // Structurally bounded, so the exact rule is storable; the wildcard is not
+    // on the allowlist (owner decision 2026-10-23) and the store refuses it.
+    expect(refusedShellPrefix(prefix.split(" "), false)).toBeNull();
+    expect(refusedShellPrefix(prefix.split(" "))).toBe("not-allowlisted");
     expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
+    await expect(manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" }))
+      .rejects.toThrow(/wildcard allowlist/);
+    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
   });

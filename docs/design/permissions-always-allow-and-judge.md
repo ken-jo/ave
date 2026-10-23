@@ -51,11 +51,10 @@ then allow. Session allows count as allow.
   Opaque runner identity or an unknown runner option alone adds no hidden-code
   blocker. The persistent-prefix boundary is checked separately below.
 
-**4. Prefix suggestion** uses an arity table (`src/permissions/rules/shell-prefix-policy.ts`).
-- `git`, `npm`, `pnpm`, `yarn`, `docker` and `kubectl` keep 2 tokens.
-- `npm run`, `pnpm run`, `yarn run` and `bun run` keep 3 tokens.
-- Everything else keeps 1 token.
-- Options and paths end the prefix.
+**4. Prefix suggestion** uses the wildcard allowlist `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`), described under decision 7.
+- An allowlisted entry keeps its listed token count: `git status` keeps 2, and `npm run <script>` keeps 3.
+- Past the entry's own tokens, options and paths end the prefix.
+- A command outside the catalog gets an exact rule for its full argv.
 
 Suggestion length selects a candidate; the refused-prefix check must still
 accept it. An edited persistent rule uses that same validation.
@@ -96,18 +95,22 @@ does not prove that the command or task contents are read-only.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
 - Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Existing entries keep their original identities.
 - Destructive tools are refused as allow prefixes at every length (`rm`, `shred`, `dd`, `mkfs`, `wipefs`), as are bare or recursive `chmod`/`chown`/`chgrp` prefixes. The matcher's destructive floor also reads each command's argv, so recursive or forced deletion in any option order or spelling (`rm -v -r`, `rm --recursive --force`), recursive or world-writable permission changes and `find -delete` are never covered by an allow rule.
-- Irreversible commands never become allow rules (owner decision 2026-10-23). The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. Once and session approvals stay available, and deny rules may still name them. The list:
-  - Always refused: `mv`, `tee` (any file operand without `-a`), `truncate`, `unlink`.
-  - `git clean`: refused unless `-n`/`--dry-run`.
-  - `git reset`: refused with `--hard`, `--merge` or `--keep`.
-  - `git checkout`: refused for path forms (`--`, `.`, `./…`, `:…`, a tree-ish followed by paths) and with `-f`, `-p`, `--ours` or `--theirs`.
-  - `git restore`: refused unless it only touches the index (`--staged` without `--worktree`).
-  - `git stash drop` and `git stash clear`.
-  - `docker`/`podman` `prune`, `rm` and `rmi`, under any object group.
-  - `kubectl delete`.
-
-  A wildcard prefix that can reach one of these forms is refused: `Bash(git clean *)`, `Bash(git checkout *)`, `Bash(git reset *)`, `Bash(git restore *)`, `Bash(git stash *)`, `Bash(docker image *)` and similar. A harmless form stays storable only as a narrower rule that cannot cover a destructive spelling, such as the exact `Bash(git checkout main)` or `Bash(git stash list *)`. The matcher also never lets an allow rule cover an irreversible argv, and any dynamic word counts as the worst case.
-- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), when the grammar cannot read them, and with `--reference=`.
+- **Wildcard allowlist (owner decision 2026-10-23).** A `Bash(<prefix> *)` allow rule may be suggested or stored only when the prefix starts with an entry of `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`) and keeps at least that entry's token count.
+  - The catalog replaces the earlier arity table. It lists read-only inspection (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `pwd`, `du`, `df`, `which`, `stat`), repository inspection (`git status/log/diff/show/fetch/rev-parse/ls-files/blame`, `git branch --list`), named project scripts (`npm/pnpm/yarn/bun test`, `npm/pnpm/yarn/bun run <script>`), and cluster or container inspection (`kubectl get/describe/logs`, `docker ps/images/logs`).
+  - Every other command is suggested only as an exact rule for its full argv, with nothing appended, and only when that argv spells back unchanged. A hand-typed wildcard outside the catalog is refused at the store with `invalid-rule`.
+  - To add an entry, confirm that no argument a trailing `*` can append reaches a destructive or irreversible form, and that its writing and code-running options are caught by `shellOptionEffect`. Then add a hit test and a miss test.
+  - Structural refusals (wrappers, shells, interpreters, runners, destructive and irreversible argv) still apply first, to exact rules as well.
+- **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. Once and session approvals stay available, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
+  - Always: `mv`, `cp`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
+  - `git clean` unless `-n`/`--dry-run`; `git reset --hard/--merge/--keep`; `git restore` unless index-only (`--staged` without `--worktree`); `git stash drop/clear`.
+  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The exception is `-b <new> [<start>]` without `--` or paths; use `git switch <branch>` for a storable exact rule. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
+  - `git switch -f/-C/--discard-changes`; `git branch -d/-D/-M/-C/-f/--delete`; `git push -f/-d/--force/--force-with-lease/--delete/--mirror/--prune`, and `+ref` or `:ref` refspecs.
+  - `docker`/`podman`/`docker-compose` `prune`/`rm`/`rmi`, and `compose down -v/--volumes/--rmi`.
+  - `kubectl delete/drain`, and `kubectl apply/replace --prune/--force`.
+  - `gh … delete`, `gh api -X/--method DELETE`; `helm uninstall/delete`; `terraform`/`tofu` `destroy`, `apply -destroy` and `state rm`; `aws` `rm`/`rb`/`delete-*`/`terminate-*`/`remove-*` operations and `--delete`.
+  - `rsync --delete*`/`--remove-source-files`; `ln -f`; `redis-cli flushall/flushdb`.
+  - A dynamic word counts as the worst case.
+- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), and with `--reference=`. A leading removal such as `-x` or `go-w` is the mode operand, not an option. A mode the grammar cannot read refuses a stored rule but never triggers the floor, so once and session choices remain.
 - Network clients (`curl`, `wget`, `ssh`, `rsync` and similar) get no reusable allow suggestion until host-scoped network rules exist; they keep once and session choices.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
@@ -201,7 +204,7 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 ### Where the code is
 
 - `src/permissions/rules/rule-specifier.ts`: the grammar, plus the pure host and MCP matchers that P1c will wire in.
-- `src/permissions/rules/shell-prefix-policy.ts`: the refused list and the arity suggestion.
+- `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused list and the wildcard allowlist.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
 - `src/permissions/rules/project-rule-files.ts`: per-project files in Ave home.
@@ -471,7 +474,7 @@ Settings accepts canonical `Bash(...)` rules, including whitespace inside their 
 - `src/permissions/__tests__/rules-language.test.ts` covers:
   - the grammar;
   - the refused list;
-  - the arity table;
+  - the wildcard allowlist, exact-only suggestions and irreversible commands;
   - compound commands, substitutions, wrappers and floors;
   - the `ls *` vs `lsof` case.
 - `src/permissions/__tests__/rules-store-and-decision.test.ts` covers:

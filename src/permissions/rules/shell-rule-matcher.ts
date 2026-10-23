@@ -243,6 +243,16 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
+/**
+ * A runner rule must name a literal command boundary. That is a structural
+ * property; the wildcard allowlist is the store's write-time policy, not a
+ * reason for the matcher to ignore a rule it was given.
+ */
+function runnerRuleBounded(tokens: readonly string[], wildcard: boolean): boolean {
+  const refusal = refusedShellPrefix(tokens, wildcard);
+  return refusal === null || refusal === "not-allowlisted";
+}
+
 /** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */
 function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   if (argv.length < spec.tokens.length) return false;
@@ -346,7 +356,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const patterns: string[] = [];
   // Stored runner rules still need a literal command boundary.
   const allowRules = rules.allow.filter((candidate) =>
-    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || refusedShellPrefix(candidate.spec.tokens) === null);
+    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || runnerRuleBounded(candidate.spec.tokens, candidate.spec.wildcard));
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
     const rule = allowRules.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));

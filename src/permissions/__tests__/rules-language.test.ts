@@ -14,6 +14,7 @@ import {
   RuleSpecifierError,
 } from "../rules/rule-specifier.js";
 import { refusedShellPrefix, suggestShellPrefix } from "../rules/shell-prefix-policy.js";
+import { isDestructiveShellArgv } from "../rules/shell-prefix-values.js";
 import {
   analyzeShellForRules,
   evaluateShellRules,
@@ -157,7 +158,7 @@ describe("argv-aware destructive floor (review of PR #77)", () => {
     [["shred"], "destructive"], [["dd"], "destructive"], [["mkfs.ext4"], "destructive"], [["wipefs"], "destructive"],
     [["chmod"], "destructive"], [["chmod", "-R"], "destructive"], [["chmod", "777"], "destructive"],
     [["chown"], "destructive"], [["chown", "-R"], "destructive"], [["chgrp", "--recursive"], "destructive"],
-    [["chmod", "+x"], null], [["chown", "user"], null],
+    [["chmod", "+x"], "not-allowlisted"], [["chown", "user"], "not-allowlisted"],
   ])("refuses destructive prefix %j as %s", (tokens, reason) => {
     expect(refusedShellPrefix(tokens)).toBe(reason);
   });
@@ -202,7 +203,7 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
   });
 
   it.each([
-    ["Bash(git checkout main)", "git checkout main"],
+    ["Bash(git switch main)", "git switch main"],
     ["Bash(git checkout -b *)", "git checkout -b feature"],
     ["Bash(git clean -n *)", "git clean -n"],
     ["Bash(git restore --staged *)", "git restore --staged src/app.ts"],
@@ -227,11 +228,11 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
     [["truncate"]], [["truncate", "-s"]], [["mv"]], [["tee"]], [["tee", "-a"]], [["unlink"]],
     [["chmod", "00777"]], [["chmod", "o=u"]], [["chmod", "--reference=template"]],
   ])("refuses the wildcard prefix %j", (tokens) => {
-    expect(refusedShellPrefix(tokens)).toBe("destructive");
+    expect(refusedShellPrefix(tokens)).not.toBeNull();
   });
 
   it.each([
-    [["git", "clean", "-fdx"]], [["git", "reset", "--hard"]], [["git", "checkout", "--", "."]], [["git", "restore", "src/app.ts"]],
+    [["git", "clean", "-fdx"]], [["git", "reset", "--hard"]], [["git", "checkout", "main"]], [["git", "checkout", "README.md"]], [["git", "checkout", "--", "."]], [["git", "restore", "src/app.ts"]],
     [["git", "stash", "drop"]], [["docker", "system", "prune", "-af"]], [["kubectl", "delete", "pod", "web"]],
     [["truncate", "-s", "1M", "data.bin"]], [["mv", "a", "b"]], [["tee", "out.txt"]], [["unlink", "stale.lock"]],
   ])("refuses the exact rule %j", (tokens) => {
@@ -239,10 +240,10 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
   });
 
   it.each([
-    [["git", "stash", "list"], true], [["git", "stash", "push"], true], [["docker", "image", "ls"], true],
-    [["kubectl", "get"], true], [["git", "status"], true],
-    [["git", "checkout", "main"], false], [["git", "clean", "-n"], false], [["git", "restore", "--staged", "src/app.ts"], false],
-    [["git", "reset", "HEAD"], false],
+    [["kubectl", "get"], true], [["git", "status"], true], [["docker", "ps"], true], [["npm", "run", "build"], true],
+    [["git", "stash", "list"], false], [["git", "stash", "push"], false], [["docker", "image", "ls"], false],
+    [["git", "switch", "main"], false], [["git", "checkout", "-b", "feature"], false], [["git", "clean", "-n"], false],
+    [["git", "restore", "--staged", "src/app.ts"], false], [["git", "reset", "HEAD"], false],
   ])("control: keeps %j storable (wildcard %s)", (tokens, wildcard) => {
     expect(refusedShellPrefix(tokens, wildcard)).toBeNull();
   });
@@ -253,6 +254,56 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
     expect(suggestShellPrefix(["git", "checkout", "main"])).toBeNull();
     expect(suggestShellPrefix(["docker", "image", "prune"])).toBeNull();
     expect(suggestShellPrefix(["git", "stash", "list"])).toBeNull();
+  });
+});
+
+describe("wildcard allowlist (owner decision 2026-10-23)", () => {
+  it.each([
+    [["ls"]], [["ls", "-la"]], [["cat"]], [["rg"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
+    [["git", "branch", "--list"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
+    [["kubectl", "logs"]], [["docker", "ps"]],
+  ])("allows the catalog wildcard %j", (tokens) => {
+    expect(refusedShellPrefix(tokens)).toBeNull();
+  });
+
+  it.each([
+    [["make"]], [["make", "build"]], [["cargo", "test"]], [["git", "branch"]], [["git", "push"]], [["git", "switch"]],
+    [["npm", "run"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
+    [["kubectl", "apply"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
+  ])("refuses the wildcard %j outside the catalog", (tokens) => {
+    expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
+  });
+
+  it("keeps structural reasons ahead of the allowlist", () => {
+    expect(refusedShellPrefix(["python3"])).toBe("interpreter");
+    expect(refusedShellPrefix(["sudo", "ls"])).toBe("wrapper");
+    expect(refusedShellPrefix(["rm"])).toBe("destructive");
+  });
+
+  it.each([
+    [["git", "status", "--short"], ["git", "status"]],
+    [["ls", "-la", "src"], ["ls"]],
+    [["npm", "run", "build", "--", "--watch"], ["npm", "run", "build"]],
+    [["git", "branch", "--list", "feat/*"], ["git", "branch", "--list"]],
+    [["kubectl", "get", "pods", "-n", "web"], ["kubectl", "get"]],
+  ])("suggests the catalog prefix for %j", (argv, prefix) => {
+    expect(suggestShellPrefix(argv)).toEqual(prefix);
+  });
+
+  it.each([[["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]]])("offers no wildcard for %j", (argv) => {
+    expect(suggestShellPrefix(argv)).toBeNull();
+  });
+});
+
+describe("chmod mode removal is a mode, not an option (round-2 regression)", () => {
+  it.each([["chmod", "-x", "script.sh"], ["chmod", "-w", "notes.txt"], ["chmod", "go-w", "shared"], ["chmod", "a-rwx", "secret"]])("does not floor %j", (...argv) => {
+    expect(isDestructiveShellArgv(argv)).toBe(false);
+    expect(refusedShellPrefix(argv, false)).toBeNull();
+  });
+
+  it("refuses an unreadable mode as a stored rule without flooring it", () => {
+    expect(isDestructiveShellArgv(["chmod", "u=rw-x", "f"])).toBe(false);
+    expect(refusedShellPrefix(["chmod", "u=rw-x", "f"], false)).toBe("destructive");
   });
 });
 
@@ -299,27 +350,34 @@ describe("refused prefixes (single shared list)", () => {
   it.each([
     [["git", "status"]],
     [["npm", "test"]],
-    [["bun", "run"]],
     [["bun", "run", "build"]],
-    [["deno", "task", "build"]],
+    [["bun", "run", "./x.ts"]],
     [["ls"]],
+  ])("accepts allowlisted wildcard %j", (tokens) => {
+    expect(refusedShellPrefix(tokens as string[])).toBeNull();
+  });
+
+  // Structurally bounded runner prefixes stay valid as exact rules, but the
+  // wildcard allowlist (owner decision 2026-10-23) keeps them out of " *" rules.
+  it.each([
+    [["bun", "run"]],
+    [["deno", "task", "build"]],
     [["npx", "prettier"]],
     [["npm", "exec", "prettier"]],
     [["pnpm", "exec", "vitest"]],
     [["yarn", "dlx", "prettier"]],
     [["bun", "exec", "echo"]],
-    [["bun", "run", "./x.ts"]],
     [["deno", "run", "main.ts"]],
     [["corepack", "pnpm", "dlx", "prettier"]],
-  ])("accepts %j", (tokens) => {
-    expect(refusedShellPrefix(tokens as string[])).toBeNull();
+  ])("accepts %j as an exact rule but not as a wildcard", (tokens) => {
+    expect(refusedShellPrefix(tokens as string[], false)).toBeNull();
+    expect(refusedShellPrefix(tokens as string[])).toBe("not-allowlisted");
   });
 });
 
 describe("arity-table suggestion", () => {
   it.each([
     [["git", "status", "--short"], ["git", "status"]],
-    [["git", "commit", "-m", "x"], ["git", "commit"]],
     [["npm", "test", "--", "foo"], ["npm", "test"]],
     [["npm", "run", "build", "--watch"], ["npm", "run", "build"]],
     [["bun", "run", "test:vitest", "a.ts"], ["bun", "run", "test:vitest"]],
@@ -331,6 +389,7 @@ describe("arity-table suggestion", () => {
   });
 
   it.each([
+    [["git", "commit", "-m", "x"]],
     [["bash", "-c", "ls"]],
     [["python", "-c", "print(1)"]],
     [["sudo", "ls"]],
