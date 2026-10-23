@@ -202,6 +202,9 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     unsupportedExecution: true,
   }] as [string, NonPathOperandSpec]),
   ["sort", { pathValueOptions: new Set(["-o", "--output", "-T", "--temporary-directory"]) }],
+  ["ssh-keygen", { pathValueOptions: new Set(["-f"]) }],
+  ["patch", { pathValueOptions: new Set(["-o", "--output"]) }],
+  ["gzip", { pathValueOptions: new Set(["-S", "--suffix"]) }],
   ["gdb", {
     valueOptions: DEBUGGER_CODE_OPTIONS,
     pathValueOptions: DEBUGGER_PATH_OPTIONS,
@@ -1192,27 +1195,37 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
     return [];
   }
   if (value === "-" && ["cat", "sed", "awk", "head", "tail", "sort", "diff", "tee"].includes(verb)) return [];
+  let paths = [value];
   if (option && value.startsWith("-") && value.length > 1) {
     const pathOptions = NON_PATH_OPERAND_SPECS.get(verb)?.pathValueOptions;
     const carried = pathOptions && readOptionValue([value], 0, pathOptions);
-    if (carried) return [carried.value];
     const equals = value.indexOf("=");
-    if (equals > 0) return [value.slice(equals + 1)];
-    // A Windows target starts at a drive letter (`-oC:/x`, `-o'C:\x'`) or a
-    // root-relative separator, which the letter cluster would otherwise eat.
-    const glued = /^-[A-Za-z]+?([/\\~.].*|[A-Za-z]:[\\/].*)$/.exec(value);
     // Unknown short flags may carry a path starting with any character. Keep
     // the complete suffix as well as the cluster interpretation; ordinary
     // option data resolving inside the root does not violate containment.
     const shortValue = /^-[A-Za-z].+/.test(value) ? [value.slice(2)] : [];
-    return glued ? [glued[1]!, ...shortValue] : shortValue;
+    if (carried) {
+      // Known option arity stops the cluster before any letters in its path.
+      paths = [carried.value, ...shortValue,
+        ...(equals > 0 && !value.startsWith("--") ? [value.slice(equals + 1)] : [])];
+    } else if (equals > 0 && value.startsWith("--")) {
+      paths = [value.slice(equals + 1)];
+    } else {
+      // A Windows target starts at a drive letter or a root-relative separator,
+      // which the letter cluster would otherwise eat.
+      const glued = /^-[A-Za-z]+?([/\\~.].*|[A-Za-z]:[\\/].*)$/.exec(value);
+      paths = [...(glued ? [glued[1]!] : []), ...shortValue,
+        ...(equals > 0 ? [value.slice(equals + 1)] : [])];
+    }
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {
-    const equals = value.indexOf("=");
-    if (equals > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.slice(0, equals))) return [value.slice(equals + 1)];
+    return paths.map((path) => {
+      const equals = path.indexOf("=");
+      return equals > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(path.slice(0, equals)) ? path.slice(equals + 1) : path;
+    });
   }
   if (verb === "dd" && (value.startsWith("if=") || value.startsWith("of="))) return [value.slice(3)];
-  return [value];
+  return paths;
 }
 
 function isQuotedRemoteUrl(word: ShellWord): boolean {

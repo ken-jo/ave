@@ -123,6 +123,52 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it.each([
+    ["ssh-keygen", "-f", "", "k"],
+    ["patch", "-o", "f", "o"],
+    ["gzip", "-S", "f", "x"],
+  ])("checks equals signs throughout attached short-option paths: %s %s", (verb, flag, tail, leaf) => {
+    withRoot((root) => {
+      for (const path of [`_/../../${leaf}=1`, `_/..=/../${leaf}`, `=_/../../${leaf}`, `_/../../${leaf}=a=b`]) {
+        expect(validateShellCommandPathPolicy(`${verb} ${flag}${path} ${tail}`, root, root, [], true), path)
+          .not.toBeNull();
+      }
+      expect(validateShellCommandPathPolicy(`${verb} ${flag}keys/k=1 ${tail}`, root, root, [], true)).toBeNull();
+    });
+  });
+
+  it.each([
+    "unknown -x_/../../k=1",
+    "unknown -ab/../k=1",
+    "sed -f_/../../k=1 f",
+    "awk -o_/../../k=1 '{print}' f",
+    "stat -x_/../../k=1 f",
+  ])("keeps generic and clustered short-option paths alongside equals values: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy("env A=B cmd", root, root, [], true))
+        .toContain("nested shell dialect is not supported");
+      expect(validateShellCommandPathPolicy(command, root, root, [], true)).not.toBeNull();
+      for (const allowed of [
+        "sort -t, -k2 -S10M f", "sort -o inside.txt f", "sort -oinside.txt f",
+        "head -n5 f", "ls -la", "git commit -m 'a=b'", "awk -v x=1 '{print}' f", "env A=B fixture-command",
+      ]) expect(validateShellCommandPathPolicy(allowed, root, root, [], true), allowed).toBeNull();
+      for (const denied of ["sed -e 'w_/../../k=1' f", "sed -ne'w_/../../k=1' f"]) {
+        expect(validateShellCommandPathPolicy(denied, root, root, [], true), denied).not.toBeNull();
+      }
+    });
+  });
+
+  it.each(["awk", "gawk", "mawk", "nawk"].flatMap((verb) =>
+    ["-vf=../outside", "--assign=f=../outside"].map((option) => [verb, option])))(
+    "checks assignment values carried by path options: %s %s",
+    (verb, option) => {
+      withRoot((root) => {
+        expect(validateShellCommandPathPolicy(`${verb} ${option} '{print}' f`, root, root, [], true)).not.toBeNull();
+        expect(validateShellCommandPathPolicy(`${verb} -vf=keys/k=1 '{print}' f`, root, root, [], true)).toBeNull();
+      });
+    },
+  );
+
   it.each(["sort -o inside.txt f", "sort -oinside.txt f", "sort -r f"])("allows contained output and valueless flags: %s", (command) => {
     withRoot((root) => {
       expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
