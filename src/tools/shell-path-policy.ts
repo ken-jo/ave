@@ -1159,7 +1159,9 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
     if (equals > 0) return [value.slice(equals + 1)];
-    const glued = /^-[A-Za-z]+?([/~.].*)$/.exec(value);
+    // A Windows target starts at a drive letter (`-oC:/x`, `-o'C:\x'`) or a
+    // root-relative separator, which the letter cluster would otherwise eat.
+    const glued = /^-[A-Za-z]+?([/\\~.].*|[A-Za-z]:[\\/].*)$/.exec(value);
     return glued ? [glued[1]!] : [];
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {

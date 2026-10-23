@@ -230,6 +230,15 @@ describe("evasion: a glued short flag hides the write target", () => {
     ).toMatchObject({ kind: "sandbox-boundary", path: outside });
   });
 
+  it("path containment reads a drive-qualified glued value as a path", () => {
+    // Absolute on Win32 and a relative operand elsewhere; either way the glued
+    // value is the target the policy must check.
+    const root = sandboxRoot();
+    expect(
+      findShellPathPolicyViolation("sort -oC:/Users/u/.ssh/authorized_keys f", root, root, [], READS_WIDE),
+    ).toMatchObject({ kind: "sensitive-path" });
+  });
+
   it("leaves ordinary glued flags read (no path in the glued value)", () => {
     expect(isReadOnlyCommand("sort -rn f")).toBe(true);
     expect(isReadOnlyCommand("sort -k1,1 f")).toBe(true);
