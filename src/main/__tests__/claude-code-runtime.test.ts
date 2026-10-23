@@ -21,6 +21,7 @@ import { CLAUDE_CODE_MAX_OUTPUT_BYTES } from "../claude-code-stream.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import * as managed from "../managed-child-processes.js";
 import * as subscriptionClient from "../claude-code-subscription-client.js";
+import * as executableLocation from "../codex-executable-location.js";
 import { CodexExecutableLocationError } from "../codex-executable-location.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
@@ -470,6 +471,66 @@ describe("CLI account and verification boundary", () => {
     await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
+
+  it.each(["none", "directories", "artifact"] as const)(
+    "admits directories and verifies the executable before sign-in (%s rejected)",
+    async (rejected) => {
+      const directories = paths();
+      const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
+      const cli = installedCli(directories.runtimeHome);
+      const events: string[] = [];
+      let preparingLogin = false;
+      const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+        candidates: cli.candidates, resolveExecutable: async (path) => path,
+        _pinExecutableForTest: async (path) => {
+          const artifact = await pinForTest(path);
+          return { ...artifact, verify: async () => {
+            if (preparingLogin) {
+              events.push("artifact");
+              if (rejected === "artifact") throw new Error("Rejected executable");
+            }
+            await artifact.verify();
+          } };
+        },
+      });
+      owners.push(client);
+      expect(await client.getStatus()).toMatchObject({ runtime: "unverified", connection: "signed-out" });
+      events.length = 0;
+      const directoryRequests: string[][] = [];
+      const assertLocations = executableLocation.assertCodexLocations;
+      vi.spyOn(executableLocation, "assertCodexLocations").mockImplementation(async (requests, trustInputs) => {
+        if (requests.length > 0 && requests.every((request) => request.kind === "private-directory")) {
+          events.push("directories");
+          preparingLogin = true;
+          directoryRequests.push(requests.map((request) => request.path));
+          if (rejected === "directories") throw new CodexExecutableLocationError("Rejected directories");
+        }
+        await assertLocations(requests, trustInputs);
+      });
+      const spawn = harness.spawn.getMockImplementation()!;
+      harness.spawn.mockImplementation((command, args, options) => {
+        events.push("spawn");
+        return spawn(command, args, options);
+      });
+      harness.spawn.mockClear();
+      harness.calls.length = 0;
+      if (rejected === "none") {
+        expect(await client.startBrowserLogin()).toMatchObject({ connection: "pending" });
+        expect(events).toEqual(["directories", "artifact", "spawn"]);
+        expect(harness.spawn).toHaveBeenCalledOnce();
+        expect(harness.calls).toHaveLength(1);
+        expect(harness.calls[0]!.args).toEqual(["auth", "login"]);
+        await expect(client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
+      } else {
+        await expect(client.startBrowserLogin()).rejects.toMatchObject({ code: rejected === "directories"
+          ? "claude-code-runtime-unsafe-location" : "claude-code-runtime-unverified" });
+        expect(events).toEqual(rejected === "directories" ? ["directories"] : ["directories", "artifact"]);
+        expect(harness.spawn).not.toHaveBeenCalled();
+        expect(harness.calls).toHaveLength(0);
+      }
+      expect(directoryRequests).toEqual([[directories.runtimeHome, directories.workspaceDir, directories.runtimeTempDir]]);
+    },
+  );
 
   it("stop cancels captured commands and prevents future launches", async () => {
     const h = clientHarness(() => undefined); const pending = h.client.getStatus(); const child = await h.started;

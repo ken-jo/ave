@@ -83,6 +83,28 @@ function fakeCodexClient(): CodexAppServerClient {
 }
 
 describe("SubscriptionRuntimeService", () => {
+  it.each(["kimi-code", "grok-build"] as const)("does not enable signed-out chat after verification (%s)", async (provider) => {
+    const status: AcpSubscriptionStatus = { ...KIMI_CONNECTED, provider, connection: "signed-out" };
+    const openTextSession = vi.fn();
+    const registry = {
+      getStatus: vi.fn(async () => status),
+      verify: vi.fn(async () => status),
+      openTextSession,
+      stopAll: vi.fn(async () => undefined),
+    } as unknown as AcpSubscriptionRuntimeRegistry;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), codexClient: fakeCodexClient(), acpRegistry: registry,
+    });
+    try {
+      expect((await service.verify(provider)).capabilities.chat).toBe(false);
+      await expect(service.openTextSession({ kind: "subscription", provider }))
+        .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      expect(openTextSession).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("requires isolation verification and shares the fresh v3 Codex auth home with text chat", async () => {
     const clientOptions: CodexAppServerClientOptions[] = [];
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];

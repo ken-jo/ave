@@ -261,6 +261,38 @@ describe("SubscriptionAuthControls", () => {
 
   const PICKER_TEST_IDS = ["configure-runtime", "change-runtime", "forget-runtime"] as const;
 
+  it.each(["claude-code", "kimi-code", "grok-build"] as const)(
+    "offers sign-in for a found signed-out runtime (%s)",
+    (runtimeId) => {
+      const beginLogin = vi.fn();
+      render(<SubscriptionProvidersSection
+        providers={[viewFor(runtimeId, { runtime: "unverified", connection: "signed-out" })]}
+        actions={{ beginLogin, verifyRuntime: vi.fn() }} />);
+
+      expect(screen.queryByTestId(`subscription-provider:${runtimeId}:verify-runtime`)).toBeNull();
+      for (const method of subscriptionRuntimeDescriptor(runtimeId).loginMethods) {
+        fireEvent.click(screen.getByTestId(`subscription-provider:${runtimeId}:login-${method}`));
+        expect(beginLogin).toHaveBeenCalledWith(runtimeId, method);
+      }
+    },
+  );
+
+  it.each([
+    ["not-configured", "signed-out"],
+    ["unavailable", "signed-out"],
+    ["checking", "signed-out"],
+    ["unverified", "unknown"],
+    ["unverified", "connected"],
+  ] as const)("does not offer sign-in for %s and %s", (runtime, connection) => {
+    render(<SubscriptionProvidersSection
+      providers={[viewFor("claude-code", { runtime, connection })]}
+      actions={{ beginLogin: vi.fn(), verifyRuntime: vi.fn() }} />);
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    if (runtime === "unverified") {
+      expect(screen.getByTestId("subscription-provider:claude-code:verify-runtime")).toBeInTheDocument();
+    }
+  });
+
   it.each([
     ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
     ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],
