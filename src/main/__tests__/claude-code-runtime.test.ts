@@ -1,7 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
-import { normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -316,7 +316,7 @@ describe("CLI conversation boundary", () => {
     const h = conversation();
     for (const text of ["complete history: first request", "complete history: first request, first answer, second request"]) {
       const completed = collect(h.runtime.streamTurn(text));
-      await vi.waitFor(() => expect(h.calls.at(-1)?.child.input).toBe(text));
+      await vi.waitFor(() => expect(h.calls.at(-1)?.child.input).toBe(text), NATIVE_LOCATION_WAIT);
       const call = h.calls.at(-1)!; call.child.send(init()); call.child.send(result()); call.child.close(); await completed;
       expect(call.args).not.toContain("--resume"); expect(call.args).toContain("--no-session-persistence");
       expect(call.child.input).toBe(text);

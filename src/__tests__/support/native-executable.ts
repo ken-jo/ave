@@ -89,6 +89,13 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
   }) as typeof fs.lstat);
 }
 
+/**
+ * Wait budget for steps gated on a native location check. On Windows each
+ * check runs a PowerShell ACL probe that alone takes most of a second, so the
+ * one-second `vi.waitFor` default races it; elsewhere the default stands.
+ */
+export const NATIVE_LOCATION_WAIT = { timeout: process.platform === "win32" ? 15_000 : 1_000 } as const;
+
 /** Windows counterpart: the real ACL probe runs, then fixture ancestors read as owner-only. */
 export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
   if (process.platform !== "win32") return actual;
