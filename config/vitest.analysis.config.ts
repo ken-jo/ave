@@ -114,6 +114,13 @@ export default defineConfig({
     // count (a CI runner under a cgroup CPU quota) size the pool to that
     // budget; anything but a positive integer is refused, not ignored.
     maxWorkers: vitestMaxWorkers(process.env.AVE_VITEST_MAX_WORKERS),
+    // The vm pools (the jsdom project) retain VM contexts until a worker is
+    // recycled; a worker whose heap passes this limit is replaced. Vitest
+    // reads it from this root block only, not per project, and the forks
+    // pool ignores it. Three CI workers at 2 GiB of heap stay well inside the
+    // runner slice's 12 GiB MemoryHigh (jsdom's native memory sits outside
+    // the heap, hence the margin).
+    vmMemoryLimit: "2048MB",
     // Node v25 enabled experimental WebStorage by default. Its
     // `localStorage` getter trips `Warning: --localstorage-file was
     // provided without a valid path` and shadows the jsdom implementation,
@@ -186,10 +193,6 @@ export default defineConfig({
           // The node project stays on forks: under vm its native-module,
           // sandbox and mock-identity suites fail and it gains ~14%.
           pool: "vmForks",
-          // VM contexts are retained until the worker is recycled. A worker
-          // that passes this limit is replaced, which keeps three CI workers
-          // well inside the runner slice's 12 GiB MemoryHigh.
-          vmMemoryLimit: "2048MB",
           // Renderer tests were authored against the original Korean UI
           // strings. After the i18n migration those strings resolve through
           // t() with English as the default; this setup pins the runtime
