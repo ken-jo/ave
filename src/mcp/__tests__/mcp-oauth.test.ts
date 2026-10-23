@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
-import { McpOAuthSession, type McpOAuthSecrets } from "../mcp-oauth.js";
+import { MCP_CLIENT_METADATA_DOCUMENT_URL, McpOAuthSession, type McpOAuthSecrets } from "../mcp-oauth.js";
 import type { McpHttpServerConfig } from "../types.js";
 import { MCP_PROTOCOL_VERSION } from "../protocol-constants.js";
 
@@ -53,6 +55,36 @@ interface Fixture {
   clients: Map<string, string[]>;
   authorizedRedirects: string[];
   tokenScopes: Map<string, string>;
+  /** Advertise `client_id_metadata_document_supported`. */
+  cimd: boolean;
+  tokenAuthMethods: string[];
+  /** Metadata documents the fake server fetched, and an optional replacement document. */
+  cimdFetches: string[];
+  cimdDocument?: Record<string, unknown>;
+}
+
+/** The document the web site publishes; the fake server "fetches" it from the repository. */
+const PUBLISHED_CLIENT_DOCUMENT = join(__dirname, "..", "..", "..", "web", "public", "oauth", "mcp-client.json");
+
+/**
+ * An authorization server's checks on a URL client_id (Client ID Metadata
+ * Document draft §4, MCP client-registration): the document's client_id must
+ * equal the URL, required fields must be present, and the request's
+ * redirect_uri must match a listed one — ignoring only the port, and only for
+ * a loopback IP literal (RFC 8252 §7.3).
+ */
+function validateClientDocument(clientId: string, redirectUri: string, document: Record<string, unknown>): boolean {
+  if (document.client_id !== clientId || typeof document.client_name !== "string" ||
+    !Array.isArray(document.redirect_uris) || document.redirect_uris.length === 0) return false;
+  const requested = new URL(redirectUri);
+  return document.redirect_uris.some((candidate) => {
+    if (typeof candidate !== "string") return false;
+    const listed = new URL(candidate);
+    const loopbackIp = listed.protocol === "http:" && (listed.hostname === "127.0.0.1" || listed.hostname === "[::1]");
+    if (!loopbackIp) return candidate === redirectUri;
+    return requested.protocol === listed.protocol && requested.hostname === listed.hostname &&
+      requested.pathname === listed.pathname && requested.search === listed.search;
+  });
 }
 
 const sessions: McpOAuthSession[] = [];
@@ -71,6 +103,7 @@ async function fixture(): Promise<Fixture> {
     authorizations: [], refreshRevoked: false, rejectAccess: false, expiresIn: 3600, methods: ["S256"],
     dcr: true, redirectMetadata: false, resourceMetadataAvailable: true, tokenRedirect: false, oidc: false, discoveryVersions: [], challengeScope: "tools",
     endpointPath: "/mcp", deniedScopes: [], clients: new Map(), authorizedRedirects: [], tokenScopes: new Map(),
+    cimd: false, tokenAuthMethods: ["none"], cimdFetches: [],
   } as unknown as Fixture;
   let lastAuthorizedScope = "";
   const server = createServer(async (request, response) => {
@@ -103,7 +136,8 @@ async function fixture(): Promise<Fixture> {
       state.discoveryVersions.push(request.headers["mcp-protocol-version"] as string | undefined);
       json({ issuer: state.issuer, authorization_endpoint: `${state.base}/authorize`, token_endpoint: `${state.base}/token`,
         registration_endpoint: state.dcr ? `${state.base}/register` : undefined, response_types_supported: ["code"],
-        code_challenge_methods_supported: state.methods, token_endpoint_auth_methods_supported: ["none"],
+        code_challenge_methods_supported: state.methods, token_endpoint_auth_methods_supported: state.tokenAuthMethods,
+        ...(state.cimd ? { client_id_metadata_document_supported: true } : {}),
         authorization_response_iss_parameter_supported: true, jwks_uri: `${state.base}/jwks`, subject_types_supported: ["public"],
         id_token_signing_alg_values_supported: ["RS256"] }); return;
     }
@@ -118,8 +152,18 @@ async function fixture(): Promise<Fixture> {
     }
     if (url.pathname === "/authorize") {
       state.authorizations.push(url);
+      const requestedClient = url.searchParams.get("client_id") ?? "";
+      if (state.cimd && requestedClient.startsWith("https://")) {
+        // A URL client_id: fetch its metadata document (only Ave's is reachable here) and validate it.
+        state.cimdFetches.push(requestedClient);
+        const document = state.cimdDocument ?? (requestedClient === MCP_CLIENT_METADATA_DOCUMENT_URL
+          ? JSON.parse(readFileSync(PUBLISHED_CLIENT_DOCUMENT, "utf8")) as Record<string, unknown> : undefined);
+        const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+        if (!document || !validateClientDocument(requestedClient, redirectUri, document)) { json({ error: "invalid_client" }, 400); return; }
+        state.clients.set(requestedClient, [redirectUri]);
+      }
       // Strict: the redirect URI must be one the client registered, compared exactly.
-      const registered = state.clients.get(url.searchParams.get("client_id") ?? "");
+      const registered = state.clients.get(requestedClient);
       if (!registered?.includes(url.searchParams.get("redirect_uri") ?? "")) { json({ error: "invalid_request" }, 400); return; }
       state.authorizedRedirects.push(url.searchParams.get("redirect_uri") ?? "");
       lastAuthorizedScope = (url.searchParams.get("scope") ?? "").split(" ").filter((scope) => !state.deniedScopes.includes(scope)).join(" ");
@@ -418,7 +462,7 @@ describe("remote authorization", () => {
     expect(() => createSession({ resource: "http://192.168.1.10/mcp" } as Fixture)).toThrow("MCP authentication failed");
   });
 
-  it.each(["client-id-metadata-document", "preregistration", "manual"] as const)("rejects unsupported %s registration before network activity", async (clientRegistration) => {
+  it.each(["preregistration", "manual"] as const)("rejects unsupported %s registration before network activity", async (clientRegistration) => {
     const state = await fixture();
     const { session, openAuthorizationUrl } = createSession(state, { config: { oauth: { clientRegistration } } });
     expect(session.getStatus()).toBe("error");
@@ -610,6 +654,68 @@ describe("remote authorization", () => {
     await session.authenticate().catch(() => undefined);
     expect(state.registrations).toHaveLength(1);
     expect(state.authorizations[1].searchParams.get("client_id")).toBe("native-client-1");
+  });
+
+  it("uses the published client metadata document when the server advertises support, without registering", async () => {
+    const state = await fixture();
+    state.cimd = true;
+    const { session } = createSession(state);
+    await session.authenticate();
+    expect(state.registrations).toHaveLength(0);
+    expect(state.cimdFetches).toEqual([MCP_CLIENT_METADATA_DOCUMENT_URL]);
+    expect(state.authorizations[0].searchParams.get("client_id")).toBe(MCP_CLIENT_METADATA_DOCUMENT_URL);
+    expect(state.authorizations[0].searchParams.get("redirect_uri")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+    expect(state.grants[0].get("client_id")).toBe(MCP_CLIENT_METADATA_DOCUMENT_URL);
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+    // A later flow binds a new port; the document covers it without registration.
+    state.rejectAccess = true;
+    state.refreshRevoked = true;
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    state.rejectAccess = false;
+    state.refreshRevoked = false;
+    await session.authenticate();
+    const [first, second] = state.authorizations.map((url) => url.searchParams.get("redirect_uri"));
+    expect(second).not.toBe(first);
+    expect(state.registrations).toHaveLength(0);
+    expect(session.getStatus()).toBe("authenticated");
+  });
+
+  it("publishes a client_id document that matches the app's client_id", () => {
+    const document = JSON.parse(readFileSync(PUBLISHED_CLIENT_DOCUMENT, "utf8")) as Record<string, unknown>;
+    expect(document).toMatchObject({ client_id: MCP_CLIENT_METADATA_DOCUMENT_URL, client_name: "Ave",
+      redirect_uris: ["http://127.0.0.1"], token_endpoint_auth_method: "none" });
+    expect(MCP_CLIENT_METADATA_DOCUMENT_URL).toBe("https://ave.agent-connector.ai/oauth/mcp-client.json");
+  });
+
+  it.each([
+    ["a different client_id", { client_id: "https://elsewhere.example.test/client.json" }],
+    ["a localhost redirect", { redirect_uris: ["http://localhost"] }],
+    ["a redirect with another path", { redirect_uris: ["http://127.0.0.1/callback"] }],
+  ])("is rejected by a strict server when the document has %s", async (_label, change) => {
+    const state = await fixture();
+    state.cimd = true;
+    state.cimdDocument = { ...JSON.parse(readFileSync(PUBLISHED_CLIENT_DOCUMENT, "utf8")) as Record<string, unknown>, ...change };
+    const { session } = createSession(state);
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(state.grants).toHaveLength(0);
+  });
+
+  it("registers dynamically when the server advertises documents but not public clients", async () => {
+    const state = await fixture();
+    state.cimd = true;
+    state.tokenAuthMethods = ["client_secret_basic"];
+    const { session } = createSession(state);
+    await session.authenticate().catch(() => undefined);
+    expect(state.cimdFetches).toHaveLength(0);
+    expect(state.registrations).toHaveLength(1);
+  });
+
+  it("fails clearly when the configuration requires a metadata document the server does not support", async () => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl } = createSession(state, { config: { oauth: { clientRegistration: "client-id-metadata-document" } } });
+    await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-registration-unsupported" });
+    expect(state.registrations).toHaveLength(0);
+    expect(openAuthorizationUrl).not.toHaveBeenCalled();
   });
 
   it("marks a 403 insufficient_scope as step-up without opening the browser, then requests the scope union", async () => {

@@ -4,6 +4,7 @@ import {
   discoverOAuthProtectedResourceMetadata,
   exchangeAuthorization,
   extractWWWAuthenticateParams,
+  isHttpsUrl,
   refreshAuthorization,
   registerClient,
   startAuthorization,
@@ -18,6 +19,7 @@ import {
 import { checkResourceAllowed } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import { InvalidClientError, InvalidGrantError, UnauthorizedClientError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { ensurePublicHttpUrl } from "../core/network-guard.js";
+import { AVE_SERVICE_BASE_URL } from "../marketplace/service/client.js";
 import type { AuthRedirectCatchers } from "../main/auth-redirect-catcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
@@ -39,7 +41,14 @@ export interface McpOAuthDependencies {
   openAuthorizationUrl(url: string): Promise<void>;
 }
 
-type ClientSource = "dynamic";
+type ClientSource = "metadata-document" | "dynamic";
+
+/**
+ * Ave's OAuth Client ID Metadata Document, published by the web site from
+ * `web/public/oauth/mcp-client.json`. The URL is the client_id itself, so it
+ * must never move. It lists the RFC 8252 loopback IP redirect without a port.
+ */
+export const MCP_CLIENT_METADATA_DOCUMENT_URL = `${AVE_SERVICE_BASE_URL}/oauth/mcp-client.json`;
 
 interface Discovery {
   issuer: string;
@@ -138,7 +147,8 @@ export function tryMcpOAuthCredentialKey(config: McpHttpServerConfig): string | 
 
 function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | undefined {
   const mode = config.oauth?.clientRegistration;
-  return mode === undefined || mode === "dynamic" ? undefined : "mcp-auth-registration-unsupported";
+  return mode === undefined || mode === "dynamic" || mode === "client-id-metadata-document"
+    ? undefined : "mcp-auth-registration-unsupported";
 }
 
 /** Host-owned credentials and browser flow for one exact remote endpoint. */
@@ -201,7 +211,7 @@ export class McpOAuthSession {
       if (!raw) return;
       const saved = JSON.parse(raw) as Credentials;
       if (saved.serverUrl !== this.serverUrl || typeof saved.issuer !== "string" || typeof saved.resource !== "string" ||
-        saved.clientSource !== "dynamic") return;
+        (saved.clientSource !== "dynamic" && saved.clientSource !== "metadata-document")) return;
       if (secureUrl(saved.issuer, allowPrivate).search ||
         (this.config.oauth?.authorizationServers?.length && !this.config.oauth.authorizationServers.includes(saved.issuer))) return;
       const resource = secureUrl(saved.resource, allowPrivate);
@@ -387,9 +397,19 @@ export class McpOAuthSession {
    * redirect_uri the client did not register.
    */
   private async selectClient(discovery: Discovery, redirectUri: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
+    const mode = this.config.oauth?.clientRegistration;
+    // Spec order: Client ID Metadata Document when the server advertises it, then dynamic registration.
+    const metadataDocumentUsable = discovery.metadata.client_id_metadata_document_supported === true &&
+      (!discovery.metadata.token_endpoint_auth_methods_supported || discovery.metadata.token_endpoint_auth_methods_supported.includes("none"));
+    if ((mode === undefined || mode === "client-id-metadata-document") && metadataDocumentUsable) {
+      if (!isHttpsUrl(MCP_CLIENT_METADATA_DOCUMENT_URL)) throw new Error(AUTH_FAILED);
+      return { source: "metadata-document", client: { client_id: MCP_CLIENT_METADATA_DOCUMENT_URL,
+        redirect_uris: [redirectUri], token_endpoint_auth_method: "none" } };
+    }
+    if (mode === "client-id-metadata-document") throw new McpOAuthError("mcp-auth-registration-unsupported");
     const stored = this.credentials;
     const secretExpiresAt = stored?.client.client_secret_expires_at;
-    const storedUsable = stored && stored.issuer === discovery.issuer &&
+    const storedUsable = stored && stored.clientSource === "dynamic" && stored.issuer === discovery.issuer &&
       !(secretExpiresAt && secretExpiresAt <= Date.now() / 1000) &&
       stored.client.redirect_uris.includes(redirectUri);
     if (storedUsable) return { client: stored.client, source: stored.clientSource };
@@ -424,7 +444,8 @@ export class McpOAuthSession {
       this.credentialGeneration += 1;
       this.status = "authenticating";
       const discovery = await this.discover(true);
-      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey);
+      // The loopback IP literal: RFC 8252 §7.3 obliges the server to accept any port for it.
+      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { redirectHost: "127.0.0.1" });
       handle = catcher.handle;
       this.assertActive();
       const { client, source } = await this.selectClient(discovery, catcher.redirectUri);
