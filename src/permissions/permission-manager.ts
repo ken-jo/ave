@@ -1816,7 +1816,7 @@ export class PermissionManager {
     toolName: string,
     input: ReviewerDispatchInput,
     routineScope?: Record<string, unknown>,
-    options?: { defer?: ReviewerDeferPolicy; abortSignal?: AbortSignal; judgeBypass?: boolean; tracingClassifier?: TracingRiskClassifier; cacheScope?: Record<string, unknown> },
+    options?: { defer?: ReviewerDeferPolicy; abortSignal?: AbortSignal; judgeBypass?: boolean; tracingClassifier?: TracingRiskClassifier; cacheScope?: Record<string, unknown>; stageOwnModel?: boolean },
   ): Promise<ReviewerDispatchResult> {
     if (options?.judgeBypass !== true && this.hasJudge(input.category) && this.mode !== "strict") {
       const lane = options?.defer === "none" ? "foreground" : "headless";
@@ -1871,9 +1871,11 @@ export class PermissionManager {
       issuedApprovalBases.add(basis);
       return basis;
     };
-    // A judge stage with its own available model supplies its classifier; only
-    // the reviewer's own (unavailable) model is refused here.
-    if (this.reviewerUnavailableReason !== undefined && options?.tracingClassifier === undefined) {
+    // Only a judge stage configured with its own model may run while the
+    // reviewer's model is unavailable. A model-less stage also supplies a
+    // tracing classifier (when a hook redacted its view), but that classifier
+    // is the reviewer's own, so it is refused like the reviewer.
+    if (this.reviewerUnavailableReason !== undefined && options?.stageOwnModel !== true) {
       return {
         verdict: { level: "high", reason: this.reviewerUnavailableReason },
         cacheReason: "miss-not-found",
@@ -2244,6 +2246,7 @@ export class PermissionManager {
             cacheIdentityInput: input.cacheIdentityInput ?? input.finalInput,
           }, context?.routineScope, {
             defer: "none", abortSignal: options?.abortSignal, judgeBypass: true,
+            ...(stage.settings.model ? { stageOwnModel: true } : {}),
             ...(stage.settings.model || policyRedacted ? {
               tracingClassifier: builtin.getClassifier(),
               cacheScope: {

@@ -871,4 +871,21 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
     expect(result).toMatchObject({ decision: "ask", forceModal: true });
     expect(reviewer.calls()).toBe(0);
   });
+
+  it("refuses a model-less stage on the unavailable reviewer even when a hook redacted its view", async () => {
+    // A redacted view makes the stage pass a tracing classifier, but without
+    // its own model that classifier is the unavailable reviewer's.
+    const reviewer = llm("low");
+    const subject = makeSubject(reviewer.classifier);
+    subject.manager.setReviewer({
+      classifier: reviewer.classifier, cache: subject.cache, deferredQueue: subject.queue,
+      unavailableReason: "Selected permission reviewer model claude/retired is unavailable",
+    });
+    wire(subject, [builtin(subject, reviewer.classifier)], {}, undefined, {
+      beforeJudge: () => ({ action: "continue", redactInputKeys: ["command"] }),
+    });
+    const result = await dispatch(subject, "foreground");
+    expect(result).toMatchObject({ decision: "ask", forceModal: true });
+    expect(reviewer.calls()).toBe(0);
+  });
 });

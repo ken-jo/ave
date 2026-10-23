@@ -998,22 +998,39 @@ export function readJudgeSettings(
   }
 }
 
+export interface StoredJudgeModelRef { vendor: LLMVendor; model: string }
+
+function storedJudgeModelRef(raw: unknown): StoredJudgeModelRef | null {
+  if (typeof raw !== "string") return null;
+  const slash = raw.indexOf("/");
+  const vendor = raw.slice(0, slash);
+  return slash > 0 && isLLMVendor(vendor) ? { vendor, model: raw.slice(slash + 1) } : null;
+}
+
 /**
- * The provider named by the stored reviewer model (`permissions.judge.model`),
- * read without the model catalog: a change to that provider's route must
- * re-wire the reviewer even when the model is not (or no longer) offered.
- * `null` when unset, absent, unreadable or not a known provider.
+ * The models the stored judge settings name, as written and read without the
+ * model catalog: the reviewer model (`permissions.judge.model`) and each chain
+ * stage's own `model`, in chain order. A change to such a model's route or
+ * catalogue must re-wire even when the model is not (or no longer) offered.
+ * An entry is `null` when unset, absent or not a known provider; unreadable
+ * settings name nothing.
  */
-export function readJudgeReviewerVendor(pathOverride?: string): LLMVendor | null {
+export function readJudgeStoredModels(pathOverride?: string): {
+  reviewer: StoredJudgeModelRef | null;
+  stages: Array<StoredJudgeModelRef | null>;
+} {
   try {
     const judge = (readSettingsDocument(pathOverride ?? defaultPath()).permissions as Record<string, unknown> | undefined)?.judge;
-    const model = judge && typeof judge === "object" ? (judge as Record<string, unknown>).model : undefined;
-    if (typeof model !== "string") return null;
-    const vendor = model.slice(0, model.indexOf("/"));
-    return isLLMVendor(vendor) ? vendor : null;
+    const block = judge && typeof judge === "object" ? judge as Record<string, unknown> : {};
+    const chain = Array.isArray(block.chain) ? block.chain : [];
+    return {
+      reviewer: storedJudgeModelRef(block.model),
+      stages: chain.map((stage) =>
+        stage && typeof stage === "object" ? storedJudgeModelRef((stage as Record<string, unknown>).model) : null),
+    };
   } catch {
     // Unreadable settings re-wire through their own fault path; here they name no provider.
-    return null;
+    return { reviewer: null, stages: [] };
   }
 }
 
