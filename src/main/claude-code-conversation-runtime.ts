@@ -60,6 +60,7 @@ export class ClaudeCodeConversationRuntime {
   private activeCancel: (() => void) | null = null;
   private running = false;
   private stopped = false;
+  private termination: void | Promise<void> = undefined;
 
   constructor(private readonly options: ClaudeCodeConversationRuntimeOptions) {
     this.spawn = options.spawn ?? ((command, args, spawnOptions) =>
@@ -75,6 +76,7 @@ export class ClaudeCodeConversationRuntime {
     const { bridge, runtimeHome, workspaceDir, runtimeTempDir } = this.options;
     let configPath: string | null = null;
     let child: ChildProcess | null = null;
+    let termination: void | Promise<void>;
     let timer: NodeJS.Timeout | undefined;
     let boundaryTask: NodeJS.Immediate | undefined;
     let ended = false;
@@ -87,7 +89,11 @@ export class ClaudeCodeConversationRuntime {
     const kill = () => {
       const active = child;
       child = null;
-      if (active) forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+      if (active) {
+        termination = forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+        this.termination = termination;
+      }
+      return termination;
     };
     const fail = (error: Error) => {
       if (failure || ended) return;
@@ -253,18 +259,22 @@ export class ClaudeCodeConversationRuntime {
       signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);
       if (boundaryTask) clearImmediate(boundaryTask);
-      try { kill(); } finally {
+      try { await kill(); } finally {
         try { if (configPath) await fs.rm(configPath, { force: true }); }
         finally { this.running = false; }
       }
     }
   }
 
-  async cancelActiveTurn(): Promise<void> { this.activeCancel?.(); }
+  async cancelActiveTurn(): Promise<void> {
+    this.activeCancel?.();
+    await this.termination;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.activeCancel?.();
+    await this.termination;
     await this.options.bridge.stop();
   }
 }

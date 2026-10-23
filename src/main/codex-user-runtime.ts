@@ -395,8 +395,12 @@ function createCodexProbeRunner(
       outcome();
     };
     const fail = (reason: string) => {
-      finish(() => rejectPromise(new Error(reason)));
-      forceKillManagedChildProcess(child, `codex probe ${reason}`);
+      if (settled) return;
+      const termination = forceKillManagedChildProcess(child, `codex probe ${reason}`);
+      finish(() => {
+        if (termination) void termination.then(() => rejectPromise(new Error(reason)));
+        else rejectPromise(new Error(reason));
+      });
     };
     const timer = setTimeout(() => fail("timeout"), options.timeoutMs);
     timer.unref();

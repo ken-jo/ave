@@ -755,6 +755,7 @@ export class CodexConversationRuntime {
   private threadDynamicTools: NormalizedDynamicTools | null = null;
   private pendingThreadDynamicTools: NormalizedDynamicTools | null = null;
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private threadStartPromise: Promise<string> | null = null;
   private threadId: string | null = null;
@@ -876,12 +877,12 @@ export class CodexConversationRuntime {
   }
 
   /** Safely closes the isolated transport and force-kills its managed child if needed. */
-  stop(): void {
-    this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
+  stop(): void | Promise<void> {
+    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
   }
 
   async shutdown(): Promise<void> {
-    this.stop();
+    await this.stop();
   }
 
   private createActiveTurn(threadId: string, callbacks: CodexConversationCallbacks): ActiveTurn {
@@ -1080,7 +1081,7 @@ export class CodexConversationRuntime {
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
-      forceKillManagedChildProcess(child, "codex conversation missing transport streams");
+      await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }
 
@@ -1701,11 +1702,12 @@ export class CodexConversationRuntime {
     }
   }
 
-  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void {
+  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.closeTransport(error, child);
-    if (child) forceKillManagedChildProcess(child, "codex conversation transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "codex conversation transport closed");
+    return this.termination;
   }
 
   private closeTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess | null): void {
