@@ -1,5 +1,5 @@
+import { homedir } from "node:os";
 import { resolve as pathResolve } from "node:path";
-import { getPolicyHome } from "./policy-home.js";
 
 /**
  * Single source of truth for expanding a leading `~` in a path argument.
@@ -42,10 +42,20 @@ import { getPolicyHome } from "./policy-home.js";
  * are reachable from tests on a single OS.
  */
 export function expandLeadingTilde(path: string): string {
-  if (path === "~") return getPolicyHome();
-  if (path.startsWith("~/")) return pathResolve(getPolicyHome(), path.slice(2));
-  if (process.platform === "win32" && path.startsWith("~\\")) {
-    return pathResolve(getPolicyHome(), path.slice(2));
-  }
-  return path;
+  if (path !== "~" && !path.startsWith("~/") && !(process.platform === "win32" && path.startsWith("~\\"))) return path;
+  // An empty home would resolve the rest under cwd; refuse instead.
+  const home = homedir();
+  if (!home) throw new Error("Cannot resolve home for path policy");
+  return path === "~" ? home : pathResolve(home, path.slice(2));
+}
+
+/** Shell operands retain both the policy home and the shell's HOME anchor. */
+export function expandShellTildePaths(path: string): string[] {
+  const policyPath = expandLeadingTilde(path);
+  const home = process.env.HOME;
+  if (!home) return [policyPath];
+  const shellPath = path === "~" ? home
+    : path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))
+      ? pathResolve(home, path.slice(2)) : path;
+  return [...new Set([policyPath, shellPath])];
 }

@@ -1147,7 +1147,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     for (const p of sensitive) {
       expect(config.filesystem.denyWrite).toContain(p);
     }
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config") + (process.platform === "win32" ? sep : ""));
     expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh") + (process.platform === "win32" ? sep : ""));
   });
 
@@ -1155,7 +1155,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const extra = join(tmpdir(), "caller-supplied-write-deny-xyz");
     const config = buildSandboxConfig({ allowedDomains: [], denyWrite: [extra] });
     expect(config.filesystem.denyWrite).toContain(extra);
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config") + (process.platform === "win32" ? sep : ""));
 
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });

@@ -215,6 +215,7 @@ beforeAll(async () => {
     // 60s stamp budget on a developer machine. A home inside the staged root
     // keeps the same floor over a tree the test owns.
     vi.stubEnv("USERPROFILE", join(root, "home"));
+    vi.stubEnv("HOME", join(root, "home"));
     mkdirSync(join(root, "home"));
   }
   listener = createServer((socket) => {

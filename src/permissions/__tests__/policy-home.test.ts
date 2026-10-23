@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +9,8 @@ import { getPolicyHome } from "../../shared/policy-home.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
-import { SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
+import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
+import { sensitivePathInArgumentText, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 
 describe.skipIf(process.platform !== "win32")("home policy with an absent HOME", () => {
   let home: string;
@@ -56,12 +57,69 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     expect(assertReadableFilePath("~/.ave/secrets/x", home, [home])).toEqual({ ok: false, error: "sensitive-path" });
   });
 
-  it("uses explicit HOME before the profile for tilde and deny roots", () => {
+  it("keeps policy tilde on the profile when HOME differs", () => {
     const explicitHome = join(home, "explicit");
     vi.stubEnv("HOME", explicitHome);
-    expect(expandLeadingTilde("~")).toBe(explicitHome);
+    expect(expandLeadingTilde("~")).toBe(home);
     const suffix = process.platform === "win32" ? sep : "";
     expect(getDefaultSensitiveReadDenyPaths()).toContain(join(explicitHome, ".ssh") + suffix);
+  });
+
+  it("retains both deny floors across distinct, absent and equivalent homes", () => {
+    const explicitHome = join(home, "explicit");
+    mkdirSync(explicitHome);
+    vi.stubEnv("AVE_HOME", undefined);
+    for (const shellHome of [explicitHome, undefined, home, home.toUpperCase(), join(home, ".")]) {
+      vi.stubEnv("HOME", shellHome);
+      const homes = shellHome === explicitHome ? [home, explicitHome] : [home];
+      for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+        expect(new Set(denied.map((path) => path.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase())).size).toBe(denied.length);
+        for (const root of homes) {
+          for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+            const path = join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments);
+            expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
+          }
+          expect(denied).toContain(join(root, "AppData", "Roaming", "Ave"));
+        }
+        if (shellHome !== explicitHome) expect(denied.some((path) => path.startsWith(explicitHome + sep))).toBe(false);
+      }
+      const writes = getDefaultSensitiveWriteDenyPaths();
+      for (const root of homes) {
+        expect(writes).toContain(join(root, ".bashrc"));
+        expect(writes).toContain(join(root, ".config") + sep);
+        expect(writes).toContain(join(root, "Library", "LaunchAgents") + sep);
+      }
+      if (shellHome === explicitHome) {
+        const policy = getBuiltinShellReadPolicy([], explicitHome);
+        expect(policy.allowRead).toContain(canonicalizePathForMatch(join(home, ".ave", "sessions")));
+        expect(policy.denyRead).toContain(join(explicitHome, ".ave", "sessions") + sep);
+      }
+    }
+  });
+
+  it.each(["profile", "shell"])("checks the %s tilde anchor through shell operands and scanners", (anchor) => {
+    const explicitHome = join(home, "explicit");
+    mkdirSync(explicitHome);
+    vi.stubEnv("HOME", explicitHome);
+    const sensitiveHome = anchor === "profile" ? home : explicitHome;
+    const ordinaryHome = anchor === "profile" ? explicitHome : home;
+    mkdirSync(join(sensitiveHome, ".ssh"));
+    mkdirSync(join(ordinaryHome, "alias"));
+    symlinkSync(join(sensitiveHome, ".ssh"), join(sensitiveHome, "alias"), "junction");
+    // The alias makes checking only one expansion observably insufficient.
+    if (anchor === "profile") {
+      expect(findShellPathPolicyViolation("cat ~/alias/key", home, home, [explicitHome], false, {
+        dialect: "bash", environment: { HOME: explicitHome, USERPROFILE: home },
+      })?.kind).toBe("sensitive-path");
+    } else {
+      expect(sensitivePathInArgumentText("~/alias/key", home)).not.toBeNull();
+      expect(shellSensitivePathSignal("cat ~/alias/key", home)).not.toBeNull();
+    }
+    for (const root of [home, explicitHome]) {
+      expect(findShellPathPolicyViolation("cat ~/.ssh/key", home, home, [explicitHome], false, {
+        dialect: "bash", environment: { HOME: root, USERPROFILE: home },
+      })?.kind).toBe("sensitive-path");
+    }
   });
 
   it("keeps child HOME absent", () => {

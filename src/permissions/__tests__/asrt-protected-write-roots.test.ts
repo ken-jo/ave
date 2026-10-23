@@ -301,6 +301,7 @@ describe("a confined child cannot reach user data through a grant", () => {
       // past srt-win's 60s stamp budget on a developer machine. A home the
       // test owns keeps the same floor, as asrt-sandbox.test.ts does.
       vi.stubEnv("USERPROFILE", join(root, "home"));
+      vi.stubEnv("HOME", join(root, "home"));
       mkdirSync(join(root, "home"));
     }
     userData = join(root, "custom-user-data");
