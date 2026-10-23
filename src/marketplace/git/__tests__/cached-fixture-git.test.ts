@@ -1,10 +1,10 @@
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
-import { copyFixtureRepo, createFixtureRepo, removeFixtureRepo, startGitHttpServer, type FixtureRepo, type GitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
+import { copyFixtureRepo, createFixtureRepo, hostGit, removeFixtureRepo, startGitHttpServer, type FixtureRepo, type GitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { BareRepo } from "../repo.js";
@@ -39,6 +39,28 @@ describe("cached fixture repositories", () => {
   });
 
   const client = () => BareRepo.init(commands, join(root, `client-${++sequence}`));
+
+  it("requires both seed HEADs to match the requested branch before copying", async () => {
+    expect(() => copyFixtureRepo(root, "mismatch", repo, { branch: "release" })).toThrow("fixture seed must be on branch release");
+    expect(existsSync(join(root, "mismatch"))).toBe(false);
+    const seed = createFixtureRepo(root, "release-seed", "release");
+    let copied: FixtureRepo | undefined;
+    try {
+      // Check the worktree as well as the served repository's HEAD.
+      writeFileSync(join(seed.work, ".git", "HEAD"), "ref: refs/heads/main\n");
+      expect(() => copyFixtureRepo(root, "work-mismatch", seed, { branch: "release" })).toThrow("fixture seed must be on branch release");
+      expect(existsSync(join(root, "work-mismatch"))).toBe(false);
+      writeFileSync(join(seed.work, ".git", "HEAD"), "ref: refs/heads/release\n");
+      copied = copyFixtureRepo(root, "release-copy", seed, { branch: "release", publishByCopy: true });
+      const commit = copied.commit({ "README.md": "release\n" }, "publish release");
+      expect(readFileSync(join(copied.work, ".git", "HEAD"), "utf8").trim()).toBe("ref: refs/heads/release");
+      expect(hostGit(["rev-parse", "refs/heads/release"], copied.bare)).toBe(commit);
+      expect(existsSync(join(copied.bare, "refs", "heads", "main"))).toBe(false);
+    } finally {
+      if (copied) await removeFixtureRepo(copied);
+      await removeFixtureRepo(seed);
+    }
+  });
 
   it("copies authored objects without overwriting another client's refs, and invalidates on publish", async () => {
     const run = vi.spyOn(git.runner, "run");

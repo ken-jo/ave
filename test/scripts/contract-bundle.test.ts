@@ -196,6 +196,7 @@ if (op === "head-object") {
     writeFileSync(join(bin, "cosign"), `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, "cosign " + args.join(" ") + "\\n");
 const opt = (name) => args[args.indexOf(name) + 1];
 const ok = args[0] === "verify-blob"
   && opt("--certificate-identity") === ${JSON.stringify(IDENTITY)}
@@ -210,7 +211,7 @@ process.exit(ok ? 0 : 1);
     return { bin, objects, log };
   }
 
-  async function upload(args: string[], tools: { bin: string }, realProcess = false) {
+  async function upload(args: string[], tools: { bin: string; log: string }, realProcess = false) {
     const env = { ...process.env, ...secrets, PATH: `${tools.bin}:${process.env.PATH ?? ""}` };
     if (realProcess) return spawnSync(process.execPath, [UPLOAD, ...args], { cwd: root, encoding: "utf8", env });
 
@@ -218,31 +219,31 @@ process.exit(ok ? 0 : 1);
     // arguments and child environments and handles their files and exit codes.
     const childProcess = await import("node:child_process");
     vi.resetModules();
-    vi.doMock("node:child_process", () => ({
-      ...childProcess,
-      spawnSync: (command: string, argv: string[], options: { env: NodeJS.ProcessEnv }) => {
-        if (command !== "aws" && command !== "cosign") throw new Error(`unexpected tool: ${command}`);
-        let stdout = "";
-        let stderr = "";
-        let status = 0;
-        const exited = {};
-        try {
-          runInNewContext(readFileSync(join(tools.bin, command), "utf8"), {
-            require: createRequire(import.meta.url),
-            process: {
-              argv: [process.execPath, command, ...argv],
-              env: options.env,
-              stdout: { write: (value: string) => { stdout += value; } },
-              stderr: { write: (value: string) => { stderr += value; } },
-              exit: (code: number) => { status = code; throw exited; },
-            },
-          });
-        } catch (error) {
-          if (error !== exited) throw error;
-        }
-        return { status, stdout, stderr };
-      },
-    }));
+    const loggedCalls = () => existsSync(tools.log) ? readFileSync(tools.log, "utf8").trim().split("\n").filter(Boolean).length : 0;
+    const callsBefore = loggedCalls();
+    const runTool = vi.fn((command: string, argv: string[], options: { env: NodeJS.ProcessEnv }) => {
+      if (command !== "aws" && command !== "cosign") throw new Error(`unexpected tool: ${command}`);
+      let stdout = "";
+      let stderr = "";
+      let status = 0;
+      const exited = {};
+      try {
+        runInNewContext(readFileSync(join(tools.bin, command), "utf8"), {
+          require: createRequire(import.meta.url),
+          process: {
+            argv: [process.execPath, command, ...argv],
+            env: options.env,
+            stdout: { write: (value: string) => { stdout += value; } },
+            stderr: { write: (value: string) => { stderr += value; } },
+            exit: (code: number) => { status = code; throw exited; },
+          },
+        });
+      } catch (error) {
+        if (error !== exited) throw error;
+      }
+      return { status, stdout, stderr };
+    });
+    vi.doMock("node:child_process", () => ({ ...childProcess, spawnSync: runTool }));
     const previous = { argv: process.argv, env: process.env, exitCode: process.exitCode };
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -253,6 +254,9 @@ process.exit(ok ? 0 : 1);
       process.env = env;
       process.exitCode = 0;
       await vi.importActual("../../scripts/upload-contract-bundle-r2.mjs");
+      // A real tool process writes the same log, so a lost mock cannot silently pass.
+      // Local validation failures legitimately invoke no tools.
+      expect(runTool).toHaveBeenCalledTimes(loggedCalls() - callsBefore);
       return { status: process.exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
     } finally {
       process.argv = previous.argv;

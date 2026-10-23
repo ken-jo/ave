@@ -91,13 +91,18 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
  * Copies own their refs, index and objects; callers clean work and bare trees.
  */
 export function copyFixtureRepo(root: string, name: string, seed: FixtureRepo, options: { branch?: string; publishByCopy?: boolean } = {}): FixtureRepo {
+  const branch = options.branch ?? "main";
+  const expectedHead = `ref: refs/heads/${branch}`;
+  for (const head of [join(seed.bare, "HEAD"), join(seed.work, ".git", "HEAD")]) {
+    if (readFileSync(head, "utf8").trim() !== expectedHead) throw new Error(`fixture seed must be on branch ${branch}`);
+  }
   const bare = join(root, name);
   const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
   cpSync(seed.bare, bare, { recursive: true });
   cpSync(seed.work, work, { recursive: true });
   // Copy publication addresses `bare` directly, so it never uses the seed's origin.
   if (!options.publishByCopy) hostGit(["remote", "set-url", "origin", bare], work);
-  return fixtureRepo(bare, work, options.branch ?? "main", options.publishByCopy);
+  return fixtureRepo(bare, work, branch, options.publishByCopy);
 }
 
 function fixtureRepo(bare: string, work: string, branch: string, publishByCopy = false): FixtureRepo {
