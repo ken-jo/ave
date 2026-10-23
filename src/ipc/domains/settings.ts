@@ -78,7 +78,8 @@ import {
   type SubscriptionRuntimeService,
 } from "../../main/subscription-runtime-service.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { readJudgeReviewerVendor } from "../../permissions/permission-settings-store.js";
+import { readJudgeReviewerModel } from "../../permissions/permission-settings-store.js";
+import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 
 let subscriptionRuntimeStatusRevision = 0;
@@ -319,16 +320,26 @@ function shortcutStartupSignature(
 
 /**
  * What the permission reviewer runs on, for re-wire detection: the active chat
- * route, plus the route of a reviewer model the user selected on another
- * provider (`permissions.judge.model`), whose endpoint or catalogue can change
- * without the chat route changing.
+ * route, plus — when the user selected a reviewer model
+ * (`permissions.judge.model`) — whether that model is in its provider's
+ * catalogue, and the route of that provider when it is not the chat one. A
+ * synced catalogue can add or drop the selected model without the chat route
+ * changing, whichever provider it is on.
  */
-function activeLlmIdentity(llm: LLMSettings): string {
+function activeLlmIdentity(
+  llm: LLMSettings,
+  installedProviderPresets: MarketplaceSettings["installedProviderPresets"],
+): string {
   const provider = llm.provider;
   const block = llm.vendors?.[provider];
-  const reviewerVendor = readJudgeReviewerVendor();
+  const reviewerModel = readJudgeReviewerModel();
+  const reviewerVendor = reviewerModel?.vendor;
   const reviewerBlock = reviewerVendor && reviewerVendor !== provider ? llm.vendors?.[reviewerVendor] : undefined;
   return JSON.stringify({
+    ...(reviewerModel ? {
+      reviewerModelAvailable: judgeModelCatalogFrom({ ...llm, installedProviderPresets: installedProviderPresets ?? [] })
+        .optionsFor(reviewerModel.vendor).includes(reviewerModel.model),
+    } : {}),
     ...(reviewerVendor && reviewerVendor !== provider ? {
       reviewerRoute: {
         vendor: reviewerVendor,
@@ -336,9 +347,6 @@ function activeLlmIdentity(llm: LLMSettings): string {
         baseUrl: reviewerBlock?.baseUrl ?? null,
         vertexProject: reviewerBlock?.vertexProject ?? null,
         vertexLocation: reviewerBlock?.vertexLocation ?? null,
-        modelLists: Object.values(llm.modelListCache ?? {})
-          .filter((entry) => entry.vendor === reviewerVendor)
-          .map((entry) => [entry.endpoint, entry.credentialScope ?? null, entry.fetchedAt]),
       },
     } : {}),
     provider,
@@ -425,7 +433,8 @@ async function finishProviderPresetMarketplaceMutation(
 ): Promise<{ ok: false; error: string; message: string } | null> {
   const newLlm = deps.settingsService.get("llm");
   let rewireError: { ok: false; error: string; message: string } | null = null;
-  if (activeLlmIdentity(prevLlm) !== activeLlmIdentity(newLlm)) {
+  const newInstalledProviderPresets = deps.settingsService.get("marketplace").installedProviderPresets;
+  if (activeLlmIdentity(prevLlm, prevInstalledProviderPresets) !== activeLlmIdentity(newLlm, newInstalledProviderPresets)) {
     try {
       deps.rewireReviewerAgent?.();
     } catch (err) {
@@ -898,7 +907,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // active identity before patching so provider/model/baseUrl/Vertex changes
     // can refresh reviewer wiring and cache scope immediately.
     const prevLlm = settingsService.get("llm");
-    const prevActiveLlmIdentity = activeLlmIdentity(prevLlm);
+    const prevActiveLlmIdentity = activeLlmIdentity(prevLlm, settingsService.get("marketplace").installedProviderPresets);
     // Legacy guard: still detect Foundry baseUrl changes even when
     // the active provider is not Foundry, preserving the prior explicit rewire.
     const prevBaseUrl = prevLlm.vendors?.["azure-foundry"]?.baseUrl ?? null;
@@ -950,7 +959,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     };
     const newLlm = appliedLlm;
     const ownsAppliedLlm = sameLlmSettings(settingsService.get("llm"), appliedLlm);
-    const newActiveLlmIdentity = activeLlmIdentity(newLlm);
+    const newActiveLlmIdentity = activeLlmIdentity(newLlm, settingsService.get("marketplace").installedProviderPresets);
     const newBaseUrl = newLlm.vendors?.["azure-foundry"]?.baseUrl ?? null;
     if (
       ownsAppliedLlm

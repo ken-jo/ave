@@ -999,18 +999,19 @@ export function readJudgeSettings(
 }
 
 /**
- * The provider named by the stored reviewer model (`permissions.judge.model`),
- * read without the model catalog: a change to that provider's route must
- * re-wire the reviewer even when the model is not (or no longer) offered.
+ * The stored reviewer model (`permissions.judge.model`) as written, read
+ * without the model catalog: a change to that provider's route or catalogue
+ * must re-wire the reviewer even when the model is not (or no longer) offered.
  * `null` when unset, absent, unreadable or not a known provider.
  */
-export function readJudgeReviewerVendor(pathOverride?: string): LLMVendor | null {
+export function readJudgeReviewerModel(pathOverride?: string): { vendor: LLMVendor; model: string } | null {
   try {
     const judge = (readSettingsDocument(pathOverride ?? defaultPath()).permissions as Record<string, unknown> | undefined)?.judge;
-    const model = judge && typeof judge === "object" ? (judge as Record<string, unknown>).model : undefined;
-    if (typeof model !== "string") return null;
-    const vendor = model.slice(0, model.indexOf("/"));
-    return isLLMVendor(vendor) ? vendor : null;
+    const raw = judge && typeof judge === "object" ? (judge as Record<string, unknown>).model : undefined;
+    if (typeof raw !== "string") return null;
+    const slash = raw.indexOf("/");
+    const vendor = raw.slice(0, slash);
+    return slash > 0 && isLLMVendor(vendor) ? { vendor, model: raw.slice(slash + 1) } : null;
   } catch {
     // Unreadable settings re-wire through their own fault path; here they name no provider.
     return null;

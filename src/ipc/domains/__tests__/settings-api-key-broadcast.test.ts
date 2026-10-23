@@ -25,7 +25,8 @@ vi.mock("electron", () => ({
     }),
   },
 }));
-vi.mock("../../../engine/llm/model-list.js", () => ({
+vi.mock("../../../engine/llm/model-list.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../engine/llm/model-list.js")>(),
   listLlmModelsFromSettings: listLlmModelsFromSettingsMock,
 }));
 
@@ -444,6 +445,51 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       const { registerSettingsHandlers } = await import("../settings.js");
       registerSettingsHandlers(deps as never);
       await invoke("ave:settings:update", { llm: { vendors: { claude: { baseUrl: "https://claude-b.example" } } } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["rewires", ["team-reviewer"], 1],
+    ["does not rewire", ["other-model"], 0],
+  ] as const)("%s when the chat provider's synced catalogue changes a same-provider reviewer model's availability (listing %j)", async (_label, listed, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "reviewer-catalogue-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
+    try {
+      const rewire = vi.fn();
+      const llm = (models: readonly string[] | null) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" } },
+        ...(models ? {
+          modelListCache: {
+            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
+          },
+        } : {}),
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? null : listed);
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      // The chat route itself is unchanged: only the synced catalogue moves.
+      await invoke("ave:settings:update", { llm: { modelListCache: llm(listed).modelListCache } });
       expect(rewire).toHaveBeenCalledTimes(rewires);
     } finally {
       vi.unstubAllEnvs();
