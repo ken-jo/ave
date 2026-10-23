@@ -43,7 +43,7 @@ describe("pre-push related test coverage", () => {
     const runFastChecks = runInNewContext(source.slice(start, end) + "; runAppFastSourceChecks", {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
       join, tmpdir, mkdtempSync, rmSync,
-      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {},
+      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 1 }),
       withHostLock: (_options: object, callback: () => unknown) => callback(),
       run: (_command: string, args: string[]) => { runs.push(args); }, withoutGitContext: () => ({}),
@@ -63,7 +63,7 @@ describe("pre-push related test coverage", () => {
     const runFastChecks = runInNewContext(source.slice(start, end) + "; runAppFastSourceChecks", {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
       join, tmpdir, mkdtempSync, rmSync,
-      runAppTypecheckGate: () => { calls.push("typecheck"); }, ensureAppTestRuntimeAbi: () => {},
+      runAppTypecheckGate: () => { calls.push("typecheck"); }, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
       MESSAGE_CATALOG_CHECK_SCRIPTS: ["check:i18n-catalog", "check:i18n-barrels"],
       runPackageScripts: (_dir: string, scripts: string[]) => { calls.push(scripts.join(" ")); },
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 3 }),
