@@ -1,7 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
-import { NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TEST, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -700,7 +700,7 @@ describe("Claude Code CLI discovery", () => {
     },
   );
 
-  it("discards private copies after retryable qualification failures", async () => {
+  it("discards private copies after retryable qualification failures", NATIVE_PROBE_HEAVY_TEST, async () => {
     const directories = paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
     const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", process.platform === "win32" ? "claude.exe" : "claude"));

@@ -96,6 +96,14 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
  */
 export const NATIVE_LOCATION_WAIT = { timeout: process.platform === "win32" ? 15_000 : 1_000 } as const;
 
+/**
+ * Test budget for the few Windows tests that admit a whole fixture through
+ * serial ACL probes: about 65 PowerShell probes at ~0.6 s each, ~40 s with
+ * the machine idle, which parallel load pushes past the 45-second default.
+ * The tests assert admission outcomes, not speed.
+ */
+export const NATIVE_PROBE_HEAVY_TEST = process.platform === "win32" ? { timeout: 240_000 } : {};
+
 /** Windows counterpart: the real ACL probe runs, then fixture ancestors read as owner-only. */
 export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
   if (process.platform !== "win32") return actual;
