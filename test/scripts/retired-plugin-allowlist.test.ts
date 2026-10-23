@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import { scanRetiredPluginIds } from "../../scripts/check-retired-name.mjs";
 import { RETIRED_PLUGIN_IDS, retiredPluginId, retiredPluginPattern } from "../../scripts/lib/retired-plugin-ids.mjs";
 
@@ -15,8 +16,8 @@ const libraryAllowance = { path, words: entry.words, text: "{Id}", reason: "exte
 const pinAllowance = { path, words: entry.words, text: "`{id}==0.2.8`", reason: "external library pin" };
 const roots: string[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function fixture(content: string): string {
