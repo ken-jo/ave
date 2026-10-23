@@ -8,8 +8,17 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
-vi.mock("node:child_process", async (importOriginal) =>
-  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal());
+  // Counts the access-rule probes: the Windows ACL query or the macOS metadata listing.
+  const execFile = ((...args: unknown[]) => {
+    const [file, , options] = args as [string, unknown, { env?: NodeJS.ProcessEnv } | undefined];
+    if (typeof options?.env?.AVE_EXECUTABLE_ACL_PATHS === "string" || file === "/bin/ls") accessRuleProbes.count++;
+    return (actual.execFile as (...rest: unknown[]) => unknown)(...args);
+  }) as typeof actual.execFile;
+  return { ...actual, execFile };
+});
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -210,6 +219,21 @@ describe("sealed subscription package artifacts", SEALED_ARTIFACT_OPTIONS, () =>
     symlinkSync(outside, join(fixture.packageRoot, "linked.cjs"));
     await expect(copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory))
       .rejects.toThrow("contains a symbolic link");
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("admits each verify through one access-rule probe regardless of file count", async () => {
+    const counts: number[] = [];
+    for (const size of [1, 8]) {
+      const fixture = fixtureForSnapshot();
+      writePackage(fixture.packageRoot, "fixture-entry", Object.fromEntries(Array.from({ length: size }, (_, index) =>
+        [join("lib", `part-${index}`, "index.cjs"), `module.exports = ${index};
+`])));
+      const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+      accessRuleProbes.count = 0;
+      await artifact.verify();
+      counts.push(accessRuleProbes.count);
+    }
+    expect(counts).toEqual([1, 1]);
   });
 });
 
