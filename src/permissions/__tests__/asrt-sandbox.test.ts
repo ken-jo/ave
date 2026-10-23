@@ -186,9 +186,11 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           : { filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
-      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
+      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "--srt-win",
+      // "exec", ...], the dispatch argument ASRT prepends to every srt-win spawn.
       expect(argv.length).toBeGreaterThanOrEqual(3);
-      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+      if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+      else expect(argv[1]).toBe("-c");
 
       const res = await runArgv(argv, env, writeDir);
       cleanupAsrtSandboxAfterCommand();
@@ -470,7 +472,8 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
-    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+    if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+    else expect(argv[1]).toBe("-c");
   });
 });
 
