@@ -349,8 +349,12 @@ Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
 so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
 follows links before parent components and preserves filesystem spelling.
 Metadata routing inspects at most 64 components; missing-path resolution is
-bounded at 64 ancestors. Existing routing links receive literal entry pins,
-and a missing target also protects its first missing component. An unresolved
+bounded at 64 ancestors. Existing routing links receive literal entry pins.
+On Linux, a bind mount follows the link instead of protecting its directory
+entry, so every write grant containing the routing link's parent is removed.
+Independent child and sibling grants remain; an ordinary write grant on that
+same parent cannot coexist with this protection. A missing target also protects
+its first missing component. An unresolved
 parent component beyond a missing ancestor refuses preparation.
 Unexpected discovery failures fail closed, either by refusing preparation or
 removing the affected root's write grant rather than trusting partial results.

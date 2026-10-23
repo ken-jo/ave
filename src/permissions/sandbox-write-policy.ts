@@ -270,6 +270,18 @@ export function buildMandatorySandboxWritePolicy(
     for (const path of local) discovered.add(path);
     for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
+  if (process.platform === "linux") {
+    // A bind mount follows a routing symlink to its target; it cannot pin the
+    // directory entry while leaving that entry's parent writable. Remove every
+    // grant that could replace the link. Independent child and sibling grants
+    // remain available because they do not make the routing parent writable.
+    for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
+      const routingParent = dirname(routingPath);
+      for (const root of roots) {
+        if (isPhysicalPathWithin(root, routingParent)) revoked.add(root);
+      }
+    }
+  }
   const retained = roots.filter(root => !revoked.has(root));
   for (const path of discovered) {
     // Revoked roots are read-only through the default filesystem jail. Never

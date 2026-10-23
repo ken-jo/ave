@@ -189,11 +189,11 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
     const alternateAttack = proveConfigAttack(project, join(otherMetadata, "config"));
     rmSync(route);
     symlinkSync(join(physical, "deep"), route, "dir");
-    const ordinaryLink = join(storage, "ordinary-link");
-    const linkControl = join(storage, "ordinary-link-worked");
+    const ordinaryLink = join(project, "ordinary-link");
+    const linkControl = join(project, "ordinary-link-worked");
     const prepare = `ln -s ${shellQuote(otherParent)} ${shellQuote(ordinaryLink)} && rm ${shellQuote(ordinaryLink)} && printf allowed > ${shellQuote(linkControl)} && rm ${shellQuote(route)} && ln -s ${shellQuote(join(otherParent, "deep"))} ${shellQuote(route)}`;
     await blockedWrite(join(otherMetadata, "config"), alternateAttack, [project, storage], undefined, prepare);
-    expect(readFileSync(linkControl, "utf8"), "ordinary symlink creation and removal must remain allowed").toBe("allowed");
+    expect(readFileSync(linkControl, "utf8"), "ordinary checkout symlink creation and removal must remain allowed").toBe("allowed");
     expect(realpathSync(route), "the metadata routing link must retain its original target").toBe(join(physical, "deep"));
     git(project, "status", "--porcelain");
     expect(existsSync(trace)).toBe(false);

@@ -1359,11 +1359,11 @@ describe("runtime write defaults", () => {
 });
 
 describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
-  it("shares explicitly granted temp writes with the host and later commands", async () => {
+  it("retains an explicitly granted temp directory for the host and later commands", async () => {
     expect(await asrtCanInitialize()).toBe(true);
     const root = mkdtempSync("/tmp/ave-ordinary-temp-");
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp", root] });
       const target = join(root, "shared.txt");
       const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`, { commandId: TEST_COMMAND_ID });
       expect(first.argv[1]).toBe("-c");

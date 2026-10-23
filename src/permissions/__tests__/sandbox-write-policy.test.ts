@@ -125,21 +125,38 @@ describe("mandatory sandbox control-file writes", () => {
     const gitDir = join(external, "metadata");
     const commonRoot = join(root, "shared");
     const commonDir = join(commonRoot, "common");
+    const independent = join(external, "independent");
     mkdirSync(checkout);
     mkdirSync(join(external, "nested"), { recursive: true });
     mkdirSync(gitDir);
     mkdirSync(join(commonRoot, "nested"), { recursive: true });
     mkdirSync(commonDir);
-    symlinkSync(join(external, "nested"), join(checkout, "metadata-link"), "dir");
+    mkdirSync(independent);
+    const metadataLink = join(external, "metadata-link");
+    symlinkSync(join(external, "nested"), metadataLink, "dir");
     symlinkSync(join(commonRoot, "nested"), join(gitDir, "common-link"), "dir");
-    writeFileSync(join(checkout, ".git"), "gitdir: metadata-link/../metadata\n");
+    writeFileSync(join(checkout, ".git"), `gitdir: ${metadataLink}/../metadata\n`);
     writeFileSync(join(gitDir, "commondir"), "common-link/../common\n");
-    const denies = buildMandatorySandboxWritePolicy([checkout]).denyWrite;
+    const policy = buildMandatorySandboxWritePolicy([root, checkout, external, independent]);
+    const denies = policy.denyWrite;
     expect(denies).toContain(gitDir);
     expect(denies).toContain(commonDir);
-    expect(denies).toContainEqual({ path: join(checkout, "metadata-link"), literal: true });
+    expect(denies).toContainEqual({ path: metadataLink, literal: true });
     expect(denies).toContainEqual({ path: join(gitDir, "common-link"), literal: true });
     expect(denies).not.toContain(join(checkout, "metadata"));
+    const linuxGrants = [checkout, independent];
+    expect(policy.allowWrite).toEqual(process.platform === "linux"
+      ? linuxGrants
+      : [root, checkout, external, independent]);
+    if (process.platform !== "linux") {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      try {
+        Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+        expect(buildMandatorySandboxWritePolicy([root, checkout, external, independent]).allowWrite).toEqual(linuxGrants);
+      } finally {
+        Object.defineProperty(process, "platform", platform);
+      }
+    }
   });
 
   it.each(["gitdir", "commondir"])("rejects non-roundtrippable UTF-8 in %s metadata", (kind) => {
