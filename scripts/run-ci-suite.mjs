@@ -28,6 +28,8 @@
 // above the limit. Uncertainty is recorded in the reason; whole-suite checking
 // waits for the category merge. Failed discovery keeps every other selection
 // source, including the nonempty must-run set. Local pre-push is unchanged.
+// An integration-base PR needs a resolved merge-commit diff: a missing merge
+// commit or an unparseable diff fails CI before any selection can omit triggers.
 // The selection is the changed test files, the tests `vitest related` reaches
 // from each changed module (every
 // transitive importer, not the pre-push tier's narrowed set), the tests that
@@ -297,9 +299,8 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
   let tests = [...new Set([...traced, ...lockSuites, ...mustRunTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
   if (missing.length > 0) {
-    const reason = `${missing[0]} is not a collected test file of this tree`;
-    if (!integrationBase) return full(reason);
-    fullReasons.push(reason);
+    if (!integrationBase) return full(`${missing[0]} is not a collected test file of this tree`);
+    fullReasons.push(...missing.map((test) => `${test} dropped: not a collected test file of this tree`));
     tests = tests.filter((test) => trackedTests.includes(test));
   }
   if (integrationBase && (mustRunTests.length === 0 || mustRunTests.some((test) => !tests.includes(test)))) {
@@ -374,11 +375,16 @@ export function planCiSuite(eventName, { headRef, baseRef } = {}) {
     return full(`${headRef} -> ${baseRef} is a category merge to main, which runs the full suite`);
   }
   const changes = pullRequestChanges();
-  if (changes.reason && !baseRef.startsWith("integration/")) return full(changes.reason);
+  if (changes.reason) {
+    if (baseRef.startsWith("integration/")) {
+      throw new Error(`integration base requires a resolved pull request diff: ${changes.reason}`);
+    }
+    return full(changes.reason);
+  }
   const trackedTests = trackedVitestFiles();
   const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests);
-  const plan = selectCiTests({
-    changes: changes.entries ?? [],
+  return selectCiTests({
+    changes: changes.entries,
     baseRef,
     trackedTests,
     mustRunTests,
@@ -391,8 +397,6 @@ export function planCiSuite(eventName, { headRef, baseRef } = {}) {
     },
     discoverRelated: discoverRelatedTests,
   });
-  if (changes.reason) plan.reason = `${changes.reason}; ${plan.reason}`;
-  return plan;
 }
 
 function describeRun(plan, coverage) {

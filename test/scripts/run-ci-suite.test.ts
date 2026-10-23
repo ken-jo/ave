@@ -8,7 +8,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   AFFECTED_TEST_LIMIT,
@@ -28,6 +28,11 @@ import {
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -252,7 +257,7 @@ describe("CI selection for integration bases", () => {
   const wide = Array.from({ length: AFFECTED_TEST_LIMIT + 1 }, (_, index) => `test/wide-${index}.test.ts`);
   const collected = [changed, reader, related, mustRun, scriptLock, ...preloadLocks, ...wide];
 
-  function scoped(path: string, discovery: "normal" | "unreached" | "failed" | "malformed" | "wide", baseRef = "integration/test-speed") {
+  function scoped(path: string, discovery: "normal" | "unreached" | "failed" | "malformed" | "uncollected" | "wide", baseRef = "integration/test-speed") {
     return selectCiTests({
       baseRef,
       changes: [modified(path), modified(changed), modified("src/ui/renderer/types.ts")],
@@ -261,7 +266,8 @@ describe("CI selection for integration bases", () => {
       readText: (file) => file === reader ? `readFileSync("${path}")` : "export {};",
       discoverRelated: (paths) => discovery === "failed" ? null : discovery === "malformed" ? JSON.parse("{}") : paths.map((source) => ({
         source,
-        tests: discovery === "unreached" && source === path ? [] : discovery === "wide" ? wide : [related],
+        tests: discovery === "unreached" && source === path ? [] : discovery === "wide" ? wide
+          : discovery === "uncollected" ? [related, "test/gone.test.ts"] : [related],
       })),
     });
   }
@@ -308,6 +314,14 @@ describe("CI selection for integration bases", () => {
       locks: preloadLocks,
     },
     {
+      name: "an uncollected related test",
+      path: "src/feature.ts",
+      discovery: "uncollected" as const,
+      fullReason: "test/gone.test.ts dropped: not a collected test file of this tree",
+      relatedCount: 2,
+      locks: preloadLocks,
+    },
+    {
       name: "more than the limit",
       path: "src/wide.ts",
       discovery: "wide" as const,
@@ -340,6 +354,49 @@ describe("CI selection for integration bases", () => {
     expect(() => expandMustRunTests({ groups: {} }, collected)).toThrow("must select at least one collected test file");
     expect(() => ciSuiteArguments({ mode: "affected", reason: "empty", tests: [] }, false))
       .toThrow("affected CI selection must not be empty");
+  });
+});
+
+describe("unresolved pull request diffs", () => {
+  const cases = [
+    {
+      name: "a HEAD that is not a merge commit",
+      outputs: ["head parent\n"],
+      reason: "HEAD has 1 parent(s), not a pull request merge commit",
+    },
+    {
+      name: "an unparseable merge diff",
+      outputs: ["head parent other\n", "not a raw diff\0"],
+      reason: "the merge commit's diff could not be parsed",
+    },
+  ];
+
+  function withGitOutputs(outputs: string[], check: () => void) {
+    const gitRun = vi.mocked(spawnSync);
+    gitRun.mockClear();
+    for (const stdout of outputs) {
+      gitRun.mockReturnValueOnce({ pid: 1, output: [], stdout, stderr: "", status: 0, signal: null });
+    }
+    try {
+      check();
+      expect(gitRun).toHaveBeenCalledTimes(outputs.length);
+    } finally {
+      gitRun.mockReset();
+    }
+  }
+
+  it.each(cases)("fails clearly for $name on an integration base before selecting tests", ({ outputs, reason }) => {
+    withGitOutputs(outputs, () => {
+      expect(() => planCiSuite("pull_request", { headRef: "ci/change", baseRef: "integration/test-speed" }))
+        .toThrow(`integration base requires a resolved pull request diff: ${reason}`);
+    });
+  });
+
+  it.each(cases)("keeps the full fallback for $name on a main base", ({ outputs, reason }) => {
+    withGitOutputs(outputs, () => {
+      expect(planCiSuite("pull_request", { headRef: "ci/change", baseRef: "main" }))
+        .toEqual({ mode: "full", reason, tests: [] });
+    });
   });
 });
 

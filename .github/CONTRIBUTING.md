@@ -76,6 +76,9 @@ catalogs, deleted or renamed modules, declarations or entry points, computed
 imports, modules no test reaches, failed discovery, or more than 600 selected
 files. The reason records uncertainty; failed discovery keeps the other sources
 and the must-run set. Whole-suite checking waits for the category merge.
+An integration-base PR must have a readable merge-commit diff. A missing merge
+commit or an unparseable diff fails CI with the cause before selecting tests:
+without the changed paths, changed tests and lock-suite triggers cannot be selected.
 PRs into other bases, including non-integration branches into `main`, keep the
 untrusted-selection fallback to full. Local pre-push policy is unchanged. Coverage is
 periodic: instrumentation and the global thresholds (`check:test-coverage`)

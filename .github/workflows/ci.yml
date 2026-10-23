@@ -169,8 +169,9 @@ jobs:
         # integration/* always keep the best traced selection plus the nonempty
         # must-run set (config/ci-must-run-tests.json), even when discovery fails
         # or selection is untrusted; whole-suite checking waits for the category
-        # merge. Other PR bases keep the untrusted -> full rule. Local pre-push
-        # is unchanged. Coverage is periodic:
+        # merge. An unresolved integration-base PR diff fails before selection.
+        # Other PR bases keep the untrusted -> full rule. Local pre-push is
+        # unchanged. Coverage is periodic:
         # only the nightly schedule and a manual dispatch run
         # `check:test-coverage` (instrumentation and every global threshold).
         # The step summary names the mode and the reason.
