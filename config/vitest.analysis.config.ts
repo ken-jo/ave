@@ -198,7 +198,7 @@ export default defineConfig({
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },
