@@ -157,6 +157,8 @@ export class McpManager {
    * Until the marketplace wires its lock state in, none can be.
    */
   private packageTransactionsIdle: () => boolean = () => true;
+  /** Package kinds whose last bundled reconcile could not run; retried once package transactions settle. */
+  private readonly deferredBundledReconciles = new Set<BundledPackageRef["kind"]>();
   private readonly authentications = new Map<string, Promise<McpAuthenticationResult>>();
   private readonly oauthRetirements = new Map<string, number>();
   private readonly serverLifecycleLocks = new Map<string, Promise<void>>();
@@ -273,6 +275,17 @@ export class McpManager {
   registerBundledCredentialSource(kind: BundledPackageRef["kind"], source: BundledCredentialSource): void {
     this.bundledCredentialSources.set(kind, source);
     void this.reconcileBundledOAuthCredentials(kind, source);
+  }
+
+  /** A package of `kind` was removed: retire its sign-ins now, through its registered source. */
+  reconcileBundledCredentials(kind: BundledPackageRef["kind"]): Promise<void> {
+    const source = this.bundledCredentialSources.get(kind);
+    return source ? this.reconcileBundledOAuthCredentials(kind, source) : Promise.resolve();
+  }
+
+  /** Every package transaction closed: run again the reconciles that one deferred. */
+  packageTransactionsSettled(): void {
+    for (const kind of [...this.deferredBundledReconciles]) void this.reconcileBundledCredentials(kind);
   }
 
   private packageRefFromApproval(packageId: string): BundledPackageRef {
@@ -673,15 +686,21 @@ export class McpManager {
    * whose declarations it lists, and the declared bundled OAuth servers by
    * stable id with the credential key each would be stored under (derived the
    * way the server's session derives it, so known before it is prepared).
-   * Undefined while a package transaction is open or the source cannot vouch.
+   * Undefined while a package transaction is open or the source cannot vouch;
+   * the kind is then marked deferred in the same step that saw it, so a
+   * settle reported right after cannot be missed.
    */
   private async bundledInventory(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<{
     installed: ReadonlySet<string>; listed: ReadonlySet<string>; declared: Map<string, string>;
   } | undefined> {
+    const defer = (): undefined => {
+      this.deferredBundledReconciles.add(kind);
+      return undefined;
+    };
     try {
-      if (!this.packageTransactionsIdle()) return undefined;
+      if (!this.packageTransactionsIdle()) return defer();
       const installed = await source.installedPackages();
-      if (!installed || !this.packageTransactionsIdle()) return undefined;
+      if (!installed || !this.packageTransactionsIdle()) return defer();
       const listed = new Set<string>();
       const declared = new Map<string, string>();
       for (const item of source.list()) {
@@ -694,7 +713,7 @@ export class McpManager {
       return { installed, listed, declared };
     } catch (error) {
       log.warn("Bundled MCP package list unavailable; stored authorization cleanup skipped: %s", errorMessage(error));
-      return undefined;
+      return defer();
     }
   }
 
@@ -705,23 +724,29 @@ export class McpManager {
    * is no longer installed, or whose listed package no longer declares the
    * server. A disabled or not-yet-loaded package is still installed and keeps
    * its grants. Checked when the queued work runs, so a package transaction
-   * opened meanwhile defers it.
+   * opened meanwhile defers it until every transaction closes
+   * ({@link packageTransactionsSettled}). A retired grant's in-memory session
+   * goes with it, so a reinstall of the same package signs in again.
    */
   private reconcileBundledOAuthCredentials(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<void> {
     return this.queueOAuthStoreWork(async (secrets) => {
-      if (!secrets.canStoreEncrypted()) return;
       const inventory = await this.bundledInventory(kind, source);
       if (!inventory) return;
+      this.deferredBundledReconciles.delete(kind);
+      for (const [stableId, { session }] of [...this.bundledOAuthSessions]) {
+        if (!this.bundledGrantRetired(stableId, kind, inventory)) continue;
+        session.dispose();
+        this.bundledOAuthSessions.delete(stableId);
+        for (const [serverId, mapped] of [...this.bundledOAuthRuntimeIds]) {
+          if (mapped === stableId) this.bundledOAuthRuntimeIds.delete(serverId);
+        }
+      }
+      if (!secrets.canStoreEncrypted()) return;
       const index = this.readOAuthIndex(secrets);
       if (!index) return;
       let changed = false;
       for (const [serverId, key] of Object.entries(index)) {
-        if (!serverId.startsWith("bundled:") || inventory.declared.has(serverId)) continue;
-        let ref: ReturnType<typeof parseBundledConfigId>;
-        try { ref = parseBundledConfigId(serverId); }
-        catch { ref = null; }
-        if (ref && ref.packageRef.kind !== kind) continue;
-        if (ref && inventory.installed.has(ref.packageRef.name) && !inventory.listed.has(ref.packageRef.name)) continue;
+        if (!this.bundledGrantRetired(serverId, kind, inventory)) continue;
         await secrets.deleteSecret(key);
         delete index[serverId];
         changed = true;
@@ -733,6 +758,18 @@ export class McpManager {
       }
       if (changed) await this.writeOAuthIndex(secrets, index);
     });
+  }
+
+  /** A bundled grant of `kind` whose package is gone from the installed set, or whose listed package no longer declares it. */
+  private bundledGrantRetired(serverId: string, kind: BundledPackageRef["kind"], inventory: {
+    installed: ReadonlySet<string>; listed: ReadonlySet<string>; declared: Map<string, string>;
+  }): boolean {
+    if (!serverId.startsWith("bundled:") || inventory.declared.has(serverId)) return false;
+    let ref: ReturnType<typeof parseBundledConfigId>;
+    try { ref = parseBundledConfigId(serverId); }
+    catch { ref = null; }
+    if (ref && ref.packageRef.kind !== kind) return false;
+    return !(ref && inventory.installed.has(ref.packageRef.name) && !inventory.listed.has(ref.packageRef.name));
   }
 
   private discardOAuthSession(serverId: string, session: McpOAuthSession): void {

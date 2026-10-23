@@ -390,6 +390,8 @@ export function pluginLifecycleServices(deps: IpcDeps) {
     });
   };
   /** Uninstall through the runtime generation barrier with journaled cleanup (see the uninstall handler). */
+  // The registry no longer names the plugin once its removal commits: retire its MCP sign-ins then, not at the
+  // next start. Under a marketplace package lock this defers until the lock is released.
   const uninstall = (pluginId: string, retain?: PluginConfigRetention) =>
     uninstallPluginWithLifecycle(pluginId, {
       pluginMarketplace,
@@ -402,7 +404,9 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       refreshPluginEventBridge,
       emitHostEvent,
       log,
-    }, retain);
+    }, retain).finally(() => {
+      void deps.mcpManager.reconcileBundledCredentials("plugin");
+    });
   return { ensureInstallStateReady, uninstall, retirement };
 }
 

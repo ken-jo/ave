@@ -435,6 +435,8 @@ async function createGitMarketplaceService(
     onSyncProgress: events.onSyncProgress,
     onCatalogChanged: events.onCatalogChanged,
     onInstallProgress: events.onInstallProgress,
+    // A sign-in pruning deferred by a package transaction runs once none is open.
+    onPackageTransactionsIdle: () => deps.mcpManager.packageTransactionsSettled(),
     log: { warn: (message) => log.warn(message) },
     legacyMigration: {
       markerPath: join(packagesRoot, "legacy-migration.json"),

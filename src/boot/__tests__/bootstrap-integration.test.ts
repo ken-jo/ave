@@ -722,6 +722,15 @@ describe("bootstrap() integration lock", () => {
     expect(await getIds()).toEqual([]);
   });
 
+  it("registers the app-plugin MCP credential source over a registry that must exist to vouch", async () => {
+    const lifecycle = services.pluginBundleLifecycle as unknown as { bundledMcpCredentialSource: ReturnType<typeof vi.fn> };
+    const mcp = services.mcpManager as unknown as { registerBundledCredentialSource: ReturnType<typeof vi.fn> };
+    const [installedPackages] = lifecycle.bundledMcpCredentialSource.mock.calls[0] as [() => Promise<ReadonlySet<string> | undefined>];
+    expect(mcp.registerBundledCredentialSource).toHaveBeenCalledWith("plugin", lifecycle.bundledMcpCredentialSource.mock.results[0]!.value);
+    // The registry path does not exist: read as empty, it would retire every app-plugin sign-in.
+    await expect(installedPackages()).resolves.toBeUndefined();
+  });
+
   it("dispatches a routine whose canonical plugin ID differs from its registry install ID", async () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");

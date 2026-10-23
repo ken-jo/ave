@@ -122,6 +122,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     forgetPluginAuthPartitionsService: vi.fn(),
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
+    mcpManager: { reconcileBundledCredentials: vi.fn(async () => undefined) },
   };
   const runActivation = async (args: unknown[], pluginId: string): Promise<void> => {
     const options = args.find((arg): arg is {
@@ -248,6 +249,10 @@ describe("plugins IPC lifecycle broadcast", () => {
     expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub");
     expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub:tenant");
     expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("samplehub");
+    // Its MCP sign-ins are retired now that the registry no longer names it, not at the next start.
+    expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin");
+    expect(deps.mcpManager.reconcileBundledCredentials.mock.invocationCallOrder[0])
+      .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",

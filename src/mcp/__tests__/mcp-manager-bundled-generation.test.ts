@@ -71,6 +71,7 @@ import { SecretDocumentStore } from "../../data/secret-document-store.js";
 import { bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, readBoundBundledCredential } from "../bundled-credential.js";
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
+import { vouchedInstalledPluginIds } from "../../plugins/registry.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-mcp-generation-"));
 
@@ -189,6 +190,98 @@ describe("McpManager bundled generation", () => {
     manager.registerBundledCredentialSource("plugin", { installedPackages: async () => new Set(), list: () => [], reconnect: async () => {} });
     await manager.disconnectAll();
     expect(stored.has(derived)).toBe(false);
+  });
+
+  it("prunes app-plugin sign-ins only on the word of a plugin registry that can vouch for the installed set", async () => {
+    const registryPath = join(mkdtempSync(join(root, "registry-")), "registry.json");
+    const removedId = bundledConfigId({ kind: "plugin", name: "removed-kit" }, "remote");
+    const disabledId = bundledConfigId({ kind: "plugin", name: "disabled-kit" }, "remote");
+    const stored = new Map<string, string>([
+      ["mcp.oauth.index", JSON.stringify({ [removedId]: "mcp.oauth.removed", [disabledId]: "mcp.oauth.disabled" })],
+      ["mcp.oauth.removed", "grant"], ["mcp.oauth.disabled", "grant"],
+    ]);
+    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const manager = new McpManager(new McpGovernance(join(root, "policy-registry.json")), new ToolRegistry(), unusedNetworkFetch,
+      join(root, "servers-registry.json"), undefined, undefined, undefined, undefined, secrets,
+      { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
+    // As at startup: the registry is the installed set, and no generation is active yet to list a declaration.
+    manager.registerBundledCredentialSource("plugin", { installedPackages: () => vouchedInstalledPluginIds(registryPath),
+      list: () => [], reconnect: async () => {} });
+    const entry = (id: string, extra: Record<string, unknown> = {}) => ({ id, manifestPath: `plugins/${id}/plugin.json`, ...extra });
+    const grants = () => [removedId, disabledId].filter((id) => JSON.parse(stored.get("mcp.oauth.index")!)[id] !== undefined);
+
+    // No registry file: read as empty on a first boot, which is no word on what is installed.
+    await manager.reconcileBundledCredentials("plugin");
+    expect(grants()).toEqual([removedId, disabledId]);
+    // A plugin update mid-replacement: the registry cannot vouch until it commits.
+    writeFileSync(registryPath, JSON.stringify({ version: 1, plugins: [entry("disabled-kit", { enabled: false }),
+      entry("other-kit", { pendingUpdate: { kind: "marketplace", previousManifestFileSha256: null, previousReceiptRaw: null } })] }));
+    await manager.reconcileBundledCredentials("plugin");
+    expect(grants()).toEqual([removedId, disabledId]);
+    // Committed: a disabled plugin is still installed and keeps its sign-in; a removed one loses it.
+    writeFileSync(registryPath, JSON.stringify({ version: 1, plugins: [entry("disabled-kit", { enabled: false }), entry("other-kit")] }));
+    await manager.reconcileBundledCredentials("plugin");
+    expect(grants()).toEqual([disabledId]);
+    expect(stored.has("mcp.oauth.removed")).toBe(false);
+    expect(stored.get("mcp.oauth.disabled")).toBe("grant");
+  });
+
+  it("asks a reinstalled app plugin to authenticate again once its uninstall retired the sign-in", async () => {
+    const stored = new Map<string, string>();
+    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const manager = new McpManager(new McpGovernance(join(root, "policy-reinstall.json")), new ToolRegistry(), unusedNetworkFetch,
+      join(root, "servers-reinstall.json"), undefined, undefined, undefined, undefined, secrets,
+      { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
+    let idle = true;
+    manager.setPackageTransactionProbe(() => idle);
+    const projectionFor = (activationId: string) => prepareBundledMcpProjection({ pluginId: "remote-kit", pluginVersion: "1.0.0",
+      generationId: "a".repeat(64), activationId, localId: "remote", fingerprint: "b".repeat(64) },
+    { transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }, "d".repeat(64));
+    const trust = new PluginMcpTrustStore();
+    let installed = new Set(["remote-kit"]);
+    let active: { activationId: string; projection: ReturnType<typeof projectionFor> } | null = { activationId: "run-first", projection: projectionFor("run-first") };
+    trust.approve(active.projection);
+    manager.registerBundledCredentialSource("plugin", {
+      installedPackages: async () => installed,
+      list: () => (active ? [{ packageName: "remote-kit", serverName: "remote", transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }] : []),
+      reconnect: async () => {
+        manager.publishBundledGeneration(await manager.prepareBundledGeneration({ pluginId: "remote-kit", generationId: active!.activationId }, [active!.projection], trust));
+      },
+    });
+    const stableId = bundledConfigId({ kind: "plugin", name: "remote-kit" }, "remote");
+    await manager.discardBundledGeneration(await manager.prepareBundledGeneration({ pluginId: "remote-kit", generationId: "run-first" }, [active.projection], trust));
+    expect(await manager.authenticate(stableId)).toEqual({ connected: true });
+    const key = oauth.sessions[0]!.credentialKey;
+    stored.set(key, "grant");
+    await vi.waitFor(() => expect(JSON.parse(stored.get("mcp.oauth.index")!)).toEqual({ [stableId]: key }));
+
+    // Uninstalled under a marketplace package lock: the removal's reconcile waits for the lock ...
+    await manager.disconnectBundledGeneration("remote-kit", "run-first");
+    active = null;
+    installed = new Set();
+    idle = false;
+    await manager.reconcileBundledCredentials("plugin");
+    expect(stored.get(key)).toBe("grant");
+    // ... and runs once every package transaction has closed.
+    idle = true;
+    manager.packageTransactionsSettled();
+    await vi.waitFor(() => expect(stored.has(key)).toBe(false));
+    expect(JSON.parse(stored.get("mcp.oauth.index")!)).toEqual({});
+
+    // Reinstalled under the same id in the same session: the old sign-in does not come back with it.
+    installed = new Set(["remote-kit"]);
+    active = { activationId: "run-second", projection: projectionFor("run-second") };
+    trust.approve(active.projection);
+    const reinstalled = await manager.prepareBundledGeneration({ pluginId: "remote-kit", generationId: "run-second" }, [active.projection], trust);
+    expect(reinstalled.degraded).toMatchObject([{ code: "credential_required", retryable: true }]);
+    expect(reinstalled.records).toHaveLength(0);
+    await manager.discardBundledGeneration(reinstalled);
+    expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
+    expect(await manager.authenticate(stableId)).toEqual({ connected: true });
+    expect(oauth.sessions).toHaveLength(2);
+    await manager.disconnectAll();
   });
 
   it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {
