@@ -230,6 +230,9 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
   const git = (cwd: string, ...args: string[]) => execFileSync("git", [
     "-c", "user.name=Mirror Test", "-c", "user.email=mirror@example.invalid",
     "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main",
+    // The repository checks blobs out as LF through .gitattributes; the fixture
+    // has none, so a system core.autocrlf would rewrite the recorded copies.
+    "-c", "core.autocrlf=false",
     ...args,
   ], { cwd, env: gitEnv, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
