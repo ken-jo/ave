@@ -7,6 +7,7 @@ import type { CodexExecutableArtifact } from "../../main/codex-executable-artifa
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
+let fixtureCurrentSid: Promise<string> | undefined;
 
 /** Loader-shaped bytes for format tests; probes use an injected runner. */
 export function nativeExecutableBytes(platform: NodeJS.Platform = process.platform, arch: NodeJS.Architecture = process.arch): Buffer {
@@ -127,6 +128,50 @@ export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeo
       }
       callback(error, masked, stderr);
     });
+  }) as typeof actual.execFile;
+  return { ...actual, execFile };
+}
+
+/** Locator tests need existing path objects, while access-policy tests keep real probes. */
+export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
+  if (process.platform !== "win32") return actual;
+  const execFile = ((...args: unknown[]) => {
+    const [file, argv, options, callback] = args as [string, string[], ChildProcessModule.ExecFileOptions, Function];
+    const pathsJson = options?.env?.AVE_EXECUTABLE_ACL_PATHS;
+    if (typeof pathsJson !== "string" || typeof callback !== "function") {
+      return (actual.execFile as (...rest: unknown[]) => ChildProcessModule.ChildProcess)(...args);
+    }
+    const child = new actual.ChildProcess();
+    const respond = async (): Promise<string> => {
+      const paths = JSON.parse(pathsJson) as string[];
+      // The native probe opens the path object itself, including reparse points.
+      for (const path of paths) await readLstat(path);
+      fixtureCurrentSid ??= new Promise<string>((resolveSid, reject) => {
+        actual.execFile(win32.join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+          windowsHide: true,
+          encoding: "utf8",
+        }, (error, stdout) => {
+          if (error) return reject(error);
+          const sid = /\bS-1-(?:\d+-)*\d+\b/.exec(stdout)?.[0];
+          if (!sid) return reject(new Error("Current account SID is unavailable"));
+          resolveSid(sid);
+        });
+      });
+      const currentSid = await fixtureCurrentSid;
+      return JSON.stringify({
+        currentSid,
+        paths: paths.map((path) => ({
+          path, owner: currentSid, daclPresent: true,
+          entries: [{ sid: currentSid, mask: 0x1f01ff, flags: 0, type: 0 }],
+        })),
+      });
+    };
+    void respond().then(
+      (stdout) => callback(null, stdout, ""),
+      // A failed path open terminates the probe process, rather than reporting a spawn ENOENT.
+      (cause: unknown) => callback(Object.assign(new Error(String(cause)), { code: 1, cmd: [file, ...argv].join(" ") }), "", String(cause)),
+    );
+    return child;
   }) as typeof actual.execFile;
   return { ...actual, execFile };
 }
