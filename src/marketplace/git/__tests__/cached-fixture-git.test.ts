@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { copyFixtureRepo, createFixtureRepo, hostGit, removeFixtureRepo, startGitHttpServer, type FixtureRepo, type GitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
@@ -39,6 +41,30 @@ describe("cached fixture repositories", () => {
   });
 
   const client = () => BareRepo.init(commands, join(root, `client-${++sequence}`));
+
+  it("disables automatic maintenance and preserves snapshots after later publications", async () => {
+    const owned = copyFixtureRepo(root, "ownership-1", repo, { publishByCopy: true });
+    let snapshot: FixtureRepo | undefined;
+    try {
+      const trace = join(root, "ownership-trace.jsonl");
+      const env = { ...gitFixtureEnv(join(root, "ownership-home")), GIT_TRACE2_EVENT: trace };
+      // Check the persisted policy independently of hostGit's command flags.
+      execFileSync(git.git.path, ["commit", "--quiet", "--allow-empty", "-m", "owned command"], { cwd: owned.work, env });
+      const events = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { event: string; argv?: string[] });
+      expect(events.filter((event) => event.event === "child_start" && event.argv?.includes("maintenance"))).toEqual([]);
+      for (const cwd of [owned.work, owned.bare]) {
+        expect(execFileSync(git.git.path, ["config", "--local", "--get", "maintenance.auto"], { cwd, env, encoding: "utf8" }).trim()).toBe("false");
+      }
+      const pinned = owned.commit({ "README.md": "snapshot\n" }, "snapshot");
+      snapshot = copyFixtureRepo(root, "ownership-snapshot", owned);
+      owned.commit({ "README.md": "later publication\n" }, "later");
+      expect(hostGit(["rev-parse", "HEAD"], snapshot.bare)).toBe(pinned);
+      expect(await new BareRepo(git.runner, snapshot.bare).readFile(pinned, "README.md", 1024)).toEqual(Buffer.from("snapshot\n"));
+    } finally {
+      if (snapshot) await removeFixtureRepo(snapshot);
+      await removeFixtureRepo(owned);
+    }
+  });
 
   it("requires both seed HEADs to match the requested branch before copying", async () => {
     expect(() => copyFixtureRepo(root, "mismatch", repo, { branch: "release" })).toThrow("fixture seed must be on branch release");

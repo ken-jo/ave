@@ -75,11 +75,14 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   const bare = join(root, name);
   mkdirSync(dirname(bare), { recursive: true });
   hostGit(["init", "--bare", "--quiet", `--initial-branch=${branch}`, bare]);
+  // Copied snapshots must have no writer rotating objects after setup returns.
+  hostGit(["config", "maintenance.auto", "false"], bare);
   hostGit(["config", "uploadpack.allowFilter", "true"], bare);
   hostGit(["config", "uploadpack.allowAnySHA1InWant", "true"], bare);
   hostGit(["config", "http.receivepack", "false"], bare);
   const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
   hostGit(["init", "--quiet", `--initial-branch=${branch}`, work]);
+  hostGit(["config", "maintenance.auto", "false"], work);
   hostGit(["config", "user.email", "fixture@example.invalid"], work);
   hostGit(["config", "user.name", "Fixture"], work);
   hostGit(["remote", "add", "origin", bare], work);
