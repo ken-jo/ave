@@ -167,6 +167,8 @@ export type NotificationActivationRegistration = (
 ) => void;
 
 export interface NotificationServiceOptions {
+  /** Read the OS notification master at delivery time for turn-end cues. */
+  isOsNotificationsEnabled?: () => boolean;
   /** Read at delivery time so changing the setting applies to the next completion. */
   isTurnCompletionSoundEnabled?: () => boolean;
   /** Live BrowserWindow getter. Service tolerates null (e.g. window closed). */
@@ -244,6 +246,7 @@ export class NotificationService {
   private readonly auditLogger?: AuditLogger;
   private readonly notificationFactory: NonNullable<NotificationServiceOptions["notificationFactory"]>;
   private readonly isTurnCompletionSoundEnabled: () => boolean;
+  private readonly isOsNotificationsEnabled: () => boolean;
   private readonly isReady: () => boolean;
   private readonly isTestEnv: () => boolean;
   private readonly isAnyWindowFocused: () => boolean;
@@ -261,6 +264,7 @@ export class NotificationService {
     this.auditLogger = opts.auditLogger;
     this.notificationFactory = opts.notificationFactory ?? unavailableNotificationFactory;
     this.isTurnCompletionSoundEnabled = opts.isTurnCompletionSoundEnabled ?? (() => true);
+    this.isOsNotificationsEnabled = opts.isOsNotificationsEnabled ?? (() => true);
     this.isReady = opts.isReady ?? (() => false);
     this.isTestEnv = opts.isTestEnv ?? defaultIsTestEnv;
     this.isAnyWindowFocused = opts.isAnyWindowFocused ?? (() => false);
@@ -309,6 +313,11 @@ export class NotificationService {
     // Test-mode + pre-ready hard guard — never pop a notification before the
     // app is ready or inside a vitest run.
     if (this.isTestEnv() || !this.isReady()) return;
+
+    if (opts.kind === "turn-end" && !this.isOsNotificationsEnabled()) {
+      this.auditSuppressed(opts.kind, 0, "os-notifications-disabled");
+      return;
+    }
 
     // #1482 — turn-end is a background-only cue. When the user is already in
     // Ave, the conversation itself is the completion signal; do not surface a
@@ -519,13 +528,13 @@ export class NotificationService {
   }
 
   /**
-   * Audit a cooldown-suppressed fire. Must NEVER silently drop — a missing
+   * Audit a suppressed fire. Must NEVER silently drop — a missing
    * audit trail hides runaway-loop bugs.
    */
   private auditSuppressed(
     kind: NotificationKind,
     elapsedMs: number,
-    reason: "cooldown" | "foreground" = "cooldown",
+    reason: "cooldown" | "foreground" | "os-notifications-disabled" = "cooldown",
   ): void {
     if (!this.auditLogger) return;
     try {

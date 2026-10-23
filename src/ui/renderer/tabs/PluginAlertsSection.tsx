@@ -112,7 +112,7 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh, c
     finally { setWorking(false); }
   }
   async function handleCompletionSoundChange(enabled: boolean) {
-    if (!completionSound) return;
+    if (!completionSound || !osEnabled) return;
     setWorking(true); setError(null);
     try { await completionSound.onChange(enabled); await refresh(); }
     catch { setError(t("alerts.saveFailed")); }
@@ -122,7 +122,7 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh, c
     <h3 className="text-sm font-semibold">{t(builtIn ? "alerts.builtIn" : "alerts.title")}</h3>
     {builtIn && <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.osMaster")}</span><Switch className="shrink-0" aria-label={t("alerts.osMaster")} checked={osEnabled} disabled={working} onCheckedChange={(enabled) => void setMaster(enabled)} /></label>}
     {builtIn && completionSound && <div className="space-y-1">
-      <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.turnCompletionSound")}</span><Switch data-testid="turn-completion-sound" className="shrink-0" aria-label={t("alerts.turnCompletionSound")} checked={completionSound.enabled} disabled={working} onCheckedChange={(enabled) => void handleCompletionSoundChange(enabled)} /></label>
+      <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.turnCompletionSound")}</span><Switch data-testid="turn-completion-sound" className="shrink-0" aria-label={t("alerts.turnCompletionSound")} checked={completionSound.enabled} disabled={working || !osEnabled} onCheckedChange={(enabled) => void handleCompletionSoundChange(enabled)} /></label>
       <p className="text-xs text-muted-foreground">{t("alerts.turnCompletionSoundHelp")}</p>
     </div>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}

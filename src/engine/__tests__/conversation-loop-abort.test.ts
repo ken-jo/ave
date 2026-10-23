@@ -10,6 +10,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { NotificationService } from "../../main/notification-service.js";
+import { issueAuthorizationRequiredControl } from "../../shared/authorization-required.js";
 
 function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
@@ -289,25 +290,47 @@ describe("ConversationLoop abort (B4)", () => {
 
 describe("turn completion notification sound delivery", () => {
   it.each([
-    { outcome: "complete", enabled: true, focused: false, count: 1, silent: false },
-    { outcome: "complete", enabled: false, focused: false, count: 1, silent: true },
-    { outcome: "complete", enabled: true, focused: true, count: 0 },
-    { outcome: "interrupted", enabled: true, focused: false, count: 0 },
-    { outcome: "stream-error", enabled: true, focused: false, count: 0 },
-    { outcome: "context-error", enabled: true, focused: false, count: 0 },
-    { outcome: "empty", enabled: true, focused: false, count: 0 },
-  ])("$outcome, sound=$enabled, focused=$focused", async ({ outcome, enabled, focused, count, silent }) => {
+    { outcome: "complete", masterEnabled: true, enabled: true, focused: false, count: 1, silent: false },
+    { outcome: "complete", masterEnabled: true, enabled: false, focused: false, count: 1, silent: true },
+    { outcome: "complete", masterEnabled: false, enabled: true, focused: false, count: 0 },
+    { outcome: "complete", masterEnabled: false, enabled: false, focused: false, count: 0 },
+    { outcome: "complete", masterEnabled: true, enabled: true, focused: true, count: 0 },
+    { outcome: "interrupted", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "stream-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "context-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "authorization-required", masterEnabled: true, enabled: true, focused: false, count: 0 },
+    { outcome: "empty", masterEnabled: true, enabled: true, focused: false, count: 0 },
+  ])("$outcome, master=$masterEnabled, sound=$enabled, focused=$focused", async ({ outcome, masterEnabled, enabled, focused, count, silent }) => {
     const show = vi.fn();
     const notificationFactory = vi.fn(() => ({ show, on: vi.fn() }));
     const notificationService = new NotificationService({
       getMainWindow: () => ({ isDestroyed: () => false, isMinimized: () => false }) as Electron.BrowserWindow,
       notificationFactory,
       isTurnCompletionSoundEnabled: () => enabled,
+      isOsNotificationsEnabled: () => masterEnabled,
       isAnyWindowFocused: () => focused,
       isReady: () => true,
       isTestEnv: () => false,
     });
-    const { loop } = makeHarness(notificationService);
+    const { loop, toolRegistry } = makeHarness(notificationService);
+    toolRegistry.register(createDynamicTool({
+      name: "authorization_probe",
+      description: "Return a host-issued authorization terminal",
+      source: "builtin",
+      category: "read",
+      jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({
+        output: "Authorization required",
+        isError: true,
+        authorizationRequired: issueAuthorizationRequiredControl({
+          kind: "tool",
+          toolName: "authorization_probe",
+          source: "builtin",
+          category: "read",
+          reason: "approval-surface-unavailable",
+        }),
+      }),
+    }));
     const abort = new AbortController();
     (loop as { provider: LLMProvider }).provider = {
       vendor: "openai",
@@ -319,11 +342,17 @@ describe("turn completion notification sound delivery", () => {
           yield { type: "error", error: "prompt is too long for this model" };
           return;
         }
+        if (outcome === "authorization-required") {
+          yield { type: "tool_call", id: "authorization-probe", name: "authorization_probe", input: {} };
+          yield { type: "message_complete", stopReason: "tool_use" };
+          return;
+        }
         yield { type: "message_complete", stopReason: "end_turn" };
       },
     };
     const result = await loop.runTurn("hi", {}, abort.signal, { inputOrigin: "user-keyboard" });
-    if (["interrupted", "stream-error", "context-error"].includes(outcome)) expect(result.stopReason).toBe(outcome);
+    if (["interrupted", "stream-error", "context-error", "authorization-required"].includes(outcome)) expect(result.stopReason).toBe(outcome);
+    if (outcome === "authorization-required") expect(result.text).not.toBe("");
     expect(notificationFactory).toHaveBeenCalledTimes(count);
     expect(show).toHaveBeenCalledTimes(count);
     if (count) expect(notificationFactory).toHaveBeenCalledWith(expect.objectContaining({ silent, urgency: "normal" }));

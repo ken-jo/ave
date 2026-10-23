@@ -28,24 +28,41 @@ function harness(rows = [row()]) {
 }
 
 describe("alert Settings controls", () => {
-  it("saves the completion sound independently beside the OS switch", async () => {
+  it("saves the completion sound beside the enabled OS switch", async () => {
     const h = harness();
     const save = vi.fn(async () => {});
     const refresh = vi.fn(async () => {});
-    const view = render(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={false} refresh={refresh} completionSound={{ enabled: true, onChange: save }} />);
+    const view = render(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={true} refresh={refresh} completionSound={{ enabled: true, onChange: save }} />);
     const sound = screen.getByRole("switch", { name: t("alerts.turnCompletionSound") });
     expect(sound).toBeChecked();
     fireEvent.click(sound);
     await waitFor(() => expect(save).toHaveBeenCalledExactlyOnceWith(false));
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
     expect(h.bridge.setOsNotificationsEnabled).not.toHaveBeenCalled();
-    view.rerender(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={false} refresh={refresh} completionSound={{ enabled: false, onChange: save }} />);
+    view.rerender(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={true} refresh={refresh} completionSound={{ enabled: false, onChange: save }} />);
     expect(sound).not.toBeChecked();
     save.mockRejectedValueOnce(new Error("private host detail"));
     fireEvent.click(sound);
     expect(await screen.findByRole("alert")).toHaveTextContent(t("alerts.saveFailed"));
     expect(sound).not.toBeChecked();
     expect(screen.queryByText("private host detail")).toBeNull();
+  });
+
+  it.each([true, false])("preserves sound=%s while the OS master disables its control", (enabled) => {
+    const h = harness();
+    const save = vi.fn(async () => {});
+    const refresh = vi.fn(async () => {});
+    const view = render(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={false} refresh={refresh} completionSound={{ enabled, onChange: save }} />);
+    const sound = screen.getByRole("switch", { name: t("alerts.turnCompletionSound") });
+    expect(sound).toBeDisabled();
+    expect(sound).toHaveAttribute("aria-checked", String(enabled));
+    expect(screen.getByText(t("alerts.turnCompletionSoundHelp"))).toBeVisible();
+    fireEvent.click(sound);
+    expect(save).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    view.rerender(<PluginAlertsSection pluginId="@host" rows={[]} api={h.bridge} osEnabled={true} refresh={refresh} completionSound={{ enabled, onChange: save }} />);
+    expect(sound).toBeEnabled();
+    expect(sound).toHaveAttribute("aria-checked", String(enabled));
   });
 
   it("marks only a visible row seen without changing either switch", async () => {
