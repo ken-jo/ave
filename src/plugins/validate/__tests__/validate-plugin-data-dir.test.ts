@@ -45,6 +45,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { validatePluginDirectory } from "../validate-plugin.js";
+import { observe } from "../../isolation/__tests__/stream-turns.js";
 
 const PROCESS_PLUGIN = fileURLToPath(new URL("./fixtures/process/", import.meta.url));
 const RAW_SPEAK = pathToFileURL(fileURLToPath(new URL("./fixtures/raw/speak.mjs", import.meta.url))).href;
@@ -89,11 +90,15 @@ speak({
       fast: true,
       toolArgs: {},
     });
+    const settled = observe(validating);
     await inConstruct;
     // The child is live and has withheld construct. Advance the protocol
-    // deadline, the refused kill escalation, and the final exit wait.
-    await vi.advanceTimersByTimeAsync(1_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    // deadline and teardown until settled, with a virtual cap so a changed
+    // deadline fails an assertion instead of leaving this test awaiting it.
+    for (let elapsed = 0; !settled() && elapsed < 60_000; elapsed += 100) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(settled()).toBe(true);
     const rows = await validating;
 
     expect(rows.find((row) => row.check === "protocol.teardown")?.ok).toBe(false);

@@ -16,7 +16,6 @@ import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance as realPerformance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { PluginManifest } from "../../types.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
@@ -125,7 +124,7 @@ function rawOptions(fixture: string, fast = true): ProtocolCheckOptions {
 
 function useProtocolClock(): number {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-  return realPerformance.now();
+  return performance.now();
 }
 
 /**
@@ -186,6 +185,9 @@ process.stdin.emit = function(event, ...args) {
   await vi.advanceTimersByTimeAsync(bound - 1);
   expect(settled).toBe(false);
   await vi.advanceTimersByTimeAsync(1);
+  // Fail at the virtual deadline even if a delayed abort would leave the
+  // real child alive and the pending run unable to finish.
+  expect(vi.mocked(openValidationSession).mock.calls.at(-1)?.[0].signal?.aborted).toBe(true);
   if (refuseSignals) await vi.advanceTimersByTimeAsync(VALIDATION_TEARDOWN_WAIT_MS);
   else if (fixture === "ignores-sigterm" && process.platform !== "win32") {
     await vi.advanceTimersByTimeAsync(VALIDATION_KILL_GRACE_MS);
@@ -547,7 +549,7 @@ describe("the raw child-process fixtures", () => {
   it("withholds-start-reply: fails lifecycle.start at 1 s and ends the child once", async () => {
     const began = useProtocolClock();
     const run = await timedRawChecks("withholds-start-reply", "ave/instance/start");
-    expect(realPerformance.now() - began).toBeLessThan(5_000);
+    expect(performance.now() - began).toBeLessThan(5_000);
     expect(row(run.rows, "lifecycle.start")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     expect(run.record.terminations).toHaveLength(1);
     for (const later of rowsAfter(run.rows, "lifecycle.start")) {
@@ -564,7 +566,7 @@ describe("the raw child-process fixtures", () => {
       "tools/call",
       rawManifest(["echo"]),
     );
-    expect(realPerformance.now() - began).toBeLessThan(5_000);
+    expect(performance.now() - began).toBeLessThan(5_000);
     expect(row(run.rows, "tools.list").ok).toBe(true);
     expect(row(run.rows, "tools.call:echo")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     expect(run.record.terminations).toHaveLength(1);
@@ -578,7 +580,7 @@ describe("the raw child-process fixtures", () => {
   it("withholds-construct: fails protocol.construct at 1 s, long before the 20 s cleanup deadline", async () => {
     const began = useProtocolClock();
     const run = await timedRawChecks("withholds-construct", "ave/instance/construct");
-    expect(realPerformance.now() - began).toBeLessThan(3_000);
+    expect(performance.now() - began).toBeLessThan(3_000);
     expect(row(run.rows, "protocol.construct")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     expect(run.record.terminations).toHaveLength(1);
     expect(run.record.exitObserved()).toBeDefined();
@@ -600,7 +602,7 @@ describe("the raw child-process fixtures", () => {
   it("slow-construct: fails protocol.construct at the runtime's 10 s activation bound", async () => {
     const began = useProtocolClock();
     const run = await timedRawChecks("slow-construct", "ave/instance/construct", rawManifest(), rawOptions("slow-construct", false));
-    expect(realPerformance.now() - began).toBeLessThan(10_500);
+    expect(performance.now() - began).toBeLessThan(10_500);
     expect(row(run.rows, "protocol.construct")).toMatchObject({ ok: false, message: "timed out after 10000 ms" });
     for (const later of rowsAfter(run.rows, "protocol.construct")) {
       expect(later.message).toBe("not exercised: protocol.construct timed out");
@@ -650,7 +652,7 @@ describe("a descendant that holds the child's pipes", () => {
           stderr += chunk.toString("utf-8");
         },
       });
-      const elapsed = realPerformance.now() - began;
+      const elapsed = performance.now() - began;
       const descendant = Number(/descendant-pid=(\d+)/.exec(stderr)?.[1]);
       expect(Number.isInteger(descendant)).toBe(true);
       spawnedPids.push(descendant);
@@ -680,7 +682,7 @@ describe("refused signals", () => {
     it(`${fixture}: an unexited child bounds the run and fails protocol.teardown`, async () => {
       const began = useProtocolClock();
       const run = await timedRawChecks(fixture, fixture === "withholds-construct" ? "ave/instance/construct" : "ave/instance/start", rawManifest(), rawOptions(fixture), true);
-      const elapsed = realPerformance.now() - began;
+      const elapsed = performance.now() - began;
       expect(row(run.rows, timedOut)).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
       for (const later of rowsAfter(run.rows, timedOut)) {
         expect(later.message).toBe(`not exercised: ${timedOut} timed out`);
