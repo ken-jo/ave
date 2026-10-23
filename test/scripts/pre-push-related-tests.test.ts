@@ -10,7 +10,7 @@ describe("pre-push related test coverage", () => {
   it("queries each source independently so a covered module cannot mask an opaque module", async () => {
     const context = {
       config: { related: [] as string[] },
-      getRelevantTestSpecifications: async () => context.config.related[0] === resolve("src/covered.ts")
+      getRelevantTestSpecifications: async () => context.config.related[0] === resolve("src/covered.ts").replaceAll("\\", "/")
         ? [{ moduleId: resolve("test/covered.test.ts") }] : [],
     };
     const coverage = await collectRelatedTestFiles(context, ["src/covered.ts", "src/opaque.ts"], resolve("."));
