@@ -58,6 +58,7 @@ function spawnedAs(child: unknown, confinement = "windows-srt") {
 }
 
 const input = {
+  egressOwner: { kind: "worker", role: "hook", pluginId: "fixture-plugin" } as const,
   label: "hook:alpha",
   command: "node",
   args: ["hook.js"],

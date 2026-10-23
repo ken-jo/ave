@@ -17,7 +17,7 @@ import type {
 } from "../../shared/sandbox-capability-info.js";
 
 export interface SandboxGateInputs {
-  /** `features.osToolSandbox` — the Settings toggle; off by default everywhere. */
+  /** `features.osToolSandbox` — the Settings toggle; on by default on macOS/Linux, gated off on Windows. */
   settingOn: boolean;
   /** `AVE_SANDBOX_ENABLED=1` — the deliberate, fail-closed env override. */
   explicitEnv: boolean;

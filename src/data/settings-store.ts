@@ -503,7 +503,7 @@ export type MemoryCaptureMode = "off" | "review" | "auto";
 
 /**
  * Experimental feature flags — UI-toggleable, persisted to settings.json.
- * All fields default to false (opt-in). Safe to add new fields without
+ * Defaults are defined per flag in settings-defaults.ts. Safe to add fields without
  * migration — missing keys are treated as false at load time.
  */
 export interface FeatureFlags {
@@ -577,18 +577,11 @@ export interface FeatureFlags {
    */
   hostClassifiesRisk?: boolean;
   /**
-   * OS tool sandbox — when `true` (and the platform is supported), shell and
-   * tool spawns are confined by the Anthropic Sandbox Runtime (ASRT; macOS
-   * Seatbelt / Linux bwrap backends). STAGED default (macOS-first): ships `true`
-   * on `darwin` and `false` on `linux`/`win32` (opt-in via Settings) until the
-   * C/D-series sandbox QA is green, after which the Linux/Windows default flips
-   * to `true`. See DEFAULT_SETTINGS for the convergence plan.
-   *
-   * Because the default is ON (on macOS), the boot gate distinguishes how the ON-signal
-   * arrived (see boot.ts + boot/steps/sandbox-gate.ts): the DEFAULT/settings-on
-   * path degrades GRACEFULLY (loud warning, unsandboxed, non-bricking) when the
-   * sandbox cannot activate, whereas the EXPLICIT `AVE_SANDBOX_ENABLED=1` env
-   * opt-in stays fail-closed (boot aborts rather than run unsandboxed).
+   * OS tool sandbox: enabled by default on macOS/Linux, gated off on Windows.
+   * Explicit persisted values are retained. Availability requires a successful
+   * runtime launch probe; the invocation plan records the actual shell route.
+   * Settings/default activation warns and continues without confinement when
+   * unavailable. Explicit AVE_SANDBOX_ENABLED=1 fails startup on macOS/Linux.
    *
    * Orthogonal to {@link hostClassifiesRisk}: sandbox-enforcement (is the
    * action kernel-confined when it runs) and risk-classification (does the
@@ -598,9 +591,9 @@ export interface FeatureFlags {
    * Capability is platform-dependent and honestly reported, not overclaimed:
    *   - macOS (Seatbelt via ASRT): filesystem + process + network egress
    *     confinement. Network egress is deny-by-default, confined to the
-   *     shared strict-union allow-list (loopback proxy floor).
+   *     local proxy with per-domain shell approval.
    *   - Linux (bwrap via ASRT): filesystem + process + network egress
-   *     confinement (same strict-union floor).
+   *     confinement (same proxy policy).
    *   - Windows: srt-win confines filesystem + network once installed; process
    *     isolation is unavailable. It degrades non-bricking (unsandboxed, loud
    *     warning) until the one-time administrator install completes.

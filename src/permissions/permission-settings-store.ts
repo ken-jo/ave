@@ -393,7 +393,7 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
 ]);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
-function defaultPath(): string {
+export function permissionSettingsPath(): string {
   return pathResolve(aveHome(), "settings.json");
 }
 
@@ -417,7 +417,7 @@ function defaultPath(): string {
  * `pathOverride` is for tests.
  */
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   if (!existsSync(filePath)) return structuredClone(DEFAULT_FILE);
   let parsed: Record<string, unknown>;
   try {
@@ -894,7 +894,7 @@ export async function writePermissionSettings(
   },
   pathOverride?: string,
 ): Promise<void> {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   await withFileLock(filePath, async () => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = (existing.permissions ?? {}) as Record<string, unknown>;
@@ -982,7 +982,7 @@ export function readJudgeSettings(
   pathOverride?: string,
   catalog?: JudgeModelCatalog,
 ): JudgeSettingsReadResult {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   try {
     const document = readSettingsDocument(filePath, false);
     const permissions = document.permissions;
@@ -1020,7 +1020,7 @@ export function readJudgeStoredModels(pathOverride?: string): {
   stages: Array<StoredJudgeModelRef | null>;
 } {
   try {
-    const judge = (readSettingsDocument(pathOverride ?? defaultPath()).permissions as Record<string, unknown> | undefined)?.judge;
+    const judge = (readSettingsDocument(pathOverride ?? permissionSettingsPath()).permissions as Record<string, unknown> | undefined)?.judge;
     const block = judge && typeof judge === "object" ? judge as Record<string, unknown> : {};
     const chain = Array.isArray(block.chain) ? block.chain : [];
     return {
@@ -1078,7 +1078,7 @@ export async function setJudgeSettingsPersist(
   if (Object.keys(update).some((key) => !allowed.has(key))) {
     throw new JudgeSettingsError("permissions.judge patch contains unknown fields");
   }
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   let receipt: JudgeSettingsWriteReceipt | undefined;
   await withFileLock(filePath, async () => {
     const document = readSettingsObjectForUpdate(filePath);
@@ -1164,7 +1164,7 @@ async function mutateAllowedDirectoriesPersist(
   ) => string[],
   pathOverride?: string,
 ): Promise<string[]> {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   let result: string[] = [];
   await withFileLock(filePath, async () => {
     const existing = readSettingsObjectForUpdate(filePath);
@@ -1256,7 +1256,7 @@ export async function beginWorkspaceRootRemovalPersist(
   source: string,
   pathOverride?: string,
 ): Promise<BeginWorkspaceRootRemovalResult | null> {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   let result: BeginWorkspaceRootRemovalResult | null = null;
   await withFileLock(filePath, async () => {
     const existing = readSettingsObjectForUpdate(filePath);
@@ -1331,7 +1331,7 @@ export async function completeWorkspaceRootRemovalPersist(
   operationId: string,
   pathOverride?: string,
 ): Promise<boolean> {
-  const filePath = pathOverride ?? defaultPath();
+  const filePath = pathOverride ?? permissionSettingsPath();
   let completed = false;
   await withFileLock(filePath, async () => {
     const existing = readSettingsObjectForUpdate(filePath);

@@ -14,7 +14,7 @@ import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
-export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v3" as const;
+export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v4" as const;
 
 export type HostShellExecutionRequest = "default" | "host";
 
@@ -23,6 +23,8 @@ export type HostShellExecutionMode = "asrt" | "plain" | "blocked";
 /** Machine-readable, host-owned fallback state. Never derive authority from UI text. */
 export type HostShellFallbackReason =
   | "none"
+  | "disabled-by-setting"
+  | "platform-unsupported"
   | "windows-partial-shell-acl-unsafe"
   | "requested-sandbox-unavailable"
   | "active-sandbox-not-shell-contained";
@@ -36,6 +38,8 @@ export interface HostShellExecutionPlan {
   readonly executionRequest: HostShellExecutionRequest;
   /** Actual route selected before permission/reviewer processing. */
   readonly mode: HostShellExecutionMode;
+  /** True only for the confined route this invocation will actually use. */
+  readonly sandboxed: boolean;
   /** Honest capability of the child selected by this plan. */
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
@@ -59,6 +63,8 @@ export interface HostShellExecutionPlanAuditProjection {
   /** Explicit per-invocation request, separate from sandbox availability. */
   readonly executionRequest: HostShellExecutionRequest;
   readonly mode: HostShellExecutionMode;
+  /** True only for the confined route this invocation will actually use. */
+  readonly sandboxed: boolean;
   readonly fallbackReason: HostShellFallbackReason;
   readonly requiresExplicitUserApproval: boolean;
   readonly capability: Readonly<{
@@ -96,6 +102,7 @@ export function getHostShellExecutionPlanAuditProjection(
     requestedSandbox: plan.requestedSandbox,
     executionRequest: plan.executionRequest,
     mode: plan.mode,
+    sandboxed: plan.sandboxed,
     fallbackReason: plan.fallbackReason,
     requiresExplicitUserApproval: plan.requiresExplicitUserApproval,
     capability: Object.freeze({
@@ -127,10 +134,9 @@ export function isIssuedHostShellExecutionPlanAuditProjection(
  * Stable approval/reviewer-cache partition for a host shell execution plan.
  *
  * This deliberately hashes the complete renderer-safe projection instead of
- * relying on {@link HostShellExecutionPlan.identity} alone. In particular, a
- * plain `none` plan can have the same route identity while differing in
- * `requestedSandbox`; an approval or reviewer verdict produced under one must
- * never be replayed under the other.
+ * relying on {@link HostShellExecutionPlan.identity} alone. Requested intent,
+ * the actual sandboxed route and confinement dimensions must all partition
+ * approvals and reviewer verdicts.
  */
 export function getHostShellExecutionPlanCacheIdentity(
   projection: HostShellExecutionPlanAuditProjection,
@@ -154,13 +160,14 @@ export function getHostShellExecutionPlanCacheIdentity(
     fallbackReason: projection.fallbackReason,
     identity: projection.identity,
     mode: projection.mode,
+    sandboxed: projection.sandboxed,
     platform: projection.platform,
     requestedSandbox: projection.requestedSandbox,
     executionRequest: projection.executionRequest,
     requiresExplicitUserApproval: projection.requiresExplicitUserApproval,
     version: projection.version,
   });
-  return "host-shell-execution-plan-cache/v3:" +
+  return "host-shell-execution-plan-cache/v4:" +
     sha256Hex(canonicalProjection);
 }
 
@@ -191,11 +198,9 @@ function noneCapability(platform: NodeJS.Platform, reason: string): SandboxCapab
 }
 
 function hasShellContainment(capability: SandboxCapability): boolean {
-  if (capability.kind !== "asrt" || capability.confidence === "assumed") return false;
-  // Preserve the legacy full-ASRT contract for fixtures produced before the
-  // per-dimension field existed. Real current producers always declare it.
-  return capability.confines === undefined ||
-    (capability.confines.filesystem === true && capability.confines.process === true);
+  if (capability.kind !== "asrt" || capability.confidence !== "verified") return false;
+  return capability.confines?.filesystem === true &&
+    capability.confines.process === true && capability.confines.network === true;
 }
 
 /**
@@ -213,7 +218,7 @@ export function buildHostShellExecutionPlan(input: {
   if (executionRequest !== "default" && executionRequest !== "host") {
     throw new Error("Invalid host shell execution request");
   }
-  const requestedSandbox = input.requestedSandbox || input.activeCapability.kind === "asrt";
+  const requestedSandbox = input.requestedSandbox;
 
   if (executionRequest === "host") {
     return Object.freeze({
@@ -222,10 +227,29 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
       identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host",
+    });
+  }
+
+  if (!requestedSandbox) {
+    const fallbackReason: HostShellFallbackReason =
+      input.platform === "darwin" || input.platform === "linux" || input.platform === "win32"
+        ? "disabled-by-setting" : "platform-unsupported";
+    return Object.freeze({
+      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
+      platform: input.platform,
+      requestedSandbox,
+      executionRequest,
+      mode: "plain" as const,
+      sandboxed: false,
+      capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
+      fallbackReason,
+      requiresExplicitUserApproval: false,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
     });
   }
 
@@ -244,6 +268,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -259,6 +284,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "asrt" as const,
+      sandboxed: true,
       capability,
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: false,
@@ -284,6 +310,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      sandboxed: false,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -295,39 +322,22 @@ export function buildHostShellExecutionPlan(input: {
   // may execute a requested shell. Future partial substrates (for example
   // `partial` or `fs-only`) must not silently degrade to an ordinary host
   // shell before they receive their own sealed execution contract.
-  if (input.activeCapability.kind !== "none") {
-    const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
-    const capability = noneCapability(
-      input.platform,
-      "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
-    );
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "blocked" as const,
-      capability,
-      fallbackReason,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
-    });
-  }
-
+  const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
   const capability = noneCapability(
     input.platform,
-    "no OS sandbox configured for the host process",
+    "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
   );
   return Object.freeze({
     version: HOST_SHELL_EXECUTION_PLAN_VERSION,
     platform: input.platform,
     requestedSandbox,
     executionRequest,
-    mode: "plain" as const,
+    mode: "blocked" as const,
+    sandboxed: false,
     capability,
-    fallbackReason: "none" as const,
+    fallbackReason,
     requiresExplicitUserApproval: false,
-    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":none",
+    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
   });
 }
 

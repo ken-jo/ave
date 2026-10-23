@@ -4,6 +4,13 @@ import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Trust / intent gate ──
+  "egress-grant-store-unreadable": "egressApprovalCard.storeUnreadable",
+  "invalid-egress-grant-destination": "formatIpcError.invalidInput",
+  "invalid-egress-grant-scope": "formatIpcError.invalidInput",
+  "invalid-egress-grant-workspace": "formatIpcError.invalidInput",
+  "invalid-egress-grant-conversation": "formatIpcError.invalidInput",
+  "invalid-egress-grant-tab": "formatIpcError.invalidInput",
+  "invalid-egress-grant-origin": "formatIpcError.invalidInput",
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",
   "process-entry-unconfined": "formatIpcError.processEntryUnconfined",

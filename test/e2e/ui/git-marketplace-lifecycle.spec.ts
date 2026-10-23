@@ -139,9 +139,8 @@ function governancePolicy(aveHome: string): McpGovernancePolicy {
 
 /** The shared fixtures, with the governance policy written before the app starts. */
 const test = base.extend({
-  userDataDir: async ({ userDataDir }, use) => {
+  userDataDir: async ({ userDataDir, aveHome }, use) => {
     // The fixture's AVE_HOME (see fixtures.ts).
-    const aveHome = join(userDataDir, 'ave-state');
     mkdirSync(join(aveHome, 'governance'), { recursive: true });
     writeFileSync(join(aveHome, 'governance', 'mcp-policy.json'), `${JSON.stringify(governancePolicy(aveHome), null, 2)}\n`);
     await use(userDataDir);

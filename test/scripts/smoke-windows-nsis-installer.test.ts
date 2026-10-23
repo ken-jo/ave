@@ -1651,19 +1651,16 @@ describe("Windows NSIS installer smoke contracts", () => {
       dependencies?: Record<string, string>;
       build?: { nsis?: { deleteAppDataOnUninstall?: boolean } };
     };
-    // Deliberate drift guard: installer.nsh drives srt-win.exe directly
-    // (`acl recover --force`, then `uninstall`), a CLI contract no type checker
-    // covers. An ASRT bump must re-verify against the newly vendored binary that
-    // both subcommands still exist, that `uninstall` still reports user
-    // cancellation as exit 10, and that the teardown still clears everything the
-    // install stamped — 0.0.73 added ambient write-deny stamps on the stock
-    // world-writable system dirs, which `uninstall` removes (and `--keep-user`
-    // deliberately keeps, a flag this installer does not pass). Verified for
-    // 0.0.76: its srt-win.exe is built from the same `vendor/srt-win-src` tree
-    // as 0.0.75 (upstream tree c2099dd at both tags; the binaries differ only
-    // by rustc toolchain). Bump this only together with that check.
+    // Direct backend CLI calls are outside compiler coverage. Runtime upgrades
+    // must recheck acl recover --force, uninstall, cancellation exit 10, and
+    // ambient-deny cleanup without --keep-user (the installer never passes it).
+    // Verified for 0.0.80: the production source delta from 0.0.76 only merges
+    // ACL batch targets (source subtree e29778f -> 2d21779; Cargo.toml and
+    // Cargo.lock unchanged). Recovery, uninstall and cancellation are unchanged.
+    // Ambient cleanup remains best effort; failed paths stay recorded for retry.
+    // Bump this guard only after source or native CLI verification.
     expect(packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"]).toBe(
-      "0.0.76",
+      "0.0.80",
     );
     expect(packageJson.build?.nsis?.deleteAppDataOnUninstall).toBe(false);
   });

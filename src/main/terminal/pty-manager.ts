@@ -16,6 +16,7 @@ import {
   isAsrtSandboxActive,
   sandboxTempEnvLaunch,
 } from "../../permissions/asrt-sandbox.js";
+import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
@@ -107,6 +108,8 @@ interface TerminalSession {
   ringBytes: number;
   disposeData: () => void;
   disposeExit: () => void;
+  /** Ends pending network approval when the confined shell closes. */
+  egressAbort?: AbortController;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
   exited: boolean;
@@ -562,11 +565,21 @@ async function spawnNewTerminal(
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
+    const egressAbort = new AbortController();
+    addCleanup(() => egressAbort.abort());
+    const egress = openEgressInvocation({ kind: "terminal", tabId }, {
+      abortSignal: AbortSignal.any([owner.abort.signal, egressAbort.signal]),
+    });
+    addCleanup(() => egress.release());
     const { argv, env } =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal });
-    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); });
+        ? await wrapWorkerCommand(cmdline, { filesystem, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+    const cleanupWrap = addCleanup(() => {
+      egressAbort.abort();
+      egress.release();
+      void cleanupAsrtSandboxAfterCommand();
+    });
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;
@@ -598,9 +611,11 @@ async function spawnNewTerminal(
       addCleanup(() => pty.kill("SIGKILL"));
     }
 
+    egress.noteProcessGroup(pty.pid);
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });
     const session: TerminalSession = {
+      egressAbort,
       info: { tabId, lane: "agent", terminalSessionId: randomBytes(16).toString("hex"), substrate: "asrt", sandboxGeneration, initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false },
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
@@ -1382,6 +1397,7 @@ function killTerminalLane(key: string): void {
   const session = sessions.get(key);
   if (!session || session.closing) return;
   session.closing = true;
+  session.egressAbort?.abort();
   session.disposeData();
   try {
     if (!session.exited) session.pty.kill();
@@ -1433,6 +1449,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   const sessionsToKill = [...sessions.entries()].filter(([, session]) => !session.exited);
   for (const [tabId, session] of sessionsToKill) {
     session.closing = true;
+    session.egressAbort?.abort();
     session.disposeData();
     if (session.forceKillTimer !== null) {
       clearTimeout(session.forceKillTimer);

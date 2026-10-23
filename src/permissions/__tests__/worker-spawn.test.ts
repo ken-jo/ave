@@ -23,6 +23,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { egressInvocationOwner } from "../egress-invocations.js";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 
@@ -352,6 +353,8 @@ describe("spawnWorker — gate ON (macOS)", () => {
       udsArgName: "--uds",
     });
 
+    const commandId = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
+    expect(egressInvocationOwner(commandId)).toEqual({ kind: "worker", role: "worker", pluginId: "local-indexer", instanceId: "embed" });
     const socketDir = join(aveHome(), "plugins", "local-indexer", "run", "embed");
     const socketPath = join(socketDir, "control.sock");
     // socketDir created 0o700; stale socket unlinked before mkdir.
@@ -423,6 +426,10 @@ describe("spawnWorker — gate ON (macOS)", () => {
     const cap = resolveReviewerSandboxCapability("plugin", "index_search", undefined, "embed", "local-indexer");
     expect(cap.kind).toBe("asrt");
     expect(cap.reason).toContain("plugin worker 'local-indexer/embed' ASRT-wrapped");
+    worker.stop();
+    expect(egressInvocationOwner(commandId)).toBeDefined();
+    child.emit("exit", 0, null);
+    expect(egressInvocationOwner(commandId)).toBeUndefined();
   });
 
   it("injects the UDS path via env when udsArgName is the env form", async () => {

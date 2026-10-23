@@ -94,6 +94,7 @@ import { ko as ko_deferredQueueDialog } from "../generated/deferredQueueDialog.j
 import { ko as ko_deferredQueuePanel } from "../generated/deferredQueuePanel.js";
 import { ko as ko_devToolsPanel } from "../generated/devToolsPanel.js";
 import { ko as ko_dockedApprovalCard } from "../generated/dockedApprovalCard.js";
+import { ko as ko_egressApprovalCard } from "../generated/egressApprovalCard.js";
 import { ko as ko_errorBoundary } from "../generated/errorBoundary.js";
 import { ko as ko_fileEditDiff } from "../generated/fileEditDiff.js";
 import { ko as ko_formatIpcError } from "../generated/formatIpcError.js";
@@ -281,6 +282,7 @@ export const koMessages: Record<string, string> = {
   ...ko_deferredQueuePanel,
   ...ko_devToolsPanel,
   ...ko_dockedApprovalCard,
+  ...ko_egressApprovalCard,
   ...ko_errorBoundary,
   ...ko_fileEditDiff,
   ...ko_formatIpcError,

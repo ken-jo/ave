@@ -7,7 +7,7 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { requireSandboxCases } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";
@@ -38,6 +38,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetActiveSandboxCapabilityForTest();
+  setSandboxRequestedAtBoot(false);
   vi.unstubAllEnvs();
   await cleanupTmpDir(root);
 });
@@ -50,9 +51,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     const defaultTranscript = join(defaultSessions, "conversation.jsonl");
     mkdirSync(defaultSessions, { recursive: true });
     writeFileSync(defaultTranscript, CONTENT);
-    const privateSibling = join(root, "private.txt");
+    const ordinaryHomeFile = join(root, "private.txt");
     const nestedSecret = join(defaultSessions, ".env");
-    writeFileSync(privateSibling, "private-home-fixture");
+    writeFileSync(ordinaryHomeFile, "ordinary-home-fixture");
     writeFileSync(nestedSecret, "private-nested-fixture");
     const userData = join(root, "user-data");
     const protectedProject = join(userData, "project");
@@ -67,11 +68,15 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(read.isError, read.output).toBe(false);
     expect(read.metadata.sandboxed).toBe(true);
     expect(read.output).toContain(CONTENT.trim());
-    for (const path of [privateSibling, nestedSecret]) {
+    const ordinaryHomeCommand = "/bin/cat " + shellQuote(ordinaryHomeFile);
+    const ordinaryHomeRead = await spawnWithSandbox(ordinaryHomeCommand, cwd, [cwd, ...baseAllowedDirectories()], 15, prepareSandboxFixture(ordinaryHomeCommand, cwd));
+    expect(ordinaryHomeRead.isError, ordinaryHomeRead.output).toBe(false);
+    expect(ordinaryHomeRead.metadata.sandboxed).toBe(true);
+    expect(ordinaryHomeRead.output).toContain("ordinary-home-fixture");
+    for (const path of [nestedSecret]) {
       const deniedCommand = "/bin/cat " + shellQuote(path);
       const denied = await spawnWithSandbox(deniedCommand, cwd, [cwd, ...baseAllowedDirectories()], 15, prepareSandboxFixture(deniedCommand, cwd));
       expect(denied.isError, denied.output).toBe(true);
-      expect(denied.output).not.toContain("private-home-fixture");
       expect(denied.output).not.toContain("private-nested-fixture");
     }
     const writeCommand = "printf changed > " + shellQuote(defaultTranscript);
@@ -102,7 +107,11 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(read.isError, read.output).toBe(false);
     expect(read.metadata.sandboxed).toBe(true);
     expect(read.output).toContain(CONTENT.trim());
-    for (const denied of [...neighbors, sibling, escape, nestedCredential, nestedEnvironment]) {
+    const siblingRead = await run("/bin/cat " + shellQuote(sibling));
+    expect(siblingRead.isError, siblingRead.output).toBe(false);
+    expect(siblingRead.metadata.sandboxed).toBe(true);
+    expect(siblingRead.output).toContain("ordinary-neighbor-fixture");
+    for (const denied of [...neighbors, escape, nestedCredential, nestedEnvironment]) {
       const result = await run("/bin/cat " + shellQuote(denied));
       expect(result.isError, result.output).toBe(true);
       expect(result.output).not.toContain("neighbor-fixture");
@@ -138,6 +147,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
   it("public BashTool reads a configured session under strict path scope", async (test) => {
     await requireSandboxCases(test);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    setSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "Native test sandbox initialized",
@@ -164,6 +174,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     let wrapped = false;
     try {
       const { child, confinement } = await spawnConfinedChild({
+        egressOwner: { kind: "worker", role: "worker", pluginId: "fixture-plugin" },
         command: "/bin/cat", args: [ordinary, transcript], label: "session-read-confined-fixture",
         grantMode: "allow-list", tempPrincipal: { kind: "plugin", id: "session-read-fixture" },
         allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),

@@ -74,11 +74,11 @@ for (const locale of ["en", "ko"] as const) {
   });
 }
 
-test("Settings loads and revokes a project rule through the real host bridge", async ({ app, mainWindow, userDataDir }, testInfo) => {
+test("Settings loads and revokes a project rule through the real host bridge", async ({ app, mainWindow, userDataDir, aveHome }, testInfo) => {
   const project = join(userDataDir, "rules-project");
   mkdirSync(project, { recursive: true });
   const captured = captureApprovalWorkingDirectory(project);
-  const rulesDirectory = join(userDataDir, "ave-state", "permissions", "project-rules");
+  const rulesDirectory = join(aveHome, "permissions", "project-rules");
   mkdirSync(rulesDirectory, { recursive: true, mode: 0o700 });
   const file = join(rulesDirectory, `${captured.identity}.json`);
   writeFileSync(file, JSON.stringify({

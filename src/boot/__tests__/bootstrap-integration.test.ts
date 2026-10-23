@@ -560,6 +560,13 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
 
 // ── permissions/* (incl. dynamically imported sandbox modules) ───────────────
 vi.mock("../../permissions/sandbox-capability.js", () => ({
+  detectSandboxCapability: vi.fn(() => ({
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "sandbox disabled by bootstrap integration fixture",
+    confines: { filesystem: false, process: false, network: false },
+  })),
   isActiveSandboxFilesystemContained: vi.fn(() => false),
   isActiveSandboxShellContained: vi.fn(() => false),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
@@ -576,6 +583,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const { mkdirSync } = await import("node:fs");
   const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
   return {
+    subscribeAsrtViolations: vi.fn(async () => () => {}),
     appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
     appOwnedSandboxHomeRoot: vi.fn(() => join(roots, "home")),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
@@ -587,6 +595,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    isAsrtMacRuntimeProbeError: vi.fn(() => false),
     isAsrtSandboxActive: vi.fn(() => false),
     updateAsrtSandboxConfig: vi.fn(async () => {}),
     computeUnionAllowedDomains: vi.fn(() => []),

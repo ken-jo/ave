@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { test, expect } from "./fixtures.js";
 import { closeInlineSettings, openInlineSettings } from "./inline-settings.js";
 
-test("form to review to local package install", async ({ app, mainWindow, userDataDir, t }, testInfo) => {
-  const mcpDir = join(userDataDir, "ave-state", "mcp");
+test("form to review to local package install", async ({ app, mainWindow, aveHome, t }, testInfo) => {
+  const mcpDir = join(aveHome, "mcp");
   await mkdir(mcpDir, { recursive: true });
   await writeFile(join(mcpDir, "servers.json"), JSON.stringify({ servers: [{ id: "sample-connector", transport: "stdio",
     command: "uvx", args: ["studio-sample==1.0.0"], env: { STUDIO_SAMPLE: "visible-value" },
@@ -36,14 +36,14 @@ test("form to review to local package install", async ({ app, mainWindow, userDa
   await page.getByTestId("plugin-studio:install-confirm").click();
   await expect(page.getByTestId("plugin-studio:package-sheet")).toHaveCount(0);
   await expect.poll(async () => {
-    const ledger = JSON.parse(await readFile(join(userDataDir, "ave-state", "packages", "ledger.json"), "utf8")) as { packages: Array<{ name: string; origin: { sourceId: string | null } }> };
+    const ledger = JSON.parse(await readFile(join(aveHome, "packages", "ledger.json"), "utf8")) as { packages: Array<{ name: string; origin: { sourceId: string | null } }> };
     return ledger.packages.find((entry) => entry.name === "team-kit")?.origin.sourceId;
   }).toBeNull();
-  const mcp = await readFile(join(userDataDir, "ave-state", "packages", "agent-plugin", "team-kit", "1.0.0", "mcp.json"), "utf8");
+  const mcp = await readFile(join(aveHome, "packages", "agent-plugin", "team-kit", "1.0.0", "mcp.json"), "utf8");
   expect(mcp).toContain("studio-sample==1.0.0");
   expect(mcp).toContain("visible-value");
   expect(mcp).not.toContain("stored-key-value");
-  const manifest = JSON.parse(await readFile(join(userDataDir, "ave-state", "packages", "agent-plugin", "team-kit", "1.0.0", "plugin.json"), "utf8")) as {
+  const manifest = JSON.parse(await readFile(join(aveHome, "packages", "agent-plugin", "team-kit", "1.0.0", "plugin.json"), "utf8")) as {
     extensions: { "ai.agent-connector.ave": { mcpAuth: Record<string, unknown> } };
   };
   expect(manifest.extensions["ai.agent-connector.ave"].mcpAuth).toEqual({ "sample-connector": { auth: "api-key", apiKeyEnv: "STUDIO_KEY" } });

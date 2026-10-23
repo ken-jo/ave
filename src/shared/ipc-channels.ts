@@ -129,6 +129,8 @@ export const PERMISSIONS = {
   // verbatim ASRT install instructions. Drives the win32 consent panel in
   // PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
   sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",
+  egressGrantsList: "ave:permissions:egress-grants-list",
+  egressGrantRevoke: "ave:permissions:egress-grant-revoke",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.

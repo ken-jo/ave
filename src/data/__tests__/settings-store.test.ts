@@ -1569,35 +1569,19 @@ describe("SettingsService role presets", () => {
     expect(reloaded.get("features")?.a2aLoopbackServer).toBe(true);
   });
 
-  it("ships hostClassifiesRisk ON and osToolSandbox OFF, on every platform", () => {
-    // hostClassifiesRisk ships ON on EVERY platform (shadow-mode reconciliation
-    // completed). It is safe to ship on non-sandbox / network-only platforms
-    // because the foreground read-relaxation is coupled to the active sandbox
-    // FILESYSTEM-CONTAINING the host — where it is not filesystem-contained it
-    // falls back to the pre-exec ask.
-    //
-    // osToolSandbox ships OFF everywhere. One setting governs the host, its
-    // workers and its plugin children alike, so a platform-specific default
-    // here would be a platform-specific plugin-isolation policy — which is what
-    // the former darwin-only default was, and it left Windows and Linux with a
-    // plugin path that required a sandbox the host never asked for.
+  it("keeps host risk classification enabled", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.hostClassifiesRisk ?? false).toBe(true);
-    expect(service.get("features")?.osToolSandbox ?? false).toBe(false);
   });
 
-  // Per-platform TRUTH-TABLE — asserts the default EXPLICITLY on each platform
-  // rather than by mirroring the impl expression, so a platform branch creeping
-  // back into settings-defaults fails here by name. The default is evaluated at
-  // module-load, so each case stubs `process.platform` and re-imports the store
-  // with `vi.resetModules()`, then reads the default through a fresh
-  // SettingsService (empty userDataPath → defaults).
+  // Re-import after replacing the host platform: defaults are evaluated once.
   it.each([
-    ["darwin", false],
-    ["linux", false],
+    ["darwin", true],
+    ["linux", true],
     ["win32", false],
+    ["freebsd", false],
   ] as const)(
-    "osToolSandbox default on %s = %s (one policy, no platform branch)",
+    "osToolSandbox default on %s = %s",
     async (platform, expected) => {
       const original = process.platform;
       const dir = mkdtempSync(join(tmpdir(), "settings-store-truthtable-"));
@@ -1616,6 +1600,13 @@ describe("SettingsService role presets", () => {
       }
     },
   );
+
+  it.each([true, false])("preserves an explicit sandbox setting of %s across reload", async (enabled) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { osToolSandbox: enabled } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("features")?.osToolSandbox).toBe(enabled);
+  });
 });
 
 describe("SettingsService LLM per-vendor patching", () => {

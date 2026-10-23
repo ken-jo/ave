@@ -6,6 +6,13 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sandboxStatus.retry": "상태 다시 확인",
+  "sandboxStatus.queryFailed": "샌드박스 상태 확인 불가 · 호스트 조회 실패",
+  "sandboxStatus.off": "샌드박스 꺼짐 · {reason}",
+  "sandboxStatus.disabled": "설정에서 비활성화됨",
+  "sandboxStatus.unsupported": "지원하지 않는 플랫폼",
+  "sandboxStatus.shellUnavailable": "셸 격리 사용 불가",
+  "sandboxStatus.unavailable": "격리를 시작하지 못함",
   "permissionJudge.retry": "다시 시도",
   "permissionJudge.rollbackFailed": "판정기 설정과 실행 상태를 복원하지 못했습니다. 자동 판정을 사용하기 전에 앱을 다시 시작하세요.",
   "permissionJudge.externalChange": "다른 창에서 판정기 설정을 변경했습니다. 다시 불러오면 저장하지 않은 수정 사항을 저장된 설정으로 바꿉니다.",

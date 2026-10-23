@@ -12,6 +12,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
+  openInvocationListener: vi.fn(),
+  closeInvocationListener: vi.fn(),
   wrapWithSandboxArgv: vi.fn(),
   cleanupAfterCommand: vi.fn(),
   reset: vi.fn(),
@@ -21,6 +23,8 @@ const h = vi.hoisted(() => ({
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
     initialize: h.initialize,
+    openInvocationListener: h.openInvocationListener,
+    closeInvocationListener: h.closeInvocationListener,
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
@@ -33,6 +37,8 @@ vi.mock("node:child_process", () => ({
 
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
+  ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
+  isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
   isAsrtLinuxRuntimeProbeError,
   isAsrtSandboxActive,
@@ -83,6 +89,7 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   setProcessPlatform("linux");
   h.initialize.mockResolvedValue(undefined);
+  h.openInvocationListener.mockResolvedValue({ port: 12345 });
   h.wrapWithSandboxArgv.mockResolvedValue({
     // This is the exact shape ASRT uses on Linux: its outer shell runs a
     // rendered bwrap command. The adapter hardens its mounts before spawning.
@@ -114,6 +121,9 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     expect(wrapCall?.[2]).toBeUndefined();
     expect(wrapCall?.[3]).toBeInstanceOf(AbortSignal);
     expect(wrapCall?.[4]).toBe(process.cwd());
+    expect(wrapCall?.[5]).toMatchObject({ commandId: expect.stringMatching(/^[a-f0-9]{32}$/u), denyUnixSockets: true });
+    expect(h.openInvocationListener).toHaveBeenCalledWith((wrapCall?.[5] as { commandId: string }).commandId);
+    expect(h.closeInvocationListener).toHaveBeenCalledWith((wrapCall?.[5] as { commandId: string }).commandId);
     expect(h.spawn).toHaveBeenCalledWith(
       "/bin/bash",
       ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
@@ -135,7 +145,28 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     expect(isAsrtSandboxActive()).toBe(true);
   });
 
-  it.each(["darwin", "win32"] as const)(
+  it("refuses activation when the invocation listener cannot open", async () => {
+    h.openInvocationListener.mockRejectedValueOnce(new Error("Listener admission refused"));
+    await expect(initializeAsrtSandbox({ allowedDomains: [] })).rejects.toSatisfy(isAsrtLinuxRuntimeProbeError);
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.reset).toHaveBeenCalledOnce();
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+
+  it("refuses Linux capability when Unix socket filtering has no supported helper", async () => {
+    const originalArch = Object.getOwnPropertyDescriptor(process, "arch")!;
+    Object.defineProperty(process, "arch", { ...originalArch, value: "ia32" });
+    try {
+      await expect(initializeAsrtSandbox({ allowedDomains: [] })).rejects.toThrow("Unix socket filtering helper is unavailable");
+      expect(h.spawn).not.toHaveBeenCalled();
+      expect(h.reset).toHaveBeenCalledOnce();
+      expect(isAsrtSandboxActive()).toBe(false);
+    } finally {
+      Object.defineProperty(process, "arch", originalArch);
+    }
+  });
+
+  it.each(["win32"] as const)(
     "does not invoke the Linux probe on %s",
     async (platform) => {
       setProcessPlatform(platform);
@@ -263,6 +294,26 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     await expectedFailure;
 
     expect(order).toEqual(["kill", "cleanup", "reset"]);
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+});
+
+describe("configured profile launch on macOS", () => {
+  it("publishes activity only after the configured profile executes", async () => {
+    setProcessPlatform("darwin");
+    const argv = ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/bin/sh", "-c", "true"];
+    h.wrapWithSandboxArgv.mockResolvedValue({ argv, env: { ASRT_PROBE_ENV: "configured" } });
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(h.spawn).toHaveBeenCalledWith(argv[0], argv.slice(1), expect.objectContaining({ shell: false }));
+    expect(isAsrtSandboxActive()).toBe(true);
+  });
+  it("resets and reports a typed failure when the OS rejects the profile", async () => {
+    setProcessPlatform("darwin");
+    h.spawn.mockImplementation(() => childThatCloses(71));
+    const failure = await initializeAsrtSandbox({ allowedDomains: [] }).catch((error: unknown) => error);
+    expect(isAsrtMacRuntimeProbeError(failure)).toBe(true);
+    expect(failure).toMatchObject({ code: ASRT_MAC_RUNTIME_PROBE_ERROR_CODE });
+    expect(h.reset).toHaveBeenCalledOnce();
     expect(isAsrtSandboxActive()).toBe(false);
   });
 });

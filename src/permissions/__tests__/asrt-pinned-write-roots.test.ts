@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 /**
  * `PerCommandFilesystem.pinWriteRoots` — the one mechanism that keeps
  * plugin-owned code from removing or replacing the host-created roots it writes
@@ -53,7 +54,7 @@ describe("pinned write roots", () => {
       expect(existsSync(appOwnedSandboxTempRoot()), "the temp root existed before the first wrap").toBe(false);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { dir: tempDir } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "pinned" });
-      const { argv } = await wrapWorkerCommand("true", {
+      const { argv } = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID,
         filesystem: {
           allowWrite: [tempDir, dataDir],
           denyRead: [],
@@ -73,11 +74,9 @@ describe("pinned write roots", () => {
   it("adds no marker without the flag, and none off macOS", () => {
     const dataDir = mkdtempSync(join(home, "plain-"));
     const unpinned = buildPerCommandSandboxCustomConfig({ allowWrite: [dataDir], denyWrite: [] });
-    expect(unpinned?.filesystem?.denyWrite).toEqual([]);
+    expect(unpinned?.filesystem?.denyWrite?.some((path) => typeof path === "string" && path.endsWith(MARKER))).toBe(false);
     const pinned = buildPerCommandSandboxCustomConfig({ allowWrite: [dataDir], denyWrite: [], pinWriteRoots: true });
-    expect(pinned?.filesystem?.denyWrite).toEqual(
-      process.platform === "darwin" ? [join(realpathSync(dataDir), MARKER)] : [],
-    );
+    expect(pinned?.filesystem?.denyWrite?.includes(join(realpathSync(dataDir), MARKER))).toBe(process.platform === "darwin");
   });
 
   it("refuses the flag without a restated deny floor, which a per-command denyWrite replaces", () => {

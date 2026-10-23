@@ -4387,7 +4387,8 @@ async function runBundledWrapToExit(
 ): Promise<void> {
   const sandboxHome = home ?? createSandboxProcessHome();
   try {
-    const { argv, env } = await wrapBundledCommand({
+    const { argv, env, egress } = await wrapBundledCommand({
+      egressOwner: { kind: "worker", role: principal.kind === "mcp" ? "mcp-server" : "hook", pluginId: principal.kind === "plugin" ? principal.id : undefined, instanceId: principal.id },
       command: process.execPath,
       args: [probe],
       sandboxHome,
@@ -4405,6 +4406,7 @@ async function runBundledWrapToExit(
         child.once("error", reject);
       });
     } finally {
+      egress.release();
       await cleanupAsrtSandboxAfterCommand();
     }
   } finally {

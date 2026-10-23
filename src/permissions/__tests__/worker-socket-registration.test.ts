@@ -13,6 +13,8 @@ import {
 const manager = vi.hoisted(() => ({
   config: undefined as { network: { allowUnixSockets?: string[] } } | undefined,
   update: vi.fn(),
+  openListener: vi.fn(),
+  closeListener: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   initialize: async (config: typeof manager.config) => { manager.config = config; },
@@ -23,6 +25,8 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
     env: process.env,
   }),
   cleanupAfterCommand: () => undefined,
+  openInvocationListener: manager.openListener,
+  closeInvocationListener: manager.closeListener,
 } }));
 vi.mock("node:child_process", () => ({
   spawn: () => {
@@ -39,7 +43,12 @@ describe("worker socket directory ownership", () => {
   beforeEach(async () => {
     setProcessPlatform("linux");
     manager.update.mockReset();
+    manager.openListener.mockReset().mockResolvedValue({ socketPath: "/configured/proxy.sock" });
+    manager.closeListener.mockReset();
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    expect(manager.openListener).toHaveBeenCalledOnce();
+    expect(manager.openListener).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]{32}$/u));
+    expect(manager.closeListener).toHaveBeenCalledWith(manager.openListener.mock.calls[0]![0]);
   });
   afterEach(async () => {
     try {

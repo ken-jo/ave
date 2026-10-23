@@ -1,3 +1,5 @@
+import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+
 /**
  * Honest, platform-aware description of what the OS tool sandbox actually
  * enforces. Shared between main (IPC handler) and any caller that needs to
@@ -6,9 +8,8 @@
  * Platform reality (now backed by the Anthropic Sandbox Runtime — see
  * src/permissions/asrt-sandbox.ts):
  *   - macOS (Seatbelt via ASRT): filesystem + process confinement, AND network
- *     — ASRT routes egress through a loopback proxy enforcing the global
- *     strict-union allow-list, so egress IS contained (no longer the old
- *     sandbox-exec fake floor that left loopback/IPv6/DNS open).
+ *     — the runtime confines connections to the invocation proxy, which
+ *     applies shell grants or the owning plugin allowlist.
  *   - Linux (bwrap via ASRT): filesystem + process + network.
  *   - Windows (srt-win via ASRT): filesystem ACL + network egress confinement.
  *     ASRT provisions a dedicated `srt-sandbox` user, applies filesystem rules
@@ -117,7 +118,9 @@ export type SandboxGateReason =
   | "degrade-default-cannot-activate"
   | "abort-explicit-cannot-activate"
   | "degrade-linux-runtime-probe-failed"
-  | "abort-linux-runtime-probe-failed";
+  | "abort-linux-runtime-probe-failed"
+  | "degrade-macos-runtime-probe-failed"
+  | "abort-macos-runtime-probe-failed";
 
 /**
  * What the sandbox gate actually decided for THIS process, sealed at boot.
@@ -155,6 +158,8 @@ export interface SandboxRuntimeCapabilityInfo {
 
 /** Capability snapshot returned to the renderer for the settings toggle. */
 export interface SandboxCapabilityInfo {
+  /** Host-issued default shell route, distinct from the platform potential. */
+  shellExecutionPlan?: HostShellExecutionPlanAuditProjection;
   platform: NodeJS.Platform;
   /** Whether the user setting (or env escape-hatch) currently has the sandbox enabled. */
   enabled: boolean;
@@ -220,4 +225,35 @@ export function sandboxConfinementForPlatform(
   // Generic partial profile for any future non-Windows partial backend:
   // filesystem + network may be present, but process isolation is not claimed.
   return { filesystem: true, process: false, network: true };
+}
+
+/**
+ * How strongly the egress proxy knows which invocation opened a connection.
+ *
+ * - `kernel-channel`: the OS pins each confined process to its own proxy
+ *   listener, so the port a connection arrives on names the invocation
+ *   (per-invocation listeners on macOS/Linux). A
+ *   process cannot present another invocation's identity.
+ * - `shared`: confined processes share one proxy endpoint and the identity is
+ *   a label the client presents (ASRT's proxy username). Attribution, not a
+ *   boundary between concurrent invocations.
+ */
+export type EgressIdentityStrength = "kernel-channel" | "shared";
+
+/**
+ * The scopes an egress grant can be given. A shell tool call's ladder is
+ * once, conversation, workspace, always; a workspace terminal tab's is once,
+ * tab, workspace, always (`tab` takes the place of `conversation`: a terminal
+ * belongs to no conversation).
+ */
+export type EgressGrantScope = "once" | "conversation" | "tab" | "workspace" | "always";
+
+/**
+ * The widest egress-grant scope an identity strength can carry. With a shared
+ * identity another invocation of the same session can present the id a grant
+ * was given to, so a grant must not outlive the conversation it was given in.
+ * The egress ask caps the scopes it offers with this.
+ */
+export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
+  return strength === "kernel-channel" ? "always" : "conversation";
 }

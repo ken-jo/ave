@@ -11,6 +11,7 @@ import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
+import { TEST_COMMAND_ID } from "../../../__tests__/support/egress-fixture.js";
 
 import {
   getDefaultSensitiveWriteDenyPaths,
@@ -189,8 +190,8 @@ async function startShell(grantOwnTty: boolean): Promise<Shell> {
   const ownTty = ownPtySlavePath(pty);
   const filesystem = { allowWrite: [workDir], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() };
   const { argv, env } = grantOwnTty
-    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { filesystem, ownTty })
-    : await wrapWorkerCommand("exec /bin/zsh -f -i", { filesystem });
+    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { filesystem, ownTty, commandId: TEST_COMMAND_ID })
+    : await wrapWorkerCommand("exec /bin/zsh -f -i", { filesystem, commandId: TEST_COMMAND_ID });
   const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin", HOME: workDir, TERM: "xterm-256color", PS1: "%# " };
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined && (/PROXY$/i.test(key) || key === "SANDBOX_RUNTIME" || key === "TMPDIR")) childEnv[key] = value;
@@ -285,7 +286,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
   it.runIf(process.platform === "darwin")("refuses a malformed tty at the wrap", async () => {
     if (!canRun) return;
     await expect(
-      wrapTerminalCommand("true", { filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
+      wrapTerminalCommand("true", { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
     ).rejects.toThrow(/not a pty slave/);
   });
 });

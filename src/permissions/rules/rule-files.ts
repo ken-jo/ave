@@ -25,7 +25,7 @@ import {
   parseRuleSpecifier,
   type RuleSpecifier,
 } from "./rule-specifier.js";
-import { refusedShellPrefix } from "./shell-prefix-policy.js";
+import { refusedShellPrefix } from "./shell-prefix-values.js";
 import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js";
 
 /** An allow wildcard outside the allowlist: refused at save, inert when already stored. */

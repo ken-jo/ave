@@ -1509,9 +1509,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox is opt-in on every platform");
-    expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L237-L254");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("per `osToolSandbox`");
+    expect(agents).toContain("src/data/settings-defaults.ts");
     expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1`");
     expect(agents).toContain("aborts startup; settings activation warns and continues without OS isolation");
     expect(agents).toContain("Windows always warns and continues when unavailable");

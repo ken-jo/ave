@@ -115,6 +115,7 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
       confidence: "verified",
       platform: "darwin",
       reason: "ASRT (Seatbelt) active — fs+process+network contained",
+      confines: { filesystem: true, process: true, network: true },
     });
     const cap = detectSandboxCapability();
     expect(cap.kind).toBe("asrt");
@@ -529,7 +530,7 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
 
     const plan = getHostShellExecutionPlan();
     expect(plan.mode).toBe("plain");
-    expect(plan.fallbackReason).toBe("none");
+    expect(plan.fallbackReason).toBe("disabled-by-setting");
     expect(plan.requiresExplicitUserApproval).toBe(false);
   });
 });

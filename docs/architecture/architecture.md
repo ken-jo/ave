@@ -1509,6 +1509,23 @@ Windows srt-win provides filesystem and network confinement but no process
 confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
+`features.osToolSandbox` defaults to `true` on macOS and Linux and `false` on
+Windows. An explicit stored value is preserved. The Windows default remains
+gated until its shell confinement lane is ready; plugin confinement alone
+does not satisfy that gate. Activation still requires a successful runtime
+probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
+its `sandboxed` field describes the selected child, including exclusions and
+unsandboxed retries, rather than merely repeating the setting. Permission,
+reviewer, audit and cache consumers use that plan.
+
+The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
+defines writes within project and temporary roots, mandatory control-file
+write denies, broad reads subject to existing protections, domain approval
+through the local egress proxy, and denied Unix sockets. Inactive shell
+confinement remains visible in the chat header and Settings through a
+persistent reason-bearing status. Workspace terminals, plugin network and
+worker control channels retain their own contracts.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,

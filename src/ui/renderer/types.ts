@@ -1,3 +1,4 @@
+import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -1593,6 +1594,8 @@ export type AvePermissionApi = {
   sandboxCapability: () => Promise<SandboxCapabilityInfo>;
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
+  egressGrantsList: () => Promise<{ ok: true; grants: readonly ListedEgressGrant[] } | IpcErrorResult>;
+  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: true } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —

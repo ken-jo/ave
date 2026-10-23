@@ -36,6 +36,8 @@ function reviewerSettings(
 function installApi(opts: { featureEnabled?: boolean } = {}) {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),

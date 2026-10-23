@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 /**
  * The per-principal sandbox temp directories: how a principal's id names its
  * directory, how the host creates it, and how boot empties the root.
@@ -203,7 +204,10 @@ describe("the private roots in a sandbox read deny", () => {
     () => {
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
       const floor = getDefaultSensitiveReadDenyPaths();
-      const denyRead: string[] = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead.map((entry) => {
+        if (typeof entry !== "string") throw new Error("Expected plain host path entries");
+        return entry;
+      });
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());
@@ -242,7 +246,7 @@ describe("the private roots in a sandbox read deny", () => {
         // `~/.ave`: an ancestor of both private roots.
         const { argv, env } = await wrapWorkerCommand(
           `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
-          {
+          { commandId: TEST_COMMAND_ID,
             filesystem: {
               allowRead: [home, own.path],
               allowWrite: [own.path],

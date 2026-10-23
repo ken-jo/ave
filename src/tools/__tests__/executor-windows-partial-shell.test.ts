@@ -226,7 +226,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     });
     expect(reviewerInput?.hostShellExecutionPlan).toBe(executedPlan);
     expect(reviewerInput?.approvalCacheKey).toContain(
-      "host-shell-execution-plan-cache/v3:",
+      "host-shell-execution-plan-cache/v4:",
     );
   });
   it("bypasses foreground reviewer and durable memory with a one-shot explicit modal", async () => {
@@ -739,7 +739,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
         platform,
         requestedSandbox: false,
         mode: "plain",
-        fallbackReason: "none",
+        fallbackReason: "disabled-by-setting",
         requiresExplicitUserApproval: false,
       });
       expect(result[0]?.is_error).toBeUndefined();

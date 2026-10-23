@@ -455,6 +455,7 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )

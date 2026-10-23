@@ -4,6 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { aveHome } from "../shared/ave-home.js";
 import type { PermissionRule } from "./permission-manager.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
@@ -11,6 +12,11 @@ import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
 
 
+
+/** Location shared by the rules writer and sandbox write protection. */
+export function permissionsFilePath(): string {
+  return resolve(aveHome(), "permissions.json");
+}
 
 export interface PermissionsFile {
   version: 1;

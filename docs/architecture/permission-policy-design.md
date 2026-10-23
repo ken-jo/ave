@@ -279,17 +279,102 @@ language or project command-rule scope today. Existing tool allow rules and
 saved grants can satisfy its ordinary asks; no new command-rule grammar is
 implied.
 
-The sink catalogue is retained because shell egress has not been delegated to a
-proxy. The OS tool sandbox remains opt-in; its current network allowlist is
-shared and strict, without per-domain approval or denial UI. Windows host-shell
-execution remains a plain child. This classification contract changes neither
-sandbox/proxy behavior nor the normal sandbox-off approval path. Native shell
-execution and egress behavior are outside the classifier validation evidence.
+The sink catalogue remains a host policy floor, including for unsandboxed
+commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
+boundary and proxy approval contract. Classification evidence alone does not
+prove native confinement or egress enforcement.
 The [implementation design](../design/permissions-always-allow-and-judge.md#shell-classification-buckets)
 records the retained credential and sink coverage. The guest risk grading below
 is a separate contract.
 
 ## Shell Execution And Explicit Host Approval
+
+### OS shell sandbox policy
+
+This policy applies to builtin Bash and PowerShell tool invocations. Workspace
+PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
+including the agent terminal's plugin/model domain union and socket policy.
+The user terminal's host shell is a separate lane.
+
+`features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
+explicitly default-off until its shell confinement gate is enabled. Loading
+settings preserves an explicit stored `true` or `false`; the platform default
+applies only when the value is absent. A setting expresses activation intent,
+while successful capability probing establishes availability. Unavailability
+has a machine-readable reason and is logged once for the activation attempt.
+An explicit `AVE_SANDBOX_ENABLED=1` request aborts startup on macOS and Linux
+if activation fails. Settings/default activation instead warns and continues
+without OS isolation; Windows also warns and continues when unavailable.
+
+The existing host-issued
+[`HostShellExecutionPlan`](../../src/permissions/host-shell-execution-plan.ts)
+is the invocation's source of execution state. Its `sandboxed` field is true
+only when the sandbox is enabled, the capability probe passed and the selected
+command will use the verified confined shell route. `executionMode: "host"`
+requests and unavailable confinement carry `sandboxed: false`; any excluded
+command or retry that runs outside confinement must use that same state.
+The field participates in the plan's audit projection and
+cache identity. Permission consumers receive the plan before deciding; neither
+a renderer flag nor a process-wide capability can establish that a particular
+command will run sandboxed. This state contract does not redefine command-rule
+matching or approval precedence.
+
+Sandbox writes are limited to the invocation's admitted project roots and
+temporary directories. Mandatory write denies protect these entries beneath
+the real home and each admitted write root, taking precedence over grants:
+
+- `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
+- `.gitconfig`, `.git/config` and `.git/hooks/**`;
+- `.vscode/**`;
+- Ave settings, permission settings, rules, policies and approval grants, with
+  paths derived from their owning stores rather than copied filenames.
+
+The deny covers creation when a protected path does not yet exist, as well as
+modification of existing content. The
+[write policy](../../src/permissions/sandbox-write-policy.ts) retains both a
+protected directory entry and its canonical target when it is a link. The
+[sandbox wrapper](../../src/permissions/asrt-sandbox.ts) composes these denies
+with the existing sensitive write floor for each invocation. Store-owned paths
+come from the [application settings store](../../src/data/settings-store.ts),
+[permission settings store](../../src/permissions/permission-settings-store.ts),
+[global rule store](../../src/permissions/rules/rule-files.ts) and
+[project rule store](../../src/permissions/rules/project-rule-files.ts).
+The same boundary covers policy files and saved permission and egress grants.
+Relocation of a store must relocate its protection too. A command cannot
+rewrite its own settings, rules or exclusions through a broader grant.
+
+Reads remain broad. This policy adds no sandbox read denies and preserves
+existing read protections, including the [saved-session projection](#saved-session-reads).
+The host sensitive-path floor and other mandatory host gates retain authority
+even for a sandboxed command.
+
+Sandboxed shell network traffic must pass through the local egress proxy.
+The shell domain allowlist starts empty; plugin-declared domains do not seed
+it. An unknown destination invokes the host approval callback and the existing
+approval dock, offering allow once, always for this destination, or deny when
+the destination can hold a persistent grant. Allow once covers that host and
+port for the current shell invocation. Always persists the destination through the
+[egress grant store](../../src/permissions/egress-grants.ts), so later matching
+requests can proceed without another ask. Grants retain the destination's
+network class and shell origin; they do not authorize plugin or terminal
+traffic. Persistent scopes require verified public destinations and sufficient
+invocation attribution. Local or private-network and unverified destinations
+offer only allow once or deny; reserved destinations remain denied. The store
+retains other scopes for its existing consumers, but builtin shell prompts
+offer only once and always.
+Deny, approval failure and timeout return a clear network access error to the
+command without opening egress.
+Headless and auto-mode requests use the same configured permission reviewer
+and escalation path as other asks. Direct sockets cannot bypass the proxy.
+Unix-domain sockets are denied for shell commands by default; plugin worker
+control channels do not grant shell access to those sockets.
+
+When shell confinement is inactive because the setting is off, the runtime is
+unavailable or the platform is unsupported, the chat header and Settings show
+a persistent, non-dismissable sandbox-off status and localized reason. The
+status reports effective shell confinement, including a platform that can
+confine plugins but cannot confine shell commands. Session approval does not
+change sandbox activation for later commands.
 
 ### Route-neutral execution foundation
 
@@ -1068,10 +1153,9 @@ Only the builtin shell wrapper receives that root through
 floor still protects sessions from confined plugin, MCP and terminal processes.
 The builtin projection retains other sensitive paths, nested exclusions and
 trusted custom read denies; a conflicting protected ancestor suppresses the
-session grant. `getBuiltinShellReadPolicy` composes invocation reads for both
-shell dialects. It omits redundant read grants strictly above HOME, which
-otherwise cause the native runtime to reapply the HOME deny after narrower
-grants. Surviving read candidates cannot reopen another protected deny; write
+session grant. `getBuiltinShellReadPolicy` composes broad invocation reads for
+both shell dialects without denying the real home as a whole. Read candidates
+cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone
 does not establish this contract: both the file gates and actual sandboxed reads
