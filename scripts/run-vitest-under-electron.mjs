@@ -125,6 +125,7 @@ export function createElectronVitestInvocation(
     cwd = process.cwd(),
     env = process.env,
     nodeExecPath = process.execPath,
+    platform = process.platform,
   },
 ) {
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
@@ -152,7 +153,9 @@ export function createElectronVitestInvocation(
         ...env,
         // Electron-as-Node processes a test starts itself (process.execPath)
         // load the initializer too, so their console children stay hidden.
-        NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions(env.NODE_OPTIONS), normalizerPath),
+        ...(platform === "win32" ? {
+          NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions(env.NODE_OPTIONS), normalizerPath),
+        } : {}),
         ELECTRON_RUN_AS_NODE: "1",
         AVE_TEST_NODE_EXEC_PATH: nodeExecPath,
       },
@@ -174,6 +177,7 @@ export function runVitestUnderElectron(
     cwd,
     env,
     nodeExecPath,
+    platform,
   } = {},
 ) {
   const hasElectronPath = electronPath !== undefined;
@@ -197,6 +201,7 @@ export function runVitestUnderElectron(
     cwd,
     env,
     nodeExecPath,
+    platform,
   });
 
   let child;

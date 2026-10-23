@@ -156,6 +156,9 @@ export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildP
           if (!sid) return reject(new Error("Current account SID is unavailable"));
           resolveSid(sid);
         });
+      }).catch((error: unknown) => {
+        fixtureCurrentSid = undefined;
+        throw error;
       });
       const currentSid = await fixtureCurrentSid;
       return JSON.stringify({

@@ -42,7 +42,12 @@ export function withHiddenConsole(args) {
   // signatures accepts an options object in that position.
   const callback = args.findIndex((arg, i) => i > 0 && typeof arg === "function");
   const next = [...args];
-  next.splice(callback >= 0 ? callback : next.length, 0, { windowsHide: true });
+  const end = callback >= 0 ? callback : next.length;
+  if (end > 1 && next[end - 1] == null) {
+    next[end - 1] = { windowsHide: true };
+  } else {
+    next.splice(end, 0, { windowsHide: true });
+  }
   return next;
 }
 
