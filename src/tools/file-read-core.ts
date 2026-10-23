@@ -73,11 +73,9 @@ export function assertReadableFilePath(
   } catch {
     resolved = lexical;
   }
-  const canonical = caseFoldForMatch(canonicalizePathForMatch(resolved));
-  const sensitive = isSensitivePath(canonical, "read");
+  const canonical = canonicalizePathForMatch(resolved);
+  const sensitive = isSensitivePath(caseFoldForMatch(canonical), "read");
   if (sensitive) return { ok: false, error: "sensitive-path" };
-  // Session membership compares canonical forms; a native win32 spelling
-  // (`D:\...`) never matched the canonical root, so saved history was refused.
   if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);
   if (!check.allowed) return { ok: false, error: "path-not-allowed" };
