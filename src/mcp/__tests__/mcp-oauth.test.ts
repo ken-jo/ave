@@ -174,6 +174,8 @@ async function fixture(): Promise<Fixture> {
           const refused = new URL(redirectUri);
           refused.searchParams.set("error", "invalid_client");
           refused.searchParams.set("state", url.searchParams.get("state") ?? "");
+          // RFC 9207: the issuer accompanies error responses too.
+          if (state.callbackIssuer !== null) refused.searchParams.set("iss", state.callbackIssuer ?? state.base);
           response.writeHead(302, { location: refused.href }); response.end(); return;
         }
       }
@@ -887,6 +889,21 @@ describe("remote authorization", () => {
     await session.authenticate();
     expect(state.authorizations.at(-1)?.searchParams.get("client_id")).toMatch(/^native-client-/u);
     expect(openAuthorizationUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["a different issuer", "wrong"],
+    ["no issuer although the server advertises one", "missing"],
+  ] as const)("does not act on a client refusal that carries %s", async (_label, issuer) => {
+    const state = await fixture();
+    state.cimd = true;
+    state.rejectMetadataDocument = "callback";
+    state.callbackIssuer = issuer === "wrong" ? `${state.base}/wrong` : null;
+    const { session, openAuthorizationUrl } = createSession(state);
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(1);
+    expect(state.registrations).toHaveLength(0);
+    expect(state.grants).toHaveLength(0);
   });
 
   it("stays strict when the configuration requires the metadata document and the server refuses it", async () => {

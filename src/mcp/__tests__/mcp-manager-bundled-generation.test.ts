@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,15 +10,18 @@ import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coo
 const disconnect = vi.fn(async () => undefined);
 const constructedConfigs: Array<Record<string, unknown>> = [];
 const constructedFetches: unknown[] = [];
-const oauth = vi.hoisted(() => ({ sessions: [] as Array<{ config: { id: string }; status: string; fetch: unknown; authenticate: () => Promise<void> }> }));
-vi.mock("../mcp-oauth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../mcp-oauth.js")>()),
+const oauth = vi.hoisted(() => ({ sessions: [] as Array<{ config: { id: string }; credentialKey: string; status: string; fetch: unknown; authenticate: () => Promise<void> }> }));
+vi.mock("../mcp-oauth.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../mcp-oauth.js")>();
+  return {
+  ...actual,
   McpOAuthSession: class {
     status = "required";
     readonly credentialKey: string;
     readonly fetch = vi.fn();
     constructor(readonly config: { id: string; url: string }) {
-      this.credentialKey = `mcp.oauth.${config.id}`;
+      // The key the real session stores its grant under.
+      this.credentialKey = actual.tryMcpOAuthCredentialKey(config as Parameters<typeof actual.tryMcpOAuthCredentialKey>[0])!;
       oauth.sessions.push(this);
     }
     authenticate = vi.fn(async () => { this.status = "authenticated"; });
@@ -26,7 +29,8 @@ vi.mock("../mcp-oauth.js", async (importOriginal) => ({
     getBlockedCode() { return undefined; }
     dispose() { this.status = "required"; }
   },
-}));
+  };
+});
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
     constructor(
@@ -127,9 +131,9 @@ describe("McpManager bundled generation", () => {
     expect(oauth.sessions).toHaveLength(1);
     expect(oauth.sessions[0].config.id).toBe(stableId);
     // The bundled grant is indexed under its stable id, so an uninstall can retire it.
-    await vi.waitFor(() => expect(JSON.parse(stored.get("mcp.oauth.index") ?? "{}")).toEqual({ [stableId]: `mcp.oauth.${stableId}` }));
+    await vi.waitFor(() => expect(JSON.parse(stored.get("mcp.oauth.index") ?? "{}")).toEqual({ [stableId]: oauth.sessions[0]!.credentialKey }));
     expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
-    manager.registerBundledCredentialSource("agent-plugin", { complete: true,
+    manager.registerBundledCredentialSource("agent-plugin", { complete: () => true,
       list: () => [{ packageName: "remote-kit", serverName: "remote", transport: "http", url: "https://example.test/mcp", auth: "oauth" }],
       reconnect: async () => {
         manager.publishBundledGeneration(await manager.prepareBundledGeneration(owner, [projection], trust));
@@ -143,6 +147,48 @@ describe("McpManager bundled generation", () => {
     // The running server's own id resolves to the same session.
     expect(await manager.authenticate(projection.serverId)).toEqual({ connected: true });
     expect(oauth.sessions).toHaveLength(1);
+  });
+
+  it("indexes a declared bundled grant, under its session's key, when a complete list follows an index rebuild", async () => {
+    const stableId = bundledConfigId({ kind: "agent-plugin", name: "rebuild-kit" }, "remote");
+    const stored = new Map<string, string>([["mcp.oauth.index", "{ not json"]]);
+    const deleted: string[] = [];
+    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { deleted.push(key); stored.delete(key); }, canStoreEncrypted: () => true };
+    const configPath = join(root, "servers-rebuild.json");
+    writeFileSync(configPath, JSON.stringify({ servers: [] }));
+    const manager = new McpManager(new McpGovernance(join(root, "policy-rebuild.json")), new ToolRegistry(), unusedNetworkFetch,
+      configPath, undefined, undefined, undefined, undefined, secrets,
+      { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
+    const declaration = { packageName: "rebuild-kit", serverName: "remote", transport: "http" as const, url: "https://example.test/mcp",
+      auth: "oauth" as const, oauth: {} };
+    let complete = false;
+    manager.registerBundledCredentialSource("agent-plugin", { complete: () => complete, list: () => [declaration], reconnect: async () => {} });
+    // The rebuild cannot index a bundled server its incomplete list cannot vouch for yet ...
+    await manager.connectAll();
+    await manager.disconnectAll();
+    expect(JSON.parse(stored.get("mcp.oauth.index")!)).toEqual({});
+    // ... and does so once the list reports complete, before the server is ever prepared.
+    complete = true;
+    manager.registerBundledCredentialSource("agent-plugin", { complete: () => complete, list: () => [declaration], reconnect: async () => {} });
+    await manager.disconnectAll();
+    const derived = JSON.parse(stored.get("mcp.oauth.index")!)[stableId] as string;
+    expect(derived).toMatch(/^mcp\.oauth\./u);
+    stored.set(derived, "grant");
+    const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/rebuild-kit", pluginVersion: "1.0.0",
+      generationId: "a".repeat(64), activationId: "run-rebuild", localId: "remote", fingerprint: "b".repeat(64) },
+    { transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }, "d".repeat(64));
+    const trust = new PluginMcpTrustStore();
+    trust.approve(projection);
+    await manager.discardBundledGeneration(await manager.prepareBundledGeneration({ pluginId: "agent-plugin/rebuild-kit", generationId: "run-rebuild" }, [projection], trust));
+    expect(oauth.sessions.at(-1)!.credentialKey).toBe(derived);
+    await manager.disconnectAll();
+    expect(stored.get(derived)).toBe("grant");
+    expect(deleted).toEqual([]);
+    // Uninstalled: the complete list no longer declares it, and its grant goes.
+    manager.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [], reconnect: async () => {} });
+    await manager.disconnectAll();
+    expect(stored.has(derived)).toBe(false);
   });
 
   it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {
@@ -168,7 +214,7 @@ describe("McpManager bundled generation", () => {
     expect(missing.degraded).toMatchObject([{ code: "credential_required" }]);
     expect(constructedConfigs).toHaveLength(0);
     await manager.discardBundledGeneration(missing);
-    manager.registerBundledCredentialSource("agent-plugin", { complete: true,
+    manager.registerBundledCredentialSource("agent-plugin", { complete: () => true,
       list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
         auth: "api-key", apiKeyHeader: "X-Token" }],
       reconnect: async () => {
@@ -207,7 +253,7 @@ describe("McpManager bundled generation", () => {
     await restarted.stageBundledCredentialDrop({ kind: "agent-plugin", name: "meeting-kit" }, "notes",
       bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-New-Token" }));
     expect(reopened.get(key)).toBeNull();
-    restarted.registerBundledCredentialSource("agent-plugin", { complete: true,
+    restarted.registerBundledCredentialSource("agent-plugin", { complete: () => true,
       list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
         auth: "api-key", apiKeyHeader: "X-New-Token" }],
       reconnect: async () => undefined,

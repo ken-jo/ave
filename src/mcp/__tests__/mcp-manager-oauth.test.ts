@@ -248,6 +248,11 @@ describe("remote authorization lifecycle", () => {
     ["a trailing comma", '{ "servers": [] , }'],
     ["an empty file", ""],
     ["a non-object servers value", '{ "servers": 3 }'],
+    ["no servers key", "{}"],
+    ["another app's mcpServers map", '{ "mcpServers": {} }'],
+    ["a misspelled servers key", '{ "server": [] }'],
+    ["a top-level array", "[]"],
+    ["a null document", "null"],
   ])("keeps every stored grant when the configuration file has %s", async (_label, content) => {
     const index = { [config.id]: keyOf(config), other: "mcp.oauth.other" };
     secretStore.set("mcp.oauth.index", JSON.stringify(index));
@@ -304,6 +309,29 @@ describe("remote authorization lifecycle", () => {
     expect(restarted.getServerState(config.id)?.authError).toBeUndefined();
   });
 
+  it("defers bundled pruning while a package transaction is open, re-checking when the work runs", async () => {
+    const stableId = `bundled:${JSON.stringify(["agent-plugin", "updating-kit", "remote"])}`;
+    secretStore.set("mcp.oauth.index", JSON.stringify({ [stableId]: "mcp.oauth.updating" }));
+    secretStore.set("mcp.oauth.updating", "grant");
+    let idle = false;
+    const owner = manager();
+    // Mid-update the package list may not name the package; nothing is pruned while its transaction is open.
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => idle, list: () => [], reconnect: async () => {} });
+    await owner.disconnectAll();
+    expect(secretStore.get("mcp.oauth.updating")).toBe("grant");
+    // Registered while idle, but a transaction opened before the queued work ran: still deferred.
+    let calls = 0;
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => { calls += 1; return idle; }, list: () => [], reconnect: async () => {} });
+    await owner.disconnectAll();
+    expect(calls).toBeGreaterThan(0);
+    expect(secretStore.get("mcp.oauth.updating")).toBe("grant");
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+    idle = true;
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => idle, list: () => [], reconnect: async () => {} });
+    await owner.disconnectAll();
+    expect(secretStore.has("mcp.oauth.updating")).toBe(false);
+  });
+
   it("retires bundled grants only from a complete package list that no longer declares them", async () => {
     const stableId = (name: string) => `bundled:${JSON.stringify(["agent-plugin", name, "remote"])}`;
     const index = { [stableId("kept-kit")]: "mcp.oauth.kept", [stableId("removed-kit")]: "mcp.oauth.removed",
@@ -313,11 +341,11 @@ describe("remote authorization lifecycle", () => {
     const declaration = (name: string) => ({ packageName: name, serverName: "remote", transport: "http" as const,
       url: "https://example.test/mcp", auth: "oauth" as const });
     const owner = manager();
-    owner.registerBundledCredentialSource("agent-plugin", { complete: false, list: () => [declaration("kept-kit")], reconnect: async () => {} });
-    owner.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => false, list: () => [declaration("kept-kit")], reconnect: async () => {} });
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
     await owner.disconnectAll();
     expect(secrets.deleteSecret).not.toHaveBeenCalled();
-    owner.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => [declaration("kept-kit")], reconnect: async () => {} });
+    owner.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [declaration("kept-kit")], reconnect: async () => {} });
     await owner.disconnectAll();
     expect(secretStore.has("mcp.oauth.removed")).toBe(false);
     expect(secretStore.get("mcp.oauth.kept")).toBe("grant");

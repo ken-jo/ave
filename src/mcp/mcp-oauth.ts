@@ -558,12 +558,14 @@ export class McpOAuthSession {
       if (!opened.ok) throw new Error(AUTH_FAILED);
       this.assertActive();
       const params = await this.dependencies.redirectCatchers.wait(this.ownerKey, handle, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
-      if (params.state === state && (params.error === "invalid_client" || params.error === "unauthorized_client")) {
+      // RFC 9207: state and issuer are checked before any part of the response, an error included,
+      // is acted on; a response that fails them is not from this flow's server.
+      if (params.state !== state || (params.iss !== undefined && params.iss !== discovery.issuer) ||
+        (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);
+      if (params.error === "invalid_client" || params.error === "unauthorized_client") {
         throw new InvalidClientError("authorization response rejected the client");
       }
-      if (!params.code || params.error !== undefined || params.state !== state ||
-        (params.iss !== undefined && params.iss !== discovery.issuer) ||
-        (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);
+      if (!params.code || params.error !== undefined) throw new Error(AUTH_FAILED);
       const tokens = await exchangeAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         authorizationCode: params.code, codeVerifier: authorization.codeVerifier, redirectUri: catcher.redirectUri,
         fetchFn: this.tokenFetch(discovery.resource) });

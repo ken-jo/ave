@@ -49,6 +49,8 @@ interface BundledCredentialDeclaration {
   command?: string;
   url?: string;
   auth?: "api-key" | "oauth";
+  /** OAuth metadata exactly as the server's projection carries it; part of its credential key. */
+  oauth?: McpHttpServerConfig["oauth"];
   apiKeyEnv?: string;
   apiKeyHeader?: string;
   args?: string[];
@@ -64,7 +66,7 @@ export interface BundledCredentialSource {
    * no longer names; an incomplete one could mistake a broken package for an
    * uninstalled one.
    */
-  readonly complete: boolean;
+  complete(): boolean;
 }
 
 export interface BundledSecretStore {
@@ -248,7 +250,7 @@ export class McpManager {
 
   registerBundledCredentialSource(kind: BundledPackageRef["kind"], source: BundledCredentialSource): void {
     this.bundledCredentialSources.set(kind, source);
-    if (source.complete) void this.reconcileBundledOAuthCredentials(kind, source);
+    void this.reconcileBundledOAuthCredentials(kind, source);
   }
 
   private packageRefFromApproval(packageId: string): BundledPackageRef {
@@ -327,8 +329,13 @@ export class McpManager {
       log.warn(`Empty config file detected, falling back to next candidate: ${path}`);
           continue;
         }
-        const parsed = JSON.parse(raw) as { servers?: McpServerConfig[] };
-        const servers = (parsed.servers ?? []).map((s) => {
+        const parsed = JSON.parse(raw) as unknown;
+        const listed = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as { servers?: unknown }).servers : undefined;
+        // `{}`, another app's `{"mcpServers":…}`, a misspelled key or a bare array is a
+        // configuration error, never an empty server list.
+        if (!Array.isArray(listed)) throw new Error(`MCP server config ${path} must be an object with a "servers" array`);
+        const servers = (listed as McpServerConfig[]).map((s) => {
           // transport 필드 누락 시 command 유무로 기본값 보정
           if (!s.transport) {
             (s as Record<string, unknown>).transport = (s as Record<string, unknown>).command ? "stdio" : "http";
@@ -596,6 +603,11 @@ export class McpManager {
       if (!index) {
         const rebuilt = Object.fromEntries(desired);
         for (const [stableId, { session }] of this.bundledOAuthSessions) rebuilt[stableId] = session.credentialKey;
+        // Bundled servers not prepared yet: from each complete source now; an incomplete one adds
+        // them when it next reports complete (reconcileBundledOAuthCredentials).
+        for (const [kind, source] of this.bundledCredentialSources) {
+          for (const [stableId, key] of this.declaredBundledOAuthKeys(kind, source) ?? []) rebuilt[stableId] ??= key;
+        }
         await this.writeOAuthIndex(secrets, rebuilt);
         this.oauthIndexUnreadable = false;
         log.error("MCP authorization credential index was rebuilt from the loaded configuration; earlier orphaned sign-ins were not deleted");
@@ -618,21 +630,41 @@ export class McpManager {
   }
 
   /**
-   * After a complete package list: delete grants of bundled OAuth servers of
-   * this kind that no installed package declares any more (an uninstalled
-   * plugin). A list that cannot be read deletes nothing.
+   * The bundled OAuth servers a source declares, by stable id, with the
+   * credential key each would be stored under; undefined while the source is
+   * incomplete (a package failed to load or a package transaction is open) or
+   * cannot be read. The key is derived the way the server's session derives
+   * it, so it is known before the server is ever prepared.
    */
-  private reconcileBundledOAuthCredentials(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<void> {
-    let declared: Set<string>;
+  private declaredBundledOAuthKeys(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Map<string, string> | undefined {
     try {
-      declared = new Set(source.list().flatMap((item) => item.transport === "http" && item.auth === "oauth"
-        ? [bundledConfigId({ kind, name: item.packageName }, item.serverName)] : []));
+      if (!source.complete()) return undefined;
+      const declared = new Map<string, string>();
+      for (const item of source.list()) {
+        if (item.transport !== "http" || item.auth !== "oauth" || !item.url) continue;
+        const id = bundledConfigId({ kind, name: item.packageName }, item.serverName);
+        const key = tryMcpOAuthCredentialKey({ id, transport: "http", url: item.url, auth: "oauth", ...(item.oauth ? { oauth: item.oauth } : {}) });
+        if (key) declared.set(id, key);
+      }
+      return declared;
     } catch (error) {
       log.warn("Bundled MCP package list unavailable; stored authorization cleanup skipped: %s", errorMessage(error));
-      return Promise.resolve();
+      return undefined;
     }
+  }
+
+  /**
+   * After a complete package list: index the grants of declared bundled OAuth
+   * servers not yet indexed (an index rebuilt before their servers were
+   * prepared), and delete grants of servers of this kind the list no longer
+   * declares (an uninstalled plugin). Completeness is checked again when the
+   * work runs, so a package transaction opened meanwhile defers it.
+   */
+  private reconcileBundledOAuthCredentials(kind: BundledPackageRef["kind"], source: BundledCredentialSource): Promise<void> {
     return this.queueOAuthStoreWork(async (secrets) => {
       if (!secrets.canStoreEncrypted()) return;
+      const declared = this.declaredBundledOAuthKeys(kind, source);
+      if (!declared) return;
       const index = this.readOAuthIndex(secrets);
       if (!index) return;
       let changed = false;
@@ -644,6 +676,11 @@ export class McpManager {
         if (ref && ref.packageRef.kind !== kind) continue;
         await secrets.deleteSecret(key);
         delete index[serverId];
+        changed = true;
+      }
+      for (const [serverId, key] of declared) {
+        if (index[serverId] !== undefined) continue;
+        index[serverId] = key;
         changed = true;
       }
       if (changed) await this.writeOAuthIndex(secrets, index);
