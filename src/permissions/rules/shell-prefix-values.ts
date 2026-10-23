@@ -141,10 +141,14 @@ export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCa
 export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 
-/** Program name with any directory and a trailing version suffix removed (`/usr/bin/python3.12` → `python3`). */
+/** Canonical executable identity, including path and interpreter-version aliases. */
 export function programName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase();
-  return base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
+  const name = base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
+  if (INTERPRETER_SET.has(name) || SHELL_SET.has(name)) return name;
+  const versioned = /^(.+?)(?:\d+(?:\.\d+)*|x)$/.exec(name);
+  const stem = versioned?.[1];
+  return stem && (INTERPRETER_SET.has(stem) || SHELL_SET.has(stem)) ? stem : name;
 }
 
 /** Runner shims share the executable/script suffixes and retain versioned identity. */
@@ -464,6 +468,8 @@ export function refusedShellPrefix(tokens: readonly string[], wildcard = true): 
   if (tokens.length === 0) return "empty";
   if (isDestructiveShellArgv(tokens) || noReusableRuleReason(tokens) !== null) return "destructive";
   if (wildcard && BANNED_PREFIX_SUGGESTIONS.some((banned) =>
-    banned.length === tokens.length && banned.every((token, index) => token === tokens[index]))) return "broad-prefix";
+    banned.length <= tokens.length && banned.every((token, index) =>
+      index === 0 ? programName(token) === programName(tokens[0]!) : token === tokens[index])
+    && tokens.slice(banned.length).every((token) => token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_.]*=/.test(token)))) return "broad-prefix";
   return null;
 }

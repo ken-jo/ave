@@ -231,25 +231,12 @@ export function stripGlobalOptions(argv: readonly (string | undefined)[]): reado
   return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
-/**
- * Pure suggestion for one simple command: a bounded prefix of its static argv. Returns `null` when no persistent suggestion is allowed (dynamic
- * argv0, or the derived prefix is refused) — the dock then offers once /
- * session only.
- */
-export function suggestShellPrefix(argv: readonly (string | undefined)[]): string[] | null {
-  const statics: string[] = [];
-  for (const token of argv) {
-    if (token === undefined) break;
-    statics.push(token);
-  }
-  if (statics.length === 0 || isDestructiveShellArgv(argv) || noReusableRuleReason(argv) !== null) return null;
-  const prefix: string[] = [];
-  for (const token of statics) {
-    if (/[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token)) return null;
-    prefix.push(token);
-    if (refusedShellPrefix(prefix) === null) return prefix;
-  }
-  return null;
+/** A proposed wildcard prefix must be the supplied complete static argv. */
+export function suggestShellPrefix(argv: readonly (string | undefined)[], wildcard = true): string[] | null {
+  if (argv.length === 0 || argv.some((token) => token === undefined || /[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token))
+    || isDestructiveShellArgv(argv) || noReusableRuleReason(argv) !== null) return null;
+  const tokens = argv as readonly string[];
+  return refusedShellPrefix(tokens, wildcard) === null ? [...tokens] : null;
 }
 
 /** Exposed for the design doc and tests; do not fork these lists elsewhere. */

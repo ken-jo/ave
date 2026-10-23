@@ -12,7 +12,7 @@ import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } 
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
-import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
+import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
@@ -311,7 +311,7 @@ export interface PermissionCheckContext {
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
    */
   projectRulesCwd?: string;
-  /** Host-only per-invocation route; absent for terminals and noncanonical tools. */
+  /** Host-only per-invocation route; missing shell routes are plain and unavailable. */
   shellExecution?: { runsSandboxed: boolean; sandboxAvailable: boolean };
   /**
    * Host-detected corruption of the exact-approval store (Store B) for this
@@ -519,6 +519,12 @@ function sameReviewerSandboxCacheState(
 // LLM caller retry wiring lives in conversation-loop.ts scope.
 // Tracked in follow-up issue for "LLM caller retry wiring" with
 // max 2 retry / counter scope / args-change-reset contract.
+
+/** A Settings row, marked when its stored rule is inert (listed and removable, never matched). */
+function withInvalidReason(row: ScopedPermissionRule): ScopedPermissionRule {
+  const reason = storedRuleInvalidReason(row);
+  return reason === null ? row : { ...row, invalidReason: reason };
+}
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -1188,7 +1194,7 @@ export class PermissionManager {
     const rules: ScopedPermissionRule[] = [];
     const errors: ScopedPermissionRuleError[] = [];
     try {
-      for (const rule of await this.listPersistedRules()) rules.push({ ...rule, scope: "user" });
+      for (const rule of await this.listPersistedRules()) rules.push(withInvalidReason({ ...rule, scope: "user" }));
     } catch (error) {
       console.error("[permission]", error);
       errors.push({ filePath: this.permissionsFilePath, errorCode: "rules-file-unavailable" });
@@ -1198,7 +1204,7 @@ export class PermissionManager {
       errors.push(...projects.errors);
       for (const file of projects.files) {
         for (const rule of file.rules) {
-          rules.push({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity });
+          rules.push(withInvalidReason({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity }));
         }
       }
     } catch (error) {
@@ -1537,10 +1543,11 @@ export class PermissionManager {
     }
     // The matcher shares the native shell parse; the other dialect owns a
     // bounded analysis shared by both of its floors before any other parser.
+    const shellExecution = context.shellExecution ?? { runsSandboxed: false, sandboxAvailable: false };
     const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     const shellSubject = ruleSubject?.dialect === "bash"
-      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: context.shellExecution?.sandboxAvailable === false }
+      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.sandboxAvailable }
       : undefined;
     // `Bash(...)` rules match bash only; PowerShell has no rule language.
     const shellRuleEvaluation = shellSubject
@@ -1549,7 +1556,7 @@ export class PermissionManager {
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
     // Route-aware shell consent includes known irreversible forms. An opaque
     // word alone does not prove one; reusable-rule matching remains stricter.
-    const shellDestructive = context.shellExecution !== undefined && ruleSubject !== undefined && (
+    const shellDestructive = ruleSubject !== undefined && (
       isDestructiveShellText(ruleSubject.command) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
@@ -1710,9 +1717,9 @@ export class PermissionManager {
       };
     }
 
-    const plainShell = ruleSubject !== undefined && context.shellExecution?.runsSandboxed === false;
+    const plainShell = ruleSubject !== undefined && !shellExecution.runsSandboxed;
     // Actual confinement, not a remembered approval, opens the automatic shell lane.
-    if (ruleSubject && context.shellExecution?.runsSandboxed === true) {
+    if (ruleSubject && shellExecution.runsSandboxed) {
       return { decision: "allow", reason: t("be_permissionManager.shellSandboxedReason"), layer: 3 };
     }
 
@@ -1792,7 +1799,7 @@ export class PermissionManager {
     // 6. Category × Source × Trust via registry descriptor
     if (result === undefined) {
       result = plainShell ? {
-        decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6,
+        decision: "ask", reason: ordinaryShellAsk ?? t("be_permissionManager.shellUnsandboxedReason"), layer: 6,
         ...(context.headless === true
           ? { reviewer: { route: "headless" as const } }
           : this.shouldRouteForegroundReviewer(resolvedCategory, context)

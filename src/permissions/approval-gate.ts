@@ -2452,8 +2452,7 @@ export class ApprovalGate {
       typeof rawShellArgs?.command === "string" && shellRuleCwd
       ? buildShellRuleApproval(
           rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId,
-          shellExecution?.runsSandboxed ?? (executionPlanAudit?.mode !== "plain"),
-          shellExecution?.sandboxAvailable === false,
+          shellExecution?.runsSandboxed ?? false,
         )
       : undefined;
     const fullReq: ApprovalRequest = {

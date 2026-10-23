@@ -60,7 +60,7 @@ afterEach(() => {
 });
 afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 
-const shell = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
+const shell = (command: string) => ({ shellExecution: { runsSandboxed: false, sandboxAvailable: true }, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
 
 describe("Store A (user-global permissions.json)", () => {
   it("fails clearly on corrupt JSON and never overwrites the file", async () => {
@@ -79,7 +79,7 @@ describe("Store A (user-global permissions.json)", () => {
       "  \"rules\": [",
       "    { \"pattern\": \"Bash(git status)\", \"action\": \"allow\" },",
       "    {",
-      "      \"pattern\": \"Bash(node -e *)\",",
+      "      \"pattern\": \"Bash(git push --force)\",",
       "      \"action\": \"allow\"",
       "    }",
       "  ]",
@@ -87,7 +87,7 @@ describe("Store A (user-global permissions.json)", () => {
     ].join("\n");
     writeFileSync(permissionsFile, text);
     await expect(readPermissionsFile(permissionsFile)).rejects.toThrow(
-      /rule 2 at line 6: Invalid permission rule "Bash\(node -e \*\)": .*refused allow prefix/,
+      /rule 2 at line 6: Invalid permission rule "Bash\(git push --force\)": .*refused allow prefix/,
     );
     // A missing comma: the parser reports a position, surfaced as line/column.
     writeFileSync(permissionsFile, "{\n  \"version\": 1\n  \"rules\": []\n}");
@@ -103,7 +103,7 @@ describe("Store A (user-global permissions.json)", () => {
   });
 
   it.each([
-    [{ pattern: "Bash(bash *)", action: "allow" }, /refused allow prefix/],
+    [{ pattern: "Bash(git push --force)", action: "allow" }, /refused allow prefix/],
     [{ pattern: "Bash(*)", action: "allow" }, /bare \*/],
     [{ pattern: "Bash(git  status)", action: "deny" }, /single spaces/],
     [{ pattern: "Mcp(github)", action: "allow" }, /not enforced yet/],
@@ -313,7 +313,7 @@ describe("decision path", () => {
     expect(result!.is_error).toBe(true);
     // The session cwd's (empty) project file is not what decided the call.
     await pm.ensureProjectRulesLoaded(repoA);
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf hi"), projectRulesCwd: repoA })).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf hi"), projectRulesCwd: repoA })).toMatchObject({ decision: "ask", layer: 6 });
   });
 
   it("re-reads a project rule file when it changes on disk", async () => {
@@ -543,26 +543,23 @@ describe("non-shell session approvals are keyed by the root conversation", () =>
   });
 });
 
-// Owner decision 2026-10-23: a stored allow wildcard outside the allowlist is
-// not migrated. It loads inert: listed with its reason, removable, never matched.
-
 describe("host shell-rule suggestions", () => {
-  it("uses canonical arity and proves whole-command coverage", () => {
-    expect(buildShellRuleApproval("git status --short", project, true, "conversation-a")).toMatchObject({ suggestedPattern: "Bash(git status *)", persistentAllowed: true, sessionAllowed: true });
-    expect(buildShellRuleApproval("git status && git diff", project, true, "conversation-a").suggestedPattern).toBeNull();
+  it("defaults to exact argv and proves whole-command coverage", () => {
+    expect(buildShellRuleApproval("git status --short", project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: "Bash(git status --short)", persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("git status && git diff", project, true, "conversation-a", true).suggestedPattern).toBeNull();
     expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
     expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status --short", project)).toBe(true);
   });
 
   it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   it.each([
-    ["git status --short", "Bash(git status *)"],
-    ["ls -la src", "Bash(ls *)"],
-  ])("keeps a useful catalog wildcard for the safe workflow %s", (command, pattern) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
+    ["git status --short", "Bash(git status --short)"],
+    ["ls -la src", "Bash(ls -la src)"],
+  ])("suggests exact consent for %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
   });
 
   it.each([
@@ -573,7 +570,7 @@ describe("host shell-rule suggestions", () => {
     "git switch -f main", "git switch --discard-changes main", "git switch -C main", "cp draft.txt final.txt",
     "git checkout README.md",
   ])("never offers or stores any rule covering the irreversible %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
     const argv = command.split(" ");
     expect(refusedShellPrefix(argv, false)).not.toBeNull();
     expect(() => shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toThrow();
@@ -592,18 +589,18 @@ describe("host shell-rule suggestions", () => {
     "npm unpublish pkg@1.0.0", "pnpm unpublish pkg", "yarn npm unpublish", "nerdctl rm web", "nerdctl system prune -af",
     "nerdctl compose down -v", "install -m 755 tool /usr/local/bin/tool", "xattr -c app", "xattr -d com.apple.quarantine app",
   ])("never offers, stores or matches a rule for %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
     expect(refusedShellPrefix(command.split(" "), false)).not.toBeNull();
     expect(() => validatePermissionRule({ pattern: `Bash(${command})`, action: "allow" })).toThrow();
     expect(shellRuleCoversCommand("Bash(git log *)", "allow", command, project)).toBe(false);
   });
 
   it.each(["git clean -fdx", "truncate -s 1M data.bin", "git checkout -- .", "git reset --hard", "git stash drop", "docker system prune -af", "kubectl delete pod web", "mv draft.txt final.txt", "tee out.txt", "unlink stale.lock"])("keeps irreversible commands once-only: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   it.each(["rm -v -r ~/work", "rm --recursive --force ~", "rm -i -rf ~", "rm -d -R /tmp/x", "chmod -R 777 /"])("treats argv-level destruction as a floor: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
   });
 
   it("does not derive a session grant without a conversation or widen a sealed one-shot", () => {
@@ -761,7 +758,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     ["git blame -- .env", "Bash(git blame *)"], ["git show HEAD:id_rsa", "Bash(git show *)"],
   ])("floors the git object path in %s like a direct read", (command, catalog) => {
     expect(shellSensitivePathSignal(command, project)).not.toBeNull();
-    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, sessionAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation-a", true)).toMatchObject({ suggestedPattern: null, sessionAllowed: false });
     if (catalog) expect(shellRuleCoversCommand(catalog, "allow", command, project)).toBe(false);
   });
 

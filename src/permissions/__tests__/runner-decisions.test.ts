@@ -43,14 +43,20 @@ function runnerManager(permissionsPath = join(directory, `${managerSequence++}.j
   return manager;
 }
 
+function actionKey(dialect: ShellDialect, command: string): string {
+  return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
+}
+
 function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command, cwd: CWD },
+    shellExecution: { runsSandboxed: false, sandboxAvailable: true },
+    approvalCacheKey: actionKey(dialect, command),
   });
 }
 
 function expectBucket(result: ReturnType<typeof checkCommand>, bucket: DecisionBucket): void {
-  expect(result.decision).toBe(bucket === "normal" ? "allow" : "ask");
+  expect(result.decision).toBe("ask");
   expect(result.forceModal === true).toBe(bucket === "floor");
   expect(result.layer).toBe(bucket === "floor" ? 2 : 6);
 }
@@ -139,7 +145,8 @@ describe("shared runner decisions", () => {
   });
 
   it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
-    expectBucket(checkCommand(runnerManager(), dialect, command), bucket);
+    // Privilege elevation remains a human floor regardless of runner visibility.
+    expectBucket(checkCommand(runnerManager(), dialect, command), /^(?:& )?sudo /.test(command) ? "floor" : bucket);
   });
 
   it("keeps runner identities separate from transparent wrappers", () => {
@@ -180,17 +187,17 @@ describe("shared runner decisions", () => {
     ...ORDINARY_CONTROLS.flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect, bucket: "ordinary" as const }))),
     { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
     { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
-  ])("honors saved grants and tool allow rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
+  ])("honors saved exact-action grants and rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
     expectBucket(checkCommand(saved, dialect, command), bucket);
-    await saved.addAlwaysAllowedPersist(dialect);
+    await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
     expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
     expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
     const ruled = runnerManager();
-    ruled.setRules([{ pattern: dialect, action: "allow" }]);
+    ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
     expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
@@ -199,8 +206,8 @@ describe("shared runner decisions", () => {
     ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
   ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
     const manager = runnerManager();
-    await manager.addAlwaysAllowedPersist(dialect);
-    manager.setRules([{ pattern: dialect, action: "allow" }]);
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    manager.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
     expectBucket(checkCommand(manager, dialect, command), "floor");
   });
 
@@ -244,7 +251,7 @@ describe("shared runner decisions", () => {
     const result = checkCommand(manager, dialect, command);
     expectBucket(result, "ordinary");
     if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
-    await manager.addAlwaysAllowedPersist(dialect);
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
   });
 

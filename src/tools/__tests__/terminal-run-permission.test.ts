@@ -98,6 +98,7 @@ describe("terminal_run permission", () => {
     const { context } = await run("npm test");
     expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "npm test", cwd: terminalCwd });
     expect(context?.projectRulesCwd).toBe(terminalCwd);
+    expect(context?.shellExecution).toEqual({ runsSandboxed: false, sandboxAvailable: false });
   });
 
   it("asks with a card naming the sealed terminal and directory, and types only after approval", async () => {
@@ -126,6 +127,20 @@ describe("terminal_run permission", () => {
     expect(decision).toMatchObject({ decision: "allow" });
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(typed).toEqual(["npm test"]);
+  });
+
+  it("ignores a prefix for plain terminal execution even in allow mode", async () => {
+    const result = await run("printf ready", { mode: "allow", rules: [{ pattern: "Bash(printf *)", action: "allow" }] });
+    expect(result.decision).toMatchObject({ decision: "ask", layer: 6 });
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.typed).toEqual([]);
+  });
+
+  it("keeps the destructive floor for terminal execution in allow mode", async () => {
+    const result = await run("rm -rf build", { mode: "allow" });
+    expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.typed).toEqual([]);
   });
 
   it("a Bash(...) deny rule refuses it, and nothing is typed", async () => {

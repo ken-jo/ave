@@ -446,7 +446,7 @@ export async function authorizeToolInvocation(
       ? {
           runsSandboxed: hostShellExecutionPlan.mode === "asrt" || invocationPermissionContext.disposableSubstrate !== undefined,
           sandboxAvailable: getHostShellExecutionPlan().mode === "asrt",
-        } : undefined;
+        } : terminalScope !== undefined ? { runsSandboxed: false, sandboxAvailable: false } : undefined;
     const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);

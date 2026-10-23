@@ -297,7 +297,7 @@ describe("AST shell matcher", () => {
     if (!shape.ok) throw new Error("Expected a parsed shell command");
     expect(shape.hidden.length).toBeGreaterThan(0);
     expect(shape.ordinaryAsk).toBeUndefined();
-    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(command.startsWith("GIT_SSH_COMMAND=") || command.startsWith("export ") ? null : "allow");
+    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBeNull();
     for (const restriction of [{ deny: ["Bash(rm *)"] }, { ask: ["Bash(rm *)"] }]) {
       expect(evaluateShellRules(command, rules(restriction))).toMatchObject({ decision: "ask", pattern: null });
     }
@@ -443,10 +443,10 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("git -C . status", set).decision).toBeNull();
   });
 
-  it("an interpreter script retains restriction visibility and can receive an escape rule", () => {
+  it("an interpreter script stays outside allow-rule coverage", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(node scripts/build.mjs)"] });
     expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "ask", pattern: null });
-    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBeNull();
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
     expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
   });
@@ -492,12 +492,12 @@ describe("bounded prefix suggestions", () => {
     expect(refusedShellPrefix(tokens, false)).toBeNull();
   });
   it.each([
-    [["git", "status", "--short"], ["git", "status"]],
-    [["npm", "run", "build"], ["npm"]],
+    [["git", "status", "--short"], ["git", "status", "--short"]],
+    [["npm", "run", "build"], ["npm", "run", "build"]],
     [["node", "scripts/build.mjs"], ["node", "scripts/build.mjs"]],
-    [["grep", "-r", "term", "src"], ["grep"]],
-    [["kubectl", "get", "pods"], ["kubectl"]],
-  ])("suggests the shortest bounded prefix for %j", (argv, expected) => {
+    [["grep", "-r", "term", "src"], ["grep", "-r", "term", "src"]],
+    [["kubectl", "get", "pods"], ["kubectl", "get", "pods"]],
+  ])("retains the complete bounded argv for %j", (argv, expected) => {
     expect(suggestShellPrefix(argv)).toEqual(expected);
   });
   it.each(["git log --ext-diff", "rg --hostname-bin=./helper term src", "find . -fprint output", "kubectl --context dev get pods", "npm run build --script-shell=./shell"])("matches an escape rule without an option catalog: %s", (command) => {

@@ -6,11 +6,11 @@ import { parseShellCommand, suggestShellPrefix } from "./shell-prefix-policy.js"
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import { validatePermissionRule } from "./rule-files.js";
-import { isDestructiveShellArgv, noReusableRuleReason, refusedShellPrefix } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
 
 /** Derive display suggestions only from the host's original shell input. */
-export function buildShellRuleApproval(command: string, projectCwd: string, rememberAllowed: boolean, sessionId?: string, runsSandboxed = true, exactAllowOnly = false): ShellRuleApproval {
+export function buildShellRuleApproval(command: string, projectCwd: string, rememberAllowed: boolean, sessionId?: string, runsSandboxed = false): ShellRuleApproval {
   const parsed = parseShellCommand(command);
   const shape = analyzeShellForRules(parsed, projectCwd);
   const floor = isDestructiveShellText(command)
@@ -21,14 +21,10 @@ export function buildShellRuleApproval(command: string, projectCwd: string, reme
   const irreversible = shape.ok && shape.commands.some((cmd) => noReusableRuleReason(cmd.argv) !== null);
   let suggestedPattern: string | null = null;
   if (reusable && !irreversible && shape.ok && shape.commands[0]) {
-    // Prefer a bounded prefix, then an exact spellable argv.
+    // Default consent names this complete argv; wider prefixes require an edit.
     const argv = shape.commands[0].argv;
-    const prefix = exactAllowOnly ? null : suggestShellPrefix(argv);
-    const candidate = prefix ? { tokens: prefix, wildcard: true }
-      : shape.commands.length === 1 && argv.every((token): token is string => token !== undefined)
-        && !argv.some((token) => EXACT_TOKEN_UNSAFE.test(token))
-        && refusedShellPrefix(argv as string[], false) === null
-        ? { tokens: argv as string[], wildcard: false } : null;
+    const tokens = shape.commands.length === 1 ? suggestShellPrefix(argv, false) : null;
+    const candidate = tokens ? { tokens, wildcard: false } : null;
     if (candidate) {
       const pattern = formatRuleSpecifier({ kind: "bash", ...candidate });
       // A suggested rule must cover this whole invocation and disclose no secret.
@@ -43,9 +39,6 @@ export function buildShellRuleApproval(command: string, projectCwd: string, reme
     persistentAllowed: reusable && suggestedPattern !== null,
   };
 }
-
-/** A token an exact rule cannot spell back unchanged (spaces, quotes, globs, `*`). */
-const EXACT_TOKEN_UNSAFE = /[\s;&|<>()$`'"\\*?[\]{}#~!]/;
 
 function suggestionCovers(pattern: string, command: string, cwd: string): boolean {
   try {

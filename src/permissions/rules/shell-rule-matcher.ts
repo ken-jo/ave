@@ -21,8 +21,8 @@
  *    code carrier from `shell-prefix-policy.ts`) and
  *    the user has any deny/ask Bash rule, the result is `ask` unless a deny
  *    rule already matched a visible command: a deny rule the matcher could not
- *    evaluate must not be bypassed by the mode. Without such restrictions, an
- *    explicit escape rule may cover the visible argv of a code carrier.
+ *    evaluate must not be bypassed by the mode. Hidden execution is never
+ *    covered by an allow rule, including an exact argv rule.
  */
 import {
   staticShellWord,
@@ -163,12 +163,12 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`,
           // `eval "…"`: the code is a string,
           // a file or stdin the matcher does not read, so deny/ask cannot
-          // see inside it. An allow rule covers visible argv, not the code contents.
+          // see inside it. No allow rule covers that hidden execution.
           const hiddenCode = hiddenCodeReason(argv);
           if (hiddenCode) {
             hidden.push(hiddenCode);
-            // A static code source stays a rule-visibility blocker. An
-            // unresolved binding still needs ordinary approval.
+            blockers.push(hiddenCode);
+            // Unresolved bindings also need ordinary approval.
             if (argv.includes(undefined)) ordinaryAsk ??= hiddenCode;
           }
           const inner = wrapperPrefixLength(argv);
@@ -321,6 +321,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
 
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };
   if (!shape.ok) return { decision: null, reason: `unparseable: ${shape.reason}` };
+  if (shape.hidden.length > 0) return { decision: null, reason: shape.hidden[0]! };
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   // Floor: destructive text anywhere is never covered by an allow rule.

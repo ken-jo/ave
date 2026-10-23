@@ -1680,7 +1680,11 @@ export function PermissionsTab({
                     <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
                       <td className="max-w-[220px] break-all px-3 py-2 font-mono">
                         {rule.pattern}
-                        {rule.action === "allow" && rule.pattern.startsWith("Bash(") ? (
+                        {rule.invalidReason === "wildcard-not-allowlisted" ? (
+                          <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-[10px] text-destructive">
+                            {t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
+                          </p>
+                        ) : rule.action === "allow" && rule.pattern.startsWith("Bash(") ? (
                           <p data-testid="permissions-shell-outside-sandbox" className="break-normal whitespace-normal font-sans text-[10px] text-muted-foreground">{t("permissionsTab.shellOutsideSandbox")}</p>
                         ) : null}
                       </td>

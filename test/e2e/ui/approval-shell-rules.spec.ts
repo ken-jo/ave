@@ -35,7 +35,7 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
         ? ["allow-once", "allow-always", "deny-once", "deny-always"]
         : ["allow-once", "deny-once"],
       shellRule: {
-        suggestedPattern: input.persistentAllowed ? "Bash(npm test *)" : null,
+        suggestedPattern: input.persistentAllowed ? "Bash(npm test)" : null,
         projectCwd: "/workspace/project",
         projectRoot: "/workspace/project",
         sessionAllowed: false,
@@ -54,7 +54,7 @@ for (const locale of ["en", "ko"] as const) {
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
       const pattern = dock.getByTestId("approval-shell-rule-pattern");
       await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖 실행" : "outside the sandbox");
-      await expect(pattern).toHaveValue("Bash(npm test *)");
+      await expect(pattern).toHaveValue("Bash(npm test)");
       await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
       await expect(dock.getByTestId("approval-deny-always")).toBeEnabled();
       await dock.getByTestId("approval-shell-rule-scope").selectOption("user");
@@ -85,13 +85,20 @@ test("Settings loads and revokes a project rule through the real host bridge", a
   writeFileSync(file, JSON.stringify({
     version: 1,
     projectRoot: captured.path,
-    rules: [{ pattern: "Bash(npm test *)", action: "allow" }],
+    rules: [{ pattern: "Bash(npm run *)", action: "allow" }, { pattern: "Bash(npm test *)", action: "allow" }],
     updatedAt: new Date().toISOString(),
   }), { mode: 0o600 });
 
   const settings = await openInlineSettings(app, mainWindow, "permissions");
   const table = settings.getByTestId("permissions-rules-table");
   const row = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm test *)" });
+  const inert = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm run *)" });
+  await expect(inert.getByTestId("permissions-rule-invalid")).toContainText(/Not in force|적용되지 않음/);
+  await inert.scrollIntoViewIfNeeded();
+  await mainWindow.screenshot({ path: testInfo.outputPath("inert-project-rule.png") });
+  await inert.getByRole("button").click();
+  await expect(inert).toHaveCount(0);
+  expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([{ pattern: "Bash(npm test *)", action: "allow" }]);
   await expect(row).toBeVisible();
   await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(/outside the sandbox|샌드박스 밖 실행/);
   await expect(row).toContainText(captured.path);
