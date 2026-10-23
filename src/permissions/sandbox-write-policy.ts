@@ -3,13 +3,14 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
 import { aveHome } from "../shared/ave-home.js";
+import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
 import { userApprovalFilePath } from "./user-approval-store.js";
 import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
-import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
 /** Control files remain unwritable even when their containing directory is granted. */
 const PROTECTED_ROOT_ENTRIES = [
@@ -24,6 +25,7 @@ const MAX_GIT_METADATA_BYTES = 65_536;
 const MAX_GIT_METADATA_TOTAL_BYTES = 1_048_576;
 const MAX_GIT_ROOT_POLICY_BYTES = 16_384;
 const MAX_GIT_POLICY_BYTES = 32_768;
+const MAX_MISSING_PATH_ANCESTORS = 64;
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 const gitScanIgnoredDirectories = new Set([
   ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "vendor", "dist", "build", ".cache",
@@ -35,6 +37,38 @@ function isCanonicalPathWithin(root: string, path: string): boolean {
   const foldedPath = process.platform === "win32" ? path.toLowerCase() : path;
   return foldedPath === foldedRoot
     || foldedPath.startsWith(foldedRoot.endsWith("/") ? foldedRoot : `${foldedRoot}/`);
+}
+
+/** Physical snapshots retain Unicode and POSIX backslashes as filesystem identity. */
+function isPhysicalPathWithin(root: string, path: string): boolean {
+  const foldedRoot = process.platform === "win32" ? root.toLowerCase() : root;
+  const foldedPath = process.platform === "win32" ? path.toLowerCase() : path;
+  const rel = relative(foldedRoot, foldedPath);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+function resolvePolicyPath(path: string, cwd: string): string {
+  return resolvePhysicalFilesystemPath(path, cwd, MAX_MISSING_PATH_ANCESTORS);
+}
+
+function resolvePolicyDenyPath(path: string): string {
+  try { return resolvePolicyPath(path, process.cwd()); }
+  catch (error) {
+    // A control below a pointer file cannot exist until that denied entry is replaced.
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") return path;
+    throw error;
+  }
+}
+
+function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>): string {
+  const resolved = inspectPhysicalFilesystemPath(path, cwd, MAX_MISSING_PATH_ANCESTORS);
+  if (resolved.unresolvedParentTraversal) {
+    throw new Error("Sandbox Git control metadata has unresolved parent traversal");
+  }
+  paths.add(resolved.path);
+  if (resolved.firstMissingPath !== undefined) paths.add(resolved.firstMissingPath);
+  for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
+  return resolved.path;
 }
 
 /** Compare filesystem grants, including canonical Windows aliases and casing. */
@@ -74,14 +108,24 @@ function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | und
     if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
       throw new Error("Sandbox Git metadata changed during discovery");
     }
+    const bytes = buffer.subarray(0, length);
+    const decoded = bytes.toString("utf8");
+    if (!Buffer.from(decoded, "utf8").equals(bytes)) {
+      throw new Error("Sandbox Git control metadata is not valid UTF-8");
+    }
     budget.metadataBytes -= length;
     // Only terminal CR/LF bytes delimit these control records. Other
     // whitespace is path data, including a trailing space, tab or NBSP.
-    return buffer.toString("utf8", 0, length).replace(/[\r\n]+$/u, "");
+    return decoded.replace(/[\r\n]+$/u, "");
   } finally { closeSync(fd); }
 }
 
-function addGitControlPaths(marker: string, paths: Set<string>, budget: GitDiscoveryBudget): boolean {
+function addGitControlPaths(
+  marker: string,
+  paths: Set<string>,
+  routingPins: Set<string>,
+  budget: GitDiscoveryBudget,
+): boolean {
   let entry;
   try { entry = lstatSync(marker); }
   catch (error) {
@@ -95,7 +139,7 @@ function addGitControlPaths(marker: string, paths: Set<string>, budget: GitDisco
   // A marker link is not a supported repository pointer. Never read its target
   // as host metadata; regular gitdir pointer files cover linked worktrees.
   if (entry.isSymbolicLink()) throw new Error("Linked sandbox Git markers are unsupported");
-  const resolvedMarker = realpathSync(marker);
+  const resolvedMarker = realpathSync.native(marker);
   paths.add(resolvedMarker);
   let gitDir = resolvedMarker;
   if (entry.isFile()) {
@@ -105,44 +149,49 @@ function addGitControlPaths(marker: string, paths: Set<string>, budget: GitDisco
       if (pointer.startsWith("gitdir: ")) throw new Error("Invalid sandbox Git directory pointer");
       return true;
     }
-    gitDir = resolve(dirname(marker), match[1]!);
+    gitDir = addGitMetadataTarget(match[1]!, dirname(marker), paths, routingPins);
   } else if (!entry.isDirectory()) {
     throw new Error("Invalid sandbox Git marker");
   }
   // The metadata directory itself prevents pointer replacement, new controls,
   // and writes to a submodule directory that does not exist until later.
   paths.add(gitDir);
-  paths.add(canonicalizePathForMatch(gitDir));
   const commonPath = readGitMetadata(join(gitDir, "commondir"), budget);
   if (commonPath === undefined) return true;
   if (!commonPath || /[\r\n\0]/.test(commonPath)) throw new Error("Invalid sandbox Git common directory");
-  const commonDir = resolve(gitDir, commonPath);
+  const commonDir = addGitMetadataTarget(commonPath, gitDir, paths, routingPins);
   paths.add(commonDir);
-  paths.add(canonicalizePathForMatch(commonDir));
   return true;
 }
 
-function addNestedGitControlPaths(root: string, paths: Set<string>, budget: GitDiscoveryBudget): boolean {
+function addNestedGitControlPaths(
+  root: string,
+  paths: Set<string>,
+  routingPins: Set<string>,
+  budget: GitDiscoveryBudget,
+): boolean {
   if (budget.entries <= 0) return false;
   let canonicalRoot: string;
-  try { canonicalRoot = foldCanonicalPathSeparators(realpathSync(root)); }
+  try { canonicalRoot = realpathSync.native(root); }
   catch (error) { return isMissingPath(error); }
-  if (!isCanonicalPathWithin(root, canonicalRoot) || !isCanonicalPathWithin(canonicalRoot, root)) return false;
+  if (!isPhysicalPathWithin(root, canonicalRoot) || !isPhysicalPathWithin(canonicalRoot, root)) return false;
   const queue = [{ path: root, depth: 0 }];
   const visited = new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]!;
     let canonical: string;
-    try { canonical = foldCanonicalPathSeparators(realpathSync(current.path)); }
+    try { canonical = realpathSync.native(current.path); }
     catch (error) { if (isMissingPath(error)) continue; return false; }
     // A directory link may be followed only within this admitted root. Another
     // admitted root is discovered separately with the same invocation budget.
-    if (!isCanonicalPathWithin(canonicalRoot, canonical)) continue;
+    if (!isPhysicalPathWithin(canonicalRoot, canonical)) continue;
     if (visited.has(canonical)) continue;
     visited.add(canonical);
-    const before = paths.size;
-    if (current.depth > 0 && !addGitControlPaths(join(current.path, ".git"), paths, budget)) return false;
-    if (paths.size !== before && [...paths].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
+    const beforePathCount = paths.size;
+    const beforeRoutingPinCount = routingPins.size;
+    if (current.depth > 0 && !addGitControlPaths(join(current.path, ".git"), paths, routingPins, budget)) return false;
+    if ((paths.size !== beforePathCount || routingPins.size !== beforeRoutingPinCount)
+      && [...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
     if (current.depth === SANDBOX_GIT_SCAN_DEPTH) continue;
     let directory;
     try { directory = opendirSync(current.path); }
@@ -180,9 +229,12 @@ export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly string[],
   userDataDir?: string,
 ): Pick<FilesystemConfig, "denyWrite"> & { allowWrite: string[] } {
-  const rootSnapshots = writeRoots.map(original => ({ original, canonical: canonicalizePathForMatch(original) }));
+  const rootSnapshots = writeRoots.map(original => ({
+    original,
+    physical: resolvePolicyPath(original, process.cwd()),
+  }));
   const paths = new Set([
-    ...rootSnapshots.flatMap(({ original, canonical }) => [original, canonical]).flatMap((root) =>
+    ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
     permissionSettingsPath(),
     userApprovalFilePath(),
@@ -194,37 +246,50 @@ export function buildMandatorySandboxWritePolicy(
     ...(userDataDir === undefined ? [] : [settingsFilePath(userDataDir)]),
   ]);
   const budget = { entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES };
-  const roots = [...new Set(rootSnapshots.map(root => root.canonical))];
+  const routingPins = new Set<string>();
+  const roots = [...new Set(rootSnapshots.map(root => root.physical))];
   const revoked = new Set<string>();
   const revoke = (root: string): void => {
     // A surviving ancestor would re-open an incompletely discovered child.
-    for (const candidate of roots) if (isCanonicalPathWithin(candidate, root)) revoked.add(candidate);
+    for (const candidate of roots) if (isPhysicalPathWithin(candidate, root)) revoked.add(candidate);
   };
   // Root-owned pointers remain explicit denies even when discovery revokes a
   // broad grant. Scan narrow grants first so an ambient temp tree cannot spend
   // the budget needed by an independently admitted workspace or private temp.
   for (const root of roots) {
-    if (!addGitControlPaths(join(root, ".git"), paths, budget)) revoke(root);
+    if (!addGitControlPaths(join(root, ".git"), paths, routingPins, budget)) revoke(root);
   }
   const discovered = new Set<string>();
-  for (const root of [...roots].sort((left, right) => right.split("/").length - left.split("/").length)) {
+  const discoveredRoutingPins = new Set<string>();
+  const separatorPattern = process.platform === "win32" ? /[\\/]/u : /\//u;
+  for (const root of [...roots].sort((left, right) => right.split(separatorPattern).length - left.split(separatorPattern).length)) {
     if (revoked.has(root)) continue;
     const local = new Set<string>();
-    if (!addNestedGitControlPaths(root, local, budget)) revoke(root);
+    const localRoutingPins = new Set<string>();
+    if (!addNestedGitControlPaths(root, local, localRoutingPins, budget)) revoke(root);
     for (const path of local) discovered.add(path);
+    for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
   const retained = roots.filter(root => !revoked.has(root));
   for (const path of discovered) {
-    for (const spelling of [path, canonicalizePathForMatch(path)]) {
-      // Revoked roots are read-only through the default filesystem jail. Never
-      // put a deny on their ancestor: it would also override retained child grants.
-      if (retained.some(root => isCanonicalPathWithin(root, spelling) || isCanonicalPathWithin(spelling, root))
-        || !roots.some(root => isCanonicalPathWithin(root, spelling))) paths.add(spelling);
+    // Revoked roots are read-only through the default filesystem jail. Never
+    // put a deny on their ancestor: it would also override retained child grants.
+    if (retained.some(root => isPhysicalPathWithin(root, path) || isPhysicalPathWithin(path, root))
+      || !roots.some(root => isPhysicalPathWithin(root, path))) {
+      paths.add(path);
     }
   }
+  for (const path of discoveredRoutingPins) {
+    if (retained.some(root => isPhysicalPathWithin(root, path) || isPhysicalPathWithin(path, root))
+      || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
+  }
   // Preserve both the directory entry and its target when a setting is a link.
-  const entries: FilesystemPathEntry[] = [...new Set([...paths].flatMap((path) => [path, canonicalizePathForMatch(path)]))]
+  const entries: FilesystemPathEntry[] = [...new Set([...paths].flatMap((path) => [
+    path,
+    resolvePolicyDenyPath(path),
+  ]))]
     .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
+  entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   // A backend glob protects future entries without expanding the argument list.
   if (process.platform === "darwin") entries.push("/**/.[gG][iI][tT]");
   if (Buffer.byteLength(JSON.stringify(entries)) > MAX_GIT_POLICY_BYTES) throw new Error("Sandbox Git write policy exceeds its size limit");

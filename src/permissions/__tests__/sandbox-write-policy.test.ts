@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMandatorySandboxWritePolicy, SANDBOX_GIT_SCAN_DEPTH } from "../sandbox-write-policy.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
@@ -68,6 +68,42 @@ describe("mandatory sandbox control-file writes", () => {
     expect(new Set(denies).size).toBe(denies.length);
   });
 
+  it.runIf(process.platform === "linux")("keeps distinct NFC and NFD grant spellings as distinct directories", () => {
+    const nfc = join(root, "caf\u00e9");
+    const nfd = join(root, "cafe\u0301");
+    mkdirSync(nfc);
+    mkdirSync(nfd);
+    const nfdPolicy = buildMandatorySandboxWritePolicy([nfd]);
+    expect(nfdPolicy.allowWrite).toEqual([nfd]);
+    expect(nfdPolicy.denyWrite).not.toContain(join(nfc, ".git"));
+    expect(buildMandatorySandboxWritePolicy([nfd, nfc]).allowWrite).toEqual([nfd, nfc]);
+    const openDirectory = vi.mocked(filesystem.opendirSync).getMockImplementation()!;
+    vi.mocked(filesystem.opendirSync).mockImplementation((...args) => {
+      if (String(args[0]) === nfd) throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+      return openDirectory(...args);
+    });
+    expect(buildMandatorySandboxWritePolicy([nfd, nfc]).allowWrite).toEqual([nfc]);
+  });
+
+  it.runIf(process.platform !== "win32")("keeps a POSIX backslash as a filename character in a grant", () => {
+    const backslash = join(root, "project\\literal");
+    const slash = join(root, "project", "literal");
+    mkdirSync(backslash);
+    mkdirSync(slash, { recursive: true });
+    const backslashPolicy = buildMandatorySandboxWritePolicy([backslash]);
+    expect(backslashPolicy.allowWrite).toEqual([backslash]);
+    expect(backslashPolicy.denyWrite).toContain(join(backslash, ".git"));
+    expect(backslashPolicy.denyWrite).not.toContain(join(slash, ".git"));
+    expect(buildMandatorySandboxWritePolicy([backslash, slash]).allowWrite).toEqual([backslash, slash]);
+  });
+
+  it("bounds physical resolution of prepared control paths at 64 missing ancestors", () => {
+    const withinLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
+    const beyondLimit = join(withinLimit, "missing-62");
+    expect(buildMandatorySandboxWritePolicy([withinLimit]).allowWrite).toEqual([withinLimit]);
+    expect(() => buildMandatorySandboxWritePolicy([beyondLimit])).toThrow("missing ancestor limit");
+  });
+
   it("denies linked gitdir, common metadata and their pointer files beyond the admitted root", () => {
     const checkout = join(root, "checkout");
     const gitDir = join(root, "metadata", "worktree");
@@ -81,6 +117,41 @@ describe("mandatory sandbox control-file writes", () => {
     for (const directory of [gitDir, common]) {
       expect(denies).toContain(directory);
     }
+  });
+
+  it.runIf(process.platform !== "win32")("resolves link and parent operands before git metadata targets", () => {
+    const checkout = join(root, "checkout");
+    const external = join(root, "external");
+    const gitDir = join(external, "metadata");
+    const commonRoot = join(root, "shared");
+    const commonDir = join(commonRoot, "common");
+    mkdirSync(checkout);
+    mkdirSync(join(external, "nested"), { recursive: true });
+    mkdirSync(gitDir);
+    mkdirSync(join(commonRoot, "nested"), { recursive: true });
+    mkdirSync(commonDir);
+    symlinkSync(join(external, "nested"), join(checkout, "metadata-link"), "dir");
+    symlinkSync(join(commonRoot, "nested"), join(gitDir, "common-link"), "dir");
+    writeFileSync(join(checkout, ".git"), "gitdir: metadata-link/../metadata\n");
+    writeFileSync(join(gitDir, "commondir"), "common-link/../common\n");
+    const denies = buildMandatorySandboxWritePolicy([checkout]).denyWrite;
+    expect(denies).toContain(gitDir);
+    expect(denies).toContain(commonDir);
+    expect(denies).toContainEqual({ path: join(checkout, "metadata-link"), literal: true });
+    expect(denies).toContainEqual({ path: join(gitDir, "common-link"), literal: true });
+    expect(denies).not.toContain(join(checkout, "metadata"));
+  });
+
+  it.each(["gitdir", "commondir"])("rejects non-roundtrippable UTF-8 in %s metadata", (kind) => {
+    const marker = join(root, ".git");
+    const invalid = Buffer.from([0x66, 0x6f, 0x80, 0x6f, 0x0a]);
+    if (kind === "gitdir") {
+      writeFileSync(marker, Buffer.concat([Buffer.from("gitdir: "), invalid]));
+    } else {
+      mkdirSync(marker);
+      writeFileSync(join(marker, "commondir"), invalid);
+    }
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("valid UTF-8");
   });
 
   it("finds nested directory and pointer markers through the inclusive depth bound", () => {
@@ -198,6 +269,35 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(marker);
     writeFileSync(join(marker, "commondir"), `${target}\n`);
     expect(buildMandatorySandboxWritePolicy([root]).denyWrite).toContainEqual({ path: target, literal: true });
+  });
+
+  it.each(["gitdir", "commondir"] as const)("denies the first missing component of an absent %s target", (kind) => {
+    const marker = join(root, ".git");
+    const storage = join(root, `${kind}-storage`);
+    const firstMissing = join(storage, "missing");
+    const target = join(firstMissing, "metadata");
+    mkdirSync(storage);
+    if (kind === "gitdir") {
+      writeFileSync(marker, `gitdir: ${target}\n`);
+    } else {
+      mkdirSync(marker);
+      writeFileSync(join(marker, "commondir"), `${target}\n`);
+    }
+    expect(buildMandatorySandboxWritePolicy([root]).denyWrite).toEqual(expect.arrayContaining([firstMissing, target]));
+  });
+
+  it.each(["gitdir", "commondir"] as const)("rejects unresolved parent traversal in a missing %s target", (kind) => {
+    const marker = join(root, ".git");
+    const storage = join(root, `${kind}-storage`);
+    mkdirSync(storage);
+    const target = `${storage}${sep}missing${sep}..${sep}metadata`;
+    if (kind === "gitdir") {
+      writeFileSync(marker, `gitdir: ${target}\n`);
+    } else {
+      mkdirSync(marker);
+      writeFileSync(join(marker, "commondir"), `${target}\n`);
+    }
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("unresolved parent traversal");
   });
 
   it("inspects unknown directory-entry types instead of skipping nested repositories", () => {

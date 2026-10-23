@@ -345,6 +345,13 @@ directory-link traversal stays within the admitted root's canonical tree.
 Derived metadata paths containing pattern characters remain literal denies,
 including absent targets. Reads have limits of 64 KiB per file and 1 MiB
 across the invocation. Exceeding either metadata limit refuses preparation.
+Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
+so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
+follows links before parent components and preserves filesystem spelling.
+Metadata routing inspects at most 64 components; missing-path resolution is
+bounded at 64 ancestors. Existing routing links receive literal entry pins,
+and a missing target also protects its first missing component. An unresolved
+parent component beyond a missing ancestor refuses preparation.
 Unexpected discovery failures fail closed, either by refusing preparation or
 removing the affected root's write grant rather than trusting partial results.
 `buildMandatorySandboxWritePolicy` returns the retained `allowWrite` roots and
@@ -386,8 +393,11 @@ independently of this scan. Discovery ignores ignore-file rules and skips
 directory entries. Canonical roots are scanned from narrower roots to their
 ancestors. Root bindings are captured once and retained grants use those
 canonical identities, so retargeting an alias cannot grant an unscanned target.
+Actual grants preserve physical Unicode and POSIX backslash spellings; matching
+normalization cannot grant or deny a different physical sibling.
 Incomplete enumeration, an exhausted entry budget or more than
-16 KiB of discovered metadata path bytes for that root removes its write grant.
+16 KiB of discovered metadata and routing-pin path bytes for that root removes
+its write grant.
 Containing ancestor grants are also removed so they cannot reopen a failed
 child; independently scanned narrower roots keep their grants when a broader
 root is removed. Required metadata denies remain explicit outside the roots

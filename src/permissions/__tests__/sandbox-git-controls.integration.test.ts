@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -47,13 +47,13 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
     return attack;
   }
 
-  async function blockedWrite(target: string, value: string, writeRoots: string[], onWrapped?: () => void): Promise<void> {
+  async function blockedWrite(target: string, value: string, writeRoots: string[], onWrapped?: () => void, prepareCommand?: string): Promise<void> {
     const original = existsSync(target) ? readFileSync(target) : undefined;
     const ordinary = join(writeRoots[0]!, `allowed-${writes++}.txt`);
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: writeRoots[0], approvalSurface: "unavailable" } });
     try {
-      const wrapped = await wrapToolCommand('printf allowed > "$NORMAL_TARGET" && mkdir -p "$(dirname "$CONTROL_TARGET")" && printf "%s" "$ATTACK_TEXT" > "$CONTROL_TARGET"', {
+      const wrapped = await wrapToolCommand(`printf allowed > "$NORMAL_TARGET" && ${prepareCommand ? `${prepareCommand} && ` : ""}mkdir -p "$(dirname "$CONTROL_TARGET")" && printf "%s" "$ATTACK_TEXT" > "$CONTROL_TARGET"`, {
         commandId: invocation.token, denyUnixSockets: true,
         filesystem: { allowWrite: writeRoots, denyWrite: [] },
       });
@@ -144,20 +144,103 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
   it.each(METADATA_PATH_SUFFIXES)("protects redirected common metadata with $label and its pointer under separate write grants", async ({ suffix }) => {
     const source = join(root, "source");
     const checkout = join(root, "checkout");
-    const common = join(root, `planted-common${suffix}`);
+    const storage = join(root, "storage");
+    const physical = join(storage, "physical");
+    const common = join(physical, `planted-common${suffix}`);
+    mkdirSync(join(physical, "deep"), { recursive: true });
+    const route = join(storage, "route");
+    symlinkSync(join(physical, "deep"), route, "dir");
     repository(source, true);
     git(source, "worktree", "add", "--quiet", "--detach", checkout, "HEAD");
     git(source, "clone", "--bare", "--quiet", source, common);
     git(source, "config", "--file", join(common, "config"), "core.bare", "false");
     const gitDir = resolve(checkout, readFileSync(join(checkout, ".git"), "utf8").trim().slice("gitdir: ".length));
     const commonPointer = join(gitDir, "commondir");
-    writeFileSync(commonPointer, `${common}\r\n`);
+    writeFileSync(commonPointer, `${route}/../planted-common${suffix}\r\n`);
     const config = join(common, "config");
     const attack = proveConfigAttack(checkout, config);
     await blockedWrite(config, attack, [checkout, common, gitDir]);
     await blockedWrite(commonPointer, `${source}\n`, [checkout, common, gitDir]);
     await blockedWrite(join(common, "modules", "future", "config"), attack, [checkout, common, gitDir]);
     git(checkout, "status", "--porcelain");
+    expect(existsSync(trace)).toBe(false);
+  });
+
+  it("resolves gitdir parent components after following directory links", async () => {
+    const project = join(root, "project");
+    const storage = join(root, "storage");
+    const physical = join(storage, "physical");
+    const metadata = join(physical, "metadata");
+    repository(project, true);
+    mkdirSync(join(physical, "deep"), { recursive: true });
+    const route = join(storage, "route");
+    symlinkSync(join(physical, "deep"), route, "dir");
+    renameSync(join(project, ".git"), metadata);
+    writeFileSync(join(project, ".git"), `gitdir: ${route}/../metadata\n`);
+    const config = join(metadata, "config");
+    const attack = proveConfigAttack(project, config);
+    await blockedWrite(config, attack, [project, storage]);
+    const otherParent = join(storage, "other");
+    const otherMetadata = join(otherParent, "metadata");
+    mkdirSync(join(otherParent, "deep"), { recursive: true });
+    cpSync(metadata, otherMetadata, { recursive: true });
+    rmSync(route);
+    symlinkSync(join(otherParent, "deep"), route, "dir");
+    const alternateAttack = proveConfigAttack(project, join(otherMetadata, "config"));
+    rmSync(route);
+    symlinkSync(join(physical, "deep"), route, "dir");
+    const ordinaryLink = join(storage, "ordinary-link");
+    const linkControl = join(storage, "ordinary-link-worked");
+    const prepare = `ln -s ${shellQuote(otherParent)} ${shellQuote(ordinaryLink)} && rm ${shellQuote(ordinaryLink)} && printf allowed > ${shellQuote(linkControl)} && rm ${shellQuote(route)} && ln -s ${shellQuote(join(otherParent, "deep"))} ${shellQuote(route)}`;
+    await blockedWrite(join(otherMetadata, "config"), alternateAttack, [project, storage], undefined, prepare);
+    expect(readFileSync(linkControl, "utf8"), "ordinary symlink creation and removal must remain allowed").toBe("allowed");
+    expect(realpathSync(route), "the metadata routing link must retain its original target").toBe(join(physical, "deep"));
+    git(project, "status", "--porcelain");
+    expect(existsSync(trace)).toBe(false);
+  });
+
+  it("keeps literal backslashes in the admitted workspace identity", async () => {
+    const project = join(root, "project\\component");
+    const sibling = join(root, "project", "component");
+    mkdirSync(project);
+    mkdirSync(sibling, { recursive: true });
+    await blockedWrite(join(sibling, "escaped.txt"), "payload", [project]);
+  });
+
+  it.runIf(process.platform === "linux")("keeps distinct Unicode workspace spellings separate", async () => {
+    const project = join(root, "project-e\u0301");
+    const sibling = join(root, "project-\u00e9");
+    mkdirSync(project);
+    mkdirSync(sibling);
+    expect(lstatSync(project).ino, "the fixture directories must be distinct physical objects").not.toBe(lstatSync(sibling).ino);
+    await blockedWrite(join(sibling, "escaped.txt"), "payload", [project]);
+  });
+
+  it.each(["gitdir", "commondir"])("protects a future %s target from new ancestor links", async (kind) => {
+    const project = join(root, "project");
+    const storage = join(root, "storage");
+    const actualParent = join(storage, "actual");
+    const metadata = join(actualParent, "metadata");
+    const route = join(storage, "future");
+    const allowedLink = join(storage, "ordinary-link");
+    repository(project, true);
+    mkdirSync(actualParent, { recursive: true });
+    if (kind === "gitdir") {
+      renameSync(join(project, ".git"), metadata);
+      writeFileSync(join(project, ".git"), `gitdir: ${route}/metadata\n`);
+    } else {
+      git(project, "clone", "--bare", "--quiet", project, metadata);
+      git(project, "config", "--file", join(metadata, "config"), "core.bare", "false");
+      writeFileSync(join(project, ".git", "commondir"), `${route}/metadata\n`);
+    }
+    symlinkSync(actualParent, route, "dir");
+    const config = join(metadata, "config");
+    const attack = proveConfigAttack(project, config);
+    rmSync(route);
+    const prepare = `ln -s ${shellQuote(actualParent)} ${shellQuote(allowedLink)} && ln -s ${shellQuote(actualParent)} ${shellQuote(route)}`;
+    await blockedWrite(config, attack, [project, storage], undefined, prepare);
+    expect(lstatSync(allowedLink).isSymbolicLink(), "ordinary symlink creation must remain allowed").toBe(true);
+    expect(existsSync(route), "the metadata's missing ancestor must remain uncreatable").toBe(false);
     expect(existsSync(trace)).toBe(false);
   });
 
