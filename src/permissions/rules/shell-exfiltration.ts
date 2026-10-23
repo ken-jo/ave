@@ -853,26 +853,53 @@ function scanRedirectTarget(target: ShellWord, state: ScanState): void {
 /** Entries a symlink-following search may inspect before it is refused as too large to rule out. */
 const SYMLINK_SCAN_ENTRY_LIMIT = 5000;
 
-/** What a content search walks: whether it recurses, follows symlinks, and the indexes of its root words. */
-function searchShape(argv: readonly (string | undefined)[]): { recursive: boolean; follow: boolean; roots: number[] } | null {
-  const name = program(argv[0])?.toLowerCase();
-  if (name === "find") {
-    let index = 1;
-    let follow = false;
-    // Leading `-H`/`-L`/`-P`, `-D <flags>`, `-O<level>`.
-    while (index < argv.length && argv[index] !== undefined && /^-(?:[HLP]+|D|O\d*)$/.test(argv[index]!)) {
-      if (argv[index]!.includes("L")) follow = true;
-      index += argv[index] === "-D" ? 2 : 1;
+/**
+ * What a search walks: whether it recurses, which symlinks it follows
+ * (`all` below the roots, or only `roots` named on the command line), and the
+ * indexes of its root words. `find` only lists names, so it is not a content
+ * search (`ancestorFloor: false`); only the links it follows matter.
+ */
+interface SearchShape {
+  recursive: boolean;
+  follow: "all" | "roots" | false;
+  ancestorFloor: boolean;
+  roots: number[];
+}
+
+function findShape(argv: readonly (string | undefined)[]): SearchShape {
+  let index = 1;
+  let follow: SearchShape["follow"] = false;
+  const roots: number[] = [];
+  // Leading options: GNU `-H`/`-L`/`-P`, `-D <flags>`, `-O<level>`; BSD also
+  // `-E`, `-X`, `-d`, `-s`, `-x` and `-f <path>` (that path is a root).
+  while (index < argv.length && argv[index] !== undefined) {
+    const word = argv[index]!;
+    if (word === "-f") { roots.push(index + 1); index += 2; continue; }
+    if (word === "-D") { index += 2; continue; }
+    if (!/^-(?:[HLPEXdsx]+|O\d*)$/.test(word)) break;
+    // The last of `-H`/`-L`/`-P` wins.
+    for (const letter of word.slice(1)) {
+      if (letter === "L") follow = "all";
+      else if (letter === "H") follow = "roots";
+      else if (letter === "P") follow = false;
     }
-    const roots: number[] = [];
-    while (index < argv.length && !(argv[index] !== undefined && /^[-(!,]/.test(argv[index]!))) roots.push(index++);
-    if (argv.slice(index).some((word) => word === undefined || word === "-follow")) follow = true;
-    return { recursive: true, follow, roots };
+    index += 1;
   }
-  const grep = name === "grep" || name === "egrep" || name === "fgrep" || name === "ggrep";
-  if (!grep && name !== "rg") return null;
-  let recursive = name === "rg";
-  let follow = false;
+  while (index < argv.length && !(argv[index] !== undefined && /^[-(!,]/.test(argv[index]!))) roots.push(index++);
+  if (argv.slice(index).some((word) => word === undefined || word === "-follow")) follow = "all";
+  return { recursive: true, follow, ancestorFloor: false, roots: roots.filter((root) => root < argv.length) };
+}
+
+/**
+ * `grep`/`rg`. GNU grep follows links under `-R`/`--dereference-recursive`;
+ * BSD grep (macOS `/usr/bin/grep`) recurses with `-r` or `-R` and follows
+ * links only with `-S` (its default is `-p`). `ggrep` is GNU everywhere.
+ */
+function contentSearchShape(argv: readonly (string | undefined)[], name: string): SearchShape {
+  const grep = name !== "rg";
+  const bsd = grep && name !== "ggrep" && process.platform === "darwin";
+  let recursive = !grep;
+  let follow: SearchShape["follow"] = false;
   let patternGiven = false;
   const operands: number[] = [];
   let delimited = false;
@@ -882,21 +909,38 @@ function searchShape(argv: readonly (string | undefined)[]): { recursive: boolea
     if (!delimited && word === "--") { delimited = true; continue; }
     if (delimited || !word.startsWith("-") || word === "-") { operands.push(index); continue; }
     if (word.startsWith("--")) {
-      const option = word.slice(2).split("=")[0]!.toLowerCase();
+      const [option = "", value] = word.slice(2).toLowerCase().split("=");
       if (option === "regexp" || option === "file") patternGiven = true;
-      if (grep && (option === "recursive" || option === "dereference-recursive" || word === "--directories=recurse")) recursive = true;
-      if ((grep && option === "dereference-recursive") || (!grep && option === "follow")) follow = true;
+      if (grep && option === "directories") {
+        // `--directories=recurse` or `--directories recurse`.
+        const directories = value ?? argv[index + 1];
+        if (directories === undefined || directories === "recurse") recursive = true;
+        if (value === undefined) index += 1;
+      }
+      if (grep && (option === "recursive" || option === "dereference-recursive")) recursive = true;
+      if ((grep && !bsd && option === "dereference-recursive") || (!grep && option === "follow")) follow = "all";
       continue;
     }
     const cluster = word.slice(1);
     if (/[ef]/.test(cluster)) patternGiven = true;
     if (grep && /[rR]/.test(cluster)) recursive = true;
-    if (grep && cluster === "d" && argv[index + 1] === "recurse") recursive = true;
-    if ((grep && cluster.includes("R")) || (!grep && cluster.includes("L"))) follow = true;
+    if (grep && cluster === "d") {
+      if (argv[index + 1] === undefined || argv[index + 1] === "recurse") recursive = true;
+      index += 1;
+      continue;
+    }
+    if (grep ? (bsd ? cluster.includes("S") : cluster.includes("R")) : cluster.includes("L")) follow = "all";
   }
   // Every operand but the pattern is a root; an option value counted as a
   // root only widens the check.
-  return { recursive, follow, roots: patternGiven ? operands : operands.slice(1) };
+  return { recursive, follow, ancestorFloor: true, roots: patternGiven ? operands : operands.slice(1) };
+}
+
+function searchShape(argv: readonly (string | undefined)[]): SearchShape | null {
+  const name = program(argv[0])?.toLowerCase();
+  if (name === "find") return findShape(argv);
+  if (name === "grep" || name === "egrep" || name === "fgrep" || name === "ggrep" || name === "rg") return contentSearchShape(argv, name);
+  return null;
 }
 
 /** A symlink below `root` that resolves into a secret-holding location, or the reason the walk could not rule one out. */
@@ -927,10 +971,11 @@ function sensitiveSymlinkUnder(root: string, state: ScanState): string | null {
 }
 
 /**
- * A recursive `grep`/`rg`/`find` reads everything below its roots, so the
- * floor covers a root at or above a secret-holding directory (`grep -r x ~`,
- * `rg --hidden x /`), and for a symlink-following search (`grep -R`,
- * `rg -L`, `find -L`) any link below the root that resolves into one.
+ * A recursive `grep`/`rg` reads every file below its roots, so the floor
+ * covers a root at or above a secret-holding directory (`grep -r x ~`,
+ * `rg --hidden x /`). For any search that follows symlinks (GNU `grep -R`,
+ * BSD `grep -S`, `rg -L`, `find -L`/`-follow`/`-H`) it also covers a followed
+ * link that resolves into one. `find` alone only lists names, like `ls -R`.
  */
 function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
   if (state.sensitive) return;
@@ -957,9 +1002,16 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
     if (!isAbsolute(root) && state.cwd === undefined) continue;
     const absolute = isAbsolute(root) ? root : resolve(state.cwd!, root);
     const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
-    const above = sensitiveLocationUnder(canonical);
+    // A content search reads every file below its root.
+    const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
     if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
     if (shape.follow) {
+      // A followed root link counts like any other followed link.
+      const lexical = caseFoldForMatch(foldCanonicalPathSeparators(absolute));
+      const viaLink = canonical !== lexical ? state.match(canonical) ?? sensitiveLocationUnder(canonical) : null;
+      if (viaLink) { state.sensitive = `search root ${absolute} links to ${viaLink}`; return; }
+    }
+    if (shape.follow === "all") {
       const link = sensitiveSymlinkUnder(absolute, state);
       if (link) { state.sensitive = link; return; }
     }

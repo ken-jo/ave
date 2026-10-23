@@ -844,28 +844,58 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   it.each([
     "grep -r BEGIN ~", "grep -rn BEGIN /", "grep --recursive BEGIN ~", "grep -d recurse BEGIN ~", "grep -r BEGIN ..",
     "rg -uuu BEGIN ~", "rg --hidden BEGIN ~", "rg BEGIN /", "rg -e BEGIN ~ src",
-    "find ~ -name id_ed25519", "find / -name id_rsa", "find ~/.config -type f", "find .. -name config",
+    "grep --directories recurse BEGIN ~", "grep --directories=recurse BEGIN ~",
   ])("floors a recursive search rooted above a sensitive directory: %s", (command) => {
     floored(command, project);
   });
 
   it.each([
-    "grep -R BEGIN .", "grep --dereference-recursive BEGIN .", "grep -R BEGIN keys",
-    "rg -L BEGIN .", "rg --follow BEGIN", "rg -L BEGIN",
-    "find -L . -name id_ed25519", "find . -follow -name id_ed25519", "find -L . -type f",
+    "grep -R BEGIN keys", "rg -L BEGIN .", "rg --follow BEGIN", "rg -L BEGIN",
+    "find -L . -name id_ed25519", "find . -follow -name id_ed25519", "find -L . -type f", "find -H keys -type f",
+    // BSD find leading options, and `-f <path>` naming a root.
+    "find -L -E . -name id_ed25519", "find -L -x -s . -type f", "find -L -d -X . -type f", "find -L -f . -name id_ed25519",
+    "find -sL . -type f",
   ])("floors a symlink-following search that reaches a sensitive path through a project link: %s", (command) => {
     floored(command, project);
   });
 
+  // `find` only lists names, like `ls -R ~` or `rg --files`; its roots are not floored.
+  it.each(["find ~ -name notes.md", "find / -name app.ts", "find ~/.config -type f", "find .. -name config", "find -s ~ -type d"])(
+    "does not floor the name listing %s", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    },
+  );
+
+  describe.each([
+    ["darwin", ["grep -rS BEGIN .", "grep -r -S BEGIN .", "grep -RS BEGIN ."], ["grep -R BEGIN .", "grep -r BEGIN ."]],
+    ["linux", ["grep -R BEGIN .", "grep --dereference-recursive BEGIN .", "grep -rR BEGIN ."], ["grep -r BEGIN .", "grep -rS BEGIN ."]],
+  ] as const)("grep symlink semantics on %s", (platform, follows, stays) => {
+    const original = process.platform;
+    beforeEach(() => { Object.defineProperty(process, "platform", { value: platform }); });
+    afterEach(() => { Object.defineProperty(process, "platform", { value: original }); });
+
+    it.each(follows)("floors %s, which follows the project link", (command) => {
+      floored(command, project);
+    });
+
+    it.each(stays)("leaves %s alone, which does not follow links", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    });
+
+    it("treats ggrep as GNU grep", () => {
+      floored("ggrep -R BEGIN .", project);
+    });
+  });
+
   it.each([
-    "grep -r BEGIN src", "grep -R BEGIN .", "rg BEGIN .", "rg -L BEGIN src", "rg --hidden BEGIN", "find . -name app.ts",
-    "find -L . -type f", "grep -rn foo src/app.ts",
+    "grep -r BEGIN src", "grep -R BEGIN .", "grep -rS BEGIN .", "rg BEGIN .", "rg -L BEGIN src", "rg --hidden BEGIN", "find . -name app.ts",
+    "find -L . -type f", "grep -rn foo src/app.ts", "grep --directories recurse foo src",
   ])("leaves the ordinary project search %s alone", (command) => {
     expect(shellSensitivePathSignal(command, clean)).toBeNull();
   });
 
   it("does not let catalog find cover a search the floor stops", () => {
-    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find ~ -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
     expect(shellRuleCoversCommand("Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
     expect(shellRuleCoversCommand("Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
   });

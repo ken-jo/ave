@@ -124,7 +124,21 @@ does not prove that the command or task contents are read-only.
   - `rsync --delete*`/`--remove-source-files`; `ln -f`; `redis-cli flushall/flushdb`; `npm`/`pnpm`/`yarn` `unpublish`; `xattr -c/-d`.
   - A dynamic word counts as the worst case.
 - `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), and with `--reference=`. A leading removal such as `-x` or `go-w` is the mode operand, not an option. A mode the grammar cannot read refuses a stored rule but never triggers the floor, so once and session choices remain.
-- The sensitive-path floor also covers what a search reads, not only its literal arguments (round 5). A recursive `grep` (`-r`, `-R`, `--recursive`, `-d recurse`), `rg` (always recursive) or `find` whose root is at or above a secret-holding directory (the home, `/`, `~/.config`, `~/Library/Application Support`, the Ave home, `/proc`, …) is floored. A symlink-following search (`grep -R`, `rg -L/--follow`, `find -L`/`-follow`) is also floored when a link below its root resolves into a sensitive path, or when the walk passes 5000 entries without ruling that out. A dynamic root is an ordinary ask. Known limit: a recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
+- The sensitive-path floor also covers what a search reads, not only its literal arguments (rounds 5 and 6).
+  - A recursive content search whose root is at or above a secret-holding directory is floored: `grep` (`-r`, `-R`, `--recursive`, `-d recurse`, `--directories recurse` or `=recurse`) and `rg`, which always recurses. Secret-holding directories include the home, `/`, `~/.config`, `~/Library/Application Support`, the Ave home and `/proc`.
+  - A search that follows symlinks is floored when a followed link resolves into a sensitive path, or when the walk passes 5000 entries without ruling that out:
+    - GNU `grep -R`/`--dereference-recursive`;
+    - BSD `grep -S` on macOS, where `-R` alone does not follow;
+    - `rg -L`/`--follow`;
+    - `find -L`/`-follow` for links below the root, and `-H` for root links.
+  - `find` without following only lists names, so its roots are not floored, consistent with `ls -R ~`, `du -a ~` and `rg --files`.
+  - BSD `find` leading options (`-E -X -d -s -x`, `-f <path>`) are parsed; `-f`'s value is a root.
+  - A dynamic root is an ordinary ask.
+- Known limits of the floor (accepted, round 6):
+  - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
+  - A secret committed to the repository is reachable through the `git log -p`, `git show` and `git diff` catalog wildcards. The floor checks paths, not the content of history.
+  - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
+  - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
 - The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
 - Secret stores added to `sensitive-paths.ts` (round 5):
   - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
