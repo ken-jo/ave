@@ -6,7 +6,7 @@
  * Reading the approval queue tells a plugin what the user is about to be asked
  * to approve, which is reconnaissance for timing a request against it, not a
  * read. The same holds for the audit log, the audit chain's integrity state,
- * the hook trust list, and which providers hold a key.
+ * and the hook trust list.
  *
  * `deferredList`'s own comment claimed it was "gated to prevent a compromised
  * foreign frame from harvesting them" while calling the validator that does not
@@ -49,7 +49,6 @@ const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]
   ["auditShow", PERMISSIONS.auditShow, [10]],
   ["auditVerify", PERMISSIONS.auditVerify, []],
   ["hookTrustList", PERMISSIONS.hookTrustList, []],
-  ["reviewerProviderHasKey", PERMISSIONS.reviewerProviderHasKey, ["openai"]],
 ];
 
 beforeEach(() => {

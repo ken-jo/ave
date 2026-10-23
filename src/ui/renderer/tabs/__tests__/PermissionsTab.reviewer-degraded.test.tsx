@@ -55,8 +55,6 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
             verb: "show" as const,
             settings: {
               mode: opts.mode,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "low" as const },
@@ -66,7 +64,6 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
-      reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,

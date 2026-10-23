@@ -1472,7 +1472,6 @@ export interface DeferredQueueEntry {
 }
 
 export type PermissionReviewerMode = "disabled" | "rule" | "llm" | "strict";
-export type PermissionReviewerProvider = "openai" | "anthropic" | "google" | "foundry" | "gcp-playground";
 export type PermissionReviewerFallbackOnError = "deny" | "rule";
 /** Issue #690 — interactive reviewer auto-approve scope. */
 export type PermissionReviewerInteractiveAutoApprove = "off" | "low" | "medium";
@@ -1489,8 +1488,6 @@ interface PermissionReviewerParentAdjudication {
 
 export interface PermissionReviewerSettings {
   mode: PermissionReviewerMode;
-  provider: PermissionReviewerProvider;
-  model: string;
   fallbackOnError: PermissionReviewerFallbackOnError;
   interactive: { autoApprove: PermissionReviewerInteractiveAutoApprove };
   parentAdjudication: PermissionReviewerParentAdjudication;
@@ -1499,7 +1496,7 @@ export interface PermissionReviewerSettings {
 export type PermissionReviewerDispatchResult =
   | {
       ok: true;
-      verb: "show" | "mode" | "provider" | "model" | "fallback" | "interactive" | "adjudication";
+      verb: "show" | "mode" | "fallback" | "interactive" | "adjudication";
       settings: PermissionReviewerSettings;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"
@@ -1612,12 +1609,11 @@ export type AvePermissionApi = {
   reviewerDispatch: (
     rawArgs: string,
   ) => Promise<PermissionReviewerDispatchResult>;
-  /**
-   * Permission policy C3 — check whether an API key (or GCP service account)
-   * is stored for a given reviewer provider. Used by the settings UI to
-   * determine which providers are selectable (key-driven dynamic activation).
-   */
-  reviewerProviderHasKey: (provider: PermissionReviewerProvider) => Promise<boolean>;
+  judgeGet: () => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeReadResult>;
+  /** Only the changed fields: unchanged stored values (even rejected ones) stay as stored. */
+  judgeSet: (
+    patch: Partial<import("../../shared/permission-judge-settings.js").PermissionJudgeSettings>,
+  ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
     | {

@@ -17,7 +17,19 @@ interface SessionCounters {
 export class JudgeCircuitBreaker {
   private readonly sessions = new Map<string, SessionCounters>();
 
-  constructor(private readonly limits: JudgeBreakerSettings) {}
+  constructor(private limits: JudgeBreakerSettings) {}
+
+  /**
+   * Apply new limits to every session's existing counts, both ways: lowered
+   * limits can open a breaker, raised limits close one whose counts are now
+   * under them. The counts themselves are kept.
+   */
+  setLimits(limits: JudgeBreakerSettings): void {
+    this.limits = { ...limits };
+    for (const counters of this.sessions.values()) {
+      counters.open = counters.consecutive >= limits.consecutive || counters.total >= limits.total;
+    }
+  }
 
   private counters(sessionId: string): SessionCounters {
     let c = this.sessions.get(sessionId);

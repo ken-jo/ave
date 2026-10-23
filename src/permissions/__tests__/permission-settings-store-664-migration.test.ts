@@ -40,8 +40,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
         },
@@ -61,8 +59,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "strict",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",
@@ -81,8 +77,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",
@@ -130,8 +124,6 @@ describe("readPermissionSettings — issue #664 migration end-to-end", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
         },
@@ -160,8 +152,6 @@ describe("readPermissionSettings — issue #664 migration end-to-end", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",

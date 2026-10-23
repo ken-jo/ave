@@ -71,7 +71,13 @@ type BeforeJudgeResult =
    * the audit row (argsHash, redactedRequest) always describes the real call.
    */
   | { action: "continue"; redactInputKeys?: readonly string[] }
-  | { action: "short-circuit"; decision: "ask" | "deny"; reason: string };
+  | { action: "short-circuit"; decision: "ask" | "deny"; reason: string; fallback?: JudgeFailureKind };
+
+type AfterJudgeResult = JudgeDecision | {
+  decision: JudgeDecision;
+  rationale: string;
+  fallback?: JudgeFailureKind;
+};
 
 /** What a judge sees in place of a value a beforeJudge hook redacted. */
 export const POLICY_REDACTED = "[redacted by policy]";
@@ -83,7 +89,7 @@ export interface JudgeHooks {
    */
   beforeJudge?(request: Readonly<JudgeRequest>): BeforeJudgeResult | Promise<BeforeJudgeResult>;
   /** May only keep or downgrade the verdict (allow → ask → deny). */
-  afterJudge?(verdict: JudgeVerdict, request: JudgeRequest): JudgeDecision | Promise<JudgeDecision>;
+  afterJudge?(verdict: JudgeVerdict, request: JudgeRequest): AfterJudgeResult | Promise<AfterJudgeResult>;
 }
 
 /** One configured stage and its provider; `judge` null = could not be constructed (→ `unavailable`). */
@@ -94,8 +100,12 @@ export interface JudgeChainStage {
 
 export interface JudgeEngineDeps {
   settings: JudgeSettings;
-  /** Constructed stages, in `settings.chain` order. Empty = judge off. */
+  /** Constructed stages, in `settings.chain` order. Empty is off unless rejected. */
   chain: readonly JudgeChainStage[];
+  /** A rejected configured chain is unavailable, rather than an explicit off. */
+  chainRejected?: boolean;
+  /** Unreadable policy cannot establish off or shadow intent. */
+  settingsUnreadable?: boolean;
   breaker: JudgeCircuitBreaker;
   /**
    * Shadow rows go to the plain shadow channel; active decisions go to the
@@ -187,15 +197,15 @@ export type JudgeOutcome =
     };
 
 function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDeps): JudgeSkipReason | null {
-  if (deps.chain.length === 0) return "judge-off";
+  if (deps.chain.length === 0 && !deps.chainRejected && !deps.settingsUnreadable) return "judge-off";
   if (gate.priorDecision !== "undecided") return "rule-decided";
   if (gate.strictMode) return "strict-mode";
   if (gate.capabilityGrant) return "capability-grant";
   if (gate.remoteController) return "remote-controller";
   const category = request.invocation.category;
   if (!isJudgeCategory(category)) return "category-not-judged";
-  if (!deps.settings.categories[category]) return "category-disabled";
-  if (deps.breaker.isOpen(request.sessionId)) return "breaker-open";
+  if (!deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
+  if (!deps.chainRejected && !deps.settingsUnreadable && deps.breaker.isOpen(request.sessionId)) return "breaker-open";
   return null;
 }
 
@@ -410,7 +420,7 @@ export async function resolveJudge(
 
   const now = deps.now ?? Date.now;
   const started = now();
-  const mode = deps.settings.mode;
+  const mode = deps.settingsUnreadable ? "active" : deps.settings.mode;
   let redactedKeys: readonly string[] = [];
   let source: JudgeOutcomeSource;
   let verdict: JudgeVerdict | undefined;
@@ -427,7 +437,8 @@ export async function resolveJudge(
     if (before.decision !== "ask" && before.decision !== "deny") {
       throw new JudgeContractError("beforeJudge may only short-circuit to ask or deny");
     }
-    source = "hook";
+    source = before.fallback ? "fallback" : "hook";
+    fallback = before.fallback;
     decision = before.decision;
     rationale = before.reason;
   } else {
@@ -436,7 +447,12 @@ export async function resolveJudge(
     }
     redactedKeys = before.redactInputKeys ?? [];
     const view = judgeView(request, redactedKeys);
-    const chain = await runChain(deps, view, signal, now, stages);
+    const unavailable = deps.chainRejected || deps.settingsUnreadable;
+    if (unavailable && signal?.aborted) throw signal.reason;
+    const chain = unavailable
+      ? { kind: "fallback" as const, fallback: "unavailable" as const,
+          failureMessage: deps.settingsUnreadable ? "Permission judge settings cannot be read" : "Permission judge configuration is invalid" }
+      : await runChain(deps, view, signal, now, stages);
     if (chain.kind === "verdict") {
       source = "judge";
       decidedBy = chain.stage;
@@ -444,11 +460,20 @@ export async function resolveJudge(
       decision = verdict.decision;
       rationale = verdict.rationale;
       if (deps.hooks?.afterJudge) {
-        const after = await deps.hooks.afterJudge(verdict, request);
+        const result = await deps.hooks.afterJudge(verdict, request);
+        const after = typeof result === "string" ? result : result.decision;
         if (!isSameOrStricter(verdict.decision, after)) {
           throw new JudgeContractError(`afterJudge may only downgrade (got ${verdict.decision} → ${String(after)})`);
         }
         decision = after;
+        if (typeof result !== "string") {
+          rationale = result.rationale;
+          if (result.fallback) {
+            if (after === "allow") throw new JudgeContractError("afterJudge failure must not allow");
+            fallback = result.fallback;
+            source = "fallback";
+          }
+        }
       }
     } else {
       source = "fallback";

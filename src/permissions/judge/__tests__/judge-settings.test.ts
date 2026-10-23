@@ -5,11 +5,11 @@ import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
   DEFAULT_JUDGE_SETTINGS,
   JudgeSettingsError,
-  judgeModelCatalogFrom,
   normalizeJudgeSettings,
   serializeJudgeSettings,
   validateJudgeSettings,
 } from "../judge-settings.js";
+import { judgeModelCatalogFrom } from "../judge-model-catalog.js";
 
 const PICKER_VENDOR = "claude" as const;
 const PICKER_MODEL = LLM_VENDOR_MODEL_OPTIONS[PICKER_VENDOR][0]!;
@@ -21,6 +21,8 @@ describe("judge settings", () => {
     expect(issues).toEqual([]);
     expect(migrated).toBe(false);
     expect(settings).toEqual({
+      // Unset reviewer model: follows the chat model, no fixed default.
+      model: null,
       chain: [],
       mode: "shadow",
       categories: { shell: true, write: true, network: false },
@@ -28,6 +30,22 @@ describe("judge settings", () => {
       chainDeadlineMs: 60_000,
       breaker: { consecutive: 3, total: 20 },
     });
+  });
+
+  it("stores the reviewer model as an explicit choice or explicit null", () => {
+    expect(normalizeJudgeSettings({ model: null }).settings.model).toBeNull();
+    const picked = validateJudgeSettings({ model: `${PICKER_VENDOR}/${PICKER_MODEL}` });
+    expect(picked.model).toEqual({ vendor: PICKER_VENDOR, model: PICKER_MODEL });
+    expect(serializeJudgeSettings(picked)).toMatchObject({ model: `${PICKER_VENDOR}/${PICKER_MODEL}` });
+    expect(serializeJudgeSettings(validateJudgeSettings({}))).toMatchObject({ model: null });
+  });
+
+  it("marks an unoffered reviewer model rejected instead of following chat", () => {
+    const read = normalizeJudgeSettings({ model: `${PICKER_VENDOR}/not-offered` });
+    expect(read.modelRejected).toBe(true);
+    expect(read.settings.model).toBeNull();
+    expect(read.issues.join()).toMatch(/permission reviewer unavailable/);
+    expect(() => validateJudgeSettings({ model: `${PICKER_VENDOR}/not-offered` })).toThrow(JudgeSettingsError);
   });
 
   it("a chain without a mode stays in shadow", () => {
@@ -166,11 +184,77 @@ describe("judge settings", () => {
     expect(() => validateJudgeSettings(pick("openai-compatible/team/llama-70b"), live)).toThrow(/not offered/);
   });
 
+  it("does not seed an endpoint-defined route before its handshake", () => {
+    const empty = judgeModelCatalogFrom({});
+    expect(empty.optionsFor("openai")).toEqual([]);
+    expect(empty.optionsFor("openrouter")).toEqual([]);
+    const saved = judgeModelCatalogFrom({ vendors: { openrouter: { model: "team/saved" } } });
+    expect(saved.optionsFor("openrouter")).toEqual(["team/saved"]);
+  });
+
+  it("keeps schema-only catalog validation independent from live route discovery", () => {
+    const model = LLM_VENDOR_MODEL_OPTIONS.openai[0]!;
+    const patch = { chain: [{ provider: "builtin-llm", model: `openai/${model}` }] };
+    expect(validateJudgeSettings(patch).chain[0]?.model).toEqual({ vendor: "openai", model });
+    expect(() => validateJudgeSettings(patch, judgeModelCatalogFrom({}))).toThrow(/not offered/);
+  });
+
+  it.each(["static", "manual"] as const)("uses the active preset's %s model options and its own saved selection", (policy) => {
+    const catalog = judgeModelCatalogFrom({
+      provider: "openai-compatible",
+      marketplaceProviderPresetId: "team-route",
+      vendors: { "openai-compatible": { model: "generic/saved", presetModels: { "team-route": "team/saved" } } },
+      installedProviderPresets: [{
+        providerId: "team-route", baseUrl: "https://models.example.test/v1", defaultModel: "team/default",
+        modelOptions: ["team/default", "team/other"], modelDiscoveryPolicy: policy, requiresApiKey: true,
+      }, {
+        providerId: "inactive-route", baseUrl: "https://other.example.test/v1", defaultModel: "inactive/default",
+        modelOptions: ["inactive/default"], requiresApiKey: false,
+      }],
+      modelListCache: {
+        cached: { vendor: "openai-compatible", endpoint: "https://models.example.test/v1/models", credentialScope: "team-route", models: ["network/model"], fetchedAt: "2026-10-22T00:00:00Z" },
+      },
+    });
+    expect(catalog.optionsFor("openai-compatible")).toEqual(["team/saved", "team/default", "team/other"]);
+  });
+
+  it("keeps same-endpoint listings separated by the active credential scope", () => {
+    const source = {
+      provider: "openai-compatible",
+      marketplaceProviderPresetId: "team-route",
+      vendors: { "openai-compatible": { baseUrl: "https://models.example.test/v1", model: "generic/saved" } },
+      installedProviderPresets: [{
+        providerId: "team-route", baseUrl: "https://models.example.test/v1", defaultModel: "team/default",
+        modelOptions: [], requiresApiKey: true,
+      }],
+      modelListCache: {
+        generic: { vendor: "openai-compatible", endpoint: "https://models.example.test/v1/models", models: ["generic/model"], fetchedAt: "2026-10-22T01:00:00Z" },
+        other: { vendor: "openai-compatible", endpoint: "https://models.example.test/v1/models", credentialScope: "other-route", models: ["other/model"], fetchedAt: "2026-10-22T02:00:00Z" },
+        selected: { vendor: "openai-compatible", endpoint: "https://models.example.test/v1/models", credentialScope: "team-route", models: ["team/model"], fetchedAt: "2026-10-22T00:00:00Z" },
+      },
+    };
+    expect(judgeModelCatalogFrom(source).optionsFor("openai-compatible")).toEqual(["team/default", "team/model"]);
+    expect(judgeModelCatalogFrom({ ...source, marketplaceProviderPresetId: undefined }).optionsFor("openai-compatible")).toContain("generic/model");
+    expect(judgeModelCatalogFrom({ ...source, marketplaceProviderPresetId: "missing-route" }).optionsFor("openai-compatible")).toEqual([]);
+  });
+
+  it("filters retired saved models using the current route listing", () => {
+    const catalog = judgeModelCatalogFrom({
+      vendors: { openai: { model: "o4-mini" } },
+      modelListCache: {
+        live: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: ["gpt-5.4"], fetchedAt: "2026-10-22T00:00:00Z", complete: true },
+      },
+    });
+    expect(catalog.optionsFor("openai")).not.toContain("o4-mini");
+    expect(catalog.optionsFor("openai")).toContain("gpt-5.4");
+  });
+
   it("a persisted builtin-llm stage with escalateBelow is a named issue on read, not a silent drop", () => {
     const persisted = { chain: [JEV, { provider: "builtin-llm", id: "llm", escalateBelow: 0.5 }], mode: "active" };
-    const { settings, issues } = normalizeJudgeSettings(persisted);
+    const { settings, issues, chainRejected } = normalizeJudgeSettings(persisted);
     expect(settings.chain).toEqual([]);
     expect(settings.mode).toBe("active");
+    expect(chainRejected).toBe(true);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("chain[1] (stage 'llm').escalateBelow");
     expect(issues[0]).toContain("builtin-llm");
@@ -180,6 +264,22 @@ describe("judge settings", () => {
 
   it("breaker thresholds are configurable", () => {
     expect(validateJudgeSettings({ breaker: { consecutive: 2, total: 5 } }).breaker).toEqual({ consecutive: 2, total: 5 });
+  });
+
+  it("distinguishes rejected active chains from explicit off and unrelated warnings", () => {
+    const mixed = normalizeJudgeSettings({ chain: [], provider: "off", mode: "active" });
+    expect(mixed).toMatchObject({ settings: { chain: [], mode: "active" }, chainRejected: true });
+    expect(normalizeJudgeSettings({ chain: "invalid", mode: "active" })).toMatchObject({
+      settings: { chain: [], mode: "active" }, chainRejected: true,
+    });
+    for (const input of [undefined, { chain: [] }, { provider: "off", mode: "active" }, { chain: [], timeoutMs: 1 }]) {
+      expect(normalizeJudgeSettings(input)).not.toHaveProperty("chainRejected");
+    }
+    const warning = normalizeJudgeSettings({ chain: [{ provider: "builtin-llm" }], mode: "active", timeoutMs: 1 });
+    expect(warning.issues).not.toEqual([]);
+    expect(warning.settings.chain).toHaveLength(1);
+    expect(warning).not.toHaveProperty("chainRejected");
+    expect(normalizeJudgeSettings(null)).toHaveProperty("chainRejected", true);
   });
 });
 
@@ -199,6 +299,18 @@ describe("external stage env", () => {
 });
 
 describe("JudgeCircuitBreaker", () => {
+  it("re-evaluates existing counts when the limits change, closing under raised limits", () => {
+    const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
+    for (let i = 0; i < 3; i++) b.record("s", "deny");
+    expect(b.isOpen("s")).toBe(true);
+    b.setLimits({ consecutive: 3, total: 20 });
+    expect(b.isOpen("s")).toBe(true);
+    b.setLimits({ consecutive: 5, total: 20 });
+    expect(b.snapshot("s")).toEqual({ consecutive: 3, total: 3, open: false });
+    b.setLimits({ consecutive: 5, total: 3 });
+    expect(b.isOpen("s")).toBe(true);
+  });
+
   it("trips on N consecutive denials; allow resets the streak, ask does not count", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
     b.record("s", "deny");

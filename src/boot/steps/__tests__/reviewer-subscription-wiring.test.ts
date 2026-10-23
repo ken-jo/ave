@@ -35,13 +35,9 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       wireReviewerAndPermissions(context as never);
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
         streamProviderFor: (provider: string) => LLMProvider | null;
-        getSecret: (key: string) => string | null;
         resolveParentSessionAdjudicationTarget: (id: string) => unknown;
       };
       expect(options.streamProviderFor("openai")).toBeNull();
-      expect(options.streamProviderFor("anthropic")).toBeNull();
-      expect(options.getSecret("llm.apiKey.azure-foundry")).toBeNull();
-      expect(options.getSecret("llm.apiKey.gemini")).toBeNull();
       expect(options.resolveParentSessionAdjudicationTarget("parent")).toBeNull();
       expect(getSecret).not.toHaveBeenCalled();
       retired = false;

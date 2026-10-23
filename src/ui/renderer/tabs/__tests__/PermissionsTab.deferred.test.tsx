@@ -45,14 +45,11 @@ function installAveApi() {
       verb: "show",
       settings: {
         mode: "disabled",
-        provider: "openai",
-        model: "gpt-4o-mini",
         fallbackOnError: "deny",
         parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
         interactive: { autoApprove: "off" },
       },
     })),
-    reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
     sandboxCapability: vi.fn(async () => ({
       platform: "linux" as NodeJS.Platform,
       enabled: false,

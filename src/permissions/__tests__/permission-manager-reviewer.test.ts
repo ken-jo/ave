@@ -800,12 +800,11 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
       networkFetch: unusedNetworkFetch,
       readSettings: () => ({
         mode: "llm",
-        provider: "openai",
-        model: "gpt-4o-mini",
         fallbackOnError: "deny",
         interactive: { autoApprove: "low" },
         parentAdjudication: PARENT_ADJUDICATION,
       }),
+      readActiveLlm: () => ({ provider: "openai", model: "gpt-4o-mini" }),
       // Factory present (boot contract honored) but the user has not
       // configured an API key → provider unconfigured → degrade to rule.
       streamProviderFor: () => null,

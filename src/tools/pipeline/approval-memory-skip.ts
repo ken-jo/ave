@@ -245,7 +245,9 @@ export async function tryUserApprovalMemorySkip(
         allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
         additionalDirectories: context.additionalDirectories ?? [],
       },
-      { defer: "none" },
+      // This assesses whether the saved user grant covers these arguments.
+      // The configured judge runs only after applicable grants are resolved.
+      { defer: "none", judgeBypass: true },
     ).catch(() => null);
     const assessed = reviewed !== null &&
       (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&
