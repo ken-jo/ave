@@ -70,8 +70,8 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "OpenRouter",
     apiKeyPlaceholder: "sk-or-...",
     baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "anthropic/claude-sonnet-4.6",
-    modelOptions: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "openrouter/free"],
+    defaultModel: "anthropic/claude-sonnet-5.5",
+    modelOptions: ["anthropic/claude-sonnet-5.5", "openai/gpt-5.4", "openrouter/free"],
     gateway: true,
   },
   deepseek: {
@@ -149,7 +149,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "rq_...",
     baseUrl: "https://router.requesty.ai/v1",
     defaultModel: "openai/gpt-5.4",
-    modelOptions: ["openai/gpt-5.4", "anthropic/claude-sonnet-4.6"],
+    modelOptions: ["openai/gpt-5.4", "claude-sonnet-5-5"],
     gateway: true,
   },
   litellm: {
@@ -173,7 +173,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "vck_...",
     baseUrl: "https://ai-gateway.vercel.sh/v1",
     defaultModel: "alibaba/qwen3.6-plus",
-    modelOptions: ["alibaba/qwen3.6-plus", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
+    modelOptions: ["alibaba/qwen3.6-plus", "anthropic/claude-sonnet-5.5", "openai/gpt-5.4"],
     gateway: true,
   },
   "vercel-v0": {
@@ -231,7 +231,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "kilo_...",
     baseUrl: "https://api.kilo.ai/api/gateway",
     defaultModel: "gpt-5.4",
-    modelOptions: ["gpt-5.4", "claude-sonnet-4-6"],
+    modelOptions: ["gpt-5.4", "anthropic/claude-sonnet-5.5"],
     gateway: true,
   },
   zai: {
@@ -812,7 +812,7 @@ export type LLMVendorSettingsMap = Partial<
 >;
 
 const CORE_DEFAULT_MODEL = {
-  claude: "claude-sonnet-4-6",
+  claude: "claude-sonnet-5-5",
   openai: "gpt-5.4-mini",
   gemini: "gemini-2.5-flash",
   "azure-foundry": "gpt-5.4-mini",
@@ -840,6 +840,10 @@ const DEFAULT_MODEL: Record<LLMVendor, string> = Object.freeze({
 
 const CORE_VENDOR_MODEL_OPTIONS = {
     claude: [
+      "claude-haiku-5-5",
+      "claude-sonnet-5-5",
+      "claude-opus-5-5",
+      "claude-fable-5-1",
       "claude-sonnet-4-6",
       "claude-opus-4-6",
       "claude-haiku-4-5",

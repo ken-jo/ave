@@ -85,9 +85,9 @@ const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
   Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>
 > = {
   claude: Object.freeze({
-    low: "claude-haiku-4-5",
-    mid: "claude-sonnet-4-6",
-    high: "claude-opus-4-6",
+    low: "claude-haiku-5-5",
+    mid: "claude-sonnet-5-5",
+    high: "claude-opus-5-5",
   }),
   openai: Object.freeze({
     low: "gpt-5.4-nano",

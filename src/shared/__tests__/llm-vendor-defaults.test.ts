@@ -238,6 +238,26 @@ describe("LLM vendor defaults", () => {
     expect(LLM_VENDOR_DEFAULTS.openai.model).toBe("gpt-5.4-mini");
   });
 
+  it("defaults to the balanced 5.5 model and offers newer releases first", () => {
+    expect(LLM_VENDOR_DEFAULTS.claude.model).toBe("claude-sonnet-5-5");
+    expect(LLM_VENDOR_MODEL_OPTIONS.claude.slice(0, 4)).toEqual([
+      "claude-haiku-5-5",
+      "claude-sonnet-5-5",
+      "claude-opus-5-5",
+      "claude-fable-5-1",
+    ]);
+    expect(LLM_VENDOR_DEFAULTS.openrouter.model).toBe("anthropic/claude-sonnet-5.5");
+  });
+
+  it.each([
+    ["openrouter", "anthropic/claude-sonnet-5.5"],
+    ["requesty", "claude-sonnet-5-5"],
+    ["vercel-ai-gateway", "anthropic/claude-sonnet-5.5"],
+    ["kilo", "anthropic/claude-sonnet-5.5"],
+  ] as const)("offers the catalog-confirmed model id for %s", (vendor, model) => {
+    expect(LLM_VENDOR_MODEL_OPTIONS[vendor]).toContain(model);
+  });
+
   it("offers the OpenRouter free router as an explicit selectable model", () => {
     expect(LLM_VENDOR_MODEL_OPTIONS.openrouter).toContain("openrouter/free");
   });

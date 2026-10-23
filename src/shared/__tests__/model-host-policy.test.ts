@@ -8,6 +8,19 @@ import {
   MAX_CREDIBLE_CONTEXT_WINDOW,
 } from "../model-host-policy.js";
 
+it.each([
+  "claude-fable-5-1",
+  "claude-opus-5-5",
+  "claude-sonnet-5-5",
+  "claude-haiku-5-5",
+])("%s uses adaptive thinking without unconfirmed beta opt-ins", (model) => {
+  expect(claudeRequestShape(model)).toEqual({
+    adaptiveThinking: true,
+    context1MBeta: false,
+    interleavedNumericThinking: false,
+  });
+});
+
 describe("request shape — Claude 1M beta header", () => {
   it.each([
     "claude-sonnet-4-6",

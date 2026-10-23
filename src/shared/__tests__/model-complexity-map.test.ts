@@ -120,9 +120,9 @@ describe("model-complexity-map", () => {
     // would silently shift the user's sub-agent model.
     it("claude tiers: haiku=low, sonnet=mid, opus=high", () => {
       expect(MODEL_COMPLEXITY_MAP.claude).toEqual({
-        low: "claude-haiku-4-5",
-        mid: "claude-sonnet-4-6",
-        high: "claude-opus-4-6",
+        low: "claude-haiku-5-5",
+        mid: "claude-sonnet-5-5",
+        high: "claude-opus-5-5",
       });
     });
 
