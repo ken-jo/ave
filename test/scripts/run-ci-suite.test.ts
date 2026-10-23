@@ -19,6 +19,7 @@ import {
   namedRepositoryPaths,
   namesChangedPath,
   planCiSuite,
+  runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
   testRunsRepoCodeOutOfProcess,
@@ -207,6 +208,12 @@ describe("CI test selection fallbacks", () => {
       expect(planCiSuite(event)).toEqual({ mode: "full", reason: `${event} runs the full suite`, tests: [] });
     }
     expect(() => planCiSuite(undefined)).toThrow("GITHUB_EVENT_NAME is unset");
+  });
+
+  it("instruments coverage only on the nightly schedule and a manual dispatch", () => {
+    expect(runsCoverage("schedule")).toBe(true);
+    expect(runsCoverage("workflow_dispatch")).toBe(true);
+    for (const event of ["push", "pull_request", undefined]) expect(runsCoverage(event)).toBe(false);
   });
 
   it("runs the full suite for a category merge to main, and refuses a pull request without its refs", () => {

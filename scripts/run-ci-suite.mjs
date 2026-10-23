@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-// The Vitest stage of CI's build-and-test job: the full suite with its
-// coverage gate, or, for a pull request whose change can be traced, only the
-// affected tests.
+// The Vitest stage of CI's build-and-test job: the full suite, or, for a pull
+// request whose change can be traced, only the affected tests.
 //
-// Full (`bun run check:test-coverage`, every global coverage threshold):
+// Coverage is periodic (owner 2026-10-24): instrumentation and the global
+// thresholds (`bun run check:test-coverage`) run only on the nightly schedule
+// and a manual dispatch, which are always full runs. Every other run executes
+// without instrumentation, so a merge or push gate does not pay for it.
+//
+// Full:
 //   - every event other than pull_request: a push to main, a release tag, the
 //     nightly schedule and a manual dispatch;
 //   - a category merge, a pull request from integration/* into main: the
@@ -25,9 +29,8 @@
 // import graph cannot see: module-size-boundaries.test.ts failed on such a
 // change), the lock suites whose trigger paths changed, and the must-run set in
 // config/ci-must-run-tests.json. Global coverage thresholds describe the
-// whole suite, so they are enforced only on full runs; a pull request that
-// lowers coverage turns the next push to main red, where the run fails the
-// job and the branch's check.
+// whole suite; a change that lowers coverage turns the next nightly run on
+// main red.
 //
 // The diff is the pull request's merge commit against its first parent, the
 // base it was merged onto: exactly what the PR adds to its target.
@@ -49,7 +52,7 @@ export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
 /**
  * Above this many changed and related test files the selection is most of the
- * suite, and a full run (with coverage) is worth its extra minutes.
+ * suite, and a full run is worth its extra minutes.
  */
 export const AFFECTED_TEST_LIMIT = 600;
 
@@ -180,6 +183,13 @@ export function expandMustRunTests(document, trackedTests) {
     }
   }
   return [...selected].sort();
+}
+
+/** The events whose run instruments coverage and enforces its thresholds. */
+export const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
+
+export function runsCoverage(eventName) {
+  return COVERAGE_EVENTS.includes(eventName);
 }
 
 function full(reason) {
@@ -325,25 +335,27 @@ export function planCiSuite(eventName, { headRef, baseRef } = {}) {
   });
 }
 
-function writeSummary(plan) {
+function describeRun(plan, coverage) {
+  if (plan.mode === "affected") return `${plan.tests.length} affected test files`;
+  return coverage ? "full suite with coverage gate" : "full suite";
+}
+
+function writeSummary(plan, coverage) {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) return;
-  const lines = [
-    `### Vitest: ${plan.mode === "full" ? "full suite with coverage gate" : `${plan.tests.length} affected test files`}`,
-    "",
-    plan.reason,
-  ];
-  if (plan.mode === "affected") lines.push("", "Coverage thresholds are enforced on full runs (push to main, tags, nightly).");
+  const lines = [`### Vitest: ${describeRun(plan, coverage)}`, "", plan.reason];
+  if (!coverage) lines.push("", "Coverage thresholds are enforced on the nightly and manually dispatched runs.");
   appendFileSync(summaryPath, `${lines.join("\n")}\n`);
 }
 
-function runPlan(plan) {
-  if (plan.mode === "full") {
+function runPlan(plan, coverage) {
+  if (coverage) {
     return spawnSync(process.execPath, [join("scripts", "run-test-coverage-gate.mjs")], { stdio: "inherit" });
   }
+  const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
   return spawnSync(
     process.execPath,
-    [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...plan.tests.map((test) => `./${test}`)],
+    [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...tests],
     { stdio: "inherit" },
   );
 }
@@ -354,10 +366,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       headRef: process.env.GITHUB_HEAD_REF,
       baseRef: process.env.GITHUB_BASE_REF,
     });
-    console.log(`[ci-suite] ${plan.mode}: ${plan.reason}`);
-    if (plan.mode === "affected") console.log(`[ci-suite] ${plan.tests.length} test files; coverage gate runs on full runs only`);
-    writeSummary(plan);
-    const result = runPlan(plan);
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    const coverage = runsCoverage(eventName);
+    if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
+    console.log(`[ci-suite] ${describeRun(plan, coverage)}: ${plan.reason}`);
+    writeSummary(plan, coverage);
+    const result = runPlan(plan, coverage);
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;
   } catch (error) {
