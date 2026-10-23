@@ -14,6 +14,9 @@ import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-
 import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 interface RpcRequest {
   id?: unknown;
   method?: unknown;

@@ -8,6 +8,9 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();

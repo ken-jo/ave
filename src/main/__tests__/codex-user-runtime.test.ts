@@ -18,6 +18,9 @@ import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-sch
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
 
