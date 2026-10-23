@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -14,6 +14,9 @@ import {
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+// Git writes loose objects read-only, and Electron's synchronous recursive removal
+// refuses read-only files on Windows; the async removal clears the attribute.
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
 const start = source.indexOf("function classifyPrePushChanges(");
@@ -158,7 +161,7 @@ describe("pre-push classification precedence", () => {
     expect(result.reason).toContain("pushed history");
   });
 
-  it("reads the global input from real pushed history when the final diff contains only source", () => {
+  it("reads the global input from real pushed history when the final diff contains only source", async () => {
     const repo = mkdtempSync(join(tmpdir(), "pre-push-history-"));
     const env = gitFixtureEnv(repo);
     const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
@@ -187,11 +190,11 @@ describe("pre-push classification precedence", () => {
       });
       expect(historyReason(repo, base, git(["rev-parse", "HEAD"]))).toContain("package.json is a global test or build input in pushed history");
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 
-  it("retains a merged main input even when a later commit removes it from the pushed net diff", () => {
+  it("retains a merged main input even when a later commit removes it from the pushed net diff", async () => {
     const repo = mkdtempSync(join(tmpdir(), "pre-push-main-merge-"));
     const env = gitFixtureEnv(repo);
     const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
@@ -226,7 +229,7 @@ describe("pre-push classification precedence", () => {
       });
       expect(historyReason(repo, published, git(["rev-parse", "HEAD"])))
         .toContain("package.json is a global test or build input in pushed history");
-    } finally { rmSync(repo, { recursive: true, force: true }); }
+    } finally { await cleanupTmpDir(repo); }
   });
 
   it("takes a message-only push on the fast tier with its consumers instead of the full suite", () => {
@@ -287,7 +290,7 @@ describe("pre-push classification precedence", () => {
     },
   );
 
-  it("selects message consumers from the pushed blobs and the checked-out tree of a real repository", () => {
+  it("selects message consumers from the pushed blobs and the checked-out tree of a real repository", async () => {
     const repo = mkdtempSync(join(tmpdir(), "pre-push-messages-"));
     const env = gitFixtureEnv(repo);
     const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
@@ -339,7 +342,7 @@ describe("pre-push classification precedence", () => {
         reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
       });
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 });

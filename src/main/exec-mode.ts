@@ -220,10 +220,14 @@ function parseCwd(
  * caller BEFORE the workspace anchor moves the process to `~/.ave/workspace`
  * (and only for a headless launch — see `execModeRequested`); it is the
  * session root when `--exec-cwd` is absent and the base of a relative one.
+ *
+ * The workload broker is the brokered Linux route, so on native Windows its
+ * flags are refused here; boot still fails closed if one ever slips through.
  */
 export function parseExecFlags(
   argv: readonly string[],
   launchCwd: string | null,
+  platform: NodeJS.Platform = process.platform,
 ): ExecRequest | { error: string } | null {
   let execRequested = false;
   let prompt: string | null = null;
@@ -298,6 +302,15 @@ export function parseExecFlags(
       }
       operatorAttestationPath = value;
       continue;
+    }
+    if (
+      platform === "win32"
+      && (arg === "--exec-workload-broker" || arg.startsWith("--exec-workload-broker=")
+        || arg === "--exec-workload-capability" || arg.startsWith("--exec-workload-capability="))
+    ) {
+      return usageError(
+        `${arg.split("=")[0]} selects the workload broker, which is the Linux route and is not supported on native Windows`,
+      );
     }
     if (arg === "--exec-workload-broker") {
       return usageError(

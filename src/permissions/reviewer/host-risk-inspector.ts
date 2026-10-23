@@ -130,7 +130,7 @@ const MUTATING_FLAGS: ReadonlyMap<string, ReadonlySet<string> | null> = new Map(
   ["find", new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir",
                     "-fprint", "-fprint0", "-fprintf", "-fls"])],
   ["fd",   new Set(["-x", "--exec", "-X", "--exec-batch"])],
-  ["sort", new Set(["-o", "--output"])],
+  ["sort", new Set(["-o", "--output", "-T", "--temporary-directory"])],
   // ripgrep executes an arbitrary preprocessor per file with `--pre` (and picks
   // which files reach it with `--pre-glob`), and runs a binary for `--hostname-bin`.
   // Searching is read-only; handing rg a program to run is not.
@@ -150,8 +150,8 @@ const GNU_ABBREVIATING_VERBS: ReadonlySet<string> = new Set(["sed", "sort"]);
  * (mode 2 above). Keyed by the same verb names as {@link MUTATING_FLAGS}.
  * A single-dash arg whose leading letter-cluster contains any of these letters
  * is treated as mutating regardless of what follows (glued suffix or combined
- * flags). Long-flag-only verbs (find, fd, sort) have no short mutating letter
- * and are handled by exact/prefix matching alone.
+ * flags). Verbs without a short-letter entry are handled by exact/prefix
+ * matching alone.
  */
 const MUTATING_SHORT_LETTERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["sed", new Set(["i"])],
@@ -160,7 +160,7 @@ const MUTATING_SHORT_LETTERS: ReadonlyMap<string, ReadonlySet<string>> = new Map
   // glued to the flag (`-oout`, `-o/Users/x/.ssh/authorized_keys`). Exact-token
   // matching only sees the first form, so the glued form wrote the file while
   // classifying read. The cluster check covers both.
-  ["sort", new Set(["o"])],
+  ["sort", new Set(["o", "T"])],
 ]);
 
 /**
@@ -541,10 +541,33 @@ export function isReadOnlyShellLeaf(
     return !leaf.argvHasExpandableDollar.some(Boolean) && parseTarListing(argv) !== null;
   }
   if (!READ_ONLY_COMMANDS.has(verb)) return false;
+  if (verb === "uniq" && hasUniqOutput(argv.slice(1))) return false;
   // A read-only verb still MUTATES when carrying a mutating flag (`sed -i`,
   // `find … -delete`, …). Escalate to non-read-only.
   if (hasMutatingFlag(verb, argv.slice(1), leaf.argvHasExpandableDollar.slice(1))) return false;
   return true;
+}
+
+function hasUniqOutput(args: readonly string[]): boolean {
+  let optionsEnded = false;
+  let positionals = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!optionsEnded && arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && arg.startsWith("-") && arg !== "-") {
+      // Numeric option values are not input/output operands. Attached values
+      // stay in the option token; a bare value-taking flag consumes the next.
+      if (/^-[^-]*[fsw]$/.test(arg)
+        || ["--skip-fields", "--skip-chars", "--check-chars"].includes(arg)) index += 1;
+      continue;
+    }
+    positionals += 1;
+    if (positionals === 2) return true;
+  }
+  return false;
 }
 
 /**

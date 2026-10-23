@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import {
   PUBLISHED_SCHEMAS,
   checkProtocolMirror,
@@ -85,8 +86,8 @@ function pointAlias(root: string, appVersion: string): void {
     readMirror(root, `2/v${appVersion}/protocol.schema.json`).toString("utf8"));
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 describe("host protocol web mirror", () => {
@@ -229,6 +230,9 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
   const git = (cwd: string, ...args: string[]) => execFileSync("git", [
     "-c", "user.name=Mirror Test", "-c", "user.email=mirror@example.invalid",
     "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main",
+    // The repository checks blobs out as LF through .gitattributes; the fixture
+    // has none, so a system core.autocrlf would rewrite the recorded copies.
+    "-c", "core.autocrlf=false",
     ...args,
   ], { cwd, env: gitEnv, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
