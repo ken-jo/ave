@@ -55,7 +55,12 @@ function replaceSealedFile(path: string, content: string): void {
   chmodSync(path, 0o500);
 }
 
-describe("sealed subscription package artifacts", () => {
+// On Windows each copied file and directory is admitted through its own
+// PowerShell ACL probe, so even these small fixtures take tens of seconds.
+// That cost is a known product issue tracked apart from these assertions.
+const SEALED_ARTIFACT_OPTIONS = process.platform === "win32" ? { timeout: 240_000 } : {};
+
+describe("sealed subscription package artifacts", SEALED_ARTIFACT_OPTIONS, () => {
   it("executes the private entry snapshot after the installed script is replaced following host verification", async () => {
     const fixture = fixtureForSnapshot();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
