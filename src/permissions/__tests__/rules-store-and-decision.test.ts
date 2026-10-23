@@ -16,6 +16,7 @@ import { readPermissionsFile, updatePermissionsFile } from "../permissions-store
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rules/rule-files.js";
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
+import { shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -685,6 +686,7 @@ describe("host shell-rule suggestions", () => {
     "kubectl get pods --username admin", "kubectl get pods --password hunter2",
     "git prune", "git tag -d v1.0", "git tag --delete v1.0", "git remote remove origin", "git remote rm origin",
     "git pull --force", "git pull -f origin main",
+    "git remote rename origin upstream", "git remote set-url origin https://evil.example/r.git", "git remote prune origin",
     // git ref and object deletion.
     "git gc --prune=now", "git gc --aggressive --prune", "git reflog expire --expire=now --all", "git reflog delete HEAD",
     "git worktree remove --force wt", "git worktree remove -f wt", "git worktree prune", "git update-ref -d refs/heads/x",
@@ -706,6 +708,9 @@ describe("host shell-rule suggestions", () => {
     ["kubectl get pods -n web", "Bash(kubectl get pods -n web)"], ["kubectl logs web -f", "Bash(kubectl logs web -f)"],
     ["kubectl describe pod web", "Bash(kubectl describe pod web)"], ["xattr -l app", "Bash(xattr -l app)"],
     ["git tag v1.0", "Bash(git tag v1.0)"], ["git remote show origin", "Bash(git remote show origin)"], ["git pull origin main", "Bash(git pull origin main)"],
+    ["git remote -v", "Bash(git remote -v)"], ["git remote get-url origin", "Bash(git remote get-url origin)"],
+    ["git reflog", "Bash(git reflog)"], ["git worktree list", "Bash(git worktree list)"],
+    ["rg foo src", "Bash(rg foo src)"], ["grep -n foo src/app.ts", "Bash(grep -n foo src/app.ts)"],
   ])("keeps the safe workflow %s one click as %s", (command, pattern) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true });
     expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
@@ -714,6 +719,7 @@ describe("host shell-rule suggestions", () => {
   it.each([
     "Bash(npm test *)", "Bash(npm run build *)", "Bash(bun test *)", "Bash(yarn run build *)", "Bash(git fetch *)", "Bash(git fetch origin *)",
     "Bash(kubectl get *)", "Bash(kubectl describe *)", "Bash(kubectl logs *)", "Bash(kubectl get pods *)",
+    "Bash(rg *)", "Bash(grep *)", "Bash(grep -n *)", "Bash(rg foo *)",
   ])(
     "refuses the former catalog wildcard %s at the store", (pattern) => {
       expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/wildcard allowlist/);
@@ -809,4 +815,105 @@ it("keeps conversation grants inspectable and revocable while Store B is corrupt
   await revokeApprovalByKey(rows[0].key);
   expect(listSessionApprovals()).toEqual([]);
   expect(readFileSync(path, "utf8")).toBe("{broken");
+});
+
+// Round 5 (owner decision 2026-10-23): the floor covers what a recursive or
+// symlink-following search reads, browser and /proc secret stores, and git
+// object paths.
+describe("sensitive reads through searches, browser stores, /proc and git objects", () => {
+  let home: string;
+  let clean: string;
+  beforeEach(() => {
+    home = join(dir, "home");
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    writeFileSync(join(home, ".ssh", "id_ed25519"), "key");
+    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    // A project link that points at the SSH directory.
+    mkdirSync(join(project, "src"), { recursive: true });
+    symlinkSync(join(home, ".ssh"), join(project, "keys"));
+    clean = join(dir, "clean");
+    mkdirSync(join(clean, "src"), { recursive: true });
+    writeFileSync(join(clean, "src", "app.ts"), "export {};");
+  });
+
+  const floored = (command: string, cwd: string) => {
+    expect(shellSensitivePathSignal(command, cwd)).not.toBeNull();
+    expect(buildShellRuleApproval(command, cwd, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  };
+
+  it.each([
+    "grep -r BEGIN ~", "grep -rn BEGIN /", "grep --recursive BEGIN ~", "grep -d recurse BEGIN ~", "grep -r BEGIN ..",
+    "rg -uuu BEGIN ~", "rg --hidden BEGIN ~", "rg BEGIN /", "rg -e BEGIN ~ src",
+    "find ~ -name id_ed25519", "find / -name id_rsa", "find ~/.config -type f", "find .. -name config",
+  ])("floors a recursive search rooted above a sensitive directory: %s", (command) => {
+    floored(command, project);
+  });
+
+  it.each([
+    "grep -R BEGIN .", "grep --dereference-recursive BEGIN .", "grep -R BEGIN keys",
+    "rg -L BEGIN .", "rg --follow BEGIN", "rg -L BEGIN",
+    "find -L . -name id_ed25519", "find . -follow -name id_ed25519", "find -L . -type f",
+  ])("floors a symlink-following search that reaches a sensitive path through a project link: %s", (command) => {
+    floored(command, project);
+  });
+
+  it.each([
+    "grep -r BEGIN src", "grep -R BEGIN .", "rg BEGIN .", "rg -L BEGIN src", "rg --hidden BEGIN", "find . -name app.ts",
+    "find -L . -type f", "grep -rn foo src/app.ts",
+  ])("leaves the ordinary project search %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, clean)).toBeNull();
+  });
+
+  it("does not let catalog find cover a search the floor stops", () => {
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find ~ -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
+  });
+
+  it.each([
+    "cat /proc/self/environ", "cat /proc/1234/environ", "xxd /proc/self/mem", "ls /proc/self/fd/3",
+    "cat /proc/self/task/12/environ", "cat /proc/self/map_files/1-2",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Cookies\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Web Data\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Local State\"",
+    "cat \"$HOME/Library/Application Support/Microsoft Edge/Default/Cookies\"",
+    "cat \"$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default/Login Data\"",
+    "cat \"$HOME/Library/Application Support/Arc/User Data/Default/Cookies\"",
+    "cat ~/.config/chromium/Default/Cookies", "cat \"$HOME/.config/google-chrome/Local State\"",
+    "cat \"$HOME/.config/BraveSoftware/Brave-Browser/Default/Web Data\"",
+    "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/logins.json\"",
+    "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/key4.db\"",
+    "cat ~/.mozilla/firefox/abc.default/cookies.sqlite", "cat ~/.mozilla/firefox/abc.default/key4.db",
+  ])("floors the secret store read %s", (command) => {
+    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
+  });
+
+  it.each(["cat /proc/self/cmdline", "cat /proc/self/status", "cat ~/.mozilla/firefox/profiles.ini", "cat \"$HOME/Library/Application Support/Code/User/settings.json\""])(
+    "leaves the non-secret read %s alone", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    },
+  );
+
+  it.each([
+    ["git show HEAD:.env", "Bash(git show *)"], ["git show :.env", "Bash(git show *)"],
+    ["git show origin/main:config/.env", "Bash(git show *)"], ["git cat-file -p HEAD:.env", null],
+    ["git log -p -- .env", "Bash(git log *)"], ["git diff HEAD -- .env", "Bash(git diff *)"],
+    ["git blame -- .env", "Bash(git blame *)"], ["git show HEAD:id_rsa", "Bash(git show *)"],
+  ])("floors the git object path in %s like a direct read", (command, catalog) => {
+    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, sessionAllowed: false });
+    if (catalog) expect(shellRuleCoversCommand(catalog, "allow", command, project)).toBe(false);
+  });
+
+  it.each(["git show HEAD:src/app.ts", "git log -p -- src", "git diff HEAD -- src/app.ts"])("leaves the git read %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, project)).toBeNull();
+  });
+
+  it.each(["rg --hostname-bin=./evil.sh foo src", "rg --hostname-bin ./evil.sh foo src", "rg --pre ./evil.sh foo src"])(
+    "offers no rule and matches none for the command-running %s", (command) => {
+      expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null });
+      expect(shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toBe(false);
+    },
+  );
 });

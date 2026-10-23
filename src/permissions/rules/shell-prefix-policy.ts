@@ -540,6 +540,8 @@ export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellO
     case "ssh": case "scp": case "sftp": effect = sshFamilyEffect(program, args); break;
     case "rg":
       if (args.some((arg) => arg !== undefined && /^--pre(?:-glob)?(?:=|$)/.test(arg))) effect = exec("rg --pre runs a command");
+      // `--hostname-bin` runs a program to learn the hostname for hyperlinks.
+      else if (args.some((arg) => arg !== undefined && /^--hostname-bin(?:=|$)/.test(arg))) effect = exec("rg --hostname-bin runs a command");
       break;
     case "less": case "more": case "most":
       if (args.some((arg) => arg !== undefined && arg.startsWith("+") && /[!|]/.test(arg))) effect = exec(`${program} + runs a shell command`);

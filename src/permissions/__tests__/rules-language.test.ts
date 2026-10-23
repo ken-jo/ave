@@ -259,7 +259,7 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
 
 describe("wildcard allowlist (owner decision 2026-10-23)", () => {
   it.each([
-    [["ls"]], [["ls", "-la"]], [["cat"]], [["rg"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
+    [["ls"]], [["ls", "-la"]], [["cat"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
     [["git", "branch", "--list"]], [["docker", "ps"]],
   ])("allows the catalog wildcard %j", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBeNull();
@@ -269,7 +269,7 @@ describe("wildcard allowlist (owner decision 2026-10-23)", () => {
     [["make"]], [["make", "build"]], [["cargo", "test"]], [["git", "branch"]], [["git", "push"]], [["git", "switch"]],
     [["npm", "run"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
     [["git", "fetch"]], [["git", "fetch", "origin"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
-    [["kubectl", "apply"]], [["kubectl", "get"]], [["kubectl", "logs"]], [["kubectl", "describe"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
+    [["rg"]], [["grep"]], [["grep", "-n"]], [["kubectl", "apply"]], [["kubectl", "get"]], [["kubectl", "logs"]], [["kubectl", "describe"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
   ])("refuses the wildcard %j outside the catalog", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
   });
@@ -290,7 +290,8 @@ describe("wildcard allowlist (owner decision 2026-10-23)", () => {
 
   it.each([
     [["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]],
-    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["kubectl", "get", "pods", "-n", "web"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
+    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["kubectl", "get", "pods", "-n", "web"]],
+    [["rg", "foo", "src"]], [["grep", "-n", "foo", "src/app.ts"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
   ])("offers no wildcard for %j", (argv) => {
     expect(suggestShellPrefix(argv)).toBeNull();
   });
@@ -678,6 +679,8 @@ describe("security review: code the matcher cannot read is hidden from deny and 
     "sed -n '1e rm x' f",
     "sed 's/x/rm y/e' f",
     "rg --pre=rm x",
+    "rg --hostname-bin=rm x",
+    "rg --hostname-bin rm x",
     "tar -tf a.tar --to-command=rm",
     "tar -tf a.tar --use-compress-program=rm",
     "tar -tIrm -f a.tar",
@@ -732,6 +735,8 @@ describe("security review: an allowed program's code-exec or write option asks",
     ["Bash(sed *)", "sed -i.bak s/a/b/ f"],
     ["Bash(rg *)", "rg --pre=rm x"],
     ["Bash(rg *)", "rg --pre-glob '*' --pre rm x"],
+    ["Bash(rg *)", "rg --hostname-bin=./evil.sh x"],
+    ["Bash(rg *)", "rg --hostname-bin ./evil.sh x"],
     ["Bash(tar -tf *)", "tar -tf a.tar --to-command=rm"],
     ["Bash(tar -tf *)", "tar -tf a.tar --use-compress-program=rm"],
     ["Bash(tar -tf *)", "tar -tf a.tar -I rm"],

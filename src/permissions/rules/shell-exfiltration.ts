@@ -33,9 +33,9 @@
  * the rule matcher never allows it, and `PermissionManager.checkDetailed`
  * forces a per-call ask in every mode (the floor).
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   staticShellWord,
   type ShellCommand,
@@ -51,6 +51,7 @@ import {
   caseFoldForMatch,
   createSensitivePathMatcher,
   foldCanonicalPathSeparators,
+  sensitiveLocationUnder,
 } from "../sensitive-paths.js";
 import {
   SHELL_PREFIX_POLICY,
@@ -849,6 +850,134 @@ function scanRedirectTarget(target: ShellWord, state: ScanState): void {
   checkWord(target, state);
 }
 
+/** Entries a symlink-following search may inspect before it is refused as too large to rule out. */
+const SYMLINK_SCAN_ENTRY_LIMIT = 5000;
+
+/** What a content search walks: whether it recurses, follows symlinks, and the indexes of its root words. */
+function searchShape(argv: readonly (string | undefined)[]): { recursive: boolean; follow: boolean; roots: number[] } | null {
+  const name = program(argv[0])?.toLowerCase();
+  if (name === "find") {
+    let index = 1;
+    let follow = false;
+    // Leading `-H`/`-L`/`-P`, `-D <flags>`, `-O<level>`.
+    while (index < argv.length && argv[index] !== undefined && /^-(?:[HLP]+|D|O\d*)$/.test(argv[index]!)) {
+      if (argv[index]!.includes("L")) follow = true;
+      index += argv[index] === "-D" ? 2 : 1;
+    }
+    const roots: number[] = [];
+    while (index < argv.length && !(argv[index] !== undefined && /^[-(!,]/.test(argv[index]!))) roots.push(index++);
+    if (argv.slice(index).some((word) => word === undefined || word === "-follow")) follow = true;
+    return { recursive: true, follow, roots };
+  }
+  const grep = name === "grep" || name === "egrep" || name === "fgrep" || name === "ggrep";
+  if (!grep && name !== "rg") return null;
+  let recursive = name === "rg";
+  let follow = false;
+  let patternGiven = false;
+  const operands: number[] = [];
+  let delimited = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const word = argv[index];
+    if (word === undefined) { operands.push(index); continue; }
+    if (!delimited && word === "--") { delimited = true; continue; }
+    if (delimited || !word.startsWith("-") || word === "-") { operands.push(index); continue; }
+    if (word.startsWith("--")) {
+      const option = word.slice(2).split("=")[0]!.toLowerCase();
+      if (option === "regexp" || option === "file") patternGiven = true;
+      if (grep && (option === "recursive" || option === "dereference-recursive" || word === "--directories=recurse")) recursive = true;
+      if ((grep && option === "dereference-recursive") || (!grep && option === "follow")) follow = true;
+      continue;
+    }
+    const cluster = word.slice(1);
+    if (/[ef]/.test(cluster)) patternGiven = true;
+    if (grep && /[rR]/.test(cluster)) recursive = true;
+    if (grep && cluster === "d" && argv[index + 1] === "recurse") recursive = true;
+    if ((grep && cluster.includes("R")) || (!grep && cluster.includes("L"))) follow = true;
+  }
+  // Every operand but the pattern is a root; an option value counted as a
+  // root only widens the check.
+  return { recursive, follow, roots: patternGiven ? operands : operands.slice(1) };
+}
+
+/** A symlink below `root` that resolves into a secret-holding location, or the reason the walk could not rule one out. */
+function sensitiveSymlinkUnder(root: string, state: ScanState): string | null {
+  const pending = [root];
+  let entries = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let children: import("node:fs").Dirent[];
+    try { children = readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const child of children) {
+      entries += 1;
+      if (entries > SYMLINK_SCAN_ENTRY_LIMIT) return `symlink-following search of ${root} too large to rule out a link to a sensitive path`;
+      const path = join(directory, child.name);
+      if (child.isSymbolicLink()) {
+        let target: string;
+        try { target = caseFoldForMatch(canonicalizePathForMatch(realpathSync(path))); } catch { continue; }
+        const hit = state.match(target) ?? sensitiveLocationUnder(target);
+        if (hit) return `symlink ${path} reaches ${hit}`;
+        // A link to a directory is walked through its target by the search.
+        try { if (statSync(path).isDirectory()) pending.push(path); } catch { /* dangling link */ }
+      } else if (child.isDirectory()) {
+        pending.push(path);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A recursive `grep`/`rg`/`find` reads everything below its roots, so the
+ * floor covers a root at or above a secret-holding directory (`grep -r x ~`,
+ * `rg --hidden x /`), and for a symlink-following search (`grep -R`,
+ * `rg -L`, `find -L`) any link below the root that resolves into one.
+ */
+function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
+  if (state.sensitive) return;
+  const argv = commandArgv(cmd);
+  const shape = searchShape(argv);
+  if (!shape?.recursive) return;
+  const roots: string[] = [];
+  for (const index of shape.roots) {
+    const glob = wordGlob(cmd.words[index]!);
+    if (glob === null || glob.includes(DYNAMIC_SEGMENT)) {
+      state.ordinaryAsk ??= "recursive search root is not static";
+      return;
+    }
+    // A wildcard root stands for its static directory prefix.
+    const segments = glob.split(/[\\/]/);
+    const firstWild = segments.findIndex(hasWildcard);
+    const literal = unescapeGlob((firstWild < 0 ? segments : segments.slice(0, firstWild)).join("/")) || (glob.startsWith("/") ? "/" : ".");
+    roots.push(literal);
+  }
+  if (roots.length === 0) roots.push(".");
+  for (const root of roots) {
+    // Without a working directory a relative root names no location; the
+    // decision path always supplies one.
+    if (!isAbsolute(root) && state.cwd === undefined) continue;
+    const absolute = isAbsolute(root) ? root : resolve(state.cwd!, root);
+    const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
+    const above = sensitiveLocationUnder(canonical);
+    if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
+    if (shape.follow) {
+      const link = sensitiveSymlinkUnder(absolute, state);
+      if (link) { state.sensitive = link; return; }
+    }
+  }
+}
+
+/** `git show HEAD:.env`, `git cat-file -p :.env`: the path inside a `<rev>:<path>` object name. */
+function scanGitObjectPaths(cmd: ShellCommand, state: ScanState): void {
+  if (state.sensitive || program(staticShellWord(cmd.words[0]!))?.toLowerCase() !== "git") return;
+  for (const word of cmd.words.slice(1)) {
+    const text = staticShellWord(word);
+    if (text === undefined || text.startsWith("-")) continue;
+    const object = /^[^:]*:(?!\/\/)(.+)$/.exec(text);
+    if (object) checkRawText(object[1]!, state);
+    if (state.sensitive) return;
+  }
+}
+
 function scanStatement(statement: ShellStatement, state: ScanState): void {
   switch (statement.kind) {
     case "command": {
@@ -863,6 +992,10 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       }
       if (statement.words.length > 0 && isNetworkProgram(commandArgv(statement))) state.network = true;
       for (const word of statement.words) checkWord(word, state);
+      if (statement.words.length > 0) {
+        scanGitObjectPaths(statement, state);
+        scanRecursiveSearch(statement, state);
+      }
       for (const assignment of statement.assignments) {
         checkWord(assignment.value, state);
         for (const element of assignment.elements ?? []) checkWord(element, state);

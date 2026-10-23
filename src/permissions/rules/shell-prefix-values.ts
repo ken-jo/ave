@@ -58,10 +58,18 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
  * - package-script runners (`npm test`, `npm run <script>`): a script body or
  *   test file is agent-editable code, the reason interpreters are refused;
  * - network clients and fetchers (`git fetch`): egress to any URL;
+ * - content searchers (`grep`, `rg`, round 5): their exec, decompression,
+ *   config and symlink options are too many to bound (`rg --pre`,
+ *   `--hostname-bin`, `-z`, `-L`, `-uuu`, `RIPGREP_CONFIG_PATH`);
  * - cluster clients (`kubectl`, round 4): its flag grammar re-targets the
  *   cluster, reads Secrets through manifests or writes files in too many
  *   spellings for a denylist to bound.
  * Those get exact rules only.
+ *
+ * Accepted limit: the `git` entries honour the repository's `.git/config`
+ * (`core.fsmonitor`, textconv drivers, `core.pager`). A config planted by an
+ * earlier write is the stated limit in `reviewer/risk-classifier.ts`; the
+ * command-line forms (`git -c`, `--ext-diff`, `--textconv`) never match.
  *
  * To add an entry, confirm that no argument a trailing `*` can append reaches
  * a destructive, irreversible or unreusable form (`isDestructiveShellArgv`,
@@ -71,7 +79,7 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
  */
 export const WILDCARD_PREFIX_CATALOG: ReadonlyMap<string, number> = new Map([
   // Read-only file and text inspection.
-  ["ls", 1], ["cat", 1], ["head", 1], ["tail", 1], ["wc", 1], ["grep", 1], ["rg", 1], ["find", 1],
+  ["ls", 1], ["cat", 1], ["head", 1], ["tail", 1], ["wc", 1], ["find", 1],
   ["pwd", 1], ["du", 1], ["df", 1], ["which", 1], ["stat", 1],
   // Repository inspection.
   ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2],
@@ -407,17 +415,23 @@ function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean
         return operands[0] === undefined ? argv.length > at + 1 && dynamic : operands[0] === "drop" || operands[0] === "clear";
       case "gc":
         return dynamic || hasLongFlag(options, ["prune"]);
+      // Option-only forms (`git remote -v`, `git reflog`) read; a dynamic
+      // subcommand counts as the worst case.
       case "reflog":
-        return operands[0] === undefined ? argv.length > at + 1 : operands[0] === "expire" || operands[0] === "delete";
+        if (operands.length === 0) return dynamic;
+        return operands[0] === undefined || operands[0] === "expire" || operands[0] === "delete";
       case "worktree":
-        if (operands[0] === undefined) return argv.length > at + 1;
-        return operands[0] === "prune" || (operands[0] === "remove" && (dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"])));
+        if (operands.length === 0) return dynamic;
+        return operands[0] === undefined || operands[0] === "prune"
+          || (operands[0] === "remove" && (dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"])));
       case "prune":
         return true;
       case "tag":
         return dynamic || hasShortFlag(options, "d") || hasLongFlag(options, ["delete"]);
       case "remote":
-        return operands[0] === undefined ? argv.length > at + 1 : operands[0] === "remove" || operands[0] === "rm";
+        // Only the mutating subcommands; `-v`, `show`, `get-url` read.
+        if (operands.length === 0) return dynamic;
+        return operands[0] === undefined || ["remove", "rm", "rename", "set-url", "prune"].includes(operands[0]);
       case "pull":
         return dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"]);
       case "update-ref":
