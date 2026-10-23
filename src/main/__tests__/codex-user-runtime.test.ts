@@ -19,14 +19,25 @@ import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNative
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-vi.mock("node:child_process", async (importOriginal) =>
-  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+const aclProbeMode = vi.hoisted(() => ({ real: false }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { fakeFixtureAcl, maskFixtureAncestorAcl } = await import("../../__tests__/support/native-executable.js");
+  const fast = fakeFixtureAcl(actual);
+  const real = maskFixtureAncestorAcl(actual);
+  return {
+    ...actual,
+    execFile: ((...args: Parameters<typeof actual.execFile>) =>
+      (aclProbeMode.real ? real : fast).execFile(...args)) as typeof actual.execFile,
+  };
+});
 
 const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
 
 const roots: string[] = [];
 afterEach(async () => {
+  aclProbeMode.real = false;
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -154,7 +165,8 @@ describe("codex executable candidates", () => {
 });
 
 describe("native executable resolution", () => {
-  it("accepts a native binary and reports a missing path as absent", async () => {
+  it("accepts a native binary and reports a missing path as absent (real ACL probes, end to end)", async () => {
+    aclProbeMode.real = true;
     const root = tempRoot();
     const native = writeNative(join(root, NATIVE_NAME));
     await expect(resolveCodexNativeExecutable(native)).resolves.toBe(native);
@@ -293,7 +305,8 @@ describe("CodexUserRuntimeLocator", () => {
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
   });
 
-  it("finds the CLI on PATH, qualifies it, and probes with the isolated environment", async () => {
+  it("finds the CLI on PATH, qualifies it, and probes with the isolated environment (real ACL probes, end to end)", async () => {
+    aclProbeMode.real = true;
     const calls: string[][] = [];
     const { root, locator, dirs } = locatorHarness({ calls });
     const native = writeNative(join(root, "path-bin", NATIVE_NAME));
