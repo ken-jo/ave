@@ -150,7 +150,9 @@ export function createElectronVitestInvocation(
       cwd,
       env: {
         ...env,
-        NODE_OPTIONS: guardedNodeOptions(env.NODE_OPTIONS),
+        // Electron-as-Node processes a test starts itself (process.execPath)
+        // load the initializer too, so their console children stay hidden.
+        NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions(env.NODE_OPTIONS), normalizerPath),
         ELECTRON_RUN_AS_NODE: "1",
         AVE_TEST_NODE_EXEC_PATH: nodeExecPath,
       },
