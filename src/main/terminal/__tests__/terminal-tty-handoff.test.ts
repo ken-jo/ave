@@ -11,6 +11,7 @@ import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
+import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 import {
   getDefaultSensitiveWriteDenyPaths,
@@ -165,7 +166,7 @@ const lines = (text: string, line: string) =>
 
 interface Shell {
   output: () => string;
-  type: (input: string, settleMs?: number) => Promise<void>;
+  type: (input: string, complete?: number | ((output: string) => boolean)) => Promise<void>;
   ownTty: string;
   close: () => void;
 }
@@ -197,12 +198,14 @@ async function startShell(grantOwnTty: boolean): Promise<Shell> {
   }
   await handoff.deliver(renderHandoffScript(argv, childEnv));
   handoff.dispose();
-  await sleep(1000);
+  await waitForTerminal(() => /[%#] $/.test(stripAnsi(out)));
   return {
     output: () => stripAnsi(out),
-    type: async (input, settleMs = 500) => {
+    type: async (input, complete = 500) => {
+      const start = out.length;
       pty.write(input);
-      await sleep(settleMs);
+      if (typeof complete === "number") await sleep(complete);
+      else await waitForTerminal(() => complete(stripAnsi(out.slice(start))));
     },
     ownTty,
     close: () => {
@@ -222,13 +225,15 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       if (!canRun) return;
       const shell = await startShell(true);
       try {
-        await shell.type("echo marker\r");
-        await shell.type("stty -a >/dev/null && echo STTY_OK\r");
+        // Keep this real: terminal echo, tty access and job control require
+        // the confined shell and its actual foreground process group.
+        await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
+        await shell.type("stty -a >/dev/null && echo STTY_OK\r", (out) => lines(out, "STTY_OK") === 1);
         await shell.type("sleep 30\r");
-        await shell.type("\x1a", 800);
+        await shell.type("\x1a", (out) => /suspended/.test(out));
         await shell.type("fg\r", 800);
-        await shell.type("\x03");
-        await shell.type("echo AFTER_FG\r");
+        await shell.type("\x03", (out) => /[%#] $/.test(out));
+        await shell.type("echo AFTER_FG\r", (out) => lines(out, "AFTER_FG") === 1);
         const out = shell.output();
         expect(out.match(/echo marker/g)?.length, out).toBe(1);
         expect(lines(out, "marker"), out).toBe(1);
@@ -253,7 +258,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       try {
         const otherTty = ownPtySlavePath(other);
         expect(otherTty).not.toBe(shell.ownTty);
-        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, 800);
+        await shell.type(`stty -echo <${otherTty} 2>/dev/null && echo OTHER_SET || echo OTHER_DENIED\r`, (out) => lines(out, "OTHER_DENIED") === 1);
         const out = shell.output();
         expect(lines(out, "OTHER_DENIED"), out).toBe(1);
         expect(lines(out, "OTHER_SET"), out).toBe(0);
@@ -271,7 +276,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       if (!canRun) return;
       const shell = await startShell(false);
       try {
-        await shell.type("echo marker\r");
+        await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
         const out = shell.output();
         expect(out.match(/echo marker/g)?.length, out).toBe(2);
         expect(out).toMatch(/can't set tty pgrp/);
