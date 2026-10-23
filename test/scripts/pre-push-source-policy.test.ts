@@ -8,7 +8,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, normalize, resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -336,7 +336,7 @@ describe("pre-push fast source tier", () => {
     const barrel = "src/contract/app-contract.ts";
     const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|vi\.mock\(\s*)["'](\.[^"']+)["']/g;
     const resolveModule = (from: string, spec: string) => {
-      const base = normalize(join(dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
+      const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
       return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
     };
     // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.

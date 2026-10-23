@@ -23,6 +23,26 @@ describe("administrative policy absence", () => {
     expect(await isAdminPolicyFileAbsent("/synthetic/policy.json", readFailure("ENOENT"), inspectEntry)).toBe(false);
   });
 
+  // Windows reports a path through a regular file as ENOENT, not ENOTDIR.
+  it.each([
+    ["the parent", ["/synthetic/admin/policy.json"]],
+    ["a grandparent", ["/synthetic/admin/nested/policy.json", "/synthetic/admin/nested"]],
+  ])("keeps a missing entry under a regular file at %s unreadable", async (_, missing) => {
+    const inspectEntry = vi.fn(async (path: string) => {
+      if (missing.includes(path)) throw readFailure("ENOENT");
+      return { isFile: () => path === "/synthetic/admin" };
+    });
+    expect(await isAdminPolicyFileAbsent(missing[0]!, readFailure("ENOENT"), inspectEntry)).toBe(false);
+  });
+
+  it("confirms a missing entry under an existing directory", async () => {
+    const inspectEntry = vi.fn(async (path: string) => {
+      if (path === "/synthetic/admin/policy.json") throw readFailure("ENOENT");
+      return { isFile: () => false };
+    });
+    expect(await isAdminPolicyFileAbsent("/synthetic/admin/policy.json", readFailure("ENOENT"), inspectEntry)).toBe(true);
+  });
+
   it.each(["ENOTDIR", "EACCES", "EPERM"])("keeps an inconclusive %s entry probe unreadable", async (code) => {
     const inspectEntry = vi.fn(async () => { throw readFailure(code); });
     expect(await isAdminPolicyFileAbsent("/synthetic/policy.json", readFailure("ENOENT"), inspectEntry)).toBe(false);

@@ -30,9 +30,12 @@ import * as managedChildProcesses from "../managed-child-processes.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { createTracer, type TraceEntry } from "../../observability/conversation-trace.js";
-import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
+
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const imageRuntime = vi.hoisted(() => ({ directory: undefined as string | undefined }));
 vi.mock("../main-paths.js", async (original) => {
@@ -67,7 +70,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));
@@ -221,7 +224,7 @@ describe("native RPC timeout context", () => {
           ? harness.runtime.verifyIsolation()
           : harness.runtime.startTurn({ text: "private request" })
         ).catch((error: unknown) => error);
-        await vi.waitFor(() => expect(methodMessages(harness, operation)).toHaveLength(1));
+        await vi.waitFor(() => expect(methodMessages(harness, operation)).toHaveLength(1), NATIVE_LOCATION_WAIT);
         await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
         const failure = await pending;
         expect(failure).toMatchObject({ providerError: {
@@ -246,7 +249,7 @@ describe("native RPC timeout context", () => {
       });
       const settled = vi.fn();
       const pending = harness.runtime.startTurn({ text: "continue normally" }).then((result) => { settled(); return result; });
-      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1));
+      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
       await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS * 2);
       expect(settled).not.toHaveBeenCalled();
       expect(harness.child.kill).not.toHaveBeenCalled();
@@ -280,7 +283,7 @@ describe("native RPC timeout context", () => {
       const tracer = createTracer("rpc-timeout", { enabled: true, traceDir: join(harness.runtimeRoot, "traces") });
       loop.setTracer(tracer);
       const pending = loop.runTurn("private-user-input", undefined, undefined, { inputOrigin: "user-keyboard" });
-      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1));
+      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
       await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
       await expect(pending).resolves.toMatchObject({ stopReason: "stream-error" });
       const raw = readFileSync(tracer.filePath!, "utf8");
@@ -793,7 +796,7 @@ describe("CodexConversationRuntime", () => {
       text: "Inspect this image.",
       attachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
     })).resolves.toMatchObject({ status: "completed" });
-    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false));
+    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
   });
 
   it("frames governed image results with original user pixels in order and cleans staged files", async () => {
@@ -863,7 +866,7 @@ describe("CodexConversationRuntime", () => {
       stagedPixels.push([...decoded.data]);
     }
     expect(stagedPixels).toEqual([[0, 255, 0, 255], [255, 0, 0, 255], [0, 0, 255, 255]]);
-    await vi.waitFor(() => expect(stagedPaths.every((path) => !existsSync(path))).toBe(true));
+    await vi.waitFor(() => expect(stagedPaths.every((path) => !existsSync(path))).toBe(true), NATIVE_LOCATION_WAIT);
     expect(readFileSync(join(projectDir, "red.png"))).toEqual(Buffer.from(red, "base64"));
     expect(readFileSync(join(projectDir, "blue.png"))).toEqual(Buffer.from(blue, "base64"));
   });
@@ -926,7 +929,7 @@ describe("CodexConversationRuntime", () => {
     });
     await expect(harness.runtime.startTurn(payload)).resolves.toMatchObject({ status: "completed" });
     expect(harness.spawnCalls).toHaveLength(1);
-    await vi.waitFor(() => expect(stagedPaths.every((path) => !existsSync(path))).toBe(true));
+    await vi.waitFor(() => expect(stagedPaths.every((path) => !existsSync(path))).toBe(true), NATIVE_LOCATION_WAIT);
   });
 
   it("removes a staged localImage when turn/start fails", async () => {
@@ -954,7 +957,7 @@ describe("CodexConversationRuntime", () => {
       text: "Fail after staging.",
       attachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
     })).rejects.toMatchObject({ code: "codex-operation-failed" });
-    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false));
+    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
   });
 
   it("removes a staged localImage when an active turn is interrupted", async () => {
@@ -987,10 +990,10 @@ describe("CodexConversationRuntime", () => {
       text: "Interrupt after staging.",
       attachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
     });
-    await vi.waitFor(() => expect(stagedPath).toBeTruthy());
+    await vi.waitFor(() => expect(stagedPath).toBeTruthy(), NATIVE_LOCATION_WAIT);
     await harness.runtime.interrupt();
     await expect(pending).resolves.toMatchObject({ status: "interrupted" });
-    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false));
+    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
   });
 
   for (const [terminalEvent, closeTransport] of [
@@ -1041,7 +1044,7 @@ describe("CodexConversationRuntime", () => {
       releaseWrite();
 
       await expect(pending).rejects.toMatchObject({ code: "codex-operation-failed" });
-      await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false));
+      await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
       expect(methodMessages(harness, "turn/start")).toHaveLength(0);
     });
   }
@@ -1665,7 +1668,7 @@ describe("CodexConversationRuntime", () => {
     if (!turnStart) throw new Error("missing-turn-start-request");
     reply(harness.child, requestId(turnStart), { turn: { id: "turn-1", status: "inProgress" } });
 
-    await vi.waitFor(() => expect(methodMessages(harness, "turn/interrupt")).toHaveLength(1));
+    await vi.waitFor(() => expect(methodMessages(harness, "turn/interrupt")).toHaveLength(1), NATIVE_LOCATION_WAIT);
     await interrupt;
     await expect(turn).resolves.toEqual({
       threadId: "thread-1",
@@ -2009,7 +2012,7 @@ describe("CodexConversationRuntime", () => {
     await vi.waitFor(() => expect(harness.messages).toContainEqual({
       id: "historic-tool-rpc",
       error: { code: -32602, message: "Invalid dynamic tool request" },
-    }));
+    }), NATIVE_LOCATION_WAIT);
     notify(harness.child, "turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-live", status: "completed" },
@@ -2199,7 +2202,7 @@ describe("CodexConversationRuntime", () => {
       abortSignal: abortController.signal,
     });
 
-    await vi.waitFor(() => expect(initializeRequest).toBeDefined());
+    await vi.waitFor(() => expect(initializeRequest).toBeDefined(), NATIVE_LOCATION_WAIT);
     abortController.abort();
     if (!initializeRequest) throw new Error("missing-initialize-request");
     reply(harness.child, requestId(initializeRequest), {});
@@ -2224,7 +2227,7 @@ describe("CodexConversationRuntime", () => {
       abortSignal: abortController.signal,
     });
 
-    await vi.waitFor(() => expect(threadStartRequest).toBeDefined());
+    await vi.waitFor(() => expect(threadStartRequest).toBeDefined(), NATIVE_LOCATION_WAIT);
     abortController.abort();
     if (!threadStartRequest) throw new Error("missing-thread-start-request");
     reply(harness.child, requestId(threadStartRequest), { thread: { id: "thread-1" } });
