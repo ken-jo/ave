@@ -26,7 +26,6 @@ import { LlmReviewerProviderAdapter, wireReviewerAgent } from "./reviewer-wiring
 import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
-import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
 import type { ParentAdjudicationTarget } from "../../permissions/parent-adjudicator.js";
 import {
@@ -281,9 +280,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       selectedModelCacheScope,
       networkFetch: singleHopNetworkFetch,
       audit: bootAuditLogger,
-      resolveRootSessionId: createRootSessionResolver(
-        (sessionId) => ctx.subAgentRunnerRef?.fn?.resolveOriginSessionId(sessionId),
-      ),
+      resolveRootSessionId: ctx.resolveRootSessionId,
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;

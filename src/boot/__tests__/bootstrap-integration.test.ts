@@ -606,6 +606,7 @@ vi.mock("../../permissions/permission-settings-store.js", async () => {
 });
 vi.mock("../../permissions/user-approval-store.js", () => ({
   migrateCanonicalization: vi.fn(async () => {}),
+  setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({
   bindManifestIntegrityAudit: vi.fn(),

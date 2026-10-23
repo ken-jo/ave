@@ -6,14 +6,17 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "ave-rules-home-"));
 process.env.AVE_HOME = TEST_HOME;
 
 import { PermissionManager } from "../permission-manager.js";
 import { readPermissionsFile, updatePermissionsFile } from "../permissions-store.js";
-import { PermissionRulesFileCorruptError } from "../rules/rule-files.js";
+import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rules/rule-files.js";
+import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
+import { shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -21,9 +24,13 @@ import {
   lookupApproval,
   readApprovals,
   recordApproval,
+  listApprovals,
+  listSessionApprovals,
+  revokeApprovalByKey,
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 import { resolveUserApprovalVerdict } from "../../shared/permissions-events.js";
+import { canonicalStringify as canonicalJson } from "../../shared/canonical-json.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { classifyApprovalRuleVerdict } from "../../tools/pipeline/approval-memory-skip.js";
@@ -137,7 +144,7 @@ describe("decision path", () => {
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     const restarted = new PermissionManager(permissionsFile);
     await restarted.ensureProjectRulesLoaded(project);
     expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project }))
@@ -175,28 +182,28 @@ describe("decision path", () => {
 
   it("deny > ask > allow across user and project scopes; ask beats allow mode", async () => {
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(git push *)", action: "allow" }, { kind: "user" });
-    await pm.addRulePersist({ pattern: "Bash(git push --force *)", action: "deny" }, { kind: "project", projectCwd: project });
-    await pm.addRulePersist({ pattern: "Bash(git push origin main)", action: "ask" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(git log *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(git log --all *)", action: "deny" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(git log origin/main)", action: "ask" }, { kind: "project", projectCwd: project });
     await pm.ensureProjectRulesLoaded(project);
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push --force x"))).toMatchObject({ decision: "deny", layer: 1 });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin dev"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "allow", layer: 3 });
     pm.setMode("allow");
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git push origin main"))).toMatchObject({ decision: "ask", forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git push --force x"))).toMatchObject({ decision: "deny" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
     // A deny rule that cannot see inside `bash -c` makes the call ask, even in allow mode.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git push --force x'"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", forceModal: true });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     const location = projectRulesLocation(dir, project);
     expect(location.filePath.startsWith(join(dir, "permissions", "project-rules"))).toBe(true);
-    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test *)", action: "allow" }] });
-    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(npm test *)" }] });
+    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
+    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(npm test)" }] });
     // A sibling project does not inherit it.
     const sibling = join(dir, "sibling");
     mkdirSync(sibling);
@@ -204,7 +211,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling })).toMatchObject({ decision: "ask" });
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
-    await pm.removeRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.removeRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
   });
 
@@ -239,7 +246,7 @@ describe("decision path", () => {
     writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     mkdirSync(join(repo, "packages", "app"), { recursive: true });
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
@@ -259,7 +266,7 @@ describe("decision path", () => {
     mkdirSync(a);
     mkdirSync(b);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: a });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: a });
     const restarted = new PermissionManager(permissionsFile);
     for (const [cwd, decision] of [[a, "allow"], [b, "ask"]] as const) {
       await restarted.ensureProjectRulesLoaded(cwd);
@@ -316,7 +323,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask" });
     const location = projectRulesLocation(dir, project);
     mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
-    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test *)", action: "allow" }] }));
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] }));
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
     writeFileSync(location.filePath, "{ broken");
@@ -400,4 +407,543 @@ describe("shell verdict for the dock (no blanket shell → HIGH)", () => {
     expect(resolveUserApprovalVerdict({ toolCategory: "shell" })).toBe("high");
     expect(resolveUserApprovalVerdict({ toolCategory: "shell", reviewerVerdict: { level: "high" }, ruleVerdict: { level: "low" } })).toBe("high");
   });
+});
+
+
+describe("scoped rule management", () => {
+  it("lists unvisited projects and retains corrupt sibling errors", async () => {
+    const secondProject = join(dir, "second-project");
+    mkdirSync(secondProject);
+    const writer = new PermissionManager(permissionsFile);
+    await writer.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
+    await writer.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "project", projectCwd: project });
+    const corrupt = projectRulesLocation(dir, secondProject);
+    writeFileSync(corrupt.filePath, "{broken");
+    const fresh = new PermissionManager(permissionsFile);
+    const listed = await fresh.listScopedRules();
+    expect(listed.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pattern: "Bash(git status *)", scope: "user" }),
+      expect.objectContaining({ pattern: "Bash(ls *)", scope: "project", projectCwd: project }),
+    ]));
+    expect(listed.errors).toEqual([{ filePath: corrupt.filePath, errorCode: "rules-file-unavailable" }]);
+    const projectRow = listed.rules.find((rule) => rule.scope === "project")!;
+    expect(projectRow.storedFile).toBe(projectRulesLocation(dir, project).identity);
+    await fresh.removeRulePersist(projectRow, { kind: "project", projectCwd: project, storedFile: projectRow.storedFile! });
+    expect((await fresh.listScopedRules()).rules).toHaveLength(1);
+    expect(readFileSync(corrupt.filePath, "utf8")).toBe("{broken");
+  });
+
+  it("lists and revokes rules from a stale file by its stored identity without rewriting its root", async () => {
+    const elsewhere = join(dir, "moved-project");
+    mkdirSync(elsewhere);
+    // A file whose stored root no longer derives its own name (the project moved).
+    const stale = projectRulesLocation(dir, elsewhere);
+    mkdirSync(dirname(stale.filePath), { recursive: true });
+    writeFileSync(stale.filePath, JSON.stringify({
+      version: 1, projectRoot: project, updatedAt: "", rules: [{ pattern: "Bash(ls *)", action: "allow" }, { pattern: "Bash(pwd *)", action: "allow" }],
+    }));
+    const manager = new PermissionManager(permissionsFile);
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([{ filePath: stale.filePath, errorCode: "rules-file-unavailable" }]);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(ls *)")!;
+    expect(row).toMatchObject({ scope: "project", projectCwd: project, storedFile: stale.identity });
+    await manager.removeRulePersist(row, { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! });
+    const after = JSON.parse(readFileSync(stale.filePath, "utf8"));
+    expect(after.projectRoot).toBe(project);
+    expect(after.rules).toEqual([{ pattern: "Bash(pwd *)", action: "allow" }]);
+  });
+
+  it("preserves live user rules when a corrupt file prevents revoke", async () => {
+    const manager = new PermissionManager(permissionsFile);
+    await manager.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" });
+    writeFileSync(permissionsFile, "{broken");
+    await expect(manager.removeRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" })).rejects.toThrow(/corrupt/);
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("ls"))).toMatchObject({ decision: "allow" });
+  });
+});
+
+describe("conversation-scoped exact decisions", () => {
+  beforeEach(() => { __resetSessionStoreForTest(); rmSync(join(TEST_HOME, "permissions", "user-approvals.json"), { force: true }); });
+
+  it("matches only the named conversation and revokes without creating disk state", async () => {
+    const identity = captureApprovalWorkingDirectory(project).identity;
+    await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "conversation-a", workingDirectoryIdentity: identity, projectCwd: project });
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project, "conversation-a")).toMatchObject({ sessionId: "conversation-a" });
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project, "conversation-b")).toBeNull();
+    expect(await lookupApproval("bash", "{}", "builtin", undefined, undefined, project)).toBeNull();
+    const rows = await listApprovals();
+    expect(rows).toEqual([expect.objectContaining({ sessionId: "conversation-a", projectCwd: project, scope: "session" })]);
+    await revokeApprovalByKey(rows[0].key);
+    expect(await listApprovals()).toEqual([]);
+    await expect(readApprovals()).resolves.toEqual({ approvals: {} });
+  });
+
+  it("refuses a session approval that names no conversation", async () => {
+    await expect(recordApproval("browser_click", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null }))
+      .rejects.toThrow(/requires its conversation session/);
+    expect(listSessionApprovals()).toEqual([]);
+  });
+});
+
+// Owner decision 2026-10-23: every session allow (not only shell) belongs to
+// the root conversation, resolved by the one resolver the judge also uses.
+describe("non-shell session approvals are keyed by the root conversation", () => {
+  const ROOT_A = "11111111-1111-4111-8111-111111111111";
+  const ROOT_B = "22222222-2222-4222-8222-222222222222";
+  const CHILD_A = "sub-aa-33333333-3333-4333-8333-333333333333";
+  const GRANDCHILD_A = "sub-ab-44444444-4444-4444-8444-444444444444";
+  const CHILD_B = "sub-ba-55555555-5555-4555-8555-555555555555";
+  const origins: Record<string, string> = { [CHILD_A]: ROOT_A, [GRANDCHILD_A]: CHILD_A, [CHILD_B]: ROOT_B };
+  const tools = [
+    { tool: "browser_click", args: canonicalJson({ selector: "#submit", tabId: "tab-1" }) },
+    { tool: "terminal_run", args: canonicalJson({ command: "make build" }) },
+    { tool: "write_file", args: canonicalJson({ path: "/tmp/out.txt" }) },
+  ];
+  beforeEach(async () => {
+    __resetSessionStoreForTest();
+    rmSync(join(TEST_HOME, "permissions", "user-approvals.json"), { force: true });
+    const { setApprovalConversationRootResolver } = await import("../user-approval-store.js");
+    const { createRootSessionResolver } = await import("../root-session-resolver.js");
+    setApprovalConversationRootResolver(createRootSessionResolver((id) => origins[id]));
+  });
+  const record = (tool: string, args: string, sessionId: string) => recordApproval(tool, args, "builtin", {
+    scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId,
+  });
+
+  it.each(tools)("shares a parent's $tool allow with its sub-agents at any depth", async ({ tool, args }) => {
+    await record(tool, args, ROOT_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toMatchObject({ sessionId: ROOT_A });
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, GRANDCHILD_A)).toMatchObject({ sessionId: ROOT_A });
+  });
+
+  it.each(tools)("shares a sub-agent's $tool allow with its root conversation", async ({ tool, args }) => {
+    await record(tool, args, GRANDCHILD_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toMatchObject({ sessionId: ROOT_A });
+  });
+
+  it.each(tools)("never lets a $tool allow reach a different root conversation", async ({ tool, args }) => {
+    await record(tool, args, CHILD_A);
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_B)).toBeNull();
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_B)).toBeNull();
+    // No process-wide fallback: a lookup without a conversation never matches.
+    expect(await lookupApproval(tool, args, "builtin")).toBeNull();
+  });
+
+  it("clears every session approval on app restart, leaving no disk state", async () => {
+    for (const { tool, args } of tools) await record(tool, args, ROOT_A);
+    expect(listSessionApprovals()).toHaveLength(tools.length);
+    await expect(readApprovals()).resolves.toEqual({ approvals: {} });
+    // A restart loads the store module afresh: the in-memory map starts empty.
+    vi.resetModules();
+    const restarted = await import("../user-approval-store.js");
+    expect(restarted.listSessionApprovals()).toEqual([]);
+    for (const { tool, args } of tools) {
+      expect(await restarted.lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toBeNull();
+      expect(await restarted.lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toBeNull();
+    }
+  });
+});
+
+// Owner decision 2026-10-23: a stored allow wildcard outside the allowlist is
+// not migrated. It loads inert: listed with its reason, removable, never matched.
+describe("stored allow wildcards outside the allowlist", () => {
+  const writeStoreA = (rules: unknown[]) => writeFileSync(permissionsFile, JSON.stringify({ version: 1, mode: "default", updatedAt: "", rules }));
+
+  it("lists the user rule with its reason, never matches it, keeps it across writes and removes it in one step", async () => {
+    writeStoreA([{ pattern: "Bash(make *)", action: "allow" }, { pattern: "Bash(git status *)", action: "allow" }]);
+    const manager = new PermissionManager(permissionsFile);
+    await manager.loadRulesFromFile();
+    expect(manager.getRulesLoadError()).toBeUndefined();
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("make build"))).not.toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, shell("git status"))).toMatchObject({ decision: "allow", layer: 3 });
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([]);
+    expect(listed.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pattern: "Bash(make *)", scope: "user", invalidReason: "wildcard-not-allowlisted" }),
+    ]));
+    expect(listed.rules.find((rule) => rule.pattern === "Bash(git status *)")?.invalidReason).toBeUndefined();
+    // Another write keeps the inert rule as stored; it cannot add a new one.
+    await manager.addRulePersist({ pattern: "Bash(ls *)", action: "allow" }, { kind: "user" });
+    expect((await readPermissionsFile(permissionsFile))!.rules.map((rule) => rule.pattern)).toContain("Bash(make *)");
+    await expect(manager.addRulePersist({ pattern: "Bash(cargo *)", action: "allow" }, { kind: "user" })).rejects.toThrow(/wildcard allowlist/);
+    await expect(updatePermissionsFile(permissionsFile, (file) => { file.rules.push({ pattern: "Bash(cargo *)", action: "allow" }); }))
+      .rejects.toThrow(/wildcard allowlist/);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(make *)")!;
+    await manager.removeRulePersist(row, { kind: "user" });
+    const reloaded = new PermissionManager(permissionsFile);
+    await reloaded.loadRulesFromFile();
+    expect((await reloaded.listScopedRules()).rules.map((rule) => rule.pattern)).not.toContain("Bash(make *)");
+    expect(reloaded.checkDetailed("bash", "builtin", "shell", null, shell("make build"))).not.toMatchObject({ decision: "allow", layer: 3 });
+  });
+
+  it("does the same for a project rules file", async () => {
+    const location = projectRulesLocation(dir, project);
+    mkdirSync(dirname(location.filePath), { recursive: true });
+    writeFileSync(location.filePath, JSON.stringify({
+      version: 1, projectRoot: location.projectRoot, updatedAt: "",
+      rules: [{ pattern: "Bash(make *)", action: "allow" }, { pattern: "Bash(ls *)", action: "allow" }],
+    }));
+    const manager = new PermissionManager(permissionsFile);
+    await manager.ensureProjectRulesLoaded(project);
+    const context = { ...shell("make build"), projectRulesCwd: project };
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, context)).not.toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project }))
+      .toMatchObject({ decision: "allow", layer: 3 });
+    const listed = await manager.listScopedRules();
+    expect(listed.errors).toEqual([]);
+    const row = listed.rules.find((rule) => rule.pattern === "Bash(make *)")!;
+    expect(row).toMatchObject({ scope: "project", invalidReason: "wildcard-not-allowlisted" });
+    await manager.removeRulePersist(row, { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! });
+    expect(JSON.parse(readFileSync(location.filePath, "utf8")).rules).toEqual([{ pattern: "Bash(ls *)", action: "allow" }]);
+  });
+
+  it("still treats a structurally refused stored allow as a corrupt file", async () => {
+    writeStoreA([{ pattern: "Bash(rm *)", action: "allow" }]);
+    const manager = new PermissionManager(permissionsFile);
+    await manager.loadRulesFromFile();
+    expect(manager.getRulesLoadError()).toMatch(/corrupt/);
+  });
+});
+
+
+describe("host shell-rule suggestions", () => {
+  it("uses canonical arity and proves whole-command coverage", () => {
+    expect(buildShellRuleApproval("git status --short", project, true, "conversation-a")).toMatchObject({ suggestedPattern: "Bash(git status *)", persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("git status && git diff", project, true, "conversation-a").suggestedPattern).toBeNull();
+    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status && curl https://example.test", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(git status *)", "allow", "git status --short", project)).toBe(true);
+  });
+
+  it.each(["node -e console.log(1)", "env FOO=1 ls", "git -c core.pager=cat status"])("retains session choices for a refused prefix: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it.each([
+    ["git status --short", "Bash(git status *)"],
+    ["ls -la src", "Bash(ls *)"],
+  ])("keeps a useful catalog wildcard for the safe workflow %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
+  });
+
+  it.each([
+    ["make build", "Bash(make build)"],
+    ["cargo test --all", "Bash(cargo test --all)"],
+    ["bun test src/app.test.ts", "Bash(bun test src/app.test.ts)"],
+    ["git switch main", "Bash(git switch main)"],
+    ["gh pr view 12", "Bash(gh pr view 12)"],
+    ["chmod +x build.sh", "Bash(chmod +x build.sh)"],
+    ["chmod -x build.sh", "Bash(chmod -x build.sh)"],
+    ["chmod -w notes.txt", "Bash(chmod -w notes.txt)"],
+  ])("offers only an exact rule outside the catalog: %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
+    expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
+    expect(shellRuleCoversCommand(pattern, "allow", `${command} extra`, project)).toBe(false);
+  });
+
+  it("offers no exact rule a token boundary would change", () => {
+    expect(buildShellRuleApproval('git commit -m "two words"', project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it.each([
+    "git branch -D feature", "git push --force origin main", "git push origin +main", "git push origin :old",
+    "docker compose down -v", "aws s3 rm s3://bucket/key --recursive", "kubectl apply --prune -f manifest.yaml",
+    "rsync --delete src dst", "ln -sf target link", "dropdb production", "redis-cli flushall",
+    "gh repo delete owner/repo --yes", "gh api -X DELETE /repos/owner/repo", "helm uninstall web", "terraform destroy",
+    "git switch -f main", "git switch --discard-changes main", "git switch -C main", "cp draft.txt final.txt",
+    "git checkout README.md",
+  ])("never offers or stores any rule covering the irreversible %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    const argv = command.split(" ");
+    expect(refusedShellPrefix(argv, false)).not.toBeNull();
+    expect(() => shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toThrow();
+  });
+
+  // Round-3 review probes (owner decision 2026-10-23): runners and `git fetch`
+  // left the catalog; these argv shapes get no rule at all, exact or wildcard.
+  it.each([
+    // Runner options that load other code or switch the project.
+    "npm run build --script-shell=./evil.sh", "npm run build --script-shell ./evil.sh",
+    "npm run build --node-options=--require=./evil.js", "npm run build --prefix=/tmp/other", "npm test --script-shell",
+    "bun test --preload ./evil.ts", "bun run build --preload", "yarn test --cwd /tmp/other", "pnpm test --filter ./other -r",
+    "npm test -w other", "npm run build --workspace=other", "pnpm run build --recursive",
+    // kubectl credentials, cluster re-targeting, raw API and secrets.
+    "kubectl get pods --kubeconfig /tmp/kubeconfig", "kubectl get pods --server=https://evil.example", "kubectl get pods -s https://evil.example",
+    "kubectl get pods --token=abc", "kubectl get pods --context prod", "kubectl get pods --cluster prod", "kubectl get pods --user admin",
+    "kubectl get pods --as admin", "kubectl get pods --as-group system:masters", "kubectl get pods --as-uid 0",
+    "kubectl get pods --certificate-authority ca.crt", "kubectl get pods --client-key key.pem", "kubectl get pods --client-certificate c.pem",
+    "kubectl get pods --insecure-skip-tls-verify", "kubectl get --raw /api/v1/secrets", "kubectl logs web --kubeconfig /tmp/k",
+    "kubectl get secrets", "kubectl get secret", "kubectl get secret/db", "kubectl describe secret db", "kubectl get pods,secrets",
+    "kubectl get secrets.v1 -A",
+    // Round 4: pflag short clusters, file writers, manifest reads, TLS and basic auth.
+    "kubectl get pods -As https://evil.example", "kubectl get pods -Ashttps://evil.example", "kubectl get pods -ws https://evil.example",
+    "kubectl get pods --profile-output=important.db", "kubectl get pods --profile=cpu", "kubectl get pods --cache-dir /tmp/cache",
+    "kubectl get -f creds.yaml -o yaml", "kubectl describe -f creds.yaml", "kubectl get --filename=creds.yaml",
+    "kubectl get -k ./overlay", "kubectl get --kustomize ./overlay", "kubectl get pods --tls-server-name evil.example",
+    "kubectl get pods --username admin", "kubectl get pods --password hunter2",
+    "git prune", "git tag -d v1.0", "git tag --delete v1.0", "git remote remove origin", "git remote rm origin",
+    "git pull --force", "git pull -f origin main",
+    "git remote rename origin upstream", "git remote set-url origin https://evil.example/r.git", "git remote prune origin",
+    // git ref and object deletion.
+    "git gc --prune=now", "git gc --aggressive --prune", "git reflog expire --expire=now --all", "git reflog delete HEAD",
+    "git worktree remove --force wt", "git worktree remove -f wt", "git worktree prune", "git update-ref -d refs/heads/x",
+    "git update-ref --stdin", "git fetch -f origin", "git fetch --force origin", "git fetch origin +main:main", "git fetch --prune",
+    "git fetch -p origin", "git fetch --prune-tags",
+    // Package unpublish, nerdctl, install, xattr.
+    "npm unpublish pkg@1.0.0", "pnpm unpublish pkg", "yarn npm unpublish", "nerdctl rm web", "nerdctl system prune -af",
+    "nerdctl compose down -v", "install -m 755 tool /usr/local/bin/tool", "xattr -c app", "xattr -d com.apple.quarantine app",
+  ])("never offers, stores or matches a rule for %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    expect(refusedShellPrefix(command.split(" "), false)).not.toBeNull();
+    expect(() => validatePermissionRule({ pattern: `Bash(${command})`, action: "allow" })).toThrow();
+    expect(shellRuleCoversCommand("Bash(git log *)", "allow", command, project)).toBe(false);
+  });
+
+  it.each([
+    ["npm test", "Bash(npm test)"], ["npm run build", "Bash(npm run build)"], ["bun test", "Bash(bun test)"],
+    ["pnpm run build", "Bash(pnpm run build)"], ["git fetch origin", "Bash(git fetch origin)"],
+    ["kubectl get pods -n web", "Bash(kubectl get pods -n web)"], ["kubectl logs web -f", "Bash(kubectl logs web -f)"],
+    ["kubectl describe pod web", "Bash(kubectl describe pod web)"], ["xattr -l app", "Bash(xattr -l app)"],
+    ["git tag v1.0", "Bash(git tag v1.0)"], ["git remote show origin", "Bash(git remote show origin)"], ["git pull origin main", "Bash(git pull origin main)"],
+    ["git remote -v", "Bash(git remote -v)"], ["git remote get-url origin", "Bash(git remote get-url origin)"],
+    ["git reflog", "Bash(git reflog)"], ["git worktree list", "Bash(git worktree list)"],
+    ["rg foo src", "Bash(rg foo src)"], ["grep -n foo src/app.ts", "Bash(grep -n foo src/app.ts)"],
+  ])("keeps the safe workflow %s one click as %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true });
+    expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
+  });
+
+  it.each([
+    "Bash(npm test *)", "Bash(npm run build *)", "Bash(bun test *)", "Bash(yarn run build *)", "Bash(git fetch *)", "Bash(git fetch origin *)",
+    "Bash(kubectl get *)", "Bash(kubectl describe *)", "Bash(kubectl logs *)", "Bash(kubectl get pods *)",
+    "Bash(rg *)", "Bash(grep *)", "Bash(grep -n *)", "Bash(rg foo *)",
+  ])(
+    "refuses the former catalog wildcard %s at the store", (pattern) => {
+      expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/wildcard allowlist/);
+    },
+  );
+
+  it("refuses a hand-typed wildcard outside the catalog at the store", () => {
+    expect(() => validatePermissionRule({ pattern: "Bash(make *)", action: "allow" })).toThrow(/wildcard allowlist/);
+    expect(validatePermissionRule({ pattern: "Bash(make *)", action: "deny" })).toMatchObject({ pattern: "Bash(make *)" });
+    expect(validatePermissionRule({ pattern: "Bash(make build)", action: "allow" })).toMatchObject({ pattern: "Bash(make build)" });
+  });
+
+  it.each(["rm notes.txt", "shred old.log"])("offers no reusable prefix for a destructive tool: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+  });
+
+  it("offers only the exact dry run for git clean -n", () => {
+    expect(buildShellRuleApproval("git clean -n", project, true, "conversation-a")).toMatchObject({ suggestedPattern: "Bash(git clean -n)", persistentAllowed: true });
+    expect(shellRuleCoversCommand("Bash(git clean -n)", "allow", "git clean -n -f", project)).toBe(false);
+  });
+
+  it.each(["git clean -fdx", "truncate -s 1M data.bin", "git checkout -- .", "git reset --hard", "git stash drop", "docker system prune -af", "kubectl delete pod web", "mv draft.txt final.txt", "tee out.txt", "unlink stale.lock"])("keeps once and session but offers no rule for an irreversible command: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it.each(["rm -v -r ~/work", "rm --recursive --force ~", "rm -i -rf ~", "rm -d -R /tmp/x", "chmod -R 777 /"])("treats argv-level destruction as a floor: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it.each(["curl https://example.test/status", "wget https://example.test/file", "ssh host uptime"])("defers network clients to host-scoped rules: %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: true });
+  });
+
+  it("does not derive a session grant without a conversation or widen a sealed one-shot", () => {
+    expect(buildShellRuleApproval("ls", project, true).sessionAllowed).toBe(false);
+    expect(buildShellRuleApproval("ls", project, false, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  });
+});
+
+
+describe("case-independent persistent-prefix refusal", () => {
+  it.each([
+    ["PYTHON", "interpreter"], ["/usr/bin/Python3.12", "interpreter"], ["NODE.EXE", "interpreter"],
+    ["SUDO", "wrapper"], ["/usr/bin/SuDo", "wrapper"], ["BASH", "shell"],
+    ["GIT", "multi-verb-tool"], ["Docker.EXE", "multi-verb-tool"], ["Rscript", "interpreter"],
+    ["NPX.CMD", "package-runner"], ["PNPM@10", "package-runner"],
+  ])("refuses a case-variant program identity %s", (program, reason) => {
+    expect(refusedShellPrefix([program])).toBe(reason);
+  });
+
+  it("rejects edited rules through the same validator and never matches them as an allow", () => {
+    expect(() => shellRuleCoversCommand("Bash(PYTHON *)", "allow", "PYTHON script.py", project)).toThrow(/refused/);
+    expect(() => shellRuleCoversCommand("Bash(SUDO *)", "allow", "SUDO ls", project)).toThrow(/refused/);
+  });
+});
+
+it("refuses case variants of delegated and config-writing verbs", () => {
+  expect(refusedShellPrefix(["GIT", "CONFIG"])).toBe("config-writer");
+  expect(refusedShellPrefix(["npm", "ExEc"])).toBe("package-runner");
+  expect(() => shellRuleCoversCommand("Bash(git CONFIG *)", "allow", "git CONFIG x y", project)).toThrow(/refused/);
+});
+
+
+it("revokes only the selected source-scoped persisted rule and live decision", async () => {
+  await updatePermissionsFile(permissionsFile, (file) => {
+    file.rules.push({ pattern: "custom_tool", action: "deny", source: "plugin" });
+    file.rules.push({ pattern: "custom_tool", action: "deny", source: "mcp" });
+    file.rules.push({ pattern: "custom_tool", action: "allow" });
+  });
+  const manager = new PermissionManager(permissionsFile);
+  await manager.loadRulesFromFile();
+  expect(manager.checkDetailed("custom_tool", "plugin", "write", null)).toMatchObject({ decision: "deny" });
+  const row = (await manager.listScopedRules()).rules.find((rule) => rule.source === "plugin")!;
+  await manager.removeRulePersist(row, { kind: "user" });
+  expect((await readPermissionsFile(permissionsFile))!.rules).toEqual([
+    { pattern: "custom_tool", action: "deny", source: "mcp" },
+    { pattern: "custom_tool", action: "allow" },
+  ]);
+  expect(manager.checkDetailed("custom_tool", "plugin", "write", null)).toMatchObject({ decision: "allow" });
+  expect(manager.checkDetailed("custom_tool", "mcp", "write", null)).toMatchObject({ decision: "deny" });
+});
+
+it("keeps conversation grants inspectable and revocable while Store B is corrupt", async () => {
+  __resetSessionStoreForTest();
+  const path = join(TEST_HOME, "permissions", "user-approvals.json");
+  rmSync(path, { force: true });
+  await recordApproval("bash", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "conversation-corrupt", workingDirectoryIdentity: captureApprovalWorkingDirectory(project).identity });
+  mkdirSync(join(TEST_HOME, "permissions"), { recursive: true });
+  writeFileSync(path, "{broken");
+  await expect(listApprovals()).rejects.toBeInstanceOf(UserApprovalStoreCorruptError);
+  const rows = listSessionApprovals();
+  expect(rows).toEqual([expect.objectContaining({ sessionId: "conversation-corrupt", scope: "session" })]);
+  await revokeApprovalByKey(rows[0].key);
+  expect(listSessionApprovals()).toEqual([]);
+  expect(readFileSync(path, "utf8")).toBe("{broken");
+});
+
+// Round 5 (owner decision 2026-10-23): the floor covers what a recursive or
+// symlink-following search reads, browser and /proc secret stores, and git
+// object paths.
+describe("sensitive reads through searches, browser stores, /proc and git objects", () => {
+  let home: string;
+  let clean: string;
+  beforeEach(() => {
+    home = join(dir, "home");
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    writeFileSync(join(home, ".ssh", "id_ed25519"), "key");
+    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    // A project link that points at the SSH directory.
+    mkdirSync(join(project, "src"), { recursive: true });
+    symlinkSync(join(home, ".ssh"), join(project, "keys"));
+    clean = join(dir, "clean");
+    mkdirSync(join(clean, "src"), { recursive: true });
+    writeFileSync(join(clean, "src", "app.ts"), "export {};");
+  });
+
+  const floored = (command: string, cwd: string) => {
+    expect(shellSensitivePathSignal(command, cwd)).not.toBeNull();
+    expect(buildShellRuleApproval(command, cwd, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false, sessionAllowed: false });
+  };
+
+  it.each([
+    "grep -r BEGIN ~", "grep -rn BEGIN /", "grep --recursive BEGIN ~", "grep -d recurse BEGIN ~", "grep -r BEGIN ..",
+    "rg -uuu BEGIN ~", "rg --hidden BEGIN ~", "rg BEGIN /", "rg -e BEGIN ~ src",
+    "grep --directories recurse BEGIN ~", "grep --directories=recurse BEGIN ~",
+  ])("floors a recursive search rooted above a sensitive directory: %s", (command) => {
+    floored(command, project);
+  });
+
+  it.each([
+    "grep -R BEGIN keys", "rg -L BEGIN .", "rg --follow BEGIN", "rg -L BEGIN",
+    "find -L . -name id_ed25519", "find . -follow -name id_ed25519", "find -L . -type f", "find -H keys -type f",
+    // BSD find leading options, and `-f <path>` naming a root.
+    "find -L -E . -name id_ed25519", "find -L -x -s . -type f", "find -L -d -X . -type f", "find -L -f . -name id_ed25519",
+    "find -sL . -type f",
+  ])("floors a symlink-following search that reaches a sensitive path through a project link: %s", (command) => {
+    floored(command, project);
+  });
+
+  // `find` only lists names, like `ls -R ~` or `rg --files`; its roots are not floored.
+  it.each(["find ~ -name notes.md", "find / -name app.ts", "find ~/.config -type f", "find .. -name config", "find -s ~ -type d"])(
+    "does not floor the name listing %s", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    },
+  );
+
+  describe.each([
+    ["darwin", ["grep -rS BEGIN .", "grep -r -S BEGIN .", "grep -RS BEGIN ."], ["grep -R BEGIN .", "grep -r BEGIN ."]],
+    ["linux", ["grep -R BEGIN .", "grep --dereference-recursive BEGIN .", "grep -rR BEGIN ."], ["grep -r BEGIN .", "grep -rS BEGIN ."]],
+  ] as const)("grep symlink semantics on %s", (platform, follows, stays) => {
+    const original = process.platform;
+    beforeEach(() => { Object.defineProperty(process, "platform", { value: platform }); });
+    afterEach(() => { Object.defineProperty(process, "platform", { value: original }); });
+
+    it.each(follows)("floors %s, which follows the project link", (command) => {
+      floored(command, project);
+    });
+
+    it.each(stays)("leaves %s alone, which does not follow links", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    });
+
+    it("treats ggrep as GNU grep", () => {
+      floored("ggrep -R BEGIN .", project);
+    });
+  });
+
+  it.each([
+    "grep -r BEGIN src", "grep -R BEGIN .", "grep -rS BEGIN .", "rg BEGIN .", "rg -L BEGIN src", "rg --hidden BEGIN", "find . -name app.ts",
+    "find -L . -type f", "grep -rn foo src/app.ts", "grep --directories recurse foo src",
+  ])("leaves the ordinary project search %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, clean)).toBeNull();
+  });
+
+  it("does not let catalog find cover a search the floor stops", () => {
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
+  });
+
+  it.each([
+    "cat /proc/self/environ", "cat /proc/1234/environ", "xxd /proc/self/mem", "ls /proc/self/fd/3",
+    "cat /proc/self/task/12/environ", "cat /proc/self/map_files/1-2",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Cookies\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Web Data\"",
+    "cat \"$HOME/Library/Application Support/Google/Chrome/Local State\"",
+    "cat \"$HOME/Library/Application Support/Microsoft Edge/Default/Cookies\"",
+    "cat \"$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default/Login Data\"",
+    "cat \"$HOME/Library/Application Support/Arc/User Data/Default/Cookies\"",
+    "cat ~/.config/chromium/Default/Cookies", "cat \"$HOME/.config/google-chrome/Local State\"",
+    "cat \"$HOME/.config/BraveSoftware/Brave-Browser/Default/Web Data\"",
+    "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/logins.json\"",
+    "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/key4.db\"",
+    "cat ~/.mozilla/firefox/abc.default/cookies.sqlite", "cat ~/.mozilla/firefox/abc.default/key4.db",
+  ])("floors the secret store read %s", (command) => {
+    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
+  });
+
+  it.each(["cat /proc/self/cmdline", "cat /proc/self/status", "cat ~/.mozilla/firefox/profiles.ini", "cat \"$HOME/Library/Application Support/Code/User/settings.json\""])(
+    "leaves the non-secret read %s alone", (command) => {
+      expect(shellSensitivePathSignal(command, project)).toBeNull();
+    },
+  );
+
+  it.each([
+    ["git show HEAD:.env", "Bash(git show *)"], ["git show :.env", "Bash(git show *)"],
+    ["git show origin/main:config/.env", "Bash(git show *)"], ["git cat-file -p HEAD:.env", null],
+    ["git log -p -- .env", "Bash(git log *)"], ["git diff HEAD -- .env", "Bash(git diff *)"],
+    ["git blame -- .env", "Bash(git blame *)"], ["git show HEAD:id_rsa", "Bash(git show *)"],
+  ])("floors the git object path in %s like a direct read", (command, catalog) => {
+    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, sessionAllowed: false });
+    if (catalog) expect(shellRuleCoversCommand(catalog, "allow", command, project)).toBe(false);
+  });
+
+  it.each(["git show HEAD:src/app.ts", "git log -p -- src", "git diff HEAD -- src/app.ts"])("leaves the git read %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, project)).toBeNull();
+  });
+
+  it.each(["rg --hostname-bin=./evil.sh foo src", "rg --hostname-bin ./evil.sh foo src", "rg --pre ./evil.sh foo src"])(
+    "offers no rule and matches none for the command-running %s", (command) => {
+      expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null });
+      expect(shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toBe(false);
+    },
+  );
 });

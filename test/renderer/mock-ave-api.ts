@@ -545,6 +545,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -1115,6 +1117,8 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         onModeChanged: vi.fn(() => () => undefined),
         listRules: vi.fn(async () => []),
+        listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+        removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
         onReviewSuggestion: vi.fn(() => () => undefined),
@@ -1139,6 +1143,12 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
           ok: false as const,
           error: "allow-selector-unavailable",
         })),
+      },
+      userApproval: {
+        record: vi.fn(async () => ({ ok: true })),
+        revokeByKey: vi.fn(async () => ({ ok: true })),
+        list: vi.fn(async () => []),
+        listSession: vi.fn(async () => []),
       },
       policy: {
         get: vi.fn(async () => ({

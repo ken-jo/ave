@@ -1390,11 +1390,15 @@ type ApprovalSentenceSelectResult =
  */
 import type {
   PermissionReviewSuggestionPayload,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
+
+export type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 
 export type AveUserApprovalApi = {
   record: (entry: {
@@ -1403,6 +1407,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
+    rule?: { pattern: string; scope: "project" | "user" };
     toolName: string;
     args: string;
     source: string;
@@ -1416,6 +1421,7 @@ export type AveUserApprovalApi = {
     approvalCacheKey?: string;
   }) => Promise<{ ok: boolean; error?: string; message?: string }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{
     key: string;
     decision?: UserApprovalDecision;
@@ -1427,6 +1433,8 @@ export type AveUserApprovalApi = {
     /** Safe display metadata. Exact input/trust/cache identity never crosses IPC. */
     toolName?: string;
     source?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>;
 };
 
@@ -1514,6 +1522,8 @@ export type AvePermissionApi = {
    */
   onConfigChanged: (cb: () => void) => () => void;
   listRules: () => Promise<PermissionRule[]>;
+  listScopedRules: () => Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }>;
+  removeScopedRule: (rule: ScopedPermissionRule) => Promise<{ ok: boolean; error?: string; message?: string }>;
   addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
   removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
   /** Permission policy — list pending HIGH-risk deferred entries from reviewer. */

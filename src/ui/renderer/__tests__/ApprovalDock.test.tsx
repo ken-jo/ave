@@ -11,6 +11,7 @@ import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
+import { t } from "../../../i18n/runtime.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
@@ -1195,7 +1196,9 @@ describe("ApprovalDock", () => {
 
     await waitFor(() => {
       expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
-        .toContain("disk unavailable");
+        .toContain(t("toolApprovalDialog.exactDecisionSaveFailed"));
+      expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
+        .not.toContain("disk unavailable");
     });
     expect(onDecide).not.toHaveBeenCalled();
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy();

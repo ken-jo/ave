@@ -957,6 +957,7 @@ export async function authorizeToolInvocation(
           tool.pluginId,
           hostShellExecutionPlan,
           auditInput,
+          sessionId,
         );
         if (memorySkip) {
           permissionResult = memorySkip;
@@ -1408,6 +1409,7 @@ export async function authorizeToolInvocation(
         tool.pluginId,
         hostShellExecutionPlan,
         auditInput,
+        sessionId,
       );
       if (memorySkip) {
         permissionResult = memorySkip;

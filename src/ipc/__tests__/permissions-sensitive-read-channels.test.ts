@@ -45,6 +45,7 @@ const HOST_RENDERER = "file:///dist/src/index.html";
 const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = [
   ["deferredList", PERMISSIONS.deferredList, []],
   ["userApprovalList", PERMISSIONS.userApprovalList, []],
+  ["listScopedRules", PERMISSIONS.listScopedRules, []],
   ["auditShow", PERMISSIONS.auditShow, [10]],
   ["auditVerify", PERMISSIONS.auditVerify, []],
   ["hookTrustList", PERMISSIONS.hookTrustList, []],

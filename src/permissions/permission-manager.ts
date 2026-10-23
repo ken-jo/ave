@@ -12,8 +12,9 @@ import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } 
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
-import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
-import { projectRulesLocation } from "./rules/project-rule-files.js";
+import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
+import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
+import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
@@ -514,6 +515,12 @@ function sameReviewerSandboxCacheState(
 // LLM caller retry wiring lives in conversation-loop.ts scope.
 // Tracked in follow-up issue for "LLM caller retry wiring" with
 // max 2 retry / counter scope / args-change-reset contract.
+
+/** A Settings row, marked when its stored rule is inert (listed and removable, never matched). */
+function withInvalidReason(row: ScopedPermissionRule): ScopedPermissionRule {
+  const reason = storedRuleInvalidReason(row);
+  return reason === null ? row : { ...row, invalidReason: reason };
+}
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -1148,17 +1155,17 @@ export class PermissionManager {
 
   /** Issue #28 — remove a rules-language rule from the user-global or a project scope. */
   async removeRulePersist(
-    rule: { pattern: string; action: PermissionRule["action"] },
-    scope: { kind: "user" } | { kind: "project"; projectCwd: string },
+    rule: { pattern: string; action: PermissionRule["action"]; source?: string },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string; storedFile?: string },
   ): Promise<void> {
     if (scope.kind === "project") {
-      await this.projectRuleScopes.removeRule(scope.projectCwd, rule.pattern, rule.action);
+      await this.projectRuleScopes.removeRule(scope.projectCwd, rule.pattern, rule.action, scope.storedFile);
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
       this.revokeAllPluginAccess(`rule-removed:${rule.action}:${rule.pattern}`);
       return;
     }
-    await this.removeRule(rule.pattern, rule.action);
+    await this.removeRule(rule.pattern, rule.action, rule.source);
   }
 
   /**
@@ -1178,24 +1185,49 @@ export class PermissionManager {
     return state.ok ? state : { ok: false, projectRoot: state.projectRoot, error: state.error.message };
   }
 
+  /** All stored rule scopes, including projects not visited in this process. */
+  async listScopedRules(): Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }> {
+    const rules: ScopedPermissionRule[] = [];
+    const errors: ScopedPermissionRuleError[] = [];
+    try {
+      for (const rule of await this.listPersistedRules()) rules.push(withInvalidReason({ ...rule, scope: "user" }));
+    } catch (error) {
+      console.error("[permission]", error);
+      errors.push({ filePath: this.permissionsFilePath, errorCode: "rules-file-unavailable" });
+    }
+    try {
+      const projects = await listStoredProjectRules(dirname(this.permissionsFilePath));
+      errors.push(...projects.errors);
+      for (const file of projects.files) {
+        for (const rule of file.rules) {
+          rules.push(withInvalidReason({ ...rule, scope: "project", projectCwd: file.projectRoot, storedFile: file.identity }));
+        }
+      }
+    } catch (error) {
+      console.error("[permission]", error);
+      errors.push({ filePath: resolve(dirname(this.permissionsFilePath), "permissions", "project-rules"), errorCode: "rules-file-unavailable" });
+    }
+    return { rules, errors };
+  }
+
   /** Issue #28 — the user-global Store A load error, if permissions.json is corrupt. */
   getRulesLoadError(): string | undefined {
     return this.rulesLoadError?.message;
   }
 
-  async removeRule(pattern: string, action: PermissionRule["action"]): Promise<void> {
-    // In-memory.
-    this.rules = this.rules.filter(
-      (r) => !(r.pattern === pattern && r.action === action && !r.source),
-    );
-    if (action === "allow") this.alwaysAllowed.delete(pattern);
-    this.policyGeneration += 1;
-    // Persistent file.
+  async removeRule(pattern: string, action: PermissionRule["action"], source?: string): Promise<void> {
+    // Persist first; corruption or an I/O error must leave live authority intact.
     await updatePermissionsFile(this.permissionsFilePath, (file) => {
       file.rules = file.rules.filter(
-        (r) => !(r.pattern === pattern && r.action === action && !r.source),
+        (r) => !(r.pattern === pattern && r.action === action && r.source === source),
       );
     });
+    this.rules = this.rules.filter(
+      (r) => !(r.pattern === pattern && r.action === action && r.source === source),
+    );
+    if (action === "allow" && source === undefined) this.alwaysAllowed.delete(pattern);
+    this.policyGeneration += 1;
+
     this.broadcastConfigChanged?.();
     // Rule removal is also a permission change. An
     // allow removal narrows the policy (revoke); a deny removal widens it.
@@ -1936,6 +1968,7 @@ export class PermissionManager {
       input.trustOrigin,
       userApprovalIdentity,
       input.executionCwd,
+      input.sessionId,
     ).catch(() => null); // storage failure must not block tool execution
     // Only a decision made on exactly these arguments short-circuits review
     // here. A target-wide hit on other arguments is classified as a fresh

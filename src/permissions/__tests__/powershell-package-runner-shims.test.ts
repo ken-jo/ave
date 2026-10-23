@@ -190,7 +190,7 @@ describe("package runner shims and dispatchers", () => {
     ["deno", ["deno", "task", "test"]],
   ] as const)("shares runner %s while preserving understood task prefixes", (name, argv) => {
     expect(SHELL_PREFIX_POLICY.packageRunners).toContain(name);
-    expect(refusedShellPrefix(argv)).toBeNull();
+    expect(refusedShellPrefix(argv, false)).toBeNull();
     expect(hiddenCodeReason(argv)).toBeNull();
     expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
   });

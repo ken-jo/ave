@@ -103,6 +103,8 @@ export const PERMISSIONS = {
   setMode: "ave:permission:set-mode",
   modeChanged: "ave:permissions:mode-changed",
   listRules: "ave:permission:list-rules",
+  listScopedRules: "ave:permission:list-scoped-rules",
+  removeScopedRule: "ave:permission:remove-scoped-rule",
   addRule: "ave:permission:add-rule",
   removeRule: "ave:permission:remove-rule",
   approvalRespond: "ave:approval:respond",

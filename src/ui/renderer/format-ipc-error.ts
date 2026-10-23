@@ -211,6 +211,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "high-is-one-shot": "formatIpcError.highIsOneShot",
   "deny-requires-persistent-scope": "formatIpcError.denyRequiresPersistentScope",
   "verdict-mismatch": "formatIpcError.verdictMismatch",
+  "invalid-rule": "formatIpcError.invalidRule",
+  "command-rule-required": "formatIpcError.commandRuleRequired",
+  "missing-session": "formatIpcError.missingSession",
+  "rule-save-failed": "formatIpcError.ruleSaveFailed",
   "add-failed": "formatIpcError.addFailed",
   "remove-failed": "formatIpcError.removeFailed",
 

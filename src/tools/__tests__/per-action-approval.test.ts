@@ -95,6 +95,7 @@ describe("per-action approval and the authorized scope", () => {
             await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
               decision: "allow",
               scope: "session",
+              sessionId: snapshot.sessionId,
               verdictAtApproval: snapshot.verdictAtApproval,
               nlJustification: null,
               trustOrigin: snapshot.trustOrigin,

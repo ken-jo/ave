@@ -38,6 +38,8 @@ import type {
 } from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { resolveUserApprovalVerdict, type ApprovalMemory } from "../shared/permissions-events.js";
+import { buildShellRuleApproval } from "./rules/shell-rule-approval.js";
+import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import type {
   RemoteControllerAuthority,
@@ -223,6 +225,8 @@ export interface ApprovalRequest {
   persistentAllowAllowed?: boolean;
   /** Canonical scope captured by the host before a remembered decision is shown. */
   persistentApprovalCwd?: string;
+  /** Host-derived command-rule editor context. */
+  shellRule?: ShellRuleApproval;
   toolName: string;
   /** Permission policy category for the invocation shown in the UI. */
   toolCategory?: ToolCategory;
@@ -475,7 +479,7 @@ export function signApprovalRequest(
  */
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "persistentApprovalCwd"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "persistentApprovalCwd" | "shellRule"
 > & {
   /** Host-owned assessment provenance; never inferred from the displayed reason. */
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
@@ -1025,6 +1029,8 @@ interface PendingEntry {
   /** Host-owned permission to create a user-approval-store record. */
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
+  shellRule?: ShellRuleApproval;
+  projectCwd?: string;
   workingDirectoryIdentity?: string;
   riskCeilingAtApproval?: RiskLevel;
   executionPlan?: HostShellExecutionPlanAuditProjection;
@@ -2429,6 +2435,14 @@ export class ApprovalGate {
           ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
+    const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
+      ? req.args as Record<string, unknown> : undefined;
+    const shellRuleCwd = req.evaluationContext?.executionCwd;
+    const shellRule = req.source === "builtin" && req.toolName === "bash" &&
+      (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
+      typeof rawShellArgs?.command === "string" && shellRuleCwd
+      ? buildShellRuleApproval(rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId)
+      : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
       ...(executionPlanAudit === undefined
@@ -2470,6 +2484,7 @@ export class ApprovalGate {
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,
+      ...(shellRule === undefined ? {} : { shellRule }),
       persistentApprovalCwd: persistentAllowAllowed ? workingDirectory?.path : undefined,
       requireExplicit:
         req.kind === "rationale"
@@ -2873,6 +2888,8 @@ export class ApprovalGate {
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
+        shellRule,
+        projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
         ...(executionPlanAudit === undefined
@@ -3180,6 +3197,9 @@ export class ApprovalGate {
     approvalMemory: ApprovalMemory | undefined;
     durableApprovalRecordAllowed: boolean;
     persistentAllowAllowed: boolean;
+    sessionId: string | undefined;
+    projectCwd: string | undefined;
+    shellRule: ShellRuleApproval | undefined;
     workingDirectoryIdentity: string | undefined;
     riskCeilingAtApproval: RiskLevel | undefined;
     verdictAtApproval: RiskVerdict["level"];
@@ -3199,6 +3219,9 @@ export class ApprovalGate {
       approvalMemory: entry.approvalMemory,
       durableApprovalRecordAllowed: entry.durableApprovalRecordAllowed,
       persistentAllowAllowed: entry.persistentAllowAllowed,
+      sessionId: entry.sessionId,
+      projectCwd: entry.projectCwd,
+      shellRule: entry.shellRule,
       workingDirectoryIdentity: entry.workingDirectoryIdentity,
       riskCeilingAtApproval: entry.riskCeilingAtApproval,
       verdictAtApproval: entry.verdictAtApproval,

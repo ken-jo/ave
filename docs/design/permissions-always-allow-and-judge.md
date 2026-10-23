@@ -1,6 +1,6 @@
 # Permissions: always-allow baseline and judge slot
 
-Status: decided 2026-10-14 (issue #28). P1a and the P2 judge module are implemented. P1b and P1c have separate delivery scopes; the P2 call-site contract is below.
+Status: decided 2026-10-14 (issue #28). P1a, the approval rules UI (P1b) and the P2 judge call site are implemented. Scoped file, network and MCP rule enforcement (P1c) remains separate work.
 
 This page carries the owner-approved direction for issue #28 into the repository. It has two goals:
 
@@ -51,11 +51,10 @@ then allow. Session allows count as allow.
   Opaque runner identity or an unknown runner option alone adds no hidden-code
   blocker. The persistent-prefix boundary is checked separately below.
 
-**4. Prefix suggestion** uses an arity table (`src/permissions/rules/shell-prefix-policy.ts`).
-- `git`, `npm`, `pnpm`, `yarn`, `docker` and `kubectl` keep 2 tokens.
-- `npm run`, `pnpm run`, `yarn run` and `bun run` keep 3 tokens.
-- Everything else keeps 1 token.
-- Options and paths end the prefix.
+**4. Prefix suggestion** uses the wildcard allowlist `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`), described under decision 7.
+- An allowlisted entry keeps its listed token count: `git status` keeps 2, and `npm run <script>` keeps 3.
+- Past the entry's own tokens, options and paths end the prefix.
+- A command outside the catalog gets an exact rule for its full argv.
 
 Suggestion length selects a candidate; the refused-prefix check must still
 accept it. An edited persistent rule uses that same validation.
@@ -90,9 +89,67 @@ does not prove that the command or task contents are read-only.
 - "Always allow" for a project writes the per-project rule file in Ave home: `<ave home>/permissions/project-rules/<identity>.json`. Identity, repository discovery, the home boundary, and retained legacy rules follow [Project Rule Scope](../architecture/permission-policy-design.md#project-rule-scope). The file is re-read when it changes on disk. Ave never writes rules into the user's repository.
 - "Everywhere" writes the user-global scope, which is Store A (`<ave home>/permissions.json`) extended in place.
 - Deny-always uses the same files.
-- Session scope is the conversation session id, in memory.
+- Every session approval (shell, browser, terminal and any other exact tool approval) is held in memory under the root conversation: the conversation and every sub-agent spawned from it, at any depth, share it, and separate root conversations never do. A session approval without a conversation is refused (`missing-session`), and the dock disables "Allow for session" for such a request and says why. The root comes from one resolver, `createRootSessionResolver` over the sub-agent runner's recorded origins (live and restored children), which the judge also uses. An app restart clears all session approvals.
 
 **7. Existing Store B entries** (exact tuples) keep matching unchanged and are never converted to prefixes.
+- The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
+- Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Existing entries keep their original identities.
+- Destructive tools are refused as allow prefixes at every length (`rm`, `shred`, `dd`, `mkfs`, `wipefs`), as are bare or recursive `chmod`/`chown`/`chgrp` prefixes. The matcher's destructive floor also reads each command's argv, so recursive or forced deletion in any option order or spelling (`rm -v -r`, `rm --recursive --force`), recursive or world-writable permission changes and `find -delete` are never covered by an allow rule.
+- **Wildcard allowlist (owner decision 2026-10-23).** A `Bash(<prefix> *)` allow rule may be suggested or stored only when the prefix starts with an entry of `WILDCARD_PREFIX_CATALOG` (`src/permissions/rules/shell-prefix-values.ts`) and keeps at least that entry's token count.
+  - The catalog replaces the earlier arity table. It lists read-only inspection (`ls`, `cat`, `head`, `tail`, `wc`, `find`, `pwd`, `du`, `df`, `which`, `stat`), repository inspection (`git status/log/diff/show/rev-parse/ls-files/blame`, `git branch --list`), and container inspection (`docker ps/images/logs`).
+  - An entry must not be widenable. Package-script runners (`npm/pnpm/yarn/bun test`, `… run <script>`) are not in the catalog, because a script body or test file is agent-editable code, the same reason interpreters are refused. `git fetch` is not in the catalog, because it is network egress to any URL. Both get exact rules only, so `npm test` and `npm run build` stay one click as `Bash(npm test)` and `Bash(npm run build)` (round 3, 2026-10-23).
+  - Accepted limit: `git status/log/diff/show/blame` honour the repository's `.git/config` (`core.fsmonitor`, a `diff.*.textconv` driver, `core.pager`), so a config planted by an earlier write runs code under these rules. The stated limit in `src/permissions/reviewer/risk-classifier.ts` (and `permission-policy-design.md`) already covers this: a config file such as `.git/config` planted by an earlier guest write is not detected. The matcher still refuses the command-line forms (`git -c`, `--ext-diff`, `--textconv`).
+  - `grep` and `rg` are not in the catalog (round 5). Their exec, decompression, config and symlink options are too many for a reliable denylist (`rg --pre`, `--hostname-bin`, `-z`, `--follow`, `-uuu`, `RIPGREP_CONFIG_PATH`), so they get exact rules only. `rg --pre` and `--hostname-bin` keep any rule from matching and get no suggestion.
+  - `kubectl` is not in the catalog (round 4). Like other network and credential clients it gets exact rules only: its flag grammar re-targets the cluster through combined short flags (`-As https://…`), reads Secrets through manifests (`-f creds.yaml`, `-k ./overlay`) and writes files (`--profile-output`) in more spellings than a denylist can bound.
+  - Exact `kubectl` rules are still refused for the following, wherever they appear:
+    - credential or cluster re-targeting: any single-dash cluster containing `s`, `--kubeconfig`, `--server`, `--token`, `--context`, `--cluster`, `--user`, `--as`, `--as-group`, `--as-uid`, `--certificate-authority`, `--client-*`, `--insecure-skip-tls-verify`, `--tls-server-name`, `--username`, `--password`;
+    - `--raw`, and the file writers `--profile`, `--profile-output` and `--cache-dir`;
+    - manifest reads with `get`/`describe` (`-f`/`--filename`, `-k`/`--kustomize`);
+    - secrets (`secret`, `secrets`, `secret/<name>`, `secrets.v1`, or one item of a comma list).
+  - Accepted risk: runner configuration flags (`--userconfig`, `--globalconfig`, `pnpm --config.*`, `--dir`, `bun -c`/`--config`) are not refused on exact runner rules. An exact `npm test` or `npm run build` rule already runs agent-editable code, the package scripts and test files, so such a flag does not widen what the user approved. The flags that load code from outside the project or switch it (`--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`, `--filter`, `-r`, `-w`) stay refused.
+  - No rule, exact or wildcard, covers a package-script runner (`npm`, `pnpm`, `yarn`, `bun`) with options that load other code or switch the project: `--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`, `--filter`, `-r`/`--recursive` or `-w`/`--workspace`.
+  - Every other command is suggested only as an exact rule for its full argv, with nothing appended, and only when that argv spells back unchanged. A hand-typed wildcard outside the catalog is refused at the store with `invalid-rule`.
+  - To add an entry, confirm that no argument a trailing `*` can append reaches a destructive or irreversible form, and that its writing and code-running options are caught by `shellOptionEffect`. Then add a hit test and a miss test.
+  - Structural refusals (wrappers, shells, interpreters, runners, destructive and irreversible argv) still apply first, to exact rules as well.
+  - A file written before the allowlist may already hold such an allow rule. It is not migrated or rewritten. It loads inert: Settings lists it with the reason "not on the known-safe list" (en/ko) and a working Remove, other writes keep it as stored, and decisions never match it (`storedRuleInvalidReason`). Any other refused stored rule still makes the whole file corrupt.
+- **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. Once and session approvals stay available, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
+  - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
+  - `git clean` unless `-n`/`--dry-run`; `git reset --hard/--merge/--keep`; `git restore` unless index-only (`--staged` without `--worktree`); `git stash drop/clear`.
+  - `git checkout` with any operand, because `git checkout <name>` restores a file of that name as readily as it switches branch. The exception is `-b <new> [<start>]` without `--` or paths; use `git switch <branch>` for a storable exact rule. `-f`, `-p`, `-B`, `--ours`, `--theirs` and `--` are always refused.
+  - `git prune`; `git gc --prune*`; `git tag -d/--delete`; `git remote remove/rm`; `git pull -f/--force`; `git reflog expire/delete`; `git worktree remove -f/--force` and `git worktree prune`; `git update-ref -d/--stdin`; `git fetch -f/--force/-p/--prune/--prune-tags` and `+ref` refspecs.
+  - `git switch -f/-C/--discard-changes`; `git branch -d/-D/-M/-C/-f/--delete`; `git push -f/-d/--force/--force-with-lease/--delete/--mirror/--prune`, and `+ref` or `:ref` refspecs.
+  - `docker`/`podman`/`nerdctl`/`docker-compose` `prune`/`rm`/`rmi`, and `compose down -v/--volumes/--rmi`.
+  - `kubectl delete/drain`, and `kubectl apply/replace --prune/--force`.
+  - `gh … delete`, `gh api -X/--method DELETE`; `helm uninstall/delete`; `terraform`/`tofu` `destroy`, `apply -destroy` and `state rm`; `aws` `rm`/`rb`/`delete-*`/`terminate-*`/`remove-*` operations and `--delete`.
+  - `rsync --delete*`/`--remove-source-files`; `ln -f`; `redis-cli flushall/flushdb`; `npm`/`pnpm`/`yarn` `unpublish`; `xattr -c/-d`.
+  - A dynamic word counts as the worst case.
+- `chmod` modes count as world-writable when written as long octal modes (`00777`), when copied from another class (`o=u`, `o=g`), and with `--reference=`. A leading removal such as `-x` or `go-w` is the mode operand, not an option. A mode the grammar cannot read refuses a stored rule but never triggers the floor, so once and session choices remain.
+- The sensitive-path floor also covers what a search reads, not only its literal arguments (rounds 5 and 6).
+  - A recursive content search whose root is at or above a secret-holding directory is floored: `grep` (`-r`, `-R`, `--recursive`, `-d recurse`, `--directories recurse` or `=recurse`) and `rg`, which always recurses. Secret-holding directories include the home, `/`, `~/.config`, `~/Library/Application Support`, the Ave home and `/proc`.
+  - A search that follows symlinks is floored when a followed link resolves into a sensitive path, or when the walk passes 5000 entries without ruling that out:
+    - GNU `grep -R`/`--dereference-recursive`;
+    - BSD `grep -S` on macOS, where `-R` alone does not follow;
+    - `rg -L`/`--follow`;
+    - `find -L`/`-follow` for links below the root, and `-H` for root links.
+  - `find` without following only lists names, so its roots are not floored, consistent with `ls -R ~`, `du -a ~` and `rg --files`.
+  - BSD `find` leading options (`-E -X -d -s -x`, `-f <path>`) are parsed; `-f`'s value is a root.
+  - A dynamic root is an ordinary ask.
+- Known limits of the floor (accepted, round 6):
+  - A recursive search inside a project still reads that project's own `.env`, which matches only the unanchored `**/.env` pattern.
+  - A secret committed to the repository is reachable through the `git log -p`, `git show` and `git diff` catalog wildcards. The floor checks paths, not the content of history.
+  - The symlink check is a point-in-time scan. A link created between the decision and the run (TOCTOU) is not seen.
+  - The 5000-entry cap means `rg -L` or `find -L` over a large repository (for example one with `node_modules`) always asks.
+- The floor also checks git object paths: `<rev>:<path>` and `:<path>` operands (`git show HEAD:.env`, `git cat-file -p HEAD:.env`) and pathspecs after `--` (`git log -p -- .env`) are floored like `cat .env`.
+- Secret stores added to `sensitive-paths.ts` (round 5):
+  - `/proc/*/environ`, `/proc/*/mem` and `/proc/*/fd/**`, together with their `task/*` and `map_files` forms; `cmdline` and `status` stay readable.
+  - Chromium-family `Cookies`, `Login Data`, `Web Data` and `Local State` under `~/Library/Application Support`, `~/.config` and Windows `User Data`, which covers Chrome, Edge, Brave, Arc and Chromium.
+  - Firefox `logins.json`, `key4.db` and `cookies.sqlite` under `Firefox/Profiles` and `.mozilla/firefox`.
+- `git remote -v`, `git remote show <name>`, `git remote get-url`, `git reflog` and `git worktree list` stay storable. Only `git remote remove/rm/rename/set-url/prune` is refused.
+- Network clients (`curl`, `wget`, `ssh`, `rsync` and similar) get no reusable allow suggestion until host-scoped network rules exist; they keep once and session choices.
+- The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
+- A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
+- Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
+- An edited rule is normalized by one shared function before it is checked: outer and inner whitespace is trimmed and runs of spaces or tabs in a `Bash(...)` body collapse to one space. The dock previews the normalized rule, and the host save path applies the same function; the rule store's parser stays strict for every other writer. The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
 - A corrupt Store A, Store B or project file fails clearly with a visible error.
 - Corrupt files are never silently dropped and never overwritten.
 
@@ -300,10 +357,10 @@ alone does not establish dispatch parity or a live provider's behavior.
 
 ## Delivery
 
-All work lands on the category branch `integration/permissions`.
+The baseline work used `integration/permissions`. The approval rules UI is delivered through `integration/permissions-2`.
 
 - **P1a** (this change): rules language, parser, shell matcher, refused list, arity suggestion, Store A extension with `ask`, per-project rule files, corrupt-file handling for Store A and B, removal of the blanket shell → HIGH. No UI.
-- **P1b:** the dock (prefix suggestion, allow-session / deny-always, per-project vs everywhere), one Settings list with revoke across Store A, project files and Store B, and i18n.
+- **P1b:** implemented in the shared approval content and Permissions Settings, with project/user rule persistence, conversation-scoped exact approvals, unified revoke and English/Korean copy.
 - **P1c:** path-scoped `Edit`, host-scoped `WebFetch`, `Mcp`, and out-of-directory depth.
 - **P2:** reuse `src/permissions/judge/`; land auto-mode relocation with the call site after P1a. The call site owns deferred-queue wiring, root-session mapping, Settings storage/UI with English and Korean text, and the judge-settings write floor.
 
@@ -312,7 +369,7 @@ All work lands on the category branch `integration/permissions`.
 ### Where the code is
 
 - `src/permissions/rules/rule-specifier.ts`: the grammar, plus the pure host and MCP matchers that P1c will wire in.
-- `src/permissions/rules/shell-prefix-policy.ts`: the refused list and the arity suggestion.
+- `src/permissions/rules/shell-prefix-policy.ts`: the suggestion; `shell-prefix-values.ts` holds the refused list and the wildcard allowlist.
 - `src/permissions/rules/shell-rule-matcher.ts`: the AST walk and deny/ask/allow evaluation.
 - `src/permissions/rules/rule-files.ts`: rule validation and `PermissionRulesFileCorruptError`.
 - `src/permissions/rules/project-rule-files.ts`: per-project files in Ave home.
@@ -330,7 +387,7 @@ All work lands on the category branch `integration/permissions`.
 Checks run in this order:
 
 1. Deny decides at layer 1.
-2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired (the repair UI is P1b). A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
+2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired. Settings identifies unavailable files without overwriting them; the user repairs the file outside the rule list. A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
 3. An identified sensitive-path or credential/sink signal decides at layer 2 as
    a forced, never-remembered prompt, before any allow rule or saved approval.
 4. Explicit ask rules decide at layer 2 as forced, never-remembered prompts.
@@ -573,16 +630,16 @@ The decision-table and classifier checks establish policy-analysis behavior.
 Native shell execution and proxy/sandbox egress behavior are not validated by
 this change.
 
-### Gaps closed by P1b
+### Approval rules UI
 
-The Settings IPC still accepts only allow/deny patterns without whitespace. Until P1b, `Bash(...)` rules are added through `PermissionManager.addRulePersist` (and removed through `removeRulePersist`).
+Settings accepts canonical `Bash(...)` rules, including whitespace inside their command prefix. The dock saves through the same `PermissionManager.addRulePersist` method. Revocation uses `removeRulePersist` for rules and the existing Store B revoke method for exact approvals. Each row identifies its decision, source and user, project, persistent or conversation scope. Revoking an entry affects subsequent permission checks; it does not answer an open approval request. Failed saves and revocations remain visible.
 
 ## Tests
 
 - `src/permissions/__tests__/rules-language.test.ts` covers:
   - the grammar;
   - the refused list;
-  - the arity table;
+  - the wildcard allowlist, exact-only suggestions and irreversible commands;
   - compound commands, substitutions, wrappers and floors;
   - the `ls *` vs `lsof` case.
 - `src/permissions/__tests__/rules-store-and-decision.test.ts` covers:
@@ -593,3 +650,6 @@ The Settings IPC still accepts only allow/deny patterns without whitespace. Unti
   - sibling projects;
   - Store B coexistence;
   - the default-mode gate offering "remember" for `ls` / `npm test` but not `rm -rf`.
+- `src/ui/renderer/components/__tests__/ToolApprovalContent-shell-rules.test.tsx` covers rule editing, refused prefixes, session scope, durable deny, save failure and English/Korean copy.
+- `src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx` covers the unified list, refresh, scoped revocation and unavailable stores.
+- `test/e2e/ui/approval-shell-rules.spec.ts` covers bilingual shell controls, one-shot credential requests and project-rule revocation through the host bridge.

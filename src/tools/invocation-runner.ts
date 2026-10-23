@@ -1160,6 +1160,7 @@ export async function runToolInvocation(
           permissionContext.trustOrigin,
           approvalCacheKeyIdentity(approvalCacheKey, approvalMemory),
           executionCwd,
+          sessionId,
         );
         if ((storedDecision?.decision ?? "allow") === "deny") {
           exactDecisionBlockReason = "tool decision for this input or target denied in permission settings";

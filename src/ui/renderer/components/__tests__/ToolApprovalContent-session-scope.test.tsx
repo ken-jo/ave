@@ -24,6 +24,7 @@ function browserRequest(tabOpener: "agent" | "user"): ApprovalRequest {
     createdAt: Date.now(),
     requireExplicit: false,
     trustOrigin: "user-keyboard",
+    sessionId: "11111111-1111-4111-8111-111111111111",
     reviewerVerdict: { level: "medium", reason: "browser page action" },
     persistentAllowAllowed: true,
     persistentApprovalCwd: "/workspace/project",
@@ -55,6 +56,22 @@ describe("ToolApprovalContent session-only browser scope", () => {
     fireEvent.click(remember);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
+  });
+
+  it("disables allow-for-this-session with its reason when the request has no conversation", async () => {
+    const onDecide = vi.fn();
+    const record = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    const { sessionId: _omitted, ...request } = browserRequest("agent");
+    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={onDecide} />);
+    const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    expect(remember).toBeDisabled();
+    const reason = "이 요청은 대화에 속하지 않아 세션 동안 허용할 수 없습니다. 한 번만 허용하세요.";
+    expect(remember).toHaveAttribute("title", reason);
+    expect(document.getElementById(remember.getAttribute("aria-describedby")!)).toHaveTextContent(reason);
+    fireEvent.click(remember);
+    expect(record).not.toHaveBeenCalled();
+    expect(onDecide).not.toHaveBeenCalled();
   });
 
   it("names the user's own tabs for a user-tab scope", () => {

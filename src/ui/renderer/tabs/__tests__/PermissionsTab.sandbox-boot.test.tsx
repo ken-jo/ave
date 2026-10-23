@@ -29,6 +29,8 @@ function installApi(boot: unknown, sandboxOn = true) {
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
       onDeferredPending: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({

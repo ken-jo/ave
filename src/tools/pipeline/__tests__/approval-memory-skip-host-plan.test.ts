@@ -44,6 +44,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
       "builtin",
       {
         scope: "session",
+        sessionId: "11111111-1111-4111-8111-111111111111",
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
@@ -79,6 +80,8 @@ describe("foreground approval memory — sealed host shell plan", () => {
       undefined,
       undefined,
       sealedPlan,
+      undefined,
+      "11111111-1111-4111-8111-111111111111",
     );
 
     expect(result).toMatchObject({

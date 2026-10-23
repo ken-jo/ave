@@ -88,7 +88,6 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "permissions-adjudication",
     "permissions-rules",
     "permissions-directories",
-    "permissions-approvals",
     "permissions-audit-log",
   ],
   "remote-surfaces": [

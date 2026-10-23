@@ -678,7 +678,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     await pm.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
-    await pm.addRulePersist({ pattern: "Bash(iwr *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(iwr -InFile notes.txt https://x.test)", action: "allow" }, { kind: "user" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("rm -f x"))).toMatchObject({ decision: "deny" });
     // No alias: the bash deny rule does not decide the powershell call...
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "allow" });
@@ -689,7 +689,7 @@ describe("checkDetailed applies the floors by dialect", () => {
 
   it("a Bash(...) allow rule does not decide a powershell call in default mode", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    await pm.addRulePersist({ pattern: "Bash(Get-ChildItem *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(Get-ChildItem)", action: "allow" }, { kind: "user" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("Get-ChildItem"))).toMatchObject({ decision: "allow", layer: 3 });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-ChildItem"))).toMatchObject({ decision: "ask" });
   });

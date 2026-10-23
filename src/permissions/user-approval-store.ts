@@ -16,7 +16,7 @@
  *   • Store A — durable glob allow/deny RULES + the `alwaysAllowed` Map in
  *     PermissionManager, managed by PermissionsTab and consulted by the SYNC
  *     `checkDetailed` (Layers 3 glob / 5 exact). It is edited explicitly in
- *     Settings and is never widened implicitly by a foreground approval card.
+ *     Settings and by explicit command-rule choices in the approval card.
  *   • Store B — THIS store. User DECISIONS, keyed as above, written
  *     for persistent allow or deny choices via the `userApprovalRecord` IPC.
  *     Exact allows are read by the reviewer lane
@@ -28,7 +28,7 @@
  * Permissions: directory 0o700, file 0o600 (per CLAUDE.md storage namespace rule)
  *
  * Scope semantics:
- *   "session"    — approval held in this process only; revoked on restart.
+ *   "session"    — conversation-bound in memory; legacy rows retain process lifetime.
  *   "persistent" — approval written to disk; survives restarts.
  *
  * The live approval gate owns persistence eligibility. An unavailable review
@@ -65,6 +65,10 @@ let persistentWrites = createSerialQueue();
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface UserApprovalEntry {
+  /** Root conversation identity for newly recorded session decisions. */
+  sessionId?: string;
+  /** Host-captured directory for display; never an authority supplied by the UI. */
+  projectCwd?: string;
   /** Legacy entries omit this field and are interpreted as an allow. */
   decision?: UserApprovalDecision;
   /** ISO 8601 wall-clock time the approval was granted. */
@@ -272,6 +276,36 @@ function memoryEntryKey(
   })), workingDirectoryIdentity);
 }
 
+/**
+ * Maps a session to the root conversation that owns its session approvals.
+ * A session allow belongs to the root conversation: every agent in that tree
+ * (the conversation and the sub-agents it spawned, at any depth) shares it,
+ * and separate root conversations never do. This covers every session
+ * approval, not only shell ones. Boot registers the one root-session resolver
+ * (`createRootSessionResolver`, shared with the judge). Without a runner no
+ * session is a child, so each session is its own root; the identity resolver
+ * is that exact answer.
+ */
+type ApprovalConversationRootResolver = (sessionId: string) => string;
+const identityConversationRoot: ApprovalConversationRootResolver = (sessionId) => sessionId;
+let resolveConversationRoot: ApprovalConversationRootResolver = identityConversationRoot;
+
+export function setApprovalConversationRootResolver(resolver: ApprovalConversationRootResolver): void {
+  resolveConversationRoot = resolver;
+}
+
+/** The root conversation a session approval is keyed and listed under. */
+function approvalConversationRoot(sessionId: string): string {
+  if (!sessionId.trim()) throw new Error("Approval session identity must be non-empty");
+  const root = resolveConversationRoot(sessionId);
+  if (!root.trim()) throw new Error("Approval root session identity must be non-empty");
+  return root;
+}
+
+function conversationEntryKey(key: string, rootSessionId: string): string {
+  return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId: rootSessionId }));
+}
+
 function entryKey(
   toolName: string,
   args: string,
@@ -388,14 +422,24 @@ export async function recordApproval(
     approvalCacheKey?: ApprovalCacheKeyIdentity;
     workingDirectoryIdentity?: string;
     riskCeilingAtApproval?: UserApprovalVerdict;
+    sessionId?: string;
+    projectCwd?: string;
   },
 ): Promise<void> {
   if (!isApprovalVerdict(entry.verdictAtApproval) ||
       (entry.riskCeilingAtApproval !== undefined && !isApprovalVerdict(entry.riskCeilingAtApproval))) {
     throw new Error("Invalid approval risk provenance");
   }
-  const key = entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  const baseKey = entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
+  // A session approval always belongs to a root conversation (owner decision
+  // 2026-10-23); an unscoped one would authorize every conversation.
+  if (entry.scope === "session" && entry.sessionId === undefined) throw new Error("A session approval requires its conversation session");
+  const rootSessionId = entry.sessionId === undefined ? undefined : approvalConversationRoot(entry.sessionId);
+  const key = rootSessionId === undefined ? baseKey : conversationEntryKey(baseKey, rootSessionId);
   const full: UserApprovalEntry = {
+    ...(rootSessionId === undefined ? {} : { sessionId: rootSessionId }),
+    ...(entry.projectCwd === undefined ? {} : { projectCwd: entry.projectCwd }),
     decision: entry.decision ?? "allow",
     approvedAt: entry.approvedAt ?? new Date().toISOString(),
     scope: entry.scope,
@@ -447,6 +491,7 @@ export async function lookupUserDecision(
   trustOrigin?: string,
   approvalCacheKey?: ApprovalCacheKeyIdentity,
   executionCwd?: string,
+  sessionId?: string,
 ): Promise<UserApprovalEntry | null> {
   const workingDirectoryIdentity = executionCwd === undefined
     ? undefined
@@ -467,6 +512,7 @@ export async function lookupUserDecision(
       denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity));
     }
   }
+  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
   const keys = [...denyOnlyKeys, key];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
   const readActive = (candidate: string): UserApprovalEntry | null => {
@@ -482,7 +528,11 @@ export async function lookupUserDecision(
     const restrictive = readActive(candidate);
     if (restrictive?.decision === "deny") return restrictive;
   }
-  return readActive(key);
+  const legacy = readActive(key);
+  if (legacy?.decision === "deny") return legacy;
+  const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
+  if (conversation && !conversation.revokedAt && hasValidRiskProvenance(conversation)) return conversation;
+  return legacy;
 }
 
 /**
@@ -498,6 +548,7 @@ export async function lookupApproval(
   trustOrigin?: string,
   approvalCacheKey?: ApprovalCacheKeyIdentity,
   executionCwd?: string,
+  sessionId?: string,
 ): Promise<UserApprovalEntry | null> {
   const entry = await lookupUserDecision(
     toolName,
@@ -506,6 +557,7 @@ export async function lookupApproval(
     trustOrigin,
     approvalCacheKey,
     executionCwd,
+    sessionId,
   );
   return entry && (entry.decision ?? "allow") === "allow" ? entry : null;
 }
@@ -545,14 +597,18 @@ export async function revokeApproval(
  * Used by the PermissionsTab UI which receives pre-computed keys from the IPC list response.
  */
 export async function revokeApprovalByKey(rawKey: string): Promise<void> {
-  // Evict from session store.
-  sessionStore.delete(rawKey);
+  if (sessionStore.get(rawKey)?.scope === "session") {
+    sessionStore.delete(rawKey);
+    approvalGeneration += 1;
+    return;
+  }
 
   await mutatePersistentApprovals((file) => {
     const existing = file.approvals[rawKey];
     if (!existing) return;
     existing.revokedAt = new Date().toISOString();
   });
+  sessionStore.delete(rawKey);
   approvalGeneration += 1;
 }
 
@@ -564,6 +620,8 @@ export async function revokeApprovalByKey(rawKey: string): Promise<void> {
  * for targeted revocation.
  */
 export type UserApprovalListEntry = {
+  projectCwd?: string;
+  sessionId?: string;
   key: string;
   decision?: UserApprovalDecision;
   approvedAt: string;
@@ -577,6 +635,8 @@ export type UserApprovalListEntry = {
 
 function projectApprovalForList(key: string, entry: UserApprovalEntry): UserApprovalListEntry {
   return {
+    ...(entry.projectCwd === undefined ? {} : { projectCwd: entry.projectCwd }),
+    ...(entry.sessionId === undefined ? {} : { sessionId: entry.sessionId }),
     key,
     ...(entry.decision === undefined ? {} : { decision: entry.decision }),
     approvedAt: entry.approvedAt,
@@ -589,6 +649,13 @@ function projectApprovalForList(key: string, entry: UserApprovalEntry): UserAppr
   };
 }
 
+/** Session rows remain inspectable and revocable when the disk file is corrupt. */
+export function listSessionApprovals(): UserApprovalListEntry[] {
+  return [...sessionStore.entries()]
+    .filter(([, entry]) => entry.scope === "session")
+    .map(([key, entry]) => projectApprovalForList(key, entry));
+}
+
 export async function listApprovals(): Promise<UserApprovalListEntry[]> {
   const file = await readApprovalsFile();
 
@@ -597,10 +664,8 @@ export async function listApprovals(): Promise<UserApprovalListEntry[]> {
   ).map(([key, entry]) => projectApprovalForList(key, entry));
 
   // Include session-only entries not persisted to disk.
-  for (const [key, entry] of sessionStore.entries()) {
-    if (entry.scope === "session" && !file.approvals[key]) {
-      result.push(projectApprovalForList(key, entry));
-    }
+  for (const row of listSessionApprovals()) {
+    if (!file.approvals[row.key]) result.push(row);
   }
 
   return result;
@@ -829,5 +894,6 @@ export async function migrateCanonicalization(): Promise<void> {
 export function __resetSessionStoreForTest(): void {
   if (sessionStore.size > 0) approvalGeneration += 1;
   sessionStore.clear();
+  resolveConversationRoot = identityConversationRoot;
   persistentWrites = createSerialQueue();
 }

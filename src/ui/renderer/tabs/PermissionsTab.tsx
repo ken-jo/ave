@@ -31,7 +31,8 @@ import type {
   PermissionReviewerMode,
   PermissionReviewerInteractiveAutoApprove,
   PermissionReviewerSettings,
-  PermissionRule,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
 } from "../types.js";
 import type {
   SandboxCapabilityInfo,
@@ -55,7 +56,6 @@ import { isIpcErrorResult } from "../types.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import type { ExactDenyDraft } from "../exact-permission-decision.js";
 import { TEST_IDS, execModeTestId, testIdSelector } from "../../../shared/test-ids.js";
-import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
@@ -343,9 +343,11 @@ export function PermissionsTab({
   const [policyAdminPath, setPolicyAdminPath] = useState<string | undefined>(undefined);
 
   // ── Rule Editor ───────────────────────────────────
-  const [rules, setRules] = useState<PermissionRule[]>([]);
+  const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
   const [newPattern, setNewPattern] = useState("");
   const [newAction, setNewAction] = useState<"allow" | "deny">("allow");
+  const [ruleLoadErrors, setRuleLoadErrors] = useState<ScopedPermissionRuleError[]>([]);
+  const [approvalLoadError, setApprovalLoadError] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
   const [directories, setDirectories] = useState<string[]>([]);
   const [newDirectory, setNewDirectory] = useState("");
@@ -367,6 +369,8 @@ export function PermissionsTab({
     toolName?: string;
     source?: string;
     args?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>([]);
   const [approvalsBusy, setApprovalsBusy] = useState(false);
   const [exactDenyBusy, setExactDenyBusy] = useState(false);
@@ -425,7 +429,7 @@ export function PermissionsTab({
         await Promise.all([
           window.ave.permission.getMode(),
           window.ave.policy.get(),
-          window.ave.permission.listRules(),
+          window.ave.permission.listScopedRules(),
           window.ave.permission.hookTrustList(),
           window.ave.permission.dirDispatch("list"),
           window.ave.permission.reviewerDispatch("show"),
@@ -442,7 +446,8 @@ export function PermissionsTab({
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
-      setRules(rulesRes);
+      setRules(rulesRes.rules);
+      setRuleLoadErrors(rulesRes.errors);
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
@@ -485,8 +490,16 @@ export function PermissionsTab({
     try {
       const list = await window.ave.userApproval.list();
       setUserApprovals(list.filter((a) => !a.revokedAt));
+      setApprovalLoadError(false);
     } catch {
-      // non-fatal
+      setApprovalLoadError(true);
+      try {
+        const sessionEntries = await window.ave.userApproval.listSession();
+        setUserApprovals(sessionEntries.filter((entry) => !entry.revokedAt));
+      } catch {
+        // Keep the corruption notice and the last known session rows.
+        setUserApprovals((entries) => entries.filter((entry) => entry.scope === "session"));
+      }
     }
   }, []);
 
@@ -845,8 +858,9 @@ export function PermissionsTab({
   };
 
   const refreshRules = async () => {
-    const r = await window.ave.permission.listRules();
-    setRules(r);
+    const r = await window.ave.permission.listScopedRules();
+    setRules(r.rules);
+    setRuleLoadErrors(r.errors);
   };
 
   const handleAddRule = async () => {
@@ -868,10 +882,10 @@ export function PermissionsTab({
     }
   };
 
-  const handleRemoveRule = async (pattern: string, action: "allow" | "deny" | "ask") => {
+  const handleRemoveRule = async (rule: ScopedPermissionRule) => {
     setRulesBusy(true);
     try {
-      const res = await window.ave.permission.removeRule(pattern, action);
+      const res = await window.ave.permission.removeScopedRule(rule);
       if (res.ok) {
         await refreshRules();
       } else {
@@ -1639,56 +1653,71 @@ export function PermissionsTab({
         {/* ── Section C: Rule Editor ── */}
         <SettingsSection
           data-settings-section="permissions-rules"
-          title={t("permissionsTab.rulesTitle")}
-          description={<>{t("permissionsTab.rulesDescriptionBefore")}<code className="text-[10px]">mcp_*</code>{t("permissionsTab.rulesDescriptionAfter")}</>}
+          title={t("permissionsTab.unifiedRulesTitle")}
+          description={t("permissionsTab.unifiedRulesDescription")}
         >
-          {rules.length === 0 ? (
+          {ruleLoadErrors.length > 0 || approvalLoadError ? (
+            <div role="alert" data-testid="permissions-rule-load-error" className="text-xs text-destructive">
+              {t("permissionsTab.unifiedRulesLoadError")}
+              {ruleLoadErrors.map((failure, index) => <p key={`${failure.filePath}:${index}`} className="break-all">{failure.filePath}</p>)}
+              {approvalLoadError ? <p>{t("permissionsTab.savedApprovalsFile")}</p> : null}
+            </div>
+          ) : null}
+          {rules.length === 0 && userApprovals.length === 0 ? (
             <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
           ) : (
             <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full table-fixed text-xs">
-                <colgroup>
-                  <col className="w-[44%]" />
-                  <col className="w-[20%]" />
-                  <col className="w-[26%]" />
-                  <col className="w-[10%]" />
-                </colgroup>
-                <thead>
-                  <tr className="border-b bg-muted/(--opacity-medium)">
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColPattern")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColAction")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColSource")}</th>
-                    <th className="px-3 py-2" />
-                  </tr>
-                </thead>
+              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full text-xs">
+                <thead><tr className="border-b bg-muted/(--opacity-medium)">
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColPattern")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColAction")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.approvalsColScope")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColSource")}</th>
+                  <th className="px-3 py-2" />
+                </tr></thead>
                 <tbody>
-                  {rules.map((r, i) => (
-                    <tr key={`${r.pattern}:${r.action}:${i}`} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
-                      <td className="px-3 py-1.5 font-mono">
-                        <span className="block truncate" title={r.pattern}>{r.pattern}</span>
+                  {rules.map((rule, index) => (
+                    <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {rule.pattern}
+                        {rule.invalidReason === "wildcard-not-allowlisted" ? (
+                          <p data-testid="permissions-rule-invalid" className="font-sans text-[10px] text-destructive">
+                            {t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
+                          </p>
+                        ) : null}
                       </td>
-                      <td className="px-3 py-1.5">
-                        <Badge variant={r.action === "allow" ? "default" : "secondary"} className={`shrink-0 whitespace-nowrap text-[10px] ${r.action === "deny" ? "text-destructive" : ""}`}>
-                          {r.action === "allow" ? t("permissionsTab.actionAllow") : t("permissionsTab.actionDeny")}
-                        </Badge>
+                      <td className="px-3 py-2"><Badge variant={rule.action === "allow" ? "default" : "secondary"}>
+                        {rule.action === "allow" ? t("permissionsTab.actionAllow") : rule.action === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAsk")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {rule.scope === "project" ? t("permissionsTab.scopeProject") : t("permissionsTab.scopeUser")}
+                        {rule.projectCwd ? <p className="text-[10px] text-muted-foreground">{rule.projectCwd}</p> : null}
                       </td>
-                      <td className="px-3 py-1.5 text-muted-foreground">
-                        <span className="block truncate" title={r.source ?? t("permissionsTab.sourceAll")}>
-                          {r.source ?? t("permissionsTab.sourceAll")}
-                        </span>
+                      <td className="px-3 py-2 text-muted-foreground">{rule.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={rulesBusy}
+                        onClick={() => void handleRemoveRule(rule)} aria-label={t("permissionsTab.revokeNamedRule", { pattern: rule.pattern })}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
+                    </tr>
+                  ))}
+                  {userApprovals.map((approval) => (
+                    <tr key={`exact:${approval.key}`} className="border-b last:border-0" data-rule-store="exact">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {approval.toolName ?? approval.key.slice(0, 12)}
+                        <p className="text-[10px] text-muted-foreground">{t("permissionsTab.exactApprovalLabel")}</p>
                       </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive"
-                          disabled={rulesBusy}
-                          onClick={() => void handleRemoveRule(r.pattern, r.action)}
-                        >
-                          ✕
-                        </Button>
+                      <td className="px-3 py-2"><Badge variant={approval.decision === "deny" ? "secondary" : "default"}>
+                        {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : t("permissionsTab.scopePersistent")}
+                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.projectCwd}</p>
                       </td>
+                      <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}
+                        onClick={() => void handleRevokeApproval(approval.key, approval.toolName ?? approval.key.slice(0, 12))}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1815,85 +1844,6 @@ export function PermissionsTab({
                   {t("permissionsTab.cancelButton")}
                 </Button>
               </div>
-            </div>
-          )}
-        </SettingsSection>
-
-        {/* ── 사용자 승인 기록 ── */}
-        <SettingsSection
-          data-settings-section="permissions-approvals"
-          title={t("permissionsTab.approvalsTitle", { count: userApprovals.length })}
-          description={t("permissionsTab.approvalsDescription")}
-          actions={
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 px-3 text-[12px]"
-              onClick={() => void fetchApprovals()}
-              disabled={approvalsBusy}
-            >
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          }
-        >
-          {userApprovals.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">{t("permissionsTab.approvalsEmpty")}</p>
-          ) : (
-            <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-approvals-table" className="min-w-[780px] w-full text-xs">
-                <thead className="border-b bg-muted/(--opacity-medium)">
-                  <tr>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColTool")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColDecision")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColScope")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColRisk")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColApprovedAt")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColReason")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColAction")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userApprovals.map((a) => (
-                    <tr key={a.key} className="border-b last:border-0">
-                      <td className="max-w-[120px] truncate px-3 py-2 font-mono">
-                        {a.toolName ?? a.key.slice(0, 12)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge
-                          variant={(a.decision ?? "allow") === "deny" ? "secondary" : "default"}
-                          className={`text-[10px] ${(a.decision ?? "allow") === "deny" ? "text-destructive" : ""}`}
-                        >
-                          {(a.decision ?? "allow") === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex h-5 items-center whitespace-nowrap rounded px-1.5 text-[10px] font-medium ${a.scope === "persistent" ? "bg-warning/(--opacity-soft) text-warning" : "bg-muted text-muted-foreground"}`}>
-                          {a.scope === "persistent" ? t("permissionsTab.scopePersistent") : t("permissionsTab.scopeSession")}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2">{a.verdictAtApproval.toUpperCase()}{a.verdictAtApproval === "high" ? t("permissionsTab.verdictHighFixed") : ""}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                        {formatDateTime(a.approvedAt)}
-                      </td>
-                      <td className="max-w-[180px] truncate px-3 py-2 text-muted-foreground"
-                          title={a.nlJustification ?? undefined}>
-                        {a.nlJustification ?? "—"}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={approvalsBusy}
-                          onClick={() => void handleRevokeApproval(a.key, a.toolName ?? a.key.slice(0, 12))}
-                        >
-                          {t("permissionsTab.revokeButton")}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </SettingsSection>

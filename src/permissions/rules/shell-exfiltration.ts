@@ -33,9 +33,9 @@
  * the rule matcher never allows it, and `PermissionManager.checkDetailed`
  * forces a per-call ask in every mode (the floor).
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   staticShellWord,
   type ShellCommand,
@@ -51,6 +51,7 @@ import {
   caseFoldForMatch,
   createSensitivePathMatcher,
   foldCanonicalPathSeparators,
+  sensitiveLocationUnder,
 } from "../sensitive-paths.js";
 import {
   SHELL_PREFIX_POLICY,
@@ -849,6 +850,186 @@ function scanRedirectTarget(target: ShellWord, state: ScanState): void {
   checkWord(target, state);
 }
 
+/** Entries a symlink-following search may inspect before it is refused as too large to rule out. */
+const SYMLINK_SCAN_ENTRY_LIMIT = 5000;
+
+/**
+ * What a search walks: whether it recurses, which symlinks it follows
+ * (`all` below the roots, or only `roots` named on the command line), and the
+ * indexes of its root words. `find` only lists names, so it is not a content
+ * search (`ancestorFloor: false`); only the links it follows matter.
+ */
+interface SearchShape {
+  recursive: boolean;
+  follow: "all" | "roots" | false;
+  ancestorFloor: boolean;
+  roots: number[];
+}
+
+function findShape(argv: readonly (string | undefined)[]): SearchShape {
+  let index = 1;
+  let follow: SearchShape["follow"] = false;
+  const roots: number[] = [];
+  // Leading options: GNU `-H`/`-L`/`-P`, `-D <flags>`, `-O<level>`; BSD also
+  // `-E`, `-X`, `-d`, `-s`, `-x` and `-f <path>` (that path is a root).
+  while (index < argv.length && argv[index] !== undefined) {
+    const word = argv[index]!;
+    if (word === "-f") { roots.push(index + 1); index += 2; continue; }
+    if (word === "-D") { index += 2; continue; }
+    if (!/^-(?:[HLPEXdsx]+|O\d*)$/.test(word)) break;
+    // The last of `-H`/`-L`/`-P` wins.
+    for (const letter of word.slice(1)) {
+      if (letter === "L") follow = "all";
+      else if (letter === "H") follow = "roots";
+      else if (letter === "P") follow = false;
+    }
+    index += 1;
+  }
+  while (index < argv.length && !(argv[index] !== undefined && /^[-(!,]/.test(argv[index]!))) roots.push(index++);
+  if (argv.slice(index).some((word) => word === undefined || word === "-follow")) follow = "all";
+  return { recursive: true, follow, ancestorFloor: false, roots: roots.filter((root) => root < argv.length) };
+}
+
+/**
+ * `grep`/`rg`. GNU grep follows links under `-R`/`--dereference-recursive`;
+ * BSD grep (macOS `/usr/bin/grep`) recurses with `-r` or `-R` and follows
+ * links only with `-S` (its default is `-p`). `ggrep` is GNU everywhere.
+ */
+function contentSearchShape(argv: readonly (string | undefined)[], name: string): SearchShape {
+  const grep = name !== "rg";
+  const bsd = grep && name !== "ggrep" && process.platform === "darwin";
+  let recursive = !grep;
+  let follow: SearchShape["follow"] = false;
+  let patternGiven = false;
+  const operands: number[] = [];
+  let delimited = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const word = argv[index];
+    if (word === undefined) { operands.push(index); continue; }
+    if (!delimited && word === "--") { delimited = true; continue; }
+    if (delimited || !word.startsWith("-") || word === "-") { operands.push(index); continue; }
+    if (word.startsWith("--")) {
+      const [option = "", value] = word.slice(2).toLowerCase().split("=");
+      if (option === "regexp" || option === "file") patternGiven = true;
+      if (grep && option === "directories") {
+        // `--directories=recurse` or `--directories recurse`.
+        const directories = value ?? argv[index + 1];
+        if (directories === undefined || directories === "recurse") recursive = true;
+        if (value === undefined) index += 1;
+      }
+      if (grep && (option === "recursive" || option === "dereference-recursive")) recursive = true;
+      if ((grep && !bsd && option === "dereference-recursive") || (!grep && option === "follow")) follow = "all";
+      continue;
+    }
+    const cluster = word.slice(1);
+    if (/[ef]/.test(cluster)) patternGiven = true;
+    if (grep && /[rR]/.test(cluster)) recursive = true;
+    if (grep && cluster === "d") {
+      if (argv[index + 1] === undefined || argv[index + 1] === "recurse") recursive = true;
+      index += 1;
+      continue;
+    }
+    if (grep ? (bsd ? cluster.includes("S") : cluster.includes("R")) : cluster.includes("L")) follow = "all";
+  }
+  // Every operand but the pattern is a root; an option value counted as a
+  // root only widens the check.
+  return { recursive, follow, ancestorFloor: true, roots: patternGiven ? operands : operands.slice(1) };
+}
+
+function searchShape(argv: readonly (string | undefined)[]): SearchShape | null {
+  const name = program(argv[0])?.toLowerCase();
+  if (name === "find") return findShape(argv);
+  if (name === "grep" || name === "egrep" || name === "fgrep" || name === "ggrep" || name === "rg") return contentSearchShape(argv, name);
+  return null;
+}
+
+/** A symlink below `root` that resolves into a secret-holding location, or the reason the walk could not rule one out. */
+function sensitiveSymlinkUnder(root: string, state: ScanState): string | null {
+  const pending = [root];
+  let entries = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    let children: import("node:fs").Dirent[];
+    try { children = readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const child of children) {
+      entries += 1;
+      if (entries > SYMLINK_SCAN_ENTRY_LIMIT) return `symlink-following search of ${root} too large to rule out a link to a sensitive path`;
+      const path = join(directory, child.name);
+      if (child.isSymbolicLink()) {
+        let target: string;
+        try { target = caseFoldForMatch(canonicalizePathForMatch(realpathSync(path))); } catch { continue; }
+        const hit = state.match(target) ?? sensitiveLocationUnder(target);
+        if (hit) return `symlink ${path} reaches ${hit}`;
+        // A link to a directory is walked through its target by the search.
+        try { if (statSync(path).isDirectory()) pending.push(path); } catch { /* dangling link */ }
+      } else if (child.isDirectory()) {
+        pending.push(path);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A recursive `grep`/`rg` reads every file below its roots, so the floor
+ * covers a root at or above a secret-holding directory (`grep -r x ~`,
+ * `rg --hidden x /`). For any search that follows symlinks (GNU `grep -R`,
+ * BSD `grep -S`, `rg -L`, `find -L`/`-follow`/`-H`) it also covers a followed
+ * link that resolves into one. `find` alone only lists names, like `ls -R`.
+ */
+function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
+  if (state.sensitive) return;
+  const argv = commandArgv(cmd);
+  const shape = searchShape(argv);
+  if (!shape?.recursive) return;
+  const roots: string[] = [];
+  for (const index of shape.roots) {
+    const glob = wordGlob(cmd.words[index]!);
+    if (glob === null || glob.includes(DYNAMIC_SEGMENT)) {
+      state.ordinaryAsk ??= "recursive search root is not static";
+      return;
+    }
+    // A wildcard root stands for its static directory prefix.
+    const segments = glob.split(/[\\/]/);
+    const firstWild = segments.findIndex(hasWildcard);
+    const literal = unescapeGlob((firstWild < 0 ? segments : segments.slice(0, firstWild)).join("/")) || (glob.startsWith("/") ? "/" : ".");
+    roots.push(literal);
+  }
+  if (roots.length === 0) roots.push(".");
+  for (const root of roots) {
+    // Without a working directory a relative root names no location; the
+    // decision path always supplies one.
+    if (!isAbsolute(root) && state.cwd === undefined) continue;
+    const absolute = isAbsolute(root) ? root : resolve(state.cwd!, root);
+    const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
+    // A content search reads every file below its root.
+    const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
+    if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
+    if (shape.follow) {
+      // A followed root link counts like any other followed link.
+      const lexical = caseFoldForMatch(foldCanonicalPathSeparators(absolute));
+      const viaLink = canonical !== lexical ? state.match(canonical) ?? sensitiveLocationUnder(canonical) : null;
+      if (viaLink) { state.sensitive = `search root ${absolute} links to ${viaLink}`; return; }
+    }
+    if (shape.follow === "all") {
+      const link = sensitiveSymlinkUnder(absolute, state);
+      if (link) { state.sensitive = link; return; }
+    }
+  }
+}
+
+/** `git show HEAD:.env`, `git cat-file -p :.env`: the path inside a `<rev>:<path>` object name. */
+function scanGitObjectPaths(cmd: ShellCommand, state: ScanState): void {
+  if (state.sensitive || program(staticShellWord(cmd.words[0]!))?.toLowerCase() !== "git") return;
+  for (const word of cmd.words.slice(1)) {
+    const text = staticShellWord(word);
+    if (text === undefined || text.startsWith("-")) continue;
+    const object = /^[^:]*:(?!\/\/)(.+)$/.exec(text);
+    if (object) checkRawText(object[1]!, state);
+    if (state.sensitive) return;
+  }
+}
+
 function scanStatement(statement: ShellStatement, state: ScanState): void {
   switch (statement.kind) {
     case "command": {
@@ -863,6 +1044,10 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       }
       if (statement.words.length > 0 && isNetworkProgram(commandArgv(statement))) state.network = true;
       for (const word of statement.words) checkWord(word, state);
+      if (statement.words.length > 0) {
+        scanGitObjectPaths(statement, state);
+        scanRecursiveSearch(statement, state);
+      }
       for (const assignment of statement.assignments) {
         checkWord(assignment.value, state);
         for (const element of assignment.elements ?? []) checkWord(element, state);

@@ -33,6 +33,7 @@
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -287,7 +288,15 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
  * Host-guard-only Windows patterns (no literal form): Chromium-family
  * `Login Data` under any `User Data` profile (Chrome, Edge, Brave, …).
  */
-const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = ["**/AppData/Local/**/User Data/**/Login Data"];
+const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = [
+  "**/AppData/Local/**/User Data/**/Login Data",
+  "**/AppData/Local/**/User Data/**/Cookies",
+  "**/AppData/Local/**/User Data/**/Web Data",
+  "**/AppData/Local/**/User Data/Local State",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/logins.json",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/key4.db",
+  "**/AppData/Roaming/Mozilla/Firefox/Profiles/**/cookies.sqlite",
+];
 
 function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH_ENTRIES): readonly string[] {
   const globs: string[] = [];
@@ -331,6 +340,32 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   // single absolute path to project onto the sandbox floor (bwrap/seatbelt
   // cannot glob). See SENSITIVE_PATH_ENTRIES for the full rule.
   "**/.config/**/Login Data", // browser credential DB, vendor dir varies
+  // Chromium-family profile stores (Chrome, Edge, Brave, Arc, Chromium):
+  // saved passwords, cookies, autofill and the key that decrypts them.
+  // The vendor directory varies, so the store name is matched under it.
+  "**/Library/Application Support/**/Login Data",
+  "**/Library/Application Support/**/Cookies",
+  "**/Library/Application Support/**/Web Data",
+  "**/Library/Application Support/**/Local State",
+  "**/.config/**/Cookies",
+  "**/.config/**/Web Data",
+  "**/.config/**/Local State",
+  // Firefox profile stores: saved logins, the key that decrypts them, cookies.
+  "**/Firefox/Profiles/**/logins.json",
+  "**/Firefox/Profiles/**/key4.db",
+  "**/Firefox/Profiles/**/cookies.sqlite",
+  "**/.mozilla/firefox/**/logins.json",
+  "**/.mozilla/firefox/**/key4.db",
+  "**/.mozilla/firefox/**/cookies.sqlite",
+  // Linux per-process secrets: another process's environment, memory and
+  // open files. `/proc/<pid>/cmdline` and `status` stay readable.
+  "/proc/*/environ",
+  "/proc/*/mem",
+  "/proc/*/fd/**",
+  "/proc/*/map_files/**",
+  "/proc/*/task/*/environ",
+  "/proc/*/task/*/mem",
+  "/proc/*/task/*/fd/**",
   "**/.env",
   "**/.env.*",
   // Generic SSH key globs — catches id_rsa / id_ed25519 / id_ecdsa even
@@ -542,6 +577,38 @@ export function getConfiguredSessionReadPolicy(): {
  * primary session namespace receives a read exception; other sensitive rules
  * still apply, including credentials placed inside the readable namespace.
  */
+/**
+ * Directories whose contents hold secrets, canonical and case-folded: every
+ * anchored table row, plus the stores the unanchored globs reach under the
+ * home (`Library/Application Support`, `.config`, `.mozilla`, `AppData`,
+ * `Library/Cookies`, `Library/Keychains`) and `/proc`. A recursive search
+ * started at or above one of them reads it. Resolved per call: the home and
+ * the Ave home are read live, never cached at module load.
+ */
+function sensitiveSearchAnchors(): string[] {
+  const home = homedir();
+  const ave = aveHome();
+  const paths = SENSITIVE_PATH_ENTRIES.map((entry) =>
+    pathResolve(entry.anchor === "home" ? home : entry.anchor === "ave-home" ? ave : "/", ...entry.segments));
+  for (const segments of [["Library", "Application Support"], ["Library", "Cookies"], ["Library", "Keychains"], [".config"], [".mozilla"], ["AppData"]]) {
+    paths.push(pathResolve(home, ...segments));
+  }
+  paths.push("/proc");
+  return paths.map((path) => caseFoldForMatch(canonicalizePathForMatch(path)));
+}
+
+/**
+ * The secret-holding location at or below `directory` (canonical and
+ * case-folded, as {@link canonicalizePathForMatch} and
+ * {@link caseFoldForMatch} produce), or null. A recursive search rooted at
+ * `directory` would read it.
+ */
+export function sensitiveLocationUnder(directory: string): string | null {
+  const trimmed = directory.length > 1 ? directory.replace(/\/+$/, "") : directory;
+  const base = trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+  return sensitiveSearchAnchors().find((anchor) => anchor === trimmed || anchor.startsWith(base)) ?? null;
+}
+
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
   return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
 }

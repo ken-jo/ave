@@ -29,6 +29,7 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
+import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
@@ -242,6 +243,16 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
+/**
+ * A runner rule must name a literal command boundary. That is a structural
+ * property; the wildcard allowlist is the store's write-time policy, not a
+ * reason for the matcher to ignore a rule it was given.
+ */
+function runnerRuleBounded(tokens: readonly string[], wildcard: boolean): boolean {
+  const refusal = refusedShellPrefix(tokens, wildcard);
+  return refusal === null || refusal === "not-allowlisted";
+}
+
 /** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */
 function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   if (argv.length < spec.tokens.length) return false;
@@ -328,8 +339,16 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   // Floor: destructive text anywhere is never covered by an allow rule.
-  if (isDestructiveShellText(command) || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))) {
+  if (isDestructiveShellText(command)
+    || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
+  }
+  // Irreversible forms (`git clean -f`, `kubectl delete`, `mv`), kubectl
+  // re-targeting or secrets, and code-loading runner options are never
+  // covered by an allow rule.
+  for (const cmd of shape.commands) {
+    const unreusable = noReusableRuleReason(cmd.argv);
+    if (unreusable) return { decision: null, reason: `${unreusable} (no allow rule covers it)` };
   }
   const exfiltration = shellExfiltrationSignal(parsed, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
@@ -340,7 +359,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const patterns: string[] = [];
   // Stored runner rules still need a literal command boundary.
   const allowRules = rules.allow.filter((candidate) =>
-    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || refusedShellPrefix(candidate.spec.tokens) === null);
+    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || runnerRuleBounded(candidate.spec.tokens, candidate.spec.wildcard));
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
     const rule = allowRules.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));

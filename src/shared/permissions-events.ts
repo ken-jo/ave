@@ -19,6 +19,37 @@ import type { RiskLevel } from "./permission-review-status.js";
  */
 export type UserApprovalScope = "session" | "persistent";
 
+export interface ScopedPermissionRuleError {
+  filePath: string;
+  errorCode: "rules-file-unavailable";
+}
+
+/** Why a stored rule is listed but never matched (see `storedRuleInvalidReason`). */
+export type StoredRuleInvalidReason = "wildcard-not-allowlisted";
+
+/** Rule-store row with its host-owned persistence scope. */
+export interface ScopedPermissionRule {
+  pattern: string;
+  action: "allow" | "deny" | "ask";
+  source?: string;
+  scope: "user" | "project";
+  projectCwd?: string;
+  /** Stored identity of the project rules file a project row was read from. */
+  storedFile?: string;
+  /** Set when the stored rule is inert: listed with this reason and removable, never matched. */
+  invalidReason?: StoredRuleInvalidReason;
+}
+
+export interface ShellRuleApproval {
+  suggestedPattern: string | null;
+  /** Execution directory the host matches and saves against. */
+  projectCwd: string;
+  /** Directory a project rule applies to (the repository root when one is found); display only. */
+  projectRoot: string;
+  sessionAllowed: boolean;
+  persistentAllowed: boolean;
+}
+
 /**
  * Exact-tuple decision stored for a user-reviewed tool invocation.
  *
