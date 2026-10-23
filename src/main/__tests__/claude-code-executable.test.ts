@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
 } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { claudeCodeNpmShimTarget, pinClaudeCodeExecutable } from "../claude-code-executable.js";
 import { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
 import type { CliDiscoveryEnvironment } from "../user-cli-discovery.js";
@@ -21,11 +22,13 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 const roots: string[] = [];
 const fixtureTimestamp = new Date(1_700_000_000_000);
-afterEach(() => {
+afterEach(async () => {
   expect(spawn).not.toHaveBeenCalled();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // A test may leave its sealed read-only copy undiscarded; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function fixture(platform: NodeJS.Platform = process.platform) {

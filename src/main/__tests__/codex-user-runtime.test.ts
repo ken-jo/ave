@@ -17,6 +17,7 @@ import {
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -25,8 +26,8 @@ const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
 
 const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -652,9 +653,14 @@ describe("CodexUserRuntimeLocator", () => {
   it("finds a CLI installed after it reported none, without being pointed at it", async () => {
     // "Check again" on the settings card is just another resolve: the user
     // installs the CLI and Ave finds it where the installer put it.
-    const { root, locator } = locatorHarness();
+    // Each platform's installer writes to its own official location.
+    const { root, locator } = locatorHarness({
+      env: (base) => ({ PATH: join(base, "path-bin"), LOCALAPPDATA: join(base, "local-app-data") }),
+    });
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
-    writeNative(join(root, "user-home", ".local", "bin", NATIVE_NAME));
+    writeNative(HOST === "win32"
+      ? join(root, "local-app-data", "Programs", "OpenAI", "Codex", "bin", NATIVE_NAME)
+      : join(root, "user-home", ".local", "bin", NATIVE_NAME));
     await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
   });
 
