@@ -79,7 +79,7 @@ describe("registerMarketplaceContentHandlers", () => {
 
   it("registers the scheme handler up front and loads once, on the first request", async () => {
     const load = vi.fn(async () => runtime(port));
-    registerMarketplaceContentHandlers(installedDeps(), () => true, TOKEN, load);
+    registerMarketplaceContentHandlers(installedDeps(), TOKEN, load);
     schemeHandler();
     expect(load).not.toHaveBeenCalled();
 
@@ -94,7 +94,7 @@ describe("registerMarketplaceContentHandlers", () => {
 
   it("includes active extension routine templates in the installed view", async () => {
     const template = { id: "daily", title: "Daily review", packageName: "sampleportal", version: "1.0.0", sourceKind: "extension" };
-    registerMarketplaceContentHandlers(installedDeps([template]), () => true, TOKEN, async () => runtime(port));
+    registerMarketplaceContentHandlers(installedDeps([template]), TOKEN, async () => runtime(port));
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toMatchObject({
       ok: true, content: { routineTemplates: [template] },
     });
@@ -104,7 +104,7 @@ describe("registerMarketplaceContentHandlers", () => {
   it("serves an asset request through the same load, even before the renderer asks", async () => {
     const servedFile = vi.fn(() => null);
     const load = vi.fn(async () => runtime({ ...port, servedFile }));
-    registerMarketplaceContentHandlers(installedDeps(), () => true, TOKEN, load);
+    registerMarketplaceContentHandlers(installedDeps(), TOKEN, load);
     const response = await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`));
     expect(response.status).toBe(404);
     expect(servedFile).toHaveBeenCalledWith("font", "harbor-serif", "files/a.woff2");
@@ -118,7 +118,7 @@ describe("registerMarketplaceContentHandlers", () => {
   });
 
   it("answers unavailable when the store cannot be loaded", async () => {
-    registerMarketplaceContentHandlers({} as IpcDeps, () => true, TOKEN, async () => {
+    registerMarketplaceContentHandlers({} as IpcDeps, TOKEN, async () => {
       throw new Error("ledger unreadable");
     });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
@@ -157,7 +157,7 @@ describe("loadInstalledContent", () => {
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
-    const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, () => true, root);
+    const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
@@ -166,28 +166,24 @@ describe("loadInstalledContent", () => {
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
-    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, () => true, root);
+    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });
 
-  it("reports its bundled package list complete only while no package transaction is open", async () => {
-    const sources: Array<{ complete(): boolean }> = [];
-    const mcpManager = { ...LEASE_ONLY_MCP, registerBundledCredentialSource: (_kind: string, source: { complete(): boolean }) => { sources.push(source); } };
-    let idle = false;
-    await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager } as unknown as IpcDeps,
-      TOKEN, () => idle, root);
+  it("vouches for its installed agent plugins only when none failed to load", async () => {
+    const sources: Array<{ installedPackages(): Promise<ReadonlySet<string> | undefined> }> = [];
+    const mcpManager = { ...LEASE_ONLY_MCP, registerBundledCredentialSource: (_kind: string, source: { installedPackages(): Promise<ReadonlySet<string> | undefined> }) => { sources.push(source); } };
+    await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager } as unknown as IpcDeps, TOKEN, root);
     expect(sources).toHaveLength(1);
-    expect(sources[0]!.complete()).toBe(false);
-    idle = true;
-    expect(sources[0]!.complete()).toBe(true);
+    expect(await sources[0]!.installedPackages()).toEqual(new Set());
   });
 
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {
     const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn(), userSkillFile: async () => null };
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps;
-    const loaded = await loadInstalledContent(deps, TOKEN, () => true, root);
+    const loaded = await loadInstalledContent(deps, TOKEN, root);
     expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
     expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
     expect(skillStore.setInstalledAgentPlugins).toHaveBeenLastCalledWith([]);
@@ -204,7 +200,7 @@ describe("loadInstalledContent", () => {
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const personaPromptStore = { setInstalledAgentPlugins: vi.fn() };
     const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, personaPromptStore, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps;
-    const loaded = await loadInstalledContent(deps, TOKEN, () => true, root);
+    const loaded = await loadInstalledContent(deps, TOKEN, root);
     const files = {
       "plugin.json": JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" }),
       "skills/draft/SKILL.md": "---\nname: draft\ndescription: Draft text\n---\nDraft the text.",

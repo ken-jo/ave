@@ -310,48 +310,60 @@ describe("remote authorization lifecycle", () => {
   });
 
   it("defers bundled pruning while a package transaction is open, re-checking when the work runs", async () => {
-    const stableId = `bundled:${JSON.stringify(["agent-plugin", "updating-kit", "remote"])}`;
+    const stableId = `bundled:${JSON.stringify(["plugin", "updating-kit", "remote"])}`;
     secretStore.set("mcp.oauth.index", JSON.stringify({ [stableId]: "mcp.oauth.updating" }));
     secretStore.set("mcp.oauth.updating", "grant");
     let idle = false;
     const owner = manager();
-    // Mid-update the package list may not name the package; nothing is pruned while its transaction is open.
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => idle, list: () => [], reconnect: async () => {} });
+    owner.setPackageTransactionProbe(() => idle);
+    // Mid-update the installed set may not name the package yet; nothing is pruned while a transaction is open.
+    const source = { installedPackages: async () => new Set<string>(), list: () => [], reconnect: async () => {} };
+    owner.registerBundledCredentialSource("plugin", source);
     await owner.disconnectAll();
     expect(secretStore.get("mcp.oauth.updating")).toBe("grant");
-    // Registered while idle, but a transaction opened before the queued work ran: still deferred.
-    let calls = 0;
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => { calls += 1; return idle; }, list: () => [], reconnect: async () => {} });
+    // Idle when asked, but a transaction opened while the installed set was being read: still deferred.
+    let reads = 0;
+    owner.setPackageTransactionProbe(() => reads === 0);
+    owner.registerBundledCredentialSource("plugin", { ...source, installedPackages: async () => { reads += 1; return new Set<string>(); } });
     await owner.disconnectAll();
-    expect(calls).toBeGreaterThan(0);
+    expect(reads).toBe(1);
     expect(secretStore.get("mcp.oauth.updating")).toBe("grant");
     expect(secrets.deleteSecret).not.toHaveBeenCalled();
     idle = true;
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => idle, list: () => [], reconnect: async () => {} });
+    owner.setPackageTransactionProbe(() => idle);
+    owner.registerBundledCredentialSource("plugin", source);
     await owner.disconnectAll();
     expect(secretStore.has("mcp.oauth.updating")).toBe(false);
   });
 
-  it("retires bundled grants only from a complete package list that no longer declares them", async () => {
-    const stableId = (name: string) => `bundled:${JSON.stringify(["agent-plugin", name, "remote"])}`;
-    const index = { [stableId("kept-kit")]: "mcp.oauth.kept", [stableId("removed-kit")]: "mcp.oauth.removed",
-      [`bundled:${JSON.stringify(["plugin", "other-kind", "remote"])}`]: "mcp.oauth.plugin-kind", [config.id]: keyOf(config) };
+  it("retires bundled grants only of packages gone from the installed set, or of servers a listed package dropped", async () => {
+    const stableId = (name: string, server = "remote") => `bundled:${JSON.stringify(["plugin", name, server])}`;
+    const index = { [stableId("active-kit")]: "mcp.oauth.active", [stableId("active-kit", "dropped")]: "mcp.oauth.dropped",
+      [stableId("disabled-kit")]: "mcp.oauth.disabled", [stableId("removed-kit")]: "mcp.oauth.removed",
+      [`bundled:${JSON.stringify(["agent-plugin", "other-kind", "remote"])}`]: "mcp.oauth.agent-kind", [config.id]: keyOf(config) };
     secretStore.set("mcp.oauth.index", JSON.stringify(index));
     for (const key of Object.values(index)) secretStore.set(key, "grant");
     const declaration = (name: string) => ({ packageName: name, serverName: "remote", transport: "http" as const,
       url: "https://example.test/mcp", auth: "oauth" as const });
     const owner = manager();
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => false, list: () => [declaration("kept-kit")], reconnect: async () => {} });
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
+    // An install record that cannot vouch, or a list that cannot be read, deletes nothing.
+    owner.registerBundledCredentialSource("plugin", { installedPackages: async () => undefined, list: () => [declaration("active-kit")], reconnect: async () => {} });
+    owner.registerBundledCredentialSource("plugin", { installedPackages: async () => { throw new Error("registry unreadable"); }, list: () => [], reconnect: async () => {} });
+    owner.registerBundledCredentialSource("plugin", { installedPackages: async () => new Set(["active-kit", "disabled-kit"]), list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
     await owner.disconnectAll();
     expect(secrets.deleteSecret).not.toHaveBeenCalled();
-    owner.registerBundledCredentialSource("agent-plugin", { complete: () => true, list: () => [declaration("kept-kit")], reconnect: async () => {} });
+    // disabled-kit is installed but not loaded (not listed): kept. removed-kit is uninstalled: pruned.
+    // active-kit is listed without "dropped": that server's grant goes.
+    owner.registerBundledCredentialSource("plugin", { installedPackages: async () => new Set(["active-kit", "disabled-kit"]),
+      list: () => [declaration("active-kit")], reconnect: async () => {} });
     await owner.disconnectAll();
     expect(secretStore.has("mcp.oauth.removed")).toBe(false);
-    expect(secretStore.get("mcp.oauth.kept")).toBe("grant");
-    expect(secretStore.get("mcp.oauth.plugin-kind")).toBe("grant");
+    expect(secretStore.has("mcp.oauth.dropped")).toBe(false);
+    expect(secretStore.get("mcp.oauth.active")).toBe("grant");
+    expect(secretStore.get("mcp.oauth.disabled")).toBe("grant");
+    expect(secretStore.get("mcp.oauth.agent-kind")).toBe("grant");
     expect(secretStore.get(keyOf(config))).toBe("grant");
-    const { [stableId("removed-kit")]: _removed, ...remaining } = index;
+    const { [stableId("removed-kit")]: _removed, [stableId("active-kit", "dropped")]: _dropped, ...remaining } = index;
     expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual(remaining);
   });
 

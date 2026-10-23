@@ -273,6 +273,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
 vi.mock("../../plugins/plugin-bundle-lifecycle.js", () => ({
   PluginBundleLifecycle: class {
     recoverRetirements = vi.fn(async () => h.rec("retirementsRecovered"));
+    bundledMcpCredentialSource = vi.fn(() => ({}));
   },
 }));
 
@@ -365,6 +366,7 @@ vi.mock("../../mcp/mcp-manager.js", () => ({
     killSwitch = vi.fn(async () => {});
     listServers = vi.fn(() => [] as unknown[]);
     setPluginGenerationAccess = vi.fn();
+    registerBundledCredentialSource = vi.fn();
   },
 }));
 vi.mock("../../mcp/mcp-elicitation-resolver.js", () => ({
