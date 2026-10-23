@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ToolOutputArtifactStore } from "../tool-output-artifact-store.js";
 import {
   MAX_SESSION_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_PENDING_BYTES, MAX_TOOL_RESULT_ARTIFACT_BYTES,
@@ -40,7 +41,7 @@ beforeEach(() => {
   store = new ToolOutputArtifactStore(sessions);
 });
 
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { await cleanupTmpDir(root); });
 
 function outputDir(sessionId = SESSION_ID): string { return join(sessions, sessionId, "tool-output"); }
 function onlyFile(suffix: string): string {
