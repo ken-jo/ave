@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
 import { normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -25,6 +25,7 @@ import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from 
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 import { claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION = "550e8400-e29b-41d4-a716-446655440000";
 const HOST_TOOL = "mcp__ave-host-tools__read_project_file";
@@ -71,7 +72,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const owner of owners.splice(0)) await owner.stop();
   for (const child of children.splice(0)) child.dispose();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -698,7 +699,7 @@ describe("Claude Code CLI discovery", () => {
   it("discards private copies after retryable qualification failures", async () => {
     const directories = paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
-    const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
+    const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", process.platform === "win32" ? "claude.exe" : "claude"));
     const spawn = vi.fn(() => {
       const child = new FakeChild(); children.push(child);
       setImmediate(() => child.emit("error", new Error("spawn EACCES")));
