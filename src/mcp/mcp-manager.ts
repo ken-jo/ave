@@ -159,6 +159,8 @@ export class McpManager {
   private packageTransactionsIdle: () => boolean = () => true;
   /** Package kinds whose last bundled reconcile could not run; retried once package transactions settle. */
   private readonly deferredBundledReconciles = new Set<BundledPackageRef["kind"]>();
+  /** `kind/name` of a removed package → the store work revoking its grants; a session made meanwhile loads after it. */
+  private readonly pendingBundledRemovals = new Map<string, Promise<void>>();
   private readonly authentications = new Map<string, Promise<McpAuthenticationResult>>();
   private readonly oauthRetirements = new Map<string, number>();
   private readonly serverLifecycleLocks = new Map<string, Promise<void>>();
@@ -277,10 +279,59 @@ export class McpManager {
     void this.reconcileBundledOAuthCredentials(kind, source);
   }
 
-  /** A package of `kind` was removed: retire its sign-ins now, through its registered source. */
-  reconcileBundledCredentials(kind: BundledPackageRef["kind"]): Promise<void> {
+  /**
+   * Reconcile the sign-ins of `kind` through its registered source. With
+   * `removed`, that package's removal committed: its grants are revoked and
+   * its sessions disposed unconditionally, whatever the installed set says by
+   * the time the reconcile runs (a reinstall of the same id may already be
+   * there), so no grant of the removed install reaches a later one.
+   */
+  reconcileBundledCredentials(kind: BundledPackageRef["kind"], options: { removed?: string } = {}): Promise<void> {
+    const revoked = options.removed === undefined ? Promise.resolve() : this.revokeRemovedBundledPackage({ kind, name: options.removed });
     const source = this.bundledCredentialSources.get(kind);
-    return source ? this.reconcileBundledOAuthCredentials(kind, source) : Promise.resolve();
+    return Promise.all([revoked, source ? this.reconcileBundledOAuthCredentials(kind, source) : undefined]).then(() => undefined);
+  }
+
+  private revokeRemovedBundledPackage(packageRef: BundledPackageRef): Promise<void> {
+    const ofPackage = (serverId: string): boolean => {
+      let ref: ReturnType<typeof parseBundledConfigId>;
+      try { ref = parseBundledConfigId(serverId); }
+      catch { ref = null; }
+      return ref?.packageRef.kind === packageRef.kind && ref.packageRef.name === packageRef.name;
+    };
+    const keys = new Set<string>();
+    for (const stableId of [...this.bundledOAuthSessions.keys()]) {
+      if (ofPackage(stableId)) keys.add(this.retireBundledSession(stableId));
+    }
+    const removal = `${packageRef.kind}/${packageRef.name}`;
+    const work = this.queueOAuthStoreWork(async (secrets) => {
+      const index = this.readOAuthIndex(secrets);
+      let changed = false;
+      for (const [serverId, key] of Object.entries(index ?? {})) {
+        if (!ofPackage(serverId)) continue;
+        keys.add(key);
+        delete index![serverId];
+        changed = true;
+      }
+      for (const key of keys) await secrets.deleteSecret(key);
+      if (changed) await this.writeOAuthIndex(secrets, index!);
+    });
+    this.pendingBundledRemovals.set(removal, work);
+    void work.then(() => {
+      if (this.pendingBundledRemovals.get(removal) === work) this.pendingBundledRemovals.delete(removal);
+    });
+    return work;
+  }
+
+  /** Dispose a bundled OAuth session and forget its runtime ids; returns the key its grant is stored under. */
+  private retireBundledSession(stableId: string): string {
+    const { session } = this.bundledOAuthSessions.get(stableId)!;
+    session.dispose();
+    this.bundledOAuthSessions.delete(stableId);
+    for (const [serverId, mapped] of [...this.bundledOAuthRuntimeIds]) {
+      if (mapped === stableId) this.bundledOAuthRuntimeIds.delete(serverId);
+    }
+    return session.credentialKey;
   }
 
   /** Every package transaction closed: run again the reconciles that one deferred. */
@@ -560,7 +611,7 @@ export class McpManager {
    * Under the same key the old session hands off: a refresh it has in flight
    * finishes and persists before the new session reads the record.
    */
-  private replaceOAuthSession(config: McpHttpServerConfig, previous: McpOAuthSession | undefined): McpOAuthSession {
+  private replaceOAuthSession(config: McpHttpServerConfig, previous: McpOAuthSession | undefined, after?: Promise<void>): McpOAuthSession {
     if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
     const dependencies = { ...this.oauthPresentation, networkFetch: this.networkFetch };
     const key = tryMcpOAuthCredentialKey(config);
@@ -569,7 +620,7 @@ export class McpManager {
       void this.queueOAuthIndexUpdate(config.id, session.credentialKey);
       return session;
     }
-    const session = new McpOAuthSession(config, dependencies);
+    const session = new McpOAuthSession(config, dependencies, after ? { after } : {});
     previous?.dispose();
     void this.queueOAuthIndexUpdate(config.id, session.credentialKey, previous?.credentialKey);
     return session;
@@ -733,13 +784,8 @@ export class McpManager {
       const inventory = await this.bundledInventory(kind, source);
       if (!inventory) return;
       this.deferredBundledReconciles.delete(kind);
-      for (const [stableId, { session }] of [...this.bundledOAuthSessions]) {
-        if (!this.bundledGrantRetired(stableId, kind, inventory)) continue;
-        session.dispose();
-        this.bundledOAuthSessions.delete(stableId);
-        for (const [serverId, mapped] of [...this.bundledOAuthRuntimeIds]) {
-          if (mapped === stableId) this.bundledOAuthRuntimeIds.delete(serverId);
-        }
+      for (const stableId of [...this.bundledOAuthSessions.keys()]) {
+        if (this.bundledGrantRetired(stableId, kind, inventory)) this.retireBundledSession(stableId);
       }
       if (!secrets.canStoreEncrypted()) return;
       const index = this.readOAuthIndex(secrets);
@@ -858,13 +904,16 @@ export class McpManager {
     if (!bundled) throw new Error("bundled MCP approval is missing its package identity");
     if (!this.oauthPresentation) throw new Error("MCP authorization is unavailable");
     // Keyed by package and server, not generation, so a grant survives plugin updates.
-    const stableId = bundledConfigId(this.packageRefFromApproval(bundled.package), bundled.server);
+    const packageRef = this.packageRefFromApproval(bundled.package);
+    const stableId = bundledConfigId(packageRef, bundled.server);
     this.bundledOAuthRuntimeIds.set(projection.serverId, stableId);
     const config: McpHttpServerConfig = { ...projection.config, id: stableId };
     const fingerprint = JSON.stringify(config);
     const previous = this.bundledOAuthSessions.get(stableId);
     if (previous?.fingerprint === fingerprint) return previous.session;
-    const session = this.replaceOAuthSession(config, previous?.session);
+    // A reinstall prepared while its removal's grants are still being revoked reads the store only after that.
+    const removal = this.pendingBundledRemovals.get(`${packageRef.kind}/${packageRef.name}`);
+    const session = this.replaceOAuthSession(config, previous?.session, removal);
     this.bundledOAuthSessions.set(stableId, { fingerprint, session });
     return session;
   }

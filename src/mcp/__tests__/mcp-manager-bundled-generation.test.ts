@@ -19,9 +19,14 @@ vi.mock("../mcp-oauth.js", async (importOriginal) => {
     status = "required";
     readonly credentialKey: string;
     readonly fetch = vi.fn();
-    constructor(readonly config: { id: string; url: string }) {
+    constructor(readonly config: { id: string; url: string },
+      dependencies: { secrets: { getSecret(key: string): string | null } }, options: { after?: Promise<void> } = {}) {
       // The key the real session stores its grant under.
       this.credentialKey = actual.tryMcpOAuthCredentialKey(config as Parameters<typeof actual.tryMcpOAuthCredentialKey>[0])!;
+      // As the real session: a stored grant signs it in, read at once or once `after` settles.
+      const loadStored = () => { if (dependencies.secrets.getSecret(this.credentialKey) === "grant") this.status = "authenticated"; };
+      if (options.after) void options.after.then(loadStored);
+      else loadStored();
       oauth.sessions.push(this);
     }
     authenticate = vi.fn(async () => { this.status = "authenticated"; });
@@ -279,6 +284,64 @@ describe("McpManager bundled generation", () => {
     expect(reinstalled.records).toHaveLength(0);
     await manager.discardBundledGeneration(reinstalled);
     expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
+    expect(await manager.authenticate(stableId)).toEqual({ connected: true });
+    expect(oauth.sessions).toHaveLength(2);
+    await manager.disconnectAll();
+  });
+
+  it("revokes a removed app plugin's sign-in even when its reinstall commits before the package locks settle", async () => {
+    const stored = new Map<string, string>();
+    let deletions: Promise<void> | undefined;
+    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: () => true };
+    const manager = new McpManager(new McpGovernance(join(root, "policy-race.json")), new ToolRegistry(), unusedNetworkFetch,
+      join(root, "servers-race.json"), undefined, undefined, undefined, undefined, secrets,
+      { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
+    let idle = true;
+    manager.setPackageTransactionProbe(() => idle);
+    const projectionFor = (activationId: string) => prepareBundledMcpProjection({ pluginId: "race-kit", pluginVersion: "1.0.0",
+      generationId: "a".repeat(64), activationId, localId: "remote", fingerprint: "b".repeat(64) },
+    { transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }, "d".repeat(64));
+    const trust = new PluginMcpTrustStore();
+    let active = { activationId: "run-first", projection: projectionFor("run-first") };
+    trust.approve(active.projection);
+    // The installed set always names the plugin: by the time a deferred reconcile reads it, the reinstall is there.
+    manager.registerBundledCredentialSource("plugin", {
+      installedPackages: async () => new Set(["race-kit"]),
+      list: () => [{ packageName: "race-kit", serverName: "remote", transport: "http", url: "https://example.test/mcp", auth: "oauth", oauth: {} }],
+      reconnect: async () => {
+        manager.publishBundledGeneration(await manager.prepareBundledGeneration({ pluginId: "race-kit", generationId: active.activationId }, [active.projection], trust));
+      },
+    });
+    const stableId = bundledConfigId({ kind: "plugin", name: "race-kit" }, "remote");
+    await manager.discardBundledGeneration(await manager.prepareBundledGeneration({ pluginId: "race-kit", generationId: "run-first" }, [active.projection], trust));
+    expect(await manager.authenticate(stableId)).toEqual({ connected: true });
+    const key = oauth.sessions[0]!.credentialKey;
+    stored.set(key, "grant");
+    await vi.waitFor(() => expect(JSON.parse(stored.get("mcp.oauth.index")!)).toEqual({ [stableId]: key }));
+
+    // Removed under its package lock, with a reinstall of the same id queued behind it. The store is slow:
+    // the reinstall is prepared while the removal is still revoking.
+    let releaseDeletions!: () => void;
+    deletions = new Promise<void>((resolve) => { releaseDeletions = resolve; });
+    idle = false;
+    await manager.disconnectBundledGeneration("race-kit", "run-first");
+    const removal = manager.reconcileBundledCredentials("plugin", { removed: "race-kit" });
+    active = { activationId: "run-second", projection: projectionFor("run-second") };
+    trust.approve(active.projection);
+    const reinstalled = await manager.prepareBundledGeneration({ pluginId: "race-kit", generationId: "run-second" }, [active.projection], trust);
+    expect(stored.get(key)).toBe("grant");
+    releaseDeletions();
+    await removal;
+    // The locks settle only after the reinstall committed.
+    idle = true;
+    manager.packageTransactionsSettled();
+    await manager.reconcileBundledCredentials("plugin");
+    expect(reinstalled.degraded).toMatchObject([{ code: "credential_required", retryable: true }]);
+    expect(reinstalled.records).toHaveLength(0);
+    expect(stored.has(key)).toBe(false);
+    expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
+    await manager.discardBundledGeneration(reinstalled);
     expect(await manager.authenticate(stableId)).toEqual({ connected: true });
     expect(oauth.sessions).toHaveLength(2);
     await manager.disconnectAll();

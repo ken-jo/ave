@@ -250,7 +250,7 @@ describe("plugins IPC lifecycle broadcast", () => {
     expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub:tenant");
     expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("samplehub");
     // Its MCP sign-ins are retired now that the registry no longer names it, not at the next start.
-    expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin");
+    expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin", { removed: "samplehub" });
     expect(deps.mcpManager.reconcileBundledCredentials.mock.invocationCallOrder[0])
       .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
     for (const win of appWindows) {
@@ -307,6 +307,8 @@ describe("plugins IPC lifecycle broadcast", () => {
     await expect(invoke("ave:plugins:uninstall", "samplehub")).rejects.toThrow("dispose chain failed");
 
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
+    // Nothing was removed, so no sign-in is revoked.
+    expect(deps.mcpManager.reconcileBundledCredentials).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
