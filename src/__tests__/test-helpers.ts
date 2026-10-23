@@ -344,21 +344,8 @@ export function useScratchLinks(): (target: string, at: string) => string {
   };
 }
 
-/**
- * A promise plus the handle that settles it, for a test that must observe work
- * mid-flight — start the call, assert on the state it is now in, then resolve.
- *
- * Three suites wrote this out; the only thing that differed between them was the
- * name of the executor's parameter. `Promise.withResolvers` is the same object,
- * but it is ES2024 and this tree compiles against `lib: ES2023`.
- */
-export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
+// Lives in a leaf module so renderer suites can use it without this file's imports.
+export { deferred } from "./support/deferred.js";
 
 /** A user transcript entry — the minimal shape every transcript suite starts from. */
 export function userEntry(text: string): ChatEntry {
