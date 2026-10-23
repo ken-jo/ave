@@ -17,6 +17,8 @@ import { t } from "../../../../i18n/runtime.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
+import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -458,6 +460,78 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("offers the catalog in release order in the fallback chooser without a key", async () => {
+    const api = makeApi();
+    await renderTab(api, { hasKey: false, model: "", fallbackOpen: true, fallbackChain: [{ provider: "claude", model: "" }] });
+    await settleModelListRequests();
+    const fallback = screen.getByTestId("fallback-chain-section");
+    openMenu(within(fallback).getAllByRole("combobox")[1]!);
+    const ids = [...document.querySelectorAll('[role="option"] [data-model-id]')].map((node) => node.getAttribute("data-model-id"));
+    expect(ids).toEqual(catalogChatModelIds("claude"));
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]));
+    expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+    expect(api.listLlmModels).not.toHaveBeenCalled();
+  });
+
+  it("offers only catalog models in release order on a newly connected route", async () => {
+    const original = activeModelCatalog();
+    const models = { ...original.providers.openai!.models };
+    delete models["gpt-5.4-mini"];
+    try {
+      installModelCatalog({ ...original, providers: { ...original.providers, openai: { models } } });
+      const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+      await settleModelListRequests();
+      const ids = await chooserModelIds();
+      expect(ids).toEqual(catalogChatModelIds("openai"));
+      expect(ids).toContain("gpt-6.1-sol");
+      expect(ids).not.toContain("gpt-5.4-mini");
+      expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      installModelCatalog(original);
+    }
+  });
+
+  it("keeps a saved selection outside the catalog without selecting a replacement", async () => {
+    const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "saved-private-model" });
+    expect(await chooserModelIds()).toContain("saved-private-model");
+    expect(chooserOption("saved-private-model")).toHaveAttribute("aria-selected", "true");
+    expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+  });
+
+  it("uses the native listing instead of a catalog seed when a key is stored", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("claude"),
+      listLlmModels: vi.fn().mockResolvedValue({ ok: true, endpoint: "https://api.anthropic.com/v1/models", models: ["live-model"], fetchedAt: new Date().toISOString() }),
+    });
+    await renderTab(api, { vendor: "claude", model: "" });
+    await settleModelListRequests();
+    expect(api.listLlmModels).toHaveBeenCalledWith(expect.objectContaining({ vendor: "claude" }));
+    expect(await chooserModelIds()).toEqual(["live-model"]);
+  });
+
+  it("omits blank ids in every listing and keeps an empty live answer authoritative", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }) => ({
+        ok: true, endpoint: "https://provider.invalid/models", models: vendor === "claude" ? ["", " ", "listed-model"] : [], fetchedAt: new Date().toISOString(),
+      })),
+    });
+    await renderTab(api, { model: "" });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toEqual(["listed-model"]);
+  });
+
+  it("omits blank runtime model ids instead of offering them as models", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [{ id: " ", label: " " }, { id: "gpt-6.1-sol", label: "gpt-6.1-sol" }] },
+    })]);
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+    expect(await chooserModelIds()).toContain("gpt-6.1-sol");
+    // Codex offers no CLI-default row, so a blank id would be the only source of one.
+    expect(screen.queryByTestId("llm-tab:model-pin:codex::")).toBeNull();
+  });
+
   it("accepts an explicit choice of the same model after a provider retirement", async () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
     await chooserModelIds();

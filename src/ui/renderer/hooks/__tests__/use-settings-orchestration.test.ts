@@ -72,6 +72,20 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("saves an empty model as an explicit unselected route", async () => {
+    const settings = makeSettings();
+    settings.llm.vendors.openai!.model = "";
+    const { api } = makeMockAveApi({ settings, hasApiKey: true });
+    Object.assign(api, { hasWebApiKey: vi.fn(async () => false), hasMarketplaceApiKey: vi.fn(async () => false) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    expect(result.current.model).toBe("");
+    await act(async () => result.current.save("llm"));
+    expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      llm: expect.objectContaining({ vendors: expect.objectContaining({ openai: expect.objectContaining({ model: "" }) }) }),
+    }));
+  });
+
   it.each(["chat", "web", "llm"])("keeps retirement pending when %s settings are saved without a provider choice", async (tab) => {
     let settings = makeSettings();
     settings.llm.retiredProvider = "copilot";

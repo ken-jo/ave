@@ -195,7 +195,7 @@ export interface ReviewerParentAdjudicationBlock {
  * Permission policy P3 — `permissions.reviewer` block. Provider/model remain
  * persisted for legacy command compatibility; runtime LLM reviewer wiring now
  * follows the active chat LLM provider/model when available.
- * Defaults: provider="openai", model="gpt-4o-mini",
+ * Defaults: provider="openai", model="" (no model selected),
  * fallbackOnError="deny", interactive.autoApprove="medium".
  */
 export interface ReviewerSettingsBlock {
@@ -334,7 +334,7 @@ const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
   // classifier.
   mode: "llm",
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: "",
   fallbackOnError: "deny",
   interactive: { autoApprove: "medium" },
   // Tier 2 mirrors the interactive threshold: the parent may decide exactly
@@ -951,8 +951,8 @@ function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBl
       `permissions.reviewer.fallbackOnError invalid: '${patch.fallbackOnError}'. Allowed: ${[...REVIEWER_FALLBACKS].join("|")}`,
     );
   }
-  if (typeof patch.model !== "string" || patch.model.length === 0) {
-    throw new Error("permissions.reviewer.model must be a non-empty string");
+  if (typeof patch.model !== "string") {
+    throw new Error("permissions.reviewer.model must be a string");
   }
   if (
     !patch.interactive ||

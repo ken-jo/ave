@@ -6,6 +6,7 @@ import {
   INSTALLED_LLM_VENDOR_IDS,
   KNOWN_LEGACY_LLM_VENDOR_IDS,
   isLLMVendor,
+  isOpenAICompatiblePresetVendor,
   LLM_VENDORS,
   LLM_VENDOR_DEFAULTS,
   OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
@@ -33,8 +34,6 @@ import {
   RETIRED_LLM_VENDOR_IDS,
 } from "../llm-vendor-defaults.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
-import { activeModelCatalog } from "../model-catalog/active.js";
-import { resolveCatalogKey } from "../model-catalog/resolve.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
 
 describe("isLLMVendor", () => {
@@ -239,8 +238,10 @@ describe("LLM vendor defaults", () => {
       .toEqual([...LLM_VENDORS].sort());
   });
 
-  it("uses gpt-5.4-mini as the OpenAI default model", () => {
-    expect(LLM_VENDOR_DEFAULTS.openai.model).toBe("gpt-5.4-mini");
+  it("requires a model choice on every fresh vendor route", () => {
+    for (const vendor of LLM_VENDORS) {
+      expect(LLM_VENDOR_DEFAULTS[vendor].model, vendor).toBe("");
+    }
   });
 
   it("offers the OpenRouter free router as an explicit selectable model", () => {
@@ -323,8 +324,8 @@ describe("LLM vendor defaults", () => {
     expect(getLlmVendorSettings({ "azure-foundry": { model: "gpt-4o" } } as never, "azure-foundry").model).toBe("gpt-4o");
   });
 
-  it("uses a currently listed general-purpose default model", () => {
-    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("gemini-3.8-flash");
+  it("leaves catalog routes unselected", () => {
+    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("");
   });
 
   it("enables thinking by default for every provider", () => {
@@ -335,8 +336,8 @@ describe("LLM vendor defaults", () => {
 
   it("freshVendorBlocks() preserves the default-visible thinking-enabled blocks", () => {
     const blocks = freshVendorBlocks();
-    expect(blocks.openai.model).toBe("gpt-5.4-mini");
-    expect(blocks.gemini.model).toBe("gemini-3.8-flash");
+    expect(blocks.openai.model).toBe("");
+    expect(blocks.gemini.model).toBe("");
     expect(blocks.groq).toBeUndefined();
     for (const v of DEFAULT_VISIBLE_LLM_VENDOR_IDS) {
       expect(blocks[v].enableThinking).toBe(true);
@@ -420,22 +421,15 @@ describe("LLM vendor defaults", () => {
     expect(llmVendorModelOptions("openai-compatible")).toEqual([]);
   });
 
-  it("starts each vendor the catalog describes on a chat model the catalog lists for it", () => {
-    // This account-scoped deployment is not described by the public catalog.
-    // Preserve its existing default; other native defaults must resolve.
-    const unverified = new Set(["doubao"]);
-    const missing = LLM_VENDORS
-      .filter((vendor) => CATALOG_PROVIDERS_BY_VENDOR[vendor].length > 0 && !unverified.has(vendor))
-      .filter((vendor) => {
-        const hit = resolveCatalogKey(activeModelCatalog(), vendor, LLM_VENDOR_DEFAULTS[vendor].model);
-        return !hit || !llmVendorModelOptions(vendor).includes(hit.id);
-      })
-      .map((vendor) => `${vendor}/${LLM_VENDOR_DEFAULTS[vendor].model}`);
-    expect(missing).toEqual([]);
-    expect(llmVendorModelOptions("doubao")).not.toContain(LLM_VENDOR_DEFAULTS.doubao.model);
+  it("offers current catalog choices before any credential without selecting one", () => {
+    expect(llmVendorModelOptions("claude")).toEqual(expect.arrayContaining([
+      "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
+    ]));
+    expect(llmVendorModelOptions("openai")[0]).toBe("gpt-6.1-sol");
+    expect(LLM_VENDOR_DEFAULTS.claude.model).toBe("");
   });
 
-  it("includes each hand-picked provider's default model in its dropdown options", () => {
+  it("keeps endpoint preset recommendations separate from route selections", () => {
     for (const v of LLM_VENDORS) {
       if (CATALOG_PROVIDERS_BY_VENDOR[v].length > 0) continue;
       const options = llmVendorModelOptions(v);
@@ -447,7 +441,8 @@ describe("LLM vendor defaults", () => {
         expect(defaultModel, `${v} handshake-only default must be empty`).toBe("");
         continue;
       }
-      expect(options).toContain(defaultModel);
+      expect(defaultModel).toBe("");
+      if (isOpenAICompatiblePresetVendor(v)) expect(options).toContain(OPENAI_COMPATIBLE_VENDOR_PRESETS[v].defaultModel);
     }
   });
 });

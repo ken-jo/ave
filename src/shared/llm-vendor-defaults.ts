@@ -54,9 +54,8 @@ export interface OpenAICompatibleVendorPreset {
   apiKeyPlaceholder: string;
   baseUrl: string;
   /**
-   * The provider-native id a newly connected route starts on. Public ids
-   * must resolve to a catalog chat entry; an existing account-scoped
-   * deployment may remain unclassified.
+   * The endpoint preset's recommended model. This metadata does not select
+   * a model for a new vendor route; the user chooses from its catalog or listing.
    */
   defaultModel: string;
   /**
@@ -799,34 +798,6 @@ export type LLMVendorSettingsMap = Partial<
   Record<LLMVendor, LLMVendorSettings>
 >;
 
-const CORE_DEFAULT_MODEL = {
-  claude: "claude-sonnet-4-6",
-  openai: "gpt-5.4-mini",
-  // New routes start on a currently listed general-purpose chat model.
-  gemini: "gemini-3.8-flash",
-  "azure-foundry": "gpt-5.4-mini",
-  // The catalog marks Vertex's Gemini 2.5 models deprecated (design
-  // `model-capability-catalog.md` §6.1), so they are not offered there.
-  "vertex-ai": "gemini-3.5-flash",
-  // Handshake-only: no static default. A fresh openai-compatible block ships
-  // with an EMPTY model so the runtime treats it as "not configured" until the
-  // user selects a model fetched live from their endpoint's /models handshake
-  // (LlmTab `modelOptionsFor` + `buildProvider` not-configured guard). Shipping
-  // a concrete id here previously sent an Ave-cluster model id to arbitrary
-  // endpoints that don't serve it, failing every first call with a 400/404.
-  "openai-compatible": "",
-} as const;
-
-const DEFAULT_MODEL: Record<LLMVendor, string> = Object.freeze({
-  ...CORE_DEFAULT_MODEL,
-  ...Object.fromEntries(
-    OPENAI_COMPATIBLE_PRESET_VENDOR_IDS.map((vendor) => [
-      vendor,
-      OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].defaultModel,
-    ]),
-  ),
-} as Record<LLMVendor, string>);
-
 /**
  * The model choices a vendor offers before any live `/models` answer.
  *
@@ -875,12 +846,12 @@ export function isModelAvailableForVendor(
 }
 
 function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
-  const model = DEFAULT_MODEL[vendor];
   const preset = isOpenAICompatiblePresetVendor(vendor)
     ? OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor]
     : null;
   return {
-    model,
+    // A catalog or endpoint listing offers choices; connecting is not a choice.
+    model: "",
     ...(preset ? { baseUrl: preset.baseUrl } : {}),
     enableThinking: true,
     thinkingBudgetTokens: DEFAULT_THINKING_BUDGET_TOKENS,

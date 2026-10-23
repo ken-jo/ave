@@ -15,17 +15,15 @@ type ActiveChatModelUnavailableReason =
   | "no-connected-provider"
   /** The saved provider was retired; the user has to pick a new one. */
   | "retired-provider"
-  /** The route is connected but names no model (handshake-only providers). */
+  /** The route is connected but the user has not selected a model. */
   | "no-model-selected";
 
 /**
  * The model chat would run on right now, or an explicit "none".
  *
- * A vendor block always carries a model id — the vendor's default is what a
- * newly connected provider starts on — so the stored id alone cannot say
- * whether a model is selected. A fresh profile holds `openai`/`gpt-5.4-mini`
- * with no key behind it; projecting that as the active model showed a model
- * nobody chose and no route could answer. This union is the one answer.
+ * Fresh vendor blocks have no selected model. Saved selections also need a
+ * connected route before they can answer a turn. This union gives the UI and
+ * the send path the same explicit answer for both conditions.
  */
 export type ActiveChatModel =
   | { readonly kind: "none"; readonly reason: ActiveChatModelUnavailableReason }

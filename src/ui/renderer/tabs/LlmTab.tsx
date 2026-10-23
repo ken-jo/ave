@@ -88,6 +88,7 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
+import { vendorHasCatalogProvider } from "../../../shared/model-catalog/vendor-models.js";
 import {
   resolveInputModalities,
   resolveModelRetirement,
@@ -721,15 +722,13 @@ function modelOptionsFor(
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
   isRetired: (model: string) => boolean = () => false,
 ): string[] {
-  const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
-  // Handshake-only: for every provider whose catalogue is the endpoint's word
-  // (see `usesEndpointModelCatalogue`) and whose discovery policy is not seeded
-  // (static/manual), never fall back to the static `info.modelOptions` seed or
-  // the seeded default model. The list stays empty until a live /models fetch
-  // succeeds; only the user's persisted selection is surfaced so an
-  // already-configured provider still shows its saved model.
+  const hasSynced = syncedOptions !== undefined;
+  // A catalog supplies choices until a live listing arrives. Without a catalog,
+  // an endpoint-defined route offers only its saved selection until it answers,
+  // unless the endpoint preset explicitly declares seeded options.
   const handshakeOnly =
     !hasSynced &&
+    !(isLLMVendor(vendorId) && vendorHasCatalogProvider(vendorId)) &&
     usesEndpointModelCatalogue(vendorId) &&
     !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
 
@@ -739,13 +738,6 @@ function modelOptionsFor(
       ? []
       : [...info.modelOptions];
 
-  if (!handshakeOnly) {
-    const defaultModel = info.defaultModel.trim();
-    if (defaultModel && !options.includes(defaultModel)) {
-      options.unshift(defaultModel);
-    }
-  }
-
   const currentModel = selectedModel.trim();
   if (currentModel && !options.includes(currentModel)) {
     options.unshift(currentModel);
@@ -754,7 +746,7 @@ function modelOptionsFor(
   // A retired model is not a choice, the saved one included: a saved
   // selection pointing at one shows as unresolved instead (design
   // `model-capability-catalog.md` §6.1).
-  return options.filter((option) => !isRetired(option));
+  return options.filter((option) => option.trim() && !isRetired(option));
 }
 
 /**
@@ -1290,11 +1282,12 @@ function modelListStatesFromCache(
 }
 
 function optionsFromModelListState(state: ModelListState | undefined): readonly string[] | undefined {
+  if (state?.status === "ready") return state.options ?? [];
   return state?.options && state.options.length > 0 ? state.options : undefined;
 }
 
 function hasUsableModelListOptions(state: ModelListState | undefined): boolean {
-  return Boolean(optionsFromModelListState(state));
+  return (optionsFromModelListState(state)?.length ?? 0) > 0;
 }
 
 /**
@@ -1378,14 +1371,10 @@ export function LlmTab(props: LlmTabProps) {
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresets.find((preset) => preset.providerId === marketplaceProviderPresetId)
     : undefined;
-  const selectedMarketplaceProviderOption = selectedMarketplaceProviderPreset
-    ? providerOptionFromPreset(selectedMarketplaceProviderPreset)
-    : undefined;
-  const vendorInfo = selectedMarketplaceProviderOption ?? getVendorInfo(vendor);
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
   const trimmedModel = model.trim();
-  const activeModelValue = trimmedModel || vendorInfo.defaultModel;
+  const activeModelValue = trimmedModel;
   const [marketplaceProviderIds, setMarketplaceProviderIds] = useState<readonly string[]>([]);
   /** What is actually stored for each vendor, mirrored so the typed fields can
    *  say whether they still hold something uncommitted. */
@@ -2319,6 +2308,8 @@ export function LlmTab(props: LlmTabProps) {
     const pushed = new Set<string>();
     for (const row of connections) {
       if (!row.apiVendorId) continue;
+      // A connected subscription does not authenticate its separate API route.
+      if (row.apiVendorId !== "vertex-ai" && rowRequiresApiKey(row) && !credentialedProviderIds.has(rowCredentialId(row))) continue;
       if (rowChatBlocker(row) !== null) continue;
       const rowId = rowCredentialId(row);
       const state = row.modelListKey ? modelLists[row.modelListKey] : undefined;
@@ -2405,7 +2396,7 @@ export function LlmTab(props: LlmTabProps) {
       // Connected only. A signed-out provider has nothing to offer yet, and
       // listing its models would invite a choice that cannot be honoured.
       if (view.status?.connection !== "connected") continue;
-      const models = view.status.models ?? [];
+      const models = (view.status.models ?? []).filter((model) => model.id.trim());
       if (models.length === 0) {
         // No model choice at all — the row IS the provider. It still belongs in
         // the list, because picking it is exactly as much of a choice as
@@ -2449,7 +2440,7 @@ export function LlmTab(props: LlmTabProps) {
     }
     return options;
   }, [
-    connections, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
+    connections, rowRequiresApiKey, credentialedProviderIds, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
     unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
 
@@ -2479,14 +2470,14 @@ export function LlmTab(props: LlmTabProps) {
     ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
     // No model is selected on a route that cannot answer: an empty value lets
     // the trigger say so instead of pointing at an option that is not listed.
-    : retiredLlmProvider || activeModelRetirement || !activeRouteCanChat
+    : retiredLlmProvider || activeModelRetirement || !activeRouteCanChat || !activeModelValue
       ? ""
       : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
   const unifiedPlaceholder = subscription.activeRuntime.kind === "api" && activeModelRetirement
     ? retiredModelPlaceholder(t, activeModelRetirement, isRetiredLlmModelMarker(retiredLlmProvider) ? retiredLlmProvider.model : activeModelValue)
     : subscription.activeRuntime.kind === "api" && !activeRouteCanChat
       ? t("llmTab.modelPlaceholderNoProvider")
-      : vendorInfo.defaultModel;
+      : t("llmTab.model");
 
   /**
    * A pick moves BOTH halves of the decision: which provider answers, and with
@@ -3626,11 +3617,10 @@ export function LlmTab(props: LlmTabProps) {
           {fallbackOpen && (
             <div id="fallback-chain-content" className="min-w-0 space-y-3">
               {fallbackChain.map((entry, idx) => {
-                const fallbackVendorInfo = getVendorInfo(entry.provider);
                 const trimmedFallbackModel = entry.model.trim();
                 const fallbackModelListKey = vendorModelListKey(entry.provider);
                 const fallbackModelRetired = modelRetiredOn(savedModelListCache, fallbackModelListKey, entry.provider);
-                const savedFallbackModel = trimmedFallbackModel || fallbackVendorInfo.defaultModel;
+                const savedFallbackModel = trimmedFallbackModel;
                 // A saved fallback at a retired or deprecated model stays
                 // unselected until the user picks another; it is not swapped
                 // for a default.
@@ -3652,12 +3642,11 @@ export function LlmTab(props: LlmTabProps) {
                       value={entry.provider}
                       onValueChange={(value) => {
                         if (!isLLMVendor(value)) return;
-                        const nextVendorInfo = getVendorInfo(value);
                         const next = [...fallbackChain];
                         next[idx] = {
                           ...next[idx]!,
                           provider: value,
-                          model: nextVendorInfo.defaultModel,
+                          model: "",
                         };
                         setFallbackChain(next);
                       }}
@@ -3680,7 +3669,7 @@ export function LlmTab(props: LlmTabProps) {
                         <SelectValue
                           placeholder={retiredFallbackModel && fallbackRetirement
                             ? retiredModelPlaceholder(t, fallbackRetirement, retiredFallbackModel)
-                            : fallbackVendorInfo.defaultModel}
+                            : t("llmTab.model")}
                         />
                       </SelectTrigger>
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
@@ -3730,7 +3719,7 @@ export function LlmTab(props: LlmTabProps) {
                 className="h-8 text-xs"
                 onClick={() => setFallbackChain((c) => [
                   ...c,
-                  { provider: "openai", model: getVendorInfo("openai").defaultModel },
+                  { provider: "openai", model: "" },
                 ])}
               >
                 {t("llmTab.addEntry")}

@@ -14,6 +14,19 @@ import {
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
 
 describe("model-complexity-map", () => {
+  it("leaves unresolved tiers to the parent without inventing a default", () => {
+    const original = activeModelCatalog();
+    try {
+      installModelCatalog({ ...original, providers: {} });
+      for (const vendor of LLM_VENDORS) {
+        for (const level of MODEL_COMPLEXITY_LEVELS) {
+          expect(resolveModelForComplexity(vendor, level)).toBeNull();
+        }
+      }
+    } finally {
+      installModelCatalog(original);
+    }
+  });
   it("resolves a newly installed family entry without retaining an imported id", () => {
     const original = activeModelCatalog();
     const model = original.providers.openai!.models[resolveModelForComplexity("openai", "mid")!]!;
