@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
+  NATIVE_PROBE_HEAVY_TEST, nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
 } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { claudeCodeNpmShimTarget, pinClaudeCodeExecutable } from "../claude-code-executable.js";
@@ -195,7 +195,7 @@ describe("subscription package launch inputs", () => {
     await expect(proof.verify()).resolves.toBeUndefined();
   });
 
-  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", async () => {
+  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", NATIVE_PROBE_HEAVY_TEST, async () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture("win32");
     expect(claudeCodeNpmShimTarget(launcher)).toBe(script);
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
