@@ -1,6 +1,6 @@
 /**
- * Pull-request CI runs the affected Vitest tests, and the full suite whenever
- * that selection cannot be trusted (scripts/run-ci-suite.mjs). These cases pin
+ * Integration-base CI always runs the best traced selection; other PR bases
+ * use the full suite when selection is untrusted (scripts/run-ci-suite.mjs). These cases pin
  * the selection against the real import graph of this tree: a leaf module
  * selects its own tests, a shared module selects the tests of the modules
  * that import it, and a global input falls back to the full suite.
@@ -236,6 +236,110 @@ describe("CI test selection fallbacks", () => {
     expect(isCategoryMergeToMain("fix/one-thing", "integration/permissions")).toBe(false);
     expect(isCategoryMergeToMain("fix/one-thing", "main")).toBe(false);
     expect(() => planCiSuite("pull_request", {})).toThrow("GITHUB_HEAD_REF and GITHUB_BASE_REF must be set");
+  });
+});
+
+describe("CI selection for integration bases", () => {
+  const changed = "test/changed.test.ts";
+  const reader = "test/reader.test.ts";
+  const related = "test/related.test.ts";
+  const mustRun = "test/must-run.test.ts";
+  const scriptLock = "test/scripts/lock.test.ts";
+  const preloadLocks = [
+    "src/__tests__/preload.test.ts", "src/__tests__/preload-shape.test.ts",
+    "src/ui/renderer/__tests__/settings-section-anchors.test.ts",
+  ];
+  const wide = Array.from({ length: AFFECTED_TEST_LIMIT + 1 }, (_, index) => `test/wide-${index}.test.ts`);
+  const collected = [changed, reader, related, mustRun, scriptLock, ...preloadLocks, ...wide];
+
+  function scoped(path: string, discovery: "normal" | "unreached" | "failed" | "malformed" | "wide", baseRef = "integration/test-speed") {
+    return selectCiTests({
+      baseRef,
+      changes: [modified(path), modified(changed), modified("src/ui/renderer/types.ts")],
+      trackedTests: collected,
+      mustRunTests: [mustRun],
+      readText: (file) => file === reader ? `readFileSync("${path}")` : "export {};",
+      discoverRelated: (paths) => discovery === "failed" ? null : discovery === "malformed" ? JSON.parse("{}") : paths.map((source) => ({
+        source,
+        tests: discovery === "unreached" && source === path ? [] : discovery === "wide" ? wide : [related],
+      })),
+    });
+  }
+
+  it.each([
+    {
+      name: "a global input",
+      path: "scripts/foo.mjs",
+      discovery: "normal" as const,
+      fullReason: "scripts/foo.mjs is a global test or build input",
+      relatedCount: 1,
+      locks: [scriptLock, ...preloadLocks],
+    },
+    {
+      name: "a message catalog",
+      path: "src/i18n/messages/generated/chat.ts",
+      discovery: "normal" as const,
+      fullReason: "src/i18n/messages/generated/chat.ts is message catalog data",
+      relatedCount: 1,
+      locks: preloadLocks,
+    },
+    {
+      name: "a module no test reaches",
+      path: "src/isolated.ts",
+      discovery: "unreached" as const,
+      fullReason: "src/isolated.ts has no related test files",
+      relatedCount: 1,
+      locks: preloadLocks,
+    },
+    {
+      name: "failed discovery",
+      path: "src/feature.ts",
+      discovery: "failed" as const,
+      fullReason: "related test discovery failed",
+      relatedCount: 0,
+      locks: preloadLocks,
+    },
+    {
+      name: "malformed discovery",
+      path: "src/feature.ts",
+      discovery: "malformed" as const,
+      fullReason: "related test coverage could not be resolved",
+      relatedCount: 0,
+      locks: preloadLocks,
+    },
+    {
+      name: "more than the limit",
+      path: "src/wide.ts",
+      discovery: "wide" as const,
+      fullReason: `${AFFECTED_TEST_LIMIT + 3} changed and related test files exceed ${AFFECTED_TEST_LIMIT}`,
+      relatedCount: wide.length,
+      locks: preloadLocks,
+    },
+  ])("keeps the exact traced composition for $name", ({ path, discovery, fullReason, relatedCount, locks }) => {
+    const relatedTests = discovery === "failed" || discovery === "malformed" ? [] : discovery === "wide" ? wide : [related];
+    expect(scoped(path, discovery)).toEqual({
+      mode: "affected",
+      tests: [...new Set([changed, reader, ...relatedTests, ...locks, mustRun])].sort(),
+      reason: `${fullReason}; integration base: traced selection, whole suite at the category merge; ` +
+        `2 changed module(s) reach ${relatedCount} test file(s); 1 changed test file(s); ` +
+        `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s)`,
+    });
+  });
+
+  it("keeps the full fallback for a non-integration PR into main", () => {
+    expect(scoped("scripts/foo.mjs", "normal", "main")).toEqual({
+      mode: "full", reason: "scripts/foo.mjs is a global test or build input", tests: [],
+    });
+  });
+
+  it("requires a nonempty must-run set even when discovery fails", () => {
+    expect(() => selectCiTests({
+      baseRef: "integration/test-speed", changes: [modified("src/feature.ts")],
+      trackedTests: collected, mustRunTests: [], readText: () => "", discoverRelated: () => null,
+    })).toThrow("integration base requires a nonempty collected must-run set");
+    expect(() => expandMustRunTests({ groups: {} }, collected)).toThrow("must select at least one collected test file");
+    expect(() => ciSuiteArguments({ mode: "affected", reason: "empty", tests: [] }, false))
+      .toThrow("affected CI selection must not be empty");
   });
 });
 
