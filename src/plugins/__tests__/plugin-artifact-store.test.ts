@@ -21,6 +21,19 @@ import { existsSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
+// Exercise the real retry ladder and filesystem operations through its
+// existing sleep seam; these cases assert cleanup outcomes, not elapsed time.
+vi.mock("../../lib/transient-fs-lock-retry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/transient-fs-lock-retry.js")>();
+  return {
+    ...actual,
+    retryOnTransientFsLock: <T>(
+      operation: () => Promise<T>,
+      options: Parameters<typeof actual.retryOnTransientFsLock>[1] = {},
+    ) => actual.retryOnTransientFsLock(operation, { sleep: async () => undefined, ...options }),
+  };
+});
+
 /**
  * One-shot hooks on `rename`; every other rename passes through, so the rest
  * of this suite runs against the real filesystem.
