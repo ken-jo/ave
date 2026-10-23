@@ -177,6 +177,19 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
+          // A fresh VM context per file inside a reused worker, instead of a
+          // fresh worker process per file. The default pool started a process
+          // and loaded jsdom (~0.9 s) for each of the ~300 renderer files; on
+          // the renderer component suite this ran 127 s -> 40 s with every
+          // test passing. Each file still gets its own module graph and
+          // globals (vitest.globalSetup.ts accepts vm pools for that reason).
+          // The node project stays on forks: under vm its native-module,
+          // sandbox and mock-identity suites fail and it gains ~14%.
+          pool: "vmForks",
+          // VM contexts are retained until the worker is recycled. A worker
+          // that passes this limit is replaced, which keeps three CI workers
+          // well inside the runner slice's 12 GiB MemoryHigh.
+          vmMemoryLimit: "2048MB",
           // Renderer tests were authored against the original Korean UI
           // strings. After the i18n migration those strings resolve through
           // t() with English as the default; this setup pins the runtime
