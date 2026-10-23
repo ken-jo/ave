@@ -48,13 +48,21 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
  * The wildcard allowlist (owner decision 2026-10-23). Only a `Bash(<prefix> *)`
  * rule that starts with one of these keys, and keeps at least the listed
  * number of tokens, may be stored or suggested as "always allow". The number
- * is also how many leading tokens a suggestion keeps, so `npm run build`
- * suggests `Bash(npm run build *)` and `Bash(npm run *)` is refused. Every
- * other command can be saved only as an exact rule for its full argv.
+ * is also how many leading tokens a suggestion keeps, so `git branch --list`
+ * suggests `Bash(git branch --list *)` and `Bash(git branch *)` is refused.
+ * Every other command can be saved only as an exact rule for its full argv.
+ *
+ * An entry must not be widenable: whatever a trailing `*` can append must stay
+ * read-only and local. Not in the catalog, by rule (owner decision
+ * 2026-10-23, round 3):
+ * - package-script runners (`npm test`, `npm run <script>`): a script body or
+ *   test file is agent-editable code, the reason interpreters are refused;
+ * - network clients and fetchers (`git fetch`): egress to any URL.
+ * Those get exact rules only.
  *
  * To add an entry, confirm that no argument a trailing `*` can append reaches
- * a destructive or irreversible form (`isDestructiveShellArgv`,
- * `isIrreversibleShellArgv`) and that its writing or code-running options are
+ * a destructive, irreversible or unreusable form (`isDestructiveShellArgv`,
+ * `noReusableRuleReason`), and that its writing or code-running options are
  * caught by `shellOptionEffect`. Add a hit and a miss test in
  * `rules-language.test.ts`.
  */
@@ -63,12 +71,10 @@ export const WILDCARD_PREFIX_CATALOG: ReadonlyMap<string, number> = new Map([
   ["ls", 1], ["cat", 1], ["head", 1], ["tail", 1], ["wc", 1], ["grep", 1], ["rg", 1], ["find", 1],
   ["pwd", 1], ["du", 1], ["df", 1], ["which", 1], ["stat", 1],
   // Repository inspection.
-  ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2], ["git fetch", 2],
+  ["git status", 2], ["git log", 2], ["git diff", 2], ["git show", 2],
   ["git rev-parse", 2], ["git ls-files", 2], ["git blame", 2], ["git branch --list", 3],
-  // Project scripts, named one script at a time.
-  ["npm test", 2], ["pnpm test", 2], ["yarn test", 2], ["bun test", 2],
-  ["npm run", 3], ["pnpm run", 3], ["yarn run", 3], ["bun run", 3],
-  // Cluster and container inspection.
+  // Cluster and container inspection. `kubectl` credentials, cluster
+  // re-targeting and secrets are kept out by `noReusableRuleReason`.
   ["kubectl get", 2], ["kubectl describe", 2], ["kubectl logs", 2],
   ["docker ps", 2], ["docker images", 2], ["docker logs", 2],
 ]);
@@ -126,7 +132,7 @@ const DESTRUCTIVE_PROGRAMS = new Set(["rm", "shred", "srm", "wipefs", "dd", "mkf
  * ordinary use. Refused as allow prefixes at every length; unlike the
  * destructive floor they keep once and session choices.
  */
-const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "cp", "tee", "dropdb"]);
+const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "cp", "tee", "dropdb", "install"]);
 /** Ownership and mode changers: destructive when recursive or world-writable. */
 const PERMISSION_CHANGERS = new Set(["chmod", "chown", "chgrp"]);
 /**
@@ -229,6 +235,68 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
   return false;
 }
 
+/**
+ * `kubectl` options that switch credentials or cluster (`--kubeconfig`,
+ * `--token`, `--as`, `-s`/`--server`, …) or reach the raw API (`--raw`).
+ * A reusable rule never covers them, wherever they appear.
+ */
+const KUBECTL_RETARGETING_OPTIONS = new Set([
+  "kubeconfig", "server", "token", "context", "cluster", "user", "as", "as-group", "as-uid",
+  "certificate-authority", "insecure-skip-tls-verify", "raw",
+]);
+
+function kubectlRetargets(argv: readonly (string | undefined)[]): boolean {
+  return argv.slice(1).some((word) => {
+    if (word === undefined) return true;
+    if (/^-s(?:$|=|.)/.test(word) && !word.startsWith("--")) return true;
+    if (!word.startsWith("--")) return false;
+    const name = word.slice(2).split("=")[0]!.toLowerCase();
+    return KUBECTL_RETARGETING_OPTIONS.has(name) || name.startsWith("client-");
+  });
+}
+
+/** `secret`, `secrets`, `secret/<name>`, `secrets.v1`, or one of a comma list. */
+function kubectlNamesSecrets(argv: readonly (string | undefined)[]): boolean {
+  return verbWords(argv, KUBECTL_VALUED_OPTIONS).slice(1).some((word) => word === undefined
+    || word.toLowerCase().split(",").some((part) => /^secrets?(?:$|[./])/.test(part)));
+}
+
+/**
+ * Package-script runner options that load other code or switch the project:
+ * `--script-shell`, `--node-options`, `--preload`, `--prefix`, `--cwd`,
+ * `--filter`, `-r`/`--recursive`, `-w`/`--workspace`.
+ */
+const RUNNER_CODE_OPTIONS = ["script-shell", "node-options", "preload", "prefix", "cwd", "filter", "recursive", "workspace", "workspaces"];
+
+function runnerLoadsOtherCode(argv: readonly (string | undefined)[]): boolean {
+  const { options } = optionWords(argv.slice(1));
+  return options.includes(undefined) || hasShortFlag(options, "rw")
+    || options.some((option) => option !== undefined && option.startsWith("--")
+      && RUNNER_CODE_OPTIONS.includes(option.slice(2).split("=")[0]!.toLowerCase()))
+    || hasLongFlag(options, RUNNER_CODE_OPTIONS);
+}
+
+/**
+ * Why no allow rule, exact or wildcard, may cover this static command, or
+ * null. Once and session approvals stay available. The matcher, the dock and
+ * the store share it:
+ * - irreversible forms ({@link isIrreversibleShellArgv});
+ * - `kubectl` with credential or cluster re-targeting options, or naming
+ *   secrets;
+ * - a package-script runner with options that load other code or switch the
+ *   project (`npm run build --script-shell=./x.sh`, `bun test --preload x`).
+ */
+export function noReusableRuleReason(argv: readonly (string | undefined)[]): string | null {
+  if (isIrreversibleShellArgv(argv)) return "irreversible command";
+  const head = argv[0];
+  if (head === undefined) return null;
+  const program = programName(head);
+  if (program === "kubectl" && kubectlRetargets(argv)) return "kubectl credential or cluster option";
+  if (program === "kubectl" && kubectlNamesSecrets(argv)) return "kubectl secrets";
+  if (["npm", "pnpm", "yarn", "bun"].includes(runnerName(head)) && runnerLoadsOtherCode(argv)) return "runner option that loads other code";
+  return null;
+}
+
 /** The first word after a tool's leading options (`git -C dir clean` → `clean`); options that take a value skip it. */
 function verbIndex(argv: readonly (string | undefined)[], valued: ReadonlySet<string>): number {
   let index = 1;
@@ -280,7 +348,7 @@ const AWS_VALUED_OPTIONS = new Set(["--profile", "--region", "--endpoint-url", "
  * `tee`, `truncate`, `unlink`). No allow rule covers them; once and session
  * approvals stay available. A dynamic word counts as the worst case.
  */
-export function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean {
+function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   if (head === undefined) return false;
   const program = programName(head);
@@ -323,11 +391,24 @@ export function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): 
           || hasShortFlag(options, "W") || hasLongFlag(options, ["worktree"]);
       case "stash":
         return operands[0] === undefined ? argv.length > at + 1 && dynamic : operands[0] === "drop" || operands[0] === "clear";
+      case "gc":
+        return dynamic || hasLongFlag(options, ["prune"]);
+      case "reflog":
+        return operands[0] === undefined ? argv.length > at + 1 : operands[0] === "expire" || operands[0] === "delete";
+      case "worktree":
+        if (operands[0] === undefined) return argv.length > at + 1;
+        return operands[0] === "prune" || (operands[0] === "remove" && (dynamic || hasShortFlag(options, "f") || hasLongFlag(options, ["force"])));
+      case "update-ref":
+        return dynamic || hasShortFlag(options, "d") || hasLongFlag(options, ["stdin"]);
+      case "fetch":
+        // Forced or pruning fetches drop local refs; `+src:dst` forces one.
+        return dynamic || hasShortFlag(options, "fpP") || hasLongFlag(options, ["force", "prune", "prune-tags"])
+          || operands.some((operand) => operand === undefined || operand.startsWith("+"));
       default:
         return false;
     }
   }
-  if (program === "docker" || program === "podman" || program === "docker-compose") {
+  if (program === "docker" || program === "podman" || program === "nerdctl" || program === "docker-compose") {
     const words = verbWords(argv, DOCKER_VALUED_OPTIONS).slice(0, 3);
     const { options } = optionWords(argv.slice(1));
     if (words.some((word) => word === undefined || word === "prune" || word === "rm" || word === "rmi")) return true;
@@ -370,6 +451,15 @@ export function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): 
   if (program === "ln") {
     const { options } = optionWords(argv.slice(1));
     return options.includes(undefined) || hasShortFlag(options, "f") || hasLongFlag(options, ["force"]);
+  }
+  if (program === "npm" || program === "pnpm" || program === "yarn") {
+    // `yarn npm unpublish` (Berry) as well as `npm unpublish`.
+    return verbWords(argv, new Set()).slice(0, 2).some((word) => word === undefined || word === "unpublish");
+  }
+  if (program === "xattr") {
+    // `-c` clears every attribute and `-d` deletes one; `-w` only writes.
+    const { options } = optionWords(argv.slice(1));
+    return options.includes(undefined) || hasShortFlag(options, "cd");
   }
   if (program === "redis-cli") {
     return argv.slice(1).some((word) => word === undefined || /^flush(?:all|db)$/i.test(word));
@@ -423,7 +513,7 @@ function structuralRefusal(tokens: readonly string[], wildcard: boolean): Refuse
   const program = programName(tokens[0]!);
   if (WRAPPER_SET.has(program)) return "wrapper";
   if (isDestructiveProgram(program) || OVERWRITING_PROGRAMS.has(program)) return "destructive";
-  if (isIrreversibleShellArgv(tokens)) return "destructive";
+  if (noReusableRuleReason(tokens) !== null) return "destructive";
   // A bare or recursive permission-changer prefix covers `chmod -R 777 /`;
   // a mode the grammar cannot read is refused here, never floored.
   if (PERMISSION_CHANGERS.has(program) && (tokens.length === 1 || isDestructiveShellArgv(tokens)

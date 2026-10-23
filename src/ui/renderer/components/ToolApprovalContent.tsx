@@ -852,11 +852,14 @@ export function ToolApprovalContent({
   const canonicalShellPattern = parsedShellPattern ? formatRuleSpecifier(parsedShellPattern) : null;
   const shellPrefixRefusal = parsedShellPattern !== null ? refusedShellPrefix(parsedShellPattern.tokens, parsedShellPattern.wildcard) : null;
   const shellPrefixRefused = shellPrefixRefusal !== null;
+  // A session allow belongs to the request's root conversation; a request
+  // with no conversation cannot hold one (the host answers `missing-session`).
+  const sessionRememberWithoutConversation = !shellRule && !outOfDirScopes && rememberIsSessionOnly && !request?.sessionId;
   const alwaysAllowUnavailable = shellRule
     ? !shellRule.persistentAllowed || !shellRule.suggestedPattern || !canonicalShellPattern || shellPrefixRefused
     : outOfDirScopes
     ? outOfDirScopes.always === null
-    : approvalIsOneShot || request?.persistentAllowAllowed === false ||
+    : approvalIsOneShot || request?.persistentAllowAllowed === false || sessionRememberWithoutConversation ||
       (finalVerdict === "high" && request?.persistentAllowAllowed !== true);
   const persistentUnavailableReason = alwaysAllowUnavailable
     ? shellRule
@@ -871,6 +874,8 @@ export function ToolApprovalContent({
       ? outOfDirSuggestedParent
         ? tHook("toolApprovalDialog.persistentUnavailableOneShot")
         : tHook("toolApprovalDialog.persistentUnavailableNoParent")
+      : sessionRememberWithoutConversation && !approvalIsOneShot && request?.persistentAllowAllowed !== false
+        ? tHook("toolApprovalDialog.sessionAllowNeedsConversation")
       : finalVerdict === "high"
         ? tHook("toolApprovalDialog.persistentUnavailableHighRisk")
         : tHook("toolApprovalDialog.persistentUnavailableOneShot")

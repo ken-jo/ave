@@ -143,7 +143,7 @@ describe("decision path", () => {
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     const restarted = new PermissionManager(permissionsFile);
     await restarted.ensureProjectRulesLoaded(project);
     expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project }))
@@ -198,11 +198,11 @@ describe("decision path", () => {
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     const location = projectRulesLocation(dir, project);
     expect(location.filePath.startsWith(join(dir, "permissions", "project-rules"))).toBe(true);
-    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test *)", action: "allow" }] });
-    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(npm test *)" }] });
+    expect(JSON.parse(readFileSync(location.filePath, "utf8"))).toMatchObject({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
+    await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: true, rules: [{ pattern: "Bash(npm test)" }] });
     // A sibling project does not inherit it.
     const sibling = join(dir, "sibling");
     mkdirSync(sibling);
@@ -210,7 +210,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling })).toMatchObject({ decision: "ask" });
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
-    await pm.removeRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    await pm.removeRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
   });
 
@@ -245,7 +245,7 @@ describe("decision path", () => {
     writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
     mkdirSync(join(repo, "packages", "app"), { recursive: true });
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
@@ -265,7 +265,7 @@ describe("decision path", () => {
     mkdirSync(a);
     mkdirSync(b);
     const pm = new PermissionManager(permissionsFile);
-    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: a });
+    await pm.addRulePersist({ pattern: "Bash(npm test)", action: "allow" }, { kind: "project", projectCwd: a });
     const restarted = new PermissionManager(permissionsFile);
     for (const [cwd, decision] of [[a, "allow"], [b, "ask"]] as const) {
       await restarted.ensureProjectRulesLoaded(cwd);
@@ -322,7 +322,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask" });
     const location = projectRulesLocation(dir, project);
     mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
-    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test *)", action: "allow" }] }));
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] }));
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
     writeFileSync(location.filePath, "{ broken");
@@ -624,8 +624,6 @@ describe("host shell-rule suggestions", () => {
   it.each([
     ["git status --short", "Bash(git status *)"],
     ["ls -la src", "Bash(ls *)"],
-    ["npm run build", "Bash(npm run build *)"],
-    ["bun test src/app.test.ts", "Bash(bun test *)"],
     ["kubectl get pods -n web", "Bash(kubectl get *)"],
   ])("keeps a useful catalog wildcard for the safe workflow %s", (command, pattern) => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true, sessionAllowed: true });
@@ -634,6 +632,7 @@ describe("host shell-rule suggestions", () => {
   it.each([
     ["make build", "Bash(make build)"],
     ["cargo test --all", "Bash(cargo test --all)"],
+    ["bun test src/app.test.ts", "Bash(bun test src/app.test.ts)"],
     ["git switch main", "Bash(git switch main)"],
     ["gh pr view 12", "Bash(gh pr view 12)"],
     ["chmod +x build.sh", "Bash(chmod +x build.sh)"],
@@ -662,6 +661,55 @@ describe("host shell-rule suggestions", () => {
     expect(refusedShellPrefix(argv, false)).not.toBeNull();
     expect(() => shellRuleCoversCommand(`Bash(${command})`, "allow", command, project)).toThrow();
   });
+
+  // Round-3 review probes (owner decision 2026-10-23): runners and `git fetch`
+  // left the catalog; these argv shapes get no rule at all, exact or wildcard.
+  it.each([
+    // Runner options that load other code or switch the project.
+    "npm run build --script-shell=./evil.sh", "npm run build --script-shell ./evil.sh",
+    "npm run build --node-options=--require=./evil.js", "npm run build --prefix=/tmp/other", "npm test --script-shell",
+    "bun test --preload ./evil.ts", "bun run build --preload", "yarn test --cwd /tmp/other", "pnpm test --filter ./other -r",
+    "npm test -w other", "npm run build --workspace=other", "pnpm run build --recursive",
+    // kubectl credentials, cluster re-targeting, raw API and secrets.
+    "kubectl get pods --kubeconfig /tmp/kubeconfig", "kubectl get pods --server=https://evil.example", "kubectl get pods -s https://evil.example",
+    "kubectl get pods --token=abc", "kubectl get pods --context prod", "kubectl get pods --cluster prod", "kubectl get pods --user admin",
+    "kubectl get pods --as admin", "kubectl get pods --as-group system:masters", "kubectl get pods --as-uid 0",
+    "kubectl get pods --certificate-authority ca.crt", "kubectl get pods --client-key key.pem", "kubectl get pods --client-certificate c.pem",
+    "kubectl get pods --insecure-skip-tls-verify", "kubectl get --raw /api/v1/secrets", "kubectl logs web --kubeconfig /tmp/k",
+    "kubectl get secrets", "kubectl get secret", "kubectl get secret/db", "kubectl describe secret db", "kubectl get pods,secrets",
+    "kubectl get secrets.v1 -A",
+    // git ref and object deletion.
+    "git gc --prune=now", "git gc --aggressive --prune", "git reflog expire --expire=now --all", "git reflog delete HEAD",
+    "git worktree remove --force wt", "git worktree remove -f wt", "git worktree prune", "git update-ref -d refs/heads/x",
+    "git update-ref --stdin", "git fetch -f origin", "git fetch --force origin", "git fetch origin +main:main", "git fetch --prune",
+    "git fetch -p origin", "git fetch --prune-tags",
+    // Package unpublish, nerdctl, install, xattr.
+    "npm unpublish pkg@1.0.0", "pnpm unpublish pkg", "yarn npm unpublish", "nerdctl rm web", "nerdctl system prune -af",
+    "nerdctl compose down -v", "install -m 755 tool /usr/local/bin/tool", "xattr -c app", "xattr -d com.apple.quarantine app",
+  ])("never offers, stores or matches a rule for %s", (command) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    expect(refusedShellPrefix(command.split(" "), false)).not.toBeNull();
+    expect(() => validatePermissionRule({ pattern: `Bash(${command})`, action: "allow" })).toThrow();
+    for (const wildcard of ["Bash(kubectl get *)", "Bash(kubectl describe *)", "Bash(kubectl logs *)", "Bash(git log *)"]) {
+      expect(shellRuleCoversCommand(wildcard, "allow", command, project)).toBe(false);
+    }
+  });
+
+  it.each([
+    ["npm test", "Bash(npm test)"], ["npm run build", "Bash(npm run build)"], ["bun test", "Bash(bun test)"],
+    ["pnpm run build", "Bash(pnpm run build)"], ["git fetch origin", "Bash(git fetch origin)"],
+    ["kubectl get pods -n web", "Bash(kubectl get *)"], ["kubectl logs web -f", "Bash(kubectl logs *)"],
+    ["kubectl describe pod web", "Bash(kubectl describe *)"], ["xattr -l app", "Bash(xattr -l app)"],
+  ])("keeps the safe workflow %s one click as %s", (command, pattern) => {
+    expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ suggestedPattern: pattern, persistentAllowed: true });
+    expect(shellRuleCoversCommand(pattern, "allow", command, project)).toBe(true);
+  });
+
+  it.each(["Bash(npm test *)", "Bash(npm run build *)", "Bash(bun test *)", "Bash(yarn run build *)", "Bash(git fetch *)", "Bash(git fetch origin *)"])(
+    "refuses the former catalog wildcard %s at the store", (pattern) => {
+      expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/wildcard allowlist/);
+    },
+  );
 
   it("refuses a hand-typed wildcard outside the catalog at the store", () => {
     expect(() => validatePermissionRule({ pattern: "Bash(make *)", action: "allow" })).toThrow(/wildcard allowlist/);

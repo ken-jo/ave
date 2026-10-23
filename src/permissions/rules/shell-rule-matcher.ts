@@ -29,7 +29,7 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
-import { isDestructiveShellArgv, isIrreversibleShellArgv } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
@@ -343,9 +343,12 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
     || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
-  // Irreversible forms (`git clean -f`, `kubectl delete`, `mv`) are never covered by an allow rule.
-  if (shape.commands.some((cmd) => isIrreversibleShellArgv(cmd.argv))) {
-    return { decision: null, reason: "irreversible command (no allow rule covers it)" };
+  // Irreversible forms (`git clean -f`, `kubectl delete`, `mv`), kubectl
+  // re-targeting or secrets, and code-loading runner options are never
+  // covered by an allow rule.
+  for (const cmd of shape.commands) {
+    const unreusable = noReusableRuleReason(cmd.argv);
+    if (unreusable) return { decision: null, reason: `${unreusable} (no allow rule covers it)` };
   }
   const exfiltration = shellExfiltrationSignal(parsed, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };

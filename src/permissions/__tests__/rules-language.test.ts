@@ -240,7 +240,7 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
   });
 
   it.each([
-    [["kubectl", "get"], true], [["git", "status"], true], [["docker", "ps"], true], [["npm", "run", "build"], true],
+    [["kubectl", "get"], true], [["git", "status"], true], [["docker", "ps"], true], [["npm", "run", "build"], false],
     [["git", "stash", "list"], false], [["git", "stash", "push"], false], [["docker", "image", "ls"], false],
     [["git", "switch", "main"], false], [["git", "checkout", "-b", "feature"], false], [["git", "clean", "-n"], false],
     [["git", "restore", "--staged", "src/app.ts"], false], [["git", "reset", "HEAD"], false],
@@ -260,15 +260,15 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
 describe("wildcard allowlist (owner decision 2026-10-23)", () => {
   it.each([
     [["ls"]], [["ls", "-la"]], [["cat"]], [["rg"]], [["find"]], [["git", "status"]], [["git", "log", "--oneline"]],
-    [["git", "branch", "--list"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
-    [["kubectl", "logs"]], [["docker", "ps"]],
+    [["git", "branch", "--list"]], [["kubectl", "logs"]], [["docker", "ps"]],
   ])("allows the catalog wildcard %j", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBeNull();
   });
 
   it.each([
     [["make"]], [["make", "build"]], [["cargo", "test"]], [["git", "branch"]], [["git", "push"]], [["git", "switch"]],
-    [["npm", "run"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
+    [["npm", "run"]], [["npm", "test"]], [["npm", "run", "build"]], [["bun", "run", "lint"]], [["bun", "test"]],
+    [["git", "fetch"]], [["git", "fetch", "origin"]], [["gh", "pr"]], [["gh", "repo"]], [["helm", "list"]], [["terraform", "plan"]], [["aws", "s3"]],
     [["kubectl", "apply"]], [["docker", "compose"]], [["ln", "-s"]], [["redis-cli"]], [["echo"]],
   ])("refuses the wildcard %j outside the catalog", (tokens) => {
     expect(refusedShellPrefix(tokens)).toBe("not-allowlisted");
@@ -283,14 +283,16 @@ describe("wildcard allowlist (owner decision 2026-10-23)", () => {
   it.each([
     [["git", "status", "--short"], ["git", "status"]],
     [["ls", "-la", "src"], ["ls"]],
-    [["npm", "run", "build", "--", "--watch"], ["npm", "run", "build"]],
     [["git", "branch", "--list", "feat/*"], ["git", "branch", "--list"]],
     [["kubectl", "get", "pods", "-n", "web"], ["kubectl", "get"]],
   ])("suggests the catalog prefix for %j", (argv, prefix) => {
     expect(suggestShellPrefix(argv)).toEqual(prefix);
   });
 
-  it.each([[["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]]])("offers no wildcard for %j", (argv) => {
+  it.each([
+    [["npm", "run"]], [["make", "build"]], [["gh", "pr", "view", "12"]], [["git", "push"]],
+    [["npm", "run", "build", "--", "--watch"]], [["npm", "test"]], [["bun", "test", "src/app.test.ts"]], [["git", "fetch", "origin"]],
+  ])("offers no wildcard for %j", (argv) => {
     expect(suggestShellPrefix(argv)).toBeNull();
   });
 });
@@ -349,9 +351,6 @@ describe("refused prefixes (single shared list)", () => {
 
   it.each([
     [["git", "status"]],
-    [["npm", "test"]],
-    [["bun", "run", "build"]],
-    [["bun", "run", "./x.ts"]],
     [["ls"]],
   ])("accepts allowlisted wildcard %j", (tokens) => {
     expect(refusedShellPrefix(tokens as string[])).toBeNull();
@@ -361,6 +360,9 @@ describe("refused prefixes (single shared list)", () => {
   // wildcard allowlist (owner decision 2026-10-23) keeps them out of " *" rules.
   it.each([
     [["bun", "run"]],
+    [["npm", "test"]],
+    [["bun", "run", "build"]],
+    [["bun", "run", "./x.ts"]],
     [["deno", "task", "build"]],
     [["npx", "prettier"]],
     [["npm", "exec", "prettier"]],
@@ -378,9 +380,6 @@ describe("refused prefixes (single shared list)", () => {
 describe("arity-table suggestion", () => {
   it.each([
     [["git", "status", "--short"], ["git", "status"]],
-    [["npm", "test", "--", "foo"], ["npm", "test"]],
-    [["npm", "run", "build", "--watch"], ["npm", "run", "build"]],
-    [["bun", "run", "test:vitest", "a.ts"], ["bun", "run", "test:vitest"]],
     [["docker", "ps", "-a"], ["docker", "ps"]],
     [["ls", "-la", "src"], ["ls"]],
     [["cat", "README.md"], ["cat"]],
@@ -390,6 +389,9 @@ describe("arity-table suggestion", () => {
 
   it.each([
     [["git", "commit", "-m", "x"]],
+    [["npm", "test", "--", "foo"]],
+    [["npm", "run", "build", "--watch"]],
+    [["bun", "run", "test:vitest", "a.ts"]],
     [["bash", "-c", "ls"]],
     [["python", "-c", "print(1)"]],
     [["sudo", "ls"]],

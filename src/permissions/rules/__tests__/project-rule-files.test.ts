@@ -174,7 +174,7 @@ describe("project rule root boundaries", () => {
     repository(legacyRoot);
     const legacy = projectRulesLocation(root, legacyRoot);
     await updateProjectRulesFile(legacy, (file) => {
-      file.rules.push({ pattern: "Bash(npm test *)", action: "allow" });
+      file.rules.push({ pattern: "Bash(npm test)", action: "allow" });
     });
     const original = readFileSync(legacy.filePath, "utf8");
     for (const name of ["a", "b"]) {
