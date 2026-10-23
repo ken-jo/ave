@@ -15,6 +15,7 @@ export declare function namedRepositoryPaths(testPath: string, text: string): st
 export declare function namesChangedPath(named: string, changedPath: string): boolean;
 export declare function expandMustRunTests(document: unknown, trackedTests: readonly string[]): string[];
 export declare function selectCiTests(input: {
+  baseRef?: string;
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
   mustRunTests: readonly string[];

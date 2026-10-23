@@ -64,16 +64,23 @@ documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 CI's `build-and-test` always runs typecheck and the build. A category merge
 (a pull request from `integration/*` into `main`) runs the full suite, as the
-multi-stage flow requires. Any other pull request to `main`
-or to an `integration/*` branch runs only the affected Vitest
-tests (`bun run test:ci`, `scripts/run-ci-suite.mjs`): the changed tests, every
-test `vitest related` reaches from a changed module, the triggered lock suites,
-and the must-run set in `config/ci-must-run-tests.json` (security, permissions,
-sandbox, contract, IPC, naming, and every test that runs repository code in a
-tsx child process or an esbuild bundle). It runs the full suite whenever that
-selection cannot be trusted: the hook's global inputs, message catalogs,
-deleted or renamed modules, a module that computes its imports, a module no
-test reaches, failed discovery, or more than 600 selected files. Coverage is
+multi-stage flow requires. Every non-PR event also runs the full suite.
+Pull requests whose base is `integration/*` always run the best traced selection
+(`bun run test:ci`, `scripts/run-ci-suite.mjs`): changed tests, every test
+`vitest related` reaches from changed modules when discovery works, tests that
+name a changed path in a string literal, triggered lock suites, and the nonempty
+must-run set in `config/ci-must-run-tests.json` (security, permissions, sandbox,
+contract, IPC, naming, and tests that run repository code out of process).
+They never fall back to the whole suite, even for global inputs, message
+catalogs, deleted or renamed modules, declarations or entry points, computed
+imports, modules no test reaches, failed discovery, or more than 600 selected
+files. The reason records uncertainty; failed discovery keeps the other sources
+and the must-run set. Whole-suite checking waits for the category merge.
+An integration-base PR must have a readable merge-commit diff. A missing merge
+commit or an unparseable diff fails CI with the cause before selecting tests:
+without the changed paths, changed tests and lock-suite triggers cannot be selected.
+PRs into other bases, including non-integration branches into `main`, keep the
+untrusted-selection fallback to full. Local pre-push policy is unchanged. Coverage is
 periodic: instrumentation and the global thresholds (`check:test-coverage`)
 run only on the nightly schedule and a manual dispatch. Every other run, full
 or affected, skips coverage. A change that lowers coverage turns the next

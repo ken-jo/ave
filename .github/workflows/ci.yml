@@ -1,7 +1,8 @@
 name: CI
-# Pull requests (to main and to integration/* category branches) run the
-# affected Vitest tests unless the selection cannot be trusted. A category
-# merge (integration/* into main) and every other event run the full suite: a
+# Pull requests into integration/* always run the best traced Vitest selection,
+# never a whole-suite fallback. Other pull requests run affected tests unless
+# selection is untrusted. A category merge (integration/* into main) and every
+# non-PR event run the full suite: a
 # push to main after a merge, a release tag, the nightly schedule and a manual
 # dispatch. Coverage is periodic: only the nightly schedule and a manual
 # dispatch instrument it and enforce its thresholds. See
@@ -164,9 +165,13 @@ jobs:
         # only as fixtures or mocked installer inputs.
         #
         # `test:ci` (scripts/run-ci-suite.mjs) runs the full suite on every
-        # event but a pull request, and on a pull request whose selection it
-        # cannot trust; otherwise the pull request's affected tests plus the
-        # must-run set (config/ci-must-run-tests.json). Coverage is periodic:
+        # non-PR event and category merge (integration/* into main). PRs into
+        # integration/* always keep the best traced selection plus the nonempty
+        # must-run set (config/ci-must-run-tests.json), even when discovery fails
+        # or selection is untrusted; whole-suite checking waits for the category
+        # merge. An unresolved integration-base PR diff fails before selection.
+        # Other PR bases keep the untrusted -> full rule. Local pre-push is
+        # unchanged. Coverage is periodic:
         # only the nightly schedule and a manual dispatch run
         # `check:test-coverage` (instrumentation and every global threshold).
         # The step summary names the mode and the reason.
