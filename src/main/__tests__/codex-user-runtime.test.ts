@@ -189,7 +189,8 @@ describe("native executable resolution", () => {
     await expect(resolveCodexNativeExecutable("/tmp/co\u0000dex")).rejects.toBeInstanceOf(CodexUserRuntimeError);
   });
 
-  it("routes a 64-bit universal executable to full copy validation", async () => {
+  // The darwin route takes a POSIX absolute path, which a Windows temp root is not.
+  it.runIf(HOST !== "win32")("routes a 64-bit universal executable to full copy validation", async () => {
     const root = tempRoot();
     const bytes = Buffer.alloc(8192);
     bytes.writeUInt32BE(0xcafebabf, 0); bytes.writeUInt32BE(1, 4);
@@ -681,10 +682,13 @@ describe("CodexUserRuntimeLocator", () => {
 
   it("runs real probes without a shell and reads their output", async () => {
     // A system utility reports no CLI version, so a completed real probe
-    // yields an invalid-executable verdict rather than a start failure.
+    // yields an invalid-executable verdict rather than a start failure. On
+    // Windows the copy must start without sibling DLLs, which rules out the
+    // Electron test host and leaves the standalone Node it was launched from.
     const { root, locator } = locatorHarness({ realProbes: true });
     const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
-    copyFileSync(HOST === "win32" ? process.execPath : "/usr/bin/true", native); chmodSync(native, 0o700);
+    const standalone = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    copyFileSync(HOST === "win32" ? standalone : "/usr/bin/true", native); chmodSync(native, 0o700);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
   });
 
