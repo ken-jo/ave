@@ -145,7 +145,8 @@ describe("sensitive paths — one table, two projections", () => {
     it("denies the default Electron userData dir on both surfaces", () => {
       // Not a table row (the exact dir is runtime-only), so this pins the two
       // hand-written projections against each other on the default layout.
-      const target = getDefaultSensitiveReadDenyPaths().find((p) =>
+      // Win32 directory rows carry a trailing separator.
+      const target = getDefaultSensitiveReadDenyPaths().map((p) => p.replace(/[\\/]$/, "")).find((p) =>
         p.endsWith("Ave"),
       );
       expect(target, "sandbox floor must carry an Electron userData dir").toBeTruthy();
