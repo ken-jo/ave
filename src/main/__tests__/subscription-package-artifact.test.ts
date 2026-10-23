@@ -1,16 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function writePackage(root: string, name: string, files: Record<string, string>, metadata: Record<string, unknown> = {}): string {

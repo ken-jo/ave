@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import {
   PUBLISHED_SCHEMAS,
   checkProtocolMirror,
@@ -85,8 +86,8 @@ function pointAlias(root: string, appVersion: string): void {
     readMirror(root, `2/v${appVersion}/protocol.schema.json`).toString("utf8"));
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 describe("host protocol web mirror", () => {
