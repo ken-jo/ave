@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 const roots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();

@@ -15,7 +15,7 @@ import { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client
 import type { CliDiscoveryEnvironment } from "../user-cli-discovery.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
+  ...(await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()),
   spawn: vi.fn(() => { throw new Error("Unexpected executable launch"); }),
 }));
 

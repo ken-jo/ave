@@ -34,6 +34,9 @@ import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } f
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 const imageRuntime = vi.hoisted(() => ({ directory: undefined as string | undefined }));
 vi.mock("../main-paths.js", async (original) => {
   const paths = await original<typeof import("../main-paths.js")>();

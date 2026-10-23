@@ -26,6 +26,9 @@ import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 import { claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+
 const SESSION = "550e8400-e29b-41d4-a716-446655440000";
 const HOST_TOOL = "mcp__ave-host-tools__read_project_file";
 const TOOL: ToolSchema = {
@@ -79,6 +82,7 @@ afterEach(async () => {
 function paths() {
   const root = mkdtempSync(join(tmpdir(), "ave-claude-runtime-"));
   roots.push(root);
+  normalizeFixtureAncestorPermissions(root);
   const value = { runtimeHome: join(root, "home"), workspaceDir: join(root, "workspace"), runtimeTempDir: join(root, "tmp") };
   for (const path of Object.values(value)) mkdirSync(path, { mode: 0o700 });
   return value;
