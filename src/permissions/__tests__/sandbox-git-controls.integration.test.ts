@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,11 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { SANDBOX_GIT_SCAN_DEPTH } from "../sandbox-write-policy.js";
 
 const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+const METADATA_PATH_SUFFIXES = [
+  { label: "a trailing space", suffix: " " },
+  { label: "a trailing tab", suffix: "\t" },
+  { label: "a trailing nonbreaking space", suffix: "\u00a0" },
+] as const;
 
 describe.skipIf(shouldSkipNativeSandboxTests())("native repository control writes", () => {
   let root: string;
@@ -120,17 +125,33 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
     expect(existsSync(trace)).toBe(false);
   });
 
-  it("protects redirected common metadata and the commondir pointer under separate write grants", async () => {
+  it.each(METADATA_PATH_SUFFIXES)("protects a gitdir target with $label under a separate write grant", async ({ suffix }) => {
+    const project = join(root, "project");
+    const storage = join(root, "storage");
+    const metadata = join(storage, `metadata${suffix}`);
+    repository(project, true);
+    mkdirSync(storage);
+    renameSync(join(project, ".git"), metadata);
+    writeFileSync(join(project, ".git"), `gitdir: ${metadata}\r\n`);
+    const config = join(metadata, "config");
+    const attack = proveConfigAttack(project, config);
+    await blockedWrite(config, attack, [project, storage]);
+    await blockedWrite(join(metadata, "hooks", "pre-commit"), "payload", [project, storage]);
+    git(project, "status", "--porcelain");
+    expect(existsSync(trace)).toBe(false);
+  });
+
+  it.each(METADATA_PATH_SUFFIXES)("protects redirected common metadata with $label and its pointer under separate write grants", async ({ suffix }) => {
     const source = join(root, "source");
     const checkout = join(root, "checkout");
-    const common = join(root, "planted-common");
+    const common = join(root, `planted-common${suffix}`);
     repository(source, true);
     git(source, "worktree", "add", "--quiet", "--detach", checkout, "HEAD");
     git(source, "clone", "--bare", "--quiet", source, common);
     git(source, "config", "--file", join(common, "config"), "core.bare", "false");
     const gitDir = resolve(checkout, readFileSync(join(checkout, ".git"), "utf8").trim().slice("gitdir: ".length));
     const commonPointer = join(gitDir, "commondir");
-    writeFileSync(commonPointer, `${common}\n`);
+    writeFileSync(commonPointer, `${common}\r\n`);
     const config = join(common, "config");
     const attack = proveConfigAttack(checkout, config);
     await blockedWrite(config, attack, [checkout, common, gitDir]);

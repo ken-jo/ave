@@ -75,7 +75,9 @@ function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | und
       throw new Error("Sandbox Git metadata changed during discovery");
     }
     budget.metadataBytes -= length;
-    return buffer.toString("utf8", 0, length).trimEnd();
+    // Only terminal CR/LF bytes delimit these control records. Other
+    // whitespace is path data, including a trailing space, tab or NBSP.
+    return buffer.toString("utf8", 0, length).replace(/[\r\n]+$/u, "");
   } finally { closeSync(fd); }
 }
 

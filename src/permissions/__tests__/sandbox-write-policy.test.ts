@@ -171,6 +171,24 @@ describe("mandatory sandbox control-file writes", () => {
     expect(() => buildMandatorySandboxWritePolicy([root]).denyWrite).toThrow("directory pointer");
   });
 
+  it.each(
+    (["gitdir", "commondir"] as const).flatMap(kind => [
+      { kind, label: "ASCII space", suffix: " " },
+      { kind, label: "tab", suffix: "\t" },
+      { kind, label: "NBSP", suffix: "\u00a0" },
+    ]),
+  )("preserves a trailing $label in a $kind target", ({ kind, label, suffix }) => {
+    const marker = join(root, ".git");
+    const target = join(root, `${kind}-${label}${suffix}`);
+    if (kind === "gitdir") {
+      writeFileSync(marker, `gitdir: ${target}\r\n`);
+    } else {
+      mkdirSync(marker);
+      writeFileSync(join(marker, "commondir"), `${target}\r\n`);
+    }
+    expect(buildMandatorySandboxWritePolicy([root]).denyWrite).toContain(target);
+  });
+
   it("treats absent gitdir and common targets with pattern characters as literal entries", () => {
     const marker = join(root, ".git");
     const target = join(root, "metadata-[*?]-absent");
@@ -220,7 +238,7 @@ describe("mandatory sandbox control-file writes", () => {
 
   it("shares metadata byte limits across all admitted roots", () => {
     const roots = Array.from({ length: 17 }, (_, index) => join(root, `project-${index}`));
-    const pointer = "gitdir: metadata".padEnd(65_536, " ");
+    const pointer = "gitdir: metadata".padEnd(65_536, "\n");
     for (const project of roots) {
       mkdirSync(project);
       writeFileSync(join(project, ".git"), pointer);
