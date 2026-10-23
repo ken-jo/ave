@@ -249,6 +249,13 @@ const ROOT = (() => {
   }
 })();
 
+/**
+ * The bits a 0o700 mkdir leaves. Windows keeps no POSIX mode, so Node reports
+ * 0o666 for the directory there; the real Windows agent lane refuses before it
+ * makes a HOME (see the native Windows case below).
+ */
+const OWNER_ONLY_DIR_MODE = nativePlatform === "win32" ? 0o666 : 0o700;
+
 let emitted: Array<{ event: string; payload: unknown }> = [];
 /** The window each emitted event was addressed to, index for index with `emitted`. */
 let emittedOwners: Array<number | null> = [];
@@ -387,7 +394,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // command, so only an assignment inside the wrap reaches the shell.
     expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
     expect(statSync(temp).isDirectory()).toBe(true);
-    expect(statSync(temp).mode & 0o777).toBe(0o700);
+    expect(statSync(temp).mode & 0o777).toBe(OWNER_ONLY_DIR_MODE);
     // Written under the HOME the wrap already grants.
     expect(options.filesystem.allowWrite).toContain(sandboxHome);
   });
