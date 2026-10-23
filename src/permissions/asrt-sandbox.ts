@@ -7,9 +7,8 @@ import { spawn } from "node:child_process";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { getPolicyHome } from "../shared/policy-home.js";
+import { policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1167,26 +1166,23 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
 }
 
 function sensitiveDenyHomes(): string[] {
-  const home = homedir();
-  const policyHome = getPolicyHome();
-  return caseFoldForMatch(canonicalizePathForMatch(home)) === caseFoldForMatch(canonicalizePathForMatch(policyHome))
-    ? [home] : [home, policyHome];
+  return policyHomeAnchors();
 }
 
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
   const homes = sensitiveDenyHomes();
   const ave = aveHome();
-  const aveHomes = process.env.AVE_HOME ? [ave] : homes.map((home) => join(home, ".ave"));
+  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
   // Electron userData dir — exact path when provided by a trusted caller;
   // otherwise derived from each home and platform layout, without a
   // desktop runtime import — safe for any non-renderer context.
   // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
   // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData = homes.map((home) => userDataDir ??
+  const electronUserData = userDataDir !== undefined ? [userDataDir] : homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
-        ? join(home, "AppData", "Roaming", "Ave")
+        ? join(home, "AppData", "Roaming", "Ave") + sep
         : join(
             // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),

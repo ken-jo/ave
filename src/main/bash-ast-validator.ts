@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from "node:path";
-import { getPolicyHome } from "../shared/policy-home.js";
+import { getPolicyHome, policyHomeAnchors } from "../shared/policy-home.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { t } from "../i18n/index.js";
 import { staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
@@ -69,20 +70,28 @@ export class BashAstValidator {
               });
               const recursive = flags.some((flag) => flag === "--recursive" || /^-[A-Za-z]*[rR]/.test(flag));
               const force = flags.some((flag) => flag === "--force" || /^-[A-Za-z]*f/.test(flag));
-              const dangerous = targets.find((index) => {
+              const homes = recursive && force ? policyHomeAnchors(environment) : [];
+              if (recursive && force) {
+                try { homes.push(getPolicyHome(environment)); } catch { /* Unresolved home-shaped operands still refuse below. */ }
+              }
+              const dangerous = recursive && force ? targets.find((index) => {
                 const target = argv[index];
                 const word = words[index]!;
                 return target !== undefined && /^\/+$/u.test(target)
                   || !environment.HOME && word.parts.some((part) => part.kind === "parameter" && part.name === "HOME")
-                  || target !== undefined && resolvePath(projectedCwd ?? cwd, target) === resolvePath(getPolicyHome(environment))
+                  || target !== undefined && homes.some((home) =>
+                    caseFoldForMatch(canonicalizePathForMatch(resolvePath(projectedCwd ?? cwd, target)))
+                      === caseFoldForMatch(canonicalizePathForMatch(home)))
                   || word.parts.some((part) => part.kind === "pattern" && part.value === "*");
-              });
-              if (recursive && force && (dangerous !== undefined || event.backquote)) {
+              }) : undefined;
+              const unresolvedHome = !environment.HOME ? event.original.words.find((word) =>
+                word.parts.some((part) => part.kind === "parameter" && part.name === "HOME")) : undefined;
+              if (recursive && force && (dangerous !== undefined || unresolvedHome !== undefined || event.backquote)) {
                 const origin = event.original.words.find((word) => word.source.start === first?.source.start);
                 const indirect = origin?.parts.some((part) => part.kind === "parameter");
                 const id = event.backquote ? "backtick-command-substitution" : indirect ? "variable-expansion-exec"
                   : event.original.source.start === 0 ? "rm-rf-root" : "rm-rf-compound";
-                refuse(id, t("be_bashAstValidator.rmRfRoot"), dangerous === undefined ? first : words[dangerous]);
+                refuse(id, t("be_bashAstValidator.rmRfRoot"), dangerous === undefined ? unresolvedHome ?? first : words[dangerous]);
               }
             }
             if (verb === "echo" && argv.slice(1).some((argument) => argument !== undefined && /^-[ne]+$/.test(argument))

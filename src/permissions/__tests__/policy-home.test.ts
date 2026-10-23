@@ -1,16 +1,25 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
-import { getPolicyHome } from "../../shared/policy-home.js";
+import { getPolicyHome, policyHomeAnchors } from "../../shared/policy-home.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { sensitivePathInArgumentText, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return { ...original, homedir: vi.fn(original.homedir), userInfo: vi.fn(original.userInfo) };
+});
+
+beforeEach(() => {
+  vi.mocked(userInfo).mockReturnValue({ homedir: join(tmpdir(), "account"), username: "test-account", uid: 1000, gid: 1000, shell: "/bin/sh" });
+});
 
 describe.skipIf(process.platform !== "win32")("home policy with an absent HOME", () => {
   let home: string;
@@ -79,7 +88,7 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
             const path = join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments);
             expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
           }
-          expect(denied).toContain(join(root, "AppData", "Roaming", "Ave"));
+          expect(denied).toContain(join(root, "AppData", "Roaming", "Ave") + sep);
         }
         if (shellHome !== explicitHome) expect(denied.some((path) => path.startsWith(explicitHome + sep))).toBe(false);
       }
@@ -141,5 +150,186 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
         expect(denied).not.toContain(path + (entry.kind === "dir" ? "" : sep));
       }
     }
+  });
+});
+
+describe("independent home anchors", () => {
+  const platform = process.platform;
+  let scratch: string;
+  let home: string;
+  let shellHome: string;
+  let passwd: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), "ave-home-anchors-"));
+    // Root-relative paths address the same temporary drive when exercising POSIX policy on win32.
+    home = platform === "win32" ? scratch.replace(/\\/g, "/").replace(/^[A-Za-z]:/, "") : scratch;
+    shellHome = home + "/shell";
+    passwd = home + "/account";
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    vi.mocked(homedir).mockReturnValue(home);
+    vi.mocked(userInfo).mockReturnValue({ homedir: passwd, username: "test-account", uid: 1000, gid: 1000, shell: "/bin/sh" });
+    vi.stubEnv("HOME", shellHome);
+    vi.stubEnv("USERPROFILE", undefined);
+    vi.stubEnv("HOMEDRIVE", undefined);
+    vi.stubEnv("HOMEPATH", undefined);
+    vi.stubEnv("AVE_HOME", join(scratch, "app"));
+    vi.stubEnv("XDG_CONFIG_HOME", undefined);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    vi.unstubAllEnvs();
+    vi.mocked(homedir).mockReset().mockImplementation(() => platform === "win32" ? process.env.USERPROFILE! : process.env.HOME!);
+    vi.mocked(userInfo).mockReset();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("keeps cwd and conventional stores with an empty application home", () => {
+    vi.stubEnv("AVE_HOME", "");
+    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const root of [process.cwd(), join(home, ".ave"), join(shellHome, ".ave"), join(passwd, ".ave")]) {
+        for (const leaf of ["secrets", "sessions", "audit"]) expect(denied).toContain(join(root, leaf));
+      }
+    }
+  });
+
+  it("retains every sensitive table row and write floor at the passwd home", () => {
+    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const root of [home, shellHome, passwd]) {
+        for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+          expect(denied).toContain(join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments));
+        }
+      }
+    }
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(passwd, ".bashrc"));
+    expect(policyHomeAnchors()).toEqual([home, shellHome, passwd]);
+  });
+
+  it.each(["rel", "/"])("ignores invalid HOME %s without adding deny rows", (HOME) => {
+    vi.stubEnv("HOME", HOME);
+    const denied = getDefaultSensitiveWriteDenyPaths();
+    expect(denied).toContain(join(passwd, ".bashrc"));
+    expect(denied).not.toContain(join(HOME, ".ssh"));
+    expect(policyHomeAnchors()).toEqual([home, passwd]);
+  });
+
+  it("keeps deny projections usable with an empty OS home", () => {
+    vi.stubEnv("HOME", "");
+    vi.mocked(homedir).mockReturnValue("");
+    expect(getDefaultSensitiveReadDenyPaths()).toContain(join(passwd, ".ssh"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(passwd, ".bashrc"));
+    expect(getPolicyHome()).toBe(passwd);
+  });
+
+  it("retains trusted app-data denies when no home resolves", () => {
+    vi.stubEnv("HOME", "");
+    vi.mocked(homedir).mockReturnValue("");
+    vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
+    const userData = join(scratch, "app-data");
+    expect(getDefaultSensitiveReadDenyPaths(userData)).toContain(userData);
+    expect(getDefaultSensitiveWriteDenyPaths(userData)).toContain(userData);
+  });
+
+  it("allows ordinary removal and refuses home-shaped forced removal without an account", () => {
+    vi.stubEnv("HOME", "");
+    vi.mocked(homedir).mockReturnValue("");
+    vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
+    expect(new BashAstValidator().validate("bash", { command: "rm foo" }, {
+      cwd: scratch, facts: { dialect: "bash", environment: { HOME: "" } },
+    }).decision).toBe("allow");
+    for (const command of ["rm -rf ~/", "rm -rf $HOME", 'rm -rf "${HOME}"/']) {
+      expect(new BashAstValidator().validate("bash", { command }, {
+        cwd: scratch, facts: { dialect: "bash", environment: { HOME: "" } },
+      }).decision).toBe("deny");
+    }
+  });
+
+  it("scans HOME parameters with an empty OS home", () => {
+    vi.stubEnv("HOME", "");
+    vi.mocked(homedir).mockReturnValue("");
+    expect(shellSensitivePathSignal("echo $HOME", scratch)).toBeNull();
+    vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
+    expect(shellSensitivePathSignal("echo $HOME", scratch)).toBeNull();
+  });
+
+  it("refuses recursive removal of the passwd home when HOME differs", () => {
+    expect(new BashAstValidator().validate("bash", { command: `rm -rf '${passwd}'` }, {
+      cwd: scratch, facts: { dialect: "bash", environment: { HOME: shellHome } },
+    }).decision).toBe("deny");
+  });
+
+  it("checks the passwd tilde anchor through operands and scanners", () => {
+    mkdirSync(join(passwd, ".ssh"), { recursive: true });
+    symlinkSync(join(passwd, ".ssh"), join(passwd, "alias"), platform === "win32" ? "junction" : "dir");
+    expect(findShellPathPolicyViolation("cat ~/alias/key", scratch, home, [home, shellHome, passwd], false, {
+      dialect: "bash", environment: { HOME: shellHome },
+    })?.kind).toBe("sensitive-path");
+    expect(sensitivePathInArgumentText("~/alias/key", scratch)).not.toBeNull();
+    expect(shellSensitivePathSignal("cat ~/alias/key", scratch)).not.toBeNull();
+    expect(expandLeadingTilde("~")).toBe(home);
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("independent profile anchors", () => {
+  let home: string;
+  let profile: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "ave-profile-anchors-"));
+    profile = join(home, "profile");
+    // As on a real host, os.homedir() is USERPROFILE.
+    vi.mocked(homedir).mockReturnValue(profile);
+    vi.stubEnv("HOME", join(home, "shell"));
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOMEDRIVE", undefined);
+    vi.stubEnv("HOMEPATH", undefined);
+    vi.stubEnv("AVE_HOME", join(home, "app"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(homedir).mockReset().mockImplementation(() => process.env.USERPROFILE!);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("keeps every default app-data copy a directory", () => {
+    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const root of [profile, process.env.HOME!]) {
+        const path = join(root, "AppData", "Roaming", "Ave");
+        expect(denied).toContain(path + sep);
+        expect(denied).not.toContain(path);
+      }
+    }
+  });
+
+  it.each(["rel", "/", "\\shell", "C:\\", "C:/"])("ignores invalid profile HOME %s", (HOME) => {
+    vi.stubEnv("HOME", HOME);
+    expect(policyHomeAnchors()).toEqual([profile]);
+    expect(getDefaultSensitiveWriteDenyPaths()).not.toContain(join(HOME, ".bashrc"));
+  });
+
+  it("anchors the drive and path when the OS home throws on an empty profile", () => {
+    vi.stubEnv("HOME", "");
+    vi.stubEnv("USERPROFILE", "");
+    vi.stubEnv("HOMEDRIVE", profile.slice(0, 2));
+    vi.stubEnv("HOMEPATH", profile.slice(2));
+    vi.mocked(homedir).mockImplementation(() => { throw Object.assign(new Error("uv_os_homedir returned ENOENT"), { code: "ENOENT" }); });
+    expect(policyHomeAnchors()).toEqual([profile]);
+    expect(getPolicyHome()).toBe(profile);
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(profile, ".bashrc"));
+  });
+
+  it.each(["case", "separator"])("deduplicates profile HOME by %s", (form) => {
+    vi.stubEnv("HOME", form === "case" ? profile.toUpperCase() : profile.replace(/\\/g, "/"));
+    expect(policyHomeAnchors()).toEqual([profile]);
+    const denied = getDefaultSensitiveWriteDenyPaths();
+    expect(denied.filter((path) => /[/\\]AppData[/\\]Roaming[/\\]Ave[/\\]$/i.test(path))).toHaveLength(1);
+  });
+
+  it("refuses recursive removal of USERPROFILE when HOME differs", () => {
+    expect(new BashAstValidator().validate("bash", { command: `rm -rf '${profile.replace(/\\/g, "/")}'` }, {
+      cwd: home, facts: { dialect: "bash", environment: { HOME: process.env.HOME, USERPROFILE: profile } },
+    }).decision).toBe("deny");
   });
 });

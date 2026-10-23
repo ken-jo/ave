@@ -1095,7 +1095,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       process.platform === "darwin"
         ? join(home, "Library", "Application Support", "Ave")
         : process.platform === "win32"
-          ? join(home, "AppData", "Roaming", "Ave")
+          ? join(home, "AppData", "Roaming", "Ave") + sep
           : join(xdgBase, "Ave");
     expect(paths).toContain(fallback);
   });
