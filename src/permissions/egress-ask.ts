@@ -1,8 +1,9 @@
 /**
  * Decide sandbox egress by the host-owned invocation identity. Shell destinations
  * require an existing grant or the host approval requester; background and auto
- * requests reach that requester's reviewer lane. Workers use their plugin/model
- * destinations. The runtime supplies terminals their existing allowlist union.
+ * requests reach that requester's reviewer lane. Terminal destinations use
+ * their own grants and owning-tab approval banner. Workers use their plugin/model
+ * destinations.
  *
  * A connection is checked by name before DNS, then against the resolved addresses
  * before dialing. A grant applies only to the approved destination network class.
@@ -83,7 +84,6 @@ export interface EgressAskDeps {
    * optionally `:port`). `undefined` pluginId is a worker no extension owns.
    */
   readonly shellGrantScopes?: readonly EgressGrantScope[];
-  readonly terminalAllowedDomains?: () => readonly string[];
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
   /** `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked. */
@@ -373,10 +373,6 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
-        if (owner.kind === "terminal" && deps.terminalAllowedDomains !== undefined) {
-          return { owner, decision: egressAllowlistMatches(deps.terminalAllowedDomains(), destination)
-            ? pass(allow("extension-allowlist", null)) : deny("policy", EGRESS_DENY_REASONS.workerOffList) };
-        }
         const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network)
           .filter((scope) => owner.kind !== "shell" || !deps.shellGrantScopes || deps.shellGrantScopes.includes(scope));
         const key = holdKey(token, destination, strength);

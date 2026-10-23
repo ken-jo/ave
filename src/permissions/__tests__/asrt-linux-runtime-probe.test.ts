@@ -8,7 +8,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import * as sandboxWritePolicy from "../sandbox-write-policy.js";
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -43,9 +50,12 @@ import {
   isAsrtLinuxRuntimeProbeError,
   isAsrtSandboxActive,
   resetAsrtSandbox,
+  wrapToolCommand,
+  wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 
 const ORIGINAL_PLATFORM = process.platform;
+const temporaryRoots: string[] = [];
 const CONFIGURED_LINUX_BWRAP_COMMAND =
   "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 
@@ -107,7 +117,72 @@ afterEach(async () => {
     await resetAsrtSandbox();
   }
   setProcessPlatform(ORIGINAL_PLATFORM);
+  vi.restoreAllMocks();
   vi.clearAllMocks();
+  for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
+});
+
+describe("Linux wrap filesystem discovery snapshot", () => {
+  it.each([
+    ["tool", wrapToolCommand], ["worker", wrapWorkerCommand],
+  ] as const)("uses one immutable scan for the %s runtime and literal-deny replay", async (_kind, wrap) => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    h.wrapWithSandboxArgv.mockClear();
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "asrt-snapshot-")));
+    temporaryRoots.push(fixture);
+    const root = join(fixture, "workspace[held]");
+    const denied = join(root, ".git");
+    const ordinary = join(root, "ordinary");
+    mkdirSync(denied, { recursive: true });
+    mkdirSync(ordinary);
+    const discover = vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy");
+    const filesystem = { allowRead: [root], allowWrite: [root], denyWrite: [] as string[] };
+    const quote = (word: string) => `'${word.replace(/'/g, `'"'"'`)}'`;
+    const mount = (option: string, path: string) => [option, path, path].map(quote).join(" ");
+    h.wrapWithSandboxArgv.mockImplementationOnce(async (_command, _shell, config: Partial<SandboxRuntimeConfig>) => {
+      const applied = config.filesystem!;
+      expect(Object.isFrozen(applied)).toBe(true);
+      for (const entries of Object.values(applied)) expect(Object.isFrozen(entries)).toBe(true);
+      expect(applied.allowRead).not.toBe(filesystem.allowRead);
+      expect(applied.allowWrite).not.toBe(filesystem.allowWrite);
+      const literal = applied.denyWrite.find(entry => typeof entry !== "string" && entry.path === denied);
+      expect(literal).toEqual({ path: denied, literal: true });
+      expect(Object.isFrozen(literal)).toBe(true);
+      expect(Reflect.set(applied, "denyWrite", [])).toBe(false);
+      expect(Reflect.set(applied.denyWrite, "0", ordinary)).toBe(false);
+      // A caller changing its lists while the runtime awaits cannot replace
+      // the snapshot the Linux replay was handed alongside this wrap.
+      filesystem.denyWrite.push(ordinary);
+      return {
+        argv: ["/bin/bash", "-c", [
+          "/configured/asrt/bwrap --new-session --die-with-parent --ro-bind / /",
+          `--tmpfs ${quote(root)}`,
+          mount("--bind", denied), mount("--bind", ordinary),
+          mount("--ro-bind", denied), mount("--ro-bind", root),
+          "-- /bin/bash -c true",
+        ].join(" ")],
+        env: {},
+      };
+    });
+    const wrapped = await wrap("true", { commandId: TEST_COMMAND_ID, filesystem });
+    expect(discover).toHaveBeenCalledOnce();
+    expect(discover).toHaveBeenCalledWith([root], undefined);
+    expect(h.wrapWithSandboxArgv).toHaveBeenCalledOnce();
+    const replay = wrapped.argv[2]!.split(mount("--ro-bind", root))[1]!;
+    expect(replay).toContain(mount("--bind", ordinary));
+    expect(replay).toContain(mount("--ro-bind", denied));
+    expect(replay).not.toContain(mount("--bind", denied));
+  });
+
+  it("rejects a marked allowRead entry before handing an ambiguous grant to the runtime", async () => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    h.wrapWithSandboxArgv.mockClear();
+    await expect(wrapToolCommand("true", {
+      commandId: TEST_COMMAND_ID,
+      filesystem: { allowRead: [{ path: process.cwd(), literal: true }] as never },
+    })).rejects.toThrow(TypeError);
+    expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
+  });
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {

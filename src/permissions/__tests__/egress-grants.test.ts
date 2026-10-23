@@ -370,6 +370,7 @@ describe("shell domain grants in the running process", () => {
     const requests: unknown[] = [];
     const callback = createEgressAskRuntimeCallback({ approvalGate: { requestAndWait: async (request) => {
       requests.push(request);
+      if (request.egressHost?.terminalTabId) return { requestId: request.id, choice: "deny-once" };
       return { requestId: request.id, choice: "allow-once", egressScope: "always" };
     } } });
     const destination = { host: "downloads.example.com", port: 443 };
@@ -390,7 +391,8 @@ describe("shell domain grants in the running process", () => {
       first.release();
       expect(await ask(second.token)).toBe(true);
       expect(requests).toHaveLength(1);
-      expect(await ask(terminal.token)).toEqual({ allow: false, reason: "not on the extension's network allowlist" });
+      expect(await ask(terminal.token)).toEqual({ allow: false, reason: "denied by the user" });
+      expect(requests).toHaveLength(2);
       expect((await revokeEgressGrant(target)).removed).toBe(true);
     } finally {
       await revokeEgressGrant(target);

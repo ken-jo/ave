@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { settingsFilePath } from "../../data/settings-store.js";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import {
   buildPerCommandSandboxCustomConfig, cleanupAsrtSandboxAfterCommand,
-  initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand,
+  isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
@@ -15,23 +16,20 @@ import { projectRulesDirectory } from "../rules/project-rule-files.js";
 import { egressGrantFilePath } from "../egress-grants.js";
 import { userApprovalFilePath } from "../user-approval-store.js";
 import { userPolicyPath } from "../policy-store.js";
-import { asrtCanInitialize } from "./test-helpers.js";
 
 const CONTROL_ENTRIES = [
   ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-  ".git/hooks/pre-commit", ".git/config", ".vscode/settings.json",
+  ".git", ".git/hooks/pre-commit", ".git/config", ".git/modules/x/config", ".git/modules/future/hooks/pre-commit", ".vscode/settings.json",
 ] as const;
 
-describe("sandbox control-file write boundary", () => {
+describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boundary", () => {
   let root: string;
   let userData: string;
-  let active = false;
   beforeAll(async () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-control-writes-")));
     userData = join(root, "desktop-data");
     vi.stubEnv("AVE_HOME", join(root, "ave"));
-    active = process.platform !== "win32" && await asrtCanInitialize();
-    if (active) await initializeAsrtSandbox({ allowedDomains: [], userDataDir: userData });
+    await initializeRequiredSandbox({ allowedDomains: [], userDataDir: userData });
   });
   afterAll(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -67,18 +65,15 @@ describe("sandbox control-file write boundary", () => {
   }
 
   it.each(CONTROL_ENTRIES)("keeps %s protected when absent and present", async (entry) => {
-    const project = join(root, entry.replaceAll("/", "-"));
+    const project = join(root, `project-${entry.replaceAll("/", "-")}`);
     mkdirSync(project);
     const target = join(project, entry);
     const config = buildPerCommandSandboxCustomConfig({ allowWrite: [project], denyWrite: [] });
     // The configured deny exists even before its protected entry is created.
     const protectedRoot = entry.startsWith(".git/hooks/") ? join(project, ".git/hooks")
+      : entry.startsWith(".git/modules/") ? join(project, ".git/modules")
       : entry.startsWith(".vscode/") ? join(project, ".vscode") : target;
     expect(config?.filesystem?.denyWrite).toContain(protectedRoot);
-    if (!active) {
-      expect(isAsrtSandboxActive()).toBe(false);
-      return;
-    }
     // Grant this project itself so each reserved name is relative to a write root.
     const originalRoot = root;
     root = project;
@@ -99,7 +94,6 @@ describe("sandbox control-file write boundary", () => {
     const targets = [settingsFilePath(userData), permissionSettingsPath(), permissionsFilePath(),
       join(projectRulesDirectory(join(root, "ave")), "project.json"),
       userApprovalFilePath(), egressGrantFilePath(), userPolicyPath()];
-    if (!active) { expect(isAsrtSandboxActive()).toBe(false); return; }
     for (const target of targets) {
       expect(await attempt(target)).not.toBe(0);
       expect(existsSync(target)).toBe(false);

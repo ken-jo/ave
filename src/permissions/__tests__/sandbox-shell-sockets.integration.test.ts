@@ -7,9 +7,10 @@ import { connect } from "node:net";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { openEgressInvocation } from "../egress-invocations.js";
-import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
+import { isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 
 async function execute(argv: readonly string[], env: NodeJS.ProcessEnv = process.env) {
@@ -37,9 +38,8 @@ function close(server: Server): Promise<void> {
 
 afterEach(async () => { if (isAsrtSandboxActive()) await resetAsrtSandbox(); });
 
-describe("host shell socket boundaries", () => {
+describe.skipIf(shouldSkipNativeSandboxTests())("host shell socket boundaries", () => {
   it("refuses Unix sockets and direct TCP while an ordinary command succeeds", async () => {
-    if (process.platform !== "darwin" && process.platform !== "linux") return;
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-shell-sockets-")));
     const socket = join(root, "host.sock");
     const unixServer = createServer((_request, response) => response.end("host-unix-visible"));
@@ -55,7 +55,7 @@ describe("host shell socket boundaries", () => {
       expect((await execute(["/usr/bin/curl", "--silent", "--show-error", "--max-time", "2", "--unix-socket", socket, "http://localhost/"])).output).toContain("host-unix-visible");
       expect((await execute(["/usr/bin/curl", "--silent", "--show-error", "--max-time", "2", "--noproxy", "*", tcpUrl])).output).toContain("host-tcp-visible");
       // A worker may need a shared socket grant. It must never widen shells.
-      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: false, allowUnixSocketDirs: [root], weakening: { allowAllUnixSockets: true } }, async () => false);
+      await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false, allowUnixSocketDirs: [root], weakening: { allowAllUnixSockets: true } }, async () => false);
       const wrap = (command: string) => wrapToolCommand(command, {
         commandId: invocation.token, denyUnixSockets: true,
         filesystem: { allowWrite: [root] },
@@ -107,9 +107,8 @@ async function requestRetiredListener(endpoint: { port?: number; socketPath?: st
   });
 }
 
-describe("native invocation proxy identity", () => {
+describe.skipIf(shouldSkipNativeSandboxTests())("native invocation proxy identity", () => {
   it("allows its own attributed request, refuses foreign credentials and listeners, and closes on release", async () => {
-    if (process.platform !== "darwin" && process.platform !== "linux") return;
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-listener-identity-")));
     const received: string[] = [];
     const upstream = createServer((request, response) => {
@@ -124,7 +123,7 @@ describe("native invocation proxy identity", () => {
     const first = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: "first", context: TEST_SHELL_EGRESS_CONTEXT });
     const second = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: "second", context: TEST_SHELL_EGRESS_CONTEXT });
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: false, corporateProxy: { http: route, https: route } }, async ({ host }, context) => {
+      await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false, corporateProxy: { http: route, https: route } }, async ({ host }, context) => {
         asked.push({ host, context });
         return true;
       });

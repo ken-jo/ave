@@ -8,7 +8,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -21,7 +21,8 @@ import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { getMandatorySandboxWriteDenyPaths } from "./sandbox-write-policy.js";
+import { buildMandatorySandboxWritePolicy, isGrantPathWithin } from "./sandbox-write-policy.js";
+export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 
@@ -774,27 +775,6 @@ function pluginOwnedReadRoots(): string[] {
 }
 
 /**
- * Whether `path` lies within `root`, asked the way a filesystem GRANT must ask
- * it. On Windows both sides go through the same canonicaliser admission uses
- * (`canonicalizePathForMatch`: realpath, which expands 8.3 short names and
- * follows links, then `caseFoldForMatch`), so `…\acme\DATA\work` or
- * `C:\Users\RUNNER~1\…` is recognised as inside `…\acme\data` — a lexical,
- * case-sensitive comparison left such a spelling an independent root, and a
- * Windows grant on an independent root below `data\` is a grant on whatever
- * the plugin later puts there. Elsewhere the comparison stays lexical on the
- * resolved paths, unchanged.
- */
-export function isGrantPathWithin(root: string, path: string): boolean {
-  if (process.platform !== "win32") {
-    const rel = relative(resolve(root), resolve(path));
-    return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
-  }
-  const foldedRoot = caseFoldForMatch(canonicalizePathForMatch(root));
-  const foldedPath = caseFoldForMatch(canonicalizePathForMatch(path));
-  return foldedPath === foldedRoot
-    || foldedPath.startsWith(foldedRoot.endsWith("/") ? foldedRoot : `${foldedRoot}/`);
-}
-/**
  * Each of `paths` replaced by the OUTERMOST of `roots` that contains it, in
  * order and without duplicates; a path no root contains is an error (callers
  * check containment first).
@@ -897,11 +877,12 @@ export function buildPerCommandSandboxCustomConfig(
       [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
     );
   }
-  if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
+  const mandatory = buildMandatorySandboxWritePolicy(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [], _baseTrustedSettings?.userDataDir);
+  fs.allowWrite = writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
   {
     fs.denyWrite = [...new Set([
       ...getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir),
-      ...getMandatorySandboxWriteDenyPaths(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [], _baseTrustedSettings?.userDataDir),
+      ...mandatory.denyWrite,
       ...(filesystem.denyWrite ?? []),
       ...(_baseTrustedSettings?.denyWrite ?? []),
       ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
@@ -921,7 +902,15 @@ export function buildPerCommandSandboxCustomConfig(
     );
   }
   if (Object.keys(fs).length === 0) return undefined;
-  return { filesystem: fs as FilesystemConfig };
+  // The runtime and Linux mount replay consume one discovery snapshot. Freeze
+  // its lists so neither consumer can change the other's policy mid-wrap.
+  for (const entries of Object.values(fs)) {
+    if (Array.isArray(entries)) {
+      for (const entry of entries) if (typeof entry === "object") Object.freeze(entry);
+      Object.freeze(entries);
+    }
+  }
+  return { filesystem: Object.freeze(fs) as FilesystemConfig };
 }
 
 /** The host spawns this; ASRT never spawns the workload itself. */
@@ -930,17 +919,11 @@ export interface SandboxWrapResult {
   readonly env: NodeJS.ProcessEnv;
 }
 
-/**
- * A path list of the per-command config as the Linux wrapper replays it. Since
- * ASRT 0.0.79 (unchanged in ASRT 0.0.80) ASRT types these lists as `FilesystemPathEntry[]`, which admits a marked
- * `{ path, literal: true }` entry; this module only ever hands ASRT plain
- * spellings, and the wrapper's re-allow replay compares spellings, so a marked
- * entry here is a contract break, refused rather than replayed as something
- * it is not.
- */
+/** Read re-allows remain plain spellings; write-deny literals retain exact paths. */
 function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: string): string[] {
   return entries.map((entry) => {
     if (typeof entry !== "string") {
+      if (field === "denyWrite" && entry.literal === true) return entry.path;
       throw new Error(
         `applyLinuxReadMaskWriteFloor: per-command ${field} holds a marked literal entry; `
           + "the Linux wrapper replays plain spellings only",
@@ -952,14 +935,13 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
 
 function applyLinuxReadMaskWriteFloor(
   wrapped: SandboxWrapResult,
-  filesystem: PerCommandFilesystem | undefined,
+  applied: Partial<FilesystemConfig> | undefined,
   cleanupAfterCommand: () => void,
 ): SandboxWrapResult {
   if (process.platform !== "linux") return wrapped;
   try {
     // The same slice the wrap was built from — the re-allows and write denies
     // ASRT was given, after the floor withheld what it withholds.
-    const applied = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem;
     return hardenLinuxSandboxWrap(wrapped, {
       ...(applied?.allowRead !== undefined ? { allowRead: spelledPathEntries(applied.allowRead, "allowRead") } : {}),
       ...(applied?.denyWrite !== undefined ? { denyWrite: spelledPathEntries(applied.denyWrite, "denyWrite") } : {}),
@@ -1493,18 +1475,20 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // this SOT because ASRT's customConfig filesystem section replaces the shared
   // arrays, but the session config now has a real persistence-vector floor too.
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(trustedSettings.userDataDir);
-  const denyWriteUnion: string[] = [];
+  const mandatory = buildMandatorySandboxWritePolicy(trustedSettings.allowWrite ?? [], trustedSettings.userDataDir);
+  const denyWriteUnion: FilesystemPathEntry[] = [];
   const denyWriteSeen = new Set<string>();
-  for (const p of [...sensitiveDenyWrite, ...getMandatorySandboxWriteDenyPaths(trustedSettings.allowWrite ?? [], trustedSettings.userDataDir), ...(trustedSettings.denyWrite ?? [])]) {
-    if (!denyWriteSeen.has(p)) {
-      denyWriteSeen.add(p);
+  for (const p of [...sensitiveDenyWrite, ...mandatory.denyWrite, ...(trustedSettings.denyWrite ?? [])]) {
+    const key = typeof p === "string" ? `pattern:${p}` : `literal:${p.path}`;
+    if (!denyWriteSeen.has(key)) {
+      denyWriteSeen.add(key);
       denyWriteUnion.push(p);
     }
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
   const filesystem: FilesystemConfig = {
     denyRead: asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
-    allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
+    allowWrite: writeRootsOutsideReadDenies(mandatory.allowWrite, sharedFloor),
     denyWrite: denyWriteUnion,
     ...(trustedSettings.allowRead !== undefined
       ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
@@ -1890,15 +1874,16 @@ export async function wrapToolCommand(
   const SandboxManager = await loadSandboxManager();
   assertCommandId("wrapToolCommand", options.commandId);
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
-    buildPerCommandSandboxCustomConfig(options.filesystem),
+    customConfig,
     options.abortSignal,
     undefined,
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
+  return applyLinuxReadMaskWriteFloor(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
 
 
@@ -2167,16 +2152,17 @@ async function wrapLongLivedCommand(
   const SandboxManager = await loadSandboxManager();
   assertCommandId(caller, options.commandId);
   await openEgressListener(SandboxManager, caller, options.commandId);
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
   // `wrapOptions` carries a tty only for the terminal.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
-    buildPerCommandSandboxCustomConfig(options.filesystem),
+    customConfig,
     options.abortSignal,
     undefined,
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
+  return applyLinuxReadMaskWriteFloor(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
 
 /**

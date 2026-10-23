@@ -12,7 +12,7 @@
  * runs on darwin/linux too — the platform is faked, so the logic is the same.
  */
 import { win32 as win32Path } from "node:path";
-import { getMandatorySandboxWriteDenyPaths } from "../sandbox-write-policy.js";
+import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -254,7 +254,7 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
     ).not.toThrow();
   });
 
-  it("keeps omitted allow fields absent while restating mandatory write denies", () => {
+  it("keeps omitted read grants absent and restates retained write grants with mandatory denies", () => {
     const config = buildPerCommandSandboxCustomConfig({
       denyRead: ["/home/u/.ssh"],
       denyWrite: ["/home/u/.config"],
@@ -265,10 +265,10 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
     expect(fs.denyWrite).toEqual(expect.arrayContaining([
       "/home/u/.config",
       ...getDefaultSensitiveWriteDenyPaths(),
-      ...getMandatorySandboxWriteDenyPaths([]),
+      ...buildMandatorySandboxWritePolicy([]).denyWrite,
     ]));
     expect(Object.prototype.hasOwnProperty.call(fs, "allowRead")).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(fs, "allowWrite")).toBe(false);
+    expect(fs.allowWrite).toEqual([]);
   });
 
   it("keeps explicitly empty allow arrays when the caller intentionally overrides them", () => {
@@ -284,7 +284,7 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
     expect(fs.denyRead).toEqual(["/home/u/.ssh"]);
     expect(fs.denyWrite).toEqual(expect.arrayContaining([
       ...getDefaultSensitiveWriteDenyPaths(),
-      ...getMandatorySandboxWriteDenyPaths([]),
+      ...buildMandatorySandboxWritePolicy([]).denyWrite,
     ]));
   });
 });

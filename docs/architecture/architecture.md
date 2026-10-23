@@ -948,6 +948,10 @@ than inferred from the initial directory or terminal output.
 authenticated shell integration, and active filesystem/process confinement.
 Its initial write-jail directory may be within the default workspace or a
 user-approved additional project, as resolved by the host's project authority.
+Its domain allowlist starts empty; the live egress proxy obtains attributed
+destination approvals for foreground and background descendants. Plugin and
+model endpoint grants remain worker-only. Approval scopes, revocation and tab
+lifecycle follow the [terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
 Canonical, segment-aligned containment rejects paths resolving outside those
 projects at admission; a renderer cwd does not add a grant. This path check is
 separate from the sandbox's actual access enforcement and does not alone prove
@@ -1520,11 +1524,24 @@ reviewer, audit and cache consumers use that plan.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
-write denies, broad reads subject to existing protections, domain approval
+write denies including repository pointers and metadata, bounded nested
+repository discovery, broad reads subject to existing protections, domain approval
 through the local egress proxy, and denied Unix sockets. Inactive shell
 confinement remains visible in the chat header and Settings through a
 persistent reason-bearing status. Workspace terminals, plugin network and
 worker control channels retain their own contracts.
+
+Write-policy preparation can remove a broad root's grant when bounded
+repository discovery cannot complete. Independently scanned narrower roots,
+including the working directory and private temporary directory, keep their
+own grants; removing an ambient temporary-root grant does not deny those
+children. The linked policy owns discovery and serialized-policy limits.
+
+Protecting repository metadata also makes index/ref updates and commits
+unavailable inside that confinement; they require the existing approved host
+route. Linux absent-path protection can create host-visible mount-point
+placeholders, with normal cleanup and crash-recovery limits defined by the
+[same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP

@@ -206,8 +206,8 @@ describe("the shared layer withholds grants under the protected floor", () => {
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings,socketDir)));",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(trustedSettings)));",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd(),{commandId:invocation.token,denyUnixSockets:true});",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{...wrapOptions,commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{...wrapOptions,commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
     ].sort());
   });
 });

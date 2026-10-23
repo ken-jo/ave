@@ -108,7 +108,6 @@ export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): Sand
     workerAllowedDomains: workerEgressAllowedDomains,
     grants: egressGrantStore(),
     shellAskEnabled: deps.shellAskEnabled ?? (() => true),
-    terminalAllowedDomains: () => normalizeUnionForAsrt([...workerAllowlists.byExtension.values()].flat().concat([...workerAllowlists.modelEndpointHosts])),
     requester: () => requester,
     audit: (entry) => {
       emitSandboxAudit(entry).catch((error: unknown) => {

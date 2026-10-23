@@ -241,7 +241,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   );
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "runs git with a disposable HOME instead of probing the denied real .gitconfig",
+    "reads a pre-created git repository with a disposable HOME and isolated fixture config",
     async () => {
       if (!(await asrtCanInitialize())) return;
 
@@ -250,6 +250,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       // disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
       const gitEnv = gitFixtureEnv(cwd);
+      const fixtureGitConfig = gitEnv.GIT_CONFIG_GLOBAL;
+      if (typeof fixtureGitConfig !== "string") throw new Error("Git fixture config path is missing");
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [
@@ -257,7 +259,9 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "fixture",
         ], { cwd, env: gitEnv });
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-        const command = `printf '%s\\n' "$HOME"; git -C '${cwd.replace(/'/g, `'\\''`)}' log --oneline -n 1`;
+        // Absent control files are protected placeholders on some backends;
+        // point Git at this fixture's separate config rather than reading one.
+        const command = `printf '%s\\n' "$HOME"; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(fixtureGitConfig)} git -C ${shellQuote(cwd)} log --oneline -n 1`;
         const result = await spawnWithSandbox(
           command,
           cwd,

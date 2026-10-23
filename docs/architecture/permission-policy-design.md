@@ -293,7 +293,7 @@ is a separate contract.
 
 This policy applies to builtin Bash and PowerShell tool invocations. Workspace
 PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
-including the agent terminal's plugin/model domain union and socket policy.
+including their own attributed domain approvals and socket policy.
 The user terminal's host shell is a separate lane.
 
 `features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
@@ -321,18 +321,34 @@ matching or approval precedence.
 
 Sandbox writes are limited to the invocation's admitted project roots and
 temporary directories. Mandatory write denies protect these entries beneath
-the real home and each admitted write root, taking precedence over grants:
+each admitted write root, taking precedence over grants:
 
 - `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
-- `.gitconfig`, `.git/config` and `.git/hooks/**`;
+- `.gitconfig` and the entire `.git` entry, whether a file, directory or absent,
+  including `.git/config`, `.git/hooks/**` and `.git/modules/**`;
 - `.vscode/**`;
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
 
-The deny covers creation when a protected path does not yet exist, as well as
+The existing sensitive-write floor owns real-home startup-file protection; the
+root-relative policy does not maintain a second real-home filename list.
+Denies cover creation when a protected path does not yet exist, as well as
 modification of existing content. The
 [write policy](../../src/permissions/sandbox-write-policy.ts) retains both a
-protected directory entry and its canonical target when it is a link. The
+protected entry and its canonical target when it is a link. A `.git` pointer
+also protects its resolved metadata directory and linked worktree common
+directory, including the `gitdir` and `commondir` control files that could
+redirect later discovery. These controls remain protected even when their
+targets are outside the current write grants. Metadata discovery reads regular
+files without executing a command. Symbolic `.git` markers refuse preparation;
+directory-link traversal stays within the admitted root's canonical tree.
+Derived metadata paths containing pattern characters remain literal denies,
+including absent targets. Reads have limits of 64 KiB per file and 1 MiB
+across the invocation. Exceeding either metadata limit refuses preparation.
+Unexpected discovery failures fail closed, either by refusing preparation or
+removing the affected root's write grant rather than trusting partial results.
+`buildMandatorySandboxWritePolicy` returns the retained `allowWrite` roots and
+mandatory `denyWrite` entries in the existing filesystem configuration. The
 [sandbox wrapper](../../src/permissions/asrt-sandbox.ts) composes these denies
 with the existing sensitive write floor for each invocation. Store-owned paths
 come from the [application settings store](../../src/data/settings-store.ts),
@@ -342,6 +358,58 @@ come from the [application settings store](../../src/data/settings-store.ts),
 The same boundary covers policy files and saved permission and egress grants.
 Relocation of a store must relocate its protection too. A command cannot
 rewrite its own settings, rules or exclusions through a broader grant.
+
+The whole `.git` entry, resolved metadata directory and common directory are
+read-only, including their descendants and ordinary index and ref updates.
+Commands that write this
+metadata, including commits, require a
+[host-side execution route](#shell-execution-and-explicit-host-approval)
+through the existing permission and approval gates. Metadata protection neither
+grants that route nor changes command-rule interpretation.
+
+On Linux, preparing a deny for an absent path can create a temporary empty file
+or directory on the host as a read-only mount point. Concurrent repository
+tools and editors can observe these placeholders, including an otherwise
+absent `.git` entry. Normal cleanup is limited to ownership-checked empty
+mount points. Abrupt host termination, including SIGKILL or OOM termination,
+can leave residue; successful normal cleanup does
+not prove crash cleanup. Recovery may remove an entry only when ownership can
+be established and must preserve unrelated, replaced or nonempty paths. An
+empty path named `.git` is not sufficient ownership evidence.
+
+Nested repositories are discovered beneath admitted roots when the wrapper is
+prepared, through directory depth three with the root at depth zero:
+`a/b/c/.git` is included. Each root's own protected entries are denied
+independently of this scan. Discovery ignores ignore-file rules and skips
+`node_modules`, `.git`, `.hg`, `.svn`, `.venv`, `venv`, `vendor`, `dist`,
+`build` and `.cache` trees. All roots share one invocation budget of 16,384
+directory entries. Canonical roots are scanned from narrower roots to their
+ancestors. Root bindings are captured once and retained grants use those
+canonical identities, so retargeting an alias cannot grant an unscanned target.
+Incomplete enumeration, an exhausted entry budget or more than
+16 KiB of discovered metadata path bytes for that root removes its write grant.
+Containing ancestor grants are also removed so they cannot reopen a failed
+child; independently scanned narrower roots keep their grants when a broader
+root is removed. Required metadata denies remain explicit outside the roots
+and above retained child grants. If the final serialized write-deny
+policy cannot fit within 32 KiB, preparation fails clearly.
+On macOS, subtree glob denies additionally protect future nested `.git`
+entries, including those beyond the scan depth. Linux uses literal discovered
+paths; repositories created after preparation or beneath deliberately skipped
+or deeper directories are not covered by that scan. This distinction must
+remain explicit in validation.
+
+A very large ambient root, such as the shared temporary directory, may
+therefore lose its broad write grant. An explicitly admitted working directory
+or private invocation temporary directory remains writable when its narrower
+scan succeeds. These bounds do not change command-rule or approval semantics.
+
+Native control-write, repository-metadata and socket regression tests require
+working isolation on macOS and Linux, with ordinary write or connection
+positive controls. Missing dependencies or failed initialization fail those
+tests. Windows skips explicitly. Local runs may explicitly opt out with
+`AVE_SKIP_NATIVE_SANDBOX_TESTS=1`; CI does not honor that opt-out. Generated
+wrapper arguments alone do not establish native enforcement.
 
 Reads remain broad. This policy adds no sandbox read denies and preserves
 existing read protections, including the [saved-session projection](#saved-session-reads).
@@ -785,8 +853,18 @@ separate permission category. The checks in this section apply to Agent:
 - The reviewer sees the Agent companion's active containment. Execution
   requires filesystem and process confinement for that exact incarnation;
   an unavailable or changed capability fails closed. Its write paths, deny
-  floors, and egress allow-list were fixed at spawn, so later configuration
-  changes do not reach that running companion.
+  floors and initial egress allow-list are fixed at spawn. Egress approvals
+  and revocations still apply through the live proxy and grant store.
+
+Agent terminal egress starts with an empty domain allowlist. Plugin manifests
+and model endpoint domains authorize worker traffic only; they do not grant
+terminal access. Unknown destinations use the existing tab banner and approval
+reviewer, with allow once, this tab, always for this destination, or deny where
+the destination is eligible for those scopes. Allow once covers one connection;
+tab and persistent grants retain their existing attribution and revocation
+rules. A background descendant keeps its terminal's attributed proxy identity
+and follows the same approval path. Closing the terminal releases its pending
+asks and tab grants. These approvals do not change Manual's host shell.
 
 The target terminal is resolved once, before any decision, and sealed into the
 approval scope: an explicit `tabId`, then the terminal the conversation's pane

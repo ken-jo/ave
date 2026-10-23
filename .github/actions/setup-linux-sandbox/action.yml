@@ -1,0 +1,41 @@
+name: Set up the Linux sandbox backend
+description: >-
+  Prepares and verifies the Linux CI sandbox backend. The runner must have
+  preprovisioned tools and user namespaces, or passwordless sudo and apt-get
+  access to install tools and update its namespace setting.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the Linux sandbox backend
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=0
+        for tool in bwrap socat rg xvfb-run bash zsh; do
+          command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
+        done
+        if [ "$missing" = 1 ]; then
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
+        else
+          echo "sandbox backend tools already installed"
+        fi
+    - name: Allow unprivileged user namespaces
+      shell: bash
+      run: |
+        set -euo pipefail
+        knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        else
+          echo "unprivileged user namespaces already allowed"
+        fi
+    - name: Prove the sandbox backend
+      shell: bash
+      run: |
+        set -euo pipefail
+        bwrap --version
+        socat -V
+        rg --version
+        bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true

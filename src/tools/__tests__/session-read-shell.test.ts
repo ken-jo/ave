@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
-import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
+import { appOwnedSandboxHomeRoot, cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
+import * as sandboxWritePolicy from "../../permissions/sandbox-write-policy.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
@@ -40,6 +41,7 @@ afterEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   setSandboxRequestedAtBoot(false);
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await cleanupTmpDir(root);
 });
 
@@ -88,6 +90,40 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(protectedRead.isError, protectedRead.output).toBe(true);
     expect(protectedRead.output).not.toContain("private-user-data-fixture");
   });
+
+  it("preserves explicit workspace and private temporary writes after a broad root exhausts discovery", async (test) => {
+    await requireSandboxCases(test);
+    const entries = join(root, "broad-root-entries");
+    mkdirSync(entries);
+    for (let index = 0; index < 16_385; index++) writeFileSync(join(entries, String(index)), "");
+    useAppOwnedSandboxTempRoot();
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const compose = vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy");
+    const command = [
+      "printf workspace-written > workspace-result",
+      'printf temporary-written > "$TMPDIR/private-result"',
+      '/bin/cat workspace-result "$TMPDIR/private-result"',
+      'printf "\\nprivate-temp:%s\\n" "$TMPDIR"',
+    ].join("; ");
+    const result = await spawnWithSandbox(command, cwd, [cwd, ...baseAllowedDirectories(), root], 15, prepareSandboxFixture(command, cwd));
+    expect(result.isError, result.output).toBe(false);
+    expect(result.metadata.sandboxed).toBe(true);
+    expect(result.output).toContain("workspace-writtentemporary-written");
+    expect(readFileSync(join(cwd, "workspace-result"), "utf8")).toBe("workspace-written");
+    expect(compose).toHaveBeenCalledOnce();
+    const composition = compose.mock.results[0]!;
+    expect(composition.type).toBe("return");
+    if (composition.type !== "return") throw new Error("Sandbox write policy did not return");
+    const policy = composition.value;
+    expect(policy.allowWrite).toContain(cwd);
+    expect(policy.allowWrite).not.toContain(root);
+    const privateTemporary = result.output.match(/private-temp:([^\r\n]+)/)?.[1];
+    expect(privateTemporary).toBeDefined();
+    const privateHome = policy.allowWrite.find(path => privateTemporary?.startsWith(`${path}/tmp`));
+    expect(privateHome).toBeDefined();
+    expect(privateHome?.startsWith(`${appOwnedSandboxHomeRoot()}/`)).toBe(true);
+    expect(existsSync(privateTemporary!)).toBe(false);
+  }, 30_000);
 
   it("native sandbox reads configured history while preserving the write floor and neighboring denies", async (test) => {
     await requireSandboxCases(test);

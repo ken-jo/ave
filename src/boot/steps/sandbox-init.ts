@@ -175,8 +175,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             log.warn("boot: ASRT dependency warnings: %s", deps.warnings.join("; "));
           }
           // The proxy routes every connection through the host-owned invocation
-          // identity. Shells start with no allowed destinations; plugin and
-          // terminal policy is supplied separately by the live allowlist builder.
+          // identity. Shells and agent terminals start with no allowed
+          // destinations; the live allowlist builder supplies worker policy only.
           await buildSandboxUnionDomains();
           const { createEgressAskRuntimeCallback } = await import("../../permissions/egress-runtime.js");
           const askNetwork = createEgressAskRuntimeCallback({
