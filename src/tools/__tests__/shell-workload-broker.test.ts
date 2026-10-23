@@ -195,8 +195,8 @@ afterEach(() => {
 // path only on a POSIX host. Native Windows refuses the broker flags at parse
 // time, so cases that dispatch a guest cwd to the broker are Linux-only.
 const itPosixGuest = it.skipIf(process.platform === "win32");
-// Routing and refusal cases never reach the guest, so they bind the
-// host-resolved form (identical on Linux) and also run on win32.
+// Routing, limit and refusal cases never inspect the guest path, so they bind
+// the host-resolved form (identical on Linux) and also run on win32.
 const hostResolvedCwd = (guestPath: string) => resolve(guestPath);
 
 describe("brokered workload shell execution", () => {
@@ -232,9 +232,9 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  itPosixGuest("accepts the broker protocol maximum timeout", async () => {
+  it("accepts the broker protocol maximum timeout", async () => {
     const command = "long-build";
-    const cwd = "/app";
+    const cwd = hostResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, timeoutSeconds: 3_600 });
     broker.execute.mockResolvedValueOnce(successfulRun("done"));
 
@@ -431,9 +431,9 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  itPosixGuest("returns broker transport failures without trying a host process", async () => {
+  it("returns broker transport failures without trying a host process", async () => {
     const command = "make all";
-    const cwd = "/app";
+    const cwd = hostResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd });
     const failure: ToolExecutionResult = {
       output: "Workload broker refused execution (handshake-binding-mismatch).",
