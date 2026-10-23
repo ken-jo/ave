@@ -412,6 +412,8 @@ function processGroupExists(processGroupId: number): boolean {
   }
 }
 
+const TASKKILL_PROCESS_NOT_FOUND = 128;
+
 function windowsTaskkillPath(): string {
   return win32.join(process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows", "System32", "taskkill.exe");
 }
@@ -468,6 +470,8 @@ function forceKillProcessTree(
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const result = await runWindowsTreeKill(pid);
       if (result.exitCode === 0) return;
+      // 128: the root is already gone, so no /T pass can reach its tree again.
+      if (result.exitCode === TASKKILL_PROCESS_NOT_FOUND) break;
       log.warn({ pid, attempt, ...result }, "managed-child: taskkill /T /F failed");
     }
     child.kill("SIGKILL");

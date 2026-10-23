@@ -94,6 +94,16 @@ describe("Windows managed process tree termination", () => {
     expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
   });
 
+  it("does not retry or warn when taskkill finds the root already gone", async () => {
+    const child = makeChild();
+    const completion = forceKillManagedChildProcess(child, "cancelled");
+    runners[0]!.emit("exit", 128, null);
+    await completion;
+    expect(runners).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  });
+
   it("drains only after asynchronous tree termination finishes", async () => {
     const child = makeChild();
     trackManagedChildProcess(child);
