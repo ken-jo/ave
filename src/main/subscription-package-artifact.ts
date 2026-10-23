@@ -28,7 +28,7 @@ export interface SubscriptionPackageArtifact {
 }
 
 function locationRequests(entries: Iterable<PackageEntry>, directoryKind: CodexLocationRequest["kind"]): CodexLocationRequest[] {
-  return [...entries].map(({ path, isDirectory }) => ({ path, kind: isDirectory ? directoryKind : "executable" }));
+  return [...entries].map(({ path, isDirectory }) => ({ path, kind: isDirectory ? directoryKind : "executable", routeKind: "guarded-script" }));
 }
 
 async function fileHash(path: string): Promise<string> {
@@ -75,7 +75,7 @@ async function resolvePackageDependency(
       const stat = await fs.lstat(candidate);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid subscription dependency directory");
       const resolved = await fs.realpath(candidate);
-      requests.push({ path: candidate, kind: "directory" });
+      requests.push({ path: candidate, kind: "directory", routeKind: "guarded-script" });
       return resolved;
     } catch (error) {
       if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
@@ -161,6 +161,32 @@ function commonPackageAncestor(roots: readonly string[]): string {
   return ancestor;
 }
 
+function commonJsGuardSource(root: string): string {
+  return `const Module = require("node:module");
+const { relative, isAbsolute } = require("node:path");
+const { realpathSync } = require("node:fs");
+const root = ${JSON.stringify(root)};
+function inside(path) {
+  const part = relative(root, path);
+  return part !== ".." && !part.startsWith(".." + require("node:path").sep) && !isAbsolute(part);
+}
+function missing() {
+  return Object.assign(new Error("subscription-module-outside-artifact"), { code: "MODULE_NOT_FOUND" });
+}
+const nodeModulePaths = Module._nodeModulePaths;
+Module._nodeModulePaths = function(path) { return nodeModulePaths.call(this, path).filter(inside); };
+const resolveFilename = Module._resolveFilename;
+Module._resolveFilename = function(specifier, parent, ...rest) {
+  if (Module.isBuiltin(specifier)) return resolveFilename.call(this, specifier, parent, ...rest);
+  const bare = !isAbsolute(specifier) && !specifier.startsWith(".");
+  if (bare && parent) parent.paths = (parent.paths || []).filter(inside);
+  const result = resolveFilename.call(this, specifier, parent, ...rest);
+  if (!inside(realpathSync(result))) throw missing();
+  return result;
+};
+`;
+}
+
 // Loaded before the package entry. Every import/require is resolved inside the
 // sealed snapshot and code is read from a no-follow handle with its own digest.
 function moduleGuardSource(files: ReadonlyMap<string, string>): string {
@@ -183,15 +209,17 @@ function verifyMetadata() {
   for (const path of metadataPaths) verifiedBytes(path);
 }
 function checkedPath(url) {
-  if (!url.startsWith("file:")) throw new Error("subscription-module-outside-artifact");
+  if (!url.startsWith("file:")) throw Object.assign(new Error("subscription-module-outside-artifact"), { code: "MODULE_NOT_FOUND" });
   const path = realpathSync(fileURLToPath(url));
-  if (!files.has(path)) throw new Error("subscription-module-outside-artifact");
+  if (!files.has(path)) throw Object.assign(new Error("subscription-module-outside-artifact"), { code: "MODULE_NOT_FOUND" });
   return path;
 }
 registerHooks({
   resolve(specifier, context, nextResolve) {
     verifyMetadata();
-    const result = nextResolve(specifier, context);
+    let result;
+    try { result = nextResolve(specifier, context); }
+    catch (error) { if (error.code === "ERR_MODULE_NOT_FOUND") error.code = "MODULE_NOT_FOUND"; throw error; }
     verifyMetadata();
     if (!isBuiltin(result.url)) checkedPath(result.url);
     return result;
@@ -212,7 +240,7 @@ registerHooks({
 /** Bind loading to the declared transitive graph, without per-package import isolation. */
 export async function copySubscriptionPackageArtifact(root: string, script: string, directory: string): Promise<SubscriptionPackageArtifact> {
   const canonicalDirectory = await fs.realpath(directory);
-  const graph = await packageGraph(root, [{ path: canonicalDirectory, kind: "private-directory" }]);
+  const graph = await packageGraph(root, [{ path: canonicalDirectory, kind: "private-directory", routeKind: "guarded-script" }]);
   const sourceAncestor = commonPackageAncestor(graph.roots);
   const snapshot = join(canonicalDirectory, "package");
   const files = new Map<string, string>();
@@ -237,6 +265,11 @@ export async function copySubscriptionPackageArtifact(root: string, script: stri
   const output = await fs.open(guard, "wx", 0o500);
   try { await output.writeFile(guardSource); await output.sync(); } finally { await output.close(); }
   const guardHash = createHash("sha256").update(guardSource).digest("hex");
+  const commonJsGuard = join(canonicalDirectory, "module-guard.cjs");
+  const commonJsSource = commonJsGuardSource(snapshot);
+  const commonJsOutput = await fs.open(commonJsGuard, "wx", 0o500);
+  try { await commonJsOutput.writeFile(commonJsSource); await commonJsOutput.sync(); } finally { await commonJsOutput.close(); }
+  const commonJsHash = createHash("sha256").update(commonJsSource).digest("hex");
   // Called only for paths admitted in the verify batch.
   const verifySealedFile = async (path: string, expectedHash: string): Promise<void> => {
     const input = await openExecutableFile(path);
@@ -249,7 +282,10 @@ export async function copySubscriptionPackageArtifact(root: string, script: stri
   const verify = async (): Promise<void> => {
     // The source graph, every sealed path and the guard share one admission batch.
     const sealed = await packageFiles(snapshot);
-    const requests = [...locationRequests(sealed, "private-directory"), { path: guard, kind: "executable" } as const];
+    const requests = [...locationRequests(sealed, "private-directory"),
+      { path: canonicalDirectory, kind: "private-directory", routeKind: "guarded-script" } as const,
+      { path: guard, kind: "executable", routeKind: "guarded-script" } as const,
+      { path: commonJsGuard, kind: "executable", routeKind: "guarded-script" } as const];
     if ((await packageGraph(root, requests)).identity !== graph.identity) throw new Error("Subscription executable changed");
     const expected = new Map(files);
     const observedDirectories = new Set<string>();
@@ -265,9 +301,11 @@ export async function copySubscriptionPackageArtifact(root: string, script: stri
     for (const path of directories) if (!observedDirectories.has(path)) throw new Error("Subscription package artifact changed");
     if (expected.size) throw new Error("Subscription package artifact changed");
     await verifySealedFile(guard, guardHash);
+    await verifySealedFile(commonJsGuard, commonJsHash);
   };
   // Source changes during copying are rejected before the first CLI probe.
   await verify();
-  return Object.freeze({ args: Object.freeze(["--no-global-search-paths", "--import", pathToFileURL(guard).href, destination(script)]),
+  return Object.freeze({ args: Object.freeze(["--no-global-search-paths", "--import", pathToFileURL(guard).href,
+    "--require", commonJsGuard, destination(script)]),
     identity: graph.identity, verify });
 }

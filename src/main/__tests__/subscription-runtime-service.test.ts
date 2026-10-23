@@ -1122,6 +1122,10 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-unsafe-location");
     expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-unsafe-location")))
       .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-npm-location")))
+      .toBe("subscription-runtime-unsafe-npm-location");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
       .toBe("subscription-runtime-not-configured");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))

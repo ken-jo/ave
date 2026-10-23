@@ -39,7 +39,7 @@ import {
   verifyCodexExecutableArtifact,
   type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
-import { assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError } from "./codex-executable-location.js";
+import { assertCodexExecutableLocation, assertCodexLocations, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError } from "./codex-executable-location.js";
 import {
   CODEX_SCHEMA_FILES,
   missingCodexProtocolRequirements,
@@ -177,7 +177,7 @@ async function nativeExecutableAt(candidate: string, platform: NodeJS.Platform):
   let real: string;
   try {
     real = await fs.realpath(candidate);
-    await assertCodexExecutableLocation(candidate);
+    await assertCodexExecutableLocation(candidate, "native");
     const stat = await fs.stat(real);
     if (!stat.isFile()) return null;
     if (!isNativeExecutableHeader(await readHeader(real), platform)) return null;
@@ -196,7 +196,8 @@ async function nativeExecutableAt(candidate: string, platform: NodeJS.Platform):
 async function isLauncherPackageRoot(root: string): Promise<boolean> {
   try {
     const manifest = join(root, "package.json");
-    await assertCodexExecutableLocation(manifest);
+    // This is metadata for native resolution; the launcher script is never run.
+    await assertCodexExecutableLocation(manifest, "native");
     const parsed = JSON.parse(await fs.readFile(manifest, "utf8")) as unknown;
     return typeof parsed === "object" && parsed !== null
       && (parsed as { name?: unknown }).name === LAUNCHER_PACKAGE_NAME;
@@ -303,7 +304,7 @@ export async function resolveCodexNativeExecutable(
   }
   if (!await exists(candidate)) return null;
   try {
-    await assertCodexExecutableLocation(candidate);
+    await assertCodexExecutableLocation(candidate, "native");
     const native = await nativeExecutableAt(candidate, platform);
     if (native) return native;
     const root = await launcherPackageRoot(candidate, platform);
@@ -552,21 +553,23 @@ export class CodexUserRuntimeLocator {
     const runtimeTempDir = validateCodexRuntimeDirectory(this.options.runtimeTempDir, startFailed);
     let probeRoot: string;
     try {
-      await assertCodexPrivateRuntimeDirectory(runtimeTempDir);
+      await assertCodexPrivateRuntimeDirectory(runtimeTempDir, "native");
       probeRoot = await fs.mkdtemp(join(runtimeTempDir, "probe-"));
     } catch {
       throw startFailed();
     }
     try {
-      await assertCodexPrivateRuntimeDirectory(probeRoot);
+      await assertCodexPrivateRuntimeDirectory(probeRoot, "native");
       const runtimeHome = join(probeRoot, "home");
       const sqliteHome = join(probeRoot, "sqlite");
       const probeTempDir = join(probeRoot, "temp");
       const schemaDir = join(probeRoot, "schema");
       for (const directory of [runtimeHome, sqliteHome, probeTempDir, schemaDir]) {
         await fs.mkdir(directory, { mode: 0o700 });
-        await assertCodexPrivateRuntimeDirectory(directory);
       }
+      await assertCodexLocations([runtimeHome, sqliteHome, probeTempDir, schemaDir].map((path) => ({
+        path, kind: "private-directory", routeKind: "native",
+      })));
       const env = sanitizedCodexConversationEnvironment(runtimeHome, sqliteHome, probeTempDir, this.env, this.platform);
       const probe = async (args: readonly string[]): Promise<string> => {
         let result: CodexProbeResult;

@@ -349,6 +349,14 @@ describe("SubscriptionAuthControls", () => {
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
   });
 
+  it("recommends the native Windows installer when an npm route is unsafe", () => {
+    render(<SubscriptionProvidersSection
+      providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unsafe-npm-location" })]}
+      actions={{ refreshStatus: vi.fn() }} />);
+    expect(screen.getByTestId("subscription-provider:claude-code:error"))
+      .toHaveTextContent("the native Claude Code installer (claude.exe) is recommended");
+  });
+
   it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {
     render(
       <SubscriptionProvidersSection
