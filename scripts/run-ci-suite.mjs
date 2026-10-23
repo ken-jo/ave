@@ -348,16 +348,15 @@ function writeSummary(plan, coverage) {
   appendFileSync(summaryPath, `${lines.join("\n")}\n`);
 }
 
-function runPlan(plan, coverage) {
-  if (coverage) {
-    return spawnSync(process.execPath, [join("scripts", "run-test-coverage-gate.mjs")], { stdio: "inherit" });
-  }
+/** The node arguments of the Vitest stage: the coverage gate, or a plain run of the plan's files (none: all). */
+export function ciSuiteArguments(plan, coverage) {
+  if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
   const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
-  return spawnSync(
-    process.execPath,
-    [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...tests],
-    { stdio: "inherit" },
-  );
+  return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...tests];
+}
+
+function runPlan(plan, coverage) {
+  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage), { stdio: "inherit" });
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
