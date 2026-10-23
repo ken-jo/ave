@@ -106,7 +106,9 @@ beforeEach(() => {
 
 describe("McpManager bundled generation", () => {
   it("withholds a bundled OAuth server until the Authenticate action, then connects it through its session", async () => {
-    const secrets = { getSecret: () => null, setSecret: async () => {}, deleteSecret: async () => {}, canStoreEncrypted: () => true };
+    const stored = new Map<string, string>();
+    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-oauth.json"), undefined, undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -124,8 +126,10 @@ describe("McpManager bundled generation", () => {
     const stableId = bundledConfigId({ kind: "agent-plugin", name: "remote-kit" }, "remote");
     expect(oauth.sessions).toHaveLength(1);
     expect(oauth.sessions[0].config.id).toBe(stableId);
+    // The bundled grant is indexed under its stable id, so an uninstall can retire it.
+    await vi.waitFor(() => expect(JSON.parse(stored.get("mcp.oauth.index") ?? "{}")).toEqual({ [stableId]: `mcp.oauth.${stableId}` }));
     expect(manager.listServers()).toEqual([{ id: stableId, status: "disconnected", authStatus: "required", registeredTools: [] }]);
-    manager.registerBundledCredentialSource("agent-plugin", {
+    manager.registerBundledCredentialSource("agent-plugin", { complete: true,
       list: () => [{ packageName: "remote-kit", serverName: "remote", transport: "http", url: "https://example.test/mcp", auth: "oauth" }],
       reconnect: async () => {
         manager.publishBundledGeneration(await manager.prepareBundledGeneration(owner, [projection], trust));
@@ -164,7 +168,7 @@ describe("McpManager bundled generation", () => {
     expect(missing.degraded).toMatchObject([{ code: "credential_required" }]);
     expect(constructedConfigs).toHaveLength(0);
     await manager.discardBundledGeneration(missing);
-    manager.registerBundledCredentialSource("agent-plugin", {
+    manager.registerBundledCredentialSource("agent-plugin", { complete: true,
       list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
         auth: "api-key", apiKeyHeader: "X-Token" }],
       reconnect: async () => {
@@ -203,7 +207,7 @@ describe("McpManager bundled generation", () => {
     await restarted.stageBundledCredentialDrop({ kind: "agent-plugin", name: "meeting-kit" }, "notes",
       bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-New-Token" }));
     expect(reopened.get(key)).toBeNull();
-    restarted.registerBundledCredentialSource("agent-plugin", {
+    restarted.registerBundledCredentialSource("agent-plugin", { complete: true,
       list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
         auth: "api-key", apiKeyHeader: "X-New-Token" }],
       reconnect: async () => undefined,

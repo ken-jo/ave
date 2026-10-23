@@ -64,7 +64,7 @@ describe("remote authentication IPC", () => {
     expect(await invoke(CHANNELS.mcp.authenticate, "remote-a")).toEqual({ connected: false, errorCode: "mcp-auth-required" });
   });
 
-  it.each(["mcp-auth-storage-unavailable", "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported"] as const)(
+  it.each(["mcp-auth-storage-unavailable", "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported", "mcp-auth-resource-mismatch"] as const)(
     "passes the distinct %s outcome through", async (errorCode) => {
       const { authenticate } = await setup();
       authenticate.mockResolvedValueOnce({ connected: false, errorCode });

@@ -61,6 +61,8 @@ interface Fixture {
   /** Metadata documents the fake server fetched, and an optional replacement document. */
   cimdFetches: string[];
   cimdDocument?: Record<string, unknown>;
+  /** Refuse Ave's metadata document at the authorization callback or the token endpoint. */
+  rejectMetadataDocument?: "callback" | "token";
   /** Clients the operator registered out of band, with their registered redirect URIs. */
   preregistered: Map<string, string[]>;
 }
@@ -168,6 +170,12 @@ async function fixture(): Promise<Fixture> {
         const redirectUri = url.searchParams.get("redirect_uri") ?? "";
         if (!document || !validateClientDocument(requestedClient, redirectUri, document)) { json({ error: "invalid_client" }, 400); return; }
         state.clients.set(requestedClient, [redirectUri]);
+        if (state.rejectMetadataDocument === "callback") {
+          const refused = new URL(redirectUri);
+          refused.searchParams.set("error", "invalid_client");
+          refused.searchParams.set("state", url.searchParams.get("state") ?? "");
+          response.writeHead(302, { location: refused.href }); response.end(); return;
+        }
       }
       const preregistered = state.preregistered.get(requestedClient);
       if (preregistered) {
@@ -203,7 +211,10 @@ async function fixture(): Promise<Fixture> {
       if (grant.get("grant_type") === "refresh_token" && state.refreshRevoked) {
         json({ error: "invalid_grant", error_description: "secret-refresh-credential" }, 400); return;
       }
-      if (!state.clients.has(grant.get("client_id") ?? "")) { json({ error: "invalid_client" }, 401); return; }
+      if (!state.clients.has(grant.get("client_id") ?? "") ||
+        (state.rejectMetadataDocument === "token" && grant.get("client_id")?.startsWith("https://"))) {
+        json({ error: "invalid_client" }, 401); return;
+      }
       if (grant.get("grant_type") === "authorization_code") {
         const challenge = createHash("sha256").update(grant.get("code_verifier") ?? "").digest("base64url");
         if (!state.pkce.includes(challenge)) { json({ error: "invalid_grant" }, 400); return; }
@@ -390,9 +401,11 @@ describe("remote authorization", () => {
     if (kind === "registration") state.dcr = false;
     if (kind === "redirect") state.redirectMetadata = true;
     const { session, openAuthorizationUrl } = createSession(state, { config: { url: `${state.base}/mcp` } });
-    // No usable registration is its own, renderer-visible outcome; every other case is a generic failure.
+    // No usable registration and a different resource are their own, renderer-visible outcomes;
+    // every other case is a generic failure.
     await expect(session.authenticate()).rejects.toThrow(kind === "registration"
-      ? /^MCP client registration mode is not supported$/u : /^MCP authentication failed$/u);
+      ? /^MCP client registration mode is not supported$/u
+      : kind === "resource" ? /^MCP authorization metadata names a different resource$/u : /^MCP authentication failed$/u);
     expect(openAuthorizationUrl).not.toHaveBeenCalled();
     expect(state.registrations).toHaveLength(0);
     expect(state.grants).toHaveLength(0);
@@ -501,7 +514,7 @@ describe("remote authorization", () => {
   it("rejects a configured resource different from discovered metadata before registration", async () => {
     const state = await fixture();
     const { session } = createSession(state, { config: { oauth: { resource: `${state.base}/other` } } });
-    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-resource-mismatch" });
     expect(state.registrations).toHaveLength(0);
   });
 
@@ -836,6 +849,84 @@ describe("remote authorization", () => {
     expect((await session.fetch(state.resource)).ok).toBe(true);
   });
 
+  it("validates a step-up token response before it can replace the working grant", async () => {
+    const state = await fixture();
+    const { session, store } = createSession(state);
+    await session.authenticate();
+    const saved = [...store.values()][0];
+    state.requiredScope = "write";
+    await session.fetch(state.resource);
+    expect(session.getStatus()).toBe("insufficient_scope");
+    state.tokenResponseBody = JSON.stringify({ access_token: "access-secret-mac", token_type: "MAC", expires_in: 3600 });
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    state.tokenResponseBody = undefined;
+    expect(session.getStatus()).toBe("insufficient_scope");
+    expect([...store.values()][0]).toBe(saved);
+    state.requiredScope = undefined;
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+    expect(state.bearer.at(-1)).toBe("Bearer access-secret-1");
+  });
+
+  it.each(["token", "callback"] as const)("registers once and retries when the server refuses the metadata document at the %s", async (where) => {
+    const state = await fixture();
+    state.cimd = true;
+    state.rejectMetadataDocument = where;
+    const { session, openAuthorizationUrl } = createSession(state);
+    await session.authenticate();
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(2);
+    expect(state.authorizations.map((url) => url.searchParams.get("client_id"))).toEqual([MCP_CLIENT_METADATA_DOCUMENT_URL, "native-client-1"]);
+    expect(state.registrations).toHaveLength(1);
+    expect(session.getStatus()).toBe("authenticated");
+    expect((await session.fetch(state.resource)).ok).toBe(true);
+    // The refusal is remembered: a later flow registers directly instead of trying the document again.
+    state.rejectAccess = true;
+    state.refreshRevoked = true;
+    await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
+    state.rejectAccess = false;
+    state.refreshRevoked = false;
+    await session.authenticate();
+    expect(state.authorizations.at(-1)?.searchParams.get("client_id")).toMatch(/^native-client-/u);
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("stays strict when the configuration requires the metadata document and the server refuses it", async () => {
+    const state = await fixture();
+    state.cimd = true;
+    state.rejectMetadataDocument = "token";
+    const { session, openAuthorizationUrl } = createSession(state, { config: { oauth: { clientRegistration: "client-id-metadata-document" } } });
+    await expect(session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(1);
+    expect(state.registrations).toHaveLength(0);
+    expect(session.getStatus()).toBe("error");
+  });
+
+  it("hands a same-key successor the refresh token its predecessor rotated in flight", async () => {
+    const state = await fixture();
+    state.expiresIn = 0;
+    const first = createSession(state);
+    await first.session.authenticate();
+    state.expiresIn = 3600;
+    let release!: () => void;
+    state.refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => { started = resolve; });
+    state.onRefreshStarted = started;
+    const inFlight = first.session.fetch(state.resource).catch(() => undefined);
+    await refreshStarted;
+    const successor = new McpOAuthSession({ id: "remote", transport: "http", url: state.resource, auth: "oauth", allowPrivateNetworks: true },
+      { secrets: first.secrets, redirectCatchers: first.catchers, openAuthorizationUrl: first.openAuthorizationUrl, networkFetch: first.networkFetch },
+      { after: first.session.handOff(), initialStatus: first.session.getStatus() });
+    sessions.push(successor);
+    expect(successor.getStatus()).toBe("authenticated");
+    release();
+    await inFlight;
+    expect((await successor.fetch(state.resource)).ok).toBe(true);
+    // The successor used the token the predecessor rotated, without spending the old refresh token again.
+    expect(state.grants.map((grant) => grant.get("grant_type"))).toEqual(["authorization_code", "refresh_token"]);
+    expect(state.bearer.at(-1)).toBe("Bearer access-secret-2");
+    expect(JSON.parse([...first.store.values()][0]).tokens.refresh_token).toBe("refresh-secret-2");
+  });
+
   it("stops offering step-up for a scope after the retry limit", async () => {
     const state = await fixture();
     state.deniedScopes = ["admin"];
@@ -870,7 +961,9 @@ describe("remote authorization", () => {
     state.declaredResource = state.base;
     const challenged = createSession(state);
     await expect(challenged.session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
-    await expect(challenged.session.authenticate()).rejects.toThrow(/^MCP authentication failed$/u);
+    await expect(challenged.session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-resource-mismatch",
+      message: "MCP authorization metadata names a different resource" });
+    expect(challenged.session.getStatus()).toBe("error");
     expect(state.registrations).toHaveLength(0);
     // Found at the well-known location instead, a containing resource remains acceptable.
     const discovered = createSession(state);

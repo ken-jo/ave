@@ -60,6 +60,8 @@ function getAuthErrorMessage(code: McpAuthErrorCode | undefined): string {
     case "mcp-auth-storage-unavailable": return t("mcpTab.authStorageUnavailableMessage");
     case "mcp-auth-storage-unreadable": return t("mcpTab.authStorageUnreadableMessage");
     case "mcp-auth-registration-unsupported": return t("mcpTab.authRegistrationUnsupportedMessage");
+    case "mcp-auth-resource-mismatch": return t("mcpTab.authResourceMismatchMessage");
+    case "mcp-auth-index-unreadable": return t("mcpTab.authIndexUnreadableMessage");
     default: return t("mcpTab.authFailedMessage");
   }
 }
@@ -573,6 +575,9 @@ export function McpTab() {
                             authStatus === "required" ? t("mcpTab.authRequiredMessage")
                               : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
                           }</p>
+                        )}
+                        {st?.authError && (
+                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
                         )}
                         {st?.connectedAt && (
                           <p className="mt-0.5 text-[10px] text-muted-foreground">

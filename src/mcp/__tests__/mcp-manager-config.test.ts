@@ -102,7 +102,7 @@ describe("McpManager — getConfigs()", () => {
   it("previews an installed plugin connector through the Studio projection", async () => {
     const mgr = await makeManager();
     const id = bundledConfigId({ kind: "agent-plugin", name: "team-kit" }, "sample");
-    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [{ packageName: "team-kit", serverName: "sample",
+    mgr.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => [{ packageName: "team-kit", serverName: "sample",
       transport: "stdio", command: "uvx", args: ["studio-sample==1.0.0"], env: { SAMPLE: "visible-env" },
       auth: "api-key", apiKeyEnv: "SAMPLE_KEY" }], reconnect: async () => undefined });
     const settings = await mgr.getConfigs();
@@ -178,7 +178,7 @@ describe("McpManager — getConfigs()", () => {
     const identity = bundledCredentialKey(ref, "sample");
     const stored = boundBundledCredential(bundledCredentialDeclaration(declaration), key);
     const mgr = await makeManager({ getSecret: (name) => name === identity ? stored : null });
-    mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+    mgr.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => [declaration], reconnect: async () => undefined });
     const id = bundledConfigId(ref, "sample");
     await expect(previewStudioConnector(mgr, id)).rejects.toThrow("stored credential");
     expect(await mgr.getStudioStoredCredentialValues()).toContain(key);
@@ -224,7 +224,7 @@ describe("McpManager — getConfigs()", () => {
         await mgr.setApiKey(id, item.key);
       } else {
         await writeFile(testConfigPath, JSON.stringify({ servers: [] }));
-        mgr.registerBundledCredentialSource("agent-plugin", { list: () => [declaration], reconnect: async () => undefined });
+        mgr.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => [declaration], reconnect: async () => undefined });
         await mgr.setBundledApiKey(ref, "sample", item.key);
         id = bundledConfigId(ref, "sample");
       }

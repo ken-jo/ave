@@ -370,7 +370,11 @@ export type McpAuthErrorCode =
   | "mcp-auth-failed"
   | "mcp-auth-storage-unavailable"
   | "mcp-auth-storage-unreadable"
-  | "mcp-auth-registration-unsupported";
+  | "mcp-auth-registration-unsupported"
+  /** Protected-resource metadata describes a different resource than this endpoint. */
+  | "mcp-auth-resource-mismatch"
+  /** The credential index is unreadable; stored sign-ins are not cleaned up until it is rebuilt. */
+  | "mcp-auth-index-unreadable";
 
 export interface McpAuthenticationResult {
   connected: boolean;
@@ -386,6 +390,8 @@ export interface McpServerState {
   status: "disconnected" | "connecting" | "connected" | "error";
   /** Host-owned authorization state. Credentials never cross this boundary. */
   authStatus?: McpAuthStatus;
+  /** A renderer-safe authorization problem to show on the server row. */
+  authError?: McpAuthErrorCode;
   connectedAt?: string;
   lastError?: string;
   registeredTools: string[];

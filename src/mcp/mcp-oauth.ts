@@ -42,6 +42,17 @@ export interface McpOAuthDependencies {
   openAuthorizationUrl(url: string): Promise<void>;
 }
 
+export interface McpOAuthSessionOptions {
+  /**
+   * Settles when a session this one replaces under the SAME credential key has
+   * finished writing. The stored record is read only after it, so a refresh
+   * the old session had in flight (a rotated refresh token) is not lost.
+   */
+  after?: Promise<void>;
+  /** Status to show until the stored record has been read. */
+  initialStatus?: McpAuthStatus;
+}
+
 type ClientSource = "preregistered" | "metadata-document" | "dynamic";
 
 /**
@@ -81,6 +92,8 @@ const MESSAGES: Record<McpAuthErrorCode, string> = {
   "mcp-auth-storage-unavailable": "MCP authorization requires encrypted storage",
   "mcp-auth-storage-unreadable": "MCP authorization storage cannot be read",
   "mcp-auth-registration-unsupported": "MCP client registration mode is not supported",
+  "mcp-auth-resource-mismatch": "MCP authorization metadata names a different resource",
+  "mcp-auth-index-unreadable": "MCP authorization credential index cannot be read",
 };
 const AUTH_FAILED = MESSAGES["mcp-auth-failed"];
 const AUTH_REQUIRED = MESSAGES["mcp-auth-required"];
@@ -98,6 +111,19 @@ export class McpOAuthError extends Error {
 
 class McpOAuthBindingChangedError extends Error {
   constructor() { super(AUTH_REQUIRED); }
+}
+
+/** Internal: the server refused Ave's client metadata document; the caller may register instead. */
+class MetadataDocumentRejectedError extends Error {
+  constructor(readonly issuer: string) { super(AUTH_FAILED); }
+}
+
+/** A bearer token response Ave can attach and schedule; anything else is refused before it is stored. */
+function validateTokens(tokens: OAuthTokens): void {
+  if (tokens.token_type.toLowerCase() !== "bearer" || !/^[A-Za-z0-9._~+/-]+=*$/u.test(tokens.access_token) ||
+    (tokens.expires_in !== undefined && (!Number.isSafeInteger(tokens.expires_in) || tokens.expires_in < 0))) {
+    throw new Error(AUTH_FAILED);
+  }
 }
 
 function secureUrl(raw: string, allowLoopback: boolean): URL {
@@ -189,14 +215,31 @@ export class McpOAuthSession {
   private pendingWrite: Promise<void> = Promise.resolve();
   private credentialGeneration = 0;
   private challengeProbeAvailable = true;
+  /** Issuers that rejected the client metadata document in this session; flows there register instead. */
+  private readonly metadataDocumentRejected = new Set<string>();
+  private readonly ready: Promise<void>;
 
-  constructor(private readonly config: McpHttpServerConfig, private readonly dependencies: McpOAuthDependencies) {
+  constructor(private readonly config: McpHttpServerConfig, private readonly dependencies: McpOAuthDependencies,
+    options: McpOAuthSessionOptions = {}) {
     this.serverUrl = secureUrl(config.url, config.allowPrivateNetworks === true).href;
     this.endpointResource = canonicalResource(new URL(this.serverUrl));
     this.credentialKey = mcpOAuthCredentialKey(config);
     this.blocked = registrationBlock(config);
-    if (this.blocked) this.status = "error";
-    else this.loadStored();
+    if (this.blocked) {
+      this.status = "error";
+      this.ready = Promise.resolve();
+    } else if (options.after) {
+      this.status = options.initialStatus ?? "required";
+      this.ready = options.after.catch(() => {}).then(() => {
+        if (!this.controller.signal.aborted) {
+          this.status = "required";
+          this.loadStored();
+        }
+      });
+    } else {
+      this.loadStored();
+      this.ready = Promise.resolve();
+    }
     this.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => this.fetchResource(input, init)) as typeof fetch;
   }
 
@@ -254,6 +297,21 @@ export class McpOAuthSession {
       this.login = this.authenticateOnce().finally(() => { this.login = undefined; });
     }
     return this.login;
+  }
+
+  /**
+   * Retire this session for a successor that keeps the same credential key:
+   * let a refresh already in flight finish and persist its (possibly rotated)
+   * tokens, then dispose. The successor reads the record after this settles.
+   */
+  async handOff(): Promise<void> {
+    for (;;) {
+      const refresh = this.refresh;
+      const write = this.pendingWrite;
+      await Promise.allSettled([refresh, write]);
+      if (this.refresh === undefined && this.pendingWrite === write) break;
+    }
+    this.dispose();
   }
 
   dispose(): void {
@@ -363,9 +421,9 @@ export class McpOAuthSession {
     // Otherwise it may name a containing resource path, but never an unrelated origin or sibling.
     if (resourceMetadataFromChallenge
       ? resourceId !== this.endpointResource
-      : !resourceContainsEndpoint(resourceUrl, new URL(this.serverUrl))) throw new Error(AUTH_FAILED);
+      : !resourceContainsEndpoint(resourceUrl, new URL(this.serverUrl))) throw new McpOAuthError("mcp-auth-resource-mismatch");
     if (this.config.oauth?.resource && resourceId !== canonicalResource(secureUrl(this.config.oauth.resource, allowPrivate))) {
-      throw new Error(AUTH_FAILED);
+      throw new McpOAuthError("mcp-auth-resource-mismatch");
     }
     const configuredIssuers = this.config.oauth?.authorizationServers;
     const issuer = resource.authorization_servers?.find((candidate) => !configuredIssuers?.length || configuredIssuers.includes(candidate));
@@ -417,7 +475,8 @@ export class McpOAuthSession {
     }
     const metadataDocumentUsable = discovery.metadata.client_id_metadata_document_supported === true &&
       (!discovery.metadata.token_endpoint_auth_methods_supported || discovery.metadata.token_endpoint_auth_methods_supported.includes("none"));
-    if ((mode === undefined || mode === "client-id-metadata-document") && metadataDocumentUsable) {
+    if ((mode === "client-id-metadata-document" || (mode === undefined && !this.metadataDocumentRejected.has(discovery.issuer))) &&
+      metadataDocumentUsable) {
       if (!isHttpsUrl(MCP_CLIENT_METADATA_DOCUMENT_URL)) throw new Error(AUTH_FAILED);
       return { source: "metadata-document", client: { client_id: MCP_CLIENT_METADATA_DOCUMENT_URL,
         redirect_uris: [redirectUri], token_endpoint_auth_method: "none" } };
@@ -448,9 +507,25 @@ export class McpOAuthSession {
   }
 
   private async authenticateOnce(): Promise<void> {
+    await this.ready;
+    try {
+      await this.authorizeInteractively();
+    } catch (error) {
+      // Registration mode unset and the server refused Ave's metadata document:
+      // run the flow once more with dynamic registration. An explicit mode stays strict.
+      if (!(error instanceof MetadataDocumentRejectedError)) throw error;
+      this.metadataDocumentRejected.add(error.issuer);
+      await this.authorizeInteractively();
+    }
+  }
+
+  private async authorizeInteractively(): Promise<void> {
     const previousStatus = this.status;
     const stepUp = this.pendingStepUp;
     let handle: string | undefined;
+    let client: OAuthClientInformationFull | undefined;
+    let source: ClientSource | undefined;
+    let issuer: string | undefined;
     try {
       this.assertActive();
       if (this.blocked === "mcp-auth-storage-unreadable") this.loadStored();
@@ -464,7 +539,8 @@ export class McpOAuthSession {
       const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { redirectHost: "127.0.0.1" });
       handle = catcher.handle;
       this.assertActive();
-      const { client, source } = await this.selectClient(discovery, catcher.redirectUri);
+      issuer = discovery.issuer;
+      ({ client, source } = await this.selectClient(discovery, catcher.redirectUri));
       this.assertActive();
       const state = randomBytes(32).toString("base64url");
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
@@ -482,6 +558,9 @@ export class McpOAuthSession {
       if (!opened.ok) throw new Error(AUTH_FAILED);
       this.assertActive();
       const params = await this.dependencies.redirectCatchers.wait(this.ownerKey, handle, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+      if (params.state === state && (params.error === "invalid_client" || params.error === "unauthorized_client")) {
+        throw new InvalidClientError("authorization response rejected the client");
+      }
       if (!params.code || params.error !== undefined || params.state !== state ||
         (params.iss !== undefined && params.iss !== discovery.issuer) ||
         (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);
@@ -489,6 +568,8 @@ export class McpOAuthSession {
         authorizationCode: params.code, codeVerifier: authorization.codeVerifier, redirectUri: catcher.redirectUri,
         fetchFn: this.tokenFetch(discovery.resource) });
       this.assertActive();
+      // Refuse a malformed token response before it can displace a working grant.
+      validateTokens(tokens);
       // The grant belongs to this client; only now does it replace the stored binding.
       this.credentials = {
         serverUrl: this.serverUrl, issuer: discovery.issuer, resource: discovery.resource,
@@ -508,6 +589,12 @@ export class McpOAuthSession {
         // A cancelled or failed step-up leaves the working grant (and its tools) in place.
         this.status = previousStatus;
       } else this.status = "error";
+      if (!this.controller.signal.aborted && source === "metadata-document" && issuer &&
+        this.config.oauth?.clientRegistration === undefined && !this.metadataDocumentRejected.has(issuer) &&
+        (error instanceof InvalidClientError || error instanceof UnauthorizedClientError)) {
+        this.status = previousStatus;
+        throw new MetadataDocumentRejectedError(issuer);
+      }
       if (error instanceof McpOAuthError && error.code !== "mcp-auth-required" && error.code !== "mcp-auth-failed") throw error;
       throw new Error(AUTH_FAILED);
     } finally {
@@ -517,8 +604,8 @@ export class McpOAuthSession {
 
   private async acceptTokens(tokens: OAuthTokens, requestedScope?: string): Promise<void> {
     this.assertActive();
-    if (!this.credentials || tokens.token_type.toLowerCase() !== "bearer" || !/^[A-Za-z0-9._~+/-]+=*$/u.test(tokens.access_token) ||
-      (tokens.expires_in !== undefined && (!Number.isSafeInteger(tokens.expires_in) || tokens.expires_in < 0))) throw new Error(AUTH_FAILED);
+    if (!this.credentials) throw new Error(AUTH_FAILED);
+    validateTokens(tokens);
     const generation = ++this.credentialGeneration;
     this.challengeProbeAvailable = false;
     this.credentials.grantedScope = tokens.scope ?? requestedScope ?? this.credentials.grantedScope;
@@ -587,6 +674,7 @@ export class McpOAuthSession {
 
   private async fetchResource(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     try {
+      await this.ready;
       this.assertActive();
       if (this.blocked) throw new McpOAuthError(this.blocked);
       const request = new Request(input, init);

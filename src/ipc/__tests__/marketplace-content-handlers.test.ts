@@ -42,7 +42,7 @@ import { loadInstalledContent, registerMarketplaceContentHandlers } from "../dom
 
 const TOKEN = "t0123456789abcdef0123456789abcdef";
 /** No installed package here has an MCP server: the runtime only registers its lease source. */
-const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined };
+const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined, registerBundledCredentialSource: () => undefined };
 const content = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,

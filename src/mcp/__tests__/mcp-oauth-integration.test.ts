@@ -344,7 +344,7 @@ describe("remote authorization over the real client transport", () => {
     fixture.wrongResource = true;
     const { manager, registry, config, browserOpens } = await createManager(fixture);
     await expect(manager.connectServer(config)).rejects.toThrow();
-    expect(await manager.authenticate(config.id)).toEqual({ connected: false, errorCode: "mcp-auth-failed" });
+    expect(await manager.authenticate(config.id)).toEqual({ connected: false, errorCode: "mcp-auth-resource-mismatch" });
     expect(fixture.registrationRequests).toEqual([]);
     expect(fixture.tokenRequests).toEqual([]);
     expect(fixture.rpcMethods).toEqual([]);

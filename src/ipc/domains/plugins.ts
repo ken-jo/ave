@@ -74,7 +74,8 @@ function isBundledMcpConfigId(value: unknown): value is string {
 /** Authorization outcomes the renderer may see; anything else collapses to a generic failure. */
 const MCP_AUTH_ERROR_CODES: ReadonlySet<McpAuthErrorCode> = new Set<McpAuthErrorCode>([
   "mcp-auth-required", "mcp-auth-failed", "mcp-auth-storage-unavailable",
-  "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported",
+  "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported", "mcp-auth-resource-mismatch",
+  "mcp-auth-index-unreadable",
 ]);
 import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";

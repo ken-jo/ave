@@ -79,11 +79,18 @@ describe("McpTab browser authentication", () => {
     ["mcp-auth-storage-unavailable", "이 기기에서는 자격 증명을 암호화해 저장할 수 없어 인증을 사용할 수 없습니다."],
     ["mcp-auth-storage-unreadable", "저장된 인증 정보를 읽을 수 없습니다. 다시 시도하고, 계속되면 서버를 삭제한 뒤 다시 추가하세요."],
     ["mcp-auth-registration-unsupported", "이 서버의 인증 설정은 Ave가 완료할 수 없는 클라이언트 등록 방식을 사용합니다. 클라이언트 ID 또는 등록 설정을 확인하세요."],
+    ["mcp-auth-resource-mismatch", "서버의 인증 메타데이터가 이 서버와 다른 주소를 가리킵니다. 서버 URL을 확인하세요. 로그인하지 않았습니다."],
   ])("localizes %s without showing provider text", async (errorCode, message) => {
     const mcp = setup();
     mcp.authenticate.mockResolvedValueOnce({ connected: false, errorCode });
     fireEvent.click(await screen.findByRole("button", { name: "인증하기" }));
     expect(await screen.findByText(message)).toBeInTheDocument();
+  });
+
+  it("shows an unreadable credential index on the server row", async () => {
+    setup(undefined, [{ id: "remote-a", status: "disconnected", registeredTools: [], authStatus: "required", authError: "mcp-auth-index-unreadable" }]);
+    expect(await screen.findByText("저장된 로그인 목록을 읽을 수 없어 삭제된 서버의 로그인 정보를 정리하지 못합니다. 다음에 서버 목록을 불러올 때 다시 만듭니다."))
+      .toBeInTheDocument();
   });
 
   it("reflects a revoked session without remounting settings", async () => {

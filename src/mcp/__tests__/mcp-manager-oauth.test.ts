@@ -12,6 +12,9 @@ const harness = vi.hoisted(() => ({
     dispose: ReturnType<typeof vi.fn>;
     clear: ReturnType<typeof vi.fn>;
     fetch: ReturnType<typeof vi.fn>;
+    handOff: ReturnType<typeof vi.fn>;
+    credentialKey: string;
+    options?: { after?: Promise<void>; initialStatus?: McpAuthStatus };
   }>,
   clients: [] as Array<{ disconnect: ReturnType<typeof vi.fn>; fetch: typeof fetch; state: { id: string; status: string; registeredTools: string[] } }>,
   login: async () => {},
@@ -42,10 +45,12 @@ vi.mock("../mcp-oauth.js", async (importOriginal) => ({
       this.status = "required";
       throw new Error("MCP authentication required");
     });
+    handOff = vi.fn(async () => { this.status = "required"; });
     getStatus() { return this.status; }
     getBlockedCode() { return undefined; }
-    constructor(value: McpHttpServerConfig) {
+    constructor(value: McpHttpServerConfig, _dependencies: unknown, readonly options?: { after?: Promise<void>; initialStatus?: McpAuthStatus }) {
       this.credentialKey = `mcp.oauth.${JSON.stringify([value.id, value.url, value.oauth])}`;
+      if (options?.initialStatus) this.status = options.initialStatus;
       harness.sessions.push(this);
     }
   },
@@ -205,13 +210,19 @@ describe("remote authorization lifecycle", () => {
     await owner.connectServer({ ...config, headers: { "x-team": "a" } }, { force: true }).catch(() => undefined);
     await vi.waitFor(() => expect(secretStore.get("mcp.oauth.index")).toBeDefined());
     expect(harness.sessions).toHaveLength(2);
-    expect(previous.dispose).toHaveBeenCalled();
+    // Same key: the old session hands off (its in-flight refresh persists) and the new one reads after it.
+    expect(previous.handOff).toHaveBeenCalledTimes(1);
+    expect(previous.dispose).not.toHaveBeenCalled();
+    expect(harness.sessions[1].options?.after).toBeInstanceOf(Promise);
     expect(previous.clear).not.toHaveBeenCalled();
     expect(secretStore.get(keyOf(config))).toBe("grant");
     // A new URL is a different credential identity: the old record goes.
     const moved = { ...config, url: "https://other.example.test/mcp" };
     await expect(owner.connectServer(moved, { force: true })).rejects.toThrow("MCP authentication required");
     await vi.waitFor(() => expect(secretStore.has(keyOf(config))).toBe(false));
+    expect(harness.sessions[1].dispose).toHaveBeenCalled();
+    expect(harness.sessions[1].handOff).not.toHaveBeenCalled();
+    expect(harness.sessions[2].options?.after).toBeUndefined();
     expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(moved) });
   });
 
@@ -231,6 +242,89 @@ describe("remote authorization lifecycle", () => {
     release();
     await shutdown;
     expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(config) });
+  });
+
+  it.each([
+    ["a trailing comma", '{ "servers": [] , }'],
+    ["an empty file", ""],
+    ["a non-object servers value", '{ "servers": 3 }'],
+  ])("keeps every stored grant when the configuration file has %s", async (_label, content) => {
+    const index = { [config.id]: keyOf(config), other: "mcp.oauth.other" };
+    secretStore.set("mcp.oauth.index", JSON.stringify(index));
+    secretStore.set(keyOf(config), "grant");
+    secretStore.set("mcp.oauth.other", "other grant");
+    await writeFile(path, content);
+    const owner = manager();
+    await owner.connectAll();
+    await owner.disconnectAll();
+    expect(secretStore.get(keyOf(config))).toBe("grant");
+    expect(secretStore.get("mcp.oauth.other")).toBe("other grant");
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual(index);
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("deletes nothing when the configuration file is missing", async () => {
+    // A first run has no file and no index; a missing file with an index is not authority to delete either.
+    secretStore.set("mcp.oauth.index", JSON.stringify({ [config.id]: keyOf(config) }));
+    secretStore.set(keyOf(config), "grant");
+    await rm(path);
+    const owner = manager();
+    await owner.connectAll();
+    await owner.disconnectAll();
+    expect(secretStore.get(keyOf(config))).toBe("grant");
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+    await rm(directory, { recursive: true, force: true });
+    const fresh = manager();
+    await fresh.connectAll();
+    await fresh.disconnectAll();
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("reports a malformed index, deletes nothing on its account, and rebuilds it only after a successful load", async () => {
+    secretStore.set("mcp.oauth.index", "{ not json");
+    secretStore.set(keyOf(config), "grant");
+    secretStore.set("mcp.oauth.orphan", "orphan grant");
+    await writeFile(path, "{ broken");
+    const owner = manager();
+    await owner.connectAll();
+    await expect(owner.connectServer(config)).rejects.toThrow();
+    await vi.waitFor(() => expect(owner.getServerState(config.id)?.authError).toBe("mcp-auth-index-unreadable"));
+    expect(owner.listServers().find((state) => state.id === config.id)?.authError).toBe("mcp-auth-index-unreadable");
+    expect(secretStore.get("mcp.oauth.index")).toBe("{ not json");
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+    await writeFile(path, JSON.stringify({ servers: [config] }));
+    await owner.connectAll();
+    await owner.disconnectAll();
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual({ [config.id]: keyOf(config) });
+    expect(secretStore.get(keyOf(config))).toBe("grant");
+    expect(secretStore.get("mcp.oauth.orphan")).toBe("orphan grant");
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+    const restarted = manager();
+    await restarted.connectServer(config).catch(() => undefined);
+    expect(restarted.getServerState(config.id)?.authError).toBeUndefined();
+  });
+
+  it("retires bundled grants only from a complete package list that no longer declares them", async () => {
+    const stableId = (name: string) => `bundled:${JSON.stringify(["agent-plugin", name, "remote"])}`;
+    const index = { [stableId("kept-kit")]: "mcp.oauth.kept", [stableId("removed-kit")]: "mcp.oauth.removed",
+      [`bundled:${JSON.stringify(["plugin", "other-kind", "remote"])}`]: "mcp.oauth.plugin-kind", [config.id]: keyOf(config) };
+    secretStore.set("mcp.oauth.index", JSON.stringify(index));
+    for (const key of Object.values(index)) secretStore.set(key, "grant");
+    const declaration = (name: string) => ({ packageName: name, serverName: "remote", transport: "http" as const,
+      url: "https://example.test/mcp", auth: "oauth" as const });
+    const owner = manager();
+    owner.registerBundledCredentialSource("agent-plugin", { complete: false, list: () => [declaration("kept-kit")], reconnect: async () => {} });
+    owner.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
+    await owner.disconnectAll();
+    expect(secrets.deleteSecret).not.toHaveBeenCalled();
+    owner.registerBundledCredentialSource("agent-plugin", { complete: true, list: () => [declaration("kept-kit")], reconnect: async () => {} });
+    await owner.disconnectAll();
+    expect(secretStore.has("mcp.oauth.removed")).toBe(false);
+    expect(secretStore.get("mcp.oauth.kept")).toBe("grant");
+    expect(secretStore.get("mcp.oauth.plugin-kind")).toBe("grant");
+    expect(secretStore.get(keyOf(config))).toBe("grant");
+    const { [stableId("removed-kit")]: _removed, ...remaining } = index;
+    expect(JSON.parse(secretStore.get("mcp.oauth.index")!)).toEqual(remaining);
   });
 
   it("deletes records left under keys the configuration no longer names when it loads", async () => {
