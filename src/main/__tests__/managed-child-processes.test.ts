@@ -15,6 +15,11 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    spawn: vi.fn(() => {
+      const runner = new EventEmitter();
+      queueMicrotask(() => runner.emit("exit", 1, null));
+      return runner;
+    }),
     spawnSync: vi.fn(() => ({
       status: 1,
       signal: null,
@@ -76,7 +81,7 @@ describe("managed child process tracking", () => {
     expect(getManagedChildProcessCount()).toBe(1);
 
     const drain = forceKillAndDrainManagedChildProcesses("clean-shutdown");
-    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGKILL"));
     child.exitCode = 137;
     child.emit("exit", 137, "SIGKILL");
     await expect(drain).resolves.toEqual({ killedCount: 1, unresolvedCount: 0 });
@@ -98,13 +103,13 @@ describe("managed child process tracking", () => {
     expect(spawnAttempted).toBe(false);
   });
 
-  it("force-kills a child registered after the admission seal and retains it until exit", () => {
+  it("force-kills a child registered after the admission seal and retains it until exit", async () => {
     const child = makeChild();
     child.pid = 5432;
     sealManagedChildProcessAdmission("before-quit");
 
     trackManagedChildProcess(child, { label: "late-unmigrated-producer" });
-    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGKILL"));
     expect(getManagedChildProcessCount()).toBe(1);
 
     child.exitCode = 137;

@@ -451,6 +451,7 @@ export class GitRunner {
       let stderr = "";
       let failure: Error | null = null;
       let settled = false;
+      let termination: void | Promise<void>;
 
       const signalGroup = (signal: NodeJS.Signals) => {
         try {
@@ -464,7 +465,13 @@ export class GitRunner {
         failure = error;
         if (process.platform === "win32") {
           // TerminateProcess leaves no cleanup either way; taskkill /T takes the tree.
-          forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          termination = forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          // Do not depend on inherited pipes closing after a failed tree pass.
+          void Promise.resolve(termination).then(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            finish(() => reject(error));
+          });
           return;
         }
         // SIGTERM first so git removes its lock files, then the whole group.
@@ -511,7 +518,8 @@ export class GitRunner {
         settled = true;
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
-        outcome();
+        if (termination) void termination.then(outcome);
+        else outcome();
       };
       child.on("error", (error: NodeJS.ErrnoException) => {
         finish(() =>

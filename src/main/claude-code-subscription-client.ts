@@ -309,7 +309,7 @@ export class ClaudeCodeSubscriptionClient {
   private stopped = false;
   private epoch = 0;
   private loginStarting = false;
-  private readonly commands = new Set<() => void>();
+  private readonly commands = new Set<() => void | Promise<void>>();
 
   constructor(options: ClaudeCodeSubscriptionClientOptions) {
     this.runtimeHome = options.runtimeHome;
@@ -481,7 +481,7 @@ export class ClaudeCodeSubscriptionClient {
     this.epoch += 1;
     this.verifiedVersion = null;
     this.verifiedIdentity = null;
-    for (const cancel of this.commands) cancel();
+    await Promise.all([...this.commands].map((cancel) => cancel()));
     await this.cancelLoginQuietly();
   }
 
@@ -637,7 +637,7 @@ export class ClaudeCodeSubscriptionClient {
     this.pendingLogin = null;
     clearTimeout(pending.timer);
     try {
-      forceKillManagedChildProcess(pending.child, "claude-code-login-cancel");
+      await forceKillManagedChildProcess(pending.child, "claude-code-login-cancel");
     } catch {
       // Best-effort cancellation only.
     }
@@ -720,10 +720,14 @@ export class ClaudeCodeSubscriptionClient {
         this.commands.delete(cancel);
         callback();
       };
-      const cancel = (code: ClaudeCodeSubscriptionErrorCode = "claude-code-operation-failed"): void => {
+      const cancel = (code: ClaudeCodeSubscriptionErrorCode = "claude-code-operation-failed"): void | Promise<void> => {
         if (settled) return;
-        finish(() => rejectPromise(new ClaudeCodeSubscriptionError(code)));
-        forceKillManagedChildProcess(child, "claude-code-command-cancel");
+        const termination = forceKillManagedChildProcess(child, "claude-code-command-cancel");
+        finish(() => {
+          if (termination) void termination.then(() => rejectPromise(new ClaudeCodeSubscriptionError(code)));
+          else rejectPromise(new ClaudeCodeSubscriptionError(code));
+        });
+        return termination;
       };
       this.commands.add(cancel);
       const append = (target: "stdout" | "stderr", chunk: Buffer | string): void => {

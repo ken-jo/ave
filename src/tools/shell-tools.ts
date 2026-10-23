@@ -303,16 +303,18 @@ function watchShellLifetime(
 ) {
   let timedOut = false;
   let aborted = false;
+  let termination: void | Promise<void>;
   let notifyStopped: () => void;
   const stopped = new Promise<void>((resolve) => { notifyStopped = resolve; });
   const stop = (): void => {
     abortSandbox?.();
-    forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
+    termination = forceKillManagedChildProcess(child, timedOut ? "shell-timeout" : "shell-cancelled");
     // An exited root can leave inherited pipes open in a detached descendant.
     // Interruption releases our pipe ends and settles without waiting for close.
     child.stdout?.destroy();
     child.stderr?.destroy();
-    notifyStopped();
+    if (termination) void termination.then(() => notifyStopped());
+    else notifyStopped();
   };
   const cancel = (): void => {
     if (timedOut || aborted) return;
@@ -328,6 +330,7 @@ function watchShellLifetime(
   if (signal?.aborted) cancel();
   return {
     stopped,
+    get termination() { return termination; },
     get timedOut() { return timedOut; },
     get aborted() { return aborted; },
     dispose(): void {
@@ -503,6 +506,7 @@ export interface BackgroundShellManager {
   read(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
   waitForOutput(sessionId: string, shellId: string, waitMs: number, signal?: AbortSignal, waitFor?: BackgroundShellWaitFor): Promise<void>;
   kill(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
+  waitForLocalCleanup(sessionId: string): Promise<void>;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
   /** Begin cleanup for every still-live broker shell during process shutdown. */
@@ -684,6 +688,7 @@ function withBrokerTransportMetadata(result: ToolExecutionResult): ToolExecution
 
 function createManager(): BackgroundShellManager {
   const shells = new Map<string, BackgroundShellEntry>();
+  const localCleanup = new Map<string, Set<Promise<void>>>();
   const brokerShells = new Map<string, BrokerBackgroundShellEntry>();
   const brokerCleanup = new Map<string, MutableBrokerSessionCleanup>();
   let brokerRuntimeImport: Promise<typeof import("../workload/runtime.js")> | undefined;
@@ -936,7 +941,16 @@ function createManager(): BackgroundShellManager {
         // Never re-signal a released handle: its numeric PID may be reused.
         if (terminationRequested) return;
         terminationRequested = true;
-        forceKillManagedChildProcess(child, "background-shell-ended");
+        const termination = forceKillManagedChildProcess(child, "background-shell-ended");
+        if (termination) {
+          const pending = localCleanup.get(sessionId) ?? new Set<Promise<void>>();
+          localCleanup.set(sessionId, pending);
+          pending.add(termination);
+          void termination.then(() => {
+            pending.delete(termination);
+            if (pending.size === 0 && localCleanup.get(sessionId) === pending) localCleanup.delete(sessionId);
+          });
+        }
       };
       const entry: BackgroundShellEntry = {
         shellId,
@@ -1141,6 +1155,10 @@ function createManager(): BackgroundShellManager {
       return snapshot(entry);
     },
 
+    async waitForLocalCleanup(sessionId): Promise<void> {
+      while (localCleanup.has(sessionId)) await Promise.all([...localCleanup.get(sessionId)!]);
+    },
+
     disposeSession(sessionId): number {
       let disposed = 0;
       for (const entry of [...shells.values()]) {
@@ -1215,6 +1233,7 @@ function createManager(): BackgroundShellManager {
       }
       const entries = [...shells.values()];
       shells.clear();
+      localCleanup.clear();
       brokerShells.clear();
       brokerCleanup.clear();
       for (const entry of entries) notify(entry);
@@ -1235,6 +1254,7 @@ export const backgroundShellManager: BackgroundShellManager = createManager();
  */
 export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
   backgroundShellManager.disposeSession(sessionId);
+  await backgroundShellManager.waitForLocalCleanup(sessionId);
   clearShellSessionCwd(sessionId);
   return await backgroundShellManager.settleSessionCleanup(sessionId);
 }
@@ -2081,6 +2101,7 @@ export async function spawnWithSandbox(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
       if (settled) return;
@@ -2152,7 +2173,10 @@ async function spawnWithTimeout(
       shell: false,
     });
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
-    child.once("close", cleanupPreparedAfterTermination);
+    child.once("close", () => {
+      if (lifetime.termination) void lifetime.termination.then(cleanupPreparedAfterTermination);
+      else cleanupPreparedAfterTermination();
+    });
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress });
@@ -2164,6 +2188,7 @@ async function spawnWithTimeout(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       if (settled) return;
       settled = true;
@@ -2468,6 +2493,7 @@ export function createBashKillTool(
       if (!result) {
         return { output: `bash_kill: ${NOT_FOUND}.`, isError: true };
       }
+      await manager.waitForLocalCleanup(sessionIdOf(ctx));
       return present(result);
     },
   });
@@ -3168,6 +3194,7 @@ async function spawnPowerShellWithSandbox(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       cleanupAfterTermination();
       lifetime.dispose();
       if (settled) return;
@@ -3240,6 +3267,7 @@ async function spawnPowerShell(
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
+      if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
       if (settled) return;
       settled = true;
