@@ -501,7 +501,10 @@ describe("session tool output artifacts", () => {
     expect(existsSync(data)).toBe(true);
   });
 
-  it("rejects directory replacement during capture without deleting the replacement", async () => {
+  // Windows refuses to rename a directory while a file inside it is open
+  // (EPERM), so the capture directory cannot be swapped out from under an
+  // open capture there.
+  it.skipIf(process.platform === "win32")("rejects directory replacement during capture without deleting the replacement", async () => {
     const capture = store.start(SESSION_ID, "directory-race");
     capture.append(Buffer.from("before"));
     await capture.waitForDrain();
