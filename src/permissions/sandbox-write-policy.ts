@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -69,6 +69,20 @@ function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, rou
   if (resolved.firstMissingPath !== undefined) paths.add(resolved.firstMissingPath);
   for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
   return resolved.path;
+}
+
+function addProtectedRoutingPins(path: string, routingPins: Set<string>): void {
+  try {
+    const resolved = inspectPhysicalFilesystemPath(path, process.cwd(), MAX_MISSING_PATH_ANCESTORS);
+    for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
+  } catch (error) {
+    const marker = dirname(path);
+    // A regular .git pointer makes its child control paths structurally
+    // impossible. Every other inspection failure remains fail-closed.
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR"
+      && basename(marker) === ".git" && lstatSync(marker).isFile()) return;
+    throw error;
+  }
 }
 
 /** Compare filesystem grants, including canonical Windows aliases and casing. */
@@ -224,10 +238,13 @@ function addNestedGitControlPaths(
  * rather than filtering the policy by what happens to exist before a command.
  * Store locations come from their writers so changing a layout also changes
  * this boundary. Existing sensitive-write protection is unioned separately.
+ * Its paths are inspected only for routing links; their owning union remains
+ * responsible for emitting the corresponding deny entries.
  */
 export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly string[],
   userDataDir?: string,
+  protectedRoutingPaths: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & { allowWrite: string[] } {
   const rootSnapshots = writeRoots.map(original => ({
     original,
@@ -271,6 +288,8 @@ export function buildMandatorySandboxWritePolicy(
     for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
   if (process.platform === "linux") {
+    for (const path of paths) addProtectedRoutingPins(path, routingPins);
+    for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins);
     // A bind mount follows a routing symlink to its target; it cannot pin the
     // directory entry while leaving that entry's parent writable. Remove every
     // grant that could replace the link. Independent child and sibling grants
@@ -301,7 +320,11 @@ export function buildMandatorySandboxWritePolicy(
     resolvePolicyDenyPath(path),
   ]))]
     .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
-  entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
+  // Linux consumes routing links only to revoke covering grants. Replaying one
+  // as a deny bind would follow its target and could mask an unrelated subtree.
+  if (process.platform !== "linux") {
+    entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
+  }
   // A backend glob protects future entries without expanding the argument list.
   if (process.platform === "darwin") entries.push("/**/.[gG][iI][tT]");
   if (Buffer.byteLength(JSON.stringify(entries)) > MAX_GIT_POLICY_BYTES) throw new Error("Sandbox Git write policy exceeds its size limit");

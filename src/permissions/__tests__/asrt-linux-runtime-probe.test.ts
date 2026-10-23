@@ -45,6 +45,7 @@ vi.mock("node:child_process", () => ({
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
+  getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
   isAsrtLinuxRuntimeProbeError,
@@ -145,6 +146,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       for (const entries of Object.values(applied)) expect(Object.isFrozen(entries)).toBe(true);
       expect(applied.allowRead).not.toBe(filesystem.allowRead);
       expect(applied.allowWrite).not.toBe(filesystem.allowWrite);
+      expect(applied.allowWrite).toEqual([root]);
       const literal = applied.denyWrite.find(entry => typeof entry !== "string" && entry.path === denied);
       expect(literal).toEqual({ path: denied, literal: true });
       expect(Object.isFrozen(literal)).toBe(true);
@@ -166,7 +168,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     });
     const wrapped = await wrap("true", { commandId: TEST_COMMAND_ID, filesystem });
     expect(discover).toHaveBeenCalledOnce();
-    expect(discover).toHaveBeenCalledWith([root], undefined);
+    expect(discover).toHaveBeenCalledWith([root], undefined, getDefaultSensitiveWriteDenyPaths());
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledOnce();
     const replay = wrapped.argv[2]!.split(mount("--ro-bind", root))[1]!;
     expect(replay).toContain(mount("--bind", ordinary));

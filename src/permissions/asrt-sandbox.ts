@@ -877,11 +877,16 @@ export function buildPerCommandSandboxCustomConfig(
       [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
     );
   }
-  const mandatory = buildMandatorySandboxWritePolicy(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [], _baseTrustedSettings?.userDataDir);
+  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
+  const mandatory = buildMandatorySandboxWritePolicy(
+    filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [],
+    _baseTrustedSettings?.userDataDir,
+    sensitiveDenyWrite,
+  );
   fs.allowWrite = writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
   {
     fs.denyWrite = [...new Set([
-      ...getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir),
+      ...sensitiveDenyWrite,
       ...mandatory.denyWrite,
       ...(filesystem.denyWrite ?? []),
       ...(_baseTrustedSettings?.denyWrite ?? []),
@@ -1475,7 +1480,11 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // this SOT because ASRT's customConfig filesystem section replaces the shared
   // arrays, but the session config now has a real persistence-vector floor too.
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(trustedSettings.userDataDir);
-  const mandatory = buildMandatorySandboxWritePolicy(trustedSettings.allowWrite ?? [], trustedSettings.userDataDir);
+  const mandatory = buildMandatorySandboxWritePolicy(
+    trustedSettings.allowWrite ?? [],
+    trustedSettings.userDataDir,
+    sensitiveDenyWrite,
+  );
   const denyWriteUnion: FilesystemPathEntry[] = [];
   const denyWriteSeen = new Set<string>();
   for (const p of [...sensitiveDenyWrite, ...mandatory.denyWrite, ...(trustedSettings.denyWrite ?? [])]) {

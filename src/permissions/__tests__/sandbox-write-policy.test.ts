@@ -18,6 +18,16 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, opendirSync: vi.fn(actual.opendirSync), readSync: vi.fn(actual.readSync) };
 });
 
+function withPlatform<T>(platform: "darwin" | "linux", action: () => T): T {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+    return action();
+  } finally {
+    Object.defineProperty(process, "platform", descriptor);
+  }
+}
+
 describe("mandatory sandbox control-file writes", () => {
   let root: string;
   beforeEach(async () => {
@@ -68,6 +78,57 @@ describe("mandatory sandbox control-file writes", () => {
     expect(new Set(denies).size).toBe(denies.length);
   });
 
+  it.runIf(process.platform !== "win32")(
+    "revokes only Linux grants that can replace linked startup entries",
+    () => {
+      const ancestor = join(root, "grants");
+      const protectedRoot = join(ancestor, "project");
+      const child = join(protectedRoot, "work");
+      const sibling = join(ancestor, "sibling");
+      const targets = join(root, "targets");
+      for (const directory of [child, sibling, targets]) mkdirSync(directory, { recursive: true });
+      const controls = [".bashrc", ".gitconfig"].map((entry) => {
+        const link = join(protectedRoot, entry);
+        const target = join(targets, entry.slice(1));
+        writeFileSync(target, "protected");
+        symlinkSync(target, link);
+        return { link, target };
+      });
+      const writeRoots = [ancestor, protectedRoot, child, sibling];
+
+      expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy(writeRoots).allowWrite))
+        .toEqual(writeRoots);
+      const linux = withPlatform("linux", () => buildMandatorySandboxWritePolicy(writeRoots));
+      expect(linux.allowWrite).toEqual([child, sibling]);
+      for (const { link, target } of controls) {
+        expect(linux.denyWrite).toEqual(expect.arrayContaining([link, target]));
+        expect(linux.denyWrite).not.toContainEqual({ path: link, literal: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "uses a supplied floor routing link only to revoke covering Linux grants",
+    () => {
+      const ancestor = join(root, "floor-grants");
+      const grant = join(ancestor, "project");
+      const child = join(grant, "work");
+      const sibling = join(ancestor, "sibling");
+      const target = join(root, "synthetic-floor-target");
+      const floor = join(grant, "synthetic-floor");
+      for (const directory of [child, sibling]) mkdirSync(directory, { recursive: true });
+      writeFileSync(target, "protected");
+      symlinkSync(target, floor);
+
+      const policy = withPlatform("linux", () =>
+        buildMandatorySandboxWritePolicy([ancestor, grant, child, sibling], undefined, [floor]));
+      expect(policy.allowWrite).toEqual([child, sibling]);
+      expect(policy.denyWrite).not.toContainEqual({ path: floor, literal: true });
+      expect(policy.denyWrite).not.toContain(floor);
+      expect(policy.denyWrite).not.toContain(target);
+    },
+  );
+
   it.runIf(process.platform === "linux")("keeps distinct NFC and NFD grant spellings as distinct directories", () => {
     const nfc = join(root, "caf\u00e9");
     const nfd = join(root, "cafe\u0301");
@@ -97,11 +158,27 @@ describe("mandatory sandbox control-file writes", () => {
     expect(buildMandatorySandboxWritePolicy([backslash, slash]).allowWrite).toEqual([backslash, slash]);
   });
 
-  it("bounds physical resolution of prepared control paths at 64 missing ancestors", () => {
-    const withinLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
-    const beyondLimit = join(withinLimit, "missing-62");
-    expect(buildMandatorySandboxWritePolicy([withinLimit]).allowWrite).toEqual([withinLimit]);
-    expect(() => buildMandatorySandboxWritePolicy([beyondLimit])).toThrow("missing ancestor limit");
+  it("bounds missing ancestry and Linux routing components independently", () => {
+    const withinMissingLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
+    const beyondMissingLimit = join(withinMissingLimit, "missing-62");
+    const buildWithoutLinuxRouting = (path: string) => process.platform === "win32"
+      ? buildMandatorySandboxWritePolicy([path])
+      : withPlatform("darwin", () => buildMandatorySandboxWritePolicy([path]));
+    expect(buildWithoutLinuxRouting(withinMissingLimit).allowWrite).toEqual([withinMissingLimit]);
+    expect(() => buildWithoutLinuxRouting(beyondMissingLimit)).toThrow("missing ancestor limit");
+
+    if (process.platform === "win32") return;
+    const existingComponents = root.split(sep).filter(Boolean).length;
+    const linuxMissingLimit = 64 - existingComponents - 2;
+    const withinRoutingLimit = join(root, ...Array.from(
+      { length: linuxMissingLimit },
+      (_, index) => `routing-${index}`,
+    ));
+    const beyondRoutingLimit = join(withinRoutingLimit, "routing-overflow");
+    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([withinRoutingLimit]).allowWrite))
+      .toEqual([withinRoutingLimit]);
+    expect(() => withPlatform("linux", () => buildMandatorySandboxWritePolicy([beyondRoutingLimit])))
+      .toThrow("component limit");
   });
 
   it("denies linked gitdir, common metadata and their pointer files beyond the admitted root", () => {
@@ -141,22 +218,21 @@ describe("mandatory sandbox control-file writes", () => {
     const denies = policy.denyWrite;
     expect(denies).toContain(gitDir);
     expect(denies).toContain(commonDir);
-    expect(denies).toContainEqual({ path: metadataLink, literal: true });
-    expect(denies).toContainEqual({ path: join(gitDir, "common-link"), literal: true });
+    const routingPins = [metadataLink, join(gitDir, "common-link")]
+      .map(path => ({ path, literal: true } as const));
+    for (const routingPin of routingPins) {
+      if (process.platform === "linux") expect(denies).not.toContainEqual(routingPin);
+      else expect(denies).toContainEqual(routingPin);
+    }
     expect(denies).not.toContain(join(checkout, "metadata"));
     const linuxGrants = [checkout, independent];
     expect(policy.allowWrite).toEqual(process.platform === "linux"
       ? linuxGrants
       : [root, checkout, external, independent]);
-    if (process.platform !== "linux") {
-      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-      try {
-        Object.defineProperty(process, "platform", { ...platform, value: "linux" });
-        expect(buildMandatorySandboxWritePolicy([root, checkout, external, independent]).allowWrite).toEqual(linuxGrants);
-      } finally {
-        Object.defineProperty(process, "platform", platform);
-      }
-    }
+    const linuxPolicy = withPlatform("linux", () =>
+      buildMandatorySandboxWritePolicy([root, checkout, external, independent]));
+    expect(linuxPolicy.allowWrite).toEqual(linuxGrants);
+    for (const routingPin of routingPins) expect(linuxPolicy.denyWrite).not.toContainEqual(routingPin);
   });
 
   it.each(["gitdir", "commondir"])("rejects non-roundtrippable UTF-8 in %s metadata", (kind) => {

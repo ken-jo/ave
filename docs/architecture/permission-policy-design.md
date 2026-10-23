@@ -349,13 +349,20 @@ Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
 so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
 follows links before parent components and preserves filesystem spelling.
 Metadata routing inspects at most 64 components; missing-path resolution is
-bounded at 64 ancestors. Existing routing links receive literal entry pins.
-On Linux, a bind mount follows the link instead of protecting its directory
+bounded at 64 ancestors. On macOS, existing routing links receive literal
+entry pins.
+On Linux, the same bounded inspection covers mandatory control paths and
+the existing sensitive-write floor, whose paths still come from their owning stores.
+A bind mount follows the link instead of protecting its directory
 entry, so every write grant containing the routing link's parent is removed.
 Independent child and sibling grants remain; an ordinary write grant on that
 same parent cannot coexist with this protection. A missing target also protects
 its first missing component. An unresolved
 parent component beyond a missing ancestor refuses preparation.
+Linux does not replay routing links as deny binds; target denies remain with
+their existing owners so a link cannot mask an unrelated target subtree.
+Symbolic `.git` marker entries refuse preparation; linked worktrees use
+regular pointer files.
 Unexpected discovery failures fail closed, either by refusing preparation or
 removing the affected root's write grant rather than trusting partial results.
 `buildMandatorySandboxWritePolicy` returns the retained `allowWrite` roots and
