@@ -61,6 +61,7 @@ interface WindowsSecurityResult {
 // its target's ACL. The path list is data supplied through the environment.
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "Add-Type -TypeDefinition @'",
   "using System;",
   "using System.ComponentModel;",
@@ -90,7 +91,9 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "}",
   "'@",
-  "$targets = @(ConvertFrom-Json -InputObject $env:AVE_EXECUTABLE_ACL_PATHS)",
+  // Direct assignment preserves the decoded array without nesting it inside
+  // the single pipeline object returned by the system command's JSON parser.
+  "$targets = ConvertFrom-Json -InputObject $env:AVE_EXECUTABLE_ACL_PATHS",
   "$paths = @($targets | ForEach-Object {",
   "  $target = [string]$_",
   "  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new([ExecutablePathSecurity]::Read($target), 0)",
