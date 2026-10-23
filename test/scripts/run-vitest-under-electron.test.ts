@@ -455,8 +455,39 @@ describe("Electron Node-mode Vitest runner", () => {
     expect(withHiddenConsole(["file", undefined, options, callback])).toEqual(["file", undefined, hidden, callback]);
     expect(withHiddenConsole(["command", options, callback])).toEqual(["command", hidden, callback]);
     expect(withHiddenConsole(["file", [], options])).toEqual(["file", [], hidden]);
-    expect(withHiddenConsole(["file", undefined, options])).toEqual(["file", undefined, hidden]);
+    expect(withHiddenConsole(["file", undefined, options])).toEqual(
+      options === undefined ? ["file", hidden] : ["file", undefined, hidden],
+    );
     expect(withHiddenConsole(["command", options])).toEqual(["command", hidden]);
+    expect(withHiddenConsole(["file", [], options, undefined])).toEqual(["file", [], hidden]);
+    expect(withHiddenConsole(["command", options, undefined])).toEqual(["command", hidden]);
+  });
+
+  it.each([
+    { name: "execFile", args: [process.execPath, ["-e", ""], undefined, undefined] },
+    { name: "exec", args: [`"${process.execPath}" -e ""`, undefined, undefined] },
+  ] as const)("accepts trailing undefined slots in real $name calls", async ({ name, args }) => {
+    const module = { ...childProcess };
+    hideChildConsoles({
+      target: { platform: "win32", env: { ELECTRON_RUN_AS_NODE: "1" } },
+      module,
+      sync: () => {},
+    });
+    const spawn = vi.spyOn(childProcess.ChildProcess.prototype, "spawn");
+    try {
+      let child!: import("node:child_process").ChildProcess;
+      expect(() => {
+        child = Reflect.apply(module[name], module, args);
+      }).not.toThrow();
+      child.stdin?.end();
+      await expect(new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      })).resolves.toBe(0);
+      expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ windowsHide: true }));
+    } finally {
+      spawn.mockRestore();
+    }
   });
 
   describe.each([undefined, null])("real child calls with %s options", (options) => {
