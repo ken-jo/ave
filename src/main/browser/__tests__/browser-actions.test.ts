@@ -133,6 +133,8 @@ async function onFakeClock<T>(work: () => Promise<T>, maxMs = 30_000): Promise<T
     const running = work().finally(() => { settled = true; });
     running.catch(() => undefined);
     for (let advanced = 0; !settled && advanced < maxMs; advanced += 10) await vi.advanceTimersByTimeAsync(10);
+    // A hang must fail here, where the real clock is still restored below.
+    if (!settled) throw new Error(`work did not settle within ${maxMs} fake ms`);
     return await running;
   } finally {
     vi.useRealTimers();
