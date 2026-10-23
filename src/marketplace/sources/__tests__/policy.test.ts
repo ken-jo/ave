@@ -428,7 +428,8 @@ describe("FilePolicySource (§18.6)", () => {
     const update = await source.check();
 
     expect(update?.load).toMatchObject({ ok: false });
-    expect(update?.digest).toBe("unreadable:ENOTDIR");
+    // The digest carries the OS code: Windows reports a path through a file as ENOENT.
+    expect(update?.digest).toBe(process.platform === "win32" ? "unreadable:ENOENT" : "unreadable:ENOTDIR");
     source.apply(update!);
     expect(source.load.ok).toBe(false);
   });
