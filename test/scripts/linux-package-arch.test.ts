@@ -26,6 +26,14 @@ function posix(text: string): string {
   return text.split(sep).join("/");
 }
 
+/**
+ * NTFS keeps no POSIX mode bits, so no file there is executable and the
+ * audit's main-binary check fails every tree built on Windows.
+ */
+const NO_EXEC_BIT_ON_WIN32 = process.platform === "win32"
+  ? ["linux-unpacked/: no executable ELF main binary at the app root"]
+  : [];
+
 /** A 64-byte ELF64 LE header: enough for the parser and for file(1). */
 function elf(machine: number, type = 3): Buffer {
   const header = Buffer.alloc(64);
@@ -120,7 +128,7 @@ describe("Linux package architecture audit", () => {
     const root = tempRoot();
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
-    expect(violations).toEqual([]);
+    expect(violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
     // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
     expect(checked).toHaveLength(7);
   });
@@ -184,8 +192,11 @@ describe("Linux package architecture audit", () => {
     const app = unpackedApp(root, "x64");
     const outside = tempRoot();
     write(join(outside, "python3"), elf(EM.arm64, 2), 0o755);
+    const before = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     symlinkSync(join(outside, "python3"), join(app, "resources/app.asar.unpacked/node_modules/node-pty/python3"));
-    expect(auditLinuxRelease(root, "x64", { fileCommand: fakeFile }).violations).toEqual([]);
+    const after = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
+    expect(after).toEqual(before);
+    expect(after.violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
   });
 
   it("checks the installers' declared arch and requires one of each", () => {
