@@ -1,8 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { isAbsolute, sep } from "node:path";
+import { isAbsolute } from "node:path";
 import { t } from "../i18n/index.js";
 import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
-import { commandLeaf, effectiveShellWords, stripCommandPath } from "../shared/shell-effective-command.js";
+import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isSensitivePath } from "../permissions/sensitive-paths.js";
@@ -639,7 +639,7 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   // A bare executable name is resolved through PATH rather than opened as a
   // cwd-relative file. An explicit executable path remains a checked operand.
   nonPathIndices.add(childIndex);
-  if (namesExecutablePath(childHead)) extraCandidates.push({ value: childHead, index: childIndex });
+  if (namesCommandPath(childHead)) extraCandidates.push({ value: childHead, index: childIndex });
 
   for (const index of childSlots.nonPathIndices) nonPathIndices.add(childIndex + index);
   for (const index of childSlots.programIndices ?? []) programIndices.add(childIndex + index);
@@ -855,14 +855,6 @@ interface CommandPolicyView {
 }
 
 /** Follow only wrapper boundaries whose complete child position is proven. */
-/**
- * Bash on win32 (Git Bash) runs a backslash-separated command word as a path,
- * not through PATH, so it is an explicit executable just like one with `/`.
- */
-function namesExecutablePath(word: string): boolean {
-  return word.includes("/") || (sep === "\\" && word.includes("\\"));
-}
-
 function projectCommandPolicyView(
   event: ShellCommandEvent,
   initialSlots?: OperandSlotClassification,
@@ -883,7 +875,7 @@ function projectCommandPolicyView(
   const captureExecutableHead = (): void => {
     const head = projectedArgv[0];
     const word = projectedWords[0];
-    if (head !== undefined && namesExecutablePath(head) && word) executableHeads.push({ value: head, word, cwd });
+    if (head !== undefined && namesCommandPath(head) && word) executableHeads.push({ value: head, word, cwd });
   };
   let knownArgv: readonly string[] = [];
   let slots = initialSlots ?? classifyOperandSlots([]);

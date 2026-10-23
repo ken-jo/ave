@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1160,6 +1160,57 @@ describe("shell-path-policy", () => {
           }
         });
       });
+      /**
+       * Git Bash on win32 runs `.\tools\bash.exe`, `bash.exe` and `BASH` all as
+       * bash, so command-name rules must see `bash` in each. Before they did,
+       * the inner program of such a head went unanalyzed and wrote outside.
+       */
+      it.runIf(process.platform === "win32").each([
+        String.raw`'.\tools\bash.exe' -c 'echo hi > ../outside.txt'`,
+        String.raw`'.\tools\sh' -c 'echo hi > ../outside.txt'`,
+        `bash.exe -c 'echo hi > ../outside.txt'`,
+        `BASH -c 'echo hi > ../outside.txt'`,
+        String.raw`env '.\tools\bash.exe' -c 'echo hi > ../outside.txt'`,
+        String.raw`uv run '.\tools\bash.exe' -c 'echo hi > ../outside.txt'`,
+        String.raw`'.\tools\env' sh -c 'echo hi > ../outside.txt'`,
+        `env.exe sh -c 'echo hi > ../outside.txt'`,
+      ])("analyzes the program of a win32 interpreter spelling: %s", (command) => {
+        withRoot((root) => {
+          expect(validateShellCommandPathPolicy(command, root, root, [])).toContain("Sandbox:");
+        });
+      });
+
+      it.runIf(process.platform === "win32")("analyzes a granted interpreter named by its full win32 path", () => {
+        withRoot((root) => {
+          const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-")));
+          roots.push(grant);
+          const bash = shellQuote(join(grant, "bin", "bash.exe"));
+          expect(validateShellCommandPathPolicy(`${bash} -c 'echo hi > ../outside.txt'`, root, root, [grant]))
+            .toContain("Sandbox:");
+          expect(validateShellCommandPathPolicy(`${bash} -c 'cat ~/.ssh/id_rsa'`, root, root, [grant]))
+            .toContain("Sensitive path:");
+        });
+      });
+
+      it.runIf(process.platform === "win32")("keeps win32 name variants of other rules' verbs under those rules", () => {
+        withRoot((root) => {
+          expect(validateShellCommandPathPolicy("cp.exe -r ./a ./b", root, root, [], true)).toContain("recursive");
+          expect(validateShellCommandPathPolicy("xargs.exe cat", root, root, []))
+            .toContain("Unsupported stream or string execution wrapper");
+        });
+      });
+
+      it("matches builtins by exact name only, so a variant does not move the tracked cwd", () => {
+        withRoot((root) => {
+          mkdirSync(join(root, "sub"));
+          expect(validateShellCommandPathPolicy("cd sub; echo hi > ../x", root, root, [])).toBeNull();
+          // bash finds no `CD` builtin; the later write is relative to the root.
+          for (const command of ["CD sub; echo hi > ../x", "COMMAND cd sub; echo hi > ../x"]) {
+            expect(validateShellCommandPathPolicy(command, root, root, []), command).toContain("Sandbox:");
+          }
+        });
+      });
+
 
       it.each([
         "env timeout 1 sh -c 'cat /etc/shadow'",
