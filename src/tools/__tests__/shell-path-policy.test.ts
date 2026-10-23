@@ -196,6 +196,18 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it.runIf(process.platform === "win32")("refuses a drive-letter tar archive, which tar reads as a remote host", () => {
+    withRoot((root) => {
+      // GNU tar takes `D:` as a host (`tar -tf D:/x.tar` reports "Cannot connect
+      // to D"), so the listing is not a local read even with reads unfenced.
+      const archive = join(root, "inside.tar");
+      for (const path of [archive, archive.replaceAll("\\", "/")]) {
+        expect(validateShellCommandPathPolicy(`tar -tf ${shellQuote(path)}`, root, root, []), path)
+          .toContain("recursive");
+      }
+    });
+  });
+
   it("rejects path operands outside the sandbox", () => {
     withRoot((root) => {
       const outside = realpathSync(tmpdir());
