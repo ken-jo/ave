@@ -406,8 +406,11 @@ function makeRig(root: string, shimNames: ReadonlySet<string>): Rig {
   const shim = join(shims, ".shim");
   writeFileSync(shim, [
     "#!/bin/sh",
-    `f=$(/usr/bin/mktemp '${calls}/call.XXXXXX') || exit 97`,
-    "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\"",
+    // One record per shim process. Keep real executable lookup and argv, but
+    // avoid starting another process just to allocate the record's filename.
+    `f='${calls}/call.'$$`,
+    "set -C",
+    "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\" || exit 97",
     "exit 0",
     "",
   ].join("\n"), { mode: 0o755 });
@@ -454,8 +457,9 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const notFoundProgram = join(rig.root, `command-not-found-${name}`);
   writeFileSync(notFoundProgram, [
     "#!/bin/sh",
-    `f=$(/usr/bin/mktemp '${rig.calls}/call.XXXXXX') || exit 97`,
-    "printf '%s\\0' command-not-found \"$@\" > \"$f\"",
+    `f='${rig.calls}/call.'$$`,
+    "set -C",
+    "printf '%s\\0' command-not-found \"$@\" > \"$f\" || exit 97",
     "exit 127",
     "",
   ].join("\n"), { mode: 0o755 });
