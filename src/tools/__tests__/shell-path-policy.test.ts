@@ -1,6 +1,7 @@
 import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -186,7 +187,10 @@ describe("shell-path-policy", () => {
 
   it("applies the optional read fence to the archive file itself", () => {
     withRoot((root) => {
-      const command = `tar -tf ${join(realpathSync(tmpdir()), "outside.tar")}`;
+      // Every absolute win32 path has a drive colon, which tar reads as a remote
+      // host and the listing parser refuses, so name the same file relatively.
+      const archive = process.platform === "win32" ? "../outside.tar" : join(realpathSync(tmpdir()), "outside.tar");
+      const command = `tar -tf ${shellQuote(archive)}`;
       expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
       expect(validateShellCommandPathPolicy(command, root, root, [], true)).toContain("Sandbox:");
     });
@@ -1069,7 +1073,8 @@ describe("shell-path-policy", () => {
         ["shell payload", "uv run sh -c 'cat /etc/shadow'"],
         ["bash payload", "uv run bash -c '[[ -f /etc/shadow ]]'"],
         ["dd input", "uv run dd if=/etc/shadow of=./copy"],
-        ["curl file URL", "uv run curl file:///etc/shadow"],
+        // A win32 file URL needs a drive, so name /etc/shadow as this host resolves it.
+        ["curl file URL", `uv run curl ${pathToFileURL(resolve("/etc/shadow")).href}`],
         ["explicit child path", "uv run /etc/shadow"],
       ])("checks child path semantics for %s", (_label, command) => {
         withRoot((root) => {
@@ -1512,7 +1517,11 @@ describe("shell-path-policy", () => {
       withRoot((root) => {
         const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-")));
         roots.push(grant);
-        symlinkSync("/etc", join(grant, "to-etc"));
+        // A real outside directory, since /etc does not exist on win32; a junction
+        // needs no symlink privilege there and is an ordinary link elsewhere.
+        const target = realpathSync(mkdtempSync(join(tmpdir(), "ave-link-target-")));
+        roots.push(target);
+        symlinkSync(target, join(grant, "to-etc"), "junction");
         // Canonicalization resolves the link before the boundary compare, so
         // the grant covers the directory and not what it points at.
         expect(validateShellCommandPathPolicy(`echo hi > ${shellQuote(grant)}/to-etc/x`, root, root, [grant]))
