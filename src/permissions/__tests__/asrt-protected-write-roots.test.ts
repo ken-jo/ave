@@ -325,6 +325,17 @@ describe("a confined child cannot reach user data through a grant", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  /**
+   * A case that spawns a POSIX shell probe through a per-command wrap. Windows
+   * has none of these wraps: ASRT there takes no per-exec allowRead/allowWrite
+   * (wrapToolCommand refuses them), wrapBundledCommand is the macOS and Linux
+   * wrap, and a confined child runs under cmd, not /bin/sh. A Windows plugin
+   * child is confined by the holder-PID ACL grant instead, which
+   * adversarial-escapes.test.ts measures against the same kind of neighbour.
+   * The floor rules these cases rely on run everywhere, above.
+   */
+  const itPosixWrap = it.runIf(hostPlatform !== "win32");
+
   const probe = () => [
     `cat ${join(userData, "Cookies")}`,
     `cat ${join(partitions, "cookie")}`,
@@ -342,7 +353,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     rmSync(join(work, "ok"));
   }
 
-  it("as a plugin child or worker, which keeps its own temp directory and HOME", async () => {
+  itPosixWrap("as a plugin child or worker, which keeps its own temp directory and HOME", async () => {
     if (!sandboxRuns) return;
     const home = createSandboxProcessHome();
     try {
@@ -373,7 +384,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     }
   });
 
-  it("as a tool command", async () => {
+  itPosixWrap("as a tool command", async () => {
     if (!sandboxRuns) return;
     const { argv, env } = await wrapToolCommand(probe(), {
       binShell: "/bin/sh",
@@ -398,7 +409,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     expect(fs?.allowWrite).toEqual(process.platform === "linux" ? [work] : [inside, work]);
   });
 
-  it("denies a trusted custom deny to a wrap that restates only the sensitive floor", async () => {
+  itPosixWrap("denies a trusted custom deny to a wrap that restates only the sensitive floor", async () => {
     // A per-command deny replaces the shared one; the plugin child, workers,
     // bundled hooks, MCP stdio and the terminal restate the sensitive floor
     // alone, so the wrap has to add the custom denies itself.
@@ -416,7 +427,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     expect(run.stdout).not.toContain(SECRET);
   });
 
-  it("withholds the saved-session root from a bundled hook or MCP stdio server", async () => {
+  itPosixWrap("withholds the saved-session root from a bundled hook or MCP stdio server", async () => {
     if (!sandboxRuns) return;
     const sessions = getConfiguredSessionReadPolicy().allowRead[0]!;
     mkdirSync(sessions, { recursive: true });
@@ -504,7 +515,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     expect(readFileSync(join(ownData, "written"), "utf-8").trim()).toBe("own-written");
   }
 
-  it("the probe reads every neighbour sentinel when nothing confines it", () => {
+  itPosixWrap("the probe reads every neighbour sentinel when nothing confines it", () => {
     if (!sandboxRuns) return;
     const layout = pluginsLayout();
     const run = spawnSync("/bin/sh", ["-c", pluginsProbe(layout, [])], { encoding: "utf-8" });
@@ -513,7 +524,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     expect(run.stdout).toContain("neighbour");
   });
 
-  it("as a plugin child whose root holds its data directory: the data stays writable and the neighbour unread", async () => {
+  itPosixWrap("as a plugin child whose root holds its data directory: the data stays writable and the neighbour unread", async () => {
     if (!sandboxRuns) return;
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
@@ -543,7 +554,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     }
   });
 
-  it("as a bundled hook: its generation and data are its own, another plugin's data and the registry are not", async () => {
+  itPosixWrap("as a bundled hook: its generation and data are its own, another plugin's data and the registry are not", async () => {
     if (!sandboxRuns) return;
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
@@ -568,7 +579,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     }
   });
 
-  it("as an agent plugin's hook or bundled server: its version and data are its own, a neighbour agent plugin's are not", async () => {
+  itPosixWrap("as an agent plugin's hook or bundled server: its version and data are its own, a neighbour agent plugin's are not", async () => {
     if (!sandboxRuns) return;
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
