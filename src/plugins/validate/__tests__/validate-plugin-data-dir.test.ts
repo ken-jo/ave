@@ -12,16 +12,28 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Children whose `kill` takes Node's refusal path, so their exit is never observed. */
-const refusal = vi.hoisted(() => ({ commandPrefix: undefined as string | undefined, pids: [] as number[] }));
+const refusal = vi.hoisted(() => ({
+  commandPrefix: undefined as string | undefined,
+  pids: [] as number[],
+  onConstruct: undefined as (() => void) | undefined,
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: (...args: Parameters<typeof actual.spawn>) => {
-      const child = (actual.spawn as (...a: unknown[]) => ChildProcess)(...args);
       const prefix = refusal.commandPrefix;
-      if (prefix !== undefined && String(args[0]).startsWith(prefix)) {
+      const refuses = prefix !== undefined && String(args[0]).startsWith(prefix);
+      const child = refuses
+        ? actual.spawn(String(args[0]), args[1] as string[], {
+          ...args[2], stdio: ["pipe", "pipe", "pipe", "ipc"],
+        })
+        : (actual.spawn as (...a: unknown[]) => ChildProcess)(...args);
+      if (refuses) {
         refusal.pids.push(child.pid!);
+        child.on("message", (message) => {
+          if (message === "construct") refusal.onConstruct?.();
+        });
         child.kill = (signal?: NodeJS.Signals | number): boolean => {
           child.emit("error", Object.assign(new Error(`kill ${String(signal)} EPERM`), { code: "EPERM", syscall: "kill" }));
           return false;
@@ -40,10 +52,12 @@ const RAW_SPEAK = pathToFileURL(fileURLToPath(new URL("./fixtures/raw/speak.mjs"
 let scratch: string | undefined;
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const pid of refusal.pids.splice(0)) {
     try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
   }
   refusal.commandPrefix = undefined;
+  refusal.onConstruct = undefined;
   if (scratch) rmSync(scratch, { recursive: true, force: true });
   scratch = undefined;
 });
@@ -59,6 +73,7 @@ describe("validatePluginDirectory data directory", () => {
     writeFileSync(join(plugin, "server.mjs"), `import { constructed, reply, speak, WITHHOLD } from ${JSON.stringify(RAW_SPEAK)};
 speak({
   "ave/instance/construct": (request) => {
+    process.send?.("construct");
     setTimeout(() => reply(request.id, constructed(request.params)), 60_000);
     return WITHHOLD;
   },
@@ -66,12 +81,20 @@ speak({
 `);
     refusal.commandPrefix = realpathSync(plugin);
 
-    const rows = await validatePluginDirectory(plugin, {
+    const inConstruct = new Promise<void>((resolve) => { refusal.onConstruct = resolve; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const validating = validatePluginDirectory(plugin, {
       childEntry: "",
       childExecArgs: [],
       fast: true,
       toolArgs: {},
     });
+    await inConstruct;
+    // The child is live and has withheld construct. Advance the protocol
+    // deadline, the refused kill escalation, and the final exit wait.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const rows = await validating;
 
     expect(rows.find((row) => row.check === "protocol.teardown")?.ok).toBe(false);
     const kept = rows.find((row) => row.check === "protocol.data-dir");
