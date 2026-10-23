@@ -294,6 +294,15 @@ describe("a confined child cannot reach user data through a grant", () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), "ave-protected-wrap-")));
     previousAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = join(root, ".ave");
+    if (hostPlatform === "win32") {
+      // srt-win stamps each deny with an ACE on its parent too, and Windows
+      // propagates that change through the parent's whole tree. Under the real
+      // profile that is a walk of the user's entire home on every initialize,
+      // past srt-win's 60s stamp budget on a developer machine. A home the
+      // test owns keeps the same floor, as asrt-sandbox.test.ts does.
+      vi.stubEnv("USERPROFILE", join(root, "home"));
+      mkdirSync(join(root, "home"));
+    }
     userData = join(root, "custom-user-data");
     partitions = join(userData, "Partitions");
     customDeny = join(root, "custom-deny");
@@ -312,6 +321,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     if (!sandboxRuns) return;
     if (previousAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = previousAveHome;
+    vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
   });
 
