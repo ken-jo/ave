@@ -43,21 +43,41 @@ const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "macos-15",
 ]);
 
-type Step = { uses?: unknown; with?: Record<string, unknown>; run?: unknown; if?: unknown };
+type Step = { uses?: unknown; with?: Record<string, unknown>; run?: unknown; if?: unknown; env?: unknown };
 type Job = {
   "runs-on"?: unknown;
   uses?: unknown;
   permissions?: unknown;
   if?: unknown;
+  env?: unknown;
   steps?: Step[];
   strategy?: { matrix?: Record<string, unknown> };
 };
 
-/** A `run:` script that fetches or checks out the pull request's own code:
- *  `gh pr checkout`, any `refs/pull/...` or `pull/<n>/head|merge` refspec, or a
- *  git command naming the head commit or branch from the event payload. */
-const PULL_REQUEST_CODE_IN_RUN =
-  /\bgh\s+pr\s+checkout\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S.*?\/(?:head|merge)\b|\bgit\b.*(?:github\.event\.pull_request\.head\.(?:sha|ref)|github\.head_ref)/imu;
+/** Text that names the pull request's own code: the head commit, branch or
+ *  repository from the event payload (`github.event.pull_request.head.*`, or
+ *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`), the head branch
+ *  (`github.head_ref`, `$GITHUB_HEAD_REF`), a `refs/pull/...` ref or a
+ *  `pull/<n>/head|merge` refspec. */
+const PULL_REQUEST_CODE_REFERENCE =
+  /pull_request\.head\b|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
+
+/** A git or gh invocation anywhere in a script. */
+const GIT_OR_GH = /\b(?:git|gh)\b/u;
+
+/** True when a `run:` step could fetch or check out pull request code: the
+ *  step's script, its own env or the env it inherits from the job and the
+ *  workflow names that code anywhere (so a variable set on one line, or in
+ *  `env:`, and used on another counts), and the script invokes git or gh
+ *  anywhere, or runs `gh pr checkout`. Deliberately strict: the whole step
+ *  is one unit. */
+function runStepFetchesPullRequestCode(step: Step, inherited: readonly unknown[]): boolean {
+  if (typeof step.run !== "string" || !GIT_OR_GH.test(step.run)) return false;
+  // `gh pr checkout` needs no reference: the pull request number is enough.
+  if (/\bgh\s+pr\s+checkout\b/u.test(step.run)) return true;
+  const scope = [step.run, JSON.stringify([step.env ?? null, ...inherited])].join("\n");
+  return PULL_REQUEST_CODE_REFERENCE.test(scope);
+}
 
 /** True when the workflow reads the `secrets` context anywhere, in any form. */
 function workflowReadsSecrets(workflow: { jobs: Record<string, Job> } & Record<string, unknown>): boolean {
@@ -120,6 +140,7 @@ export function workflowRunnerViolations(source: string, name: string): string[]
   const workflow = parseYaml(source, { merge: true }) as {
     on?: unknown;
     permissions?: unknown;
+    env?: unknown;
     jobs?: Record<string, Job>;
   };
   if (workflow.jobs === undefined) throw new Error(`${name} has no jobs`);
@@ -153,7 +174,7 @@ export function workflowRunnerViolations(source: string, name: string): string[]
     }
     if (!privileged) continue;
     for (const step of job.steps ?? []) {
-      if (typeof step.run === "string" && PULL_REQUEST_CODE_IN_RUN.test(step.run)) {
+      if (runStepFetchesPullRequestCode(step, [job.env ?? null, workflow.env ?? null])) {
         violations.push(`${name}:${id} fetches pull request code in a run step under pull_request_target`);
       }
       if (typeof step.uses !== "string" || !step.uses.startsWith("actions/checkout@")) continue;
