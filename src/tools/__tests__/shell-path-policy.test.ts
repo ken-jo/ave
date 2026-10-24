@@ -141,6 +141,60 @@ describe("shell-path-policy", () => {
       }));
     });
 
+    for (const variant of ["uppercase drive", "lowercase drive", "localhost"] as const) {
+      it.skipIf(process.platform !== "win32")(`resolves ${variant} URL parent components after following directory links`, ({ skip }) => {
+        withRoot(root => withRoot(outside => {
+          const link = join(root, "link");
+          try {
+            symlinkSync(outside, link, "dir");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+            throw error;
+          }
+          const urlPath = pathToFileURL(link).href.slice("file:///".length);
+          const drive = variant === "lowercase drive" ? urlPath[0]!.toLowerCase() : urlPath[0]!.toUpperCase();
+          const authority = variant === "localhost" ? "localhost" : "";
+          const url = `file://${authority}/${drive}${urlPath.slice(1)}/%2e%2e/ordinary.txt`;
+          for (const prefix of ["", "--url "]) {
+            expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true)).toContain("Sandbox:");
+          }
+        }));
+      });
+    }
+
+    for (const variant of ["relative", "absolute"] as const) {
+      it.skipIf(process.platform !== "win32")(`resolves ${variant} plain path parent components after following directory links`, ({ skip }) => {
+        withRoot(root => withRoot(outside => {
+          const link = join(root, "link");
+          try {
+            symlinkSync(outside, link, "dir");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+            throw error;
+          }
+          const path = `${variant === "relative" ? "link" : link}/../ordinary.txt`;
+          expect(validateShellCommandPathPolicy(`cat '${path}'`, root, root, [], true)).toContain("Sandbox:");
+        }));
+      });
+    }
+
+    it.skipIf(process.platform !== "win32")("refuses unresolved URL parent components after following directory links", ({ skip }) => {
+      withRoot(root => {
+        const link = join(root, "link");
+        try {
+          symlinkSync(join(root, "missing-target"), link, "dir");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+          throw error;
+        }
+        const url = `${pathToFileURL(link).href}/%2e%2e/ordinary.txt`;
+        for (const prefix of ["", "--url "]) {
+          expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true))
+            .toContain("cannot resolve command operand");
+        }
+      });
+    });
+
     it.each(["file:.env", "FILE:.env", "file://localhost/.env", "file:///outside/.env"])("grants no local file authority to an unsupported URL protocol: %s", url => {
       // The downloader does not implement this protocol; it remains URL data.
       withRoot(root => {
