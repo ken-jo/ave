@@ -55,11 +55,40 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 
 /** The app sets these for something it launched; they are not configuration. */
 const INTERNAL: readonly string[] = [
-  // The host hands the AVE_HOME paths to check to its DACL read-back
-  // PowerShell child as JSON, so no path is spliced into -Command (ave-home.ts).
-  "AVE_DACL_PATHS",
+  // The host hands the AVE_HOME paths and the icacls path to its one-shot DACL
+  // read-back PowerShell child as one JSON value, so nothing is spliced into
+  // -Command (ave-home.ts).
+  "AVE_DACL_REQUEST",
+  // Lifecycle and script hooks: the host describes the event to the hook
+  // process it spawns (script-hook-runner.ts). The hook reads them; the host
+  // writes every one of them per invocation.
   "AVE_HOOK_EVENT",
+  "AVE_HOOK_MATCHER",
+  "AVE_HOOK_MCP_SERVER_ID",
+  "AVE_HOOK_PLUGIN_ID",
   "AVE_HOOK_SESSION",
+  "AVE_HOOK_SESSION_ID",
+  "AVE_HOOK_TOOL_NAME",
+  "AVE_HOOK_TRUST_ORIGIN",
+  "AVE_HOOK_TYPE",
+  // The corporate-CA extraction child's common-name needle, passed as
+  // data rather than spliced into its PowerShell script (corp-ca-extract.ts).
+  "AVE_CORP_CA_QUERY",
+  // The Windows sandbox-runtime integrity children: the owner pid and the
+  // directories the host created, handed to the PowerShell script that
+  // verifies and protects them (srt-win-integrity.ts).
+  "AVE_SRT_OWNER_PID",
+  "AVE_SRT_OWN_DIRECTORIES",
+  "AVE_SRT_PRIVATE_DIRECTORY",
+  "AVE_SRT_TEMP_ROOT",
+  // The package root and icacls path for the sandbox ACL child
+  // (asrt-windows-support.ts).
+  "AVE_ASRT_ACL_TARGET",
+  "AVE_ASRT_ICACLS_PATH",
+  // The bash capability probe sets and reads these inside its own `-c`
+  // script to see how the shell expands assignments (shell-resolver.ts).
+  "AVE_PROBE_RHS",
+  "AVE_PROBE_VALUE",
   // Both halves of the subscription tool bridge. The host binds an ephemeral
   // loopback port and mints a token, then hands the pair to the MCP child it
   // just spawned; neither is something a person configures. The URL sat in
@@ -256,6 +285,37 @@ const DYNAMIC_LOOKUP_RE = /(?:process\.)?env\s*\[\s*(?!["'`])/;
 const TABLE_ENTRY_RE = /["'`](AVE_[A-Z0-9_]*[A-Z0-9])["'`]/g;
 const TEST_FILE_RE = /(?:(?:^|[\\/])__tests__[\\/])|(?:\.test\.[cm]?tsx?$)/;
 
+/**
+ * The other half of a host↔child protocol: a variable the host WRITES for a
+ * child it spawns, and the child script (embedded here as a string) READS.
+ * Neither side is a `process.env` read, so {@link READ_RE} sees neither, and
+ * such a variable used to pass this gate unclassified — `AVE_DACL_SYSTEM_ROOT`
+ * did, and `AVE_DACL_PATHS` was only "found" because a test happened to read
+ * it back from the spawn options. Each shape is one production source here
+ * actually uses:
+ *   - `$env:NAME` / `${env:NAME}` — a PowerShell child read;
+ *   - `[Environment]::GetEnvironmentVariable('NAME', …)` — the same, via .NET;
+ *   - `$NAME` — a POSIX shell child read (`${NAME}` is excluded: in TypeScript
+ *     that is a template interpolation of a constant, not a shell read);
+ *   - `NAME: value` — an object key, which is how a spawn's `env` is written.
+ *     A type annotation (`const NAME: T`) and a ternary branch are excluded.
+ * Tests are excluded for the same reason as {@link TABLE_ENTRY_RE}: a test
+ * writes and reads fixtures for children it starts itself.
+ */
+const CHILD_PROTOCOL_RES: readonly RegExp[] = [
+  /\$\{?[Ee][Nn][Vv]:(AVE_[A-Z0-9_]*[A-Z0-9])\b/g,
+  /GetEnvironmentVariable\(\s*["'](AVE_[A-Z0-9_]*[A-Z0-9])["']/g,
+  /(?<![\w$])\$(AVE_[A-Z0-9_]*[A-Z0-9])\b/g,
+  /(?<![\w$.[]|\b(?:const|let|var)\s+|\?\s*)["']?(AVE_[A-Z0-9_]*[A-Z0-9])["']?\s*:(?!:)/g,
+];
+
+/**
+ * A child read whose name is interpolated from a constant —
+ * `GetEnvironmentVariable('${TARGET_ENV}')`, `$env:${NAME}`. As with
+ * {@link DYNAMIC_LOOKUP_RE}, the quoted `AVE_*` literal in that file is the read.
+ */
+const INTERPOLATED_CHILD_LOOKUP_RE = /(?:GetEnvironmentVariable\(\s*["']?|\$\{?[Ee][Nn][Vv]:)\$\{/;
+
 function scan(dir: string, found: Map<string, string>): void {
   // `withFileTypes` rather than a `statSync` beside the read: one syscall
   // answers directory-or-file, so there is no window between the check and
@@ -275,8 +335,11 @@ function scan(dir: string, found: Map<string, string>): void {
       if (!found.has(variable)) found.set(variable, where);
     }
     const patterns = [READ_RE];
-    if (!TEST_FILE_RE.test(where) && DYNAMIC_LOOKUP_RE.test(text)) {
-      patterns.push(TABLE_ENTRY_RE);
+    if (!TEST_FILE_RE.test(where)) {
+      patterns.push(...CHILD_PROTOCOL_RES);
+      if (DYNAMIC_LOOKUP_RE.test(text) || INTERPOLATED_CHILD_LOOKUP_RE.test(text)) {
+        patterns.push(TABLE_ENTRY_RE);
+      }
     }
     for (const pattern of patterns) {
       for (const match of text.matchAll(pattern)) {
