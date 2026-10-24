@@ -31,7 +31,7 @@ import {
   parseHookConfig,
   type HookConfigEntry,
 } from "./hook-config.js";
-import { defaultHooksDir, type DiscoveredHook } from "./hook-discovery.js";
+import { defaultHooksDir, discoverHooks, type DiscoveredHook } from "./hook-discovery.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 
@@ -48,6 +48,18 @@ export const HOOKS_CONFIG_FILENAME = "hooks.json";
 /** Default `hooks.json` path inside the hooks directory. */
 export function defaultHooksConfigPath(dir: string = defaultHooksDir()): string {
   return pathResolve(dir, HOOKS_CONFIG_FILENAME);
+}
+
+/** Trust and matcher review share exact filenames; timestamped copies are forensic only. */
+export function discoverHookTrustFiles(dir: string): {
+  scripts: DiscoveredHook[];
+  config: LoadedHookConfig;
+  hooks: DiscoveredHook[];
+} {
+  const scripts = discoverHooks(dir);
+  const config = loadHookConfig(defaultHooksConfigPath(dir));
+  const synthetic = syntheticConfigHook(config);
+  return { scripts, config, hooks: synthetic ? [...scripts, synthetic] : scripts };
 }
 
 /**

@@ -161,7 +161,9 @@ export class HookMatcherError extends Error {
 /** Bound backtracking without changing the regular expression engine. */
 function validateMatcherRepetition(pattern: string): void {
   let inClass = false;
-  let repetitions = 0;
+  let groupDepth = 0;
+  let choicePoints = 0;
+  let topLevelAlternation = false;
   for (let i = 0; i < pattern.length; i += 1) {
     const char = pattern[i];
     if (char === "\\") {
@@ -174,14 +176,19 @@ function validateMatcherRepetition(pattern: string): void {
     if (char === "[") inClass = true;
     if (char === "]") inClass = false;
     if (inClass) continue;
+    if (char === "(") groupDepth += 1;
+    if (char === ")") groupDepth -= 1;
+    if (char === "|") {
+      if (groupDepth > 0) choicePoints += 1;
+      else topLevelAlternation = true;
+    }
     const counted = char === "{" ? /^\{\d+(?:,\d*)?\}/u.exec(pattern.slice(i))?.[0] : undefined;
     const quantified = char === "*" || char === "+" || (char === "?" && pattern[i - 1] !== "(") || counted !== undefined;
     if (!quantified) continue;
     if (pattern[i - 1] === ")") {
       throw new HookMatcherError("matcher quantified groups are not supported");
     }
-    repetitions += 1;
-    if (repetitions > 2) throw new HookMatcherError("matcher supports at most two quantified atoms");
+    choicePoints += 1;
     if (counted) {
       if (counted.match(/\d+/gu)!.some((value) => Number(value) > HOOK_MATCHER_SUBJECT_MAX)) {
         throw new HookMatcherError("matcher repetition exceeds subject limit");
@@ -189,6 +196,10 @@ function validateMatcherRepetition(pattern: string): void {
       i += counted.length - 1;
     }
     if (pattern[i + 1] === "?") i += 1;
+  }
+  const limit = pattern.startsWith("^") && !topLevelAlternation ? 3 : 2;
+  if (choicePoints > limit) {
+    throw new HookMatcherError(`matcher supports at most ${limit} quantified atoms or grouped alternatives`);
   }
 }
 
@@ -252,7 +263,7 @@ export function compileHookMatcher(matcher: string | undefined): (subject: strin
  *
  * The `.disabled/` subfolder is NEVER walked.
  */
-export function discoverHooks(dir: string = defaultHooksDir(), quarantined = false): DiscoveredHook[] {
+export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[] {
   if (!existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -272,7 +283,7 @@ export function discoverHooks(dir: string = defaultHooksDir(), quarantined = fal
       continue;
     }
     if (!st.isFile()) continue;
-    const hookType = hookTypeFromName(quarantined ? fileName.replace(/(\.sh)\..+$/u, "$1") : fileName);
+    const hookType = hookTypeFromName(fileName);
     if (!hookType) continue;
     let h: { sha256: string; size: number; matcher?: string };
     try {

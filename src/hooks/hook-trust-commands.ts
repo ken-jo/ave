@@ -7,7 +7,6 @@ import {
   defaultLockfilePath,
   diffAgainstLockfile,
   disableHook,
-  discoverHooks,
   ensureHooksDirectory,
   hookMatcherError,
   persistLockfile,
@@ -18,8 +17,8 @@ import {
 import {
   HOOKS_CONFIG_FILENAME,
   defaultHooksConfigPath,
+  discoverHookTrustFiles,
   loadHookConfig,
-  syntheticConfigHook,
 } from "./hook-config-trust.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import type { ScriptHookManager } from "./script-hook-manager.js";
@@ -153,47 +152,21 @@ function disabledConfigPath(opts: HookTrustCommandOptions): string {
  * Snapshot the `.sh` + `hooks.json` trust surface. The config trust unit rides
  * the same `DiscoveredHook` flow: when `hooks.json` exists in the hooks dir it
  * is folded into `active` (and the diff); when it only exists under `.disabled/`
- * it is folded into `disabled`. `configEntries` carries the parsed entries of
- * whichever copy is present, for trust-review summaries.
+ * it is folded into `disabled`. Both copies remain visible when present.
  */
 function snapshot(opts: HookTrustCommandOptions): {
   active: DiscoveredHook[];
   disabled: DiscoveredHook[];
   lockfile: ReturnType<typeof readLockfile>;
   diff: HookDiff[];
-  configEntries: HookConfigEntry[];
-  configErrors: string[];
 } {
   ensureHooksDirectory(hooksDir(opts));
-  const active = discoverHooks(hooksDir(opts));
-  const disabled = discoverHooks(disabledDir(opts));
+  const { hooks: active } = discoverHookTrustFiles(hooksDir(opts));
+  const { hooks: disabled } = discoverHookTrustFiles(disabledDir(opts));
   const lockfile = readLockfile(lockfilePath(opts));
 
-  // Fold the `hooks.json` trust unit in (active copy wins; else disabled copy).
-  let configEntries: HookConfigEntry[] = [];
-  let configErrors: string[] = [];
-  const activeConfig = loadHookConfig(configPath(opts));
-  if (activeConfig.exists) {
-    const synthetic = syntheticConfigHook(activeConfig);
-    if (synthetic) {
-      active.push(synthetic);
-      configEntries = activeConfig.entries;
-      configErrors = activeConfig.errors;
-    }
-  } else {
-    const disabledConfig = loadHookConfig(disabledConfigPath(opts));
-    if (disabledConfig.exists) {
-      const synthetic = syntheticConfigHook(disabledConfig);
-      if (synthetic) {
-        disabled.push(synthetic);
-        configEntries = disabledConfig.entries;
-        configErrors = disabledConfig.errors;
-      }
-    }
-  }
-
   const diff = diffAgainstLockfile(active, lockfile);
-  return { active, disabled, lockfile, diff, configEntries, configErrors };
+  return { active, disabled, lockfile, diff };
 }
 
 async function persistTrustedHooks(
@@ -230,18 +203,20 @@ function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustComman
 export function listHookTrustState(
   opts: HookTrustCommandOptions = {},
 ): Extract<HookTrustCommandResult, { verb: "list" }> {
-  const { disabled, diff, configEntries, configErrors } = snapshot(opts);
+  const { disabled, diff } = snapshot(opts);
+  const activeConfig = loadHookConfig(configPath(opts));
+  const disabledConfig = loadHookConfig(disabledConfigPath(opts));
   return {
     ok: true,
     verb: "list",
     active: diff.map((d) =>
       d.hook.fileName === HOOKS_CONFIG_FILENAME
-        ? withConfigSummary(rowFromDiff(d), configEntries, configErrors)
+        ? withConfigSummary(rowFromDiff(d), activeConfig.entries, activeConfig.errors)
         : rowFromDiff(d),
     ),
     disabled: disabled.map((hook) =>
       hook.fileName === HOOKS_CONFIG_FILENAME
-        ? withConfigSummary(rowFromHook(hook, "disabled"), configEntries, configErrors)
+        ? withConfigSummary(rowFromHook(hook, "disabled"), disabledConfig.entries, disabledConfig.errors)
         : rowFromHook(hook, "disabled"),
     ),
   };

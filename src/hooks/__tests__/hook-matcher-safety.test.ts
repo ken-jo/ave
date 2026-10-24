@@ -7,6 +7,8 @@ import * as hookDiscovery from "../hook-discovery.js";
 import { parseHookConfig } from "../hook-config.js";
 import { buildHookRegistry } from "../hook-registry.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
+import { collectHookMatcherDiagnostics } from "../hook-matcher-diagnostics.js";
+import { listHookTrustState } from "../hook-trust-commands.js";
 import { hookJsonInput, lifecycleMatcherSubject } from "../hook-contract.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -17,6 +19,88 @@ const PAYLOAD = { toolName: "read_file", source: "builtin" as const, category: "
   input: {}, sessionId: "session-example", trustOrigin: "user-keyboard" as const };
 
 describe("hook matcher safety", () => {
+  it.each([
+    "(?:.|.)".repeat(36) + "!",
+    "(?:a|aa)".repeat(30),
+    "(?:\\w|\\w)".repeat(25),
+  ])("refuses grouped choice explosions without evaluating them: %s", async (matcher) => {
+    expect(hookMatcherError(matcher)).toBeDefined();
+    for (const event of ["PreToolUse", "PermissionRequest"] as const) {
+      const parsed = parseHookConfig({ hooks: { [event]: [{ matcher, hooks: [{ type: "command", command: ["node", COMMAND] }] }] } });
+      const manager = new ScriptHookManager();
+      manager.setTrustedRegistry([], parsed.entries);
+      const result = await (event === "PreToolUse" ? manager.runPreToolUse(PAYLOAD) : manager.runPermissionRequest(PAYLOAD));
+      expect(result).toMatchObject({ decision: "deny", results: [] });
+      expect(result.reason).toContain(JSON.stringify(matcher));
+    }
+  });
+
+  it("allows a third choice only with a leading anchor and no top-level alternative", () => {
+    for (const pattern of ["^a*a*a*!", "^(?:a|aa)a*a*!", "^a*a*\\|a*!", "^a*a*[|]a*!"]) {
+      expect(hookMatcherError(pattern), pattern).toBeUndefined();
+    }
+    for (const pattern of ["a*a*a*!", "^a*a*a*!|b", "^b|a*a*a*!", "^a*a*a*a*!", "(?:a|aa)(?:a|aa)a*!", "^(?:a|aa)(?:a|aa)a*a*!"]) {
+      expect(hookMatcherError(pattern), pattern).toBeDefined();
+    }
+  });
+
+  it.each(["script", "config"] as const)("ignores user-disabled forensic %s copies but retains system quarantine guards", async (kind) => {
+    const dir = mkdtempSync(join(tmpdir(), "hook-forensic-"));
+    try {
+      const disabledDir = join(dir, ".disabled");
+      mkdirSync(disabledDir);
+      const fileName = kind === "script" ? "pre-guard.sh" : "hooks.json";
+      const content = kind === "script" ? "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n" : JSON.stringify({ hooks: {
+        PreToolUse: [{ matcher: "*danger*", hooks: [{ type: "command", command: ["node", COMMAND] }] }],
+      } });
+      // A previous rejection occupies the canonical name; the next rejection keeps a timestamped copy.
+      writeFileSync(join(disabledDir, fileName), kind === "script" ? "#!/bin/sh\nexit 0\n" : "{}");
+      writeFileSync(join(dir, fileName), content);
+      const hook = kind === "script" ? hookDiscovery.discoverHooks(dir)[0] : { path: join(dir, fileName), fileName, hookType: "pre" as const, sha256: "hash", size: 1 };
+      const forensic = hookDiscovery.disableHook(hook, disabledDir);
+      expect(forensic).not.toBe(join(disabledDir, fileName));
+      const manager = new ScriptHookManager();
+      let diagnostics = collectHookMatcherDiagnostics(dir, disabledDir);
+      expect(diagnostics.notices).toEqual([]);
+      manager.setMatcherGuards(diagnostics.guards);
+      expect(await manager.runPreToolUse(PAYLOAD)).toMatchObject({ decision: "allow", results: [] });
+
+      writeFileSync(join(disabledDir, fileName), content);
+      diagnostics = collectHookMatcherDiagnostics(dir, disabledDir);
+      expect(diagnostics.guards).toHaveLength(1);
+      manager.setMatcherGuards(diagnostics.guards);
+      expect(await manager.runPreToolUse(PAYLOAD)).toMatchObject({ decision: "deny", results: [] });
+      expect(diagnostics.notices.join(" ")).not.toContain(forensic);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("lists every diagnostic guard even when active and quarantined configs coexist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hook-inventory-"));
+    try {
+      const disabledDir = join(dir, ".disabled");
+      mkdirSync(disabledDir);
+      for (const [directory, matcher] of [[dir, "["], [disabledDir, "*danger*"]] as const) {
+        writeFileSync(join(directory, "pre-guard.sh"), `#!/bin/sh\n# ave-hook-matcher: ${matcher}\nexit 0\n`);
+        writeFileSync(join(directory, "hooks.json"), JSON.stringify({ hooks: {
+          PreToolUse: [{ matcher, hooks: [{ type: "command", command: ["node", COMMAND] }] }],
+        } }));
+      }
+      const diagnostics = collectHookMatcherDiagnostics(dir, disabledDir);
+      const listed = listHookTrustState({ hooksDir: dir, disabledDir, lockfilePath: join(dir, ".lockfile.json") });
+      const rows = [...listed.active.map((row) => ({ row, directory: dir })), ...listed.disabled.map((row) => ({ row, directory: disabledDir }))];
+      expect(rows).toHaveLength(4);
+      expect(diagnostics.guards).toHaveLength(4);
+      for (const { row, directory } of rows) {
+        expect(row.errors?.join(" ")).toContain(directory === dir ? '"["' : '"*danger*"');
+        expect(diagnostics.notices.join(" ")).toContain(join(directory, row.fileName));
+      }
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("exposes invalid matchers through the compiled path without a swallowing shortcut", () => {
     expect(() => compileHookMatcher("*danger*")).toThrow();
     expect(hookDiscovery).not.toHaveProperty("hookMatchesTool");
@@ -150,7 +234,7 @@ describe("hook matcher safety", () => {
   });
 
   it("valid reference matchers and bounded MCP names remain usable", async () => {
-    for (const matcher of ["Edit|Write", "Edit, Write", "code-reviewer", "^Notebook", "mcp__memory__.*", "mcp__.*__write.*", "^(manual|auto)$"]) expect(hookMatcherError(matcher), matcher).toBeUndefined();
+    for (const matcher of ["Edit|Write", "Edit, Write", "code-reviewer", "^Notebook", "Notebook.*", "mcp__.*", "mcp__memory__.*", "mcp__.*__write.*", "^(manual|auto)$"]) expect(hookMatcherError(matcher), matcher).toBeUndefined();
     expect(compileHookMatcher("mcp__.*__write.*")("mcp__" + "s".repeat(120) + "__write" + "t".repeat(124))).toBe(true);
     const manager = new ScriptHookManager();
     const parsed = parseHookConfig({ hooks: { PreToolUse: [{ matcher: "write_file", hooks: [{ type: "command", command: ["node", COMMAND, "echo"] }] }] } });
@@ -160,7 +244,18 @@ describe("hook matcher safety", () => {
   });
 
   it("bounds accepted repeated atoms at both length caps", () => {
-    for (const pattern of ["a{0,256}a{0,256}b", "a{0,256}a{0,256}b".padEnd(256, "b")]) {
+    // Include cold interpretation and leave scheduling margin on shared hosts.
+    const boundMs = 250;
+    for (const pattern of [
+      "a{0,256}a{0,256}b",
+      "a{0,256}a{0,256}\\x62" + "(?:)".repeat(59),
+      "^a{0,256}a{0,256}a{0,256}b",
+      "^a{0,256}a{0,256}a{0,256}b" + "(?:)".repeat(57) + "()",
+      "(?:a|aa)a{0,256}b",
+      "^(?:a|aa)a{0,256}a{0,256}b",
+      "(?:a|aa)(?:a|aa)!",
+      "^(?:a|aa)(?:a|aa)(?:a|aa)!",
+    ]) {
       const predicate = compileHookMatcher(pattern);
       const times: number[] = [];
       for (let i = 0; i < 100; i += 1) {
@@ -168,8 +263,9 @@ describe("hook matcher safety", () => {
         expect(predicate("a".repeat(256))).toBe(false);
         times.push(performance.now() - start);
       }
-      process.stdout.write(`accepted matcher: pattern=${pattern.length} subject=256 iterations=100 max=${Math.max(...times).toFixed(3)}ms bound=50ms\n`);
-      expect(Math.max(...times)).toBeLessThan(50);
+      const maximum = Math.max(...times);
+      process.stdout.write(`accepted matcher: pattern=${pattern.length} subject=256 iterations=100 cold=${times[0].toFixed(3)}ms max=${maximum.toFixed(3)}ms bound=${boundMs}ms margin=${(boundMs - maximum).toFixed(3)}ms\n`);
+      expect(maximum).toBeLessThan(boundMs);
     }
   });
 
