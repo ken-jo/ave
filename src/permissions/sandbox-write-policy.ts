@@ -263,7 +263,7 @@ function addGitDirectoryControls(
       continue;
     }
     const missingAncestor = discovery?.previous?.storeMissingAncestors.get(directory);
-    if (missingAncestor !== undefined) {
+    if (discovery && missingAncestor !== undefined) {
       discovery.storeMissingAncestors.set(directory, missingAncestor);
       discovery.stores.set(directory, undefined);
       if (!discovery.isPathExcluded?.(missingAncestor) && gitEntryIdentity(missingAncestor) !== undefined) {
