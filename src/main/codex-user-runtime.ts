@@ -41,7 +41,7 @@ import {
 } from "./codex-executable-artifact.js";
 import {
   assertCodexExecutableLocation, assertCodexLocations, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError,
-  createPrivateDirectory, createPrivateTempDirectory,
+  createPrivateDirectories, createPrivateTempDirectory,
 } from "./codex-executable-location.js";
 import {
   CODEX_SCHEMA_FILES,
@@ -571,7 +571,7 @@ export class CodexUserRuntimeLocator {
       const sqliteHome = join(probeRoot, "sqlite");
       const probeTempDir = join(probeRoot, "temp");
       const schemaDir = join(probeRoot, "schema");
-      for (const directory of [runtimeHome, sqliteHome, probeTempDir, schemaDir]) await createPrivateDirectory(directory);
+      await createPrivateDirectories([runtimeHome, sqliteHome, probeTempDir, schemaDir]);
       await assertCodexLocations([runtimeHome, sqliteHome, probeTempDir, schemaDir].map((path) => ({
         path, kind: "private-directory", routeKind: "native",
       })));

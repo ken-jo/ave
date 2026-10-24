@@ -923,25 +923,44 @@ export async function claimPrivateOwnership(paths: readonly string[]): Promise<v
   }
 }
 
-async function claimCreatedDirectory(path: string): Promise<string> {
+/**
+ * Create private directories in order, each owned by the current account,
+ * with one ownership claim for the whole set. A later path may sit inside an
+ * earlier one; the first path's parent must exist. If any creation or the
+ * claim fails, every directory this call made is removed before the error
+ * is rethrown, so no half-owned directory is left behind.
+ */
+export async function createPrivateDirectories(paths: readonly string[]): Promise<void> {
+  const created: string[] = [];
+  await claimCreatedOrRemove(created, async () => {
+    for (const path of paths) {
+      await fs.mkdir(path, { mode: 0o700 });
+      created.push(path);
+    }
+  });
+}
+
+async function claimCreatedOrRemove(created: string[], create: () => Promise<void>): Promise<void> {
   try {
-    await claimPrivateOwnership([path]);
+    await create();
+    await claimPrivateOwnership(created);
   } catch (error) {
-    await fs.rm(path, { recursive: true, force: true });
+    for (const path of [...created].reverse()) await fs.rm(path, { recursive: true, force: true });
     throw error;
   }
-  return path;
 }
 
 /** Create one private directory owned by the current account; its parent must exist. */
 export async function createPrivateDirectory(path: string): Promise<string> {
-  await fs.mkdir(path, { mode: 0o700 });
-  return claimCreatedDirectory(path);
+  await createPrivateDirectories([path]);
+  return path;
 }
 
 /** `fs.mkdtemp` for a private directory owned by the current account. */
 export async function createPrivateTempDirectory(prefix: string): Promise<string> {
-  return claimCreatedDirectory(await fs.mkdtemp(prefix));
+  const created: string[] = [];
+  await claimCreatedOrRemove(created, async () => { created.push(await fs.mkdtemp(prefix)); });
+  return created[0]!;
 }
 
 /** Admit the file's location; callers execute a separately pinned artifact. */

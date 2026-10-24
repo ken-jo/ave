@@ -17,11 +17,14 @@ import {
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
-import { createPrivateDirectory } from "../codex-executable-location.js";
+import { createPrivateDirectories } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const aclProbeMode = vi.hoisted(() => ({ real: false }));
-const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
+// Admission probes and ownership claims are counted apart: each private
+// directory or copy the runtime creates costs one claim by design, while
+// admission batching is what the probe bounds guard.
+const accessRuleProbes = vi.hoisted(() => ({ count: 0, claims: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const { fakeFixtureAclTransport, installFixtureAclTransport, maskFixtureAncestorAclTransport } =
@@ -29,10 +32,11 @@ vi.mock("node:child_process", async (importOriginal) => {
   if (process.platform !== "win32") return actual;
   const fast = fakeFixtureAclTransport(actual.execFile);
   const real = maskFixtureAncestorAclTransport(actual.spawn);
-  // Each ACL host request is one access-rule probe.
+  // Each ACL host request is one access-rule probe or one ownership claim.
   installFixtureAclTransport({
     request: (...args) => {
-      accessRuleProbes.count++;
+      if (args[0].setOwner) accessRuleProbes.claims++;
+      else accessRuleProbes.count++;
       return (aclProbeMode.real ? real : fast).request(...args);
     },
     discard: () => { fast.discard(); real.discard(); },
@@ -292,13 +296,19 @@ async function locatorHarness(input: {
   env?: (root: string) => NodeJS.ProcessEnv;
   calls?: string[][];
   run?: CodexProbeRunner;
+  /** Give the Windows fixture root its private access list before anything is created in it. */
+  privateRoot?: boolean;
 } = {}) {
   const root = tempRoot();
-  const dirs: Record<string, string> = {};
-  for (const name of ["home", "sqlite", "workspace", "temp"]) dirs[name] = await createPrivateDirectory(join(root, name));
+  // Children inherit the root's access list when they are created, as the
+  // product's private directories do under the Ave home.
+  if (HOST === "win32" && input.privateRoot) normalizeFixtureAncestorPermissions(root);
+  const dirs = Object.fromEntries(["home", "sqlite", "workspace", "temp"].map((name) => [name, join(root, name)]));
+  const runtimeDirectory = join(dirs.home!, "runtime");
+  await createPrivateDirectories([...Object.values(dirs), runtimeDirectory]);
   const locator = new CodexUserRuntimeLocator({
     runtimeHome: dirs.home!,
-    runtimeDirectory: await createPrivateDirectory(join(dirs.home!, "runtime")),
+    runtimeDirectory,
     sqliteHome: dirs.sqlite!,
     workspaceDir: dirs.workspace!,
     runtimeTempDir: dirs.temp!,
@@ -318,8 +328,7 @@ describe("CodexUserRuntimeLocator", () => {
   it("finds the CLI on PATH, qualifies it, and probes with the isolated environment (real ACL probes, end to end)", async () => {
     aclProbeMode.real = true;
     const calls: string[][] = [];
-    const { root, locator, dirs } = await locatorHarness({ calls });
-    if (HOST === "win32") normalizeFixtureAncestorPermissions(root);
+    const { root, locator, dirs } = await locatorHarness({ calls, privateRoot: true });
     const native = writeNative(join(root, "path-bin", NATIVE_NAME));
     const resolved = await locator.resolve();
     expect(resolved.version).toBe("0.153.4");
@@ -542,6 +551,7 @@ describe("CodexUserRuntimeLocator", () => {
 
   it("evicts a corrupted cached artifact and qualifies fresh source bytes on retry", async () => {
     const before = accessRuleProbes.count;
+    const claimsBefore = accessRuleProbes.claims;
     const calls: string[][] = [];
     const { root, locator } = await locatorHarness({ calls });
     writeNative(join(root, "path-bin", NATIVE_NAME));
@@ -555,6 +565,10 @@ describe("CodexUserRuntimeLocator", () => {
     expect(calls).toHaveLength(6);
     // The unbatched admission used 54 probes for these three resolutions.
     if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(33);
+    // One claim for the harness directories; each of the three copies claims
+    // its directory and its files; each of the two qualifications claims its
+    // probe root and that root's four directories.
+    if (HOST === "win32") expect(accessRuleProbes.claims - claimsBefore).toBe(1 + 3 * 2 + 2 * 2);
   });
 
   it("runs every probe against the same copy despite an injected source and ancestor replacement", async () => {
@@ -619,6 +633,7 @@ describe("CodexUserRuntimeLocator", () => {
 
   it("copies the native companion and includes its bytes in compatibility-cache identity", async () => {
     const before = accessRuleProbes.count;
+    const claimsBefore = accessRuleProbes.claims;
     const calls: string[][] = [];
     const { root, locator } = await locatorHarness({ calls });
     const source = writeNative(join(root, "path-bin", NATIVE_NAME));
@@ -634,6 +649,10 @@ describe("CodexUserRuntimeLocator", () => {
     expect(calls).toHaveLength(6);
     // The unbatched companion path used 58 probes for these two resolutions.
     if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(30);
+    // One claim for the harness directories; each of the two copies claims its
+    // directory and both files together; each qualification claims its probe
+    // root and that root's four directories.
+    if (HOST === "win32") expect(accessRuleProbes.claims - claimsBefore).toBe(1 + 2 * 2 + 2 * 2);
   });
 
   it("refuses a version below the minimum and keeps the version it found", async () => {

@@ -190,8 +190,7 @@ describe("sealed subscription package artifacts", () => {
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     writeFileSync(join(fixture.modules, "fixture-dep", "index.cjs"), "module.exports = 'updated';\n");
     await expect(artifact.verify()).rejects.toThrow("Subscription executable changed");
-    const nextDirectory = join(fixture.root, "next-private");
-    mkdirSync(nextDirectory, { mode: 0o700 });
+    const nextDirectory = await createPrivateDirectory(join(fixture.root, "next-private"));
     const next = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, nextDirectory);
     expect(next.identity).not.toBe(artifact.identity);
     expect(runArtifact(next, fixture.root).stdout).toBe("updated\n");

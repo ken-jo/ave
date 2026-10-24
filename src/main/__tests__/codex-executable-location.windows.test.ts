@@ -9,6 +9,7 @@ import {
   assertCodexLocations,
   claimPrivateOwnership,
   CodexExecutableLocationError,
+  createPrivateDirectories,
   createPrivateTempDirectory,
   _resetDesktopPackageCacheForTest,
   _resetWindowsAclHostForTest,
@@ -226,8 +227,10 @@ it.runIf(process.platform === "win32")("answers from its own imports when no mod
 }, 45_000);
 
 it.runIf(process.platform === "win32")("falls back to the directory service when LocalAccounts cannot be imported", async () => {
-  const { request, prime, launch } = realHostFixture();
-  await prime();
+  const fixture = realHostFixture();
+  await fixture.prime();
+  // The launch is captured by the first request, so read it only after prime.
+  const { request, launch } = fixture;
   const expected = (JSON.parse(await request(400, [])) as RawReply).result.machineDomainSid;
   const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
   const absent = script.replaceAll(String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
@@ -256,6 +259,10 @@ it.runIf(process.platform === "win32").each([
     discard: () => {},
   });
   await expect(createPrivateTempDirectory(join(parent, "claimed-"))).rejects.toBeInstanceOf(refusal);
-  expect(requests.map(({ setOwner, paths }) => ({ setOwner, count: paths.length }))).toEqual([{ setOwner: true, count: 1 }]);
+  // A nested set is claimed once and removed whole.
+  const nested = join(parent, "set");
+  await expect(createPrivateDirectories([nested, join(nested, "inner")])).rejects.toBeInstanceOf(refusal);
+  expect(requests.map(({ setOwner, paths }) => ({ setOwner, count: paths.length })))
+    .toEqual([{ setOwner: true, count: 1 }, { setOwner: true, count: 2 }]);
   expect(readdirSync(parent)).toEqual([]);
 });

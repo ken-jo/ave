@@ -1609,8 +1609,9 @@ group rather than by the user. Ownership on Windows follows two rules:
 1. **Objects the app creates are owned by the current user SID, set when they
    are created.** Private runtime directories, the files copied into them, and
    the app's private temporary directories are made through
-   `createPrivateDirectory`, `createPrivateTempDirectory` and
-   `claimPrivateOwnership` in `src/main/codex-executable-location.ts`. Those
+   `createPrivateDirectory`, `createPrivateDirectories`,
+   `createPrivateTempDirectory` and `claimPrivateOwnership` in
+   `src/main/codex-executable-location.ts`. Those
    functions ask the resident ACL host to set the owner from the host's own
    token user and read it back. If that fails, creation is refused and a
    directory created by the call is removed. Persistent runtime directories are
