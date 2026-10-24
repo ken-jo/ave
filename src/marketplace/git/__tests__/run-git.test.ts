@@ -16,11 +16,26 @@ import {
   removeFixtureRepo,
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
-import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { createTestGitRunner as buildTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { BareRepo } from "../repo.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, GitRunner, type GitRemote, type GitResult } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
+
+// Process/authentication cases use a real broker; only its immutable runtime
+// and listener are shared. Each runner owns a fresh config and empty directory.
+let sharedRuntime: TestGitRunner;
+const brokerTokens: Record<string, string> = {};
+beforeAll(async () => {
+  sharedRuntime = await buildTestGitRunner({ tokens: brokerTokens });
+});
+afterAll(async () => sharedRuntime.cleanup());
+async function createRunner(options: Parameters<typeof buildTestGitRunner>[0] = {}): Promise<TestGitRunner> {
+  const { tokens = {}, ...configuration } = options;
+  for (const host of Object.keys(brokerTokens)) delete brokerTokens[host];
+  Object.assign(brokerTokens, tokens);
+  return buildTestGitRunner({ ...configuration, runtime: sharedRuntime });
+}
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
   return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken, credentialsAllowed: true, addressPolicy: () => "allow" };
@@ -44,7 +59,7 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<Mark
 describe("GitRunner invocation contract", () => {
   let t: TestGitRunner;
   beforeAll(async () => {
-    t = await createTestGitRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
+    t = await createRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
   });
   afterAll(async () => t.cleanup());
 
@@ -107,7 +122,7 @@ describe("GitRunner proxy from PAC", () => {
     ["SOCKS5 socks.corp.example:1080; DIRECT", "http.proxy=socks5://socks.corp.example:1080"],
     ["DIRECT", "http.proxy="],
   ])("maps %j", async (pac, flag) => {
-    const t = await createTestGitRunner({ resolveProxy: async () => pac });
+    const t = await createRunner({ resolveProxy: async () => pac });
     try {
       expect(await t.runner.configArgs(remote("https://github.com/acme/tools"))).toContain(flag);
     } finally {
@@ -124,7 +139,7 @@ describe("GitRunner proxy from PAC", () => {
     ["SOCKS5 169.254.169.254:1080", "address-metadata"],
   ])("refuses the literal proxy of %j before git starts, on the preflight and on a call (§18.3 #3)", async (pac, reason) => {
     const lookups: string[] = [];
-    const t = await createTestGitRunner({ resolveProxy: async () => pac, lookup: async (host) => (lookups.push(host), ["1.1.1.1"]) });
+    const t = await createRunner({ resolveProxy: async () => pac, lookup: async (host) => (lookups.push(host), ["1.1.1.1"]) });
     const spawn = vi.spyOn(GitRunner.prototype as unknown as { spawnGit: () => Promise<GitResult> }, "spawnGit");
     try {
       const target = remote("https://git.example.com/acme/tools");
@@ -143,7 +158,7 @@ describe("GitRunner proxy from PAC", () => {
     const routes = ["PROXY checked.test:3128", "PROXY unchecked.test:3128"];
     let asked = 0;
     const lookups: string[] = [];
-    const t = await createTestGitRunner({
+    const t = await createRunner({
       resolveProxy: async () => routes[Math.min(asked++, routes.length - 1)]!,
       lookup: async (host) => (lookups.push(host), ["127.0.0.1"]),
     });
@@ -167,7 +182,7 @@ describe("GitRunner proxy from PAC", () => {
   });
 
   it("refuses a proxy git cannot use instead of going direct", async () => {
-    const t = await createTestGitRunner({ resolveProxy: async () => "QUIC quic.corp.example:443" });
+    const t = await createRunner({ resolveProxy: async () => "QUIC quic.corp.example:443" });
     try {
       await expectCode(t.runner.configArgs(remote("https://github.com/acme/tools")), "SOURCE_UNREACHABLE");
     } finally {
@@ -190,7 +205,7 @@ describe("GitRunner against a smart-HTTP server", () => {
     head = repo.commit({ "README.md": "hello\n" }, "initial");
     server = await startGitHttpServer({ root });
     otherServer = await startGitHttpServer({ root });
-    t = await createTestGitRunner();
+    t = await createRunner();
   });
   afterAll(async () => {
     await t.cleanup();
@@ -215,7 +230,7 @@ describe("GitRunner against a smart-HTTP server", () => {
   it("pins the remote's host to its one lookup's answer with http.curloptResolve, and looks it up no second time (§18.2.4)", async () => {
     // A rebinding resolver: the fixture's address to the first lookup, the metadata address to any later one.
     const lookups: string[] = [];
-    const pinned = await createTestGitRunner({
+    const pinned = await createRunner({
       lookup: async (host) => {
         lookups.push(host);
         return lookups.length === 1 ? ["127.0.0.1"] : ["169.254.169.254"];
@@ -234,7 +249,7 @@ describe("GitRunner against a smart-HTTP server", () => {
   });
 
   it("starts no git when the one lookup answers only refused addresses", async () => {
-    const refused = await createTestGitRunner({ lookup: async () => ["169.254.169.254"] });
+    const refused = await createRunner({ lookup: async () => ["169.254.169.254"] });
     try {
       const url = server.url("tools").replace("127.0.0.1", "market.test");
       const error = await expectCode(
@@ -296,7 +311,7 @@ describe("GitRunner against a smart-HTTP server", () => {
       expire = callback;
       return cancel;
     });
-    const timed = await createTestGitRunner({ _scheduleTimeoutForTest: schedule });
+    const timed = await createRunner({ _scheduleTimeoutForTest: schedule });
     try {
       const result = expectCode(
         timed.runner.run(["ls-remote", server.url("timeout")], { remote: remote(server.url("timeout")), timeoutMs: 300 }),
@@ -367,7 +382,10 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("answers with the stored token for the ticket's host", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    // Releasing a borrowed runner must leave its suite-owned broker available.
+    const released = await createRunner();
+    await released.cleanup();
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     try {
       const result = await t.runner.run(["ls-remote", server.url("private-tools")], {
         remote: remote(server.url("private-tools")),
@@ -384,7 +402,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   it("reports SOURCE_AUTH_REQUIRED without a token and with a wrong one", async () => {
     const cases: Array<Record<string, string>> = [{}, { "127.0.0.1": "wrong" }];
     for (const tokens of cases) {
-      const t = await createTestGitRunner({ tokens });
+      const t = await createRunner({ tokens });
       try {
         await expectCode(
           t.runner.run(["ls-remote", server.url("private-tools")], {
@@ -400,7 +418,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("keeps the token out of the user's credential helpers", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     const store = join(t.dir, "stored-credentials");
     // Forward slashes: a raw Windows path is not a valid unquoted config value.
     writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
@@ -417,7 +435,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("offers no token to a source that does not declare token auth", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     server.seen.length = 0;
     try {
       await expectCode(
@@ -434,7 +452,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("sends no credential over http without token-unencrypted, a stored token included (§18.2.2)", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     const store = join(t.dir, "stored-credentials");
     writeFileSync(store, "http://x-access-token:s3cret-token@127.0.0.1\n");
     writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
@@ -458,7 +476,7 @@ describe("GitRunner authentication through the askpass broker", () => {
 
   it("reaches an http source only once unencrypted is confirmed, at its one checked address, and signs in only with token-unencrypted (§18.2.2, §18.2.4)", async () => {
     const lookups: string[] = [];
-    const t = await createTestGitRunner({ tokens: { "market.test": "s3cret-token" }, lookup: async (host) => (lookups.push(host), ["127.0.0.1"]) });
+    const t = await createRunner({ tokens: { "market.test": "s3cret-token" }, lookup: async (host) => (lookups.push(host), ["127.0.0.1"]) });
     // git cannot resolve market.test itself: every request reaches the fixture only through the pinned address.
     const url = server.url("private-tools").replace("127.0.0.1", "market.test");
     const normalized = normalizeSourceUrl(url);
@@ -499,7 +517,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("never gives a token to a ticket bound to another host", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token", "localhost": "other" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token", "localhost": "other" } });
     server.seen.length = 0;
     try {
       // The ticket is bound to `localhost`, while git prompts for 127.0.0.1.

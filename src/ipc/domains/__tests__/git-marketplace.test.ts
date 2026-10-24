@@ -1393,9 +1393,11 @@ describe("a package installed from a source stored under a credential-shaped id 
   ])("is refused detail with the quarantine reason but uninstalled through its row's handle, %s", async (_label, removeFirst) => {
     const root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-quarantine-"));
     const folder = join(mkdtempSync(join(tmpdir(), "ave-git-marketplace-quarantine-source-")), "market");
-    writeFolderFiles(folder, { "SKILL.md": "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n" });
+    const volume = new FakeVolume(process.platform, { drives: { [tmpdir().slice(0, 2).toUpperCase()]: "\\Device\\HarddiskVolume1" } });
+    volume.file(join(folder, "SKILL.md"), "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n");
+    const folders = { ...nodeFolders(), fs: volume };
     const installed = [{ kind: "skill" as const, name: "note", version: "1.0.0", sourceId: TOKEN, originCommit: null }];
-    let harness = await folderService({ root, folders: nodeFolders(), installed });
+    let harness = await folderService({ root, folders, installed });
     try {
       const preview = await harness.service.previewSource({ input: folder, auth: "none" });
       if (preview.type === "confirm") throw new Error("a local folder needs no confirmation");
@@ -1410,7 +1412,7 @@ describe("a package installed from a source stored under a credential-shaped id 
         const path = join(marketplaces, TOKEN, "snapshots", file);
         writeFileSync(path, readFileSync(path, "utf8").replace('"sourceId":"notes"', `"sourceId":${JSON.stringify(TOKEN)}`));
       }
-      harness = await folderService({ root, folders: nodeFolders(), installed });
+      harness = await folderService({ root, folders, installed });
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
@@ -1510,6 +1512,7 @@ describe("folder dialogs (§18.9)", () => {
     }
 
     it("reads and adds the folder main chose, never the sibling its masked display names", async () => {
+      // Real canonical paths and sibling identities are the evidence in this case.
       const chosen = await choose(join(parent, TOKEN));
       expect(chosen.display).toBe(join(parent, scrubDiagnosticSecrets(TOKEN)));
       const preview = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none" });
