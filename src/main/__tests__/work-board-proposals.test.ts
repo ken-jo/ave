@@ -90,7 +90,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
         posted.proposal.createdAt,
       );
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -106,7 +106,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       expect(JSON.parse(readFileSync(join(path, "..", "proposals.json"), "utf8")).proposals)
         .toHaveLength(1);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -120,7 +120,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -139,7 +139,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
         FIXED_NOW + PROPOSAL_TTL_MAX_MS,
       );
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });
@@ -153,7 +153,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -165,7 +165,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const result = await store.upsertProposal(mail, input({ kind: "stale-index" }));
       expect(result).toEqual({ status: "kind_not_granted", kind: "stale-index" });
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -184,7 +184,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(2);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -198,7 +198,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       expect((await store.upsertProposal(INDEXER, input({ key: "folder:invoices" }))).status)
         .toBe("ok");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -216,7 +216,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       // And a second withdrawal is a no-op, not an error.
       expect(await store.withdrawProposal("indexer", "stale-index", "folder:reports")).toBe(false);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -242,7 +242,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -262,7 +262,7 @@ describe("WorkBoardStore — proposal refusals", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });
@@ -295,7 +295,7 @@ describe("WorkBoardStore — accepting a proposal", () => {
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -308,7 +308,7 @@ describe("WorkBoardStore — accepting a proposal", () => {
         proposalId: "indexer:stale-index:deadbeefdeadbeef",
       });
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });
