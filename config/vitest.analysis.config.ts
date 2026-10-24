@@ -6,7 +6,6 @@ import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
-import { messageCatalogPlugin } from "./vitest-message-catalog.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
@@ -94,7 +93,7 @@ export default defineConfig({
       if (isAveHomeGuardSeam(id)) return `export * from ${JSON.stringify(AVE_HOME_GUARD)};\n`;
       return null;
     },
-  }, messageCatalogPlugin(ROOT)],
+  }],
   test: {
     globalSetup: [rootPath("config/vitest.globalSetup.ts")],
     // Boot integration fixtures assert calls recorded by their beforeAll setup.

@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
-import { createServer, normalizePath } from "vite";
-import { messageCatalogPlugin } from "../../config/vitest-message-catalog.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -273,83 +270,5 @@ describe("check-test-coverage", () => {
       "tools",
       "mcp",
     ]);
-  });
-
-  it("bundles catalog data without changing translations or losing fragment watches", async () => {
-    const root = path.resolve(import.meta.dirname, "../..");
-    const fragmentDir = path.join(root, "src/i18n/messages/generated");
-    const fragments = fs.readdirSync(fragmentDir).filter((file) => file.endsWith(".ts") && file !== "index.ts").sort();
-    const expected: Record<string, Record<string, string>> = { generatedEn: {}, koMessages: {} };
-    for (const file of fragments) {
-      const fragment = await import(pathToFileURL(path.join(fragmentDir, file)).href);
-      Object.assign(expected.generatedEn, fragment.en);
-      Object.assign(expected.koMessages, fragment.ko);
-    }
-    const captured = new Map<string, string>();
-    const server = await createServer({
-      root,
-      configFile: false,
-      server: { middlewareMode: true, watch: null, ws: false },
-      optimizeDeps: { noDiscovery: true, include: [] },
-      plugins: [messageCatalogPlugin(root), {
-        name: "capture-catalog-data",
-        transform(code, id) {
-          captured.set(normalizePath(id), code);
-          return null;
-        },
-      }],
-    });
-    try {
-      for (const [entry, exportName] of [
-        ["generated/index.ts", "generatedEn"],
-        ["generated-locales/ko.ts", "koMessages"],
-      ]) {
-        const file = path.join(root, "src/i18n/messages", entry);
-        const container = server.environments.ssr.pluginContainer;
-        container.watchFiles.clear();
-        await server.environments.ssr.transformRequest(file);
-        const code = captured.get(normalizePath(file))!;
-        const watched = [...container.watchFiles].map(normalizePath);
-        expect(code).not.toMatch(/^import\s/m);
-        const actual = await import(/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
-        expect(Object.keys(actual)).toEqual([exportName]);
-        expect(actual[exportName]).toEqual(expected[exportName]);
-        const encodedMap = code.match(/sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)/)![1];
-        const sourceMap = JSON.parse(Buffer.from(encodedMap, "base64").toString("utf8")) as { sources: string[] };
-        const mappedSources = sourceMap.sources.map((source) => normalizePath(path.resolve(path.dirname(file), source)));
-        for (const fragment of fragments) {
-          expect(mappedSources).toContain(normalizePath(path.join(fragmentDir, fragment)));
-          expect(watched).toContain(normalizePath(path.join(fragmentDir, fragment)));
-        }
-      }
-      const runtime = path.join(root, "src/i18n/runtime.ts");
-      const source = await server.environments.ssr.pluginContainer.load(runtime);
-      expect(source).toBeNull();
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("refuses catalog barrels that import runtime modules", async () => {
-    const root = fs.mkdtempSync(path.join(tmpdir(), "ave-catalog-boundary-"));
-    const entry = path.join(root, "src/i18n/messages/generated/index.ts");
-    fs.mkdirSync(path.dirname(entry), { recursive: true });
-    fs.writeFileSync(entry, 'export { value } from "../../runtime.js";');
-    fs.writeFileSync(path.join(root, "src/i18n/runtime.ts"), "export const value = 1;");
-    const server = await createServer({
-      root,
-      configFile: false,
-      server: { middlewareMode: true, watch: null, ws: false },
-      optimizeDeps: { noDiscovery: true, include: [] },
-      plugins: [messageCatalogPlugin(root)],
-    });
-    try {
-      await expect(server.environments.ssr.pluginContainer.load(entry)).rejects.toThrow(
-        "catalog bundle contains a non-fragment module",
-      );
-    } finally {
-      await server.close();
-      fs.rmSync(root, { recursive: true, force: true });
-    }
   });
 });
