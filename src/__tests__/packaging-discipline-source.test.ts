@@ -508,6 +508,37 @@ describe("installer smoke and packaging discipline", () => {
       expect(underTarget({ run })).toEqual(["t.yml:check fetches pull request code in a run step under pull_request_target"]);
     });
 
+    const fetchesPullRequestCode = ["t.yml:check fetches pull request code in a run step under pull_request_target"];
+
+    it.each([
+      ["a head sha set on one line and checked out on a later one",
+        "SHA='${{ github.event.pull_request.head.sha }}'\necho \"checking $SHA\"\ngit checkout \"$SHA\""],
+      ["the head branch from the runner's environment", "git fetch origin \"$GITHUB_HEAD_REF\""],
+      ["the head sha read from the event file",
+        "H=$(jq -r .pull_request.head.sha \"$GITHUB_EVENT_PATH\")\ngit fetch origin \"$H\""],
+    ])("refuses a multi-line run step that fetches pull request code through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(fetchesPullRequestCode);
+    });
+
+    it("refuses a run step that reaches the head commit through step or job env", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      expect(underTarget({ env: { H: head }, run: "git fetch origin \"$H\"" })).toEqual(fetchesPullRequestCode);
+      expect(forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", env: { H: head }, steps: [{ run: "set -e\ngit fetch origin $H" }] },
+          { pull_request_target: null }),
+        "t.yml",
+      )).toEqual(fetchesPullRequestCode);
+      const workflowEnv = stringifyYaml({
+        on: { pull_request_target: null },
+        permissions: { contents: "read" },
+        env: { REF: "${{ github.head_ref }}" },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: "gh repo clone o/r -- --branch \"$REF\"" }] } },
+      });
+      expect(forkRunnerViolations(workflowEnv, "t.yml")).toEqual(fetchesPullRequestCode);
+      // The same reference with no git or gh in the step is not a checkout.
+      expect(underTarget({ env: { H: head }, run: "echo \"$H\"" })).toEqual([]);
+    });
+
     it("reads secrets as an expression context, not as a word in a script", () => {
       expect(underTarget({ run: "cat secrets.txt && git log --oneline -1" })).toEqual([]);
     });
