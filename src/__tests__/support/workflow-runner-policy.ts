@@ -164,14 +164,27 @@ function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[
   return reasons;
 }
 
-/** Every workflow allowed to run on `pull_request_target`, with the sha256 of
- *  its content (LF line endings). Such a workflow runs with the base
+/** Every workflow allowed to run on `pull_request_target`, with the sha256
+ *  (LF line endings) of the workflow file and of every repository file it
+ *  executes, keyed by repository path. Such a workflow runs with the base
  *  repository's token and permissions while the pull request is a fork's, and
  *  the step lint above cannot see every channel a head reference can travel
  *  through. So a new or edited one fails until this list is updated, and the
- *  update is in the diff for a reviewer to see. */
-export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, string>> = {
-  "cluster-detector.yml": "17639cbf71170c65865a07d577472d405233fafe99017ab22a8edb7a570abc56",
+ *  update is in the diff for a reviewer to see.
+ *
+ *  The executed files are derived by the gate ({@link pullRequestTargetExecutedFiles}),
+ *  so the pinned set cannot go stale: a script the workflow starts to run, or
+ *  a module one of them starts to import, fails as unpinned. cluster-detector
+ *  checks out the live base SHA (never the pull request) into `.cluster-policy`
+ *  and runs its scripts from there, so these files run as they are on the base
+ *  branch; the pin makes every change to them, merged by anyone, a deliberate
+ *  review point for code that runs with this workflow's token. */
+export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "cluster-detector.yml": {
+    ".github/workflows/cluster-detector.yml": "17639cbf71170c65865a07d577472d405233fafe99017ab22a8edb7a570abc56",
+    "scripts/check-cluster-scope.mjs": "7ee8ae74cfbd607c571f8d8844f18d7fdaf016dd01c76a6ce8d621ef88318787",
+    "scripts/check-cluster-sensitive-paths.mjs": "45b2179ebcc146834e0cc8433af2b19440ef28e37cbd5460ba5e01e4458b229c",
+  },
 };
 
 /** The sha256 {@link PULL_REQUEST_TARGET_WORKFLOWS} pins for `source`. */
@@ -179,20 +192,112 @@ function workflowContentHash(source: string): string {
   return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
 }
 
-/** The allow-list violation of one workflow, if it runs on
- *  pull_request_target and is unlisted or edited since it was listed. */
-export function pullRequestTargetAllowListViolations(source: string, name: string): string[] {
+/** A repository path a `run:` script names: a relative path with a script
+ *  extension, as `node .cluster-policy/scripts/x.mjs` or `bash ./tools/x.sh`
+ *  writes it. A path built from a variable (`"$DIR/x.mjs"`) is not seen; the
+ *  workflow's own pin covers that edit. */
+const RUN_SCRIPT_PATH = /(?:^|[\s"'=(])((?:\.\/)?[\w.-]+(?:\/[\w.-]+)+\.(?:mjs|cjs|js|mts|cts|ts|sh|py|ps1))(?=$|[\s"';)|&])/gmu;
+
+/** A static relative import or require in a JavaScript or TypeScript module. */
+const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gmu;
+
+function normalizeRepoPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) throw new Error(`${path} leaves the repository`);
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join("/");
+}
+
+/** The repository files a workflow executes, sorted, the workflow itself
+ *  first: every script a `run:` step names (with an actions/checkout `path:`
+ *  prefix mapped back to the repository root), every local action's
+ *  action.yml, and transitively every static relative import of those
+ *  modules. `readFile` answers a repository path's content, or undefined when
+ *  there is no such file; a relative import that resolves to nothing fails. */
+export function pullRequestTargetExecutedFiles(
+  name: string,
+  source: string,
+  readFile: (path: string) => string | undefined,
+): string[] {
+  const workflow = parseYaml(source, { merge: true }) as { jobs?: Record<string, Job> };
+  const steps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
+  const checkoutRoots = steps
+    .filter((step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@"))
+    .map((step) => (typeof step.with?.path === "string" ? normalizeRepoPath(step.with.path) : ""))
+    .filter((root) => root !== "");
+  const found = new Set<string>();
+  const queue: string[] = [];
+  const add = (path: string): void => {
+    if (found.has(path)) return;
+    found.add(path);
+    queue.push(path);
+  };
+  for (const step of steps) {
+    if (typeof step.uses === "string" && step.uses.startsWith("./")) {
+      const dir = normalizeRepoPath(step.uses);
+      const action = [`${dir}/action.yml`, `${dir}/action.yaml`].find((path) => readFile(path) !== undefined);
+      if (action === undefined) throw new Error(`${name} uses ${step.uses}, which has no action.yml`);
+      add(action);
+    }
+    if (typeof step.run !== "string") continue;
+    for (const match of step.run.matchAll(RUN_SCRIPT_PATH)) {
+      let path = normalizeRepoPath(match[1] as string);
+      const root = checkoutRoots.find((prefix) => path.startsWith(`${prefix}/`));
+      if (root !== undefined) path = path.slice(root.length + 1);
+      if (readFile(path) !== undefined) add(path);
+    }
+  }
+  while (queue.length > 0) {
+    const file = queue.shift() as string;
+    if (!/\.(?:mjs|cjs|js|mts|cts|ts)$/u.test(file)) continue;
+    const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
+    for (const match of (readFile(file) as string).matchAll(RELATIVE_IMPORT)) {
+      const target = normalizeRepoPath(`${dir}/${match[1] as string}`);
+      if (readFile(target) === undefined) throw new Error(`${file} imports ${match[1]}, which resolves to no file`);
+      add(target);
+    }
+  }
+  return [`.github/workflows/${name}`, ...[...found].sort()];
+}
+
+/** The allow-list violations of one workflow, if it runs on
+ *  pull_request_target: unlisted, or its pinned files differ from the files
+ *  it executes, or one of them changed since it was listed. */
+export function pullRequestTargetAllowListViolations(
+  source: string,
+  name: string,
+  readFile: (path: string) => string | undefined,
+): string[] {
   const workflow = parseYaml(source, { merge: true }) as { on?: unknown };
   if (!workflowEvents(workflow.on).includes("pull_request_target")) return [];
   const why = "pull_request_target runs with base-repo permissions; update the allow-list "
     + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
   const pinned = PULL_REQUEST_TARGET_WORKFLOWS[name];
   if (pinned === undefined) return [`${name} is not on the pull_request_target allow-list: ${why}`];
-  const actual = workflowContentHash(source);
-  if (actual !== pinned) {
-    return [`${name} changed since its pull_request_target review (sha256 ${actual}, allow-list ${pinned}): ${why}`];
+  const workflowPath = `.github/workflows/${name}`;
+  const read = (path: string): string | undefined => (path === workflowPath ? source : readFile(path));
+  const executed = pullRequestTargetExecutedFiles(name, source, read);
+  const violations: string[] = [];
+  const unpinned = executed.filter((path) => !(path in pinned));
+  if (unpinned.length > 0) violations.push(`${name} executes files the allow-list does not pin (${unpinned.join(", ")}): ${why}`);
+  const stale = Object.keys(pinned).filter((path) => !executed.includes(path));
+  if (stale.length > 0) violations.push(`${name} no longer executes pinned files (${stale.join(", ")}): ${why}`);
+  for (const path of executed) {
+    const expected = pinned[path];
+    if (expected === undefined) continue;
+    const actual = workflowContentHash(read(path) as string);
+    if (actual !== expected) {
+      violations.push(`${path} changed since its pull_request_target review of ${name} (sha256 ${actual}, allow-list ${expected}): ${why}`);
+    }
   }
-  return [];
+  return violations;
 }
 
 /** True when the workflow reads the `secrets` context anywhere, in any form. */
