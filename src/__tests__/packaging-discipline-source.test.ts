@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import {
   forkRunnerViolations,
   forkSafeRunsOn,
   pullRequestTargetAllowListViolations,
+  pullRequestTargetExecutedFiles,
   workflowEvents,
 } from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
@@ -428,10 +429,18 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("pins every pull_request_target workflow to a reviewed allow-list entry", () => {
+  /** A repository file's content, or undefined when the path is no file. */
+  const repoFile = (path: string): string | undefined => {
+    const absolute = resolve(root, path);
+    return existsSync(absolute) && statSync(absolute).isFile() ? readRepoFile(path) : undefined;
+  };
+  const allowListWhy = "pull_request_target runs with base-repo permissions; update the allow-list "
+    + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
+
+  it("pins every pull_request_target workflow, and every file it executes, to a reviewed allow-list entry", () => {
     const names = workflowFileNames();
     const violations = names.flatMap((name) =>
-      pullRequestTargetAllowListViolations(readRepoFile(`.github/workflows/${name}`), name));
+      pullRequestTargetAllowListViolations(readRepoFile(`.github/workflows/${name}`), name, repoFile));
     expect(violations).toEqual([]);
     // The list is exact: every entry is a workflow that exists and runs on
     // pull_request_target, so a removed or retriggered one leaves no stale pin.
@@ -441,23 +450,76 @@ describe("installer smoke and packaging discipline", () => {
     });
     expect(Object.keys(PULL_REQUEST_TARGET_WORKFLOWS).sort()).toEqual(targets);
     expect(targets).toEqual(["cluster-detector.yml"]);
+    // The derivation is read, not vacuous: the scope script the workflow runs
+    // from its .cluster-policy checkout, and the module that script imports.
+    expect(pullRequestTargetExecutedFiles(
+      "cluster-detector.yml",
+      readRepoFile(".github/workflows/cluster-detector.yml"),
+      repoFile,
+    )).toEqual([
+      ".github/workflows/cluster-detector.yml",
+      "scripts/check-cluster-scope.mjs",
+      "scripts/check-cluster-sensitive-paths.mjs",
+    ]);
   });
 
   it("refuses an edited or unlisted pull_request_target workflow until the allow-list is updated", () => {
-    const why = "pull_request_target runs with base-repo permissions; update the allow-list "
-      + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
     const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
     const edited = cluster.replace("CLUSTER_THRESHOLD=3", "CLUSTER_THRESHOLD=4");
     expect(edited).not.toBe(cluster);
-    const [changed] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml");
-    expect(changed).toMatch(/^cluster-detector\.yml changed since its pull_request_target review \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
-    expect(changed?.endsWith(why)).toBe(true);
+    const [changed, ...rest] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml", repoFile);
+    expect(rest).toEqual([]);
+    expect(changed).toMatch(/^\.github\/workflows\/cluster-detector\.yml changed since its pull_request_target review of cluster-detector\.yml \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
+    expect(changed?.endsWith(allowListWhy)).toBe(true);
     // Line endings alone are not an edit: a Windows checkout reads CRLF.
-    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml")).toEqual([]);
-    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml"))
-      .toEqual([`copy.yml is not on the pull_request_target allow-list: ${why}`]);
-    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml"))
+    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml", repoFile))
       .toEqual([]);
+    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml", repoFile))
+      .toEqual([`copy.yml is not on the pull_request_target allow-list: ${allowListWhy}`]);
+    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml", repoFile))
+      .toEqual([]);
+  });
+
+  describe("files a pull_request_target workflow executes", () => {
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const withFile = (path: string, content: string) => (candidate: string): string | undefined =>
+      (candidate === path ? content : repoFile(candidate));
+
+    it.each([
+      ["the scope script it runs", "scripts/check-cluster-scope.mjs"],
+      ["the module that script imports", "scripts/check-cluster-sensitive-paths.mjs"],
+    ])("refuses an edit to %s without a re-pin", (_label, path) => {
+      const edited = `${repoFile(path) as string}\n// edited\n`;
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", withFile(path, edited));
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(new RegExp(`^${path.replace(/\./gu, "\\.")} changed since its pull_request_target review of cluster-detector\\.yml `, "u"));
+      expect(violations[0]?.endsWith(allowListWhy)).toBe(true);
+    });
+
+    it("refuses a new import that the allow-list does not pin", () => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const edited = `import { errorMessage } from "./lib/error-message.mjs";\n${repoFile(path) as string}`;
+      const read = (candidate: string) => (candidate === "scripts/lib/error-message.mjs" ? "export {};\n" : withFile(path, edited)(candidate));
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", read);
+      expect(violations).toHaveLength(2);
+      expect(violations[0])
+        .toBe(`cluster-detector.yml executes files the allow-list does not pin (scripts/lib/error-message.mjs): ${allowListWhy}`);
+      expect(violations[1]).toMatch(/^scripts\/check-cluster-sensitive-paths\.mjs changed since /u);
+    });
+
+    it("refuses a run step that starts another repository script, and an import that resolves to nothing", () => {
+      const runsMore = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+        "node .cluster-policy/scripts/check-cluster-policy-version.mjs\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+      );
+      expect(runsMore).not.toBe(cluster);
+      const read = withFile("scripts/check-cluster-policy-version.mjs", "export {};\n");
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read))
+        .toContain("scripts/check-cluster-policy-version.mjs");
+      const broken = withFile("scripts/check-cluster-scope.mjs", `import "./missing-module.mjs";\n`);
+      expect(() => pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken))
+        .toThrow("scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file");
+    });
   });
 
   describe("fork runner policy mutations", () => {
