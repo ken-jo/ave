@@ -8,24 +8,27 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
+  NATIVE_PROBE_HEAVY_TEST, nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
 } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { claudeCodeNpmShimTarget, pinClaudeCodeExecutable } from "../claude-code-executable.js";
 import { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
 import type { CliDiscoveryEnvironment } from "../user-cli-discovery.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
+  ...(await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()),
   spawn: vi.fn(() => { throw new Error("Unexpected executable launch"); }),
 }));
 
 const roots: string[] = [];
 const fixtureTimestamp = new Date(1_700_000_000_000);
-afterEach(() => {
+afterEach(async () => {
   expect(spawn).not.toHaveBeenCalled();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // A test may leave its sealed read-only copy undiscarded; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function fixture(platform: NodeJS.Platform = process.platform) {
@@ -192,7 +195,7 @@ describe("subscription package launch inputs", () => {
     await expect(proof.verify()).resolves.toBeUndefined();
   });
 
-  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", async () => {
+  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", NATIVE_PROBE_HEAVY_TEST, async () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture("win32");
     expect(claudeCodeNpmShimTarget(launcher)).toBe(script);
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);

@@ -107,9 +107,11 @@ export class BrowserUploadSelection {
   private dispatchBytes = 0;
   private stagedBytes: number;
   private dispatchDir: string | undefined;
+  private readonly dispatchSlots: string[] = [];
   constructor(
     private readonly destination: BrowserUploadPickerRequest,
     private readonly dir: string,
+    private readonly slots: readonly string[],
     private readonly files: readonly StagedFile[],
     readonly result: BrowserUploadResult,
   ) { this.stagedBytes = result.bytes; }
@@ -154,7 +156,12 @@ export class BrowserUploadSelection {
           this.dispatchBytes += bytes;
           this.dispatchDir ??= await namespace.childDir(join(basename(this.dir), `dispatch-${randomUUID()}`));
           assertCurrent();
-          const path = join(this.dispatchDir, basename(file.path));
+          // The browser names the File after this basename, so each copy keeps
+          // the original name inside its own slot directory.
+          const slot = join(this.dispatchDir, String(this.dispatchSlots.length));
+          await fs.mkdir(slot, { mode: 0o700 });
+          this.dispatchSlots.push(slot);
+          const path = join(slot, basename(file.path));
           const copy = await fs.open(path, "wx", 0o600);
           try {
             const identity = await copy.stat({ bigint: true });
@@ -200,6 +207,7 @@ export class BrowserUploadSelection {
     // recursively remove a directory, follow links or remove selected originals.
     for (const file of [...this.dispatchFiles, ...this.files]) await removeOwnedFile(file);
     try {
+      for (const slot of [...this.dispatchSlots, ...this.slots]) await fs.rmdir(slot);
       if (this.dispatchDir) await fs.rmdir(this.dispatchDir);
       await fs.rmdir(this.dir);
     }
@@ -235,6 +243,7 @@ export async function stageBrowserUpload(
   reservedBytes += BROWSER_UPLOAD_LIMITS.selectionBytes;
   let dir: string | undefined;
   const paths: StagedFile[] = [];
+  const slots: string[] = [];
   const files: { name: string; bytes: number }[] = [];
   let bytes = 0;
   try {
@@ -263,7 +272,12 @@ export async function stageBrowserUpload(
         if (!sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
         assertUploadActive(destination.signal); assertDestination();
         const name = basename(original).replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 200) || "file";
-        const path = join(dir, `${paths.length}-${name}`);
+        // One slot directory per file keeps the original basename, which the
+        // browser exposes as File.name, even when two sources share a name.
+        const slot = join(dir, String(slots.length));
+        await fs.mkdir(slot, { mode: 0o700 });
+        slots.push(slot);
+        const path = join(slot, name);
         const staged = await fs.open(path, "wx", 0o600);
         try {
           const identity = await staged.stat({ bigint: true });
@@ -281,13 +295,16 @@ export async function stageBrowserUpload(
     }
     assertUploadActive(destination.signal); assertDestination();
     reservedBytes -= BROWSER_UPLOAD_LIMITS.selectionBytes - bytes;
-    const selection = new BrowserUploadSelection(Object.freeze({ ...destination }), dir, Object.freeze(paths), Object.freeze({ status: "selected", files: Object.freeze(files), count: files.length, bytes }));
+    const selection = new BrowserUploadSelection(Object.freeze({ ...destination }), dir, Object.freeze(slots), Object.freeze(paths), Object.freeze({ status: "selected", files: Object.freeze(files), count: files.length, bytes }));
     liveSelections.add(selection);
     return selection;
   } catch (err) {
     for (const path of paths) await removeOwnedFile(path);
     if (dir) {
-      try { await fs.rmdir(dir); }
+      try {
+        for (const slot of slots) await fs.rmdir(slot);
+        await fs.rmdir(dir);
+      }
       catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
     }
     reservedBytes -= BROWSER_UPLOAD_LIMITS.selectionBytes;

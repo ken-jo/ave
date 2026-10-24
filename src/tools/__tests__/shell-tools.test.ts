@@ -20,6 +20,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { powerShellLiteral as psLiteral } from "../../__tests__/support/powershell-ast.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
@@ -319,8 +320,9 @@ describe("bash tool", () => {
       mkdirSync(join(root, ".ssh"), { recursive: true });
       writeFileSync(target, "secret", "utf8");
       try {
+        // Quoted so bash keeps a Windows path's backslashes and names the file.
         const result = await new BashTool().execute(
-          { command: `cat ${target}`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          { command: `cat ${shellQuote(target)}`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
         expect(result.isError).toBe(true);

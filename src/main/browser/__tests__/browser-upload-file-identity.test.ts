@@ -29,7 +29,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const { promises: fs } = await import("node:fs");
 const { tmpdir } = await import("node:os");
-const { join } = await import("node:path");
+const { basename, join } = await import("node:path");
 const { stageBrowserUpload, BROWSER_UPLOAD_LIMITS } = await import("../browser-upload.js");
 const LARGE_ID = 2n ** 60n;
 const ORIGINAL_IDENTITY = { dev: LARGE_ID, ino: LARGE_ID };
@@ -51,6 +51,12 @@ afterEach(async () => {
   if (previousHome === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = previousHome;
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+// Each staged file sits alone in a slot directory under its selection.
+async function stagedFileIn(selectionDir: string): Promise<string> {
+  const slot = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+  return join(slot, (await fs.readdir(slot))[0]!);
+}
 
 describe("browser upload exact file identity", () => {
   describe.each(["dev", "ino"] as const)("adjacent %s values beyond number precision", (field) => {
@@ -102,7 +108,7 @@ describe("browser upload exact file identity", () => {
     const selection = await stageBrowserUpload(destination, async () => [original], () => {});
     const root = join(dir, "home", "browser-uploads");
     const selectionDir = join(root, (await fs.readdir(root))[0]!);
-    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    const stagedPath = await stagedFileIn(selectionDir);
     if (change === "replacement") {
       await fs.rename(stagedPath, stagedPath + ".original");
       await fs.writeFile(stagedPath, "replaced bytes", { mode: 0o400 });
@@ -131,7 +137,7 @@ describe("browser upload exact file identity", () => {
     const selection = await stageBrowserUpload(destination, async () => [original], () => {});
     const root = join(dir, "home", "browser-uploads");
     const selectionDir = join(root, (await fs.readdir(root))[0]!);
-    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    const stagedPath = await stagedFileIn(selectionDir);
     const before = await fs.stat(stagedPath, { bigint: true });
     await fs.chmod(stagedPath, 0o600);
     await fs.writeFile(stagedPath, "modified bytes");
@@ -184,7 +190,7 @@ describe("browser upload exact file identity", () => {
     const selection = await stageBrowserUpload(destination, async () => [original], () => {});
     const root = join(dir, "home", "browser-uploads");
     const selectionDir = join(root, (await fs.readdir(root))[0]!);
-    const stagedPath = join(selectionDir, (await fs.readdir(selectionDir))[0]!);
+    const stagedPath = await stagedFileIn(selectionDir);
     const open = fs.open.bind(fs);
     let observedSource = false;
     let assertDescriptorRead: () => void = () => { throw new Error("Staging descriptor was not opened"); };
@@ -206,6 +212,7 @@ describe("browser upload exact file identity", () => {
       await selection!.dispatch(destination, async (paths) => {
         assertDescriptorRead();
         expect(paths[0]).not.toBe(stagedPath);
+        expect(basename(paths[0]!)).toBe("notes.txt");
         expect(await fs.readFile(paths[0]!, "utf8")).toBe("approved bytes");
         await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: "ENOENT" });
       });
