@@ -502,7 +502,9 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
       await until(() => tracker.promptEndCount() > prompts, 3_000);
       await sleep(200);
       typed = await typeOnce();
-      if (!typed.ok) throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous})`);
+      if (!typed.ok) {
+        throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous}; prompt ${tracker.promptState()}; prompt ends ${tracker.promptEndCount()}; edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)}; stuck ${JSON.stringify(stuck)})`);
+      }
     }
     previous = line;
     const prompts = tracker.promptEndCount();
