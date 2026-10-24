@@ -1126,6 +1126,7 @@ function upstreamModelProvider(
   modelId: string,
   providerId: string,
   providerLabel: string,
+  otherLabel: string,
 ): { id: string; label: string } {
   const presetId = providerId.startsWith(API_PROVIDER_PREFIX)
     ? providerId.slice(API_PROVIDER_PREFIX.length) : "";
@@ -1139,7 +1140,7 @@ function upstreamModelProvider(
   const readableId = id.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   return {
     id,
-    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : readableId || providerLabel,
+    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : readableId || otherLabel,
   };
 }
 
@@ -1184,7 +1185,7 @@ function UnifiedModelSelect({
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   const indexedOptions = useMemo(() => options.map((option) => {
     const modelId = parseUnifiedValue(option.value)?.modelId ?? option.modelId;
-    const upstream = upstreamModelProvider(modelId, option.providerId, option.providerLabel);
+    const upstream = upstreamModelProvider(modelId, option.providerId, option.providerLabel, t("llmTab.modelOtherGroup"));
     return {
       option,
       upstream,
@@ -1194,11 +1195,11 @@ function UnifiedModelSelect({
         option.providerLabel, option.vendorLabel,
       ].join(" ")),
     };
-  }), [options]);
+  }), [options, t]);
   const groupedOptions = useMemo(() => {
     const providers = new Map<string, {
       label: string;
-      upstreams: Map<string, { label: string; items: UnifiedModelOption[] }>;
+      upstreams: Map<string, { label: string; unprefixed: boolean; items: UnifiedModelOption[] }>;
     }>();
     const pins: UnifiedModelOption[] = [];
     for (const { option, upstream } of indexedOptions) {
@@ -1211,11 +1212,12 @@ function UnifiedModelSelect({
         provider = { label: option.providerLabel, upstreams: new Map() };
         providers.set(option.providerId, provider);
       }
-      let group = provider.upstreams.get(upstream.id);
+      let group = provider.upstreams.get(upstream.label);
       if (!group) {
-        group = { label: upstream.label, items: [] };
-        provider.upstreams.set(upstream.id, group);
+        group = { label: upstream.label, unprefixed: false, items: [] };
+        provider.upstreams.set(upstream.label, group);
       }
+      group.unprefixed ||= upstream.id === "";
       group.items.push(option);
     }
     return {
@@ -1224,7 +1226,7 @@ function UnifiedModelSelect({
         id,
         label: provider.label,
         groups: [...provider.upstreams].map(([upstreamId, group]) => ({ id: upstreamId, ...group }))
-          .sort((a, b) => a.label.localeCompare(b.label)),
+          .sort((a, b) => Number(a.unprefixed) - Number(b.unprefixed) || a.label.localeCompare(b.label)),
       })),
     };
   }, [indexedOptions, pinnedSet]);

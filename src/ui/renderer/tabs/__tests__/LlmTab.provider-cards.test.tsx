@@ -1430,6 +1430,7 @@ describe("LlmTab grouped model search", () => {
     crossVendor = false,
     pinnedModels: string[] = [],
     user?: ReturnType<typeof userEvent.setup>,
+    additionalEntries: { id: string }[] = [],
   ) {
     const { api } = profileApi({
       installedProviderIds: crossVendor ? ["openrouter", "requesty"] : ["openrouter"],
@@ -1437,7 +1438,7 @@ describe("LlmTab grouped model search", () => {
     }, {
       hasApiKey: storedKeysFor(...(crossVendor ? ["openrouter", "openai", "requesty"] : ["openrouter"])),
       listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => {
-        const entries = vendor === "openrouter" ? routedEntries
+        const entries = vendor === "openrouter" ? [...routedEntries, ...additionalEntries]
           : vendor === "openai" ? [{ id: "gpt-direct-fixture" }]
             : [{ id: "openai/gpt-gateway-fixture" }, { id: "google/gemini-gateway-fixture" }];
         return {
@@ -1485,7 +1486,8 @@ describe("LlmTab grouped model search", () => {
         option.querySelector(`[data-model-id="${modelId}"]`))).toBe(true);
     }
     const labels = [...provider.querySelectorAll("[data-slot='select-label']")]
-      .slice(1).map((label) => label.textContent!);
+      .slice(1).map((label) => label.textContent!)
+      .filter((label) => label !== t("llmTab.modelOtherGroup"));
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
     const group = within(provider).getByRole("group", { name: getVendorOption("openai").label });
     expect(within(group).getAllByRole("option").map((option) =>
@@ -1494,6 +1496,41 @@ describe("LlmTab grouped model search", () => {
     expect(within(provider).getByRole("group", { name: "Acme" })).toBeInTheDocument();
     expect(chooserOption("plain-model").closest("[data-model-provider]")).toBe(provider);
     expect(chooserOption("openrouter/free").closest("[data-model-provider]")).toBe(provider);
+  });
+
+  it("places models without a prefix in the last subgroup labelled Other", async () => {
+    const { list, ids } = await openSearchCatalogue(false, [], undefined, [{ id: "zenith/model" }]);
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    const groups = within(provider).getAllByRole("group");
+    const other = groups.at(-1)!;
+    expect(other).toHaveAccessibleName(t("llmTab.modelOtherGroup"));
+    expect(within(other).getByRole("option").querySelector("[data-model-id]"))
+      .toHaveAttribute("data-model-id", "plain-model");
+    expect(ids().at(-1)).toBe("plain-model");
+    const labels = groups.slice(0, -1).map((group) =>
+      group.querySelector("[data-slot='select-label']")!.textContent!);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("merges equal upstream display names while preserving model order and search", async () => {
+    const models = ["acme-labs/first", "acme_labs/second", "acme-labs/third"];
+    const { list, search, ids } = await openSearchCatalogue(false, [], undefined, models.map((id) => ({ id })));
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    const merged = within(provider).getByRole("group", { name: "Acme Labs" });
+    expect(within(merged).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
+    search("acme labs");
+    expect(ids()).toEqual(models);
+    expect(within(provider).getAllByRole("group")).toHaveLength(1);
+    search("acme_labs");
+    expect(ids()).toEqual([models[1]]);
+    expect(within(provider).getByRole("group", { name: "Acme Labs" })).toBeInTheDocument();
+    search("third");
+    expect(ids()).toEqual([models[2]]);
+    search("");
+    const restored = within(provider).getByRole("group", { name: "Acme Labs" });
+    expect(within(restored).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
   });
 
   it.each([
