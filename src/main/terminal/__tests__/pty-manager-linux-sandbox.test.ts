@@ -214,14 +214,45 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
       expect(tracker.get(tracker.nextBlockId() - 1)?.status).toBe("running");
       killTerminal(tabId);
       await until(() => exits.includes(tabId));
+      expect(existsSync(marker)).toBe(false);
+      expect(shown.get(tabId)).toContain(JSON.stringify(marker));
       await resetAsrtSandbox();
       exits = [];
 
+      mkdirSync(join(marker, "hooks"), { recursive: true });
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), "changed");
       const reopened = await startSandboxedShell(shellPath, tabId);
       const id = reopened.nextBlockId();
       await typeAndWait(tabId, reopened, "printf blocked > later/.git/config");
       expect(reopened.get(id)?.exitCode).not.toBe(0);
       expect(readFileSync(join(marker, "config"), "utf8")).toBe("changed");
+    }, 90_000);
+
+    it.skipIf(shouldSkipNativeSandboxTests())(`${name}: a newly created control requires reopen and is quarantined when the shell exits`, async () => {
+      const marker = join(process.cwd(), ".git");
+      mkdirSync(join(marker, "objects"), { recursive: true });
+      mkdirSync(join(marker, "refs"));
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), "[core]\n\tbare = false\n");
+      const control = join(marker, "commondir");
+      const tracker = await startSandboxedShell(shellPath, tabId);
+      expect(existsSync(control)).toBe(false);
+      await typeAndWait(tabId, tracker, "printf . > .git/commondir");
+      expect(readFileSync(control, "utf8")).toBe(".");
+      await settle(tracker);
+      await expect(typeTerminalCommand(tabId, OWNER, "git status", tracker.currentCwd()!)).resolves.toMatchObject({
+        ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged"),
+      });
+      expect(existsSync(control)).toBe(true);
+      killTerminal(tabId);
+      await until(() => exits.includes(tabId));
+      expect(existsSync(control)).toBe(false);
+      expect(existsSync(join(marker, "HEAD"))).toBe(true);
+      expect(shown.get(tabId)).toContain(JSON.stringify(control));
+      const notice = t("sandboxPolicy.quarantined", { moves: "" });
+      expect(shown.get(tabId)).toContain(notice.split("\n")[0]);
+      expect(shown.get(tabId)).toContain(notice.split("\n").at(-1));
     }, 90_000);
 
     it(`${name}: terminal_run types at the shell's prompt, and refuses a busy, nested or moved shell`, async (test) => {

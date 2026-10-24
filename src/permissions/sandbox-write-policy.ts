@@ -32,6 +32,7 @@ const GIT_CONTROL_ENTRIES = [
   "hooks", "config", "config.worktree", "commondir", "gitdir",
   "objects/info/alternates", "objects/info/http-alternates", "remotes", "branches",
 ] as const;
+const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;
 function caseInsensitiveGitPattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
@@ -42,6 +43,60 @@ const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
   `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
 ]);
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
+interface GitControlEntryIdentity {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  readonly size: number | bigint;
+  readonly mtimeMs: number | bigint;
+  readonly ctimeMs: number | bigint;
+  readonly kind: "directory" | "file" | "link" | "other";
+}
+export interface SandboxGitControlSnapshot {
+  readonly isPathExcluded?: (path: string, includesChildren?: boolean) => boolean;
+  readonly bareRoots: ReadonlySet<string>;
+  readonly roots: ReadonlyMap<string, GitControlEntryIdentity | undefined>;
+  readonly entries: ReadonlyMap<string, GitControlEntryIdentity | undefined>;
+  readonly markers: ReadonlyMap<string, GitControlEntryIdentity | undefined>;
+  readonly stores: ReadonlyMap<string, GitControlEntryIdentity | undefined>;
+  readonly markerStores: ReadonlyMap<string, readonly string[]>;
+  readonly replacedMarkers: ReadonlySet<string>;
+  readonly directories: ReadonlyMap<string, GitControlEntryIdentity | undefined>;
+  readonly directoryTargets: ReadonlyMap<string, string>;
+  readonly directoryDepths?: ReadonlyMap<string, number>;
+  readonly storeMissingAncestors: ReadonlyMap<string, string>;
+}
+interface GitControlDiscovery {
+  isPathExcluded?: (path: string, includesChildren?: boolean) => boolean;
+  roots: readonly string[];
+  cleanup: boolean;
+  quarantineRoot: string;
+  markers: Map<string, GitControlEntryIdentity | undefined>;
+  stores: Map<string, GitControlEntryIdentity | undefined>;
+  markerStores: Map<string, readonly string[]>;
+  replacedMarkers: Set<string>;
+  directories: Map<string, GitControlEntryIdentity | undefined>;
+  directoryTargets: Map<string, string>;
+  directoryDepths: Map<string, number>;
+  storeMissingAncestors: Map<string, string>;
+  scannedStores: Set<string>;
+  bareEntries: Map<string, GitControlEntryIdentity | undefined>;
+  previous?: SandboxGitControlSnapshot;
+}
+function gitControlEntries(discovery?: GitControlDiscovery): readonly string[] {
+  return process.platform === "linux" || discovery ? LINUX_GIT_CONTROL_ENTRIES : GIT_CONTROL_ENTRIES;
+}
+function gitEntryIdentity(path: string): GitControlEntryIdentity | undefined {
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) { if (isMissingPath(error)) return undefined; throw error; }
+  return {
+    dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs,
+    kind: stat.isDirectory() ? "directory" : stat.isFile() ? "file" : stat.isSymbolicLink() ? "link" : "other",
+  };
+}
+function sameGitEntry(left: GitControlEntryIdentity | undefined, right: GitControlEntryIdentity | undefined): boolean {
+  return left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino && left.kind === right.kind;
+}
 const gitScanIgnoredDirectories = new Set([
   ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "vendor", "dist", "build", ".cache",
 ]);
@@ -75,7 +130,7 @@ function resolvePolicyDenyPath(path: string): string {
   }
 }
 
-function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>): string {
+function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>, discovery?: GitControlDiscovery): string {
   const resolved = inspectPhysicalFilesystemPath(path, cwd, MAX_MISSING_PATH_ANCESTORS);
   if (resolved.unresolvedParentTraversal) {
     throw new Error("Sandbox Git control metadata has unresolved parent traversal");
@@ -83,6 +138,7 @@ function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, rou
   if (resolved.firstMissingPath !== undefined) {
     paths.add(resolved.path);
     paths.add(resolved.firstMissingPath);
+    discovery?.storeMissingAncestors.set(resolved.path, resolved.firstMissingPath);
   }
   for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
   return resolved.path;
@@ -186,26 +242,72 @@ function classifyNonRepositoryWriteRoots(writeRoots: readonly string[], budget: 
 }
 
 function addGitDirectoryControls(
-  gitDir: string,
+  gitDir: string | readonly string[],
   paths: Set<string>,
   routingPins: Set<string>,
   budget: GitDiscoveryBudget,
+  discovery?: GitControlDiscovery,
+  relatedStores?: Set<string>,
 ): boolean {
-  const queue = [gitDir];
-  const visited = new Set<string>();
+  const queue = typeof gitDir === "string" ? [gitDir] : [...gitDir];
+  const visited = discovery?.previous ? discovery.scannedStores : new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     const directory = queue[index]!;
     if (visited.has(directory)) continue;
     visited.add(directory);
-    for (const entry of GIT_CONTROL_ENTRIES) paths.add(join(directory, entry));
+    if (discovery?.isPathExcluded?.(directory)) continue;
+    relatedStores?.add(directory);
+    if (discovery?.previous && discovery.cleanup && !discovery.roots.some(root =>
+      isPhysicalPathWithin(root, directory) || isPhysicalPathWithin(directory, root))) {
+      discovery.stores.set(directory, discovery.previous.stores.get(directory));
+      continue;
+    }
+    const missingAncestor = discovery?.previous?.storeMissingAncestors.get(directory);
+    if (missingAncestor !== undefined) {
+      discovery.storeMissingAncestors.set(directory, missingAncestor);
+      discovery.stores.set(directory, undefined);
+      if (!discovery.isPathExcluded?.(missingAncestor) && gitEntryIdentity(missingAncestor) !== undefined) {
+        paths.add(missingAncestor);
+        discovery.replacedMarkers.add(missingAncestor);
+      }
+      continue;
+    }
+    const identity = gitEntryIdentity(directory);
+    discovery?.stores.set(directory, identity);
+    if (discovery && !discovery.previous) {
+      const commonPath = readGitMetadata(join(directory, "commondir"), budget);
+      if (commonPath !== undefined) {
+        if (!commonPath || /[\r\n\0]/.test(commonPath)) throw new Error("Invalid sandbox Git common directory");
+        queue.push(addGitMetadataTarget(commonPath, directory, paths, routingPins, discovery));
+      }
+    }
+    if (discovery?.cleanup && !discovery.roots.some(root =>
+      isPhysicalPathWithin(root, directory) || isPhysicalPathWithin(directory, root))) continue;
+    if (discovery?.previous && !discovery.previous.stores.has(directory)) {
+      paths.add(directory);
+      discovery.replacedMarkers.add(directory);
+      continue;
+    }
+    if (discovery?.previous?.stores.has(directory)
+      && (discovery.previous.stores.get(directory) !== undefined || identity !== undefined)
+      && !sameGitEntry(discovery.previous.stores.get(directory), identity)) {
+      if (discovery.previous.stores.get(directory) === undefined && identity !== undefined) {
+        paths.add(directory);
+        discovery.replacedMarkers.add(directory);
+        continue;
+      }
+      throw new Error("Sandbox Git metadata store identity changed during invocation");
+    }
+    for (const entry of gitControlEntries(discovery)) paths.add(join(directory, entry));
     if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
     for (const containerName of ["modules", "worktrees"]) {
       const container = join(directory, containerName);
+      if (discovery?.isPathExcluded?.(container)) continue;
       let stat;
       try { stat = lstatSync(container); }
       catch (error) { if (isMissingPath(error)) { paths.add(container); continue; } throw error; }
       if (stat.isSymbolicLink()) {
-        addProtectedRoutingPins(container, routingPins);
+        if (!discovery?.previous) addProtectedRoutingPins(container, routingPins);
         paths.add(container);
         continue;
       }
@@ -220,18 +322,31 @@ function addGitDirectoryControls(
           for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
             if (budget.entries-- <= 0) return false;
             const nested = join(child, entry.name);
+            if (discovery?.isPathExcluded?.(nested)) continue;
             let stat;
             try { stat = lstatSync(nested); }
             catch (error) { if (isMissingPath(error)) continue; return false; }
-            if (stat.isSymbolicLink()) { paths.add(nested); addProtectedRoutingPins(nested, routingPins); continue; }
+            if (stat.isSymbolicLink()) {
+              paths.add(nested);
+              if (!discovery?.previous) addProtectedRoutingPins(nested, routingPins);
+              continue;
+            }
             if (!stat.isDirectory()) continue;
+            if (discovery?.previous && !discovery.previous.stores.has(nested)) {
+              discovery.stores.set(nested, gitEntryIdentity(nested));
+              paths.add(nested);
+              discovery.replacedMarkers.add(nested);
+              continue;
+            }
             // Metadata stores are identified by HEAD just like worktree markers.
             // Grouping directories are still traversed for nested submodule names.
             if (hasGitHead(nested) || containerName === "worktrees") queue.push(nested);
             else {
               // An existing grouping directory can become a module store in
               // the same invocation; protect its future controls as well.
-              for (const control of GIT_CONTROL_ENTRIES) paths.add(join(nested, control));
+              discovery?.stores.set(nested, gitEntryIdentity(nested));
+              if (discovery) queue.push(nested);
+              for (const control of gitControlEntries(discovery)) paths.add(join(nested, control));
               if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
               directories.push(nested);
             }
@@ -244,20 +359,143 @@ function addGitDirectoryControls(
   return true;
 }
 
+/**
+ * Capture the bounded Linux control set without creating missing mount targets.
+ * A post-command pass uses only pre-resolved stores: newly introduced routing
+ * bytes and marker links never choose a host path for quarantine.
+ */
+export function snapshotSandboxGitControls(
+  writeRoots: readonly string[], previous?: SandboxGitControlSnapshot,
+): SandboxGitControlSnapshot {
+  if (previous) previous = restrictSandboxGitControlSnapshot(previous, writeRoots);
+  const roots = previous ? new Map(previous.roots) : new Map(
+    [...new Set(writeRoots.map(root => resolvePolicyPath(root, process.cwd())))].map(root => [root, gitEntryIdentity(root)] as const),
+  );
+  const discovery: GitControlDiscovery = {
+    roots: [...roots.keys()], markers: new Map(), stores: new Map(), markerStores: new Map(), replacedMarkers: new Set(),
+    directories: new Map(), directoryTargets: new Map(), directoryDepths: new Map(), storeMissingAncestors: new Map(), scannedStores: new Set(), bareEntries: new Map(),
+    cleanup: true, quarantineRoot: resolvePolicyPath(sandboxQuarantineRoot(), process.cwd()),
+    ...(previous?.isPathExcluded ? { isPathExcluded: previous.isPathExcluded } : {}),
+    ...(previous ? { previous } : {}),
+  };
+  const paths = new Set<string>();
+  const pins = new Set<string>();
+  const budget: GitDiscoveryBudget = { entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES };
+  const bareRoots = previous?.bareRoots ?? new Set(classifyNonRepositoryWriteRoots([...roots.keys()], budget));
+  for (const root of bareRoots) for (const name of [...SANDBOX_BARE_REPOSITORY_ENTRIES, "hooks"]) {
+    const path = join(root, name);
+    if (!discovery.isPathExcluded?.(path)) discovery.bareEntries.set(path, gitEntryIdentity(path));
+  }
+  for (const [root, identity] of roots) {
+    if (discovery.isPathExcluded?.(root)) continue;
+    if (isPhysicalPathWithin(resolvePolicyPath(sandboxQuarantineRoot(), process.cwd()), root)) continue;
+    const current = gitEntryIdentity(root);
+    if (identity !== undefined && !sameGitEntry(identity, current)) {
+      throw new Error("Sandbox Git cleanup write root identity changed during invocation");
+    }
+    if (current === undefined) continue;
+    if (current.kind !== "directory" || realpathSync.native(root) !== root) {
+      throw new Error("Sandbox Git cleanup write root is not a physical directory");
+    }
+    if (!addGitControlPaths(join(root, ".git"), paths, pins, budget, discovery)
+      || !addNestedGitControlPaths(root, paths, pins, budget, discovery)) {
+      throw new Error("Sandbox Git cleanup scan could not complete within its discovery budget");
+    }
+  }
+  if (previous) {
+    const stores = [...new Set([...previous.markerStores.values()].flat())].filter(store =>
+      ![...discovery.replacedMarkers].some(marker => isPhysicalPathWithin(marker, store)));
+    if (!addGitDirectoryControls(stores, paths, pins, budget, discovery)) {
+      throw new Error("Sandbox Git cleanup scan could not complete within its discovery budget");
+    }
+  }
+  return finishGitControlSnapshot(roots, bareRoots, discovery, paths);
+}
+
+/** Narrow the captured grant set without re-reading or trusting later metadata. */
+export function restrictSandboxGitControlSnapshot(
+  snapshot: SandboxGitControlSnapshot, effectiveWriteRoots: readonly string[],
+  isPathExcluded?: (path: string, includesChildren?: boolean) => boolean,
+): SandboxGitControlSnapshot {
+  const effective = new Set(effectiveWriteRoots.map(root => resolve(root)));
+  const excluded = snapshot.isPathExcluded && isPathExcluded
+    ? (path: string, includesChildren?: boolean): boolean => snapshot.isPathExcluded!(path, includesChildren) || isPathExcluded(path, includesChildren)
+    : isPathExcluded ?? snapshot.isPathExcluded;
+  const roots = new Map([...snapshot.roots].filter(([root]) => effective.has(root) && !excluded?.(root)));
+  const withinRoots = (path: string): boolean => !excluded?.(path) && [...roots.keys()].some(root => isPhysicalPathWithin(root, path));
+  const markerStores = new Map([...snapshot.markerStores].filter(([marker]) =>
+    [...roots.keys()].some(root => isPhysicalPathWithin(root, marker))));
+  const referencedStores = new Set([...markerStores.values()].flat());
+  return {
+    roots,
+    bareRoots: new Set([...snapshot.bareRoots].filter(root => roots.has(root))),
+    entries: new Map([...snapshot.entries].filter(([path]) => withinRoots(path))),
+    markers: new Map([...snapshot.markers].filter(([path]) => withinRoots(path))),
+    directories: new Map([...snapshot.directories].filter(([path]) => withinRoots(path))),
+    directoryTargets: new Map([...snapshot.directoryTargets].filter(([path]) => withinRoots(path))),
+    ...(snapshot.directoryDepths ? { directoryDepths: new Map([...snapshot.directoryDepths].filter(([path]) => withinRoots(path))) } : {}),
+    storeMissingAncestors: new Map([...snapshot.storeMissingAncestors].filter(([path]) => withinRoots(path) || referencedStores.has(path))),
+    stores: new Map([...snapshot.stores].filter(([path]) => withinRoots(path) || referencedStores.has(path))),
+    markerStores,
+    replacedMarkers: new Set([...snapshot.replacedMarkers].filter(withinRoots)),
+    ...(excluded ? { isPathExcluded: excluded } : {}),
+  };
+}
+
+function finishGitControlSnapshot(
+  roots: ReadonlyMap<string, GitControlEntryIdentity | undefined>, bareRoots: ReadonlySet<string>,
+  discovery: GitControlDiscovery, paths: ReadonlySet<string>,
+): SandboxGitControlSnapshot {
+  const entries = new Map<string, GitControlEntryIdentity | undefined>();
+  for (const path of new Set([...paths, ...discovery.markers.keys()])) {
+    if (!discovery.isPathExcluded?.(path) && [...roots.keys()].some(root => isPhysicalPathWithin(root, path))) entries.set(path, gitEntryIdentity(path));
+  }
+  for (const root of bareRoots) for (const name of [...SANDBOX_BARE_REPOSITORY_ENTRIES, "hooks"]) {
+    if (!discovery.isPathExcluded?.(join(root, name))) entries.set(join(root, name), discovery.bareEntries.get(join(root, name)));
+  }
+  return {
+    roots, bareRoots, entries, markers: discovery.markers, stores: discovery.stores, markerStores: discovery.markerStores,
+    replacedMarkers: discovery.replacedMarkers,
+    directories: discovery.directories,
+    directoryTargets: discovery.directoryTargets,
+    directoryDepths: discovery.directoryDepths,
+    storeMissingAncestors: discovery.storeMissingAncestors,
+    ...(discovery.isPathExcluded ? { isPathExcluded: discovery.isPathExcluded } : {}),
+  };
+}
+
 function addGitControlPaths(
   marker: string,
   paths: Set<string>,
   routingPins: Set<string>,
   budget: GitDiscoveryBudget,
+  discovery?: GitControlDiscovery,
 ): boolean {
+  if (discovery?.isPathExcluded?.(marker)) return true;
   let entry;
   try { entry = lstatSync(marker); }
   catch (error) {
-    if (isMissingPath(error)) { paths.add(marker); return true; }
+    if (isMissingPath(error)) { paths.add(marker); discovery?.markers.set(marker, undefined); return true; }
     if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) {
       return false;
     }
     throw error;
+  }
+  const markerIdentity = gitEntryIdentity(marker);
+  discovery?.markers.set(marker, markerIdentity);
+  if (discovery?.previous) {
+    const original = discovery.previous.markers.get(marker);
+    const unchanged = sameGitEntry(original, markerIdentity)
+      && (markerIdentity?.kind !== "file" || (original !== undefined && markerIdentity !== undefined && original.size === markerIdentity.size
+        && original.mtimeMs === markerIdentity.mtimeMs && original.ctimeMs === markerIdentity.ctimeMs));
+    if (!unchanged) {
+      paths.add(marker);
+      discovery.replacedMarkers.add(marker);
+      return true;
+    }
+    const stores = discovery.previous.markerStores.get(marker) ?? [];
+    discovery.markerStores.set(marker, stores);
+    return addGitDirectoryControls(stores, paths, routingPins, budget, discovery);
   }
   if (!entry.isDirectory()) paths.add(marker);
   // A marker link is not a supported repository pointer. Never read its target
@@ -273,16 +511,23 @@ function addGitControlPaths(
       if (pointer.startsWith("gitdir: ")) throw new Error("Invalid sandbox Git directory pointer");
       return true;
     }
-    gitDir = addGitMetadataTarget(match[1]!, dirname(marker), paths, routingPins);
+    gitDir = addGitMetadataTarget(match[1]!, dirname(marker), paths, routingPins, discovery);
   } else if (!entry.isDirectory()) {
     throw new Error("Invalid sandbox Git marker");
   }
-  if (!addGitDirectoryControls(gitDir, paths, routingPins, budget)) return false;
+  discovery?.markerStores.set(marker, [gitDir]);
+  const relatedStores = discovery ? new Set<string>() : undefined;
+  if (!addGitDirectoryControls(gitDir, paths, routingPins, budget, discovery, relatedStores)) return false;
+  if (discovery && relatedStores) {
+    discovery.markerStores.set(marker, [...relatedStores]);
+    return true;
+  }
   const commonPath = readGitMetadata(join(gitDir, "commondir"), budget);
   if (commonPath === undefined) return true;
   if (!commonPath || /[\r\n\0]/.test(commonPath)) throw new Error("Invalid sandbox Git common directory");
   const commonDir = addGitMetadataTarget(commonPath, gitDir, paths, routingPins);
-  return addGitDirectoryControls(commonDir, paths, routingPins, budget);
+  discovery?.markerStores.set(marker, [gitDir, commonDir]);
+  return addGitDirectoryControls(commonDir, paths, routingPins, budget, discovery);
 }
 
 function addNestedGitControlPaths(
@@ -290,35 +535,76 @@ function addNestedGitControlPaths(
   paths: Set<string>,
   routingPins: Set<string>,
   budget: GitDiscoveryBudget,
+  discovery?: GitControlDiscovery,
 ): boolean {
   if (budget.entries <= 0) return false;
   let canonicalRoot: string;
   try { canonicalRoot = realpathSync.native(root); }
   catch (error) { return isMissingPath(error); }
   if (!isPhysicalPathWithin(root, canonicalRoot) || !isPhysicalPathWithin(canonicalRoot, root)) return false;
-  const queue = [{ path: root, depth: 0 }];
+  const queue = [{ path: root, depth: 0 }, ...(discovery?.previous ? [...discovery.previous.directoryTargets.keys()]
+    .filter(path => isPhysicalPathWithin(root, path))
+    .map(path => ({ path, depth: discovery.previous!.directoryDepths?.get(path) ?? SANDBOX_GIT_SCAN_DEPTH })) : [])];
   const visited = new Set<string>();
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]!;
+    if (discovery?.isPathExcluded?.(current.path)) continue;
+    discovery?.directoryDepths.set(current.path, current.depth);
+    const routeIdentity = discovery ? gitEntryIdentity(current.path) : undefined;
+    if (discovery?.previous && routeIdentity?.kind === "link"
+      && !discovery.previous.directoryTargets.has(current.path)
+      && !sameGitEntry(discovery.previous.directories.get(current.path), routeIdentity)) {
+      discovery.directories.set(current.path, routeIdentity);
+      continue;
+    }
     let canonical: string;
-    try { canonical = realpathSync.native(current.path); }
-    catch (error) { if (isMissingPath(error)) continue; return false; }
+    if (discovery?.previous?.directoryTargets.has(current.path)) {
+      const frozenTarget = discovery.previous.directoryTargets.get(current.path);
+      discovery.directories.set(current.path, routeIdentity);
+      if (frozenTarget === undefined) {
+        discovery.replacedMarkers.add(current.path);
+        continue;
+      }
+      discovery.directoryTargets.set(current.path, frozenTarget);
+      try {
+        if (realpathSync.native(current.path) !== frozenTarget
+          || !sameGitEntry(discovery.previous.directories.get(current.path), gitEntryIdentity(current.path))) discovery.replacedMarkers.add(current.path);
+      } catch {
+        discovery.replacedMarkers.add(current.path);
+      }
+      if (!isPhysicalPathWithin(canonicalRoot, frozenTarget) || discovery.isPathExcluded?.(frozenTarget)) continue;
+      if (!sameGitEntry(discovery.previous.directories.get(frozenTarget), gitEntryIdentity(frozenTarget))
+        || realpathSync.native(frozenTarget) !== frozenTarget) {
+        throw new Error("Sandbox Git directory route target identity changed during invocation");
+      }
+      canonical = frozenTarget;
+    } else {
+      try { canonical = realpathSync.native(current.path); }
+      catch (error) { if (isMissingPath(error)) continue; return false; }
+    }
+    if (discovery?.isPathExcluded?.(canonical)) continue;
+    if (discovery && !discovery.previous && routeIdentity?.kind === "link") {
+      if (!sameGitEntry(routeIdentity, gitEntryIdentity(current.path))) return false;
+      discovery.directories.set(current.path, routeIdentity);
+      discovery.directoryTargets.set(current.path, canonical);
+    }
     // A directory link may be followed only within this admitted root. Another
     // admitted root is discovered separately with the same invocation budget.
     if (!isPhysicalPathWithin(canonicalRoot, canonical)) continue;
     if (visited.has(canonical)) continue;
     visited.add(canonical);
+    discovery?.directories.set(canonical, gitEntryIdentity(canonical));
     const beforePathCount = paths.size;
     const beforeRoutingPinCount = routingPins.size;
     if (current.depth > 0) {
-      const marker = join(current.path, ".git");
+      const marker = join(discovery ? canonical : current.path, ".git");
       let entry;
-      try { entry = lstatSync(marker); }
+      try { if (!discovery?.isPathExcluded?.(marker)) entry = lstatSync(marker); }
       catch (error) { if (!isMissingPath(error)) return false; }
       // A directory repository is identified by its HEAD marker. Pointer files
       // remain controls even if their target is not yet a valid repository.
-      if (entry !== undefined && (!entry.isDirectory() || hasGitHead(marker))) {
-        if (!addGitControlPaths(marker, paths, routingPins, budget)) return false;
+      if (entry !== undefined && (discovery || process.platform === "linux" || !entry.isDirectory() || hasGitHead(marker))) {
+        if (!addGitControlPaths(marker, paths, routingPins, budget, discovery)) return false;
       }
     }
     if ((paths.size !== beforePathCount || routingPins.size !== beforeRoutingPinCount)
@@ -327,17 +613,18 @@ function addNestedGitControlPaths(
     // can route them to an arbitrary directory name. Discover every macOS
     // indirection, including dependency and metadata trees, or revoke the
     // incomplete grant when the shared entry/path budgets are exhausted.
-    if (process.platform !== "darwin" && current.depth === SANDBOX_GIT_SCAN_DEPTH) continue;
+    if ((discovery || process.platform !== "darwin") && current.depth === SANDBOX_GIT_SCAN_DEPTH) continue;
     let directory;
-    try { directory = opendirSync(current.path); }
+    try { directory = opendirSync(discovery ? canonical : current.path); }
     catch (error) { if (isMissingPath(error)) continue; return false; }
     try {
       for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
         if (budget.entries-- <= 0) {
           return false;
         }
-        if (process.platform !== "darwin" && gitScanIgnoredDirectories.has(entry.name.toLowerCase())) continue;
-        const child = join(current.path, entry.name);
+        if ((discovery || process.platform !== "darwin") && gitScanIgnoredDirectories.has(entry.name.toLowerCase())) continue;
+        const child = join(discovery ? canonical : current.path, entry.name);
+        if (discovery && isPhysicalPathWithin(discovery.quarantineRoot, child)) continue;
         let descend = entry.isDirectory() || entry.isSymbolicLink();
         // Some filesystems return DT_UNKNOWN. Such an entry is not evidence
         // that a directory cannot contain protected metadata.
@@ -355,8 +642,8 @@ function addNestedGitControlPaths(
 }
 
 /**
- * Literal denies include absent paths: the runtime must prevent their creation,
- * rather than filtering the policy by what happens to exist before a command.
+ * Sensitive/application literal denies include absent paths. Linux Git controls
+ * alone use existing entries plus a recoverable post-command quarantine sweep.
  * Store locations come from their writers so changing a layout also changes
  * this boundary. Existing sensitive-write protection is unioned separately.
  * Its paths are inspected only for routing links; their owning union remains
@@ -369,6 +656,7 @@ export function buildMandatorySandboxWritePolicy(
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
+  gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
   const rootSnapshots = writeRoots.map(original => ({
     original,
@@ -390,14 +678,27 @@ export function buildMandatorySandboxWritePolicy(
   const budget = { entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES };
   const routingPins = new Set<string>();
   const roots = [...new Set(rootSnapshots.map(root => root.physical))];
-  for (const root of classifyNonRepositoryWriteRoots(roots, budget)) {
+  const rootIdentities = new Map(roots.map(root => [root, gitEntryIdentity(root)] as const));
+  const bareRoots = new Set(classifyNonRepositoryWriteRoots(roots, budget));
+  const gitDiscovery: GitControlDiscovery | undefined = process.platform === "linux" ? {
+    roots, cleanup: false, quarantineRoot: resolvePolicyPath(sandboxQuarantineRoot(), process.cwd()),
+    markers: new Map(), stores: new Map(), markerStores: new Map(), replacedMarkers: new Set(), directories: new Map(), directoryTargets: new Map(), directoryDepths: new Map(), storeMissingAncestors: new Map(), scannedStores: new Set(), bareEntries: new Map(),
+  } : undefined;
+  for (const root of bareRoots) {
+    if (gitDiscovery) for (const name of [...SANDBOX_BARE_REPOSITORY_ENTRIES, "hooks"]) {
+      gitDiscovery.bareEntries.set(join(root, name), gitEntryIdentity(join(root, name)));
+    }
     for (const entry of [...SANDBOX_BARE_REPOSITORY_ENTRIES, ...(hasGitHead(root) ? ["hooks"] : [])]) {
       const path = join(root, entry);
       if (process.platform === "darwin") paths.add(path);
       else {
         // Never manufacture a host bare-layout entry merely to mount a deny.
-        try { lstatSync(path); paths.add(path); }
-        catch (error) { if (!isMissingPath(error)) throw error; }
+        if (gitDiscovery) {
+          if (gitDiscovery.bareEntries.get(path) !== undefined) paths.add(path);
+        } else {
+          try { lstatSync(path); paths.add(path); }
+          catch (error) { if (!isMissingPath(error)) throw error; }
+        }
       }
     }
   }
@@ -419,8 +720,8 @@ export function buildMandatorySandboxWritePolicy(
     if (revoked.has(root)) continue;
     const local = new Set<string>();
     const localRoutingPins = new Set<string>();
-    if (!addGitControlPaths(join(root, ".git"), local, localRoutingPins, budget)
-      || !addNestedGitControlPaths(root, local, localRoutingPins, budget)) {
+    if (!addGitControlPaths(join(root, ".git"), local, localRoutingPins, budget, gitDiscovery)
+      || !addNestedGitControlPaths(root, local, localRoutingPins, budget, gitDiscovery)) {
       const pathBytes = [...local, ...localRoutingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0);
       revoke(root, budget.entries <= 0 ? "entry-budget" : pathBytes > MAX_GIT_ROOT_POLICY_BYTES ? "path-budget" : "filesystem-access");
     }
@@ -428,6 +729,12 @@ export function buildMandatorySandboxWritePolicy(
     for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
   if (process.platform === "linux") {
+    // Missing Git binds manufacture host mountpoints and can change repository
+    // interpretation. The post-command owner handles newly created controls.
+    for (const path of discovered) {
+      try { lstatSync(path); }
+      catch (error) { if (isMissingPath(error)) discovered.delete(path); else throw error; }
+    }
     for (const path of paths) addProtectedRoutingPins(path, routingPins);
     for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins);
     for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins);
@@ -473,5 +780,9 @@ export function buildMandatorySandboxWritePolicy(
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries,
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
+    ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
+      new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),
+      new Set([...bareRoots].filter(root => !revoked.has(root))), gitDiscovery, discovered,
+    ) } : {}),
   };
 }

@@ -13,9 +13,11 @@ import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { holdSandboxGitWrites } from "../shared/host-git.js";
+import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
-import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
@@ -24,7 +26,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { buildMandatorySandboxWritePolicy, isGrantPathWithin } from "./sandbox-write-policy.js";
+import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
@@ -523,13 +525,19 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
 
 /** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
-const bareRepositoryCleanups = new Map<string, { cleanup: () => string | undefined; complete: (outcome: SandboxCleanupOutcome) => void }>();
+interface PendingGitCleanup {
+  cleanup: () => string | undefined;
+  complete: (outcome: SandboxCleanupOutcome) => void;
+  releaseHostGit: () => void;
+}
+const bareRepositoryCleanups = new Map<string, PendingGitCleanup>();
 
-function completeBareRepositoryCleanup(pending: { cleanup: () => string | undefined; complete: (outcome: SandboxCleanupOutcome) => void }): void {
+function completeBareRepositoryCleanup(pending: PendingGitCleanup): void {
   let failure: string | undefined;
   let notice: string | undefined;
   try {
     notice = pending.cleanup();
+    pending.releaseHostGit();
   } catch (error) {
     failure = t("sandboxPolicy.cleanupFailed", { reason: errorMessage(error) });
     log.error(failure);
@@ -858,6 +866,7 @@ export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
   onNotice?: (notice: string) => void,
+  onGitControlSnapshot?: (snapshot: SandboxGitControlSnapshot) => void,
 ): Partial<SandboxRuntimeConfig> | undefined {
   // Windows keeps its separate per-exec filesystem admission contract.
   if (filesystem === undefined && process.platform === "win32") return undefined;
@@ -955,7 +964,48 @@ export function buildPerCommandSandboxCustomConfig(
       Object.freeze(entries);
     }
   }
+  if (mandatory.gitControlSnapshot) {
+    const snapshot = restrictSandboxGitControlSnapshot(
+      mandatory.gitControlSnapshot, spelledPathEntries(fs.allowWrite ?? [], "allowWrite"), gitQuarantineExclusions(fs, floor),
+    );
+    onGitControlSnapshot?.(snapshot);
+  }
   return { filesystem: Object.freeze(fs) as FilesystemConfig };
+}
+
+/** Cleanup cannot move host entries hidden or made read-only by this policy. */
+function gitQuarantineExclusions(filesystem: Partial<FilesystemConfig>, floor: readonly string[]): (path: string, includesChildren?: boolean) => boolean {
+  const normalize = (path: string): string => resolvePhysicalFilesystemPath(expandLeadingTilde(path), process.cwd(), MAX_WALK_UP);
+  const protectedReads = floor.map(normalize);
+  const readMasks = spelledPathEntries(filesystem.denyRead ?? [], "denyRead").map(normalize);
+  const writeRoots = spelledPathEntries(filesystem.allowWrite ?? [], "allowWrite").map(normalize);
+  const writeDenies = (filesystem.denyWrite ?? []).map(entry => typeof entry === "string"
+    ? { path: normalize(entry), literal: false }
+    : { path: normalize(entry.path), literal: entry.literal === true });
+  for (const pattern of [...protectedReads, ...readMasks, ...writeDenies.filter(entry => !entry.literal).map(entry => entry.path)]) {
+    if (/[\[\]]/u.test(pattern) || (pattern.includes("\\") && /[*?]/u.test(pattern))) {
+      throw new Error("Linux Git quarantine cannot represent a filesystem deny pattern");
+    }
+  }
+  const covers = (pattern: string, path: string): boolean => /[*?]/u.test(pattern)
+    ? readDenyCoversPath(pattern, path, true) : isGrantPathWithin(pattern, path);
+  const intersects = (pattern: string, path: string): boolean => {
+    if (covers(pattern, path)) return true;
+    const wildcard = pattern.search(/[*?\[\]]/u);
+    if (wildcard < 0) return isGrantPathWithin(path, pattern);
+    const literalPrefix = pattern.slice(0, wildcard);
+    const prefix = literalPrefix.endsWith("/") ? literalPrefix.replace(/\/+$/u, "") || "/" : dirname(literalPrefix);
+    return isGrantPathWithin(path, prefix) || isGrantPathWithin(prefix, path);
+  };
+  return (path, includesChildren = false) => {
+    const matches = includesChildren ? intersects : covers;
+    if (protectedReads.some(denied => matches(denied, path))) return true;
+    if (readMasks.some(denied => matches(denied, path)
+      && !writeRoots.some(root => covers(denied, root) && isGrantPathWithin(root, path)))) return true;
+    return writeDenies.some(denied => denied.literal
+      ? isGrantPathWithin(denied.path, path) || (includesChildren && isGrantPathWithin(path, denied.path))
+      : matches(denied.path, path));
+  };
 }
 
 /** The host spawns this; ASRT never spawns the workload itself. */
@@ -972,12 +1022,15 @@ export interface SandboxWrapResult {
   readonly notices?: readonly string[];
   /** The immutable discovery snapshot supplied to this invocation's runtime. */
   readonly filesystemPolicy?: Readonly<Pick<FilesystemConfig, "allowWrite" | "denyWrite">>;
+  /** Git identities captured by the same scan that selected the mounted denies. */
+  readonly gitControlSnapshot?: SandboxGitControlSnapshot;
 }
 
 function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: (() => string | undefined) | undefined, released: () => boolean): SandboxWrapResult {
   if (!cleanup) return wrapped;
+  const releaseHostGit = holdSandboxGitWrites(spelledPathEntries(wrapped.filesystemPolicy?.allowWrite ?? [], "allowWrite"));
   const cleanupCompleted = new Promise<SandboxCleanupOutcome>(complete => {
-    const pending = { cleanup, complete };
+    const pending = { cleanup, complete, releaseHostGit };
     if (released()) completeBareRepositoryCleanup(pending);
     else bareRepositoryCleanups.set(commandId, pending);
   });
@@ -1291,11 +1344,11 @@ function withholdUnder(
 }
 
 /** Use the shared policy grammar; unrepresented runtime patterns keep the deny. */
-function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
+function readDenyCoversPath(denied: string, canonicalPath: string, normalized = false): boolean {
   // Native patterns additionally support character classes and, on Windows,
   // environment references. Do not claim a safe carve-out from those forms.
   if (/[\[\]]/.test(denied) || (process.platform === "win32" && denied.includes("%"))) return true;
-  const pattern = canonicalizePathForMatch(expandLeadingTilde(denied));
+  const pattern = normalized ? denied : canonicalizePathForMatch(expandLeadingTilde(denied));
   for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
     if (globMatch(candidate, pattern) || globMatch(`${candidate}/`, pattern)) return true;
     if (dirname(candidate) === candidate) return false;
@@ -1946,9 +1999,10 @@ export async function wrapToolCommand(
   assertCommandId("wrapToolCommand", options.commandId);
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const notices: string[] = [];
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice));
+  let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; });
   const cleanupBare = process.platform === "linux"
-    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId) : undefined;
+    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1958,7 +2012,7 @@ export async function wrapToolCommand(
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  return trackBareRepositoryCleanup({ ...result, ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+  return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
 
@@ -2230,9 +2284,10 @@ async function wrapLongLivedCommand(
   assertCommandId(caller, options.commandId);
   await openEgressListener(SandboxManager, caller, options.commandId);
   const notices: string[] = [];
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice));
+  let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; });
   const cleanupBare = process.platform === "linux"
-    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId) : undefined;
+    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
@@ -2243,7 +2298,7 @@ async function wrapLongLivedCommand(
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  return trackBareRepositoryCleanup({ ...result, ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+  return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
 
@@ -2632,10 +2687,9 @@ export async function annotateWithSandboxViolations(
   const annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, [text, ...new Set(notices)].filter(Boolean).join("\n"));
   if (annotated.includes("`.git` metadata is protected; rerun outside the sandbox after approval")) return annotated;
   const deniedMetadata = /\.git(?:[\\/\s:'"`]|$)/iu.test(annotated)
-    && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format)/iu.test(annotated);
-  // A missing-marker bind on Linux is a read-only empty file. Repository
-  // creation can therefore report an invalid marker or a nonempty destination
-  // before it reaches the attempted write. This is a diagnostic, never a retry.
+    && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format|not a directory)/iu.test(annotated);
+  // Protected metadata can make repository creation fail before a direct write
+  // error is reported. This only explains the existing host-approval route.
   const blockedCloneDestination = command !== undefined && /\bgit\b[^\n]*\bclone\b/u.test(command)
     && /destination path .*already exists and is not an empty directory/iu.test(annotated);
   if (deniedMetadata || blockedCloneDestination) {

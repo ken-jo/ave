@@ -1,12 +1,13 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, loadLocaleMessages, setLocale } from "../../i18n/index.js";
 import * as atomicFile from "../../lib/atomic-file.js";
 import { prepareSandboxBareRepositoryCleanup } from "../sandbox-bare-repository-cleanup.js";
 import { createSandboxQuarantine, sandboxQuarantineRoot } from "../sandbox-quarantine.js";
+import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 
 const { warnings } = vi.hoisted(() => ({ warnings: vi.fn() }));
 vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ warn: warnings }) }));
@@ -19,7 +20,11 @@ describe("sandbox protected Git quarantine", () => {
   let base: string;
   let root: string;
   let previousLocale: ReturnType<typeof getLocale>;
-  beforeEach(() => {
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(fs.openSync).mockImplementation(actual.openSync);
+    vi.mocked(fs.lstatSync).mockImplementation(actual.lstatSync);
+    vi.mocked(fs.closeSync).mockImplementation(actual.closeSync);
     previousLocale = getLocale();
     base = realpathSync.native(mkdtempSync(join(tmpdir(), "sandbox-bare-cleanup-")));
     root = join(base, "work");
@@ -176,6 +181,7 @@ describe("sandbox protected Git quarantine", () => {
         replace(join(previous, "config"), join(directories.get(Number(target[1]))!, target[2]!));
       }
     });
+    close.mockClear();
     expect(() => quarantine.move(original)).toThrow(/identity changed/);
     expect(close).toHaveBeenCalledTimes(2);
     expect(readFileSync(join(outside, "config"), "utf8")).toBe("unrelated user entry");
@@ -255,7 +261,7 @@ describe("sandbox protected Git quarantine", () => {
     renameSync(root, join(base, "previous"));
     mkdirSync(root);
     writeFileSync(join(root, "HEAD"), "unrelated");
-    expect(cleanup()).toBeUndefined();
+    expect(cleanup).toThrow("write root identity changed");
     expect(readFileSync(join(root, "HEAD"), "utf8")).toBe("unrelated");
     expect(warnings).toHaveBeenCalledWith(expect.stringContaining("replaced root"));
   });
@@ -269,5 +275,387 @@ describe("sandbox protected Git quarantine", () => {
     expect(cleanup()).toBeUndefined();
     expect(readFileSync(join(root, "HEAD"), "utf8")).toBe("ordinary source file");
     expect(warnings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "config", "config.worktree", "commondir", "gitdir", "hooks/pre-commit", "info/attributes",
+    "objects/info/alternates", "objects/info/http-alternates", "modules/new/config", "worktrees/new/gitdir",
+  ])("quarantines a newly created %s while retaining ordinary repository data", async (control) => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `new-${control}`);
+    const path = join(marker, control);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "new control");
+    const notice = cleanup();
+    expect(notice).toContain("moved to quarantine");
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(join(marker, "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+    expect(quarantinedEntries()).toHaveLength(1);
+  });
+
+  it.each([0, 1, 3])("quarantines a newly created hooks-only marker at depth %s without requiring HEAD", async depth => {
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `new-marker-${depth}`);
+    const parent = join(root, ...Array.from({ length: depth }, (_, index) => `nested-${index}`));
+    const marker = join(parent, ".git");
+    mkdirSync(join(marker, "hooks"), { recursive: true });
+    writeFileSync(join(marker, "hooks", "pre-commit"), "preserved hook");
+    const notice = cleanup();
+    expect(notice).toContain(JSON.stringify(marker));
+    expect(existsSync(marker)).toBe(false);
+    const [moved] = quarantinedEntries();
+    expect(readFileSync(join(moved!, "hooks", "pre-commit"), "utf8")).toBe("preserved hook");
+  });
+
+  it.each(["file", "link"] as const)("quarantines a new marker %s without reading its external target", async kind => {
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "config"), "external configuration");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `new-marker-${kind}`);
+    const marker = join(root, ".git");
+    if (kind === "file") writeFileSync(marker, `gitdir: ${outside}\n`);
+    else symlinkSync(outside, marker, "dir");
+    expect(cleanup()).toContain(JSON.stringify(marker));
+    expect(existsSync(marker)).toBe(false);
+    const [moved] = quarantinedEntries();
+    if (kind === "link") expect(lstatSync(moved!).isSymbolicLink()).toBe(true);
+    else expect(readFileSync(moved!, "utf8")).toBe(`gitdir: ${outside}\n`);
+    expect(readFileSync(join(outside, "config"), "utf8")).toBe("external configuration");
+  });
+
+  it("moves new routing pointers and symbolic controls without selecting their targets", async () => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "config"), "unrelated config");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "untrusted-routing");
+    writeFileSync(join(marker, "commondir"), outside);
+    symlinkSync(outside, join(marker, "hooks"), "dir");
+    cleanup();
+    expect(readFileSync(join(outside, "config"), "utf8")).toBe("unrelated config");
+    const moved = quarantinedEntries();
+    expect(moved).toHaveLength(2);
+    expect(moved.some(path => lstatSync(path).isSymbolicLink() && readlinkSync(path) === outside)).toBe(true);
+  });
+
+  it.each(["modules", "worktrees"] as const)("moves a new cyclic %s link without resolving its target", async name => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "root HEAD");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `cyclic-${name}`);
+    const path = join(marker, name);
+    symlinkSync(name, path, "dir");
+    expect(cleanup()).toContain(JSON.stringify(path));
+    const [moved] = quarantinedEntries();
+    expect(lstatSync(moved!).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(moved!)).toBe(name);
+  });
+
+  it("quarantines a replaced marker without treating the replacement as a trusted store", async () => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "original HEAD");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "replaced-marker");
+    renameSync(marker, join(root, "previous-metadata"));
+    mkdirSync(marker);
+    writeFileSync(join(marker, "commondir"), "invalid new routing bytes");
+    expect(cleanup()).toContain(JSON.stringify(marker));
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(join(root, "previous-metadata", "HEAD"), "utf8")).toBe("original HEAD");
+    expect(readFileSync(join(quarantinedEntries()[0]!, "commondir"), "utf8")).toBe("invalid new routing bytes");
+  });
+
+  it("never changes controls in an inaccessible external store selected before preparation", async () => {
+    const store = join(base, "external-store");
+    mkdirSync(store);
+    writeFileSync(join(store, "HEAD"), "external HEAD");
+    writeFileSync(join(root, ".git"), `gitdir: ${store}\n`);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "external-store");
+    writeFileSync(join(store, "config.worktree"), "external new control");
+    expect(cleanup()).toBeUndefined();
+    expect(readFileSync(join(store, "config.worktree"), "utf8")).toBe("external new control");
+  });
+
+  it("sweeps an already resolved common store inside a writable root through an external gitdir", async () => {
+    const store = join(base, "external-store");
+    const common = join(root, "common");
+    mkdirSync(store);
+    mkdirSync(common);
+    writeFileSync(join(store, "HEAD"), "external HEAD");
+    writeFileSync(join(store, "commondir"), `${common}\n`);
+    writeFileSync(join(root, ".git"), `gitdir: ${store}\n`);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "writable-common");
+    writeFileSync(join(common, "config.worktree"), "new common control");
+    expect(cleanup()).toContain(JSON.stringify(join(common, "config.worktree")));
+    expect(existsSync(join(common, "config.worktree"))).toBe(false);
+    expect(readFileSync(quarantinedEntries()[0]!, "utf8")).toBe("new common control");
+    expect(readFileSync(join(store, "HEAD"), "utf8")).toBe("external HEAD");
+  });
+
+  it("sweeps common metadata already resolved from a module store", async () => {
+    const marker = join(root, ".git");
+    const module = join(marker, "modules", "inner");
+    const common = join(root, "shared-module");
+    mkdirSync(module, { recursive: true });
+    mkdirSync(common);
+    writeFileSync(join(marker, "HEAD"), "root HEAD");
+    writeFileSync(join(module, "HEAD"), "module HEAD");
+    writeFileSync(join(module, "commondir"), `${common}\n`);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "module-common");
+    writeFileSync(join(common, "config.worktree"), "new module control");
+    expect(cleanup()).toContain(JSON.stringify(join(common, "config.worktree")));
+    expect(existsSync(join(common, "config.worktree"))).toBe(false);
+    expect(readFileSync(join(module, "HEAD"), "utf8")).toBe("module HEAD");
+  });
+
+  it.each(["modules", "worktrees"] as const)("quarantines an entirely new %s metadata store", async container => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "existing root HEAD");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `new-${container}-store`);
+    const store = join(marker, container, "new");
+    mkdirSync(join(store, "objects"), { recursive: true });
+    mkdirSync(join(store, "refs"));
+    writeFileSync(join(store, "HEAD"), "new store HEAD");
+    writeFileSync(join(store, "config"), "new store configuration");
+    expect(cleanup()).toContain(JSON.stringify(store));
+    expect(existsSync(store)).toBe(false);
+    const [moved] = quarantinedEntries();
+    expect(readFileSync(join(moved!, "HEAD"), "utf8")).toBe("new store HEAD");
+    expect(readFileSync(join(moved!, "config"), "utf8")).toBe("new store configuration");
+    expect(lstatSync(join(moved!, "objects")).isDirectory()).toBe(true);
+    expect(readFileSync(join(marker, "HEAD"), "utf8")).toBe("existing root HEAD");
+  });
+
+  it.each(["metadata", "bare"] as const)("keeps the actual policy snapshot before a new %s control appears", async kind => {
+    const marker = join(root, ".git");
+    if (kind === "metadata") {
+      mkdirSync(marker);
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const initial = (() => {
+      try {
+        Object.defineProperty(process, "platform", { ...descriptor, value: "linux" });
+        return buildMandatorySandboxWritePolicy([root]).gitControlSnapshot;
+      } finally {
+        Object.defineProperty(process, "platform", descriptor);
+      }
+    })();
+    expect(initial).toBeDefined();
+    const path = kind === "metadata" ? join(marker, "config.worktree") : join(root, "config");
+    writeFileSync(path, "appeared after policy");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "actual-policy-baseline", initial);
+    expect(cleanup()).toContain(JSON.stringify(path));
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("quarantines only effective roots when a later floor withholds another captured root", async () => {
+    const retained = join(root, "retained");
+    const withheld = join(root, "withheld");
+    for (const directory of [retained, withheld]) {
+      mkdirSync(join(directory, ".git"), { recursive: true });
+      writeFileSync(join(directory, ".git", "HEAD"), "ref: refs/heads/main\n");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const initial = (() => {
+      try {
+        Object.defineProperty(process, "platform", { ...descriptor, value: "linux" });
+        return buildMandatorySandboxWritePolicy([retained, withheld]).gitControlSnapshot;
+      } finally {
+        Object.defineProperty(process, "platform", descriptor);
+      }
+    })();
+    expect(initial?.roots.size).toBe(2);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([retained], "effective-roots", initial);
+    const retainedControl = join(retained, ".git", "config.worktree");
+    const withheldControl = join(withheld, ".git", "config.worktree");
+    writeFileSync(retainedControl, "retained root new control");
+    writeFileSync(withheldControl, "withheld root external control");
+    const notice = cleanup();
+    expect(notice).toContain(JSON.stringify(retainedControl));
+    expect(notice).not.toContain(withheldControl);
+    expect(existsSync(retainedControl)).toBe(false);
+    expect(readFileSync(withheldControl, "utf8")).toBe("withheld root external control");
+  });
+
+  it("does not use a new ordinary directory link to expand post-command repository coverage", async () => {
+    const deep = join(root, "a", "b", "c", "d");
+    mkdirSync(join(deep, ".git"), { recursive: true });
+    writeFileSync(join(deep, ".git", "HEAD"), "deep repository HEAD");
+    writeFileSync(join(deep, ".git", "config"), "deep original config");
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "root HEAD");
+    const initial = snapshotSandboxGitControls([root]);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "new-directory-alias", initial);
+    const alias = join(root, "alias");
+    symlinkSync(deep, alias, "dir");
+    const control = join(root, ".git", "config.worktree");
+    writeFileSync(control, "new root control");
+    const after = snapshotSandboxGitControls([root], initial);
+    expect(after.directories.get(alias)?.kind).toBe("link");
+    expect(after.markers.has(join(deep, ".git"))).toBe(false);
+    const notice = cleanup();
+    expect(notice).toContain(JSON.stringify(control));
+    expect(notice).not.toContain(JSON.stringify(join(deep, ".git")));
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(deep, ".git", "config"), "utf8")).toBe("deep original config");
+    expect(existsSync(control)).toBe(false);
+  });
+
+  it("uses an unchanged initial directory link only through its physical target", async () => {
+    const deep = join(root, "a", "b", "c", "d");
+    mkdirSync(deep, { recursive: true });
+    const alias = join(root, "alias");
+    symlinkSync(deep, alias, "dir");
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "initial-directory-alias");
+    mkdirSync(join(deep, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(deep, ".git", "hooks", "pre-commit"), "new hook");
+    expect(cleanup()).toContain(JSON.stringify(join(deep, ".git")));
+    expect(existsSync(join(deep, ".git"))).toBe(false);
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+  });
+
+  it("preserves an excluded nested store while sweeping accessible controls in the same write root", async () => {
+    const blocked = join(root, "private-store");
+    for (const directory of [root, blocked]) {
+      mkdirSync(join(directory, ".git"), { recursive: true });
+      writeFileSync(join(directory, ".git", "HEAD"), "ref: refs/heads/main\n");
+    }
+    const initial = restrictSandboxGitControlSnapshot(snapshotSandboxGitControls([root]), [root], path =>
+      isGrantPathWithin(blocked, path));
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "excluded-nested-store", initial);
+    const accessibleControl = join(root, ".git", "config.worktree");
+    const blockedControl = join(blocked, ".git", "config.worktree");
+    writeFileSync(accessibleControl, "new accessible control");
+    writeFileSync(blockedControl, "concurrent external control");
+    const notice = cleanup();
+    expect(notice).toContain(JSON.stringify(accessibleControl));
+    expect(notice).not.toContain(blocked);
+    expect(existsSync(accessibleControl)).toBe(false);
+    expect(readFileSync(blockedControl, "utf8")).toBe("concurrent external control");
+  });
+
+  it("fails instead of moving a new metadata directory containing an excluded descendant", async () => {
+    const marker = join(root, ".git");
+    const protectedPath = join(marker, "private-data");
+    const initial = restrictSandboxGitControlSnapshot(snapshotSandboxGitControls([root]), [root], (path, includesChildren) =>
+      isGrantPathWithin(protectedPath, path) || (includesChildren === true && isGrantPathWithin(path, protectedPath)));
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "excluded-descendant", initial);
+    mkdirSync(marker);
+    writeFileSync(protectedPath, "external protected data");
+    writeFileSync(join(marker, "config"), "new config");
+    expect(cleanup).toThrow("quarantine would include a protected path");
+    expect(readFileSync(protectedPath, "utf8")).toBe("external protected data");
+    expect(readFileSync(join(marker, "config"), "utf8")).toBe("new config");
+    expect(quarantinedEntries()).toEqual([]);
+  });
+
+  it.each(["retargeted", "removed"] as const)("keeps a frozen directory target when its intermediate route is %s", async mode => {
+    const known = join(root, "known", "a", "b", "c");
+    const foreign = join(root, "foreign", "a", "b", "c");
+    for (const directory of [known, foreign]) {
+      mkdirSync(join(directory, ".git"), { recursive: true });
+      writeFileSync(join(directory, ".git", "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(directory, ".git", "config"), "pre-existing configuration");
+    }
+    mkdirSync(join(root, ".cache"));
+    const router = join(root, ".cache", "router");
+    const alias = join(root, "alias");
+    symlinkSync(known, router, "dir");
+    symlinkSync(join(".cache", "router"), alias, "dir");
+    const initial = snapshotSandboxGitControls([root]);
+    expect(initial.directoryTargets.get(alias)).toBe(known);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `frozen-${mode}`, initial);
+    if (mode === "retargeted") {
+      rmSync(router);
+      symlinkSync(foreign, router, "dir");
+    } else rmSync(alias);
+    const control = join(known, ".git", "config.worktree");
+    writeFileSync(control, "new known-target control");
+    const current = snapshotSandboxGitControls([root], initial);
+    expect(current.directoryTargets.get(alias)).toBe(known);
+    expect(current.replacedMarkers.has(alias)).toBe(true);
+    expect(current.markers.has(join(foreign, ".git"))).toBe(false);
+    const notice = cleanup();
+    expect(notice).toContain(JSON.stringify(control));
+    expect(notice).not.toContain(foreign);
+    expect(existsSync(control)).toBe(false);
+    expect(readFileSync(join(foreign, ".git", "config"), "utf8")).toBe("pre-existing configuration");
+    expect(readFileSync(join(known, ".git", "HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+  });
+
+  it.each(["gitdir", "commondir"] as const)("quarantines the first missing %s routing ancestor without following a new link", async kind => {
+    const storage = join(root, "storage");
+    const missing = join(storage, "future");
+    const target = join(missing, "metadata");
+    const actualParent = join(root, "actual-parent");
+    mkdirSync(storage);
+    mkdirSync(join(actualParent, "metadata"), { recursive: true });
+    writeFileSync(join(actualParent, "metadata", "config"), "pre-existing target configuration");
+    if (kind === "gitdir") writeFileSync(join(root, ".git"), `gitdir: ${target}\n`);
+    else {
+      mkdirSync(join(root, ".git"));
+      writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(root, ".git", "commondir"), `${target}\n`);
+    }
+    const initial = snapshotSandboxGitControls([root]);
+    expect(initial.storeMissingAncestors.get(target)).toBe(missing);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], `missing-${kind}`, initial);
+    symlinkSync(actualParent, missing, "dir");
+    expect(cleanup()).toContain(JSON.stringify(missing));
+    const [moved] = quarantinedEntries();
+    expect(lstatSync(moved!).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(moved!)).toBe(actualParent);
+    expect(readFileSync(join(actualParent, "metadata", "config"), "utf8")).toBe("pre-existing target configuration");
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it("leaves an unchanged ordinary external directory alias outside cleanup coverage", async () => {
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "config"), "external configuration");
+    const alias = join(root, "alias");
+    symlinkSync(outside, alias, "dir");
+    const initial = snapshotSandboxGitControls([root]);
+    expect(initial.directoryTargets.get(alias)).toBe(outside);
+    expect(initial.directories.has(outside)).toBe(false);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "external-alias", initial);
+    const current = snapshotSandboxGitControls([root], initial);
+    expect(current.replacedMarkers.has(alias)).toBe(false);
+    expect(cleanup()).toBeUndefined();
+    expect(readFileSync(join(outside, "config"), "utf8")).toBe("external configuration");
+  });
+
+  it("flags an external alias chain retarget without adding its new internal repository to cleanup", async () => {
+    const outside = join(base, "outside");
+    const deep = join(root, "deep", "a", "b", "c");
+    mkdirSync(outside);
+    mkdirSync(join(deep, ".git"), { recursive: true });
+    writeFileSync(join(deep, ".git", "HEAD"), "pre-existing deep HEAD");
+    writeFileSync(join(deep, ".git", "config"), "pre-existing deep configuration");
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "root HEAD");
+    mkdirSync(join(root, ".cache"));
+    const router = join(root, ".cache", "router");
+    const alias = join(root, "alias");
+    symlinkSync(outside, router, "dir");
+    symlinkSync(join(".cache", "router"), alias, "dir");
+    const initial = snapshotSandboxGitControls([root]);
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "external-alias-retarget", initial);
+    rmSync(router);
+    symlinkSync(deep, router, "dir");
+    const control = join(root, ".git", "config.worktree");
+    writeFileSync(control, "new root control");
+    const current = snapshotSandboxGitControls([root], initial);
+    expect(current.replacedMarkers.has(alias)).toBe(true);
+    expect(current.directoryTargets.get(alias)).toBe(outside);
+    expect(current.markers.has(join(deep, ".git"))).toBe(false);
+    expect(cleanup()).toContain(JSON.stringify(control));
+    expect(readFileSync(join(deep, ".git", "config"), "utf8")).toBe("pre-existing deep configuration");
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
   });
 });

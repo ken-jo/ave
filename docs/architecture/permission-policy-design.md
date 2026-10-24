@@ -332,10 +332,13 @@ each admitted write root, taking precedence over grants:
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
 Denies cover creation when a protected path does not yet exist, as well as
-modification of existing content. The
+modification of existing content, except for the Linux Git metadata policy
+below. Linux mounts only existing Git controls and quarantines newly created
+controls after the invocation. Startup-file and application-store denies retain
+their existing creation protection. The
 [write policy](../../src/permissions/sandbox-write-policy.ts) retains both a
-protected entry and its canonical target when it is a link. A regular `.git`
-pointer file remains write-denied. Its resolved metadata directory and linked
+protected entry and its canonical target when it is a link. An existing regular
+`.git` pointer file remains write-denied. Its resolved metadata directory and linked
 worktree common directory receive the same control-path protection, including
 the `gitdir` and `commondir` records that could redirect later discovery.
 Ordinary data in those directories is writable only when already admitted;
@@ -343,8 +346,9 @@ resolving a pointer grants no new write root. Controls remain protected when the
 targets are outside the current write grants. Metadata discovery reads regular
 files without executing a command. Symbolic `.git` markers refuse preparation;
 directory-link traversal stays within the admitted root's canonical tree.
-Derived metadata paths containing pattern characters remain literal denies,
-including absent targets. Reads have limits of 64 KiB per file and 1 MiB
+Derived metadata paths containing pattern characters remain literal paths;
+macOS denies include absent targets, while Linux Git deny mounts require an
+existing entry. Reads have limits of 64 KiB per file and 1 MiB
 across the invocation. Exceeding either metadata limit refuses preparation.
 Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
 so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
@@ -357,9 +361,9 @@ the existing sensitive-write floor, whose paths still come from their owning sto
 A bind mount follows the link instead of protecting its directory
 entry, so every write grant containing the routing link's parent is removed.
 Independent child and sibling grants remain; an ordinary write grant on that
-same parent cannot coexist with this protection. A missing target also protects
-its first missing component. An unresolved
-parent component beyond a missing ancestor refuses preparation.
+same parent cannot coexist with this protection. Non-Git sensitive-write
+protection can also protect the first missing component of a missing target.
+An unresolved parent component beyond a missing ancestor refuses preparation.
 Linux does not replay routing links as deny binds; target denies remain with
 their existing owners so a link cannot mask an unrelated target subtree.
 Symbolic `.git` marker entries refuse preparation; linked worktrees use
@@ -383,21 +387,24 @@ rewrite its own settings, rules or exclusions through a broader grant.
 An existing `.git` directory is writable within an admitted root. Git can update
 objects, refs, the index, `HEAD`, logs and `COMMIT_EDITMSG`, so ordinary commit,
 branch, stash and merge operations can run inside confinement. The sandbox
-continues to deny changes to configuration, executable hooks and discovery
-records:
+continues to protect configuration, executable hooks and discovery records.
+In the table, a protected entry is denied on macOS even when absent. On Linux,
+an entry present during preparation is deny-mounted; an entry absent then may
+be created during execution and is quarantined after confirmed exit:
 
 | Path relative to a repository metadata directory | Write policy |
 | --- | --- |
-| `hooks/**`, `config`, `config.worktree` | Denied, including creation. |
-| `modules/**/hooks/**`, `modules/**/config`, `modules/**/config.worktree` | Denied for submodule repositories, including future entries where backend patterns apply. |
-| `worktrees/*/config.worktree`, `worktrees/*/commondir`, `worktrees/*/gitdir` | Denied; linked-worktree configuration and discovery cannot be redirected. |
-| `commondir`, `gitdir` and a checkout's regular `.git` pointer file | Denied, including their resolved control targets. |
-| `objects/info/alternates`, `objects/info/http-alternates` | Denied; object-store paths and alternate URLs must not be redirected by an in-sandbox write. |
-| `remotes/**`, `branches/**` | Denied; legacy remote URL and refspec definitions are configuration-equivalent routing inputs. |
+| `hooks/**`, `config`, `config.worktree` | Protected configuration and executable hooks. |
+| `modules/**/hooks/**`, `modules/**/config`, `modules/**/config.worktree` | Protected submodule controls, including future entries where backend patterns apply. |
+| `worktrees/*/config.worktree`, `worktrees/*/commondir`, `worktrees/*/gitdir` | Protected linked-worktree configuration and discovery. |
+| `commondir`, `gitdir` and a checkout's regular `.git` pointer file | Protected routing entries, including already resolved control targets. |
+| `objects/info/alternates`, `objects/info/http-alternates` | Protected object-store paths and alternate URLs. |
+| `remotes/**`, `branches/**` | Protected legacy remote URL and refspec definitions; these are configuration-equivalent routing inputs. |
+| `info/attributes` | Linux protects this control; macOS retains writable attributes as described below. |
 | `objects/**`, `refs/**`, `index`, `HEAD`, `logs/**`, `COMMIT_EDITMSG` | Writable subject to the control-path exceptions. |
 
-A `.git` entry absent when a command is prepared remains blocked from creation.
-Repository initialization and cloning therefore require the existing
+A `.git` entry absent when a command is prepared remains blocked from creation
+on macOS. Repository initialization and cloning there require the existing
 [explicit host execution route](#shell-execution-and-explicit-host-approval).
 A protected-path failure reports: "`.git` metadata is protected; rerun outside
 the sandbox after approval". The caller must submit `executionMode: "host"`
@@ -405,22 +412,34 @@ with a justification for that exact action; no automatic unsandboxed retry,
 parallel approval path or lasting sandbox disable is introduced. Metadata
 protection does not change command-rule interpretation.
 
+On Linux, an absent `.git` entry is not a deny-mount target. Initialization or
+cloning can create it inside the current invocation; successful post-exit
+quarantine moves the new marker or metadata directory out of the write root
+and reports where it can be restored. It is temporary access during that
+invocation, not a persistent repository grant. Existing repositories retain
+ordinary object, ref, index and `HEAD` writes without creating absent routing
+files as mount points: a missing `commondir`, for example, remains absent when
+Git reads it.
+
 The additional-file audit follows the
 [repository layout manual](https://git-scm.com/docs/gitrepository-layout#_description).
 `info/` is not denied as a whole. `info/exclude`, `info/sparse-checkout`,
 `info/refs` and `objects/info/packs` contain patterns or repository data rather
 than command definitions. `info/grafts` changes apparent ancestry, like
 writable replacement refs, and is not treated as code or configuration
-injection. `info/attributes` remains writable: an attribute selects a driver,
-while its clean, smudge, process, merge or diff command must already be defined
-in configuration. The
+injection. On macOS `info/attributes` remains writable: an attribute selects a
+driver, while its clean, smudge, process, merge or diff command must already be
+defined in configuration. The
 [attribute manual](https://git-scm.com/docs/gitattributes#_filter) documents this
-separation; existing trusted drivers can still run when selected. Alternates
-are denied for routing integrity, without claiming that their contents are
+separation; existing trusted drivers can still run when selected. Linux treats
+`info/attributes` as a protected control: an existing file is denied, and a new
+file is quarantined after execution. This limits persistence of a new driver
+selection without claiming that it cannot run during that invocation. Alternates
+are protected for routing integrity, without claiming that their contents are
 executable commands. The [fetch manual](https://git-scm.com/docs/git-fetch#REMOTES)
 documents the legacy `remotes/` and `branches/` files as alternatives to remote
 configuration. Their URLs can select transport helpers, so those subtrees are
-denied alongside configuration.
+protected alongside configuration.
 
 The policy intentionally differs across the referenced implementations:
 
@@ -429,7 +448,7 @@ The policy intentionally differs across the referenced implementations:
 | Existing metadata directory | Permit ordinary Git writes; deny controls. | The [runtime at `c66fb77`](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/sandbox-utils.ts#L39-L49) permits `.git`; its [macOS builder](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/macos-sandbox-utils.ts#L126-L133) denies hooks and conditionally config. |
 | Whole-directory protection | Existing `.git` directories remain writable. | The [permission builder at `970111f`](https://github.com/openai/codex/blob/970111f/codex-rs/protocol/src/permissions.rs#L2360-L2380) protects an existing top-level `.git` and resolved pointer target; its [Seatbelt matcher](https://github.com/openai/codex/blob/970111f/codex-rs/sandboxing/src/seatbelt.rs#L591-L603) covers protected names and descendants. |
 | Nested controls | Case-insensitive macOS patterns at any depth; bounded Linux scan before every command. | The [Linux builder at `c66fb77`](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L537-L566) scans per command and uses `.git/HEAD` to identify nested repositories. |
-| Missing `.git` | Creation denied. | The pinned [Linux marker handling](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L408-L427) leaves an absent marker unmounted; Ave deliberately retains creation protection. |
+| Missing `.git` | macOS creation denied; Linux creation allowed during the invocation, then recoverable quarantine. | The pinned [Linux marker handling](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L408-L427) leaves an absent marker unmounted. |
 | Bare layout in a non-repository root | macOS prevention; recoverable Linux post-command quarantine plus host Git hardening. | The [protected-path documentation](https://code.claude.com/docs/en/sandboxing#protected-paths) describes top-level bare-layout protection and Linux cleanup. Ave preserves moved entries for recovery. |
 
 #### Bare layouts and host Git
@@ -463,6 +482,35 @@ metadata. A post-spawn process error can return before child termination; its
 later quarantine outcome is logged after exit rather than changing that
 already returned error result.
 
+The Linux sweep also covers newly appeared Git controls within the bounded
+discovery area, including repositories created without a `HEAD` yet and
+submodule and linked-worktree controls. A new or replaced marker entry is
+quarantined as a whole, as is a previously resolved metadata store that was
+absent at preparation and materialized during execution. Newly encountered
+submodule and private-worktree stores are also quarantined as whole entries
+before their new routing records can select cleanup targets. The sweep reuses
+the metadata/control discovery rules and already resolved stores captured
+before execution, restricted to the final effective write roots. Read- or
+write-denied control subtrees are excluded from cleanup. It preserves
+pre-existing entries and does not trust a replaced marker or follow a new
+routing pointer, symbolic link or ordinary directory link to choose arbitrary
+cleanup targets. Initially trusted directory links retain their captured
+physical route. Resolving an external store does not authorize quarantining
+controls the command could not write. For a previously unresolved trusted
+store, cleanup moves its newly appeared first missing ancestor as an entry;
+a new routing link never selects the linked target for relocation. Quarantine
+does not roll back other data writes permitted during the invocation.
+If moving an entire marker or store
+would include a protected descendant, cleanup fails visibly and retains its
+hold rather than moving protected state.
+Preparation also refuses deny patterns that cleanup cannot represent safely,
+including character classes and patterns combining POSIX backslashes with
+wildcards. It never treats an unsupported pattern as a successful empty sweep.
+An incomplete cleanup scan or exceeded budget reports failure rather than
+claiming that all new controls were quarantined. These guarantees describe a
+successful post-exit sweep: controls can be visible during execution, and
+concurrent processes or a failed sweep can observe or leave them in place.
+
 Every Ave-owned Git subprocess uses the shared argument builder in
 [host-git.ts](../../src/shared/host-git.ts), including marketplace operations,
 ignore queries, runtime admission and version probes. It supplies `safe.bareRepository=explicit`,
@@ -471,6 +519,31 @@ while retaining the caller's environment, credential and transport gates.
 Hooks may be enabled only by an explicit caller policy for a demonstrated
 requirement. Sandboxed agent commands and user-entered terminal commands do
 not acquire host authority through this helper.
+
+Linux invocation preparation also registers canonical retained write roots
+with `holdSandboxGitWrites` after taking its metadata snapshot and before
+spawning the child. The shared `isHostGitWorkspaceAvailable` check defers
+queries in overlapping roots, including ancestor or descendant workspaces;
+independent siblings remain available. The current Ave-owned Git consumer of
+user-project metadata is the synchronous project-instruction `check-ignore`
+query. While a hold is active, it returns its existing conservative
+"not ignored" answer without spawning Git or memoizing that temporary answer.
+Future Ave-owned callers that read user-workspace Git metadata must use the
+same availability check as well as the shared argument builder.
+
+The invocation releases its hold only after quarantine succeeds. A failed
+cleanup retains the hold for that host process's remaining lifetime, deferring
+the coordinated query when its checkout root overlaps a held root.
+Overlapping invocations have independent holds; releasing one does not release
+another. Holds compare canonical checkout-root paths; they do not track every
+checkout-to-gitdir or commondir relationship. A sibling checkout whose root
+does not overlap a hold can still query a changed external metadata store
+shared with a held workspace. This is ordering within the current Ave process,
+not filesystem isolation for arbitrary Git processes. It neither persists across a host crash
+or restart nor cancels Git work already running before the hold. External
+editors, user terminals and other processes can still observe newly created
+controls during execution or after failed cleanup. The shared Git flags do
+not neutralize every configured filter or helper.
 
 The [safe configuration documentation](https://github.com/git/git/blob/7e34d8174dcda3435d1404c9a30bef46afe6c13e/Documentation/config/safe.adoc)
 explains that `explicit` refuses implicitly discovered bare repositories while
@@ -486,20 +559,20 @@ quarantine, and forced host termination can prevent the sweep altogether. Recomm
 `git config --global safe.bareRepository explicit` for those independent
 clients, as recommended by the safe configuration documentation. The setting
 does not disable an already configured filter, credential helper or other
-trusted command in a normal repository; this policy prevents new control-file
-injection rather than making all Git configuration inert.
+trusted command in a normal repository. Linux quarantine limits persistence of
+new controls after a successful sweep; it does not make all Git configuration
+inert or prevent its use during execution.
 
 #### Preparation and native validation
 
-On Linux, preparing a deny for an absent path can create a temporary empty file
-or directory on the host as a read-only mount point. Concurrent repository
-tools and editors can observe these placeholders, including an otherwise
-absent `.git` entry. Normal cleanup is limited to ownership-checked empty
-mount points. Abrupt host termination, including SIGKILL or OOM termination,
-can leave residue; successful normal cleanup does
-not prove crash cleanup. Recovery may remove an entry only when ownership can
-be established and must preserve unrelated, replaced or nonempty paths. An
-empty path named `.git` is not sufficient ownership evidence.
+On Linux, a missing Git control is omitted from deny mounts so preparation
+does not manufacture an empty marker, configuration file or routing record on
+the host. The sensitive-write and application-store protection owners remain
+unchanged. Their absent-path protection can still require temporary mount
+points. Normal mount-point cleanup is limited to ownership-checked empty
+entries; abrupt host termination, including SIGKILL or OOM termination, can
+leave residue. Successful normal cleanup does not prove crash cleanup.
+Recovery must preserve unrelated, replaced or nonempty paths.
 
 On Linux, nested repositories are discovered beneath admitted roots before every
 sandboxed command, through directory depth three with the root at depth zero:
@@ -533,11 +606,14 @@ explicit reason for narrowed access before a later filesystem permission error.
 On macOS, case-insensitive backend patterns additionally protect nested Git
 controls at any depth, including future entries. Typed exact-entry Seatbelt
 rules protect marker creation and regular pointer-file writes without denying
-an existing directory's children. Linux uses `.git/HEAD` as its existing-directory marker and literal
-discovered controls. It re-scans on each command rather than retaining one
-wrapper's scan. Repositories created during that command or beneath deliberately
-skipped or deeper directories remain outside the Linux scan. This distinction must
-remain explicit in validation.
+an existing directory's children. Linux uses `.git/HEAD` to classify repository
+and non-repository roots; discovery also inspects controls in partial `.git`
+directories without `HEAD`. It uses literal discovered controls and re-scans
+on each command rather than retaining one wrapper's scan. Newly created
+repositories within the discovery bounds are
+handled by the post-exit quarantine sweep, not by mounts added to a running
+process. Deliberately skipped or deeper directories remain outside the Linux
+discovery coverage. This distinction must remain explicit in validation.
 
 Here a command means a new sandboxed process invocation through the wrapper.
 A persistent workspace PTY receives its OS profile when it starts; later blocks
@@ -549,9 +625,9 @@ boundary: foreground code can emit them, background jobs can keep running, and
 raw terminal input does not pass through `terminal_run`. A post-block check
 cannot establish that a control file was not used before that check.
 
-Before each agent-typed command on Linux, the host re-scans and compares the
-policy with the retained roots and denies captured for that terminal's initial
-profile. An additional required deny, a removed initial grant or a scan failure
+Before each agent-typed command on Linux, the host re-scans the effective write
+roots and compares controls with the identities captured for that terminal's
+initial profile. New controls, replaced markers or directory links, or a scan failure
 refuses typing through the existing unverified-directory error path and asks
 the caller to close and reopen the Agent terminal. The baseline never advances
 without creating a fresh sandbox profile. Adding an authorized project outside

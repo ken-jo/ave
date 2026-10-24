@@ -19,6 +19,7 @@ describe("protected Git metadata diagnostics", () => {
     "fatal: cannot create /project/.git/config: Read-only file system",
     "fatal: .GIT/hooks/pre-commit: Permission denied",
     "fatal: invalid gitfile format: /project/.git",
+    "fatal: cannot stat '/project/.git/hooks': Not a directory",
   ])("explains the existing approval route for %s", async message => {
     const output = await annotateWithSandboxViolations("command", message);
     expect(output).toContain("`.git` metadata is protected; rerun outside the sandbox after approval");

@@ -27,16 +27,26 @@ import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
 import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
+import type { SandboxGitControlSnapshot } from "../../../permissions/sandbox-write-policy.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
 const nativePlatform = process.platform;
 let additionalProjectDirectories: string[] = [];
 let addedGitControlPath: string | undefined;
+function emptyGitSnapshot(): SandboxGitControlSnapshot {
+  return { roots: new Map(), entries: new Map(), markers: new Map(), stores: new Map(), markerStores: new Map(),
+    replacedMarkers: new Set(), directories: new Map(), directoryTargets: new Map(), storeMissingAncestors: new Map(), bareRoots: new Set() };
+}
 vi.mock("../../../permissions/sandbox-write-policy.js", () => ({
   buildMandatorySandboxWritePolicy: (roots: readonly string[]) => ({
     allowWrite: [...roots],
     denyWrite: addedGitControlPath === undefined ? [] : [addedGitControlPath],
+  }),
+  snapshotSandboxGitControls: () => ({
+    ...emptyGitSnapshot(),
+    entries: new Map(addedGitControlPath === undefined ? [] : [[addedGitControlPath,
+      { dev: 1, ino: 2, size: 0, mtimeMs: 0, ctimeMs: 0, kind: "file" as const }]]),
   }),
 }));
 const wrapWorkerCommandMock = vi.fn<
@@ -48,7 +58,7 @@ const wrapTerminalCommandMock = vi.fn<
 const cleanupMock = vi.fn(() => Promise.resolve());
 function withFilesystemPolicy(wrapped: SandboxWrapResult, options: unknown): SandboxWrapResult {
   const filesystem = (options as { filesystem?: { allowWrite: string[] } } | undefined)?.filesystem;
-  return { filesystemPolicy: { allowWrite: filesystem?.allowWrite ?? [], denyWrite: [] }, ...wrapped };
+  return { filesystemPolicy: { allowWrite: filesystem?.allowWrite ?? [], denyWrite: [] }, gitControlSnapshot: emptyGitSnapshot(), ...wrapped };
 }
 vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
@@ -1489,7 +1499,12 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
   const MAC_TAB = "terminal:0000000c-1";
 
   beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     needsOwnTtyGrant = true;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
   });
 
   it("publishes initialization once for an in-flight remount and cancellation closes no tab-owned shell", async () => {

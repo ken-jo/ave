@@ -591,7 +591,7 @@ async function spawnNewTerminal(
       egress.release();
       void cleanupAsrtSandboxAfterCommand();
     });
-    const gitPolicyChanged = prepareTerminalGitPolicyCheck(allowWrite, wrapped.filesystemPolicy);
+    const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;

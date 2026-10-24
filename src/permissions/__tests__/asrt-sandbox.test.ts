@@ -35,6 +35,9 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -259,8 +262,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "fixture",
         ], { cwd, env: gitEnv });
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-        // Absent control files are protected placeholders on some backends;
-        // point Git at this fixture's separate config rather than reading one.
+        // Keep fixture identity and signing configuration independent of the
+        // sandbox HOME and the user's global configuration.
         const command = `printf '%s\\n' "$HOME"; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(fixtureGitConfig)} git -C ${shellQuote(cwd)} log --oneline -n 1`;
         const result = await spawnWithSandbox(
           command,
@@ -278,6 +281,37 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
         expect(existsSync(sandboxHome ?? "")).toBe(false);
       } finally {
         await cleanupTmpDir(cwd);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || shouldSkipNativeSandboxTests())(
+    "returns a quarantine restore notice after a normal Git commit creates a control",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-git-control-result-")));
+      const env = gitFixtureEnv(root);
+      const config = env.GIT_CONFIG_GLOBAL;
+      if (typeof config !== "string") throw new Error("Git fixture config path is missing");
+      const locale = getLocale();
+      setLocale("en");
+      try {
+        execFileSync("git", ["init", "--quiet"], { cwd: root, env });
+        await initializeRequiredSandbox({ allowedDomains: [] });
+        const commondir = join(root, ".git", "commondir");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        const command = `export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(config)}; test ! -e .git/commondir && git status --porcelain && printf committed > tracked.txt && git add tracked.txt && git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet -m sandbox-commit && git branch sandbox-branch && printf untrusted-target > .git/commondir`;
+        const result = await spawnWithSandbox(command, root, [root], TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
+          prepareSandboxFixture(command, root));
+        expect(result.isError, result.output).toBe(false);
+        expect(result.metadata.sandboxed).toBe(true);
+        expect(result.output).toContain("moved to quarantine (not deleted)");
+        expect(result.output).toContain(JSON.stringify(commondir));
+        expect(result.output).toContain("Restore each entry");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        expect(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: root, env, encoding: "utf8" }).trim()).toBe("sandbox-commit");
+      } finally {
+        setLocale(locale);
+        await cleanupTmpDir(root);
       }
     },
   );

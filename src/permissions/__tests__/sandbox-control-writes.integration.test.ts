@@ -5,9 +5,10 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { settingsFilePath } from "../../data/settings-store.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import {
-  cleanupAsrtSandboxAfterCommand,
+  annotateWithSandboxViolations, cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -27,7 +28,10 @@ const linkedControlEntries = [...CONTROL_ENTRIES.filter(entry => entry !== ".git
 describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boundary", () => {
   let root: string;
   let userData: string;
+  let previousLocale: ReturnType<typeof getLocale>;
   beforeAll(async () => {
+    previousLocale = getLocale();
+    setLocale("en");
     root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-control-writes-")));
     userData = join(root, "desktop-data");
     vi.stubEnv("AVE_HOME", join(root, "ave"));
@@ -37,13 +41,14 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+    setLocale(previousLocale);
   });
 
   async function attempt(
     target: string,
     command = 'mkdir -p "$(dirname "$CONTROL_TARGET")" && printf changed >> "$CONTROL_TARGET"',
     writeRoots: string[] = [root],
-  ): Promise<number | null> {
+  ): Promise<{ status: number | null; output: string }> {
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
     try {
@@ -52,7 +57,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
         // An explicit empty caller deny cannot remove mandatory host policy.
         filesystem: { allowWrite: writeRoots, denyWrite: [] },
       });
-      return await new Promise((resolve, reject) => {
+      const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
         const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
           env: { ...process.env, ...wrapped.env, CONTROL_TARGET: target }, cwd: root, stdio: ["ignore", "ignore", "pipe"],
         });
@@ -61,9 +66,17 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
         child.once("error", reject);
         child.once("close", (code) => {
           if (code === 71) reject(new Error(stderr));
-          else resolve(code);
+          else resolve({ status: code, stderr });
         });
       });
+      expect(result.status, result.stderr).not.toBeNull();
+      invocation.release();
+      if (process.platform === "linux") expect(wrapped.cleanupCompleted).toBeDefined();
+      const outcome = await wrapped.cleanupCompleted;
+      expect(outcome?.failure, outcome?.failure).toBeUndefined();
+      const output = await annotateWithSandboxViolations(invocation.token, result.stderr, command,
+        [...(wrapped.notices ?? []), ...(outcome?.notice ? [outcome.notice] : [])]);
+      return { status: result.status, output };
     } finally {
       invocation.release();
       await cleanupAsrtSandboxAfterCommand();
@@ -78,16 +91,23 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     const originalRoot = root;
     root = project;
     try {
-      expect(await attempt(target)).not.toBe(0);
+      const missing = await attempt(target);
+      if (process.platform === "linux" && (entry === ".git" || entry.startsWith(".git/"))) {
+        expect(missing.status, missing.output).toBe(0);
+        expect(missing.output).toContain("moved to quarantine (not deleted)");
+        expect(missing.output).toContain("Restore each entry");
+        expect(missing.output).toContain(`${JSON.stringify(join(project, ".git"))} -> `);
+        expect(existsSync(join(project, ".git"))).toBe(false);
+      } else expect(missing.status, missing.output).not.toBe(0);
       expect(existsSync(target)).toBe(false);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, "original");
       if (entry.startsWith(".git/")) writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
       if (entry.startsWith(".git/modules/")) writeFileSync(join(project, ".git", "modules", entry.split("/")[2]!, "HEAD"), "ref: refs/heads/main\n");
-      expect(await attempt(target)).not.toBe(0);
+      expect((await attempt(target)).status).not.toBe(0);
       expect(readFileSync(target, "utf8")).toBe("original");
       const ordinary = join(project, "result.txt");
-      expect(await attempt(ordinary)).toBe(0);
+      expect((await attempt(ordinary)).status).toBe(0);
       expect(readFileSync(ordinary, "utf8")).toBe("changed");
     } finally {
       root = originalRoot;
@@ -138,7 +158,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     const originalRoot = root;
     root = project;
     try {
-      const status = await attempt(target,
+      const { status } = await attempt(target,
         `printf ordinary > ${shellQuote(ordinary)} && rm "$CONTROL_TARGET" && ln -s ${shellQuote(replacement)} "$CONTROL_TARGET"`,
         [project, work]);
       expect(status).not.toBeNull();
@@ -158,15 +178,15 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
       join(projectRulesDirectory(join(root, "ave")), "project.json"),
       userApprovalFilePath(), egressGrantFilePath(), userPolicyPath()];
     for (const target of targets) {
-      expect(await attempt(target)).not.toBe(0);
+      expect((await attempt(target)).status).not.toBe(0);
       expect(existsSync(target)).toBe(false);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, "original");
-      expect(await attempt(target)).not.toBe(0);
+      expect((await attempt(target)).status).not.toBe(0);
       expect(readFileSync(target, "utf8")).toBe("original");
     }
     const ordinary = join(root, "settings-control-result.txt");
-    expect(await attempt(ordinary)).toBe(0);
+    expect((await attempt(ordinary)).status).toBe(0);
     expect(readFileSync(ordinary, "utf8")).toBe("changed");
   });
 });

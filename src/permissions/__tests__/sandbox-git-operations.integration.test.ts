@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { annotateWithSandboxViolations, cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { SANDBOX_GIT_SCAN_DEPTH } from "../sandbox-write-policy.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 
 const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 const GIT_IDENTITY = "-c user.name=Fixture -c user.email=fixture@example.invalid";
@@ -19,12 +21,14 @@ const PROTECTED_METADATA_FILES = [
   "modules/child/modules/grandchild/config.worktree", "worktrees/linked/config.worktree",
   "worktrees/linked/commondir", "worktrees/linked/gitdir",
   "objects/info/alternates", "objects/info/http-alternates", "remotes/origin", "branches/origin",
+  ...(process.platform === "linux" ? ["info/attributes"] : []),
 ] as const;
 const REPOSITORY_DEPTHS = process.platform === "darwin" ? [0, 1, 4] : [0, 1, SANDBOX_GIT_SCAN_DEPTH];
 const DEEP_MARKER_LOCATIONS = ["nested", "node_modules", "build"] as const;
 
 describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata operations", () => {
   let root: string;
+  let previousLocale: ReturnType<typeof getLocale>;
 
   function hostGit(cwd: string, ...args: string[]): string {
     const result = spawnSync("git", ["-C", cwd, ...args], { env: gitEnv, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs });
@@ -41,7 +45,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
     hostGit(path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "seed");
   }
 
-  async function execute(command: string, cwd = root, writeRoots = [root]): Promise<{ status: number | null; output: string }> {
+  async function execute(command: string, cwd = root, writeRoots = [root], onPrepared?: () => void): Promise<{ status: number | null; output: string }> {
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: cwd, approvalSurface: "unavailable" } });
     try {
@@ -49,13 +53,18 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
         commandId: invocation.token, denyUnixSockets: true,
         filesystem: { allowWrite: writeRoots, denyWrite: [] },
       });
+      onPrepared?.();
       const result = spawnSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
         cwd, env: { ...gitEnv, ...wrapped.env }, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       if (result.error) throw result.error;
       expect(result.status, result.stderr).not.toBeNull();
       expect(result.status, result.stderr).not.toBe(71);
-      const output = await annotateWithSandboxViolations(invocation.token, `${result.stdout}\n${result.stderr}`, command);
+      invocation.release();
+      const outcome = await wrapped.cleanupCompleted;
+      expect(outcome?.failure, outcome?.failure).toBeUndefined();
+      const output = await annotateWithSandboxViolations(invocation.token, `${result.stdout}\n${result.stderr}`, command,
+        [...(wrapped.notices ?? []), ...(outcome?.notice ? [outcome.notice] : [])]);
       return { status: result.status, output };
     } finally {
       invocation.release();
@@ -64,12 +73,15 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
   }
 
   beforeEach(async () => {
+    previousLocale = getLocale();
+    setLocale("en");
     root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-git-operations-")));
     await initializeRequiredSandbox({ allowedDomains: [] });
   });
   afterEach(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     rmSync(root, { recursive: true, force: true });
+    setLocale(previousLocale);
   });
 
   it("allows commit, branch and stash writes in an existing repository", async () => {
@@ -80,7 +92,10 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
     expect(hostGit(root, "branch", "--list", "sandbox-branch")).toContain("sandbox-branch");
     expect(hostGit(root, "stash", "list")).toContain("sandbox-stash");
     expect(readFileSync(join(root, "tracked.txt"), "utf8")).toBe("seed\ncommitted");
-    expect(readFileSync(join(root, ".git", "info", "attributes"), "utf8")).toBe("*.txt text\n");
+    if (process.platform === "linux") {
+      expect(existsSync(join(root, ".git", "info", "attributes"))).toBe(false);
+      expect(result.output).toContain(JSON.stringify(join(root, ".git", "info", "attributes")));
+    } else expect(readFileSync(join(root, ".git", "info", "attributes"), "utf8")).toBe("*.txt text\n");
     expect(hostGit(root, "status", "--porcelain")).toBe("");
   });
 
@@ -114,16 +129,74 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
     expect(readFileSync(join(sharedMetadata, "config"))).toEqual(config);
   });
 
-  it.each(["init", "clone"])("blocks git %s with the approved outside-sandbox rerun guidance", async (operation) => {
+  it.each(["init", "clone"])("applies platform metadata protection to git %s", async (operation) => {
     const source = join(root, "source");
     const target = join(root, "target");
     repository(source);
     mkdirSync(target);
-    const command = operation === "init" ? "git init --quiet" : `git -c protocol.file.allow=always clone --quiet --local ${shellQuote(source)} .`;
-    const result = await execute(command, target, [target]);
-    expect(result.status, result.output).not.toBe(0);
-    expect(result.output).toContain("`.git` metadata is protected; rerun outside the sandbox after approval");
+    const linuxClone = process.platform === "linux" && operation === "clone";
+    const command = operation === "init" ? "git init --quiet"
+      : `git -c protocol.file.allow=always clone --quiet --local ${shellQuote(source)} ${linuxClone ? shellQuote(target) : "."}`;
+    const result = await execute(command, linuxClone ? root : target, linuxClone ? [root] : [target]);
+    if (process.platform === "linux") {
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain("moved to quarantine (not deleted)");
+      expect(result.output).toContain(JSON.stringify(join(target, ".git")));
+    } else {
+      expect(result.status, result.output).not.toBe(0);
+      expect(result.output).toContain("`.git` metadata is protected; rerun outside the sandbox after approval");
+    }
     expect(existsSync(join(target, ".git"))).toBe(false);
+  });
+
+  it.runIf(process.platform === "linux")("keeps absent commondir ENOENT while status, add, commit and branch run", async () => {
+    repository(root);
+    const commondir = join(root, ".git", "commondir");
+    const absent = (): void => { expect(() => lstatSync(commondir)).toThrow(/ENOENT/); };
+    absent();
+    const result = await execute(`test ! -e .git/commondir && git status --porcelain && printf committed >> tracked.txt && git add tracked.txt && git ${GIT_IDENTITY} commit --quiet -m missing-control && git branch missing-control-branch && test ! -e .git/commondir`, root, [root], () => {
+      absent();
+      expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+    });
+    expect(result.status, result.output).toBe(0);
+    absent();
+    expect(isHostGitWorkspaceAvailable(root)).toBe(true);
+    expect(hostGit(root, "log", "-1", "--format=%s")).toBe("missing-control");
+    expect(hostGit(root, "branch", "--list", "missing-control-branch")).toContain("missing-control-branch");
+  });
+
+  it.runIf(process.platform === "linux").each(["commondir", "gitdir", "config.worktree", "hooks/pre-commit", "info/attributes"])("quarantines new %s after command exit with restore notice", async entry => {
+    repository(root);
+    if (entry.startsWith("hooks/")) rmSync(join(root, ".git", "hooks"), { recursive: true, force: true });
+    const path = join(root, ".git", entry);
+    const original = entry.startsWith("hooks/") ? dirname(path) : path;
+    const payload = "created during command";
+    const result = await execute(`mkdir -p ${shellQuote(dirname(path))} && printf %s ${shellQuote(payload)} > ${shellQuote(path)}`);
+    expect(result.status, result.output).toBe(0);
+    expect(existsSync(original)).toBe(false);
+    const prefix = `${JSON.stringify(original)} -> `;
+    const move = result.output.split("\n").find(line => line.startsWith(prefix));
+    expect(move, result.output).toBeDefined();
+    const destination = JSON.parse(move!.slice(prefix.length)) as string;
+    expect(readFileSync(entry.startsWith("hooks/") ? join(destination, "pre-commit") : destination, "utf8")).toBe(payload);
+    expect(result.output).toContain("Restore each entry");
+  });
+
+  it.runIf(process.platform === "linux")("quarantines a new control symlink without following its target", async () => {
+    repository(root);
+    const untouched = join(root, "untouched");
+    writeFileSync(untouched, "original");
+    const control = join(root, ".git", "commondir");
+    const result = await execute(`ln -s ${shellQuote(untouched)} ${shellQuote(control)}`);
+    expect(result.status, result.output).toBe(0);
+    const prefix = `${JSON.stringify(control)} -> `;
+    const move = result.output.split("\n").find(line => line.startsWith(prefix));
+    expect(move, result.output).toBeDefined();
+    const destination = JSON.parse(move!.slice(prefix.length)) as string;
+    expect(lstatSync(destination).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(destination)).toBe(untouched);
+    expect(readFileSync(untouched, "utf8")).toBe("original");
+    expect(existsSync(control)).toBe(false);
   });
 
   it.each(REPOSITORY_DEPTHS)("denies each repository control at depth %i while ordinary metadata stays writable", async (depth) => {

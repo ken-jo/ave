@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
-import { buildHostGitArgs } from "../host-git.js";
+import { buildHostGitArgs, holdSandboxGitWrites, isHostGitWorkspaceAvailable } from "../host-git.js";
 
 describe("host Git configuration floor", () => {
   it("applies the mandatory floor after caller configuration without changing command arguments", () => {
@@ -22,6 +22,79 @@ describe("host Git configuration floor", () => {
 
   it("uses the null device when no owned empty directory is supplied", () => {
     expect(buildHostGitArgs(["--version"])).toContain(`core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`);
+  });
+});
+
+describe("host Git workspace ordering", () => {
+  let root: string;
+  const releases: Array<() => void> = [];
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "ave-host-git-order-"));
+  });
+  afterEach(() => {
+    for (const release of releases.splice(0)) release();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function hold(roots: readonly string[]): () => void {
+    const release = holdSandboxGitWrites(roots);
+    releases.push(release);
+    return release;
+  }
+
+  it("blocks exact, ancestor and descendant workspaces while preserving independent siblings", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const release = hold([project]);
+    expect(isHostGitWorkspaceAvailable(project)).toBe(false);
+    expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(project, "src"))).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(root, "project-sibling"))).toBe(true);
+    release();
+    expect(isHostGitWorkspaceAvailable(project)).toBe(true);
+  });
+
+  it("retains overlapping failed-cleanup holds until their own idempotent release", () => {
+    const firstRelease = hold([root]);
+    const failedCleanupRelease = hold([join(root, "src")]);
+    firstRelease();
+    firstRelease();
+    expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(root, "src", "nested"))).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(root, "independent"))).toBe(true);
+    failedCleanupRelease();
+    failedCleanupRelease();
+    expect(isHostGitWorkspaceAvailable(root)).toBe(true);
+  });
+
+  it("resolves physical aliases for holds and queries, including not-yet-created descendants", () => {
+    const physical = join(root, "physical");
+    const alias = join(root, "alias");
+    mkdirSync(physical);
+    symlinkSync(physical, alias, process.platform === "win32" ? "junction" : "dir");
+    const release = hold([join(alias, "future")]);
+    expect(isHostGitWorkspaceAvailable(physical)).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(physical, "future", "nested"))).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(alias, "future"))).toBe(false);
+    expect(isHostGitWorkspaceAvailable(join(physical, "sibling"))).toBe(true);
+    release();
+    expect(isHostGitWorkspaceAvailable(join(alias, "future"))).toBe(true);
+  });
+
+  it("refuses unresolved query identities while another hold is unsettled", () => {
+    hold([root]);
+    const dangling = join(root, "dangling");
+    symlinkSync(join(root, "missing"), dangling, process.platform === "win32" ? "junction" : "dir");
+    expect(isHostGitWorkspaceAvailable(dangling)).toBe(false);
+  });
+
+  it("does not hold any workspace for an empty write-root list", () => {
+    const release = hold([]);
+    expect(isHostGitWorkspaceAvailable(root)).toBe(true);
+    release();
+    release();
+    expect(isHostGitWorkspaceAvailable(root)).toBe(true);
   });
 });
 

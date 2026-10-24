@@ -26,6 +26,7 @@ import {
   PROJECT_INSTRUCTIONS_MAX_IMPORT_DEPTH,
 } from "../project-agents-md.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { holdSandboxGitWrites } from "../../shared/host-git.js";
 
 describe("discoverProjectAgentsMd", () => {
   let root: string;
@@ -385,5 +386,27 @@ describe("discoverDirectoryInstructions", () => {
     verdicts.clear();
     discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
     expect(gitCalls.checkIgnore - before).toBe(2);
+  });
+
+  it("defers workspace Git queries until sandbox cleanup releases the hold without caching the temporary answer", () => {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+    execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
+    writeFileSync(join(project, ".gitignore"), "build/\n");
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    const verdicts = new Map<string, boolean>();
+    const before = gitCalls.checkIgnore;
+    const release = holdSandboxGitWrites([join(project, "build")]);
+    try {
+      const deferred = discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
+      expect(deferred.map((layer) => layer.content)).toEqual(["generated rule"]);
+      expect(gitCalls.checkIgnore).toBe(before);
+      expect(verdicts.size).toBe(0);
+    } finally {
+      release();
+    }
+    expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
+    expect(gitCalls.checkIgnore - before).toBe(1);
+    expect([...verdicts.values()]).toEqual([true]);
   });
 });

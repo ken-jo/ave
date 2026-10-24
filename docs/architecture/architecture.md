@@ -1550,14 +1550,29 @@ The existing tool result and terminal output report why access was narrowed,
 which roots lost their grants and which roots remain writable.
 
 Existing repository metadata permits index/ref updates, commits, branches and
-stashes; new `.git` entries remain blocked and require the existing approved
-host route. Linux re-scans nested controls before each command and atomically
-quarantines newly appeared bare-layout entries in non-repository roots after
-exit. The entries remain recoverable, and existing result and terminal output
-show their original paths and restore locations. Rename failures report an
+stashes. macOS blocks new `.git` entries and requires the existing approved
+host route. Linux deny-mounts existing Git controls only, preserving missing
+routing records as absent, and re-scans nested controls before each command.
+After confirmed exit it atomically quarantines newly appeared controls,
+new or replaced marker entries, new submodule/private-worktree stores,
+newly materialized pre-resolved stores and reserved bare-layout entries within
+discovery coverage and the final effective write grants. Inaccessible control
+subtrees are excluded; a whole-entry move that would include protected state
+fails visibly instead. New routing or directory links cannot authorize cleanup
+targets. The entries remain recoverable, and existing result and terminal
+output show their original paths and restore locations. Rename failures report an
 error without deleting entries. Every Ave-owned Git process carries one shared
-hardening policy. Independent user and editor Git processes and the interval
-before Linux quarantine remain residual risks defined by the
+hardening policy. Linux invocations hold overlapping canonical write roots
+until quarantine succeeds. The current Ave-owned user-project Git query defers
+without spawning or caching its temporary answer while a hold is active;
+cleanup failure retains the hold for the host process's lifetime. Future
+user-workspace Git callers must use the same availability check. Holds compare
+checkout-root paths; a non-overlapping sibling checkout can still read a shared
+external gitdir or commondir. This ordering is not durable across crashes and
+does not control Git already running or
+external editor and user-terminal processes. New controls remain usable during
+the invocation by such processes; these temporal and failed-cleanup risks are
+defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
