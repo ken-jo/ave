@@ -490,10 +490,12 @@ export async function handlePermissionCommand(
     if (result.verb === "list") {
       const active = result.active.length === 0
         ? t("be_conversationLoop.hookListActiveEmpty")
-        : result.active.map((h) => `- active ${h.fileName} [${h.state}]`).join("\n");
+        : result.active.map((h) => [`- active ${h.fileName} [${h.state}]`,
+          ...(h.errors ?? []).map((error) => `  - ${error}`)].join("\n")).join("\n");
       const disabled = result.disabled.length === 0
         ? t("be_conversationLoop.hookListDisabledEmpty")
-        : result.disabled.map((h) => `- disabled ${h.fileName}`).join("\n");
+        : result.disabled.map((h) => [`- disabled ${h.fileName}`,
+          ...(h.errors ?? []).map((error) => `  - ${error}`)].join("\n")).join("\n");
       return t("be_conversationLoop.hookTrustStatus", { active, disabled });
     }
     // accept|disable|reject mutated hook trust state. Mirror the IPC hook-trust

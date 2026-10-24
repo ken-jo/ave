@@ -311,8 +311,10 @@ describe("manualCompact — #811 m2 PreCompact / PostCompact lifecycle events", 
 
     expect(post).toBeDefined();
     const postPayload = post?.[3] as {
+      reason: string;
       messagesBefore: number; messagesAfter: number; tokensBefore: number; tokensAfter: number;
     };
+    expect(postPayload.reason).toBe("manual");
     expect(postPayload.messagesBefore).toBe(4);
     expect(typeof postPayload.messagesAfter).toBe("number");
     expect(typeof postPayload.tokensBefore).toBe("number");

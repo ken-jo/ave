@@ -6,6 +6,7 @@
  * `conversation-loop.ts`; fail-closed / fail-soft semantics are unchanged.
  */
 import type { LifecycleHookEvent } from "../../hooks/script-hook-types.js";
+import { stopHookBlockFeedback } from "../../hooks/hook-contract.js";
 import type { ConversationLoopDeps } from "./types.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -35,6 +36,30 @@ export async function fireLifecycleEvent(
       log.warn(
         `lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`,
       );
+    }
+}
+
+/**
+ * Stop/SubagentStop at a clean end of a run. Fail-soft like
+ * {@link fireLifecycleEvent}, but returns a deliberate block's feedback so the
+ * caller can continue the run; a failure or dispatch error ends it normally.
+ */
+export async function fireContinuableStop(
+  deps: ConversationLoopDeps,
+  sessionId: string,
+  event: "Stop" | "SubagentStop",
+  payload: import("../../hooks/script-hook-types.js").LifecycleEventPayload,
+  sessionIdOverride?: string,
+): Promise<string | undefined> {
+    const manager = deps.scriptHookManager;
+    if (!manager) return undefined;
+    try {
+      return stopHookBlockFeedback(
+        await manager.runLifecycleEvent(event, sessionIdOverride ?? sessionId, "unknown", payload),
+      );
+    } catch (err) {
+      log.warn(`lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`);
+      return undefined;
     }
 }
 

@@ -20,6 +20,7 @@ import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { createLogger } from "../lib/logger.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
+import { defaultHooksDir } from "../hooks/hook-discovery.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -373,9 +374,9 @@ export interface PerCommandFilesystem {
   /**
    * Reads this wrap may hold inside the protected read floor, each one also
    * named in `allowRead`. Without it every `allowRead` entry under the floor
-   * is withheld. Only two composers set it: the builtin shell, for the
-   * configured saved-session root, and a plugin's child and workers, for a
-   * declared `hostDirectory` that pierces the floor (`certs`). Anything else
+   * is withheld. Composers set it for an exact user hook script, the builtin
+   * shell's configured saved-session root, or a plugin's declared
+   * `hostDirectory` that pierces the floor (`certs`). Anything else
    * is refused (see {@link readGrantsOutsideReadDenies}).
    */
   readonly floorPierces?: readonly string[];
@@ -1106,11 +1107,24 @@ function writeRootsOutsideReadDenies(roots: readonly string[], floor: readonly s
 /**
  * The only reads a wrap may ask to hold inside the floor: the configured
  * saved-session root and a host directory catalog row that pierces the floor.
+ * Exact user hook files are checked separately when a wrap names its pierces.
  * A ceiling, not a grant — each wrap names its own in `floorPierces`.
  */
 function floorPierceCeiling(): string[] {
   return [...getConfiguredSessionReadPolicy().allowRead, ...hostDirectoryFloorPierces()]
     .map((path) => canonicalizePathForMatch(path));
+}
+
+/** Only regular files physically beneath the hook directory can pierce its read floor. */
+function isHookScriptRead(path: string): boolean {
+  const canonical = resolve(canonicalizePathForMatch(path));
+  const root = caseFoldForMatch(resolve(defaultHooksDir()));
+  if (!caseFoldForMatch(canonical).startsWith(`${root}${sep}`)) return false;
+  try {
+    return lstatSync(canonical).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1127,7 +1141,7 @@ function readGrantsOutsideReadDenies(
 ): string[] {
   const ceiling = floorPierceCeiling();
   for (const pierce of floorPierces) {
-    if (!ceiling.includes(canonicalizePathForMatch(pierce))) {
+    if (!ceiling.includes(canonicalizePathForMatch(pierce)) && !isHookScriptRead(pierce)) {
       throw new Error(`sandbox: ${pierce} is not a read the host lets re-open the protected floor`);
     }
   }
@@ -1898,14 +1912,14 @@ let appOwnedTempRootReady = false;
 
 /**
  * Whose temp directory a confined process gets: a plugin, covering its child,
- * its workers and its bundled hooks, or one MCP stdio server.
+ * its workers and its bundled hooks, one MCP stdio server, or a user command hook.
  */
 export interface SandboxTempPrincipal {
-  readonly kind: "plugin" | "mcp";
+  readonly kind: "plugin" | "mcp" | "hook";
   readonly id: string;
 }
 
-const SANDBOX_TEMP_PRINCIPAL_KINDS: ReadonlySet<string> = new Set(["plugin", "mcp"]);
+const SANDBOX_TEMP_PRINCIPAL_KINDS: ReadonlySet<string> = new Set(["plugin", "mcp", "hook"]);
 
 /**
  * The longest id, in UTF-8 bytes, that names a temp directory. Its hex form

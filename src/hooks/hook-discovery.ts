@@ -40,6 +40,7 @@ import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
 import type { ScriptHookType } from "./script-hook-types.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { clearHookDisableCause, disabledHookOriginalName, readHookDisableCause, writeHookDisableCause, type HookDisableCause } from "./hook-disable-state.js";
 
 const log = createLogger("hook-discovery");
 
@@ -56,9 +57,9 @@ export interface DiscoveredHook {
   size: number;
   /**
    * Optional tool-name matcher (#811 hooks-on-mcp-calls). Parsed from a
-   * `# ave-hook-matcher: <glob>` frontmatter line; when present the hook runs
-   * ONLY for tool calls whose name matches the glob (e.g. `mcp_*` for every MCP
-   * tool, `mcp_hr_*` for one server). Absent ⇒ runs for every tool (unchanged).
+   * `# ave-hook-matcher: <matcher>` frontmatter line; when present the hook runs
+   * ONLY for tool calls whose name matches it (e.g. `mcp_.*` for every MCP
+   * tool, `^mcp_hr_` for one server). Absent ⇒ runs for every tool (unchanged).
    */
   matcher?: string;
 }
@@ -128,12 +129,12 @@ function hookTypeFromName(fileName: string): ScriptHookType | null {
   return null;
 }
 
-/** Parse the optional `# ave-hook-matcher: <glob>` frontmatter directive. */
+/** Parse the optional `# ave-hook-matcher: <matcher>` frontmatter directive. */
 function parseMatcher(buf: Buffer): string | undefined {
   // Only scan the first 1KB (the directive must be in the header comment block).
   const head = buf.subarray(0, 1024).toString("utf-8");
-  const m = head.match(/^#\s*ave-hook-matcher:\s*(\S+)\s*$/m);
-  return m ? m[1] : undefined;
+  const m = head.match(/^#[\t ]*ave-hook-matcher:[\t ]*([^\r\n]*)/m);
+  return m ? m[1].trim() : undefined;
 }
 
 function sha256OfFile(path: string): { sha256: string; size: number; matcher?: string } {
@@ -145,22 +146,115 @@ function sha256OfFile(path: string): { sha256: string; size: number; matcher?: s
   };
 }
 
+/** Matchers made only of these characters are exact names, split on `|` or `,`. */
+const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]+$/u;
+
+export const HOOK_MATCHER_PATTERN_MAX = 256;
+export const HOOK_MATCHER_SUBJECT_MAX = 256;
+
+export class HookMatcherError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HookMatcherError";
+  }
+}
+
+/** Bound backtracking without changing the regular expression engine. */
+function validateMatcherRepetition(pattern: string): void {
+  let inClass = false;
+  let groupDepth = 0;
+  let choicePoints = 0;
+  let topLevelAlternation = false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    if (char === "\\") {
+      if (!inClass && /[1-9k]/u.test(pattern[i + 1] ?? "")) {
+        throw new HookMatcherError("matcher backreferences are not supported");
+      }
+      i += 1;
+      continue;
+    }
+    if (char === "[") inClass = true;
+    if (char === "]") inClass = false;
+    if (inClass) continue;
+    if (char === "(") groupDepth += 1;
+    if (char === ")") groupDepth -= 1;
+    if (char === "|") {
+      if (groupDepth > 0) choicePoints += 1;
+      else topLevelAlternation = true;
+    }
+    const counted = char === "{" ? /^\{\d+(?:,\d*)?\}/u.exec(pattern.slice(i))?.[0] : undefined;
+    const quantified = char === "*" || char === "+" || (char === "?" && pattern[i - 1] !== "(") || counted !== undefined;
+    if (!quantified) continue;
+    if (pattern[i - 1] === ")") {
+      throw new HookMatcherError("matcher quantified groups are not supported");
+    }
+    choicePoints += 1;
+    if (counted) {
+      if (counted.match(/\d+/gu)!.some((value) => Number(value) > HOOK_MATCHER_SUBJECT_MAX)) {
+        throw new HookMatcherError("matcher repetition exceeds subject limit");
+      }
+      i += counted.length - 1;
+    }
+    if (pattern[i + 1] === "?") i += 1;
+  }
+  const limit = pattern.startsWith("^") && !topLevelAlternation ? 3 : 2;
+  if (choicePoints > limit) {
+    throw new HookMatcherError(`matcher supports at most ${limit} quantified atoms or grouped alternatives`);
+  }
+}
+
 /**
- * Does a hook apply to a tool call? A hook with no matcher applies to every tool
- * (unchanged behavior); a hook with a matcher applies only when the glob matches
- * the tool name. Glob: `*` → any run of chars, `?` → one char; anchored.
+ * Why a matcher cannot load, or undefined when it is usable. Matchers follow the
+ * public matcher contract: an exact
+ * name list, or else a JavaScript regular expression. An invalid regular
+ * expression must refuse the hook rather than silently match nothing.
  */
-export function hookMatchesTool(matcher: string | undefined, toolName: string): boolean {
-  if (!matcher) return true;
-  const regex = new RegExp(
-    "^" +
-      matcher
-        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*/g, ".*")
-        .replace(/\?/g, ".") +
-      "$",
-  );
-  return regex.test(toolName);
+export function hookMatcherError(matcher: string | undefined): string | undefined {
+  try {
+    compileHookMatcher(matcher);
+    return undefined;
+  } catch (err) {
+    if (!(err instanceof HookMatcherError)) throw err;
+    return err.message;
+  }
+}
+
+/**
+ * Does a hook apply to a subject (a tool name, or a lifecycle event's value)?
+ * No matcher, `""` or `*` matches everything. A matcher of only letters, digits,
+ * `_`, `-`, spaces, `,` and `|` is a list of exact names (`Edit|Write`,
+ * `Edit, Write`). Anything else is an unanchored regular expression
+ * (`mcp__.*`, `^Notebook`). Loading rejects invalid regular expressions through
+ * {@link hookMatcherError}. Length and repetition bounds apply before dispatch.
+ * Registries compile it once when built, outside dispatch.
+ */
+export function compileHookMatcher(matcher: string | undefined): (subject: string) => boolean {
+  if (matcher !== undefined && matcher.length > HOOK_MATCHER_PATTERN_MAX) {
+    throw new HookMatcherError(`matcher exceeds ${HOOK_MATCHER_PATTERN_MAX} characters`);
+  }
+  let matches: (subject: string) => boolean;
+  if (!matcher || matcher === "*") matches = () => true;
+  else if (EXACT_MATCHER.test(matcher)) {
+    const names = new Set(matcher.split(/[|,]/u).map((name) => name.trim()));
+    matches = (subject) => names.has(subject);
+  } else {
+    validateMatcherRepetition(matcher);
+    let regex: RegExp;
+    try {
+      regex = new RegExp(matcher);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new HookMatcherError(error.message);
+    }
+    matches = (subject) => regex.test(subject);
+  }
+  return (subject) => {
+    if (subject.length > HOOK_MATCHER_SUBJECT_MAX) {
+      throw new HookMatcherError(`matcher subject exceeds ${HOOK_MATCHER_SUBJECT_MAX} characters`);
+    }
+    return matches(subject);
+  };
 }
 
 /**
@@ -170,7 +264,7 @@ export function hookMatchesTool(matcher: string | undefined, toolName: string): 
  *
  * The `.disabled/` subfolder is NEVER walked.
  */
-export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[] {
+export function discoverHooks(dir: string = defaultHooksDir(), includeDisabledCopies = false): DiscoveredHook[] {
   if (!existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -190,7 +284,7 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
       continue;
     }
     if (!st.isFile()) continue;
-    const hookType = hookTypeFromName(fileName);
+    const hookType = hookTypeFromName(includeDisabledCopies ? disabledHookOriginalName(fileName) ?? "" : fileName);
     if (!hookType) continue;
     let h: { sha256: string; size: number; matcher?: string };
     try {
@@ -198,6 +292,11 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
     } catch (err) {
       log.warn("hook-discovery: hash failed for %s: %s", path, (err as Error).message);
       continue;
+    }
+    const matcherError = hookMatcherError(h.matcher);
+    if (matcherError !== undefined) {
+      // Retained for review and for a denial guard on blocking tool events.
+      log.warn("hook-discovery: %s matcher %s is invalid (%s)", path, JSON.stringify(h.matcher), matcherError);
     }
     out.push({ path, fileName, hookType, sha256: h.sha256, size: h.size, matcher: h.matcher });
   }
@@ -311,14 +410,14 @@ export async function persistLockfile(
 }
 
 /**
- * Move a rejected hook into the `.disabled/` subfolder. Idempotent —
- * if the destination already exists (user previously rejected then
- * re-rejected the same name) appends a timestamp suffix so we keep
- * forensic copies.
+ * Move a hook into `.disabled/`, recording why it must not run. Collisions keep
+ * separate copies and separate cause records; only explicit user disables may
+ * clear matcher guards. A failed cause write leaves an unmarked, fail-closed file.
  */
 export function disableHook(
   hook: DiscoveredHook,
   disabledDir: string = defaultDisabledDir(),
+  cause: HookDisableCause,
 ): string {
   mkdirSync(disabledDir, { recursive: true, mode: 0o700 });
   let dest = join(disabledDir, hook.fileName);
@@ -326,7 +425,18 @@ export function disableHook(
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     dest = join(disabledDir, `${hook.fileName}.${ts}`);
   }
+  // A stale record from an earlier manual move must not survive a crash before the write.
+  clearHookDisableCause(dest);
   renameSync(hook.path, dest);
+  try {
+    writeHookDisableCause(dest, cause);
+  } catch (err) {
+    // A stale or planted record must not outlive the failed write.
+    try {
+      clearHookDisableCause(dest);
+    } catch { /* Reported below through the resulting state. */ }
+    log.warn("hook-discovery: disable cause not recorded for %s (%s); resulting cause: %s", dest, (err as Error).message, readHookDisableCause(dest));
+  }
   return dest;
 }
 

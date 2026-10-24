@@ -23,7 +23,8 @@
  * (alphabetical, as `discoverHooks` already returns them) first, then config
  * entries (file order).
  */
-import { hookMatchesTool, type DiscoveredHook } from "./hook-discovery.js";
+import { compileHookMatcher, HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
+import { hookEventSupportsMatcher } from "./hook-contract.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
 
@@ -49,8 +50,12 @@ interface BaseHookRegistryEntry {
   id: string;
   /** Closed-set internal event (tool-use pre|post|perm OR a lifecycle event). */
   event: HookEvent;
-  /** Optional glob matcher over the tool name; absent ⇒ matches every tool. */
+  /** Optional matcher over the tool name or lifecycle subject; absent ⇒ matches all. */
   matcher?: string;
+  /** Compiled once when this registry entry is built; never serialized. */
+  matchesSubject: (subject: string) => boolean;
+  /** Inert guard: refuses the event without executing a command. */
+  matcherError?: string;
   /** argv form of the command to execute (always ≥1 element). */
   command: string[];
   env?: Record<string, string>;
@@ -74,16 +79,32 @@ export interface ConfigHookRegistryEntry extends BaseHookRegistryEntry {
   timeoutMs: number;
 }
 
-/**
- * Normalize one legacy `.sh` `DiscoveredHook` into a registry entry. The `.sh`
- * file IS the local script, so `command` is its absolute path as a single-element
- * argv. `event` is the prefix-derived `hookType`; `matcher` carries the optional
- * `# ave-hook-matcher:` frontmatter glob unchanged.
- */
+/** Compile a bounded predicate, retaining only expected matcher failures. */
+function matcherFields(event: HookEvent, matcher: string | undefined, file: string, invalid?: string): Pick<BaseHookRegistryEntry, "matchesSubject" | "matcherError"> {
+  if (!hookEventSupportsMatcher(event)) return { matchesSubject: () => true };
+  try {
+    if (invalid !== undefined) throw new HookMatcherError(invalid);
+    const predicate = compileHookMatcher(matcher);
+    return { matchesSubject: (subject) => {
+      try {
+        return predicate(subject);
+      } catch (error) {
+        if (!(error instanceof HookMatcherError)) throw error;
+        throw new HookMatcherError(`${file}: matcher ${JSON.stringify(matcher)}: ${error.message}`);
+      }
+    } };
+  } catch (error) {
+    if (!(error instanceof HookMatcherError)) throw error;
+    return { matchesSubject: () => false, matcherError: `${file}: matcher ${JSON.stringify(matcher)}: ${error.message}` };
+  }
+}
+
+/** Normalize a legacy script, preserving its path and trust identity. */
 function fromDiscoveredHook(hook: DiscoveredHook): ShHookRegistryEntry {
   return {
     id: `sh:${hook.fileName}`,
     event: hook.hookType,
+    ...matcherFields(hook.hookType, hook.matcher, hook.path),
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     command: [hook.path],
     source: "sh",
@@ -96,6 +117,7 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
   return {
     id: `config:${entry.id}`,
     event: entry.event,
+    ...matcherFields(entry.event, entry.matcher, entry.configPath ?? `hooks.json:${entry.id}`, entry.matcherError),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     command: entry.command,
     ...(entry.env ? { env: entry.env } : {}),
@@ -106,20 +128,31 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
 
 /**
  * Build the unified registry: legacy `.sh` hooks first (alphabetical — preserved
- * from `discoverHooks`), then declarative config entries (file order). Pure —
- * does no I/O and does not mutate its inputs.
+ * from `discoverHooks`), then declarative config entries (file order). An entry
+ * with an invalid matcher becomes an inert denial guard for pre/perm; other
+ * events refuse it. Pure — does no I/O and does not mutate its
+ * inputs.
  */
 export function buildHookRegistry(
-  shHooks: DiscoveredHook[],
-  configEntries: HookConfigEntry[],
+  shHooks: readonly DiscoveredHook[],
+  configEntries: readonly HookConfigEntry[],
 ): HookRegistryEntry[] {
-  return [...shHooks.map(fromDiscoveredHook), ...configEntries.map(fromConfigEntry)];
+  const registry: HookRegistryEntry[] = [];
+  for (const hook of shHooks) {
+    const entry = fromDiscoveredHook(hook);
+    if (!entry.matcherError || entry.event === "pre" || entry.event === "perm") registry.push(entry);
+  }
+  for (const entry of configEntries) {
+    const normalized = fromConfigEntry(entry);
+    if (!normalized.matcherError || normalized.event === "pre" || normalized.event === "perm") registry.push(normalized);
+  }
+  return registry;
 }
 
 /**
  * Filter a registry down to the entries that apply to a given `event` +
- * `toolName`. Reuses the same glob `hookMatchesTool` as the `.sh` runtime so
- * `.sh` frontmatter and `hooks.json` matchers behave identically (decision (a)).
+ * `toolName`. Reuses the same compiled matcher as the `.sh` runtime so `.sh`
+ * frontmatter and `hooks.json` matchers behave identically (decision (a)).
  * An entry with no `matcher` matches every tool. Order is preserved.
  */
 export function filterRegistryByEventAndTool(
@@ -127,17 +160,14 @@ export function filterRegistryByEventAndTool(
   event: HookEvent,
   toolName: string,
 ): HookRegistryEntry[] {
-  return registry.filter(
-    (entry) => entry.event === event && hookMatchesTool(entry.matcher, toolName),
-  );
+  return filterRegistryByEventAndSubject(registry, event, toolName);
 }
 
 /**
  * Filter a registry to the entries that apply to a given lifecycle `event` +
- * `subject` (#811 milestone-2). For lifecycle events the matcher subject is the
- * `sessionId` (or `'*'` = all) instead of a tool name; the SAME glob
- * `hookMatchesTool` is reused so a config matcher behaves identically across
- * tool-use and lifecycle surfaces (design §5: "Subject for matcher = sessionId").
+ * `subject` (#811 milestone-2). The manager picks the subject per event (see
+ * `lifecycleMatcherSubject`); the same compiled matcher is reused so a config
+ * matcher behaves identically across tool-use and lifecycle surfaces.
  * An entry with no `matcher` matches every session. Order is preserved.
  */
 export function filterRegistryByEventAndSubject(
@@ -145,7 +175,13 @@ export function filterRegistryByEventAndSubject(
   event: HookEvent,
   subject: string,
 ): HookRegistryEntry[] {
-  return registry.filter(
-    (entry) => entry.event === event && hookMatchesTool(entry.matcher, subject),
-  );
+  return registry.filter((entry) => {
+    if (entry.event !== event) return false;
+    try {
+      return entry.matchesSubject(subject);
+    } catch (error) {
+      if (!(error instanceof HookMatcherError) || event === "pre" || event === "perm") throw error;
+      return false;
+    }
+  });
 }

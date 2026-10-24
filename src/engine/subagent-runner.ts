@@ -3391,6 +3391,7 @@ export class SubAgentRunner {
       ? `${modePreamble}\n\n${input.instructions}`
       : input.instructions;
     let assistantRounds = 0;
+    let subagentStopDispatched = false;
 
     try {
       // Subagent lifecycle parity (#811): fire SubagentStart on the child loop
@@ -3472,6 +3473,13 @@ export class SubAgentRunner {
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
           inputOrigin: executionPolicy?.inputOrigin ?? "llm-tool-arg",
+          // A clean end dispatches SubagentStop inside the run, where a
+          // deliberate block continues the child; the finally then skips it.
+          subagentStop: {
+            ...(input.spawnId !== undefined ? { agentId: input.spawnId } : {}),
+            ...(input.profileMode !== undefined ? { agentType: input.profileMode } : {}),
+            onDispatched: () => { subagentStopDispatched = true; },
+          },
         },
       );
       // `result.toolCalls.length` is the authoritative final count (the
@@ -3508,11 +3516,14 @@ export class SubAgentRunner {
       reasoningStreamEmitter.cancel();
       unregisterSpawnChild();
       // SubagentStop — fires once whether the run completed, errored, or
-      // aborted (the subagent has stopped either way). Observe-only/fail-soft.
-      await child.fireLifecycleEvent("SubagentStop", {
-        agentId: input.spawnId,
-        agentType: input.profileMode,
-      });
+      // aborted (the subagent has stopped either way). Observe-only/fail-soft
+      // here; a clean end already dispatched it inside the run.
+      if (!subagentStopDispatched) {
+        await child.fireLifecycleEvent("SubagentStop", {
+          agentId: input.spawnId,
+          agentType: input.profileMode,
+        });
+      }
     }
 
     if (cancellation.signal.aborted) {
