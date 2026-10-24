@@ -151,9 +151,11 @@ export async function runHookTrustWorkflow(
 
   // Test dispatcher path; production omits it and strict-denies.
   let decisions: TrustPromptDecision[];
+  let promptCompleted = false;
   if (options.promptDispatcher) {
     try {
       decisions = await options.promptDispatcher.prompt(newOrChanged);
+      promptCompleted = true;
     } catch (err) {
       log.warn(
         "hook-trust: prompt dispatcher failed (%s) — strict-deny applied",
@@ -179,7 +181,7 @@ export async function runHookTrustWorkflow(
       // Skip if the file already vanished between diff and decision.
       if (existsSync(d.hook.path)) {
         try {
-          disableHook(d.hook, options.disabledDir);
+          disableHook(d.hook, options.disabledDir, promptCompleted && decision?.trust === false ? "user" : "system-quarantine");
           disabled.push(d.hook);
         } catch (err) {
           log.warn(

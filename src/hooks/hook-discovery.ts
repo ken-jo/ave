@@ -40,6 +40,7 @@ import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
 import type { ScriptHookType } from "./script-hook-types.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { disabledHookOriginalName, writeHookDisableCause, type HookDisableCause } from "./hook-disable-state.js";
 
 const log = createLogger("hook-discovery");
 
@@ -263,7 +264,7 @@ export function compileHookMatcher(matcher: string | undefined): (subject: strin
  *
  * The `.disabled/` subfolder is NEVER walked.
  */
-export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[] {
+export function discoverHooks(dir: string = defaultHooksDir(), includeDisabledCopies = false): DiscoveredHook[] {
   if (!existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -283,7 +284,7 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
       continue;
     }
     if (!st.isFile()) continue;
-    const hookType = hookTypeFromName(fileName);
+    const hookType = hookTypeFromName(includeDisabledCopies ? disabledHookOriginalName(fileName) ?? "" : fileName);
     if (!hookType) continue;
     let h: { sha256: string; size: number; matcher?: string };
     try {
@@ -409,14 +410,14 @@ export async function persistLockfile(
 }
 
 /**
- * Move a rejected hook into the `.disabled/` subfolder. Idempotent —
- * if the destination already exists (user previously rejected then
- * re-rejected the same name) appends a timestamp suffix so we keep
- * forensic copies.
+ * Move a hook into `.disabled/`, recording why it must not run. Collisions keep
+ * separate copies and separate cause records; only explicit user disables may
+ * clear matcher guards. A failed cause write leaves an unmarked, fail-closed file.
  */
 export function disableHook(
   hook: DiscoveredHook,
   disabledDir: string = defaultDisabledDir(),
+  cause: HookDisableCause,
 ): string {
   mkdirSync(disabledDir, { recursive: true, mode: 0o700 });
   let dest = join(disabledDir, hook.fileName);
@@ -425,6 +426,7 @@ export function disableHook(
     dest = join(disabledDir, `${hook.fileName}.${ts}`);
   }
   renameSync(hook.path, dest);
+  writeHookDisableCause(dest, cause);
   return dest;
 }
 

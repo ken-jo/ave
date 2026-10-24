@@ -22,8 +22,8 @@
  * `trusted` — exactly the same gate `.sh` files pass through.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve as pathResolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, join, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
   classifyCommand,
@@ -34,6 +34,7 @@ import {
 import { defaultHooksDir, discoverHooks, type DiscoveredHook } from "./hook-discovery.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { disabledHookOriginalName } from "./hook-disable-state.js";
 
 const log = createLogger("hook-config-trust");
 
@@ -50,16 +51,25 @@ export function defaultHooksConfigPath(dir: string = defaultHooksDir()): string 
   return pathResolve(dir, HOOKS_CONFIG_FILENAME);
 }
 
-/** Trust and matcher review share exact filenames; timestamped copies are forensic only. */
-export function discoverHookTrustFiles(dir: string): {
+/** Disabled review includes every stored copy; active discovery keeps exact names. */
+export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false): {
   scripts: DiscoveredHook[];
   config: LoadedHookConfig;
+  configs: LoadedHookConfig[];
   hooks: DiscoveredHook[];
 } {
-  const scripts = discoverHooks(dir);
+  const scripts = discoverHooks(dir, includeDisabledCopies);
   const config = loadHookConfig(defaultHooksConfigPath(dir));
-  const synthetic = syntheticConfigHook(config);
-  return { scripts, config, hooks: synthetic ? [...scripts, synthetic] : scripts };
+  const configs = includeDisabledCopies && existsSync(dir)
+    ? readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && disabledHookOriginalName(entry.name) === HOOKS_CONFIG_FILENAME)
+      .map((entry) => loadHookConfig(join(dir, entry.name)))
+    : [config];
+  const synthetic = configs.flatMap((loaded) => {
+    const hook = syntheticConfigHook(loaded);
+    return hook ? [{ ...hook, fileName: basename(loaded.path) }] : [];
+  });
+  return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
 }
 
 /**

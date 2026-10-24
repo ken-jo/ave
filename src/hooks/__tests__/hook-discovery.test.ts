@@ -206,7 +206,7 @@ describe("Permission policy P4 hook-discovery", () => {
       mkdirSync(dir);
       const path = writeHook(dir, "pre-bad.sh", "echo");
       const hooks = discoverHooks(dir);
-      const dest = disableHook(hooks[0], join(dir, ".disabled"));
+      const dest = disableHook(hooks[0], join(dir, ".disabled"), "user");
       expect(dest).toContain(".disabled");
       expect(dest).toContain("pre-bad.sh");
       // Original is gone
@@ -224,7 +224,7 @@ describe("Permission policy P4 hook-discovery", () => {
       writeFileSync(join(disabledDir, "pre-bad.sh"), "old");
       writeHook(dir, "pre-bad.sh", "new");
       const hooks = discoverHooks(dir);
-      const dest = disableHook(hooks[0], disabledDir);
+      const dest = disableHook(hooks[0], disabledDir, "user");
       expect(dest).not.toBe(join(disabledDir, "pre-bad.sh"));
       expect(dest).toContain("pre-bad.sh.");
     });

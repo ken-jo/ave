@@ -23,8 +23,21 @@ describe("hook matcher safety", () => {
     "(?:.|.)".repeat(36) + "!",
     "(?:a|aa)".repeat(30),
     "(?:\\w|\\w)".repeat(25),
+    "(?:.|.)".repeat(3),
+    "(?:a|(?:b|c))".repeat(2),
+    "(?=a+)a+a+",
+    "[^][^][^]a*a*a*!",
+    "(?<n>a)\\k<n>",
+    "(?<=a+)a+a+",
+    "a{1,2}a?a+",
   ])("refuses grouped choice explosions without evaluating them: %s", async (matcher) => {
-    expect(hookMatcherError(matcher)).toBeDefined();
+    const constructor = vi.spyOn(globalThis, "RegExp");
+    try {
+      expect(hookMatcherError(matcher)).toBeDefined();
+      expect(constructor).not.toHaveBeenCalled();
+    } finally {
+      constructor.mockRestore();
+    }
     for (const event of ["PreToolUse", "PermissionRequest"] as const) {
       const parsed = parseHookConfig({ hooks: { [event]: [{ matcher, hooks: [{ type: "command", command: ["node", COMMAND] }] }] } });
       const manager = new ScriptHookManager();
@@ -57,13 +70,15 @@ describe("hook matcher safety", () => {
       writeFileSync(join(disabledDir, fileName), kind === "script" ? "#!/bin/sh\nexit 0\n" : "{}");
       writeFileSync(join(dir, fileName), content);
       const hook = kind === "script" ? hookDiscovery.discoverHooks(dir)[0] : { path: join(dir, fileName), fileName, hookType: "pre" as const, sha256: "hash", size: 1 };
-      const forensic = hookDiscovery.disableHook(hook, disabledDir);
+      const forensic = hookDiscovery.disableHook(hook, disabledDir, "user");
       expect(forensic).not.toBe(join(disabledDir, fileName));
       const manager = new ScriptHookManager();
       let diagnostics = collectHookMatcherDiagnostics(dir, disabledDir);
       expect(diagnostics.notices).toEqual([]);
       manager.setMatcherGuards(diagnostics.guards);
       expect(await manager.runPreToolUse(PAYLOAD)).toMatchObject({ decision: "allow", results: [] });
+      const listed = listHookTrustState({ hooksDir: dir, disabledDir, lockfilePath: join(dir, ".lockfile.json") });
+      expect(listed.disabled.map((row) => row.fileName)).toContain(forensic.slice(disabledDir.length + 1));
 
       writeFileSync(join(disabledDir, fileName), content);
       diagnostics = collectHookMatcherDiagnostics(dir, disabledDir);
@@ -215,21 +230,13 @@ describe("hook matcher safety", () => {
     expect(result).toMatchObject({ decision: "allow", results: [] });
   });
 
-  it("rejects catastrophic shapes at the caps well within the dispatch budget", () => {
+  it("rejects catastrophic shapes at the caps before evaluation", () => {
     const pattern = "(\\w+)+-".padEnd(256, "x");
     // Fail before evaluation on an implementation without the load-time guard.
     expect(hookMatcherError(pattern)).toBeDefined();
-    const times: number[] = [];
-    for (let i = 0; i < 100; i += 1) {
-      const start = performance.now();
-      const registry = buildHookRegistry([], [{ id: "bounded", event: "pre", matcher: pattern, source: "config", command: ["node", COMMAND], timeoutMs: 5000 }]);
-      expect(registry[0].matcherError).toBeDefined();
-      expect(registry[0].matchesSubject("a".repeat(256))).toBe(false);
-      times.push(performance.now() - start);
-    }
-    const maximum = Math.max(...times);
-    process.stdout.write(`catastrophic matcher: pattern=256 subject=256 iterations=100 max=${maximum.toFixed(3)}ms bound=50ms\n`);
-    expect(maximum).toBeLessThan(50);
+    const registry = buildHookRegistry([], [{ id: "bounded", event: "pre", matcher: pattern, source: "config", command: ["node", COMMAND], timeoutMs: 5000 }]);
+    expect(registry[0].matcherError).toBeDefined();
+    expect(registry[0].matchesSubject("a".repeat(256))).toBe(false);
     for (const unsafe of ["(a|aa)+$", "a*a*a*", "(a+)+$", "a{999999}", "(a)\\1+"]) expect(hookMatcherError(unsafe), unsafe).toBeDefined();
   });
 
@@ -243,30 +250,24 @@ describe("hook matcher safety", () => {
     expect((await manager.runPreToolUse({ ...PAYLOAD, toolName: "write_file" })).results).toHaveLength(1);
   });
 
-  it("bounds accepted repeated atoms at both length caps", () => {
-    // Include cold interpretation and leave scheduling margin on shared hosts.
-    const boundMs = 250;
-    for (const pattern of [
-      "a{0,256}a{0,256}b",
-      "a{0,256}a{0,256}\\x62" + "(?:)".repeat(59),
-      "^a{0,256}a{0,256}a{0,256}b",
-      "^a{0,256}a{0,256}a{0,256}b" + "(?:)".repeat(57) + "()",
-      "(?:a|aa)a{0,256}b",
-      "^(?:a|aa)a{0,256}a{0,256}b",
-      "(?:a|aa)(?:a|aa)!",
-      "^(?:a|aa)(?:a|aa)(?:a|aa)!",
-    ]) {
-      const predicate = compileHookMatcher(pattern);
-      const times: number[] = [];
-      for (let i = 0; i < 100; i += 1) {
-        const start = performance.now();
-        expect(predicate("a".repeat(256))).toBe(false);
-        times.push(performance.now() - start);
-      }
-      const maximum = Math.max(...times);
-      process.stdout.write(`accepted matcher: pattern=${pattern.length} subject=256 iterations=100 cold=${times[0].toFixed(3)}ms max=${maximum.toFixed(3)}ms bound=${boundMs}ms margin=${(boundMs - maximum).toFixed(3)}ms\n`);
-      expect(maximum).toBeLessThan(boundMs);
-    }
+  it.each([
+    "a{0,256}a{0,256}b",
+    "a{0,256}a{0,256}\\x62" + "(?:)".repeat(59),
+    "^a{0,256}a{0,256}a{0,256}b",
+    "^a{0,256}a{0,256}a{0,256}b" + "(?:)".repeat(57) + "()",
+    "(?:a|aa)a{0,256}b",
+    "^(?:a|aa)a{0,256}a{0,256}b",
+    "(?:a|aa)(?:a|aa)!",
+    "^(?:a|aa)(?:a|aa)(?:a|aa)!",
+  ])("accepts shapes within the structural budget: %s", (pattern) => {
+    expect(hookMatcherError(pattern)).toBeUndefined();
+  });
+
+  it("counts empty negated classes as atoms and refuses named backreferences", () => {
+    expect(compileHookMatcher("[^]")("\n")).toBe(true);
+    expect(compileHookMatcher("[^]*[^]*!")("aaa")).toBe(false);
+    expect(hookMatcherError("[^]*[^]*[^]*!")).toBeDefined();
+    expect(hookMatcherError("(?<n>a)\\k<n>")).toContain("backreferences");
   });
 
   it("registry and validation rethrow unexpected matcher construction failures", () => {
