@@ -40,6 +40,8 @@ export interface ClaudeCodeConversationRuntimeOptions {
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
   readonly bridge: SubscriptionToolBridge;
+  /** A model the service validated against `listModels`; absent: the CLI's default. */
+  readonly model?: string;
   readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly platform?: NodeJS.Platform;
 }
@@ -156,7 +158,7 @@ export class ClaudeCodeConversationRuntime {
       await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
       await runtime.verify();
       assertActive();
-      const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames)], {
+      const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames, this.options.model)], {
         cwd: workspaceDir,
         env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
         stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,

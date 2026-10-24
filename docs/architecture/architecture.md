@@ -510,9 +510,10 @@ settings, the endpoint's report or the catalog, never from its name. Where none 
 them, the window is the 128K host fallback (source `fallback`), the price is unknown,
 images are refused and an OpenAI-family request sends no reasoning effort. Host-owned
 values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the 128K
-fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
-Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
-the Responses-vs-Chat wire choice).
+fallback, the credible-window ceiling, TPM defaults, and request-control projection. A declared numeric reasoning budget
+selects numeric thinking; qualitative-only reasoning selects adaptive thinking.
+Unknown entries carry no inferred control. Protocol selection reads reported
+controls or catalog reasoning support instead of model-version patterns.
 A model that is going away is in one of two tiers (`resolveModelRetirement`,
 `src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
 listing on its native host no longer names it (never for local, self-hosted, gateway,
