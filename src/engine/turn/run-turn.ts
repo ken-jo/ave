@@ -6,6 +6,7 @@
  * token-projection fields it reads/writes live on the ConversationLoop
  * instance (via `self`), so turn_summary.tokensIn is computed exactly as before.
  */
+import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { randomUUID } from "node:crypto";
 // LoopContext — the turn-local mutable carrier these free functions operate
 // on. It IS the ConversationLoop instance: the class owns all turn state and
@@ -588,7 +589,7 @@ async function runTurnInSpan(
     if (options?.subAgentReport && !options.initialGuidance && inputOrigin === "agent-message") {
       userMeta.subAgentReport = options.subAgentReport;
     }
-    self.history.append({
+    const turnUserMessage = self.history.append({
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
@@ -705,7 +706,7 @@ async function runTurnInSpan(
     // in-process MCP loopback path (LoopbackTransport → PluginMcpServer →
     // pluginRuntimeToolDelegate). Clearing session B never wipes session A's
     // activation because the Map is keyed per sessionId.
-    result = await sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    const runQuery = () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -732,6 +733,10 @@ async function runTurnInSpan(
         },
       ),
     );
+    if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
+    result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
+      ? await runQuery()
+      : await withCodeCheckpoint({ sessionId: effectiveSessionId, messageId: turnUserMessage.meta.messageId }, runQuery);
     await finalizeTurnState();
     if (!commitsHostInjectedMessages(result.stopReason) && initialGuidanceId) {
       self.history.removeByHostInjectionId(initialGuidanceId);
