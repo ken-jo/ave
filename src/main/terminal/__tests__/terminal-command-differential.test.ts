@@ -487,6 +487,17 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     if (name === "zsh") {
       tracedIntegration = instrument(tracedIntegration, '  [[ "$(bindkey -lL main)" == *vi* ]]',
         `  local ave_keymap\n  bindkey -lL main >'${bindings}'\n  IFS= read -r ave_keymap <'${bindings}'\n  [[ "$ave_keymap" == *vi* ]]`);
+      if (process.platform === "darwin") {
+        // Query current traps with the native builtin as well. The focused
+        // default-prompt case retains the production pipe and its child wait.
+        const traps = join(rig.root, "prompt-traps");
+        tracedIntegration = instrument(tracedIntegration,
+          "  { builtin trap && builtin printf '\\0'; } | IFS= builtin read -r -d '' ave_traps",
+          `  { builtin trap && builtin printf '\\0'; } >'${traps}' || return 1\n  IFS= builtin read -r -d '' ave_traps <'${traps}' || return 1`);
+        tracedIntegration = instrument(tracedIntegration,
+          '  if (( pipestatus[1] == 0 && pipestatus[2] == 0 )) && [[ -z "$ave_traps" ]]; then builtin trap - INT; fi',
+          '  if [[ -z "$ave_traps" ]]; then builtin trap - INT; fi');
+      }
     } else {
       tracedIntegration = instrument(tracedIntegration, '  [[ "$__ave_paste" = 1 && "$(bind -v)" == *"enable-bracketed-paste on"* ]]',
         `  local -a ave_binding_options\n  bind -v >'${bindings}'\n  mapfile -t ave_binding_options <'${bindings}'\n  [[ "$__ave_paste" = 1 && "${"${ave_binding_options[*]}"}" == *"enable-bracketed-paste on"* ]]`);
@@ -498,9 +509,6 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
   // descendant a writer. The prompt closes the shell's own copy; EOF then
   // proves process substitutions finished before their records are read.
   const fenceHooks = [
-    // Interrupts are sent only at idle prompts in this fixture. Avoid a
-    // temporary SIGINT mask around child waits on this platform.
-    ...(name === "zsh" && process.platform === "darwin" ? ["setopt traps_async"] : []),
     `__ave_begin_fence() { exec 9>'${fencePath}'; printf f >&9; __ave_fence_open=1; }`,
     '__ave_close_fence() { if [ "${__ave_fence_open:-0}" = 1 ]; then exec 9>&-; __ave_fence_open=0; fi; return 0; }',
     name === "zsh"
@@ -546,7 +554,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     for (const check of changes) check();
   });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); for (const check of changes) check(); resolve(); }));
-  let fence: { finish(): Promise<void> } | undefined;
+  let fence: { cancel(): Promise<void> } | undefined;
   const beginFence = async () => {
     const reader = spawn("/bin/cat", [fencePath], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
@@ -560,24 +568,35 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     // Hold a writer until the command returns, including the interval before
     // its native editor callback opens FD 9. Neither FIFO open can lose EOF.
     const writer = await open(fencePath, "w");
-    let finished: Promise<void> | undefined;
+    let finished: Promise<{ code: number | null; error?: Error }> | undefined;
     const finish = () => finished ??= (async () => {
       await writer.close();
-      const result = await closed;
+      return new Promise<{ code: number | null; error?: Error }>((resolve) => {
+        const timer = setTimeout(() => {
+          reader.kill("SIGKILL");
+          resolve({ code: null, error: new Error("A descendant kept the command-completion FIFO open") });
+        }, 3_000);
+        void closed.then((result) => { clearTimeout(timer); resolve(result); });
+      });
+    })();
+    fence = { cancel: async () => {
+      reader.kill("SIGKILL");
+      // Cleanup is bounded and makes no assertions that could mask the
+      // command failure. Completion is checked by the command's own caller.
+      try { await finish(); } catch (error) { process.stderr.write(`FIFO cleanup: ${String(error)}\n`); }
+    } };
+    return async () => {
+      const result = await finish();
+      fence = undefined;
       if (result.error) throw result.error;
       expect(result.code, errors).toBe(0);
-    })();
-    fence = { finish };
-    return async () => {
-      await finish();
       expect(output).toBe("f");
-      fence = undefined;
     };
   };
   const close = async () => {
     try { pty.kill("SIGKILL"); } catch { /* gone */ }
     await exited;
-    await fence?.finish();
+    await fence?.cancel();
     liveSessions.delete(close);
   };
   liveSessions.add(close);
@@ -778,13 +797,13 @@ afterAll(async () => {
 const executeShell = promisify(execFile);
 
 /** Share interpreter startup while keeping each probe's state in a subshell. */
-async function runProbeBatch(shellPath: string, root: string, scripts: readonly string[]): Promise<string[]> {
+async function runProbeBatch(shellPath: string, root: string, scripts: readonly string[], interactive = false): Promise<string[]> {
   const script = scripts.map((body, index) => `(
 ${body}
 )
 __ave_probe_status=$?
 printf '\\000%s:%s\\000' '${index}' "$__ave_probe_status"`).join("\n");
-  const result = await executeShell(shellPath, ["-fc", script], {
+  const result = await executeShell(shellPath, [interactive ? "-fic" : "-fc", script], {
     encoding: "utf8",
     cwd: root,
     env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
@@ -920,6 +939,37 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
       } finally { await session.close(); }
     }));
     for (const result of results) if (result.status === "rejected") throw result.reason;
+  });
+
+  it("preserves configured traps and default interrupt options while preparing prompts", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-prompt-traps-")));
+    opened.push(root);
+    const cases = [
+      { setup: ":", marker: "" },
+      { setup: "trap 'printf list-handler' INT", marker: "list-handler" },
+      { setup: "TRAPINT() { printf function-handler; return 130; }", marker: "function-handler" },
+      { setup: "trap '' INT", marker: "trap -- '' INT" },
+      { setup: "trap 'printf unrelated-handler' USR1", marker: "unrelated-handler" },
+      { setup: "read() { return 1; }; trap 'printf shadowed-read-handler' INT", marker: "shadowed-read-handler" },
+    ];
+    const fixtures = cases.map(({ setup }, index) => {
+      const home = join(root, String(index));
+      mkdirSync(home);
+      installShellIntegration(home, ZSH!, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+      return { home, script: `source '${join(home, ".zshrc")}'; unsetopt traps_async; ${setup}
+builtin trap > '${join(home, "before")}'
+__ave_precmd
+builtin trap > '${join(home, "after")}'
+print -r -- "$options[trapsasync]"` };
+    });
+    const output = await runProbeBatch(ZSH!, root, fixtures.map(({ script }) => script), true);
+    for (const [index, { home }] of fixtures.entries()) {
+      const before = readFileSync(join(home, "before"), "utf8");
+      if (cases[index]!.marker) expect(before).toContain(cases[index]!.marker);
+      else expect(before).toBe("");
+      expect(readFileSync(join(home, "after"), "utf8")).toBe(before);
+      expect(output[index]!.endsWith("off\n")).toBe(true);
+    }
   });
 
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {

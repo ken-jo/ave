@@ -126,7 +126,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
 
 /** The command text the shell recorded for the block typing produced. */
 async function ranCommand(shell: LiveShell, result: TypeTerminalCommandResult): Promise<string> {
-  if (!result.ok) throw new Error(`not typed: ${result.message}`);
+  if (!result.ok) throw new Error(`not typed (${result.reason}): ${result.message}`);
   await until(() => shell.tracker.get(result.firstBlockId)?.status === "done"
     && ["ready", "pending-input", "no-bracketed-paste", "vi-editing-mode", "not-found-handler"].includes(shell.tracker.promptState()));
   return shell.tracker.get(result.firstBlockId)!.command;
@@ -342,11 +342,11 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       expect(reading).toMatchObject({ ok: true, foreground: { command: basename(path!), cwd: shell.home } });
       const gate = createGate(shell.home, "release-foreground");
       try {
-        const running = await shell.type(`sh -c "printf '\\nFOREGROUND_READY\\n'; read -r < '${gate.path}'"`);
+        const running = await shell.type(`sh -c 'exec 3< "$1"; printf "\\nFOREGROUND_READY\\n"; IFS= read -r released <&3' sh '${gate.path}'`);
         expect(running).toMatchObject({ ok: true });
         await until(() => shell.tracker.promptState() === "command-running" && /\r?\nFOREGROUND_READY\r?\n/u.test(shell.output()));
         const during = await readTerminalForeground(shell.pty.pid);
-        expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+        expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home), JSON.stringify(during)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
         gate.release();
         await ranCommand(shell, running);
       } finally { gate.close(); }
