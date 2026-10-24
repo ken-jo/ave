@@ -740,10 +740,15 @@ describe("installer smoke and packaging discipline", () => {
     // Every step runs in one shell that exists on all three hosts.
     expect(installers).toMatch(/^ {4}defaults:\n {6}run:\n {8}shell: bash$/mu);
 
-    // A persistent runner starts from a clean checkout, gets Node from the
-    // runner tool cache rather than a system install, and drops its build
-    // output after the upload.
-    expect(installers).toMatch(/^ {10}persist-credentials: false\n {10}clean: true$/mu);
+    // The checkout keeps no token, and Node is the pinned 24 rather than the
+    // image's own. Nothing is left over from a self-hosted runner: no clean
+    // or build-output removal for a persistent workspace, and no branch on
+    // the runner's environment, since every job runs on a hosted image.
+    expect(installers).toMatch(/^ {10}persist-credentials: false$/mu);
+    expect(installers).not.toContain("Remove build output");
+    for (const name of workflowFileNames()) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toContain("runner.environment");
+    }
     expectPinnedAction(installers, "actions/setup-node");
     expect(installers).toContain('node-version: "24"');
     const setupNode = installers.indexOf("uses: actions/setup-node@");
@@ -879,59 +884,32 @@ describe("installer smoke and packaging discipline", () => {
     expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
     expect(setupBun).toContain("for tool in bun bunx; do");
 
-    expect(installers).toContain(
-      "      - name: Remove build output from a self-hosted runner\n"
-        + "        if: always() && runner.environment == 'self-hosted'\n"
-        + "        run: rm -rf release",
-    );
-    expect(installers.indexOf("Remove build output")).toBeGreaterThan(installers.indexOf("Upload installers"));
-
     // Installer caches stay per OS.
     expect(installers).toContain("key: ${{ runner.os }}-installers-");
     expect(installers).toContain("key: ${{ runner.os }}-uv-");
   });
 
-  it("never authorizes a destructive or host-mutating release step on a self-hosted runner", () => {
-    const hosted = "runner.environment == 'github-hosted'";
+  it("authorizes the destructive Windows release steps only on the hosted Windows installer job", () => {
+    // These steps claim HKCU ave://, install machine-wide and uninstall, so
+    // they need a disposable machine. Every job runs on a hosted label (the
+    // runner policy above), so the Windows matrix entry is that machine; each
+    // authorization is still scoped to it alone.
     const workflows = readdirSync(resolve(root, ".github/workflows")).filter((name) => /\.ya?ml$/u.test(name));
-    // Every place any workflow sets a disposable-host or destructive smoke
-    // authorization requires a hosted runner in the same expression, so a
-    // self-hosted runner's own environment can never turn one on.
     let authorizations = 0;
     for (const name of workflows) {
       for (const line of readRepoFile(`.github/workflows/${name}`).split("\n")) {
         if (!/AVE_ALLOW_[A-Z_]*(DISPOSABLE|DESTRUCTIVE)[A-Z_]*:/u.test(line)) continue;
         authorizations += 1;
-        expect(line, `${name}: ${line.trim()}`).toContain(`&& ${hosted} && '1' || ''`);
+        expect(name).toBe("build-installers.yml");
+        expect(line, `${name}: ${line.trim()}`).toMatch(/: \$\{\{ matrix\.target == 'win' && '1' \|\| '' \}\}$/u);
       }
     }
     expect(authorizations).toBe(2);
 
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
-    const commands = jobRunCommands(installers);
-
-    // The packaged application claims HKCU ave:// for its executable when it
-    // launches, so no step launches it on a self-hosted (owner) Windows PC:
-    // every step that runs a packaged-app launcher is gated to hosted Windows.
-    const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
-    const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
-    let launchSteps = 0;
-    for (const step of installers.split(/\n(?= {6}- )/u)) {
-      if (!launchers.some((launcher) => step.includes(launcher))) continue;
-      launchSteps += 1;
-      const condition = step.match(/^ {8}if: >-\n((?: {10}.*\n)+)/mu)?.[1] ?? "";
-      expect(condition, step.split("\n")[0]).toContain(windowsHostedOnly);
-    }
-    expect(launchSteps).toBe(launchers.length);
+    expect(installers).toMatch(/^ {12}os: windows-2025\n {12}target: win$/mu);
     expect(installers).not.toContain("--skip-windows-installer-smoke");
-
-    // Signing imports into and searches a keychain; a self-hosted runner is
-    // the owner's machine, so it always builds unsigned.
-    const build = commands.find((command) => command.includes("node scripts/build-installers.mjs"));
-    const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
-    expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
-    expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
   });
 
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {

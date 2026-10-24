@@ -33,14 +33,13 @@ export const TRUSTED_EVENTS: ReadonlySet<string> = new Set([
   "repository_dispatch",
 ]);
 
-/** GitHub-hosted labels a fork-reachable job may name. */
+/** The GitHub-hosted labels a job may name: pinned images, and ubuntu-latest
+ *  for the Linux-only gates that do not ship or test a platform build. */
 const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "ubuntu-latest",
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
-  "windows-latest",
   "windows-2025",
-  "macos-latest",
   "macos-15",
 ]);
 
