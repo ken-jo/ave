@@ -55,6 +55,15 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * The host script up to its native type: preferences, autoloading off and the
+ * module imports. Scripts that run a slice of the host run it under the same
+ * module rules, so they find the same cmdlets without a module-path search.
+ */
+function hostModulePreamble(script: string): string {
+  return script.slice(0, script.indexOf("Add-Type -TypeDefinition @'"));
+}
+
 function withMetadata(stat: Stats, metadata: Partial<Stats>): Stats {
   return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, metadata) as Stats;
 }
@@ -652,7 +661,7 @@ describe("native access-rule admission", () => {
     // Execute only the resolver from the encoded production probe. All registry
     // and package commands are functions over fixture data; no host query runs.
     const mockedScript = [
-      "$ErrorActionPreference = 'Stop'",
+      hostModulePreamble(script),
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
       // The decoded request line, as the host reads it.
       "$request = ConvertFrom-Json -InputObject $env:AVE_ACL_REQUEST_FIXTURE",
@@ -801,7 +810,7 @@ describe("native access-rule admission", () => {
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
     const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
     const query = [
-      "$ErrorActionPreference = 'Stop'",
+      hostModulePreamble(script),
       "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
       `$candidates = @(${kind === "empty" ? "" : kind === "single" ? `'${CAP_SID}'` : `$currentSid, '${CAP_SID}'`})`,
       // The request line, decoded as the host decodes it.
