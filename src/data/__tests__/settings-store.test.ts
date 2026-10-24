@@ -3687,7 +3687,7 @@ function writePlainSecrets(secretsPath: string, entries: Record<string, string>)
 
 describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   const MARKER = "llm-vendor-id-package-names";
-  const MODEL = "DeepHermes-3-Llama-3-3-70B-Preview";
+  const MODEL = "selected-model";
   const BASE_URL = "https://inference-api.nousresearch.com/v1";
   let userDataPath: string;
   let settingsPath: string;
@@ -3755,10 +3755,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     writeFileSync(settingsPath, JSON.stringify({
       llm: {
         provider: "v0",
-        vendors: { v0: { model: "v0-1.5-md" } },
+        vendors: { v0: { model: "selected-model" } },
         fallbackChain: [
           { provider: "nousResearch", model: MODEL },
-          { provider: "v0", model: "v0-1.5-md" },
+          { provider: "v0", model: "selected-model" },
         ],
       },
       marketplace: { installedProviderIds: ["v0", "nousResearch"] },
@@ -3767,10 +3767,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const llm = service.get("llm");
     expect(llm.provider).toBe("vercel-v0");
-    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("v0-1.5-md");
+    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("selected-model");
     expect(llm.fallbackChain).toEqual([
       { provider: "nous-research", model: MODEL },
-      { provider: "vercel-v0", model: "v0-1.5-md" },
+      { provider: "vercel-v0", model: "selected-model" },
     ]);
     expect(service.get("marketplace").installedProviderIds).toEqual(["vercel-v0", "nous-research"]);
   });
@@ -3917,10 +3917,10 @@ describe("retired vendor profile migration", () => {
         provider: "copilot",
         vendors: {
           copilot: { model: "gpt-5.4-mini" },
-          claude: { model: "claude-sonnet-4-6" },
+          claude: { model: "selected-model" },
           openai: { model: "gpt-5.4" },
         },
-        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "claude-sonnet-4-6" }],
+        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "selected-model" }],
       },
     }), "utf-8");
   }
@@ -3945,9 +3945,9 @@ describe("retired vendor profile migration", () => {
     expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
     expect(llm.retiredProvider).toBe("copilot");
     expect(Object.keys(llm.vendors)).not.toContain("copilot");
-    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("claude-sonnet-4-6");
+    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("selected-model");
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5.4");
-    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "claude-sonnet-4-6" }]);
+    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "selected-model" }]);
 
     // Written back: the file no longer selects copilot, and the marker survives
     // a restart until the user picks a provider.

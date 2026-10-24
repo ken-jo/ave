@@ -149,6 +149,54 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
+/**
+ * Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose
+ * CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776 removed.
+ * Only the removed non-empty defaults belong here; live defaults must never
+ * change which saved selections this one-time migration clears.
+ */
+const REMOVED_BUILT_IN_DEFAULT_MODELS: Readonly<Partial<Record<LLMVendor, string>>> = Object.freeze({
+  claude: "claude-sonnet-4-6",
+  openai: "gpt-5.4-mini",
+  gemini: "gemini-3.8-flash",
+  "azure-foundry": "gpt-5.4-mini",
+  "vertex-ai": "gemini-3.5-flash",
+  openrouter: "anthropic/claude-sonnet-4.6",
+  deepseek: "deepseek-flash",
+  xai: "grok-4.20-0309-non-reasoning",
+  together: "Qwen/Qwen3.6-Plus",
+  fireworks: "accounts/fireworks/models/glm-5p3-flash",
+  groq: "openai/gpt-oss-120b",
+  poolside: "poolside/laguna-m.1",
+  cerebras: "gpt-oss-120b",
+  sambanova: "Meta-Llama-3.3-70B-Instruct",
+  nebius: "nvidia/nemotron-3-super-120b-a12b",
+  baseten: "deepseek-ai/DeepSeek-V4.1-Flash",
+  requesty: "openai/gpt-6-luna",
+  litellm: "gpt-5.4",
+  huggingface: "MiniMaxAI/MiniMax-M2.5",
+  "vercel-ai-gateway": "alibaba/qwen3.6-plus",
+  "vercel-v0": "v0-1.5-md",
+  aihubmix: "gpt-5.4-mini",
+  hicap: "hicap-pro",
+  "nous-research": "DeepHermes-3-Llama-3-3-70B-Preview",
+  "huawei-cloud-maas": "DeepSeek-R1",
+  wandb: "deepseek-ai/DeepSeek-V4.1-Flash",
+  xiaomi: "mimo-v2.6-flash",
+  kilo: "openai/gpt-5.4",
+  zai: "glm-5v-turbo",
+  "zai-coding-plan": "glm-5.2",
+  qwen: "qwen3.7-plus",
+  "qwen-code": "qwen3-coder-plus",
+  doubao: "doubao-1-5-pro-256k-250115",
+  mistral: "mistral-medium-latest",
+  moonshot: "kimi-k3",
+  asksage: "gpt-5.4-mini",
+  ollama: "llama3.3",
+  lmstudio: "local-model",
+  oca: "anthropic/claude-3-7-sonnet-20250219",
+});
 /**
  * The value every saved vendor block carried before the default stopped
  * being written. A stored `outputTokenLimit` of exactly this, without the
@@ -217,7 +265,27 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
+
+function withoutBuiltInDefaultModels(llm: LLMSettings): LLMSettings {
+  const vendors = { ...llm.vendors };
+  for (const vendor of LLM_VENDORS) {
+    const block = vendors[vendor];
+    const removedDefault = REMOVED_BUILT_IN_DEFAULT_MODELS[vendor];
+    if (block && removedDefault !== undefined && block.model === removedDefault) {
+      vendors[vendor] = { ...block, model: "" };
+    }
+  }
+  // The same removed defaults used to seed new fallback rows.
+  const fallbackChain = llm.fallbackChain.map((entry) => {
+    const removedDefault = REMOVED_BUILT_IN_DEFAULT_MODELS[entry.provider];
+    return removedDefault !== undefined && entry.model === removedDefault
+      ? { ...entry, model: "" }
+      : entry;
+  });
+  return { ...llm, vendors, fallbackChain };
+}
 
 /** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
 function withoutFossilOutputTokenLimits(stored: Record<string, any>): { stored: Record<string, any>; changed: boolean } {
@@ -2154,6 +2222,13 @@ export class SettingsService {
         LLM_VENDORS.filter(isMarketplaceEligibleLLMVendor),
         undefined,
       );
+      // Clear before retirement detection and custom-block pruning: the old
+      // built-in model alone must not keep an otherwise unconfigured route.
+      if (!appliedMigrations.includes(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION)) {
+        llm = withoutBuiltInDefaultModels(llm);
+        appliedMigrations.push(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION);
+        migrationWriteBack = true;
+      }
       // A profile still naming a removed vendor (RETIRED_LLM_VENDOR_IDS): the
       // merge above has already moved `provider` to the default, because the
       // id is no longer a vendor. Record the move so it is not silent, and

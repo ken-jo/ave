@@ -19,6 +19,11 @@ import { resolveContextWindowForRoute } from "../../../../shared/context-budget.
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
 import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SettingsService } from "../../../../data/settings-store.js";
+import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -489,6 +494,40 @@ describe("LlmTab provider cards", () => {
       expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
     } finally {
       installModelCatalog(original);
+    }
+  });
+
+  it("shows the model chooser after clearing a stored built-in default without an error", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-model-"));
+    const options = {
+      userDataPath,
+      encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    };
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini" } } },
+      }));
+      const migrated = new SettingsService(options);
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const { hooks } = await renderTab(makeApi({
+        hasApiKey: storedKeysFor("openai"),
+        getModelCatalog: vi.fn(async () => ({ ok: true, catalog: activeModelCatalog(), refreshPolicy: "auto" })),
+      }), {
+        vendor: llm.provider, model: llm.vendors.openai!.model, retiredLlmProvider: llm.retiredProvider,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent("gpt-5.4-mini");
+      expect(screen.queryAllByRole("alert").map((node) => node.textContent).join("\n")).toBe("");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
     }
   });
 

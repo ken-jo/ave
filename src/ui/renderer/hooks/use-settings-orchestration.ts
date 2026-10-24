@@ -395,9 +395,7 @@ export function useSettingsOrchestration(
     setVendor("openai-compatible");
     // This preset's own stored model, so switching between two presets restores
     // what each was last set to rather than resetting both to a seed.
-    setModel(
-      llmRouteModel(openaiCompatibleDefaults, preset.providerId) || preset.defaultModel,
-    );
+    setModel(llmRouteModel(openaiCompatibleDefaults, preset.providerId));
     // NOT `preset.baseUrl`: this field is the generic custom provider row's
     // stored endpoint and is written back on every save, so parking the
     // preset's address in it is how the two rows used to overwrite each other.

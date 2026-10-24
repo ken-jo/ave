@@ -218,6 +218,8 @@ export interface ReviewerSettingsBlock {
    * idempotent — subsequent loads do not re-write.
    */
   disabledMigratedAt?: string;
+  /** One-time removal of the old built-in model; later selections are preserved. */
+  modelDefaultMigratedAt?: string;
 }
 
 export interface PermissionSettingsBlock {
@@ -396,6 +398,9 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
 /** Exported so IPC handlers can validate provider names against a single SOT. */
 export const REVIEWER_PROVIDERS_SET: ReadonlySet<ReviewerProvider> = new Set(REVIEWER_PROVIDERS);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
+// Frozen source: 26ab8c776^:src/permissions/permission-settings-store.ts,
+// DEFAULT_REVIEWER's model removed by 26ab8c776. Do not read live defaults.
+const REMOVED_REVIEWER_DEFAULT_MODEL = "gpt-4o-mini";
 
 function defaultPath(): string {
   return pathResolve(aveHome(), "settings.json");
@@ -417,6 +422,8 @@ function defaultPath(): string {
  * subsequent loads do not re-rewrite. Persistence failure is logged but
  * the in-memory result is still the migrated (strict) shape — the user
  * never silently lands on the new pass-through-LOW semantic.
+ * The removed built-in reviewer model is also cleared once, guarded by
+ * `modelDefaultMigratedAt`; a later explicit choice of that id survives.
  *
  * `pathOverride` is for tests.
  */
@@ -440,17 +447,18 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
   }
   {
     const migrated = migrateLegacyDisabledMode(parsed);
+    const modelMigrated = migrateLegacyReviewerModel(parsed);
     const normalized = normalizePermissionSettings(parsed, filePath);
-    if (migrated) {
+    if (migrated || modelMigrated) {
       // Persist the migration synchronously so the file converges to the
-      // post-#664 shape. We do a best-effort write — if the file is locked
+      // current shape. We do a best-effort write — if the file is locked
       // or the disk is read-only, we still return the migrated in-memory
       // result so the user's runtime behaviour is fail-closed (strict).
       try {
         writeUtf8FileAtomicSync(filePath, JSON.stringify(parsed, null, 2), 0o600);
       } catch (persistErr) {
         log.warn(
-          "issue-664 migration: failed to persist migrated settings to %s — runtime still strict (%s)",
+          "failed to persist permission settings migrations to %s (%s)",
           filePath,
           (persistErr as Error).message,
         );
@@ -488,12 +496,32 @@ function readSettingsDocument(filePath: string): Record<string, unknown> {
  * with whatever that one mutation happened to hold.
  */
 function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> {
-  if (!existsSync(filePath)) return {};
   try {
-    return readSettingsDocument(filePath);
+    const parsed = existsSync(filePath) ? readSettingsDocument(filePath) : {};
+    // Stamp before merging a user patch, including a fresh file's first write:
+    // an explicit selection of the old id must survive the next read.
+    migrateLegacyReviewerModel(parsed);
+    return parsed;
   } catch (err) {
     throw new PermissionSettingsUnreadableError(filePath, (err as Error).message, { cause: err });
   }
+}
+
+function migrateLegacyReviewerModel(parsed: Record<string, unknown>): boolean {
+  const perm = parsed.permissions;
+  if (perm !== undefined && (perm === null || typeof perm !== "object" || Array.isArray(perm))) return false;
+  const permissions = (perm ?? {}) as Record<string, unknown>;
+  const rawReviewer = permissions.reviewer;
+  if (rawReviewer !== undefined && (rawReviewer === null || typeof rawReviewer !== "object" || Array.isArray(rawReviewer))) return false;
+  const reviewer = (rawReviewer ?? {}) as Record<string, unknown>;
+  if (typeof reviewer.modelDefaultMigratedAt === "string" && reviewer.modelDefaultMigratedAt.length > 0) return false;
+  if ((reviewer.provider === undefined || reviewer.provider === "openai") && reviewer.model === REMOVED_REVIEWER_DEFAULT_MODEL) {
+    reviewer.model = "";
+  }
+  reviewer.modelDefaultMigratedAt = new Date().toISOString();
+  permissions.reviewer = reviewer;
+  parsed.permissions = permissions;
+  return true;
 }
 
 /**
@@ -514,8 +542,8 @@ function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> 
  * command or hand-edit) gets the new pass-through semantic without
  * re-migration because the marker is already present.
  *
- * Out-of-band: this is the only auto-rewrite the loader performs. All
- * other validation falls back to defaults without mutation.
+ * Other validation falls back to defaults without mutation; the separate
+ * built-in model migration has its own persisted marker.
  */
 export function migrateLegacyDisabledMode(parsed: Record<string, unknown>): boolean {
   const perm = parsed.permissions;
@@ -756,6 +784,10 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
       ? obj.disabledMigratedAt
       : undefined;
+  const modelDefaultMigratedAt =
+    typeof obj.modelDefaultMigratedAt === "string" && obj.modelDefaultMigratedAt.length > 0
+      ? obj.modelDefaultMigratedAt
+      : undefined;
   return {
     mode,
     provider,
@@ -764,6 +796,7 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     interactive,
     parentAdjudication,
     disabledMigratedAt,
+    modelDefaultMigratedAt,
   };
 }
 
@@ -915,6 +948,9 @@ export async function writePermissionSettings(
     const nextReviewer: ReviewerSettingsBlock = patch.reviewer
       ? validateReviewerPatch({ ...existingReviewer, ...patch.reviewer })
       : existingReviewer;
+    // A malformed old block may have been normalized to defaults above.
+    // Mark it before persisting any explicit model selection as well.
+    if (!nextReviewer.modelDefaultMigratedAt) nextReviewer.modelDefaultMigratedAt = new Date().toISOString();
     const nextDirs =
       patch.additionalDirectories !== undefined
         ? [...patch.additionalDirectories]

@@ -604,7 +604,6 @@ function providerOptionFromPreset(
     placeholder: preset.apiKeyPlaceholder ?? "sk-...",
     needsBaseUrl: true,
     baseUrlPlaceholder: preset.baseUrl,
-    defaultModel: preset.defaultModel,
     modelOptions: preset.modelOptions,
     requiresApiKey: preset.requiresApiKey,
     ...(preset.modelDiscoveryPolicy ? { modelDiscoveryPolicy: preset.modelDiscoveryPolicy } : {}),

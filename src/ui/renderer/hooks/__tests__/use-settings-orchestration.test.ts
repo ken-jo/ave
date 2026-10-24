@@ -492,6 +492,7 @@ describe("useSettingsOrchestration", () => {
       result.current.selectMarketplaceProviderPreset(futureRouter);
     });
     await waitFor(() => expect(result.current.vendor).toBe("openai-compatible"));
+    expect(result.current.model).toBe("");
 
     let saved = false;
     await act(async () => {
@@ -513,7 +514,7 @@ describe("useSettingsOrchestration", () => {
           // the generic custom-provider row's, and a preset writing it is how
           // the two rows used to overwrite each other.
           "openai-compatible": expect.objectContaining({
-            presetModels: { "future-router": "future/free" },
+            presetModels: { "future-router": "" },
           }),
         },
       }),
@@ -749,6 +750,7 @@ describe("useSettingsOrchestration", () => {
 
     act(() => { result.current.selectMarketplaceProviderPreset(alpha); });
     await waitFor(() => expect(result.current.marketplaceProviderPresetId).toBe("alpha-gw"));
+    expect(result.current.model).toBe("");
     act(() => { result.current.setModel("alpha/chosen"); });
     await act(async () => { await result.current.save("llm"); });
 
