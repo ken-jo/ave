@@ -1472,6 +1472,32 @@ describe("installer smoke and packaging discipline", () => {
     const verification = jobs.get("build-and-test");
     expect(verification, "ci.yml lost its build-and-test job").toBeDefined();
     const commands = jobRunCommands(verification as string);
+    const build = jobs.get("build");
+    const shards = jobs.get("vitest");
+    expect(build, "ci.yml lost its build job").toBeDefined();
+    expect(shards, "ci.yml lost its vitest shard job").toBeDefined();
+
+    // build-and-test reports the build job and every Vitest shard: it needs
+    // both, still runs when one failed or the run was cancelled (a skipped
+    // job reports success to branch protection), and its first step, which
+    // a cancellation cannot skip either, fails unless both succeeded.
+    // The hygiene gates follow it, so they run after every verification step
+    // has reported, as the ordering scan above requires within one job.
+    const body = verification as string;
+    expect(body).toMatch(/^ {4}needs: \[build, vitest\]$/mu);
+    expect(body).toMatch(/^ {4}if: always\(\)$/mu);
+    expect(body).not.toContain("cancelled()");
+    expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
+    const results = commands[0] as string;
+    expect(results).toContain('if [ "$BUILD_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
+    expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
+    expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
+    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
+    expect(shards).toMatch(/^ {4}needs: build$/mu);
+    expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
+    expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 
     // `build-and-test` is one of the two required status checks on `main`; the
     // other is `naming-gate`. Read the current list with
@@ -1500,45 +1526,54 @@ describe("installer smoke and packaging discipline", () => {
     // that `test:ci` runs; there is no separate evidence step. `test:ci`
     // (scripts/run-ci-suite.mjs) runs `check:test-coverage`'s gate on every
     // full run and the affected tests on a traceable pull request.
-    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([
+    expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE)).toEqual([
       "bun run build",
-      "bun run test:ci",
       "bun run typecheck",
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
+    expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });
 
+  // The Vitest shards gate on the build job's docs_only output at job level,
+  // so their steps carry no condition of their own; the confinement job
+  // classifies the change itself and conditions each step.
+  const SHARD_GATE = undefined;
+  const DOCS_GATE = "steps.docs-impact.outputs.docs_only != 'true'";
+
   it.each([
-    ["build-and-test", "bubblewrap socat ripgrep zsh", "bwrap socat rg zsh"],
-    ["linux-confinement-tests", "bubblewrap socat ripgrep xvfb bash zsh", "bwrap socat rg xvfb-run bash zsh"],
-  ])("uses cached packages and proves the sandbox in %s", (jobId, packages, commands) => {
+    ["vitest", SHARD_GATE, "bubblewrap socat ripgrep zsh", "bwrap socat rg zsh"],
+    ["linux-confinement-tests", DOCS_GATE, "bubblewrap socat ripgrep xvfb bash zsh", "bwrap socat rg xvfb-run bash zsh"],
+  ])("uses cached packages and proves the sandbox in %s", (jobId, gate, packages, commands) => {
     const source = readRepoFile(".github/workflows/ci.yml");
     const workflow = parseYaml(source);
     const steps = workflow.jobs[jobId].steps;
     const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
-    expect(install).toMatchObject({
-      if: "steps.docs-impact.outputs.docs_only != 'true'",
-      with: { packages, commands },
-    });
+    expect(install).toMatchObject({ with: { packages, commands } });
+    expect(install.if).toBe(gate);
     const runtime = steps.filter((step: { name?: string }) => [
       "Allow unprivileged user namespaces", "Prove the sandbox backend",
     ].includes(step.name ?? ""));
     expect(runtime).toHaveLength(2);
     for (const step of runtime) {
-      expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+      expect(step.if).toBe(gate);
       expect(steps.indexOf(step)).toBeGreaterThan(steps.indexOf(install));
     }
     expect(runtime[0].run).toContain("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0");
     expect(runtime[1].run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
     const job = workflowJobs(source).get(jobId) as string;
     expect(jobRunCommands(job).join("\n")).not.toMatch(/apt-get\s+install/u);
-    if (jobId === "build-and-test") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
+    if (jobId === "vitest") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
   });
 
-  it.each(["build-and-test", "linux-confinement-tests"])("installs and saves packages before dependency code in %s", (jobId) => {
+  it("gates the Vitest shards on the build job's documentation classification", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    expect(workflow.jobs.vitest.if).toBe("needs.build.outputs.docs_only != 'true'");
+  });
+
+  it.each(["vitest", "linux-confinement-tests"])("installs and saves packages before dependency code in %s", (jobId) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const steps = workflow.jobs[jobId].steps;
     const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
