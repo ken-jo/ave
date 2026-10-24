@@ -913,7 +913,7 @@ export function ChatGroupSession({
     <>
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon" className={HEADER_BUTTON_CLASS}
+        <Button variant="ghost" size="icon" className={`${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
           onClick={() => {
             if (!columnsVisibility.thumbnailHiddenForWidth) onThumbnailOpenChange(!thumbnailOpen);
           }} title={thumbnailLabel}
@@ -929,7 +929,7 @@ export function ChatGroupSession({
         <Button
           variant="ghost"
           size="icon"
-          className={`relative ${HEADER_BUTTON_CLASS}`}
+          className={`relative ${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
           onClick={() => {
             if (!columnsVisibility.panelHiddenForWidth) onSidePanelOpenChange(!panelOpen);
           }}
