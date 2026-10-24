@@ -82,6 +82,90 @@ beforeEach(async () => {
 afterEach(async () => { await cleanupTmpDir(directory); });
 
 describe("durable session tab bindings", () => {
+  it.each(["sessions", "clear"])("does not rewrite identical restored bindings (%s)", async (state) => {
+    const saved = layout();
+    saved.sideTabs.main![0]!.binding = state === "sessions"
+      ? { owner: { sessionId: MAIN_SESSION }, paneSessionId: PANE_SESSION }
+      : {};
+    saved.sideTabs.main![1]!.binding = {};
+    await saveLayout(settings, saved);
+    const patch = vi.spyOn(settings, "patch");
+    const { registry, changes } = registryFor();
+    registry.sessionBindingsState(1);
+    registry.paneConversation(1, BROWSER_TAB);
+    await registry.flushBindingWrites();
+    expect(patch).not.toHaveBeenCalled();
+    expect(changes).toHaveLength(1);
+    expect(settings.get("system").mainLayout).toEqual(saved);
+  });
+
+  it("writes a legacy migration once and does not rewrite it on the next restore", async () => {
+    await memory.saveSessionMetadata(PANE_SESSION, { sessionKind: "main", paneTabId: TERMINAL_TAB });
+    const patch = vi.spyOn(settings, "patch");
+    const first = registryFor();
+    expect(first.registry.paneConversation(1, TERMINAL_TAB)).toBe(PANE_SESSION);
+    await first.registry.flushBindingWrites();
+    expect(patch).toHaveBeenCalledOnce();
+    const restartedSettings = settingsFromDisk();
+    const restartedPatch = vi.spyOn(restartedSettings, "patch");
+    const restarted = registryFor(restartedSettings, 3);
+    expect(restarted.registry.paneConversation(3, TERMINAL_TAB)).toBe(PANE_SESSION);
+    await restarted.registry.flushBindingWrites();
+    expect(restartedPatch).not.toHaveBeenCalled();
+  });
+
+  it("deletes an unmounted owner binding when its layout slot disappears", async () => {
+    const saved = layout();
+    saved.sideTabs.main![0]!.binding = { owner: { sessionId: MAIN_SESSION } };
+    await saveLayout(settings, saved);
+    const { registry } = registryFor();
+    expect(registry.windowsHoldingTab(BROWSER_TAB)).toEqual([1]);
+    registry.prepareLayoutBindings(1, { ...layout(), sideTabs: {} });
+    expect(registry.windowsHoldingTab(BROWSER_TAB)).toEqual([]);
+    expect(registry).toHaveProperty("workspaceBindings.size", 0);
+    await registry.flushBindingWrites();
+  });
+
+  it("retains only the ending pane target when an unmounted owned slot disappears", async () => {
+    const saved = layout();
+    saved.sideTabs.main![0]!.binding = { owner: { sessionId: MAIN_SESSION }, paneSessionId: PANE_SESSION };
+    await saveLayout(settings, saved);
+    const { registry } = registryFor();
+    registry.prepareLayoutBindings(1, { ...layout(), sideTabs: {} });
+    const bindings = Reflect.get(registry, "workspaceBindings") as ReadonlyMap<string, unknown>;
+    expect([...bindings.values()]).toEqual([{
+      windowId: 1, surface: { kind: "browser", tabId: BROWSER_TAB }, owner: null,
+      paneSessionId: PANE_SESSION, closed: true,
+    }]);
+    expect(registry.defaultBrowserTab(1, PANE_SESSION)).toMatchObject({ ok: false });
+    expect(registry.isPaneConversation(PANE_SESSION)).toBe(true);
+    registry.releasePaneConversation(1, BROWSER_TAB, true);
+    expect(registry).toHaveProperty("workspaceBindings.size", 0);
+    await registry.flushBindingWrites();
+  });
+
+  it("prunes the layout entry without allowing a pending request to replace a retained browser owner", async () => {
+    const { registry, requests } = registryFor();
+    await openOwnedTab(registry, requests);
+    registry.prepareLayoutBindings(1, { ...layout(), sideTabs: {} });
+    expect(registry).toHaveProperty("workspaceBindings.size", 0);
+    registry.guestDestroyed(41);
+    const abort = new AbortController();
+    const pending = registry.requestTabOp(1, { op: "new", url: "https://example.com/", actor: { sessionId: PANE_SESSION } }, { signal: abort.signal });
+    registry.guestAttached(guest(42), 1);
+    try {
+      expect(registry.bindTab(1, { tabId: BROWSER_TAB, webContentsId: 42, requestId: requests.at(-1)!.requestId }))
+        .toEqual({ ok: false, error: "guest-not-hosted" });
+      expect(registry.bindTab(1, { tabId: BROWSER_TAB, webContentsId: 42 })).toEqual({ ok: true });
+      expect(registry.liveTab("tab-1")?.owner).toEqual({ sessionId: MAIN_SESSION });
+      expect(registry.sessionBindingsState(1).bindings).toEqual([]);
+    } finally {
+      abort.abort();
+      await pending;
+      await registry.flushBindingWrites();
+    }
+  });
+
   it("drains writes added while shutdown is waiting for persistence", async () => {
     const registry = new BrowserTabRegistry<BrowserGuest>();
     let finishFirst!: () => void;

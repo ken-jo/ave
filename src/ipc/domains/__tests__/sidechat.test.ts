@@ -954,6 +954,30 @@ describe("pane chats are their own conversations", () => {
     expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
   });
 
+  it("resumes a stored pane through the row hint in a non-primary window", async () => {
+    const stored = [{ role: "user", content: "continue this pane" }];
+    const { store, pane } = setup({ [STORED_PANE_SESSION]: stored }, { [STORED_PANE_SESSION]: PANE_A.tabId });
+    const load = vi.fn((windowId: number) => windowId === 1 ? {
+      version: 1 as const, tree: { kind: "leaf" as const, chatGroupId: "main" }, focusedId: "main",
+      surfaces: {}, sideTabs: {}, panelOpenIds: ["main"],
+    } : undefined);
+    const save = vi.fn(async () => {});
+    browserTabRegistry.setBindingPersistence({
+      savedWindowId: () => 1, load, save,
+      sessionExists: store.hasSessionTranscript,
+    });
+    expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
+      .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: stored });
+    await expect(sendFrom({ input: "continue", surface: PANE_A })).resolves.toMatchObject({ ok: true });
+    expect(load).toHaveBeenCalledWith(7);
+    expect(load).toHaveBeenCalledWith(1);
+    expect(store.findPaneSession).toHaveBeenCalledWith(PANE_A.tabId);
+    expect(pane(PANE_A)!.loadSession).toHaveBeenCalledWith(STORED_PANE_SESSION, expect.anything());
+    expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(STORED_PANE_SESSION);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("reads a pane's live history from its loop once it holds the pane's conversation", async () => {
     const files: Record<string, unknown[]> = {};
     const { store, pane } = setup(files);
