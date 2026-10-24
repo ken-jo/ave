@@ -230,8 +230,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Filesystem reach: workspace roots, attachment picking, file preview.
   ["workspace", CHANNELS.workspace.listRoots, []],
   ["workspace", CHANNELS.workspace.listDir, [{ path: "/" }]],
-  // Query validation follows the sender guard; avoid filesystem work in this table.
-  ["workspace", CHANNELS.workspace.searchFiles, [null]],
+  // A valid query, so the host frame reaches the search call past query
+  // validation; searchWorkspaceFiles is mocked above, so no filesystem walk runs.
+  ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
