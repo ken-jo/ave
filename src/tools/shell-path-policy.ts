@@ -10,6 +10,7 @@ import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { expandShellTildePaths } from "../shared/home-tilde.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 
 export type ShellPathPolicyViolationKind =
@@ -1085,6 +1086,14 @@ export function findShellPathPolicyViolation(
     // These exact public standard-stream operands name the child descriptors;
     // resolving them in the host process would inspect different descriptors.
     if (SHELL_DEVICE_PATHS.has(path)) return;
+    // The shell resolves HOME while policy paths retain the OS home floor.
+    // Check both tilde anchors without granting either one as a workspace.
+    if (label === "~" || label.startsWith("~/")) {
+      for (const candidate of expandShellTildePaths(label)) {
+        const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(candidate)), effect);
+        if (sensitive) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${sensitive}`, candidate: label, path: candidate });
+      }
+    }
     // Drive-relative targets depend on a per-drive cwd that was not captured.
     if (process.platform === "win32" && /^[A-Za-z]:(?![\\/])/.test(path)) decline("drive-relative command operand is unresolved");
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");

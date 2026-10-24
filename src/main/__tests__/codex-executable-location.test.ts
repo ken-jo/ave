@@ -2,13 +2,14 @@ import { execFile, type ChildProcess } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, promises as fs, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   assertCodexExecutableLocation,
   assertCodexLocations,
   assertCodexPrivateRuntimeDirectory,
   CodexExecutableLocationError,
+  _resetDesktopPackageCacheForTest,
 } from "../codex-executable-location.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -18,6 +19,8 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 const HOST = process.platform;
 const roots: string[] = [];
+
+beforeEach(() => { _resetDesktopPackageCacheForTest(); });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -351,6 +354,10 @@ describe.skipIf(HOST === "win32")("extended access-rule admission", () => {
 
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";
 const FOREIGN_SID = "S-1-5-21-100-200-300-1002";
+const MACHINE_DOMAIN_SID = "S-1-5-21-10-20-30";
+const CAP_SID = "S-1-5-21-400-500-600-700";
+const PACKAGE_SID = "S-1-15-2-10-20-30-40-50-60-70";
+const PACKAGE_CAPABILITY_SID = "S-1-15-3-10-20-30-40-50-60-70";
 
 interface AccessEntry {
   sid: string;
@@ -380,8 +387,13 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
   candidate: string;
   modify: (callback: (paths: PathSecurity[]) => void) => void;
   links: Map<string, string>;
+  sandboxGroup: Record<string, unknown>;
+  probe: Record<string, unknown>;
 } {
-  vi.stubGlobal("process", { ...process, platform: "win32", env: { SystemRoot: String.raw`C:\Windows` } });
+  vi.stubGlobal("process", Object.create(process, {
+    platform: { value: "win32" },
+    env: { value: { SystemRoot: String.raw`C:\Windows` } },
+  }));
   const links = new Map<string, string>();
   vi.spyOn(fs, "lstat").mockImplementation(async (path) => pathStats(links.has(String(path))
     ? "link"
@@ -389,6 +401,8 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
   vi.spyOn(fs, "readlink").mockImplementation(async (path) => links.get(String(path))!);
   vi.spyOn(fs, "realpath").mockImplementation(async (path) => links.get(String(path)) ?? String(path));
   let modify = (_paths: PathSecurity[]): void => {};
+  const sandboxGroup: Record<string, unknown> = {};
+  const probe: Record<string, unknown> = { desktopPackage: { status: "unavailable", reason: "mapping-not-found" } };
   vi.mocked(execFile).mockImplementation((...args) => {
     const options = args[2] as { env: NodeJS.ProcessEnv };
     const callback = args[3] as (error: Error | null, stdout: string, stderr: string) => void;
@@ -400,36 +414,448 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
       entries: [{ sid: CURRENT_SID, mask: 0x1f01ff, flags: 0, type: 0 }],
     }));
     modify(paths);
-    callback(null, JSON.stringify({ currentSid: CURRENT_SID, paths }), "");
+    const capSidAccounts = (JSON.parse(options.env.AVE_ACL_CAP_SIDS ?? "[]") as string[])
+      .map((sid) => ({ sid, resolvesToAccount: false }));
+    callback(null, JSON.stringify({ currentSid: CURRENT_SID, machineDomainSid: MACHINE_DOMAIN_SID,
+      capSidAccounts, paths, sandboxGroup, ...probe }), "");
     return {} as ChildProcess;
   });
-  return { candidate, modify: (callback) => { modify = callback; }, links };
+  return { candidate, modify: (callback) => { modify = callback; }, links, sandboxGroup, probe };
+}
+
+function desktopPackageFixture(directory = false) {
+  const fixture = windowsFixture(directory ? String.raw`C:\Tools\runtime` : undefined, directory);
+  fixture.probe.desktopPackage = { status: "resolved", packageSid: PACKAGE_SID, capabilitySid: PACKAGE_CAPABILITY_SID };
+  return fixture;
+}
+
+function capFixture(directory = false) {
+  const fixture = windowsFixture(directory ? String.raw`C:\Tools\runtime` : undefined, directory);
+  const capPath = String.raw`C:\Fixture\cap_sid`;
+  const lstat = vi.mocked(fs.lstat).getMockImplementation()!;
+  vi.mocked(fs.lstat).mockImplementation((async (path) => String(path) === capPath ? pathStats("file") : lstat(path)) as typeof fs.lstat);
+  return { ...fixture, capPath };
 }
 
 describe("native access-rule admission", () => {
-  it.runIf(HOST === "win32")("reads each decoded path separately with the system access-query command", async () => {
+  it.each([PACKAGE_SID, PACKAGE_CAPABILITY_SID])("admits identified package SID %s on ancestors and non-private leaves", async (sid) => {
+    const fixture = desktopPackageFixture();
+    fixture.modify((paths) => { for (const path of paths) path.entries.push({ sid, mask: 0x1f01ff, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    expect(execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "S-1-15-2-1", "S-1-15-2-2", "S-1-15-2-11-21-31-41-51-61-71", "S-1-15-3-11-21-31-41-51-61-71",
+    "S-1-15-3-10-20-30-40-50-60-71",
+  ])("keeps other package or capability SID %s foreign", async (sid) => {
+    const fixture = desktopPackageFixture();
+    for (const index of [1, 2]) {
+      fixture.modify((paths) => { paths[index]!.entries.push({ sid, mask: 0x1f01ff, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it.each(["mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "sid-mismatch", "resolution-failed"])(
+    "keeps admission operational without an exemption after %s", async (reason) => {
+      const fixture = desktopPackageFixture();
+      fixture.probe.desktopPackage = { status: "unavailable", reason };
+      await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+      for (const sid of [PACKAGE_SID, PACKAGE_CAPABILITY_SID]) {
+        fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 0x1f01ff, flags: 0, type: 0 }); });
+        await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+      }
+    },
+  );
+
+  it.each([PACKAGE_SID, PACKAGE_CAPABILITY_SID])("keeps private directories and their children strict for package SID %s", async (sid) => {
+    const fixture = desktopPackageFixture(true);
+    fixture.modify((paths) => { paths[2]!.entries.push({ sid, mask: 1, flags: 8, type: 0 }); });
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).rejects.toThrow("accessible by another account");
+    fixture.modify((paths) => { paths.at(-1)!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+    // A directory leaf inside the private root also retains the private rule.
+    await expect(assertCodexLocations([
+      { path: fixture.candidate, kind: "private-directory" },
+      { path: `${fixture.candidate}\\child`, kind: "directory" },
+    ])).rejects.toThrow("accessible by another account");
+  });
+
+  it.each([PACKAGE_SID, PACKAGE_CAPABILITY_SID])("does not exempt package SID %s from ownership checks", async (sid) => {
+    const fixture = desktopPackageFixture();
+    fixture.modify((paths) => { paths[1]!.owner = sid; });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("untrusted owner");
+  });
+
+  it.each([
+    undefined, null, [], {}, { status: "resolved", packageSid: PACKAGE_SID },
+    { status: "resolved", packageSid: "S-1-15-2-1", capabilitySid: "S-1-15-3-1" },
+    { status: "resolved", packageSid: 123, capabilitySid: PACKAGE_CAPABILITY_SID },
+    { status: "resolved", packageSid: "S-1-15-2-10-20-30-40-50-60", capabilitySid: PACKAGE_CAPABILITY_SID },
+    { status: "resolved", packageSid: PACKAGE_SID, capabilitySid: "S-1-15-3-10-20-30-40-50-60-71" },
+    { status: "resolved", packageSid: PACKAGE_SID, capabilitySid: null },
+    { status: "resolved", packageSid: PACKAGE_SID, capabilitySid: PACKAGE_CAPABILITY_SID, reason: "resolution-failed" },
+    { status: "unavailable" }, { status: "unavailable", reason: 123 }, { status: "unavailable", reason: "unknown" },
+    { status: "unavailable", reason: "resolution-failed", packageSid: PACKAGE_SID },
+    { status: "other", packageSid: PACKAGE_SID, capabilitySid: PACKAGE_CAPABILITY_SID },
+    { status: "skipped" },
+  ])("refuses malformed package principal output %#", async (output) => {
+    const fixture = windowsFixture();
+    fixture.probe.desktopPackage = output;
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("access rules are invalid");
+  });
+
+  it.each(["resolved", "unavailable"])("caches a %s package outcome across admissions and probe batches", async (status) => {
+    const fixture = desktopPackageFixture();
+    if (status === "unavailable") fixture.probe.desktopPackage = { status, reason: "package-not-installed" };
+    let batch = 0;
+    fixture.modify((paths) => {
+      if (batch++ > 0) fixture.probe.desktopPackage = { status: "skipped" };
+      if (status === "resolved") paths[0]!.entries.push({ sid: PACKAGE_SID, mask: 2, flags: 0, type: 0 });
+    });
+    await expect(assertCodexLocations(Array.from({ length: 130 }, (_, index) => ({
+      path: String.raw`C:\Tools\file-${index}.exe`, kind: "executable" as const,
+    })))).resolves.toBeUndefined();
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    const flags = vi.mocked(execFile).mock.calls.map((call) =>
+      (call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE);
+    expect(flags).toEqual([undefined, "skip", "skip"]);
+    if (status === "unavailable") {
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid: PACKAGE_SID, mask: 2, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it("rejects malformed skipped output even when the lookup was skipped", async () => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [command, args, options] = vi.mocked(execFile).mock.calls[0]!;
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-access-query-")));
-    roots.push(root);
-    const executable = join(root, "odd'; \uD55C\uAE00 $(Write-Output injected).exe");
-    writeFileSync(executable, "fixture");
-    const targets = [root, executable];
+    fixture.probe.desktopPackage = { status: "skipped", packageSid: PACKAGE_SID };
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("access rules are invalid");
+  });
+
+  it.each(["same resolved", "same unavailable", "different SID", "different status", "different reason"])(
+    "checks concurrent first lookup agreement: %s", async (outcome) => {
+      const fixture = desktopPackageFixture();
+      if (outcome.endsWith("unavailable") || outcome === "different reason") {
+        fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
+      }
+      const respond = vi.mocked(execFile).getMockImplementation()!;
+      const pending: (() => void)[] = [];
+      vi.mocked(execFile).mockImplementation((...args) => {
+        const callback = args[3] as (error: Error | null, stdout: string, stderr: string) => void;
+        return respond(args[0], args[1], args[2], (error, stdout, stderr) => {
+          pending.push(() => callback(error, String(stdout), String(stderr)));
+        });
+      });
+      const first = assertCodexExecutableLocation(fixture.candidate);
+      await vi.waitFor(() => { expect(pending).toHaveLength(1); });
+      if (outcome === "different SID") fixture.probe.desktopPackage = {
+        status: "resolved", packageSid: "S-1-15-2-11-21-31-41-51-61-71", capabilitySid: "S-1-15-3-11-21-31-41-51-61-71",
+      };
+      if (outcome === "different status") fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
+      if (outcome === "different reason") fixture.probe.desktopPackage = { status: "unavailable", reason: "package-not-installed" };
+      const second = assertCodexExecutableLocation(fixture.candidate);
+      const results = Promise.allSettled([first, second]);
+      await vi.waitFor(() => { expect(pending).toHaveLength(2); });
+      expect(vi.mocked(execFile).mock.calls.map((call) =>
+        (call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE)).toEqual([undefined, undefined]);
+      for (const complete of pending) complete();
+      const [firstResult, secondResult] = await results;
+      expect(firstResult.status).toBe("fulfilled");
+      if (outcome.startsWith("same")) expect(secondResult.status).toBe("fulfilled");
+      else {
+        expect(secondResult.status).toBe("rejected");
+        if (secondResult.status === "rejected") expect(secondResult.reason.message).toContain("access rules are invalid");
+      }
+    },
+  );
+
+  it("does not cache malformed lookup results", async () => {
+    const fixture = windowsFixture();
+    fixture.probe.desktopPackage = { status: "skipped" };
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("access rules are invalid");
+    fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    for (const call of vi.mocked(execFile).mock.calls) {
+      expect((call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE).toBeUndefined();
+    }
+  });
+
+  it("warns once per process about an unavailable package exemption across repeated probes", async () => {
+    const fixture = windowsFixture();
+    fixture.probe.desktopPackage = { status: "unavailable", reason: "publisher-mismatch" };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await assertCodexExecutableLocation(fixture.candidate);
+    fixture.probe.desktopPackage = { status: "skipped" };
+    await assertCodexExecutableLocation(fixture.candidate);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[codex-executable-location] Desktop package exemption unavailable", { reason: "publisher-mismatch" });
+  });
+
+  it.runIf(HOST === "win32").each([
+    { label: "skipped lookup", skip: true, mapping: "failure", installation: "failure", expected: "skipped" },
+    { label: "case-insensitive identity", expected: "resolved" },
+    { label: "missing mapping", mapping: "missing", expected: "mapping-not-found" },
+    { label: "ambiguous mapping", mapping: "ambiguous", expected: "ambiguous-mapping" },
+    { label: "mapping query failure", mapping: "failure", expected: "resolution-failed" },
+    { label: "moniker query failure", mapping: "moniker-failure", expected: "resolution-failed" },
+    { label: "lookalike moniker", moniker: "claude_otherpublisher", expected: "mapping-not-found" },
+    { label: "missing installation", installation: "missing", expected: "package-not-installed" },
+    { label: "package query failure", installation: "failure", expected: "resolution-failed" },
+    { label: "lookalike family", family: "Claude_otherpublisher", expected: "package-not-installed" },
+    { label: "publisher mismatch", publisher: "otherpublisher", expected: "publisher-mismatch" },
+    { label: "mapping SID differs from derivation", sid: "S-1-15-2-11-21-31-41-51-61-71", expected: "sid-mismatch" },
+    { label: "short well-known SID", sid: "S-1-15-2-1", expected: "malformed-sid" },
+    { label: "short package SID", sid: "S-1-15-2-10-20-30-40-50-60", expected: "malformed-sid" },
+    { label: "extra sub-authority", sid: "S-1-15-2-10-20-30-40-50-60-70-80", expected: "malformed-sid" },
+    { label: "capability mapping", sid: PACKAGE_CAPABILITY_SID, expected: "malformed-sid" },
+  ])("resolves package principals read-only using command mocks: $label", async (testCase) => {
+    const fixture = windowsFixture();
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [command, args] = vi.mocked(execFile).mock.calls[0]!;
+    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    const resolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("[PSCustomObject]@{ currentSid ="));
+    const mapping = { PSPath: "fixture-mapping", PSChildName: testCase.sid ?? PACKAGE_SID,
+      Moniker: testCase.moniker ?? "cLaUdE_pzs8sxrjxfjjc" };
+    const input = {
+      mappings: testCase.mapping === "missing" ? [] : testCase.mapping === "ambiguous" ? [mapping, mapping] : [mapping],
+      packages: testCase.installation === "missing" ? [] : [{ PackageFamilyName: testCase.family ?? "cLaUdE_pzs8sxrjxfjjc",
+        PublisherId: testCase.publisher ?? "pzs8sxrjxfjjc" }],
+      failMapping: testCase.mapping === "failure", failMoniker: testCase.mapping === "moniker-failure",
+      failPackage: testCase.installation === "failure",
+    };
+    // Execute only the resolver from the encoded production probe. All registry
+    // and package commands are functions over fixture data; no host query runs.
+    const mockedScript = [
+      "$ErrorActionPreference = 'Stop'",
+      "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
+      `Add-Type 'public static class ExecutablePathSecurity { public static string DerivePackageSid(string name) { return "${PACKAGE_SID}"; } }'`,
+      "function Get-ChildItem { param($LiteralPath, $ErrorAction); if ($fixture.failMapping) { throw 'Fixture failure' }; $fixture.mappings }",
+      "function Get-ItemProperty { param($LiteralPath, $Name, $ErrorAction); if ($fixture.failMoniker) { throw 'Fixture failure' }; $fixture.mappings | Where-Object { $_.PSPath -eq $LiteralPath } | Select-Object -First 1 }",
+      "function Get-AppxPackage { param($Name, $ErrorAction); if ($Name -cne 'Claude' -or $fixture.failPackage) { throw 'Fixture failure' }; $fixture.packages }",
+      resolver,
+      "[PSCustomObject]$desktopPackage | ConvertTo-Json -Compress",
+    ].join("\n");
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const stdout = await new Promise<string>((resolve, reject) => {
-      childProcess.execFile(command, args!, {
-        ...options,
-        env: { ...options!.env, AVE_EXECUTABLE_ACL_PATHS: JSON.stringify(targets) },
-        encoding: "utf8",
+      childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(mockedScript, "utf16le").toString("base64")], {
+        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
+        env: { ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
+          AVE_ACL_DESKTOP_PACKAGE: testCase.skip ? "skip" : undefined },
       }, (error, output) => error ? reject(error) : resolve(output));
     });
-    const result = JSON.parse(stdout) as { currentSid: string; paths: PathSecurity[] };
-    expect(result.currentSid).toMatch(/^S-1-/);
-    expect(result.paths.map((path) => path.path)).toEqual(targets);
-    expect(result.paths.every((path) => path.daclPresent && path.entries.length > 0)).toBe(true);
+    fixture.probe.desktopPackage = JSON.parse(stdout);
+    _resetDesktopPackageCacheForTest();
+    if (testCase.skip) {
+      expect(fixture.probe.desktopPackage).toEqual({ status: "skipped" });
+      return;
+    }
+    expect(fixture.probe.desktopPackage).toEqual(testCase.expected === "resolved"
+      ? { status: "resolved", packageSid: PACKAGE_SID, capabilitySid: PACKAGE_CAPABILITY_SID }
+      : { status: "unavailable", reason: testCase.expected });
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid: PACKAGE_CAPABILITY_SID, mask: 0x1f01ff, flags: 0, type: 0 }); });
+    const admission = assertCodexExecutableLocation(fixture.candidate);
+    if (testCase.expected === "resolved") await expect(admission).resolves.toBeUndefined();
+    else await expect(admission).rejects.toThrow("writable by another account");
+  });
+
+  it("never adds a probe for optional cap trust when the admission batch is full", async () => {
+    const fixture = capFixture();
+    const read = vi.fn(async () => JSON.stringify({ workspace: FOREIGN_SID }));
+    const requests = Array.from({ length: 126 }, (_, index) => ({ path: String.raw`C:\Tools\file-${index}.exe`, kind: "executable" as const, routeKind: "native" as const }));
+    await expect(assertCodexLocations(requests, { capSidPath: fixture.capPath, readCapSidFile: read })).resolves.toBeUndefined();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.runIf(HOST === "win32").each(["valid", "malformed", "oversized"])("reads a %s cap file from a real temporary fixture with the bounded reader", async (kind) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-cap-sid-reader-")));
+    roots.push(root);
+    const capPath = join(root, "cap_sid");
+    writeFileSync(capPath, kind === "valid" ? JSON.stringify({ workspace: CAP_SID }) : kind === "malformed" ? "{" : " ".repeat(1024 * 1024 + 1));
+    const lstat = fs.lstat.bind(fs);
+    const fixture = windowsFixture();
+    const fixtureLstat = vi.mocked(fs.lstat).getMockImplementation()!;
+    vi.mocked(fs.lstat).mockImplementation((async (...args: Parameters<typeof fs.lstat>) => String(args[0]) === capPath
+      ? lstat(...args) : fixtureLstat(...args)) as typeof fs.lstat);
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 }); });
+    const admission = assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: capPath });
+    if (kind === "valid") await expect(admission).resolves.toBeUndefined();
+    else await expect(admission).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["group", "member"] as const)("trusts a managed sandbox %s for mutation and ownership", async (principal) => {
+    const fixture = windowsFixture();
+    const groupSid = "S-1-5-21-10-20-30-100";
+    const memberSid = "S-1-5-21-10-20-30-101";
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)", sid: groupSid, members: [memberSid] });
+    fixture.modify((paths) => { paths[1]!.owner = principal === "group" ? groupSid : memberSid;
+      paths[1]!.entries.push({ sid: paths[1]!.owner, mask: 0x1f01ff, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+  });
+
+  it.each(["group", "member"])("refuses the whole managed group with a foreign-domain %s", async (part) => {
+    const fixture = windowsFixture();
+    const localSid = `${MACHINE_DOMAIN_SID}-101`;
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: part === "group" ? FOREIGN_SID : `${MACHINE_DOMAIN_SID}-100`,
+      members: part === "group" ? [localSid] : [localSid, FOREIGN_SID] });
+    for (const sid of [localSid, FOREIGN_SID]) {
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it.each(["S-1-1-0", "S-1-5-11", "S-1-5-32-545"])("refuses every sandbox principal when membership includes %s", async (broadSid) => {
+    const fixture = windowsFixture();
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: groupSid, members: [memberSid, broadSid] });
+    for (const sid of [groupSid, memberSid, broadSid]) {
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+    }
+  });
+
+  it.each([null, "", "S-1-5-21-10-20", "S-1-5-32", "not-a-sid"])("refuses the whole managed group when the machine domain is %j", async (machineDomainSid) => {
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    const admit = async (domain: unknown) => {
+      const fixture = windowsFixture();
+      Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+        sid: groupSid, members: [memberSid] });
+      fixture.probe.machineDomainSid = domain;
+      fixture.modify((paths) => { paths[1]!.entries.push({ sid: memberSid, mask: 2, flags: 0, type: 0 }); });
+      return assertCodexExecutableLocation(fixture.candidate);
+    };
+    // The same group is trusted under the real machine domain, so the refusal below is the domain's doing.
+    await expect(admit(MACHINE_DOMAIN_SID)).resolves.toBeUndefined();
+    await expect(admit(machineDomainSid)).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["group", "member"])("refuses a %s SID whose domain only starts with the machine domain", async (part) => {
+    const groupSid = `${MACHINE_DOMAIN_SID}-100`;
+    const memberSid = `${MACHINE_DOMAIN_SID}-101`;
+    const longer = `${MACHINE_DOMAIN_SID}-5-100`;
+    const fixture = windowsFixture();
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: part === "group" ? longer : groupSid, members: part === "group" ? [memberSid] : [memberSid, longer] });
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid: memberSid, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
+  it("pins the group lookup locally without a machine-name environment input", async () => {
+    const fixture = windowsFixture();
+    process.env.COMPUTERNAME = "untrusted-host";
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [, args, options] = vi.mocked(execFile).mock.calls[0]!;
+    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    expect(options!.env).not.toHaveProperty("COMPUTERNAME");
+    expect(script).not.toContain("$env:COMPUTERNAME");
+    expect(script).toContain("WinNT://./CodexSandboxUsers,group");
+    expect(script).toContain("AccountDomainSid");
+  });
+
+  it.each(["current domain", "machine domain", "resolved account"])("refuses cap trust for a SID from %s", async (kind) => {
+    const fixture = capFixture();
+    const sid = kind === "current domain" ? FOREIGN_SID : kind === "machine domain" ? `${MACHINE_DOMAIN_SID}-102` : CAP_SID;
+    fixture.probe.capSidAccounts = [{ sid, resolvesToAccount: kind === "resolved account" }];
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
+      readCapSidFile: async () => JSON.stringify({ workspace: sid }) })).rejects.toThrow("writable by another account");
+  });
+
+  it.runIf(HOST === "win32").each(["empty", "single", "multiple"])("probes account translation for %s cap candidates", async (kind) => {
+    const fixture = windowsFixture();
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [command, args] = vi.mocked(execFile).mock.calls[0]!;
+    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
+    const query = [
+      "$ErrorActionPreference = 'Stop'",
+      "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+      `$candidates = @(${kind === "empty" ? "" : kind === "single" ? `'${CAP_SID}'` : `$currentSid, '${CAP_SID}'`})`,
+      "$env:AVE_ACL_CAP_SIDS = ConvertTo-Json -InputObject $candidates -Compress",
+      resolver,
+      "ConvertTo-Json -InputObject @{ currentSid = $currentSid; accounts = @($capSidAccounts) } -Depth 4 -Compress",
+    ].join("\n");
+    const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const stdout = await new Promise<string>((resolve, reject) => {
+      childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(query, "utf16le").toString("base64")], {
+        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
+      }, (error, output) => error ? reject(error) : resolve(output));
+    });
+    const result = JSON.parse(stdout) as { currentSid: string; accounts: { sid: string; resolvesToAccount: boolean }[] };
+    expect(result.accounts).toEqual(kind === "empty" ? [] : kind === "single" ? [{ sid: CAP_SID, resolvesToAccount: false }]
+      : [{ sid: result.currentSid, resolvesToAccount: true }, { sid: CAP_SID, resolvesToAccount: false }]);
+  });
+
+  it.each(["different description", "different name", "invalid SID"])("does not trust a sandbox group with %s", async (mismatch) => {
+    const fixture = windowsFixture();
+    Object.assign(fixture.sandboxGroup, { name: mismatch === "different name" ? "OtherGroup" : "CodexSandboxUsers",
+      description: mismatch === "different description" ? "Unmanaged group" : "Codex sandbox internal group (managed)",
+      sid: FOREIGN_SID, members: mismatch === "invalid SID" ? ["invalid"] : [] });
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["S-1-5-21-10-20-30-999", "S-1-15-3-10-20-30"])("keeps unknown SID %s foreign", async (sid) => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["workspace", "readonly", "workspace_by_cwd", "writable_root_by_path"])("trusts an admitted cap SID from %s without adding a probe", async (key) => {
+    const fixture = capFixture();
+    fixture.modify((paths) => { const leaf = paths.find((path) => path.path === fixture.candidate)!;
+      leaf.owner = CAP_SID; leaf.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 }); });
+    const contents = JSON.stringify({ [key]: key.endsWith("_cwd") || key.endsWith("_path") ? { "C:\\workspace": CAP_SID } : CAP_SID });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
+      readCapSidFile: async () => contents })).resolves.toBeUndefined();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(execFile).mock.calls[0]![2]!.env!.AVE_ACL_CAP_SIDS).toBe(JSON.stringify([CAP_SID]));
+  });
+
+  it.each(["bad JSON", "wrong SID", "oversized", "unreadable"])("ignores a cap file with %s", async (failure) => {
+    const fixture = capFixture();
+    fixture.modify((paths) => { paths[1]!.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
+      readCapSidFile: async () => failure === "bad JSON" ? "{" : failure === "oversized" ? " ".repeat(1024 * 1024 + 1)
+        : failure === "unreadable" ? null : JSON.stringify({ workspace: "S-1-15-3-10-20-30" }),
+    })).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["file", "parent"])("ignores parsed cap SIDs when the cap %s is foreign-writable", async (component) => {
+    const fixture = capFixture();
+    const read = vi.fn(async () => JSON.stringify({ workspace: CAP_SID }));
+    fixture.modify((paths) => {
+      paths.find((path) => path.path === (component === "file" ? fixture.capPath : String.raw`C:\Fixture`))!
+        .entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 });
+      paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: CAP_SID, mask: 2, flags: 0, type: 0 });
+    });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath, readCapSidFile: read }))
+      .rejects.toThrow("writable by another account");
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["group", "member", "cap"])("keeps private directories private from a trusted sandbox %s", async (principal) => {
+    const fixture = capFixture(true);
+    const sid = principal === "cap" ? CAP_SID : `${MACHINE_DOMAIN_SID}-101`;
+    Object.assign(fixture.sandboxGroup, { name: "CodexSandboxUsers", description: "Codex sandbox internal group (managed)",
+      sid: principal === "group" ? sid : `${MACHINE_DOMAIN_SID}-100`, members: principal === "member" ? [sid] : [] });
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid, mask: 1, flags: 0, type: 0 }); });
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate, "native", { capSidPath: fixture.capPath,
+      readCapSidFile: async () => JSON.stringify({ workspace: CAP_SID }) })).rejects.toThrow("accessible by another account");
+  });
+
+  it("passes decoded paths separately to the access-query command", async () => {
+    const fixture = windowsFixture(String.raw`C:\Tools\odd'; \uD55C\uAE00 $(Write-Output injected).exe`);
+    await assertCodexExecutableLocation(fixture.candidate);
+    const args = vi.mocked(execFile).mock.calls[0]![1]!;
+    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    expect(script).toContain("ConvertFrom-Json");
+    expect(script).toContain("[ExecutablePathSecurity]::Read($target)");
+    expect(script).not.toContain(fixture.candidate);
   });
 
   it("checks access rules instead of synthetic uid and permission values", async () => {
@@ -450,6 +876,9 @@ describe("native access-rule admission", () => {
     const script = Buffer.from(args![4]!, "base64").toString("utf16le");
     expect(script).toContain("CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000");
     expect(script).toContain("GetSecurityInfo");
+    expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
+    expect(script).toContain("Get-AppxPackage -Name 'Claude' -ErrorAction Stop");
+    expect(script).not.toMatch(/Set-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
     expect(script).not.toContain(fixture.candidate);
     expect(options).toMatchObject({
       timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
@@ -478,6 +907,110 @@ describe("native access-rule admission", () => {
     const fixture = windowsFixture();
     fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
     await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
+  it.each(["native", "guarded-script"] as const)("admits ancestor subdirectory creation only for %s", async (kind) => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => { for (const path of paths.slice(0, -1)) path.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, kind)).resolves.toBeUndefined();
+  });
+
+  it("rejects foreign subdirectory creation on a script route's ancestors", async () => {
+    const fixture = windowsFixture();
+    const script = String.raw`C:\Tools\cli.js`;
+    vi.mocked(fs.lstat).mockImplementation(async (path) => pathStats(String(path) === script ? "file" : "directory"));
+    fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexLocations([{ path: script, kind: "executable", routeKind: "script" }]))
+      .rejects.toThrow("writable by another account");
+  });
+
+  it.each(["native", "guarded-script", "script"] as const)("rejects leaf subdirectory creation for %s", async (kind) => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => { paths[2]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, kind)).rejects.toThrow("writable by another account");
+  });
+
+  it("keeps foreign subdirectory creation rejected on a private directory", async () => {
+    const fixture = windowsFixture(String.raw`C:\Tools\runtime`, true);
+    fixture.modify((paths) => { paths[2]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate, "native")).rejects.toThrow("accessible by another account");
+  });
+
+  it("allows ancestor subdirectory creation for a private native runtime", async () => {
+    const fixture = windowsFixture(String.raw`C:\Tools\runtime`, true);
+    fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate, "native")).resolves.toBeUndefined();
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).rejects.toThrow("writable by another account");
+  });
+
+  it("allows ancestor subdirectory creation for a private guarded package", async () => {
+    const fixture = windowsFixture(String.raw`C:\Tools\runtime`, true);
+    fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate, "guarded-script")).resolves.toBeUndefined();
+  });
+
+  it("keeps a private subtree strict even when a child is also admitted as native", async () => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => { paths.find((path) => path.path === fixture.candidate)!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    await expect(assertCodexLocations([
+      { path: String.raw`C:\Tools`, kind: "private-directory", routeKind: "native" },
+      { path: fixture.candidate, kind: "executable", routeKind: "native" },
+    ])).rejects.toThrow("accessible by another account");
+  });
+
+  it.each([0x2, 0x4 | 0x40, 0x10, 0x40, 0x100, 0x10000, 0x40000, 0x80000, 0x40000000, 0x10000000])(
+    "rejects foreign ancestor mutation mask %i on a native route", async (mask) => {
+      const fixture = windowsFixture();
+      fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask, flags: 0, type: 0 }); });
+      await expect(assertCodexExecutableLocation(fixture.candidate, "native")).rejects.toThrow("writable by another account");
+    },
+  );
+
+  it("reports the rejected path, SID and mask in one warning", async () => {
+    const fixture = desktopPackageFixture();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x44, flags: 0, type: 0 }); });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native")).rejects.toThrow(
+      `"C:\\\\" (SID ${FOREIGN_SID}, mask 0x44)`,
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("keeps the strictest shared ancestor rule regardless of request order %s", async (reverse) => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => { paths[0]!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 }); });
+    const requests = [
+      { path: fixture.candidate, kind: "executable", routeKind: "native" },
+      { path: String.raw`C:\Tools\other.exe`, kind: "executable", routeKind: "script" },
+    ] as const;
+    await expect(assertCodexLocations(reverse ? [...requests].reverse() : requests)).rejects.toThrow("writable by another account");
+  });
+
+  it.each([false, true])("keeps a requested directory leaf strict regardless of request order %s", async (reverse) => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => {
+      paths.find((path) => path.path === String.raw`C:\Tools`)!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 });
+    });
+    const requests = [
+      { path: fixture.candidate, kind: "executable", routeKind: "native" },
+      { path: String.raw`C:\Tools`, kind: "directory", routeKind: "native" },
+    ] as const;
+    await expect(assertCodexLocations(reverse ? [...requests].reverse() : requests)).rejects.toThrow("writable by another account");
+  });
+
+  it("checks the native link route and its resolved leaf with their own rules", async () => {
+    const fixture = windowsFixture();
+    fixture.links.set(fixture.candidate, String.raw`C:\Native\runtime.exe`);
+    fixture.modify((paths) => {
+      for (const path of paths.filter((path) => path.path === String.raw`C:\Tools` || path.path === String.raw`C:\Native`)) {
+        path.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 });
+      }
+    });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native")).resolves.toBeUndefined();
+    fixture.modify((paths) => {
+      paths.find((path) => path.path === String.raw`C:\Native\runtime.exe`)!.entries.push({ sid: FOREIGN_SID, mask: 0x4, flags: 0, type: 0 });
+    });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native")).rejects.toThrow("writable by another account");
   });
 
   it.each([0, 1, 2, 4, 16])("checks an applicable ACE with propagation flags %i", async (flags) => {

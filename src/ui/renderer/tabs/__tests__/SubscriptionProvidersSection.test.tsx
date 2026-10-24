@@ -261,6 +261,38 @@ describe("SubscriptionAuthControls", () => {
 
   const PICKER_TEST_IDS = ["configure-runtime", "change-runtime", "forget-runtime"] as const;
 
+  it.each(["claude-code", "kimi-code", "grok-build"] as const)(
+    "offers sign-in for a found signed-out runtime (%s)",
+    (runtimeId) => {
+      const beginLogin = vi.fn();
+      render(<SubscriptionProvidersSection
+        providers={[viewFor(runtimeId, { runtime: "unverified", connection: "signed-out" })]}
+        actions={{ beginLogin, verifyRuntime: vi.fn() }} />);
+
+      expect(screen.queryByTestId(`subscription-provider:${runtimeId}:verify-runtime`)).toBeNull();
+      for (const method of subscriptionRuntimeDescriptor(runtimeId).loginMethods) {
+        fireEvent.click(screen.getByTestId(`subscription-provider:${runtimeId}:login-${method}`));
+        expect(beginLogin).toHaveBeenCalledWith(runtimeId, method);
+      }
+    },
+  );
+
+  it.each([
+    ["not-configured", "signed-out"],
+    ["unavailable", "signed-out"],
+    ["checking", "signed-out"],
+    ["unverified", "unknown"],
+    ["unverified", "connected"],
+  ] as const)("does not offer sign-in for %s and %s", (runtime, connection) => {
+    render(<SubscriptionProvidersSection
+      providers={[viewFor("claude-code", { runtime, connection })]}
+      actions={{ beginLogin: vi.fn(), verifyRuntime: vi.fn() }} />);
+    expect(screen.queryByTestId("subscription-provider:claude-code:login-browser")).toBeNull();
+    if (runtime === "unverified") {
+      expect(screen.getByTestId("subscription-provider:claude-code:verify-runtime")).toBeInTheDocument();
+    }
+  });
+
   it.each([
     ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
     ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],
@@ -347,6 +379,14 @@ describe("SubscriptionAuthControls", () => {
     expect(screen.getByTestId("subscription-provider:codex:error"))
       .toHaveTextContent("must not be writable by other users");
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
+  });
+
+  it("recommends the native Windows installer when an npm route is unsafe", () => {
+    render(<SubscriptionProvidersSection
+      providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unsafe-npm-location" })]}
+      actions={{ refreshStatus: vi.fn() }} />);
+    expect(screen.getByTestId("subscription-provider:claude-code:error"))
+      .toHaveTextContent("the native Claude Code installer (claude.exe) is recommended");
   });
 
   it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {

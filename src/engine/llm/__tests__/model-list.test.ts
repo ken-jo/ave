@@ -338,7 +338,7 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openai-compatible",
-        baseUrl: "http://10.232.178.100:30000/v1",
+        baseUrl: "http://10.10.2.100:30000/v1",
         secret: "internal-key",
       }) as never,
       { vendor: "openai-compatible" },
@@ -351,11 +351,11 @@ describe("LLM model list sync", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
       models: ["Qwen3.6-35B-A3B-NVFP4"],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "http://10.232.178.100:30000/v1/models",
+      "http://10.10.2.100:30000/v1/models",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer internal-key" }),
       }),
@@ -554,14 +554,14 @@ describe("LLM model list sync", () => {
 
     const result = await listLlmModelsFromSettings(
       makeSettingsService({ baseUrl: "https://router.example/v1" }) as never,
-      { vendor: "openrouter", baseUrl: "http://10.232.178.100:30000/v1" },
+      { vendor: "openrouter", baseUrl: "http://10.10.2.100:30000/v1" },
       {
         fetchImpl,
         ensurePublicUrl: async (_url, options) => {
           expect(options?.allowPrivateNetworks).toBe(false);
           expect(options?.allowLoopback).toBe(false);
           throw new NetworkGuardError(
-            "target resolves to non-public address(es): 10.232.178.100",
+            "target resolves to non-public address(es): 10.10.2.100",
           );
         },
       },
@@ -570,7 +570,7 @@ describe("LLM model list sync", () => {
     expect(result).toMatchObject({
       ok: false,
       error: "invalid-model-list-endpoint",
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -582,7 +582,7 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openrouter",
-        baseUrl: "http://10.232.178.100:30000/v1",
+        baseUrl: "http://10.10.2.100:30000/v1",
         secret: "commercial-key",
       }) as never,
       { vendor: "openrouter" },
@@ -592,7 +592,7 @@ describe("LLM model list sync", () => {
     expect(result).toMatchObject({
       ok: false,
       error: "invalid-model-list-endpoint",
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
     });
     expect(ensurePublicUrl).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();

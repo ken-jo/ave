@@ -15,7 +15,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -40,6 +40,14 @@ import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return {
+    ...original,
+    userInfo: vi.fn(original.userInfo),
+  };
+});
 
 const hostPlatform = process.platform;
 const SECRET = "user-data-the-child-must-not-read";
@@ -301,6 +309,8 @@ describe("a confined child cannot reach user data through a grant", () => {
       // past srt-win's 60s stamp budget on a developer machine. A home the
       // test owns keeps the same floor, as asrt-sandbox.test.ts does.
       vi.stubEnv("USERPROFILE", join(root, "home"));
+      vi.stubEnv("HOME", join(root, "home"));
+      vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, "home") });
       mkdirSync(join(root, "home"));
     }
     userData = join(root, "custom-user-data");
