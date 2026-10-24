@@ -2,8 +2,8 @@
  * The main window's saved layout — what comes back on the next launch.
  *
  * It holds the pane tree (geometry), which panes show a terminal or web page,
- * which panes had their side panel open, and each pane's terminal and browser
- * side tabs. Each terminal records the directory its shell last reported, and
+ * which panes had their work panel or session thumbnails open, and each
+ * pane's terminal and browser side tabs. Each terminal records the directory its shell last reported, and
  * each page its last address. It does NOT hold a terminal's process or
  * scrollback: those end with the app, so a restored terminal is a new shell
  * started in the saved directory, and it says so in its buffer.
@@ -54,6 +54,8 @@ export interface MainLayoutSnapshot {
   surfaces: Record<string, SavedSurface>;
   /** Panes whose side panel was open. */
   panelOpenIds: string[];
+  /** Panes whose session thumbnails were open. Older layouts restore them closed. */
+  thumbnailOpenIds: string[];
   /** Each pane's terminal and browser side tabs, in tab order. */
   sideTabs: Record<string, SavedSurface[]>;
 }
@@ -161,6 +163,9 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
     }
     if (!Array.isArray(raw.panelOpenIds) || !raw.panelOpenIds.every((id) => typeof id === "string")) refuse("panelOpenIds is not a list of pane ids");
     for (const id of raw.panelOpenIds as string[]) inTree(id, "panelOpenIds");
+    const thumbnailOpenIds = raw.thumbnailOpenIds === undefined ? [] : raw.thumbnailOpenIds;
+    if (!Array.isArray(thumbnailOpenIds) || !thumbnailOpenIds.every((id) => typeof id === "string")) refuse("thumbnailOpenIds is not a list of pane ids");
+    for (const id of thumbnailOpenIds as string[]) inTree(id, "thumbnailOpenIds");
     if (!isRecord(raw.sideTabs)) refuse("sideTabs is not an object");
     const sideTabs: Record<string, SavedSurface[]> = {};
     for (const [paneId, value] of Object.entries(raw.sideTabs)) {
@@ -180,6 +185,7 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
         focusedId: raw.focusedId,
         surfaces,
         panelOpenIds: [...new Set(raw.panelOpenIds as string[])],
+        thumbnailOpenIds: [...new Set(thumbnailOpenIds as string[])],
         sideTabs,
       },
     };

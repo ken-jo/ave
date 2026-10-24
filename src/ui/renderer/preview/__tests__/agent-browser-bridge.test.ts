@@ -4,7 +4,7 @@
  * conversation it is for.
  */
 import { describe, expect, it, vi } from "vitest";
-import { bindGuestToTab, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
 import { setWebSurfaceElement } from "../web-surfaces.js";
 
@@ -21,6 +21,14 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
 }
 
 describe("user browser navigation", () => {
+  it("quietly ignores a close for a tab no host holds", () => {
+    const owner = host("session", ["browser:live"]);
+    const unregister = registerBrowserTabHost({} as AveApi, owner);
+    try {
+      expect(() => closeBrowserTab("browser:missing")).not.toThrow();
+      expect(owner.calls).toEqual([]);
+    } finally { unregister(); }
+  });
   it("waits for main to confirm takeover before navigating", async () => {
     let resolveStop!: (result: { ok: true }) => void;
     const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { resolveStop = resolve; }));

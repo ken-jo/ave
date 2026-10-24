@@ -20,7 +20,7 @@ const TERMINAL_TAB = "terminal:0000000a-2";
 
 function layout(): MainLayoutSnapshot {
   return {
-    version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"],
+    version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"], thumbnailOpenIds: [],
     sideTabs: { main: [
       { kind: "browser", tabId: BROWSER_TAB, ordinal: 1, cwd: null, url: "https://example.com/" },
       { kind: "terminal", tabId: TERMINAL_TAB, ordinal: 1, cwd: "/work", url: null },

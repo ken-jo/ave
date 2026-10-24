@@ -94,6 +94,8 @@ export interface SurfaceMoves {
   tabToMain: (fromGroupId: string, tabId: string, drop?: { paneId: string; target: DropTarget }) => void;
   /** Move the surface a pane shows into `toGroupId`'s side panel (default: the pane's own group). */
   paneToSide: (paneId: string, toGroupId?: string) => void;
+  /** Bring a live surface from any pane or side panel into this group's work panel. */
+  tabToSide: (tabId: string, toGroupId: string) => void;
 }
 
 export const SurfaceMovesContext = createContext<SurfaceMoves | null>(null);
