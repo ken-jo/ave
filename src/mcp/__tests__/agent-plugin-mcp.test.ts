@@ -51,7 +51,7 @@ describe("agent plugin MCP runtime resolution", () => {
     expect(projection.config.env).toMatchObject({ PLUGIN_ROOT: realpathSync(item.generationRoot), PLUGIN_DATA: realpathSync(item.dataDir) });
     if (command.startsWith("./")) expect(projection.config.command).toBe(join(realpathSync(item.generationRoot), "server", "run"));
     else expect(projection.config.command).toBe(command);
-    if (command === "node" || command === "bun") expect(isAbsolute(projection.config.args![0]!)).toBe(true);
+    if (command === "node" || command === "bun") expect(isAbsolute(projection.config.args?.[0] ?? "")).toBe(true);
     if (command === "npx" && args.includes("${PLUGIN_DATA}/db")) expect(projection.config.args?.at(-1)).toBe(join(realpathSync(item.dataDir), "db"));
   });
 

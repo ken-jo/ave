@@ -7,6 +7,7 @@ import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js";
 import { CodexAppServerError, type CodexAppServerClient, type CodexAppServerClientOptions } from "../codex-app-server-client.js";
 import { CodexUserRuntimeError } from "../codex-user-runtime.js";
+import { ClaudeCodeSubscriptionError } from "../claude-code-subscription-client.js";
 import type {
   CodexConversationRuntime,
   CodexConversationRuntimeOptions,
@@ -1089,34 +1090,32 @@ describe("SubscriptionRuntimeService", () => {
     }
   });
 
-  it("routes a chosen and a forgotten user CLI through the locator and restarts the app-server", async () => {
-    const locator = {
-      resolve: vi.fn(),
-      lastKnownVersion: vi.fn(() => "0.153.4"),
-      choose: vi.fn(async () => undefined),
-      forget: vi.fn(async () => undefined),
-      dispose: vi.fn(async () => undefined),
-    };
-    const codexClient = fakeCodexClient();
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
-      codexClient,
-      codexRuntimeLocator: locator,
-      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
-    });
-    try {
-      const chosen = await service.chooseExecutable("codex", "/opt/tools/codex");
-      expect(locator.choose).toHaveBeenCalledWith("/opt/tools/codex");
-      expect(codexClient.stop).toHaveBeenCalledOnce();
-      expect(chosen).toMatchObject({ provider: "codex", runtime: "ready", version: "0.153.4" });
-      await service.forgetExecutable("codex");
-      expect(locator.forget).toHaveBeenCalledOnce();
-      expect(codexClient.stop).toHaveBeenCalledTimes(2);
-    } finally {
-      await service.stop();
-      expect(locator.dispose).toHaveBeenCalledOnce();
-    }
-  });
+  it.each(["codex", "claude-code"] as const)(
+    "refuses to choose or forget a %s path: Ave finds that CLI itself",
+    async (runtimeId) => {
+      const locator = {
+        resolve: vi.fn(),
+        lastKnownVersion: vi.fn(() => "0.153.4"),
+        dispose: vi.fn(async () => undefined),
+      };
+      const codexClient = fakeCodexClient();
+      const service = await SubscriptionRuntimeService.create(async () => undefined, {
+        namespace: namespace(),
+        codexClient,
+        codexRuntimeLocator: locator,
+        acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      });
+      try {
+        await expect(service.chooseExecutable(runtimeId, "/opt/tools/cli"))
+          .rejects.toMatchObject({ code: "subscription-provider-not-supported" });
+        await expect(service.forgetExecutable(runtimeId))
+          .rejects.toMatchObject({ code: "subscription-provider-not-supported" });
+        expect(codexClient.stop).not.toHaveBeenCalled();
+      } finally {
+        await service.stop();
+      }
+    },
+  );
 
   it("gives each user-CLI failure its own renderer-safe code", () => {
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
@@ -1139,5 +1138,14 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-invalid-executable")))
       .toBe("subscription-runtime-unavailable");
+    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the
+    // same "update it" state as a too-old `codex`.
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible")))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured")))
+      .toBe("subscription-runtime-not-configured");
+    // The CLI changed since it was verified: chat is not ready until it is verified again.
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unverified")))
+      .toBe("subscription-chat-unavailable");
   });
 });

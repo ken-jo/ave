@@ -26,6 +26,8 @@ import {
 } from "../sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
+const CONFIGURED_LINUX_BWRAP_COMMAND =
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 const probeMocks = vi.hoisted(() => ({
   wrapWithSandboxArgv: vi.fn(),
   spawn: vi.fn(),
@@ -57,7 +59,7 @@ describe("scoped sandbox gates", () => {
   beforeEach(() => {
     setProcessPlatform("linux");
     probeMocks.wrapWithSandboxArgv.mockResolvedValue({
-      argv: ["/sandbox/probe", "true"],
+      argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       env: {},
     });
     probeMocks.spawn.mockImplementation(() => {
@@ -85,7 +87,7 @@ describe("scoped sandbox gates", () => {
       "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
     );
     expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
-      "/sandbox/probe", ["true"], expect.objectContaining({ shell: false }),
+      "/bin/bash", ["-c", CONFIGURED_LINUX_BWRAP_COMMAND], expect.objectContaining({ shell: false }),
     );
   });
 

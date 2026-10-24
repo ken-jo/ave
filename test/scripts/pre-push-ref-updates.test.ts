@@ -208,6 +208,8 @@ describe("new-branch base", () => {
         ref: "refs/heads/main", count: 1,
       });
     } finally {
+      // git writes loose objects read-only, and on Windows the synchronous
+      // rmSync refuses read-only files; the async removal clears the attribute.
       await cleanupTmpDir(root);
     }
   });
@@ -242,7 +244,7 @@ describe("new-branch base", () => {
       console: { log: (line: string) => logs.push(line) },
     });
     const result = findNewBranchBase("/fixture", { localRef: "refs/heads/feat/x", localSha: C }, "https://example.invalid/ave");
-    expect(result).toEqual({ sha: A });
+    expect(result).toEqual({ sha: A, tips: [A] });
     expect(logs).toContain(
       `[checks] skipping base candidate refs/heads/integration/permissions (${B.slice(0, 12)}): git fetch exited 128: fatal: could not read from remote`,
     );

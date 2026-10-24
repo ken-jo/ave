@@ -133,6 +133,7 @@ export const FULL_CHECK_GLOBAL_INPUT_FILES = Object.freeze([
   "src/__tests__/support/ave-home-isolation-guard.ts",
   "src/__tests__/vitest-ave-home.ts",
   "src/__tests__/vitest-model-catalog.ts",
+  "src/__tests__/vitest-vm-exit-hooks.ts",
   "src/i18n/testing/vitest-ambient-intl.ts",
   "src/shared/ave-home-test-guard.ts",
   "tsconfig.json",
@@ -196,7 +197,8 @@ export function isFullCheckGlobalInput(relativePath) {
   );
 }
 
-function isCollectedVitestFile(relativePath) {
+/** A path Vitest collects as a test file (see the Vitest config's include globs). */
+export function isCollectedVitestFile(relativePath) {
   if (!collectedVitestPath.test(relativePath)) return false;
   const segments = relativePath.split("/");
   return !segments.some((segment) => deniedTestTreeSegments.has(segment));

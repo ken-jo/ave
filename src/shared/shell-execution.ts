@@ -285,7 +285,9 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       decline("unresolved executed command", effective.words[0]);
     }
     const verb = stripCommandPath(head);
-    const shellBuiltin = !head.includes("/") && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
+    // Builtins match only their exact name; a path, `.exe` or case variant is
+    // an external program even when it normalizes to a builtin's name.
+    const shellBuiltin = head === verb && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
     const commandState = cloneState(assigned);
     for (const assignment of node.assignments) commandState.exported.add(assignment.name);
     for (const transition of effective.environmentTransitions) {
@@ -303,7 +305,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
         checkPath(target, transition.path.source.raw, commandState, "write");
-        commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!);
+        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve wrapper working directory", transition.path);
+        }
         commandState.variables.set("PWD", commandState.cwd);
       }
     }
@@ -486,7 +492,14 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
       const label = targetWord?.source.raw ?? head;
       const next = pathResolve(state.cwd!, target);
-      const destination = physical ? resolveShellFilesystemPath(target, state.cwd!) : next;
+      let destination = next;
+      if (physical) {
+        try { destination = resolveShellFilesystemPath(target, state.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve working-directory destination", targetWord);
+        }
+      }
       // cd -L collapses logical .. before chdir; -P follows actual links.
       checkPath(destination, label, state, "write");
       let observedDirectory = false;

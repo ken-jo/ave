@@ -4,14 +4,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveShell } from "../../src/lib/shell-resolver.js";
+
 import { describe, expect, it } from "vitest";
 
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
-const documentGuard = pathToFileURL(resolve(root, "scripts/lib/document-consumer-guard.mjs")).href;
 const bash = resolveShell("bash").cmd;
+// A file URL, since import() refuses a bare Windows absolute path.
+const documentGuard = pathToFileURL(resolve(root, "scripts/lib/document-consumer-guard.mjs")).href;
 const documentProbe = "const { packagedDocumentInputs } = await import(process.argv[1]);"
   + " packagedDocumentInputs({ build: { files: ['dist/**/*'] } }, process.argv[2]);";
 

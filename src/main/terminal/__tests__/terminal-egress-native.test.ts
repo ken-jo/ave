@@ -56,9 +56,8 @@ import {
   __resetTerminalsForTest,
   killTerminal,
   setTerminalEmitter,
-  spawnTerminal,
-  writeTerminal,
 } from "../pty-manager.js";
+import { spawnTerminal, writeTerminal } from "../../../__tests__/support/terminal-agent-fixture.js";
 
 const CURL = "/usr/bin/curl";
 const HOST = "example.com";

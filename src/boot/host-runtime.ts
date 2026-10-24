@@ -7,6 +7,7 @@ import type { NotificationServiceOptions } from "../main/notification-service.js
 import type { InitPluginRuntimeInput } from "./steps/plugin-runtime.js";
 import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
+import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
@@ -44,6 +45,8 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   createAudioCaptureSurface(): AudioCaptureSurface;
   createFloatingDockSurface(): FloatingDockSurface;
   pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
+  pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
+  browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;
   prepareRelease(input: ReleasePrepInput): ReleasePrepOutput;
   beforeShutdown(): void;
 }

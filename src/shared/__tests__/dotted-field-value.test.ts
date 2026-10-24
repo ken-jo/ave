@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 /**
  * `getDottedFieldValue` — the selection step both path-argument consumers use.
  *
@@ -8,6 +7,7 @@ import { resolve } from "node:path";
  * calling it.
  */
 import { describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
 import { getDottedFieldValue } from "../dotted-field-value.js";
 import { extractTargetFilePaths } from "../../tools/pipeline/path-extraction.js";
 import type { Tool } from "../../tools/base.js";
@@ -98,10 +98,13 @@ describe("patch-envelope path fields", () => {
   ].join("\n");
 
   it("selects the files the patch names for the pipeline's target paths", () => {
-    expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch }, "/work")).toEqual([
-      resolve("/work", "src/a.ts"),
-      resolve("/work", "src/b.ts"),
-      resolve("/work", ".env"),
+    // A native absolute cwd, so the expected paths carry this platform's root
+    // and separators (`D:\work\src\a.ts` on Windows).
+    const work = resolve("/work");
+    expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch }, work)).toEqual([
+      join(work, "src", "a.ts"),
+      join(work, "src", "b.ts"),
+      join(work, ".env"),
     ]);
   });
 

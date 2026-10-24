@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   initializeAsrtSandbox,
   registerWorkerUnixSocketDir,
@@ -9,7 +11,8 @@ import {
 
 useVerifiedAveHomePrivacy();
 
-// Config ownership only: these tests do not claim OS confinement.
+// Config ownership only: the probe gets a valid wrapper and a successful child
+// lifecycle. Runtime confinement and probe failures have separate coverage.
 const manager = vi.hoisted(() => ({
   config: undefined as { network: { allowUnixSockets?: string[] } } | undefined,
   update: vi.fn(),
@@ -19,18 +22,36 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   initialize: async (config: typeof manager.config) => { manager.config = config; },
   updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
   reset: async () => { manager.config = undefined; },
-  wrapWithSandboxArgv: async () => ({ argv: [process.execPath, "-e", "process.exit(0)"], env: process.env }),
+  wrapWithSandboxArgv: async () => ({
+    argv: ["/bin/bash", "-c", "/configured/bwrap --ro-bind / / -- /bin/bash -c true"],
+    env: process.env,
+  }),
   cleanupAfterCommand: () => undefined,
 } }));
+vi.mock("node:child_process", () => ({
+  spawn: () => {
+    const child = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  },
+}));
 
 describe("worker socket directory ownership", () => {
+  const originalPlatform = process.platform;
   const dir = "/run/plugin/sockets";
   const allowed = () => manager.config?.network.allowUnixSockets ?? [];
   beforeEach(async () => {
+    setProcessPlatform("linux");
     manager.update.mockReset();
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
   });
-  afterEach(async () => { await resetAsrtSandbox(); });
+  afterEach(async () => {
+    try {
+      await resetAsrtSandbox();
+    } finally {
+      setProcessPlatform(originalPlatform);
+    }
+  });
 
   it("does not count the same holder twice", async () => {
     const holder = {};

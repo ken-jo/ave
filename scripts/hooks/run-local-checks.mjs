@@ -48,8 +48,12 @@
 // CI runs the full suite and build. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
-// (findNewBranchBase), not only the default branch. A direct push TO an
-// integration/* branch is treated like the default branch (full checks):
+// (findNewBranchBase), not only the default branch. For every branch push,
+// pushed commits that a live default or integration/* tip already contains
+// are not the branch's own: merging the base in does not move the tier, while
+// own commits and a merge's conflict resolutions still do (scanPushedHistory).
+// A direct push TO an integration/* branch is treated like the default
+// branch (full checks):
 // those branches advance through reviewed PR merges and lead-run merges of
 // main, so a direct push is the exceptional case and has to carry the whole
 // proof itself.
@@ -66,6 +70,7 @@ import {
   chooseNewBranchBase,
   findMissingCandidateTips,
   isIntegrationBranchRef,
+  parseGitRawDiff,
   parsePrePushUpdates,
   parseRemoteHeads,
   readPrePushInput,
@@ -310,6 +315,14 @@ function ensureAppTestRuntimeAbi(dir) {
   }
 }
 
+// The background-shell suites load the git-ignored Windows job launcher. The
+// full tier builds it through `test:prepare`; the test-only and fast tiers call
+// `test:vitest` directly, so they run the same check here.
+function ensureWindowsJobLauncher(dir) {
+  if (!isWindows) return;
+  run(commands.node, [join(dir, "scripts/prepare-windows-job.mjs")], dir);
+}
+
 // ---------------------------------------------------------------------------
 // Push / commit branch policy
 // ---------------------------------------------------------------------------
@@ -518,15 +531,31 @@ function gitRunner(repoRoot, timeout) {
 // local object store are fetched once (objects only: no tags, no ref or
 // FETCH_HEAD update) before the base is chosen.
 function findNewBranchBase(repoRoot, update, remoteLocation) {
-  if (!isUsableRemoteLocation(remoteLocation)) {
-    return { reason: `no conservative base found for ${update.localRef}: the push remote location is unusable` };
+  const live = listLiveBaseTips(repoRoot, remoteLocation);
+  if (!live.candidates) return { reason: `no conservative base found for ${update.localRef}: ${live.reason}` };
+  const chosen = chooseNewBranchBase(update.localSha, live.candidates, gitRunner(repoRoot, 15_000));
+  if (!chosen) {
+    return {
+      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
+    };
   }
+  console.log(
+    `[checks] new branch ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
+      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
+  );
+  return { sha: chosen.sha, tips: live.candidates.map(({ sha }) => sha) };
+}
+
+// The live default and integration/* tips of the remote that are present
+// locally, after one fetch of any that are missing. They choose a new branch's
+// base and, for every branch push, mark the pushed commits that are not the
+// branch's own (scanPushedHistory).
+function listLiveBaseTips(repoRoot, remoteLocation) {
+  if (!isUsableRemoteLocation(remoteLocation)) return { reason: "the push remote location is unusable" };
   const git = gitRunner(repoRoot, 15_000);
   const listing = git(["ls-remote", "--symref", "--", remoteLocation, "HEAD", "refs/heads/*"]);
   const remoteHeads = listing.status === 0 ? parseRemoteHeads(listing.stdout) : null;
-  if (!remoteHeads) {
-    return { reason: `no conservative base found for ${update.localRef}: the remote's branch heads could not be listed` };
-  }
+  if (!remoteHeads) return { reason: "the remote's branch heads could not be listed" };
   const candidates = selectBaseCandidates(remoteHeads);
   const missing = findMissingCandidateTips(candidates, git);
   if (missing.length > 0) {
@@ -543,17 +572,8 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
       console.log(`[checks] skipping base candidate ${candidate.ref} (${candidate.sha.slice(0, 12)}): ${fetchReason}`);
     }
   }
-  const chosen = chooseNewBranchBase(update.localSha, candidates, git);
-  if (!chosen) {
-    return {
-      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
-    };
-  }
-  console.log(
-    `[checks] new branch ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
-      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
-  );
-  return { sha: chosen.sha };
+  const absent = new Set(findMissingCandidateTips(candidates, git).map(({ ref }) => ref));
+  return { candidates: candidates.filter(({ ref }) => !absent.has(ref)) };
 }
 
 function runSharedHistoryGuard(repoRoot, parsedUpdates, remote, remoteLocation) {
@@ -607,22 +627,7 @@ function getChangedEntries(repoRoot, baseSha, localSha) {
 
   const decoded = decodeUtf8Strict(result.stdout);
   if (decoded === null) return null;
-  const fields = decoded.split("\0");
-  if (fields.at(-1) !== "") return null;
-  fields.pop();
-
-  const entries = [];
-  for (let index = 0; index < fields.length; ) {
-    const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[index++]);
-    if (!raw) return null;
-    const [, oldMode, newMode, status] = raw;
-    const pathCount = /^[RC]/.test(status) ? 2 : 1;
-    if (index + pathCount > fields.length) return null;
-    for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
-      entries.push({ oldMode, newMode, status, path: fields[index++] });
-    }
-  }
-  return entries;
+  return parseGitRawDiff(decoded);
 }
 
 function getGitBlob(repoRoot, objectId, relativePath) {
@@ -635,23 +640,53 @@ function getGitBlob(repoRoot, objectId, relativePath) {
   return decodeUtf8Strict(result.stdout);
 }
 
-function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
+// The tier of a push is decided from the branch's own commits: those in
+// base..local that no live default or integration/* tip of the remote already
+// contains (`excludedTips`). A sub-branch that merges its integration base
+// therefore does not inherit the base's global-input changes; those commits
+// were checked when they reached that tip. A merge commit's own change is the
+// set of paths where it differs from every parent (its conflict resolutions):
+// what it takes unchanged from one parent is that parent's history, which is
+// either checked here as own commits or already on a live tip.
+//
+// Returns { reason } when the pushed history needs the full checks, else
+// { ownCommits, excludedCommits, ownPaths }. ownPaths is null when nothing was
+// excluded, so the whole base..local diff is the branch's own.
+function scanPushedHistory(repoRoot, baseSha, localSha, excludedTips = []) {
   const history = captureOptional(commands.git, ["rev-list", "--parents", `${baseSha}..${localSha}`], repoRoot);
-  if (!history) return "pushed history could not be resolved";
-  for (const line of history.split("\n")) {
+  if (!history) return { reason: "pushed history could not be resolved" };
+  let own = history.split("\n");
+  if (excludedTips.length > 0) {
+    const scoped = spawnSync(
+      commands.git,
+      ["rev-list", "--parents", localSha, `^${baseSha}`, ...excludedTips.map((sha) => `^${sha}`), "--"],
+      { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (scoped.error || scoped.status !== 0) return { reason: "pushed history could not be scoped to own commits" };
+    own = (scoped.stdout || "").split("\n").filter(Boolean);
+  }
+  const excludedCommits = history.split("\n").length - own.length;
+  const ownPaths = excludedCommits > 0 ? new Set() : null;
+  for (const line of own) {
     const [commit, ...parents] = line.split(" ");
     if (parents.length === 0 || ![commit, ...parents].every((sha) => /^[0-9a-f]{40,64}$/.test(sha))) {
-      return "pushed history has no conservative parent";
+      return { reason: "pushed history has no conservative parent" };
     }
+    const perParent = [];
     for (const parent of parents) {
       const entries = getChangedEntries(repoRoot, parent, commit);
-      if (entries === null) return "pushed history diff failed";
-      if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
-      const selection = selectFastSourceChecks(entries);
-      if (!selection.eligible) return `${selection.reason} in pushed history`;
+      if (entries === null) return { reason: "pushed history diff failed" };
+      perParent.push(entries);
     }
+    const entries = perParent.length === 1
+      ? perParent[0]
+      : perParent[0].filter(({ path }) => perParent.every((list) => list.some((entry) => entry.path === path)));
+    for (const { path } of entries) ownPaths?.add(path);
+    if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
+    const selection = selectFastSourceChecks(entries);
+    if (!selection.eligible) return { reason: `${selection.reason} in pushed history` };
   }
-  return null;
+  return { ownCommits: own.length, excludedCommits, ownPaths };
 }
 
 // The checks for the message catalog files of a fast push (see
@@ -690,6 +725,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
   let commentOnlyEligible = true;
   let updatesAlreadyOnRemote = 0;
   const protectedBranchNames = getProtectedBranchNames(repoRoot);
+  let liveTips = null;
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
       return { docsOnly: false, reason: `deleted ref ${update.remoteRef} requires full checks` };
@@ -733,12 +769,30 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
       continue;
     }
 
-    const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
-    if (entries === null) {
+    // A branch's own commits decide its tier; see scanPushedHistory. A listing
+    // failure only loses the scoping: every pushed commit then counts as own.
+    if (!isNewBranch && liveTips === null) {
+      const live = listLiveBaseTips(repoRoot, remoteLocation);
+      if (!live.candidates) console.log(`[checks] own-commit scoping skipped: ${live.reason}`);
+      liveTips = live.candidates?.map(({ sha }) => sha) ?? [];
+    }
+    const history = scanPushedHistory(repoRoot, baseSha, update.localSha, isNewBranch ? base.tips ?? [] : liveTips);
+    if (history.reason) return { docsOnly: false, reason: history.reason };
+    if (history.ownCommits === 0) {
+      updatesAlreadyOnRemote += 1;
+      continue;
+    }
+    const diff = getChangedEntries(repoRoot, baseSha, update.localSha);
+    if (diff === null) {
       return { docsOnly: false, reason: `git diff failed for ${update.localRef}` };
     }
-    const historyReason = getPushedHistoryFullReason(repoRoot, baseSha, update.localSha);
-    if (historyReason) return { docsOnly: false, reason: historyReason };
+    const entries = history.ownPaths ? diff.filter(({ path }) => history.ownPaths.has(path)) : diff;
+    if (history.ownPaths) {
+      console.log(
+        `[checks] ${update.localRef}: ${history.excludedCommits} pushed commit(s) already on a live default or ` +
+          `integration branch are excluded; the tier follows ${history.ownCommits} own commit(s) and ${entries.length} path(s)`
+      );
+    }
     for (const entry of entries) {
       changedFiles.add(entry.path);
       changedEntries.push({ ...entry, baseSha, localSha: update.localSha });
@@ -992,6 +1046,7 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   runAppTypecheckGate(dir, "targeted Vitest checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
   run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
@@ -1046,6 +1101,7 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   if (messageCatalog) runPackageScripts(dir, MESSAGE_CATALOG_CHECK_SCRIPTS, "ave message catalog checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {

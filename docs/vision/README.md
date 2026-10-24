@@ -17,14 +17,14 @@ platform that is pleasant to use every day.
 
 ## Goals
 
-These are product goals. [Where Ave is today](#where-ave-is-today) says what
-already ships.
+These are product goals. [Where Ave is today](#where-ave-is-today) describes
+implemented behavior and remaining validation.
 
-1. **Browser use at the level of Aside.** The agent browses with you: it opens
+1. **A browser you and the agent share.** The agent browses with you: it opens
    and reads pages, follows links, fills forms, and operates sites in a browser
    you can see and take over at any moment. You and the agent share the same
    tabs, so handing work back and forth needs no copy and paste.
-2. **Terminal work at the level of Warp.** The terminal is a first-class
+2. **A terminal for everyday work with an agent.** The terminal is a first-class
    surface: multiple tabs, commands and their output grouped as blocks you can
    read, copy, and rerun, searchable history, and an agent that works inside the
    terminal with you rather than only through one-shot commands.
@@ -46,16 +46,21 @@ Checked against the code; source files and tests win if this page drifts.
   providers.
 - **Work panel.** Files, Preview, Browser, Terminal, Sub-agents, and Side chat
   in one panel per tile.
-- **Browser.** Browser tabs in the work panel for the user, in an isolated web
-  session (`src/main/side-browser-webview.ts`). The agent reaches the web
-  through `web_fetch` and `web_search` (`src/tools/`). Agent-driven browsing of
-  the shared tabs is a goal, not yet shipped.
-- **Terminal.** Real interactive PTY terminal tabs rendered with xterm.js
-  (`src/main/terminal/pty-manager.ts`,
-  `src/ui/renderer/components/PtyTerminalView.tsx`), running inside the OS
-  sandbox. The agent runs commands through its shell tool
-  (`src/tools/shell-tools.ts`). Command blocks, terminal history search, and an
-  agent inside the terminal are goals, not yet shipped.
+- **Browser.** The agent operates visible shared tabs through typed browser
+  tools, alongside `web_fetch` and `web_search`. Human takeover pauses agent
+  mutation until explicit Resume. Borrowed user tabs survive agent release;
+  agent-created tabs remain for handoff after a turn. Browser sandboxing stays
+  enabled in every mode. The [workspace guide](../guides/browser-terminal-workspace.md)
+  covers page actions, file-picker uploads, browser controls, and visible-card
+  previews. Native interaction and provider-authentication signoff remain pending.
+- **Terminal.** Interactive terminal tabs separate **Manual · host**, using
+  the user's shell/profile, from **Agent · isolated**, a confined companion
+  with its own HOME and command blocks. `terminal_run` always uses Agent;
+  `terminal_read` identifies each lane and session. An unavailable Agent backend
+  leaves Manual usable without falling back to host execution. The current
+  Windows interactive Agent lane is unavailable. Native lane validation remains
+  pending; searchable terminal history remains a goal. See the
+  [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes).
 - **Extensions.** Manifest-driven plugins, a managed marketplace, git
   marketplaces, MCP servers and MCP app cards, and skills
   ([plugin development](../guides/plugin-development.md)).

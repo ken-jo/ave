@@ -7,6 +7,11 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createNodeSecretEncryption, SecretKeyFileError } from "../node-secret-encryption.js";
 import { SecretDocumentStore, SecretEncryptionUnavailableError } from "../secret-document-store.js";
 
+// The external key reader proves owner-only protection through the POSIX uid,
+// mode bits and O_NOFOLLOW, none of which exist on Windows, so it refuses every
+// key file there before opening it. Tests that need a working key are POSIX-only.
+const posixOnly = it.skipIf(process.platform === "win32");
+
 let root: string;
 let keyFile: string;
 beforeEach(() => {
@@ -16,15 +21,8 @@ beforeEach(() => {
 });
 afterEach(async () => cleanupTmpDir(root));
 
-// External key protection requires POSIX ownership and no-follow file opens.
 describe("protected external key encryption", () => {
-  it.runIf(process.platform === "win32")("refuses an external key without reading or modifying it on an unsupported host", () => {
-    const before = readFileSync(keyFile);
-    expect(() => createNodeSecretEncryption(keyFile)).toThrow(/unavailable on this platform/);
-    expect(readFileSync(keyFile)).toEqual(before);
-  });
-
-  it.skipIf(process.platform === "win32")("encrypts independently on each write and authenticates empty and Unicode strings", () => {
+  posixOnly("encrypts independently on each write and authenticates empty and Unicode strings", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     expect(encryption.getSelectedStorageBackend()).toBe("external_key");
     expect(encryption.isEncryptionAvailable()).toBe(true);
@@ -38,7 +36,7 @@ describe("protected external key encryption", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("rejects a wrong key, changes to every envelope region, and truncated ciphertext", () => {
+  posixOnly("rejects a wrong key, changes to every envelope region, and truncated ciphertext", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const ciphertext = encryption.encryptString("protected-credential");
     const otherFile = join(root, "other-key");
@@ -66,8 +64,21 @@ describe("protected external key encryption", () => {
     expect(readdirSync(root).filter((name) => !name.endsWith(".lock-anchor"))).toEqual(before);
   });
 
-  it.skipIf(process.platform === "win32")("rejects relative, absent, directory, linked, oversized and unprotected key files without repair", () => {
+  it("rejects a relative key file path before any platform or file check", () => {
     expect(() => createNodeSecretEncryption("key")).toThrow(/absolute/);
+  });
+
+  it.runIf(process.platform === "win32")("refuses every key file on Windows without reading or repairing it", () => {
+    writeFileSync(join(root, "sized-31"), randomBytes(31));
+    const before = readdirSync(root);
+    for (const path of [keyFile, join(root, "missing"), root, join(root, "sized-31")]) {
+      expect(() => createNodeSecretEncryption(path)).toThrow(SecretKeyFileError);
+      expect(() => createNodeSecretEncryption(path)).toThrow(/unavailable on this platform/);
+    }
+    expect(readdirSync(root)).toEqual(before);
+  });
+
+  posixOnly("rejects absent, directory, linked, oversized and unprotected key files without repair", () => {
     expect(() => createNodeSecretEncryption(join(root, "missing"))).toThrow(SecretKeyFileError);
     expect(() => createNodeSecretEncryption(root)).toThrow(/regular file/);
     const symlink = join(root, "linked");
@@ -90,7 +101,7 @@ describe("protected external key encryption", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("accepts an owner read-only key and pins it until the next startup", () => {
+  posixOnly("accepts an owner read-only key and pins it until the next startup", () => {
     chmodSync(keyFile, 0o400);
     const encryption = createNodeSecretEncryption(keyFile);
     const ciphertext = encryption.encryptString("secret");
@@ -101,12 +112,12 @@ describe("protected external key encryption", () => {
   });
 });
 
-describe("external-key secret documents", () => {
+describe.skipIf(process.platform === "win32")("external-key secret documents", () => {
   const storeAt = (rootPath: string, encryption = createNodeSecretEncryption(keyFile)) => new SecretDocumentStore({
     path: join(rootPath, "secrets.json"), policy: "packaged", encryption,
   });
 
-  it.skipIf(process.platform === "win32")("persists authenticated ciphertext with its own encoding and preserves it across restart", async () => {
+  it("persists authenticated ciphertext with its own encoding and preserves it across restart", async () => {
     const store = storeAt(root);
     await store.set("api", "server-secret");
     const bytes = readFileSync(store.path, "utf8");
@@ -117,7 +128,7 @@ describe("external-key secret documents", () => {
     expect(readFileSync(store.path, "utf8")).toBe(bytes);
   });
 
-  it.skipIf(process.platform === "win32")("refuses reads, replacement, deletion and migration with the wrong or missing key", async () => {
+  it("refuses reads, replacement, deletion and migration with the wrong or missing key", async () => {
     const store = storeAt(root);
     await store.set("api", "preserved");
     const before = readFileSync(store.path);
@@ -136,7 +147,7 @@ describe("external-key secret documents", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("refuses existing desktop and development documents without modifying their bytes or modes", async () => {
+  it("refuses existing desktop and development documents without modifying their bytes or modes", async () => {
     const desktopValue = Buffer.from("desktop-ciphertext").toString("base64");
     const documents = [
       { api: desktopValue },

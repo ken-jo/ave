@@ -145,6 +145,7 @@ The production attachment resolves the previously test-only router factory witho
 
 - **Immutable handler snapshot:** the A2A gate lazily snapshots the current `AgentProfileStore` list, active `SubAgentRunner`, and conversation project binding once for the boot. At most 32 routable profiles are admitted. Missing runner/profile services, an invalid host binding, or an ID collision disables the whole A2A family for that boot; an empty profile list retains no A2A-only listener.
 - **Opaque addresses:** each handler URL uses `agent-<letter-encoded sha256(canonical-real-profile-path)[:32]>`. The letters-only structural alphabet prevents a random digest from being misclassified as phone/card PII by the mandatory DLP validator. Profile `name` remains display-only and never becomes a path segment. Name, body, tool, model, or mode edits keep the same address; moving the profile file changes it. Stable identity across moves would require a separately persisted host-minted profile UUID, which the current profile schema does not contain.
+- **Structural UUIDs versus content:** task, context, message, artifact, reference-task, and child-session identifiers accept complete canonical UUIDs and the host forms `sub-<8 lowercase hex>-<uuid>` and `a2a-wire-<8 lowercase hex>-<uuid>` without content DLP. Digit groups in these typed keys are not phone or card content. Admission, persistence reload, wire projection, and the persisted session field `a2aWireInternalOrigin` use this same distinction. All identifiers retain their existing shape, length, and control-character checks; other opaque tokens retain content DLP. Parts, message metadata content (including descriptive suspension metadata), titles, and arbitrary prefixes still undergo DLP, including UUID-shaped text when it appears as content. Wire continuation binds the authoritative task key, not a metadata copy of an identifier.
 - **Minimal Agent Cards:** the public card contains only a DLP-clean profile name, a bounded DLP-clean description (otherwise a fixed fallback), application version, one generic delegation skill, `text/plain` modes, explicit false unsupported capabilities, and the bearer scheme. It never includes the profile body/path/tools/triggers/model/mode, project metadata, provider state, approval state, prompts, or the bearer secret.
 - **Shared persistence with fair bounds:** every handler uses one `openFeatureNamespace("a2a-loopback")` Task store so cross-handler ownership remains detectable. The immutable active-handler set drops and audits removed-profile records in memory. Bounds are 100 Tasks per handler, 32 handlers/3,200 Tasks globally, and 64 history Messages per Task; a handler may evict only its own oldest terminal Tasks.
 - **One host consent coordinator:** the existing listener creates one boot-scoped single-flight `AgentActionApprover` and passes the same instance to `/v1` external mutations and every A2A handler. A startup retry may rebuild a disposed A2A runtime but never forks the consent coordinator within that boot.
@@ -167,7 +168,7 @@ P4-0 closes the documentation/evidence lag after the ph3 runtime, expiry,
 official-TCK, and production-handler smoke changes merged. Ph4 starts from the
 following boundary; it does not reopen ph3's loopback listener contract.
 
-- **P4-1 owner and purpose:** the active public `agent-hub` Node/TypeScript
+- **P4-1 owner and purpose:** the active public Agent Hub Node/TypeScript
   server owns a pure Agent Card registry admission module. It accepts one
   already-retrieved card, validates the
   bounded Ave/A2A v1 subset, and returns an immutable admission result.
@@ -199,19 +200,19 @@ following boundary; it does not reopen ph3's loopback listener contract.
 - **Merge evidence (2026-07-15):** the P4-0 contract landed in
   `ave#1636` as merge commit
   `6a7a777873e04e968d3338bb723fba404e26c928`, and the P4-1 admission core
-  landed in `agent-hub#15` as merge commit
+  landed in the Agent Hub repository's PR 15 as merge commit
   `8856b193b8417e9e4b61421be47904030ab25b2e`.
   The merged implementation remains pure admission with no hidden I/O or
   execution effect: every result is `routable=false`, local
   mailbox/question/resume behavior is unchanged, and D8 remains depth-1.
 - **P4-1 hardening evidence (2026-07-15):** the DEL/C1 control-character
   follow-up landed through
-  `agent-hub#17`. GitHub
+  the Agent Hub repository's PR 17. GitHub
   records its PR `merged_at` as `2026-07-15T07:06:51Z` and its
   `merge_commit_sha` as
   `f8b50e734d92b1ad4590e730820c9c4207331cab`;
   that commit's committer timestamp is `2026-07-15T07:06:50Z`. The related
-  `agent-hub#16` issue
+  Agent Hub issue 16
   was closed with state reason `completed` at `2026-07-15T07:06:52Z`. This
   closes only the P4-1
   input-validation follow-up. It adds no persistence, trust-review workflow,

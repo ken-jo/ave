@@ -1,5 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
-import type { AppServices } from "./types.js";
+import type { AppServices, PaneChatLoops } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { WorkerEgressAllowlists } from "../permissions/egress-runtime.js";
 /**
@@ -216,6 +216,8 @@ export class BootContext {
   declare conversationLoop: ConversationLoop;
   /** Side-chat (workspace rail) — 2nd loop with isolated `~/.ave/side-chat/` store. */
   declare sideChatConversationLoop: ConversationLoop;
+  /** The pane chats' own loops — see IpcDeps. */
+  declare paneChatLoops: PaneChatLoops;
   /** The side-chat store — the conversation list reads it beside the main one. */
   declare sideChatMemoryManager: MemoryManager;
   /** Resolves the loop behind one tiled chat group — see IpcDeps. */
@@ -341,6 +343,7 @@ const BOOT_CONTEXT_FIELDS = [
   "postTurnHookChain",
   "conversationLoop",
   "sideChatConversationLoop",
+  "paneChatLoops",
   "sideChatMemoryManager",
   "resolveChatGroupLoop",
   "releaseChatGroupLoop",

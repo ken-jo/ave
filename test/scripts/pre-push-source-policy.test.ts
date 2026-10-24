@@ -28,12 +28,10 @@ import {
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { messages } from "../../src/i18n/messages/index.js";
 import { parseSourceTexts } from "../../scripts/lib/ts7-ast.mjs";
+import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 const root = resolve(import.meta.dirname, "../..");
 
-function modified(path: string) {
-  return { status: "M", oldMode: "100644", newMode: "100644", path };
-}
 function added(path: string) {
   return { status: "A", oldMode: "000000", newMode: "100644", path };
 }
@@ -362,10 +360,17 @@ describe("pre-push fast source tier", () => {
       return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
     };
     // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.
-    const imports = (file: string) => [...readFileSync(resolve(root, file), "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").matchAll(specifier)]
-      .map((match) => resolveModule(file, match[1]!))
-      .filter((path): path is string => path !== null && path.startsWith("src/"));
+    const importCache = new Map<string, string[]>();
+    const imports = (file: string) => {
+      const cached = importCache.get(file);
+      if (cached) return cached;
+      const dependencies = [...readFileSync(resolve(root, file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").matchAll(specifier)]
+        .map((match) => resolveModule(file, match[1]!))
+        .filter((path): path is string => path !== null && path.startsWith("src/"));
+      importCache.set(file, dependencies);
+      return dependencies;
+    };
     const reaches = (start: string, target: string) => {
       const seen = new Set<string>();
       const stack = [start];

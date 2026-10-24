@@ -255,6 +255,15 @@ beforeAll(async () => {
   // The deny floor is derived from `aveHome()`: pointing it here is what makes
   // `<AVE_HOME>/secrets` a real denied path with a real file in it.
   process.env.AVE_HOME = aveHome;
+  if (process.platform === "win32") {
+    // srt-win stamps each deny with an ACE on its parent too, and Windows
+    // propagates that change through the parent's whole tree. Under the real
+    // profile every initialize walks the user's entire home, past srt-win's
+    // 60s stamp budget on a developer machine. A home inside the staged root
+    // keeps the same floor over a tree the test owns.
+    vi.stubEnv("USERPROFILE", join(root, "home"));
+    mkdirSync(join(root, "home"));
+  }
   listener = createServer((socket) => {
     listenerConnections.push(socket.remoteAddress ?? "unknown");
     socket.destroy();
@@ -270,6 +279,7 @@ afterAll(async () => {
   if (listener !== undefined) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
+  vi.unstubAllEnvs();
   if (stagedRoot !== undefined) rmSync(stagedRoot, { recursive: true, force: true });
   rmSync(childBundleDir(CHILD_BUNDLE_CACHE), { recursive: true, force: true });
 });

@@ -19,9 +19,12 @@ beforeEach(() => {
 });
 afterEach(async () => cleanupTmpDir(root));
 
-// External key protection requires POSIX ownership and no-follow file opens.
-describe.skipIf(process.platform === "win32")("plugin storage with a configured external key", () => {
-  it("round-trips real ciphertext and refuses wrong-key replacement without changing stored bytes", async () => {
+describe("plugin storage with a configured external key", () => {
+  // A configured external key is refused on Windows, where owner-only key
+  // protection cannot be proven from POSIX uid and mode bits.
+  const withExternalKey = it.skipIf(process.platform === "win32");
+
+  withExternalKey("round-trips real ciphertext and refuses wrong-key replacement without changing stored bytes", async () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const storage = createPluginStorage("sample", dataDir, encryption);
     await storage.writeEncrypted("token", "plugin-credential");
@@ -37,14 +40,18 @@ describe.skipIf(process.platform === "win32")("plugin storage with a configured 
     expect(await storage.readEncrypted("token")).toBe("plugin-credential");
   });
 
-  it("preserves incompatible ciphertext and rejects missing encryption without plaintext fallback", async () => {
+  withExternalKey("preserves incompatible ciphertext", async () => {
     const storage = createPluginStorage("sample", dataDir, createNodeSecretEncryption(keyFile));
     const before = Buffer.from("v10legacy-desktop-ciphertext");
     writeFileSync(join(dataDir, "token"), before, { mode: 0o600 });
     await expect(storage.readEncrypted("token")).rejects.toThrow(/unsupported encryption format/);
     await expect(storage.writeEncrypted("token", "replacement")).rejects.toThrow(/unsupported encryption format/);
     expect(readFileSync(join(dataDir, "token"))).toEqual(before);
+  });
 
+  it("rejects missing encryption without plaintext fallback", async () => {
+    const before = Buffer.from("v10legacy-desktop-ciphertext");
+    writeFileSync(join(dataDir, "token"), before, { mode: 0o600 });
     const unavailable = createPluginStorage("sample", dataDir, createNodeSecretEncryption());
     await expect(unavailable.readEncrypted("token")).rejects.toMatchObject({ code: "encryption-unavailable" });
     await expect(unavailable.writeEncrypted("token", "replacement")).rejects.toMatchObject({ code: "encryption-unavailable" });

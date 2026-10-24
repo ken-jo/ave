@@ -2015,6 +2015,7 @@ export default async function createPlugin({ hostApi }) {
     const slowId = "p-start-slow-peer";
     const timedDir = join(installedDir, timedId);
     const slowDir = join(installedDir, slowId);
+    const slowPeer = await childProcessGate(testDir);
     await mkdir(timedDir, { recursive: true });
     await mkdir(slowDir, { recursive: true });
     await writeFile(
@@ -2026,8 +2027,12 @@ export default async function createPlugin({ hostApi }) {
     );
     await writeFile(
       join(slowDir, "entry.mjs"),
-      `export default async function createPlugin() {
-  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => new Promise((resolve) => setTimeout(resolve, 1_000)) };
+      `${slowPeer.moduleSource}
+export default async function createPlugin() {
+  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => {
+    gate.signal("slow-peer-entered");
+    await gate.waitFor("release-slow-peer");
+  } };
 }\n`,
       "utf-8",
     );
@@ -2108,29 +2113,31 @@ export default async function createPlugin({ hostApi }) {
       settled = true;
     });
 
-    for (
-      let attempt = 0;
-      attempt < 100 && !timedIncarnation?.isLifecycleHookActive();
-      attempt += 1
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      for (
+        let attempt = 0;
+        attempt < 100 && !timedIncarnation?.isLifecycleHookActive();
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(timedIncarnation?.isLifecycleHookActive()).toBe(true);
+      expect(timedHostApi).toBeDefined();
+      await slowPeer.waitFor("slow-peer-entered");
+      // Hold the peer until revocation is observed, so ordering does not
+      // depend on a fixed sleep outlasting child startup on a busy host.
+      const revokeDeadline = Date.now() + 5_000;
+      while (timedIncarnation!.isActive() && Date.now() < revokeDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(settled).toBe(false);
+      expect(() => timedHostApi!.getSecret("late-write")).toThrow(
+        /no longer active/,
+      );
+    } finally {
+      await slowPeer.signal("release-slow-peer");
+      await starting;
     }
-    expect(timedIncarnation?.isLifecycleHookActive()).toBe(true);
-    expect(timedHostApi).toBeDefined();
-    // The plugin is a child (§9.8 A1), so the hook scope opens at construct,
-    // a spawn before `start()` and its 30 ms timer: wait for the revocation
-    // itself, then hold the ordering — it lands while the peer is still
-    // starting, not when startAll settles.
-    const revokeDeadline = Date.now() + 5_000;
-    while (timedIncarnation!.isActive() && Date.now() < revokeDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    expect(settled).toBe(false);
-    expect(() => timedHostApi!.getSecret("late-write")).toThrow(
-      /no longer active/,
-    );
-
-    await starting;
     expect(runtime.listPluginIds()).not.toContain(timedId);
     expect(runtime.listPluginIds()).toContain(slowId);
   });
@@ -2188,9 +2195,30 @@ export default async function createPlugin({ hostApi }) {
     await runtime.startAll();
     await expect(runtime.call(toolName)).resolves.toBe("active");
 
-    await expect(
-      runtime.removePluginWithCommit(pluginId, async () => "durably-removed"),
-    ).rejects.toThrow(/generation retirement failed/);
+    // Keep the real child and stop request; advance only the host's bound
+    // once retirement has actually entered the stop operation.
+    const stopping = runtime as unknown as {
+      stopPluginInstance(...args: unknown[]): Promise<boolean>;
+    };
+    const stop = stopping.stopPluginInstance.bind(stopping);
+    let entered!: () => void;
+    const inStop = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(stopping, "stopPluginInstance").mockImplementation((...args) => {
+      const result = stop(...args);
+      entered();
+      return result;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const removal = expect(
+        runtime.removePluginWithCommit(pluginId, async () => "durably-removed"),
+      ).rejects.toThrow(/generation retirement failed/);
+      await inStop;
+      await vi.advanceTimersByTimeAsync(2_000);
+      await removal;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(runtime.listPluginIds()).not.toContain(pluginId);
     await expect(runtime.call(toolName)).rejects.toThrow(/not found/);
@@ -3383,7 +3411,7 @@ export default async function createPlugin() {
     //
     // Reproduces by writing an entry that throws at the top level, which
     // surfaces through esbuild-style "Dynamic require of …" / generic
-    // ReferenceError patterns observed for samplemail 0.1.18 / pageindex 0.1.16
+    // ReferenceError patterns observed for samplemail 0.1.18 / the indexer plugin 0.1.16
     // pre-SDK-v3.4.2.
     const pluginDir = join(installedDir, "p-broken-entry");
     await mkdir(pluginDir, { recursive: true });

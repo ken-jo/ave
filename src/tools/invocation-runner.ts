@@ -13,6 +13,7 @@ import {
   findPowerShellCommandPathViolation,
   validatePowerShellCommandStructure,
 } from "./shell-tools.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
 import {
   isCanonicalFileTool,
   normalizeCanonicalFileToolInput,
@@ -1815,8 +1816,14 @@ export async function runToolInvocation(
             if (shellPathViolation) break;
           }
         } else {
+          // A command typed into a terminal runs in the directory that
+          // terminal's shell reported (sealed with its approval scope), so
+          // its relative operands resolve there, as a bash `cwd` would.
+          const pathPolicyInput = isCanonicalTerminalRunTool(tool)
+            ? { ...finalInput, cwd: terminalCommandScopeOf(approvalMemory).cwd }
+            : finalInput;
           shellPathViolation = shellPathPolicyViolation(
-            finalInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
+            pathPolicyInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
             preparedShellInvocation ? preparedShellFacts(preparedShellInvocation) : undefined,
           );
         }

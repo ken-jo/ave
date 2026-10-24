@@ -1,4 +1,3 @@
-import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {
   chmodSync,
   mkdirSync,
@@ -17,6 +16,7 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import {
   WorkloadBrokerConfigurationError,
+  assertSecureWorkloadBrokerSocket,
   loadWorkloadBrokerCapabilityFile,
 } from "../capability-file.js";
 import {
@@ -176,8 +176,13 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-// The broker requires Unix sockets and POSIX owner-verified capability files.
-describe.skipIf(process.platform === "win32")("brokered workload runtime", () => {
+// The broker is the Linux route: it listens on an AF_UNIX socket path and
+// authenticates its capability file by uid, 0400/0700 modes and O_NOFOLLOW,
+// none of which exist on native Windows. There loading fails closed, which
+// the win32-only case below pins.
+const itPosixBroker = it.skipIf(process.platform === "win32");
+
+describe("brokered workload runtime", () => {
   const authority = (operation: "shell.run" | "shell.start" | "file.read_binary", toolName: "bash" | "view_image") =>
     issueWorkloadToolCorrelationAuthority({
       toolUseId: `tool-${toolName}`,
@@ -190,7 +195,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
         planIdentity: operation === "shell.run" ? "3".repeat(64) : null,
       },
     });
-  it("keeps the request write side open until the broker responds", async () => {
+  itPosixBroker("keeps the request write side open until the broker responds", async () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     await startBroker(socketPath, false, 25);
@@ -199,7 +204,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     await expect(initializeWorkloadBroker({ socketPath, capabilityPath })).resolves.toBeDefined();
   });
 
-  it("boots only after an exact handshake and returns typed terminal proof", async () => {
+  itPosixBroker("boots only after an exact handshake and returns typed terminal proof", async () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     await startBroker(socketPath);
@@ -252,7 +257,19 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     });
   });
 
-  it("rejects a binary response whose declared byte count does not match its data", async () => {
+  it.skipIf(process.platform !== "win32")("fails closed on native Windows before reading the capability or socket", async () => {
+    const socketPath = join(root, "workload.sock");
+    const capabilityPath = join(root, "capability.json");
+    writeFileSync(capabilityPath, JSON.stringify(capability(socketPath)));
+    const unavailable = new WorkloadBrokerConfigurationError("protected-file-unavailable");
+
+    expect(() => loadWorkloadBrokerCapabilityFile(capabilityPath, socketPath)).toThrow(unavailable);
+    expect(() => assertSecureWorkloadBrokerSocket(socketPath)).toThrow(unavailable);
+    await expect(initializeWorkloadBroker({ socketPath, capabilityPath })).rejects.toThrow(unavailable);
+    expect(getActiveWorkloadBrokerProjection()).toBeUndefined();
+  });
+
+  itPosixBroker("rejects a binary response whose declared byte count does not match its data", async () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     await startBroker(socketPath, true);
@@ -269,7 +286,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     });
   });
 
-  it("binds each tool authority to one exact operation and consumes it once", async () => {
+  itPosixBroker("binds each tool authority to one exact operation and consumes it once", async () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     await startBroker(socketPath);
@@ -303,7 +320,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     });
   });
 
-  it("issues a background parent only from the frozen successful shell.start result", async () => {
+  itPosixBroker("issues a background parent only from the frozen successful shell.start result", async () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     await startBroker(socketPath);
@@ -331,7 +348,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     })).toThrow("background-parent-receipt-invalid");
   });
 
-  it("requires an owned 0400 regular capability file and rejects symlinks", () => {
+  itPosixBroker("requires an owned 0400 regular capability file and rejects symlinks", () => {
     const socketPath = join(root, "workload.sock");
     const capabilityPath = join(root, "capability.json");
     writeFileSync(capabilityPath, JSON.stringify(capability(socketPath)), { mode: 0o600 });
@@ -344,7 +361,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
       .toThrow(new WorkloadBrokerConfigurationError("capability-file-unavailable"));
   });
 
-  it("requires an owned real 0700 parent directory", () => {
+  itPosixBroker("requires an owned real 0700 parent directory", () => {
     const socketPath = join(root, "workload.sock");
     const secureParent = join(root, "secure");
     mkdirSync(secureParent, { mode: 0o700 });
@@ -368,7 +385,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     }
   });
 
-  it.skipIf(!canCreateSymlinks())("rejects a symlinked capability parent", () => {
+  itPosixBroker("rejects a symlinked capability parent", () => {
     const socketPath = join(root, "workload.sock");
     const realParent = join(root, "real-parent");
     const linkedParent = join(root, "linked-parent");
@@ -384,7 +401,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
     )).toThrow(new WorkloadBrokerConfigurationError("capability-directory-invalid"));
   });
 
-  it("rejects capability parent replacement during validation", () => {
+  itPosixBroker("rejects capability parent replacement during validation", () => {
     const socketPath = join(root, "workload.sock");
     const secureParent = join(root, "parent-to-replace");
     const originalParent = join(root, "original-parent");
@@ -409,7 +426,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
       .toThrow(new WorkloadBrokerConfigurationError("capability-directory-symlink-invalid"));
   });
 
-  it("rejects regular capability parent replacement during validation", () => {
+  itPosixBroker("rejects regular capability parent replacement during validation", () => {
     const socketPath = join(root, "workload.sock");
     const secureParent = join(root, "regular-parent-to-replace");
     const originalParent = join(root, "regular-original-parent");
@@ -436,7 +453,7 @@ describe.skipIf(process.platform === "win32")("brokered workload runtime", () =>
       .toThrow(new WorkloadBrokerConfigurationError("capability-directory-changed"));
   });
 
-  it("rejects capability path replacement during validation", () => {
+  itPosixBroker("rejects capability path replacement during validation", () => {
     const socketPath = join(root, "workload.sock");
     const secureParent = join(root, "replace-parent");
     mkdirSync(secureParent, { mode: 0o700 });

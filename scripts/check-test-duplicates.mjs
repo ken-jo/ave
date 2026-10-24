@@ -39,6 +39,8 @@ const ROOT = process.cwd();
 
 const SKIP_DIRS = new Set([
   ".git",
+  // Generated dependency caches can contain their packages' own test suites.
+  ".cache",
   // Agent worktrees (`.claude/worktrees/**` and `.worktrees/**`) are transient
   // checkouts of this very
   // repo — scanning them reports every helper as a 2-3x "duplicate" of itself, and

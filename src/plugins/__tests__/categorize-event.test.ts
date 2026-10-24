@@ -31,7 +31,7 @@ describe("categorizeEvent", () => {
     expect(categorizeEvent("task.created")).toBe("other");
     // Plugin-owned namespaces are NOT in PUBLIC_EVENT_NAMESPACES
     // (open-source-readiness) — categorized as "other".
-    expect(categorizeEvent("agent_hub.work_item.due_soon")).toBe("other");
+    expect(categorizeEvent("samplehub.work_item.due_soon")).toBe("other");
   });
 
   it("handles bare event names without dots", () => {

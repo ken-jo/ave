@@ -84,6 +84,12 @@ export interface UseSendMessageDeps {
   /** The active route's input modalities, for the image gate. Optional: without them the catalog entry for the model's name decides. */
   llmRouteModalities?: Settings["llmRouteModalities"];
   llmReadyWithoutApiKey: Settings["llmReadyWithoutApiKey"];
+  /**
+   * Main's active chat model; null until the first snapshot. `kind: "none"`
+   * blocks the send and opens provider setup — the composer's own call to
+   * action — rather than handing the turn to a vendor default nobody chose.
+   */
+  activeChatModel: Settings["activeChatModel"];
   /** Canonical safe status and raw-image budget for the selected runtime. */
   subscriptionRuntimePolicy: Settings["subscriptionRuntimePolicy"];
   /** False until the active runtime selection has been read from settings. */
@@ -166,7 +172,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
     appendSystemEntry,
     setErrorWithThought, handleCompactCommand, sessionLoad, applyLoadedSession,
     refreshSessionId, refreshSessions, attachments, setAttachments,
-    llmVendor, llmModel, llmRouteModalities, llmReadyWithoutApiKey, subscriptionRuntimePolicy,
+    llmVendor, llmModel, llmRouteModalities, llmReadyWithoutApiKey, activeChatModel, subscriptionRuntimePolicy,
     settingsReady = true,
     onOpenSettings, setQuestion, handleAskRef,
   } = deps;
@@ -242,6 +248,12 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           if (debugStreamEnabled) debugLog("handleAsk", "load-session:handled", { sessionId: match.id });
           return;
         }
+      }
+      // No connected provider means no model: the draft stays put and the
+      // user lands where a provider is added.
+      if (activeChatModel?.kind === "none") {
+        onOpenSettings("llm");
+        return;
       }
       // Once a subscription runtime is selected its verified chat capability is
       // the only send gate. A stored API key belongs to the inactive runtime and
@@ -469,6 +481,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       llmModel,
       llmRouteModalities,
       llmReadyWithoutApiKey,
+      activeChatModel,
       subscriptionRuntimePolicy,
       settingsReady,
       onOpenSettings,

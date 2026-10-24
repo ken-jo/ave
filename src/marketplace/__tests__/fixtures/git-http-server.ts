@@ -9,11 +9,11 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 interface SeenRequest {
   method: string;
@@ -28,8 +28,8 @@ export interface GitHttpServer {
   readonly seen: SeenRequest[];
   /** Answer every request for `name` with a redirect to `location`. */
   redirect(name: string, location: string): void;
-  /** Never answer requests for `name`. */
-  hang(name: string): void;
+  /** Never answer requests for `name`; resolves when its first request arrives. */
+  hang(name: string): Promise<void>;
   /** Answer GET `path` with `body` (release assets, archives); `null` removes it. */
   file(path: string, body: Buffer | null, status?: number): void;
   close(): Promise<void>;
@@ -75,14 +75,54 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   const bare = join(root, name);
   mkdirSync(dirname(bare), { recursive: true });
   hostGit(["init", "--bare", "--quiet", `--initial-branch=${branch}`, bare]);
+  // Copied snapshots must have no writer rotating objects after setup returns.
+  hostGit(["config", "maintenance.auto", "false"], bare);
   hostGit(["config", "uploadpack.allowFilter", "true"], bare);
   hostGit(["config", "uploadpack.allowAnySHA1InWant", "true"], bare);
   hostGit(["config", "http.receivepack", "false"], bare);
   const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
   hostGit(["init", "--quiet", `--initial-branch=${branch}`, work]);
+  hostGit(["config", "maintenance.auto", "false"], work);
   hostGit(["config", "user.email", "fixture@example.invalid"], work);
   hostGit(["config", "user.name", "Fixture"], work);
   hostGit(["remote", "add", "origin", bare], work);
+  return fixtureRepo(bare, work, branch);
+}
+
+/**
+ * Copy a read-only seed made by createFixtureRepo, on the same branch.
+ * Copies own their refs, index and objects; callers clean work and bare trees.
+ */
+export function copyFixtureRepo(root: string, name: string, seed: FixtureRepo, options: { branch?: string; publishByCopy?: boolean } = {}): FixtureRepo {
+  const branch = options.branch ?? "main";
+  const expectedHead = `ref: refs/heads/${branch}`;
+  for (const head of [join(seed.bare, "HEAD"), join(seed.work, ".git", "HEAD")]) {
+    if (readFileSync(head, "utf8").trim() !== expectedHead) throw new Error(`fixture seed must be on branch ${branch}`);
+  }
+  const bare = join(root, name);
+  const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
+  cpSync(seed.bare, bare, { recursive: true });
+  cpSync(seed.work, work, { recursive: true });
+  // Copy publication addresses `bare` directly, so it never uses the seed's origin.
+  if (!options.publishByCopy) hostGit(["remote", "set-url", "origin", bare], work);
+  return fixtureRepo(bare, work, branch, options.publishByCopy);
+}
+
+function fixtureRepo(bare: string, work: string, branch: string, publishByCopy = false): FixtureRepo {
+  const publish = () => {
+    if (!publishByCopy) {
+      hostGit(["push", "--quiet", "origin", `HEAD:${branch}`], work);
+      return;
+    }
+    // Fixture publication needs the authored objects and ref, not a second
+    // transport process. Client HTTP transport still reads a real bare repo.
+    cpSync(join(work, ".git", "objects"), join(bare, "objects"), { recursive: true, force: false });
+    const ref = readFileSync(join(work, ".git", "refs", "heads", branch));
+    for (const path of [join(bare, "refs", "heads", branch), join(work, ".git", "refs", "remotes", "origin", branch)]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, ref);
+    }
+  };
   return {
     bare,
     work,
@@ -94,7 +134,7 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
       }
       hostGit(["add", "--all"], work);
       hostGit(["commit", "--quiet", "--allow-empty", "-m", message], work);
-      hostGit(["push", "--quiet", "origin", `HEAD:${branch}`], work);
+      publish();
       return hostGit(["rev-parse", "HEAD"], work);
     },
     commitEntries(entries, message) {
@@ -113,11 +153,12 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
       const parent = hostGit(["rev-parse", "HEAD"], work);
       const commit = hostGit(["commit-tree", tree, "-p", parent, "-m", message], work);
       hostGit(["update-ref", "HEAD", commit], work);
-      hostGit(["push", "--quiet", "origin", `HEAD:${branch}`], work);
+      publish();
       return commit;
     },
     forcePush() {
-      hostGit(["push", "--quiet", "--force", "origin", `HEAD:${branch}`], work);
+      if (publishByCopy) publish();
+      else hostGit(["push", "--quiet", "--force", "origin", `HEAD:${branch}`], work);
     },
   };
 }
@@ -127,7 +168,7 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
  * Retries ride out the brief EBUSY a just-exited git child can leave on the work dir.
  */
 export async function removeFixtureRepo(repo: FixtureRepo): Promise<void> {
-  await rm(repo.work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await cleanupTmpDir(repo.work);
 }
 
 function authorized(req: IncomingMessage, token: string | undefined): boolean {
@@ -183,7 +224,7 @@ function serveBackend(root: string, req: IncomingMessage, res: ServerResponse, u
 export async function startGitHttpServer(options: GitHttpServerOptions): Promise<GitHttpServer> {
   const seen: SeenRequest[] = [];
   const redirects = new Map<string, string>();
-  const hanging = new Set<string>();
+  const hanging = new Map<string, () => void>();
   const files = new Map<string, { body: Buffer; status: number }>();
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -195,7 +236,11 @@ export async function startGitHttpServer(options: GitHttpServerOptions): Promise
       return;
     }
     const repo = url.pathname.split("/")[1] ?? "";
-    if (hanging.has(repo)) return;
+    const hung = hanging.get(repo);
+    if (hung) {
+      hung();
+      return;
+    }
     const location = redirects.get(repo);
     if (location) {
       res.writeHead(302, { location });
@@ -217,7 +262,7 @@ export async function startGitHttpServer(options: GitHttpServerOptions): Promise
     seen,
     url: (name) => `${origin}/${name}`,
     redirect: (name, location) => redirects.set(name, location),
-    hang: (name) => hanging.add(name),
+    hang: (name) => new Promise<void>((resolve) => hanging.set(name, resolve)),
     file: (path, body, status = 200) => {
       if (body === null) files.delete(path);
       else files.set(path, { body, status });

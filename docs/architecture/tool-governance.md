@@ -189,6 +189,25 @@ indistinguishable from payloads and prompt once.
 
 Tests: `src/permissions/reviewer/__tests__/web-fetch-egress-screen.test.ts`.
 
+### 7.2 Workspace terminal tools
+
+Desktop hosts register two terminal tools; both reach only the terminals of the
+app window that hosts the conversation (a sub-agent inherits its parent's), and
+routines or other windowless sessions get neither.
+
+| Tool | Category | What it does |
+| --- | --- | --- |
+| `terminal_read` (`src/tools/terminal-read.ts`) | `read` | Lists terminals and returns their command blocks (command, directory, exit code, output), framed as untrusted terminal data. |
+| `terminal_run` (`src/tools/terminal-run.ts`) | `shell` | Types one command at a terminal's empty prompt so it runs visibly there, then returns its block through the same frame. |
+
+`terminal_run` reuses the `bash` permission lane; its target sealing, busy-terminal
+refusal and text rules are specified in
+[Commands Typed Into A Workspace Terminal](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
+
+Tests: `src/tools/__tests__/terminal-read.test.ts`,
+`src/tools/__tests__/terminal-run.test.ts`,
+`src/tools/__tests__/terminal-run-permission.test.ts`.
+
 ## 8. Audit log
 
 `AuditLogger` (`src/audit/audit-logger.ts`) writes JSONL under

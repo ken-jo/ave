@@ -177,6 +177,9 @@
                   "description": {
                     "type": "string"
                   },
+                  "locales": {
+                    "$ref": "#/definitions/pluginUiExtensionLocales"
+                  },
                   "defaults": {
                     "type": "object"
                   },
@@ -463,6 +466,9 @@
                   "type": "string",
                   "description": "Human-readable label for the auth surface, shown next to the badge (e.g. 'Microsoft 계정', 'Portal'). Defaults to the plugin's `name` if omitted.",
                   "maxLength": 64
+                },
+                "locales": {
+                  "$ref": "#/definitions/pluginAuthLocales"
                 },
                 "statusTool": {
                   "type": "string",
@@ -894,6 +900,9 @@
                       },
                       "description": {
                         "type": "string"
+                      },
+                      "locales": {
+                        "$ref": "#/definitions/pluginConfigPropertyLocales"
                       },
                       "default": {
                         "description": "Default value for the form field. Outer JSON byte-size cap is enforced server-side (see marketplace publisher.py); the schema bounds object/array primitives so a pathological default can't blow up the catalog.",
@@ -2191,6 +2200,111 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
           "not": {
             "pattern": "[\\r\\n]"
+          }
+        }
+      }
+    },
+    "pluginLocalizedLabel": {
+      "type": "string",
+      "description": "One language's short label. Not blank, single line.",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "pluginLocalizedDescription": {
+      "type": "string",
+      "description": "One language's helper text. Not blank; may span lines.",
+      "minLength": 1,
+      "maxLength": 2000,
+      "not": {
+        "pattern": "^\\s*$"
+      }
+    },
+    "pluginUiExtensionLocales": {
+      "type": "object",
+      "description": "Per-language overrides of this entry's displayName/title/description, keyed by a normalized lower-case BCP-47 tag. The host resolves against its UI language: the exact tag, then its base language, then the entry's own fields, then the plugin id. The entry's own fields stay the baseline for every language the map does not name. Requires Ave 0.14.1 or later: earlier hosts reject the key, so a plugin declaring it sets requires.minAppVersion to 0.14.1 or later.",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+        "not": {
+          "pattern": "[\\r\\n]"
+        },
+        "maxLength": 35
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "displayName": {
+            "$ref": "#/definitions/pluginLocalizedLabel"
+          },
+          "title": {
+            "$ref": "#/definitions/pluginLocalizedLabel"
+          },
+          "description": {
+            "$ref": "#/definitions/pluginLocalizedDescription"
+          }
+        }
+      }
+    },
+    "pluginConfigPropertyLocales": {
+      "type": "object",
+      "description": "Per-language overrides of this property's title/description, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the property's own fields, then the config key. Requires Ave 0.14.1 or later (requires.minAppVersion 0.14.1 or later).",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+        "not": {
+          "pattern": "[\\r\\n]"
+        },
+        "maxLength": 35
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "$ref": "#/definitions/pluginLocalizedLabel"
+          },
+          "description": {
+            "$ref": "#/definitions/pluginLocalizedDescription"
+          }
+        }
+      }
+    },
+    "pluginAuthLocales": {
+      "type": "object",
+      "description": "Per-language overrides of auth.label, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the own label, then the plugin name. Requires Ave 0.14.1 or later (requires.minAppVersion 0.14.1 or later).",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+        "not": {
+          "pattern": "[\\r\\n]"
+        },
+        "maxLength": 35
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "\\S",
+            "not": {
+              "pattern": "[\\r\\n]"
+            }
           }
         }
       }

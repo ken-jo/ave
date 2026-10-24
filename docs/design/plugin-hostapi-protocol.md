@@ -867,7 +867,7 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `withdrawAlert` (:1893 at `f1a8d191e`) | req | plain-json → plain-json | caller's own alert kinds only | unchanged; golden fixture `.../withdrawAlert.json` |
 | `logEvent` (:1377) | notif | plain-json → void | tagged `plugin:<id>` by host | none |
 | `onShutdown` (:1388) | sub | handler-registration, host-terminated | 5 s per handler (`:1384-1386`) | becomes `ave/instance/shutdown` request (§3.4) |
-| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ socketPath, pid }` cross; stdout/stderr/exit are notifications (`host-api-wire.ts:1652-1666`) |
+| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, socketPath, pid }` cross; the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
 | `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | unchanged |
 | `pickFolders` (:1510) | UI | plain-json | OS dialog, user consent is the dialog | unchanged; the chosen paths do not widen the envelope unless declared (§2.2) |
@@ -2757,6 +2757,18 @@ The mirror check makes the canonical protocol schema **frozen on `main` from a t
 until the next version bump**, and the bump is therefore the first change after the
 tag (`docs/development/release-process.md`, "Between releases: the next protocol
 candidate", added by #2589). Exactly what happened, and what it means for this plan:
+
+- **Enforced since 0.14.1.** The check now compares every recorded copy whose version
+  has a `v<version>` tag in the checkout with the canonical schema that tag carries,
+  published or not, and `syncProtocolMirror` refuses to write such a copy
+  (`scripts/lib/plugin-host-protocol-mirror.mjs`, `checkTaggedCopy`). Before that, a
+  candidate left at a tagged version (`3/v0.14.0`, `publishedTag: null`, with
+  `package.json` still at `0.14.0`) passed the check after being regenerated with a
+  later protocol change. A version with no tag yet (the open candidate, including
+  the release script's pre-tag sync) is not compared; a checkout that cannot say
+  whether a version is tagged — shallow, without any `v*` tag, or not a git
+  repository — is refused, so CI checks out full history (`fetch-depth: 0`) in
+  every job that builds or checks the mirror.
 
 - **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
   at `publishedTag: null`, that copy was the candidate, and the check refused any `main`

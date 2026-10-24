@@ -8,7 +8,6 @@
  */
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -203,9 +202,11 @@ describe("the dock window paints the host theme main sends (real preload, host t
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
     // The asset URLs main resolved reach the bridge (the preload resolves nothing itself).
+    // The mocked asset paths become file URLs the platform's way: a rooted
+    // `/assets/...` path carries the current drive on Windows.
     const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
-    expect(bridge.pluginShellUrl).toBe(pathToFileURL(resolve("/assets/plugin-ui-shell.html")).href);
-    expect(bridge.pluginPreloadUrl).toBe(pathToFileURL(resolve("/assets/plugin-preload.cjs")).href);
+    expect(bridge.pluginShellUrl).toBe(pathToFileURL("/assets/plugin-ui-shell.html").href);
+    expect(bridge.pluginPreloadUrl).toBe(pathToFileURL("/assets/plugin-preload.cjs").href);
   });
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {

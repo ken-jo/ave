@@ -7,11 +7,12 @@ import {
   lstatSync,
   openSync,
   readSync,
-  type Stats,
+  type BigIntStats,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
+import { fileIdentityKey, sameFileIdentity } from "../lib/file-identity.js";
 import { createLogger } from "../lib/logger.js";
 import { FileLockReleaseError, withFileLock } from "../lib/with-file-lock.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
@@ -78,11 +79,10 @@ function pathEntryExists(path: string): boolean {
   }
 }
 
-function isSameRegularFile(left: Stats, right: Stats): boolean {
+function isSameRegularFile(left: BigIntStats, right: BigIntStats): boolean {
   return left.isFile()
     && right.isFile()
-    && left.dev === right.dev
-    && left.ino === right.ino
+    && sameFileIdentity(left, right)
     && left.size === right.size;
 }
 
@@ -123,28 +123,29 @@ function readStableSecretFile(path: string): string {
   for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
     let fd: number | undefined;
     try {
-      const before = lstatSync(path);
+      const before = lstatSync(path, { bigint: true });
       if (!before.isFile() || before.isSymbolicLink()) {
         throw new SecretDocumentValidationError("Secret document must be a regular file");
       }
-      if (before.size > MAX_SECRET_DOCUMENT_BYTES) {
+      if (before.size > BigInt(MAX_SECRET_DOCUMENT_BYTES)) {
         throw new SecretDocumentValidationError("Secret document exceeds the size limit");
       }
       fd = openSecretFileNoFollow(path);
-      const opened = fstatSync(fd);
+      const opened = fstatSync(fd, { bigint: true });
       if (!isSameRegularFile(before, opened)) continue;
-      const bytes = readWholeDescriptor(fd, opened.size);
+      const size = Number(opened.size);
+      const bytes = readWholeDescriptor(fd, size);
       // Trust is anchored to the bytes in hand: re-read the same window and
       // require an identical digest. `fstat` identity cannot see an equal-size
       // in-place mutation, so the content check — not the metadata — decides.
       const readDigest = contentDigest(bytes);
-      const verifyDigest = contentDigest(readWholeDescriptor(fd, opened.size));
-      const afterHandle = fstatSync(fd);
-      const afterPath = lstatSync(path);
+      const verifyDigest = contentDigest(readWholeDescriptor(fd, size));
+      const afterHandle = fstatSync(fd, { bigint: true });
+      const afterPath = lstatSync(path, { bigint: true });
       if (!readDigest.equals(verifyDigest)
         || !isSameRegularFile(opened, afterHandle)
         || !isSameRegularFile(opened, afterPath)
-        || bytes.byteLength !== opened.size) {
+        || bytes.byteLength !== size) {
         continue;
       }
       try {
@@ -168,18 +169,18 @@ function repairSecretFileMode(path: string, mode: number): boolean {
   if (process.platform === "win32") return false;
   let fd: number | undefined;
   try {
-    const before = lstatSync(path);
+    const before = lstatSync(path, { bigint: true });
     if (!before.isFile() || before.isSymbolicLink()) {
       throw new SecretDocumentValidationError("Secret document must be a regular file");
     }
     fd = openSecretFileNoFollow(path);
-    const opened = fstatSync(fd);
+    const opened = fstatSync(fd, { bigint: true });
     if (!isSameRegularFile(before, opened)) {
       throw new SecretDocumentValidationError("Secret document changed during mode repair");
     }
-    const changed = (opened.mode & 0o777) !== mode;
+    const changed = (opened.mode & 0o777n) !== BigInt(mode);
     if (changed) fchmodSync(fd, mode);
-    if (!isSameRegularFile(opened, lstatSync(path))) {
+    if (!isSameRegularFile(opened, lstatSync(path, { bigint: true }))) {
       throw new SecretDocumentValidationError("Secret document changed during mode repair");
     }
     return changed;
@@ -438,7 +439,7 @@ export class SecretDocumentStore {
       if (!stat.isFile() || stat.size > BigInt(MAX_SECRET_DOCUMENT_BYTES)) {
         throw new SecretDocumentValidationError("Secret document must be a bounded regular file");
       }
-      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      return `${fileIdentityKey(stat)}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
     } catch (error) {
       if (isMissingPathError(error)) return "missing";
       throw error;

@@ -11,15 +11,11 @@ import {
 } from "../codex-app-server-client.js";
 import { CODEX_APP_SERVER_ARGV } from "../codex-conversation-runtime.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
-import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  if (process.platform !== "win32") return original;
-  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
-  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
-});
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 interface RpcRequest {
   id?: unknown;
@@ -355,7 +351,7 @@ describe("CodexAppServerClient", () => {
 
     const statusPromise = harness.client.getStatus();
     void statusPromise.catch(() => undefined);
-    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(3));
+    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(3), NATIVE_LOCATION_WAIT);
 
     expect(harness.server.requests.map((request) => request.method).slice(0, 2)).toEqual([
       "initialize",

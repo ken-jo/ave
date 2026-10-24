@@ -203,7 +203,7 @@ export interface SpawnedWorker {
   onStderr(listener: WorkerOutputListener): void;
   /**
    * Subscribe to worker EXIT (crash or normal). Fires once when the child
-   * process exits — the consumer needs this to mark the worker dead and recover
+   * process exits and its output streams drain — the consumer marks it dead and recovers
    * (the handle owns lifecycle, so without it a crashed worker is undetectable).
    */
   onExit(listener: (info: { code: number | null; signal: NodeJS.Signals | null }) => void): void;
@@ -608,7 +608,95 @@ function makeHandle(
   socketPath: string | null,
   io: { readonly stdin: Writable | null; readonly stdout: Readable | null } = child,
 ): SpawnedWorker {
+  const outputBacklogMax = 1024 * 1024;
+  const outputBacklogEventMax = 256;
   let stopped = false;
+  let terminalExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  let completed = false;
+  const stopOnce = (): void => {
+    if (stopped || terminalExit) return;
+    stopped = true;
+    terminateChildBestEffort(child);
+  };
+  type OutputState = {
+    listeners: WorkerOutputListener[];
+    backlog: string[];
+    bytes: number;
+    overflowed: boolean;
+  };
+  const stdout: OutputState = { listeners: [], backlog: [], bytes: 0, overflowed: false };
+  const stderr: OutputState = { listeners: [], backlog: [], bytes: 0, overflowed: false };
+  let replayFailure: { error: unknown } | undefined;
+  const captureOutput = (state: OutputState, chunk: Buffer): void => {
+    if (replayFailure || state.overflowed) return;
+    const text = chunk.toString("utf-8");
+    if (state.listeners.length > 0) {
+      for (const listener of state.listeners) listener(text);
+      return;
+    }
+    const bytes = text.length * 2;
+    if (state.backlog.length >= outputBacklogEventMax || state.bytes + bytes > outputBacklogMax) {
+      state.backlog = [];
+      state.bytes = 0;
+      state.overflowed = true;
+      stopOnce();
+      return;
+    }
+    state.backlog.push(text);
+    state.bytes += bytes;
+  };
+  io.stdout?.on("data", (chunk: Buffer) => captureOutput(stdout, chunk));
+  child.stderr?.on("data", (chunk: Buffer) => captureOutput(stderr, chunk));
+
+  const exitListeners: Array<(info: { code: number | null; signal: NodeJS.Signals | null }) => void> = [];
+  const outputStreams = [...new Set([io.stdout, child.stderr].filter((stream): stream is Readable => stream !== null))];
+  const drained = new Set(outputStreams.filter((stream) => stream.readableEnded || stream.closed));
+  const completeIfDrained = (): void => {
+    if (completed || !terminalExit || drained.size !== outputStreams.length) return;
+    completed = true;
+    for (const listener of exitListeners.splice(0)) listener(terminalExit);
+  };
+  for (const stream of outputStreams) {
+    const markDrained = (): void => {
+      drained.add(stream);
+      completeIfDrained();
+    };
+    stream.once("end", markDrained);
+    stream.once("close", markDrained);
+  }
+  const captureExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    // Record death immediately so stop() cannot signal a reused pid while pipes drain.
+    terminalExit ??= { code, signal };
+    completeIfDrained();
+  };
+  child.once("exit", captureExit);
+  child.once("close", captureExit);
+  if (child.exitCode !== null || child.signalCode !== null) {
+    captureExit(child.exitCode, child.signalCode);
+  }
+  const subscribeOutput = (state: OutputState, name: string, listener: WorkerOutputListener): void => {
+    if (replayFailure) throw replayFailure.error;
+    if (state.overflowed) {
+      throw new Error(`Worker ${name} exceeded the ${outputBacklogMax}-byte or ${outputBacklogEventMax}-event pre-listener buffer.`);
+    }
+    state.listeners.push(listener);
+    const queued = state.backlog;
+    state.backlog = [];
+    state.bytes = 0;
+    try {
+      for (const chunk of queued) listener(chunk);
+    } catch (error) {
+      replayFailure = { error };
+      for (const output of [stdout, stderr]) {
+        output.backlog = [];
+        output.bytes = 0;
+        output.listeners = [];
+      }
+      stopOnce();
+      throw error;
+    }
+  };
+
   // A worker that exits first leaves the liveness pipe without a reader. A
   // late EPIPE on it is that pipe ending as designed, not a host fault, and
   // must not surface as an unhandled 'error' on the host.
@@ -616,21 +704,16 @@ function makeHandle(
   return {
     socketPath,
     pid: child.pid,
-    onStdout(listener: WorkerOutputListener): void {
-      io.stdout?.on("data", (chunk: Buffer) => listener(chunk.toString("utf-8")));
-    },
-    onStderr(listener: WorkerOutputListener): void {
-      child.stderr?.on("data", (chunk: Buffer) => listener(chunk.toString("utf-8")));
-    },
+    onStdout: (listener) => subscribeOutput(stdout, "stdout", listener),
+    onStderr: (listener) => subscribeOutput(stderr, "stderr", listener),
     onExit(listener): void {
-      child.once("exit", (code, signal) => listener({ code, signal }));
+      if (completed) listener(terminalExit!);
+      else exitListeners.push(listener);
     },
     stop(): void {
-      if (stopped) return;
-      stopped = true;
       // Keep ASRT/UDS/HOME ownership until definitive child termination.
       // A TERM-ignoring worker is escalated without releasing its confinement.
-      terminateChildBestEffort(child);
+      stopOnce();
     },
   };
 }

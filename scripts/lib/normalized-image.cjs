@@ -1,13 +1,3 @@
-"use strict";
-/**
- * What a generated PNG or ICO depicts, independent of how it was compressed.
- *
- * Shared by `generate-ave-icons.cjs` (which keeps an existing file whose
- * picture is unchanged, so a build does not dirty the tracked installer icons
- * with re-deflated bytes) and `check-generated-assets.mjs` (which accepts an
- * encoder-only difference as no divergence). One definition, so the generator
- * never keeps a file the guard would reject, nor rewrites one it would accept.
- */
 const { inflateSync } = require("node:zlib");
 
 /**
@@ -75,11 +65,4 @@ function normalizedImage(bytes) {
   return normalizedIco(bytes) ?? normalizedPng(bytes);
 }
 
-/** Whether two encodings depict the same image (false when either is not one). */
-function sameDecodedImage(a, b) {
-  const left = normalizedImage(a);
-  const right = normalizedImage(b);
-  return left !== null && right !== null && left.equals(right);
-}
-
-module.exports = { sameDecodedImage };
+module.exports = { normalizedImage };

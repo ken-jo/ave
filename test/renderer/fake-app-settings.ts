@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import type { AppSettings, DeepPartial } from "../../src/ui/renderer/types.js";
+import { resolveActiveChatModel } from "../../src/shared/active-chat-model.js";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20,8 +21,19 @@ function mergeDeep<T>(base: T, patch: DeepPartial<T>): T {
  * `a2aRemote` block (exactly what `ave:settings:get` answers with), with deep
  * overrides applied. Renderer tests that used to hand-write a partial object
  * typed as the full snapshot start from this instead.
+ *
+ * `activeChatModel` is main's derived answer. Unless a test overrides it, the
+ * fixture resolves it as main would for a route WITH a stored credential —
+ * the state these tests were written against. A test about the no-provider
+ * state passes `activeChatModel: { kind: "none", ... }` explicitly.
  */
 export function fakeAppSettings(overrides: DeepPartial<AppSettings> = {}): AppSettings {
-  const { a2aRemote: _mainOnly, ...base } = structuredClone(DEFAULT_SETTINGS);
-  return mergeDeep<AppSettings>(base, overrides);
+  const { a2aRemote: _mainOnly, ...stored } = structuredClone(DEFAULT_SETTINGS);
+  const { activeChatModel: activeOverride, ...storedOverrides } = overrides;
+  const merged = mergeDeep(stored, storedOverrides as DeepPartial<typeof stored>);
+  return {
+    ...merged,
+    activeChatModel: (activeOverride as AppSettings["activeChatModel"] | undefined)
+      ?? resolveActiveChatModel(merged.llm, true),
+  };
 }

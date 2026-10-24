@@ -33,6 +33,7 @@ import {
   type RationaleApprovalDisplay,
 } from "../../../shared/rationale-approval-display.js";
 import { isNonUserTrustOrigin, trustOriginLabel } from "../utils/trust-origin-label.js";
+import { getActiveSurface } from "../preview/active-surface.js";
 import {
   ReviewRow,
   categoryLabel,
@@ -60,6 +61,7 @@ import { isRecord } from "../../../shared/is-record.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
+import { terminalCommandLookalikes } from "../../../shared/terminal-command-lookalikes.js";
 
 type ElicitationFieldKind = ElicitationSchemaFieldKind;
 type ElicitationFormValue = string | boolean;
@@ -565,7 +567,71 @@ function rememberScopeText(
       );
     case "browser-agent-tabs":
       return t("toolApprovalDialog.rememberScopeBrowserAgentTabs", { toolName });
+    case "terminal-command":
+      return t("toolApprovalDialog.rememberScopeTerminalCommand", { cwd: memory.scope.cwd });
   }
+}
+
+/**
+ * The exact command a `terminal_run` card types (as the card's input row
+ * shows it), the terminal it types into and the directory its shell is in —
+ * the last two sealed by the host before the card was shown. Named the way
+ * the terminal's tab is labelled when it is the window's active terminal
+ * (the usual target), else by its id.
+ */
+function terminalTargetText(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args">,
+): string | null {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return null;
+  const command = parseArgs(request.args)?.command;
+  if (typeof command !== "string") return null;
+  const active = getActiveSurface();
+  const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
+  return t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
+}
+
+/**
+ * Facts about a `terminal_run` command a reader could miss in its text: each
+ * character that could pass for another, by code point (a look-alike reads as
+ * the letter it imitates; words in one script, such as Korean filenames, are
+ * not listed — see terminalCommandLookalikes), and a terminal directory
+ * outside the allowed folders (the command still runs there, inside the
+ * terminal's sandbox).
+ */
+function terminalCommandNotes(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext">,
+): string[] {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
+  const notes: string[] = [];
+  const command = parseArgs(request.args)?.command;
+  if (typeof command === "string") {
+    const lookalikes = terminalCommandLookalikes(command);
+    if (lookalikes.length > 0) {
+      const list = lookalikes
+        .slice(0, 12)
+        .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
+        .join(", ");
+      notes.push(t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list }));
+    }
+  }
+  const context = request.evaluationContext;
+  if (context) {
+    // Both sides are in the allowed-directory check's form (realpath,
+    // case-folded where the file system folds case): the host resolved the
+    // terminal's directory when it sealed the target, and the list is kept
+    // that way (allowed-directories.ts).
+    const target = memory.scope.cwdForMatch;
+    const inside = context.allowedDirectories.some((dir) => {
+      const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+      return target === root || target.startsWith(`${root}/`);
+    });
+    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
+  }
+  return notes;
 }
 
 /**
@@ -1587,6 +1653,16 @@ export function ToolApprovalContent({
                 {browserTargetText(tHook, request)}
               </p>
             ) : null}
+            {terminalTargetText(tHook, request) ? (
+              <p className="text-[10px] text-muted-foreground break-all" data-testid="approval-terminal-target">
+                {terminalTargetText(tHook, request)}
+              </p>
+            ) : null}
+            {terminalCommandNotes(tHook, request).map((note) => (
+              <p key={note} className="text-[10px] text-warning break-all" data-testid="approval-terminal-note">
+                {note}
+              </p>
+            ))}
             {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {rememberScopeText(tHook, request, request.persistentApprovalCwd)}

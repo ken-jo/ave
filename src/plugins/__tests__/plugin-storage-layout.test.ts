@@ -234,8 +234,10 @@ describe("resolvePluginSocketDir", () => {
     // A derivation from `aveHome()` and the id would answer with the
     // production path for a plugin whose data dir is somewhere else — and the
     // child would then be handed a directory the sandbox never heard of.
-    expect(resolvePluginSocketDir("/somewhere/else/plugins/p/data")).toBe(
-      resolve("/somewhere/else/plugins/p", PLUGIN_OWN_SOCKET_DIR_NAME),
+    // Resolved so the expected root carries the drive on Windows as resolve() does.
+    const relocated = resolve("/somewhere/else/plugins/p");
+    expect(resolvePluginSocketDir(join(relocated, "data"))).toBe(
+      join(relocated, PLUGIN_OWN_SOCKET_DIR_NAME),
     );
   });
 });

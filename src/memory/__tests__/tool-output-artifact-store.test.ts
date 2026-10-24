@@ -9,8 +9,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ToolOutputArtifactStore } from "../tool-output-artifact-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { ToolOutputArtifactStore } from "../tool-output-artifact-store.js";
 import {
   MAX_SESSION_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_PENDING_BYTES, MAX_TOOL_RESULT_ARTIFACT_BYTES,
   type ToolOutputArtifactInfo, type ToolOutputCapture,
@@ -552,7 +552,9 @@ describe("session tool output artifacts", () => {
     expect(existsSync(data)).toBe(true);
   });
 
-  // An open capture prevents renaming its directory on this host.
+  // Windows refuses to rename a directory while a file inside it is open
+  // (EPERM), so the capture directory cannot be swapped out from under an
+  // open capture there.
   it.skipIf(process.platform === "win32")("rejects directory replacement during capture without deleting the replacement", async () => {
     const capture = store.start(SESSION_ID, "directory-race");
     capture.append(Buffer.from("before"));

@@ -799,6 +799,106 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
   // ── fail-closed: an uncompilable schema aborts plugin loading ───────────────
+  describe("per-language display text (locales)", () => {
+    const uiEntry = (locales: unknown) => ({
+      id: "panel",
+      slot: "sidebar",
+      kind: "embedded-page",
+      displayName: "미팅",
+      title: "회의 기록",
+      page: "panel",
+      locales,
+    });
+    const withUi = (locales: unknown) => agentPluginsDocument({
+      id: "ui-locales-plugin",
+      name: "UI Locales Plugin",
+      version: "1.0.0",
+      description: "UI extension with per-language labels.",
+      entry: "dist/index.js",
+      tools: [],
+      ui: [uiEntry(locales)],
+    });
+    const withConfigProperty = (locales: unknown) => agentPluginsDocument({
+      id: "config-locales-plugin",
+      name: "Config Locales Plugin",
+      version: "1.0.0",
+      description: "Config property with per-language text.",
+      entry: "dist/index.js",
+      tools: [],
+      configSchema: { properties: { folder: { type: "string", title: "폴더", locales } } },
+    });
+    const withAuth = (locales: unknown) => agentPluginsDocument({
+      id: "auth-locales-plugin",
+      name: "Auth Locales Plugin",
+      version: "1.0.0",
+      description: "Auth block with per-language label.",
+      entry: "dist/index.js",
+      tools: [
+        { name: "al_status", description: "Report the sign-in state.", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["app"] } } },
+        { name: "al_login", description: "Begin the sign-in flow.", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["app"] } } },
+      ],
+      auth: { label: "계정", statusTool: "al_status", loginTool: "al_login", locales },
+    });
+
+    it("accepts ui[].locales with any subset of displayName/title/description", async () => {
+      const validator = await buildManifestValidator();
+      const ok = validator(withUi({
+        en: { displayName: "Meeting", description: "Records meetings.\nTwo lines are fine here." },
+        "pt-br": { title: "Gravador de reuniões" },
+        ko: { displayName: "미팅" },
+      }));
+      if (!ok) console.error(validator.errors);
+      expect(ok).toBe(true);
+    });
+
+    it("accepts configSchema property and auth locales", async () => {
+      const validator = await buildManifestValidator();
+      expect(validator(withConfigProperty({ en: { title: "Folder", description: "Where to scan." } }))).toBe(true);
+      expect(validator(withAuth({ en: { label: "Account" } }))).toBe(true);
+    });
+
+    it.each([
+      ["an empty map", {}],
+      ["an upper-case tag", { EN: { displayName: "Meeting" } }],
+      ["an underscore tag", { pt_br: { displayName: "Reunião" } }],
+      ["a tag with a line break", { "en\n": { displayName: "Meeting" } }],
+      ["an empty entry", { en: {} }],
+      ["an unknown field", { en: { label: "Meeting" } }],
+      ["a non-string value", { en: { displayName: 42 } }],
+      ["a blank label", { en: { displayName: "   " } }],
+      ["an empty label", { en: { title: "" } }],
+      ["a multi-line label", { en: { title: "Meeting\nRecorder" } }],
+      ["a blank description", { en: { description: " \n " } }],
+      ["a string instead of an entry", { en: "Meeting" }],
+      ["an array instead of a map", [{ en: { displayName: "Meeting" } }]],
+      ["more than 16 locales", Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`l${String.fromCharCode(97 + i)}`, { title: "x" }]))],
+    ])("rejects ui[].locales with %s", async (_name, locales) => {
+      const validator = await buildManifestValidator();
+      expect(validator(withUi(locales))).toBe(false);
+    });
+
+    it.each([
+      ["a ui-only field on a config property", withConfigProperty({ en: { displayName: "Folder" } })],
+      ["an auth entry without label", withAuth({ en: {} })],
+      ["an auth label over 64 characters", withAuth({ en: { label: "x".repeat(65) } })],
+    ])("rejects %s", async (_name, document) => {
+      const validator = await buildManifestValidator();
+      expect(validator(document)).toBe(false);
+    });
+
+    it("names the offending field when a locale entry carries an unknown key", async () => {
+      const validator = await buildManifestValidator();
+      expect(validator(withUi({ en: { label: "Meeting" } }))).toBe(false);
+      expect(validator.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          keyword: "additionalProperties",
+          instancePath: expect.stringContaining("/ui/0/locales/en"),
+          params: expect.objectContaining({ additionalProperty: "label" }),
+        }),
+      ]));
+    });
+  });
+
   describe("fail-closed", () => {
     beforeEach(() => {
       vi.resetModules();
@@ -891,6 +991,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
     capabilities: ["knowledge-index"],
     auth: {
       label: "Full Featured Account",
+      locales: { ko: { label: "전체 기능 계정" } },
       statusTool: "ff_status",
       loginTool: "ff_login",
       logoutTool: "ff_logout",
@@ -908,6 +1009,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
         slot: "sidebar",
         kind: "embedded-page",
         title: "Settings",
+        locales: { ko: { title: "설정", description: "플러그인 설정" } },
         page: "settings",
       },
     ],
@@ -919,7 +1021,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
     ],
     configSchema: {
       properties: {
-        enabled: { type: "boolean", default: true, title: "Enable" },
+        enabled: { type: "boolean", default: true, title: "Enable", locales: { ko: { title: "사용" } } },
         apiKey: { type: "string", format: "secret", title: "API Key" },
       },
       required: ["enabled"],
@@ -972,6 +1074,10 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
         interpreter: "python3",
       });
       expect(parsed.requires?.minAppVersion).toBe("1.0.0");
+      // Per-language text reaches the manifest every surface reads, unchanged.
+      expect(parsed.ui?.[0]?.locales).toEqual({ ko: { title: "설정", description: "플러그인 설정" } });
+      expect(parsed.configSchema?.properties.enabled?.locales).toEqual({ ko: { title: "사용" } });
+      expect(parsed.auth?.locales).toEqual({ ko: { label: "전체 기능 계정" } });
       expect(parsed.networkAccess?.allowedDomains).toEqual(["api.example.com"]);
       expect(parsed.uiResources?.[0]).toEqual({
         uri: "ui://full-featured-plugin/card.html",

@@ -26,8 +26,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import decodedImage from "./lib/decoded-image.cjs";
 import { withoutGitContext } from "./lib/git-process-environment.mjs";
+import { normalizedImage } from "./lib/normalized-image.cjs";
 
 const rootArgIndex = process.argv.indexOf("--root");
 const ROOT = rootArgIndex >= 0
@@ -86,7 +86,9 @@ function encodingOnlyDivergence(path) {
   } catch {
     return false;
   }
-  return decodedImage.sameDecodedImage(committed.stdout, worktree);
+  const before = normalizedImage(committed.stdout);
+  const after = normalizedImage(worktree);
+  return before !== null && after !== null && before.equals(after);
 }
 
 // The icon encoder does not produce identical bytes on every platform, so the

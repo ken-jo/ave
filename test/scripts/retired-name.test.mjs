@@ -14,7 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
-import { ALLOWLIST, RETIRED_NAME, RETIRED_NAME_PATTERN, scanRetiredName } from "../../scripts/check-retired-name.mjs";
+import {
+  ALLOWLIST,
+  RETIRED_NAME,
+  RETIRED_NAME_PATTERN,
+  RETIRED_PLUGIN_ALLOWLIST,
+  scanRetiredName,
+  scanRetiredPluginIds,
+} from "../../scripts/check-retired-name.mjs";
+import { RETIRED_PLUGIN_IDS, retiredPluginId, retiredPluginPattern } from "../../scripts/lib/retired-plugin-ids.mjs";
 
 const lower = RETIRED_NAME;
 const upper = RETIRED_NAME.toUpperCase();
@@ -144,4 +152,78 @@ test("exempts allowlisted paths and prefixes, and reports an entry once nothing 
 
 test("keeps the real allowlist empty", () => {
   assert.deepEqual(ALLOWLIST, []);
+});
+
+// Retired plugin ids. Like the product name, the controls are built from the
+// list's words so this file never spells an id.
+const cap = (word) => word[0].toUpperCase() + word.slice(1);
+
+test("lists each retired id once, as lower-case words", () => {
+  const ids = RETIRED_PLUGIN_IDS.map(retiredPluginId);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const entry of RETIRED_PLUGIN_IDS) {
+    assert.ok(entry.words.length >= 2, retiredPluginId(entry));
+    for (const word of entry.words) assert.match(word, /^[a-z]+$/u);
+    assert.ok(entry.reason.length > 0);
+  }
+});
+
+test("matches a retired id as a plugin id, tool name, path segment and camelCase identifier", () => {
+  for (const entry of RETIRED_PLUGIN_IDS) {
+    const id = retiredPluginId(entry);
+    const pattern = retiredPluginPattern(entry);
+    const snake = id.replaceAll("-", "_");
+    const camel = entry.words.map(cap).join("");
+    for (const spelling of [
+      `"${id}"`, `${snake}_list_items`, `${snake}.work_item.due_soon`, `~/.ave/plugins/${id}/data`,
+      `persist:plugin-auth:${id}`, `migrate${camel}Board`, `${camel}Panel`, `const ${entry.words[0]}${cap(entry.words[1])} = 1`,
+      `${snake.toUpperCase()}_HOME`,
+    ]) {
+      assert.equal(pattern.test(spelling), true, `${id}: ${spelling}`);
+    }
+  }
+});
+
+test("does not match a retired id's words as prose, inside a longer word, or as a live catalog name", () => {
+  for (const entry of RETIRED_PLUGIN_IDS) {
+    const id = retiredPluginId(entry);
+    const pattern = retiredPluginPattern(entry);
+    const prose = entry.words.map(cap).join(" ");
+    for (const text of [`the ${prose} service`, `${prose} 플러그인`, `${id}s`, `x${entry.words.join("")}y`, "korea-weather", "imported-from-proactive"]) {
+      assert.equal(pattern.test(text), false, `${id}: ${text}`);
+    }
+    if (entry.separator === "") assert.equal(pattern.test(entry.words.join("_")), false, `${id}: separated words are ordinary`);
+  }
+});
+
+test("flags a retired id in tracked content and paths, and exempts only allowlisted lines by exact text", () => {
+  const [entry] = RETIRED_PLUGIN_IDS;
+  const id = retiredPluginId(entry);
+  const f = fixture({
+    "src/a.test.ts": `const ok = 1;\ninvoke("uninstall", "${id}");\n`,
+    [`docs/${id}.md`]: "Clean.\n",
+    "docs/kept.md": `- [Kept](#10-${id}--heading)\n- another \`${id}\` mention\n`,
+  });
+  const allowlist = [
+    { path: "docs/kept.md", words: entry.words, text: "](#10-{id}--heading)", reason: "anchor" },
+    { path: "docs/gone.md", words: entry.words, text: "{id}", reason: "nothing left here" },
+  ];
+  try {
+    const { offenders, stale } = scanRetiredPluginIds(f.root, allowlist, [entry]);
+    assert.deepEqual(offenders, [
+      { path: `docs/${id}.md`, id, inPath: true, lines: [] },
+      { path: "docs/kept.md", id, inPath: false, lines: [2] },
+      { path: "src/a.test.ts", id, inPath: false, lines: [2] },
+    ]);
+    assert.deepEqual(stale, [`docs/gone.md: ${id}`]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("names only known ids in the real plugin allowlist, each with a reason", () => {
+  for (const item of RETIRED_PLUGIN_ALLOWLIST) {
+    assert.ok(RETIRED_PLUGIN_IDS.some((entry) => entry.words.join(" ") === item.words.join(" ")), item.path);
+    assert.ok(item.reason.length > 0 && item.text.length > 0, item.path);
+  }
 });

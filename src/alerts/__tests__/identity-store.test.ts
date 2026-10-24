@@ -144,6 +144,14 @@ describe("AlertStore", () => {
     expect(store.isClosed("id0", 0)).toBe(false);
     expect(store.isClosed("id1", 0)).toBe(true);
     expect(store.isClosed(`id${MAX_CLOSED_PER_PLUGIN}`, 0)).toBe(true);
+
+    // The burst is written once, as its final state.
+    await store.flush();
+    const reloaded = createStore();
+    await reloaded.load(0);
+    expect(reloaded.isClosed("id0", 0)).toBe(false);
+    expect(reloaded.isClosed("id1", 0)).toBe(true);
+    expect(reloaded.isClosed(`id${MAX_CLOSED_PER_PLUGIN}`, 0)).toBe(true);
   });
 
   it("expires open identities at their lifetime and forgets closed ones past theirs", async () => {

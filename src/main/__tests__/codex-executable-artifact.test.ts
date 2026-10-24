@@ -1,23 +1,21 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, fstatSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
-import { copyCodexExecutableArtifact, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
-import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  if (process.platform !== "win32") return original;
-  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
-  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
-});
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  // A test may leave its sealed read-only copy behind; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
@@ -30,6 +28,66 @@ function fixture(platform: NodeJS.Platform = process.platform) {
 }
 
 describe("private executable artifacts", () => {
+  it.each(["opening", "copying", "hashing"] as const)("refuses an identity change beyond number precision while %s", async (stage) => {
+    const { runtime, source } = fixture();
+    const artifact = stage === "hashing" ? await copyCodexExecutableArtifact(source, runtime) : null;
+    const target = artifact?.executable ?? source;
+    // Preserve the fixture's trusted ancestors while injecting file identity changes.
+    const lstat = vi.mocked(fs.lstat).getMockImplementation?.() ?? fs.lstat.bind(fs);
+    const open = fs.open.bind(fs);
+    const originalIno = 2n ** 60n;
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      const result = await lstat(...args);
+      if (!result) throw new Error("Expected an existing file entry");
+      if (String(args[0]) === target && args[1]?.bigint === true) {
+        Object.defineProperty(result, "ino", { value: originalIno });
+      }
+      return result;
+    });
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === target) {
+        let calls = 0;
+        vi.spyOn(handle, "stat").mockImplementation(async () => {
+          const result = fstatSync(handle.fd, { bigint: true });
+          const changed = stage === "opening" || ++calls >= (stage === "copying" ? 3 : 4);
+          Object.defineProperty(result, "ino", { value: originalIno + (changed ? 1n : 0n) });
+          return result;
+        });
+      }
+      return handle;
+    });
+    if (artifact) {
+      await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable changed while hashing");
+    } else {
+      await expect(copyCodexExecutableArtifact(source, runtime)).rejects.toThrow(`Executable changed while ${stage}`);
+      expect(readdirSync(runtime)).toEqual([]);
+    }
+  });
+
+  it("hashes and seals a script copy with exclusive no-follow opens", async () => {
+    const { runtime, source } = fixture();
+    const script = Buffer.from("#!/usr/bin/env node\nexport const value = 1;\n");
+    writeFileSync(source, script);
+    const open = vi.spyOn(fs, "open");
+    const destination = join(runtime, "module.js");
+    const artifact = await copyExecutableFile(source, destination);
+    expect(artifact).toEqual({
+      executable: destination,
+      contentHash: createHash("sha256").update(script).digest("hex"),
+    });
+    expect(readFileSync(destination)).toEqual(script);
+    const creation = open.mock.calls.find(([, flags]) => typeof flags === "number" && (flags & constants.O_CREAT) !== 0)!;
+    expect(Number(creation[1]) & constants.O_EXCL).toBe(constants.O_EXCL);
+    expect(creation[2]).toBe(0o600);
+    if (process.platform !== "win32") {
+      const sourceOpen = open.mock.calls.find(([path]) => String(path) === source)!;
+      expect(Number(sourceOpen[1]) & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+      expect(Number(creation[1]) & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+      expect(statSync(destination).mode & 0o777).toBe(0o500);
+    }
+  });
+
   it("hashes while copying, uses exclusive no-follow opens and seals the native copy", async () => {
     const { runtime, source } = fixture();
     const open = vi.spyOn(fs, "open");

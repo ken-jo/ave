@@ -37,6 +37,15 @@ import {
   setAppShutdownStarted,
 } from "./app-state.js";
 import { errorMessage } from "../shared/error-message.js";
+import { interruptRunningTurnsForExit } from "../engine/turn/turn-journal.js";
+import { disposeBrowserUploads } from "./browser/browser-upload.js";
+
+/**
+ * How long a quit waits for running turns to record themselves as interrupted.
+ * Their rows are already on disk as they happen (the turn journal), so this
+ * buys the clean interrupted record, not the data, and stays short.
+ */
+const RUNNING_TURN_EXIT_WAIT_MS = 3_000;
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
@@ -186,6 +195,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
       () => bootMcpDisconnect?.(),
       () => bootPluginShutdown?.stopRuntime(signal),
       () => stopSubscriptionRuntimes(),
+      () => disposeBrowserUploads(),
       () => forceKillAllTerminalsForShutdown(),
       () => forceKillAndDrainManagedChildProcesses(reason),
       () => host?.close(),
@@ -242,6 +252,19 @@ export async function runAppShutdownCleanup(options: {
       // no-op when nothing ever attached — `peekFloatingDock` does not build
       // one just to tear it down.
 
+      if (signal.aborted) return;
+      // Running turns first, before any stage that can stall: each is aborted
+      // as `host-exit` and given a bounded moment to write its interrupted
+      // row, so the session reopens with the partial answer and Continue.
+      const interrupted = await interruptRunningTurnsForExit(RUNNING_TURN_EXIT_WAIT_MS);
+      if (interrupted.turns > 0) {
+        log.info(
+          { turns: interrupted.turns, settled: interrupted.settled },
+          "shutdown: interrupted running turns",
+        );
+      }
+      if (signal.aborted) return;
+      await disposeBrowserUploads();
       if (signal.aborted) return;
       // Stop the opt-in local API server EARLY — it's fast (destroys idle
       // sockets + ends live SSE streams) and blanks its on-disk discovery file

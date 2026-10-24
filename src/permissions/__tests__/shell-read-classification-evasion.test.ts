@@ -32,10 +32,15 @@ import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
  */
 const READS_WIDE = false;
 import { shellPathPolicyViolation } from "../../tools/pipeline/path-extraction.js";
-import { canonicalizePathForMatch } from "../sensitive-paths.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 
 /** Absolute path to a real credential file under the current user's home. */
-const AUTHORIZED_KEYS = join(homedir(), ".ssh", "authorized_keys").replaceAll("\\", "/");
+const AUTHORIZED_KEYS = join(homedir(), ".ssh", "authorized_keys");
+/**
+ * The same path as one shell word. Unquoted, the backslashes of a Win32 path
+ * are bash escapes, so the command would name a different, relative file.
+ */
+const AUTHORIZED_KEYS_WORD = shellQuote(AUTHORIZED_KEYS);
 
 function classify(finalInput: Record<string, unknown>) {
   return inspectHostRisk({ source: "plugin", finalInput });
@@ -61,7 +66,7 @@ describe("evasion: a second command-bearing field carries the payload", () => {
     const root = sandboxRoot();
     expect(
       shellPathPolicyViolation(
-        { command: "cat ./notes.txt", script: `cat ${AUTHORIZED_KEYS}` },
+        { command: "cat ./notes.txt", script: `cat ${AUTHORIZED_KEYS_WORD}` },
         root,
         [],
         READS_WIDE,
@@ -143,22 +148,22 @@ describe("evasion: an env assignment selects the interpreter", () => {
     // credential operand — either way the control now runs on a command that
     // used to be waved through as read.
     expect(
-      findShellPathPolicyViolation(`LESSOPEN='|/bin/sh %s' cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`LESSOPEN='|/bin/sh %s' cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).not.toBeNull();
     expect(
-      findShellPathPolicyViolation(`LESSOPEN=/bin/sh cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`LESSOPEN=/bin/sh cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).not.toBeNull();
     // Without the assignment the same operand is the sensitive-path block.
     expect(
-      findShellPathPolicyViolation(`cat ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`cat ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "sensitive-path" });
   });
 });
 
 describe("evasion: a read-only git subcommand carries a writing flag", () => {
   it("git diff --output=<file> is no longer read", () => {
-    expect(isReadOnlyCommand(`git diff --output=${AUTHORIZED_KEYS}`)).toBe(false);
-    expect(classify({ command: `git diff --output=${AUTHORIZED_KEYS}` })).toBe("shell");
+    expect(isReadOnlyCommand(`git diff --output=${AUTHORIZED_KEYS_WORD}`)).toBe(false);
+    expect(classify({ command: `git diff --output=${AUTHORIZED_KEYS_WORD}` })).toBe("shell");
   });
 
   it("escalates every unknown flag on an inspection subcommand (allow-list, not deny-list)", () => {
@@ -192,35 +197,46 @@ describe("evasion: a read-only git subcommand carries a writing flag", () => {
   it("runs path containment on the git write flag", () => {
     const root = sandboxRoot();
     expect(
-      findShellPathPolicyViolation(`git diff --output=${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`git diff --output=${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "sensitive-path" });
   });
 });
 
 describe("evasion: a glued short flag hides the write target", () => {
-  const command = `sort -o${AUTHORIZED_KEYS} f`;
+  const command = `sort -o${AUTHORIZED_KEYS_WORD} f`;
 
   it("sort -o<file> glued to the flag is no longer read", () => {
     expect(isReadOnlyCommand(command)).toBe(false);
     expect(classify({ command })).toBe("shell");
     // The separated form was already covered; both must stay shell.
-    expect(isReadOnlyCommand(`sort -o ${AUTHORIZED_KEYS} f`)).toBe(false);
+    expect(isReadOnlyCommand(`sort -o ${AUTHORIZED_KEYS_WORD} f`)).toBe(false);
   });
 
   it("path containment resolves the glued value as the real target, not a relative path", () => {
     const root = sandboxRoot();
-    const violation = findShellPathPolicyViolation(command, root, root, [], READS_WIDE);
-    expect(violation).toMatchObject({ kind: "sensitive-path" });
-    // Compare identities independently of the host's display separators.
-    expect(canonicalizePathForMatch(violation!.path!)).toBe(canonicalizePathForMatch(AUTHORIZED_KEYS));
+    expect(findShellPathPolicyViolation(command, root, root, [], READS_WIDE)).toMatchObject({
+      kind: "sensitive-path",
+      // A violation reports the resolved host path the command opens, which is
+      // the platform form on every platform.
+      path: AUTHORIZED_KEYS,
+    });
     // The decisive case: a glued target whose BASENAME is not itself sensitive.
     // Resolved as a pseudo-relative path it landed inside the sandbox and
     // produced no violation at all; resolved as the real target it is
     // out-of-bounds.
-    const outside = join(homedir(), "Documents", "exfil.txt").replaceAll("\\", "/");
-    const outsideViolation = findShellPathPolicyViolation(`sort -o${outside} f`, root, root, [], READS_WIDE);
-    expect(outsideViolation).toMatchObject({ kind: "sandbox-boundary" });
-    expect(canonicalizePathForMatch(outsideViolation!.path!)).toBe(canonicalizePathForMatch(outside));
+    const outside = join(homedir(), "Documents", "exfil.txt");
+    expect(
+      findShellPathPolicyViolation(`sort -o${shellQuote(outside)} f`, root, root, [], READS_WIDE),
+    ).toMatchObject({ kind: "sandbox-boundary", path: outside });
+  });
+
+  it("path containment reads a drive-qualified glued value as a path", () => {
+    // Absolute on Win32 and a relative operand elsewhere; either way the glued
+    // value is the target the policy must check.
+    const root = sandboxRoot();
+    expect(
+      findShellPathPolicyViolation("sort -oC:/Users/u/.ssh/authorized_keys f", root, root, [], READS_WIDE),
+    ).toMatchObject({ kind: "sensitive-path" });
   });
 
   it("leaves ordinary glued flags read (no path in the glued value)", () => {
@@ -253,7 +269,7 @@ describe("evasion: mutating/exec forms missing from allow-listed verbs", () => {
     // — the point is that the rule now RUNS for this payload at all, where a
     // `read` verdict used to skip the whole policy.
     expect(
-      findShellPathPolicyViolation(`find . -fprint0 ${AUTHORIZED_KEYS}`, root, root, [], READS_WIDE),
+      findShellPathPolicyViolation(`find . -fprint0 ${AUTHORIZED_KEYS_WORD}`, root, root, [], READS_WIDE),
     ).toMatchObject({ kind: "recursive-traversal" });
   });
 });
