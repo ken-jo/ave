@@ -75,9 +75,10 @@ function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
  * puts an Ubuntu-like command-not-found handler that calls it ahead of the
  * integration, where the system startup file would have defined it.
  */
-async function startShell(shellPath: string, options: { notFoundProgram?: string; startup?: string } = {}): Promise<LiveShell> {
+async function startShell(shellPath: string, options: { notFoundProgram?: string; startup?: string; profile?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+  if (options.profile !== undefined) writeFileSync(join(home, ".zprofile"), options.profile);
   // The host distro's command-not-found handler is removed (Ubuntu's
   // /etc/bash.bashrc, read before this file, defines one for bash), so a case
   // has one only when it installs it: the same on every host.
@@ -100,7 +101,8 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   pty.onData((data) => { output += data; tracker.recordOutput(data); shellEvents.emit("output"); });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
   opened.push({ pty, home, exited });
-  await until(() => tracker.promptEndCount() > 0);
+  try { await until(() => tracker.promptEndCount() > 0); }
+  catch (cause) { throw new Error(`${basename(shellPath)} did not start: ${JSON.stringify(output.slice(-4096))}`, { cause }); }
   // No user input has been recorded yet: the authenticated prompt is the
   // readiness barrier, not an elapsed quiet-input window.
   const shellName = basename(shellPath);
@@ -353,6 +355,24 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
     }, 30_000);
   });
 }
+
+describe.runIf(TERMINAL_TEST_ZSH !== undefined)("zsh startup", () => {
+  it("starts without a system completion audit asking for input", async () => {
+    const shell = await startShell(TERMINAL_TEST_ZSH!, { profile: [
+      // The global interactive startup file runs this before our .zshrc.
+      // A native audit of a writable completion directory must never block it.
+      'mkdir -m 777 "$HOME/completions"',
+      'printf "#compdef fixture\\n" > "$HOME/completions/_fixture"',
+      'if [[ -z "$skip_global_compinit" ]]; then',
+      '  fpath=("$HOME/completions" $fpath)',
+      "  autoload -Uz compinit",
+      "  compinit -D",
+      "fi",
+    ].join("\n") });
+    expect(shell.output()).not.toContain("Ignore insecure");
+    expect(await ranCommand(shell, await shell.type("true"))).toBe("true");
+  }, 30_000);
+});
 
 describe.runIf(TERMINAL_TEST_ZSH !== undefined)("zsh with a right-hand prompt", () => {
   it("is refused as taking no paste, not left looking like the user is typing", async () => {

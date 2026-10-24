@@ -600,7 +600,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     liveSessions.delete(close);
   };
   liveSessions.add(close);
-  if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start`);
+  if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start: ${JSON.stringify(recentOutput)}`);
 
   const waitForEditor = async () => {
     if (tracker.promptState() !== "ready") throw new Error(`${name}: prompt is ${tracker.promptState()} after ${previous}`);

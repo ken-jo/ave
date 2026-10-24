@@ -317,6 +317,9 @@ export function installShellIntegration(
   const writeNonce = (): void => writeFileSync(noncePath, options.nonce, { mode: 0o600 });
   switch (shell) {
     case "zsh":
+      // Global completion setup precedes .zshrc and can wait for approval of
+      // host completion paths. This isolated HOME owns its completion setup.
+      writeFileSync(join(homePath, ".zshenv"), HEADER + "\nskip_global_compinit=1\n", { mode: 0o600 });
       writeFileSync(join(homePath, ".zshrc"), ZSH_RC(noncePath), { mode: 0o600 });
       writeNonce();
       // zsh reads its startup files from ZDOTDIR when set; pin it to this HOME
