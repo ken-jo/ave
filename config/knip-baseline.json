@@ -1989,11 +1989,6 @@
     },
     {
       "type": "types",
-      "file": "src/shared/abortable-deadline.ts",
-      "name": "AbortableDeadlineTerminationReason"
-    },
-    {
-      "type": "types",
       "file": "src/shared/attachments-deny-list.ts",
       "name": "DenyExtension"
     },

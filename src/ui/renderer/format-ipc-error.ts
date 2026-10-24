@@ -3,6 +3,10 @@
 import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  "code-checkpoint-unavailable": "codeRewind.unavailable",
+  "code-restore-failed": "codeRewind.failed",
+  "code-restore-conflict": "codeRewind.conflict",
+  "invalid-rewind-mode": "codeRewind.invalidMode",
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",

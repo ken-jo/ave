@@ -2,7 +2,7 @@
 
 > Status: **milestone-1 + milestone-2 IMPLEMENTED on `dev`** (2026-06-06) · Issue: #811 (previous tracker)
 > DONE + cluster-reviewed: command hooks (declarative `hooks.json` via TOFU trust),
-> the `mcp_*` tool matcher, per-request MCP identity in hook stdin, and ALL §5
+> the `^mcp_.*$` tool matcher, per-request MCP identity in hook stdin, and ALL §5
 > lifecycle events — 6 non-blocking observe-only (PostToolUseFailure, PermissionDenied,
 > SessionStart, Stop, PreCompact, PostCompact) + 1 blocking fail-closed
 > (UserPromptSubmit). GATED milestones remain design-only, tracked as issues:
@@ -15,6 +15,8 @@ hash-locked, quarantine-by-default trust model. This document designs how to **e
 compatibility** (generic command hooks, more lifecycle events, eventually HTTP / MCP /
 prompt / agent hooks) **without weakening that trust posture**. Every expansion is gated
 behind a phase that adds the security control it depends on first.
+
+The [user hook contract](../guides/user-hooks.md) owns the current public event names, per-event JSON input, accepted decision output, configuration location, and failure behavior. Internal `pre`/`post`/`perm` aliases remain stable. The tables below retain the original expansion rationale; the public contract includes the shipped session-end, notification, and subagent events.
 
 ---
 
@@ -39,10 +41,11 @@ Discovery: `src/hooks/hook-discovery.ts` resolves `~/.config/ave/hooks/`, globs 
 
 ### 1.3 Execution model
 
-- **Runner**: `src/hooks/script-hook-runner.ts:runOneHookScript`. Input = single-line JSON on **stdin** (`ScriptHookStdin`); output = stdout JSON (`ScriptHookStdout = { action: "allow"|"deny", reason }`).
+- **Runner**: `src/hooks/script-hook-runner.ts:runOneHookScript`. Input = newline-terminated JSON on **stdin**, adding the public `HookJsonInput` envelope to the legacy payload. Exit-0 output accepts the legacy `{action, reason}` or the documented structured decision forms; empty stdout is a successful no-op.
 - **Timeout**: `DEFAULT_HOOK_TIMEOUT_MS = 5_000` (`src/hooks/script-hook-types.ts`) — **separate** from `TOOL_TIMEOUT_POLICY`'s 120 s global ceiling. Enforced via `SIGKILL` of the detached process group.
 - **Env allowlist**: `buildSafeChildEnv` (`src/tools/safe-env.ts`) forwards only a generic non-secret allowlist (`FORWARD_ENV_KEYS`: `PATH`, `HOME`, `USER`, `USERNAME`, `LANG`, `LC_*`, `TZ`, …) plus the three injected `AVE_HOOK_TYPE` / `AVE_HOOK_TOOL_NAME` / `AVE_HOOK_TRUST_ORIGIN` vars. Everything else — `AVE_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_*`, `AWS_*`, `GITHUB_TOKEN`, future provider secrets — is stripped.
 - **Fail-closed**: non-zero exit, timeout, spawn error, or malformed stdout → **deny**.
+- **Command admission**: trusted user commands pass the existing shell permission manager and approval gate. On macOS/Linux an active OS sandbox wraps them with sensitive-path floors and the hook cwd write scope; wrapper failure never falls back to unconfined execution. Windows user commands retain the shell policy's exact host-approval limitation. Plugin-bundled hooks retain their existing confinement policy.
 - **Composition**: deny precedence — a hook may downgrade an upstream `allow` to `deny`, never upgrade `deny` to `allow`. **No `modify`/`updatedInput` action exists in v1** (deferred pending signing).
 - **DLP**: `input` strings are DLP-redacted at the caller (`src/hooks/script-hook-manager.ts`) before dispatch.
 
@@ -109,7 +112,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "bash|apply_patch|mcp__.*",   // regex over toolName; "*" = all
+        "matcher": "^mcp_.*$",                  // regex over toolName; "*" = all
         "hooks": [
           {
             "type": "command",
@@ -124,7 +127,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
 ```
 
 - `event` keys are the closed set in §5. Unknown events → entry ignored + warn-audited (fail-closed, never silently active).
-- `matcher` is a regex matched against the event's primary subject (`toolName` for tool events; empty/`*` for lifecycle events).
+- `matcher` shares the legacy script matcher: exact names separated by `|` or `,` when the pattern contains only letters, digits, `_`, `-`, spaces and those separators; otherwise an unanchored JavaScript regular expression. Empty/`*` matches all. Regexes compile once per registry build and run as written without a complexity bound. Invalid regexes refuse loading and appear with their reason in `/permission hooks list`. Tool events match `toolName`, compaction events match `trigger` (`manual`/`auto`), subagent events match agent type, SessionEnd matches its reason, and UserPromptSubmit matches input text. SessionStart, Notification and Stop retain session-ID matching. See the [public contract](../guides/user-hooks.md) for migration examples and compatibility differences.
 - Each `handler` declares `type` (initially only `"command"`), `command` (argv string), and optional `timeoutMs`.
 - **Trust identity** of a `command` handler = the sha256 of the resolved local script/executable when the command resolves to a local file (see §6.1); plus the verbatim `command` string. Both are shown in the trust-review UI and recorded in the lockfile.
 
@@ -149,8 +152,8 @@ Each proposed event below has a **verified existing fire point**. `Blocking` sta
 | `UserPromptSubmit` | `src/engine/turn/run-turn.ts:183` (after classify/route, before `queryLoop`) | input text | **yes** (deny → turn refused) | `inputText`*, `inputOrigin`, `route`, `classification` |
 | `SessionStart` | `src/engine/turn/run-turn.ts:169` (`runTurn` entry) | sessionId | no | `sessionMeta` (routine scope / persona) |
 | `Stop` | `src/engine/turn/run-turn.ts:430` (`runTurn` finally, before post-turn chain) | sessionId | no | `stopReason`, `toolCount`, `durationMs` |
-| `PreCompact` | `src/engine/turn/compaction.ts:81/442` (manual/automatic paths) | sessionId | no | `reason` (threshold/manual), `tokenEstimate` |
-| `PostCompact` | `src/engine/turn/compaction.ts:118/488` (manual/automatic paths) | sessionId | no | `messagesBefore/After`, `tokensBefore/After` |
+| `PreCompact` | `src/engine/turn/compaction.ts:81/442` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `reason` (`auto-compact`/`manual`), `trigger`, `tokenEstimate` |
+| `PostCompact` | `src/engine/turn/compaction.ts:118/488` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `trigger`, `messagesBefore/After`, `tokensBefore/After` |
 
 \* `UserPromptSubmit` `inputText` and any tool `input` are **DLP-redacted** before dispatch (§6.6). `UserPromptSubmit` is the only **new** blocking event; it must inherit the same fail-closed semantics as `PreToolUse`.
 
@@ -231,7 +234,7 @@ behavior-based, not sequence numbers.
 - *Unit tests: discovery, trust diff, command execution, timeout, invalid output, deny precedence, `.sh` back-compat* → test plan §9.
 
 ## 9. Test plan (command-hooks milestone)
-- **Discovery/normalization**: `.sh` + `hooks.json` merge into one registry; unknown event ignored+warned; matcher regex compiled safely (reject catastrophic patterns).
+- **Discovery/normalization**: `.sh` + `hooks.json` merge into one registry; unknown event ignored+warned; invalid matcher regexes reject loading. Compile once per registry build; the user-authored regex runs as written, without a complexity bound.
 - **Trust diff**: new/changed `command` script quarantined; `/permission hooks accept` restores; binary-only command rejected up front.
 - **Execution**: command runs Python/Node/shell; stdin payload shape; stdout `allow`/`deny`; non-zero exit / timeout / malformed → deny; env allowlist enforced (secret vars absent).
 - **Composition**: deny precedence across legacy + declarative; cannot upgrade deny→allow.

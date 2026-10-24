@@ -39,6 +39,7 @@ How the host is built. Start with the [architecture index](./architecture/README
 ## 3. Guides
 
 - [Getting started](./guides/getting-started.md): build, run, connect a provider.
+- [User hooks](./guides/user-hooks.md): configuration, event JSON, command decisions, permissions, and failures.
 - [Windows setup](./guides/windows-setup.md) and the
   [native Linux host](./guides/native-server.md).
 - [Telegram bridge](./guides/telegram-bridge.md): reach a conversation from a
