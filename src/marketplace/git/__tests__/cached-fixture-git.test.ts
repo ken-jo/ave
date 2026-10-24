@@ -115,7 +115,10 @@ describe("cached fixture repositories", () => {
   it("replays streamed archive bytes exactly as the real command emits them", async () => {
     const target = await client();
     const commit = await target.fetchRef(remote, undefined, "candidate");
-    const args = ["archive", "--format=tar", "--prefix=export/", `${commit}^{tree}`];
+    // A commit, not its tree: for a bare tree `git archive` stamps every entry
+    // with the current time, so a real run and a replay a second apart differ
+    // in their tar headers. A commit's entries carry its commit time.
+    const args = ["archive", "--format=tar", "--prefix=export/", commit];
     const options = { gitDir: target.dir, timeoutMs: GIT_TIMEOUTS_MS.export };
     const actual = await git.runner.run(args, options);
     for (let index = 0; index < 2; index++) {
