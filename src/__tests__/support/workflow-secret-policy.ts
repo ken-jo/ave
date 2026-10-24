@@ -22,7 +22,9 @@ function* workflowExpressions(value: string, implicit: boolean): Generator<strin
   }
 }
 
-function expressionReadsReleaseSecrets(tokens: string[]): boolean {
+/** True when the expression reads the `secrets` context with a key `keyMatches`
+ *  accepts, or reads it whole, by wildcard or by a computed key. */
+function expressionReadsSecrets(tokens: string[], keyMatches: (key: string) => boolean): boolean {
   for (let index = 0; index < tokens.length; index += 1) {
     if (tokens[index]?.toLowerCase() !== "secrets" || tokens[index - 1] === ".") continue;
     const access = tokens[index + 1];
@@ -37,20 +39,34 @@ function expressionReadsReleaseSecrets(tokens: string[]): boolean {
       // Whole-context, wildcard and computed reads can expose any release key.
       return true;
     }
-    if (key.toUpperCase().startsWith("R2_")) return true;
+    if (keyMatches(key)) return true;
   }
   return false;
 }
 
-function readsReleaseSecrets(value: unknown, implicit = false): boolean {
+function readsSecrets(value: unknown, keyMatches: (key: string) => boolean, implicit: boolean): boolean {
   if (typeof value === "string") {
     for (const tokens of workflowExpressions(value, implicit)) {
-      if (expressionReadsReleaseSecrets(tokens)) return true;
+      if (expressionReadsSecrets(tokens, keyMatches)) return true;
     }
     return false;
   }
   if (value === null || typeof value !== "object") return false;
-  return Object.values(value).some((child) => readsReleaseSecrets(child));
+  return Object.values(value).some((child) => readsSecrets(child, keyMatches, false));
+}
+
+const isReleaseKey = (key: string): boolean => key.toUpperCase().startsWith("R2_");
+
+function readsReleaseSecrets(value: unknown, implicit = false): boolean {
+  return readsSecrets(value, isReleaseKey, implicit);
+}
+
+/** True when `value` (a string, or every string nested in it) reads the
+ *  `secrets` context in any form: a named key, the whole context as in
+ *  `toJSON(secrets)`, a wildcard or a computed key. `implicit` reads a bare
+ *  string as one expression, the way Actions reads an `if:`. */
+export function readsAnySecret(value: unknown, implicit = false): boolean {
+  return readsSecrets(value, () => true, implicit);
 }
 
 /** Require the literal release environment for secret reads or forwarding. */

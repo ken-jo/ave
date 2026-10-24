@@ -1,4 +1,5 @@
 import { parse as parseYaml } from "yaml";
+import { readsAnySecret } from "./workflow-secret-policy.js";
 
 /**
  * The fork-safety rule for `.github/workflows/`, shared by the suites that pin
@@ -32,25 +33,38 @@ export const TRUSTED_EVENTS: ReadonlySet<string> = new Set([
   "repository_dispatch",
 ]);
 
-/** GitHub-hosted labels a fork-reachable job may name. */
+/** The GitHub-hosted labels a job may name: pinned images, and ubuntu-latest
+ *  for the Linux-only gates that do not ship or test a platform build. */
 const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "ubuntu-latest",
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
-  "windows-latest",
   "windows-2025",
-  "macos-latest",
   "macos-15",
 ]);
 
-type Step = { uses?: unknown; with?: Record<string, unknown> };
+type Step = { uses?: unknown; with?: Record<string, unknown>; run?: unknown; if?: unknown };
 type Job = {
   "runs-on"?: unknown;
   uses?: unknown;
   permissions?: unknown;
+  if?: unknown;
   steps?: Step[];
   strategy?: { matrix?: Record<string, unknown> };
 };
+
+/** A `run:` script that fetches or checks out the pull request's own code:
+ *  `gh pr checkout`, any `refs/pull/...` or `pull/<n>/head|merge` refspec, or a
+ *  git command naming the head commit or branch from the event payload. */
+const PULL_REQUEST_CODE_IN_RUN =
+  /\bgh\s+pr\s+checkout\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S.*?\/(?:head|merge)\b|\bgit\b.*(?:github\.event\.pull_request\.head\.(?:sha|ref)|github\.head_ref)/imu;
+
+/** True when the workflow reads the `secrets` context anywhere, in any form. */
+function workflowReadsSecrets(workflow: { jobs: Record<string, Job> } & Record<string, unknown>): boolean {
+  if (readsAnySecret(workflow)) return true;
+  return Object.values(workflow.jobs).some((job) =>
+    readsAnySecret(job.if, true) || (job.steps ?? []).some((step) => readsAnySecret(step.if, true)));
+}
 
 /** The events a workflow's `on:` names, whatever its form. */
 export function workflowEvents(on: unknown): string[] {
@@ -122,7 +136,7 @@ export function workflowRunnerViolations(source: string, name: string): string[]
   if (privileged && grantsWrite(workflow.permissions)) {
     violations.push(`${name} grants a write permission to pull_request_target`);
   }
-  if (privileged && /\bsecrets\s*[.[]/iu.test(JSON.stringify(workflow.jobs))) {
+  if (privileged && workflowReadsSecrets(workflow as { jobs: Record<string, Job> })) {
     violations.push(`${name} reads a secret under pull_request_target`);
   }
   for (const [id, job] of Object.entries(workflow.jobs)) {
@@ -139,6 +153,9 @@ export function workflowRunnerViolations(source: string, name: string): string[]
     }
     if (!privileged) continue;
     for (const step of job.steps ?? []) {
+      if (typeof step.run === "string" && PULL_REQUEST_CODE_IN_RUN.test(step.run)) {
+        violations.push(`${name}:${id} fetches pull request code in a run step under pull_request_target`);
+      }
       if (typeof step.uses !== "string" || !step.uses.startsWith("actions/checkout@")) continue;
       const inputs = step.with ?? {};
       const ref = String(inputs.ref ?? "");
