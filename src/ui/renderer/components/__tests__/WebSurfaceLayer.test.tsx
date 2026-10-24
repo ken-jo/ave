@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AveApi } from "../../types.js";
 import { useState } from "react";
 import { readFileSync } from "node:fs";
-import { FAVICON_SCHEMES } from "../../preview/favicon-source.js";
+import { FAVICON_SCHEMES, faviconSource } from "../../preview/favicon-source.js";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
@@ -61,7 +61,7 @@ const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; r
 const layerApi = { browserTabs: { bindTab } } as unknown as AveApi;
 
 describe("WebSurfaceLayer", () => {
-  it("keeps favicon helper schemes aligned with the renderer img-src CSP", () => {
+  it("keeps host favicon helper schemes aligned with the renderer img-src CSP", () => {
     const html = readFileSync("src/index.html", "utf8");
     const policy = html.match(/content="([^"]*default-src[^"]*)"/)![1]!;
     const sources = policy.match(/(?:^|;)\s*img-src\s+([^;]+)/)![1]!.trim().split(/\s+/);
@@ -69,21 +69,53 @@ describe("WebSurfaceLayer", () => {
     expect([...FAVICON_SCHEMES].sort()).toEqual(sources.filter((value) => value !== "'self'").sort());
     const candidates = ["data:image/png;base64,YQ==", "blob:null/favicon", "ave-content://installed/icon.png",
       "https://site.example/icon.png", "http://site.example/icon.png", "file:///private/icon.png", "javascript:alert(1)"];
-    publishLiveWebTabs(source, new Set(["browser:csp"]));
-    render(<><WebSurfaceSlot tabId="browser:csp" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
-    const guest = guests()[0]!;
     const allowedSchemes: string[] = [];
     for (const candidate of candidates) {
-      act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [candidate] })); });
       const scheme = candidate.slice(0, candidate.indexOf(":") + 1);
-      expect(webSurfaceFavicon("browser:csp")).toBe(sources.includes(scheme) ? candidate : null);
-      if (webSurfaceFavicon("browser:csp") !== null) allowedSchemes.push(scheme);
+      expect(faviconSource(candidate)).toBe(sources.includes(scheme) ? candidate : null);
+      if (faviconSource(candidate) !== null) allowedSchemes.push(scheme);
     }
     expect(allowedSchemes.sort()).toEqual(sources.filter((value) => value !== "'self'").sort());
-    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["./icon.png"] })); });
-    expect(webSurfaceFavicon("browser:csp")).toBe("./icon.png");
-    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["//site.example/icon.png"] })); });
-    expect(webSurfaceFavicon("browser:csp")).toBeNull();
+    expect(faviconSource("./icon.png")).toBe("./icon.png");
+    expect(faviconSource("//site.example/icon.png")).toBeNull();
+  });
+
+  it.each([
+    ["internal content", "ave-content://installed/icon.png", null],
+    ["blob", "blob:https://site.example/icon", null],
+    ["script", "javascript:alert(1)", null],
+    ["file", "file:///private/icon.png", null],
+    ["relative", "./icon.png", null],
+    ["bare path", "icon.png", null],
+    ["root path", "/icon.png", null],
+    ["protocol relative", "//site.example/icon.png", null],
+    ["non-image data", "data:text/html,<p>icon</p>", null],
+    ["empty image type", "data:image/;base64,YQ==", null],
+    ["credentials", "https://user:password@site.example/icon.png", null],
+    ["oversized URL", "https://site.example/" + "a".repeat(8192), null],
+    ["padded URL", " https://site.example/icon.png", null],
+    ["malformed URL", "https://", null],
+    ["non-string", null, null],
+    ["http", "http://site.example/icon.png", "http://site.example/icon.png"],
+    ["https", "https://site.example/icon.png", "https://site.example/icon.png"],
+    ["image data", "data:image/png;base64,YQ==", "data:image/png;base64,YQ=="],
+    ["vector image data", "data:image/svg+xml,%3Csvg/%3E", "data:image/svg+xml,%3Csvg/%3E"],
+  ])("filters a guest's %s favicon at the event boundary", (_label, candidate, expected) => {
+    publishLiveWebTabs(source, new Set(["browser:icon"]));
+    render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
+    const guest = guests()[0]!;
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["data:image/png;base64,YQ=="] })); });
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [candidate] })); });
+    expect(webSurfaceFavicon("browser:icon")).toBe(expected);
+  });
+
+  it("skips rejected guest favicon candidates before choosing an external image", () => {
+    publishLiveWebTabs(source, new Set(["browser:icon"]));
+    render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
+    act(() => { guests()[0]!.dispatchEvent(Object.assign(new Event("page-favicon-updated"), {
+      favicons: ["ave-content://installed/icon.png", "./icon.png", "https://site.example/icon.png"],
+    })); });
+    expect(webSurfaceFavicon("browser:icon")).toBe("https://site.example/icon.png");
   });
   it("binds a guest that cannot name itself at attach on its first dom-ready, and only then", async () => {
     bindTab.mockClear();
@@ -130,7 +162,7 @@ describe("WebSurfaceLayer", () => {
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })); });
     expect(committedWebSurfaceLocation("browser:9")).toBe("https://a.example/");
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://a.example/icon.png"] })); });
-    expect(webSurfaceFavicon("browser:9")).toBeNull();
+    expect(webSurfaceFavicon("browser:9")).toBe("https://a.example/icon.png");
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["file:///private/icon.png", "https://user:password@a.example/icon.png", "https://a.example/" + "a".repeat(8192)] })); });
     expect(webSurfaceFavicon("browser:9")).toBeNull();
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [null, "data:image/png;base64,YQ=="] })); });

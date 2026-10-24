@@ -914,7 +914,10 @@ export function ChatGroupSession({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" className={HEADER_BUTTON_CLASS}
-          onClick={() => onThumbnailOpenChange(!thumbnailOpen)} title={thumbnailLabel}
+          onClick={() => {
+            if (!columnsVisibility.thumbnailHiddenForWidth) onThumbnailOpenChange(!thumbnailOpen);
+          }} title={thumbnailLabel}
+          aria-disabled={columnsVisibility.thumbnailHiddenForWidth}
           aria-label={thumbnailLabel} aria-pressed={thumbnailVisible} data-testid={TEST_IDS.paneThumbnailToggle}>
           <GalleryVerticalEnd className="h-4 w-4" />
         </Button>
@@ -927,10 +930,13 @@ export function ChatGroupSession({
           variant="ghost"
           size="icon"
           className={`relative ${HEADER_BUTTON_CLASS}`}
-          onClick={() => onSidePanelOpenChange(!panelOpen)}
+          onClick={() => {
+            if (!columnsVisibility.panelHiddenForWidth) onSidePanelOpenChange(!panelOpen);
+          }}
           title={panelLabel}
           aria-label={panelLabel}
           aria-pressed={panelVisible}
+          aria-disabled={columnsVisibility.panelHiddenForWidth}
           data-testid={TEST_IDS.panePanelToggle}
         >
           {panelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}

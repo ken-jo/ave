@@ -22,7 +22,7 @@
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
-import { faviconSource } from "../preview/favicon-source.js";
+import { guestFaviconSource } from "../preview/favicon-source.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
@@ -260,8 +260,8 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
     const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
     const onFavicon = (event: Event) => {
       const icons = (event as Event & { favicons?: unknown }).favicons;
-      const favicon = Array.isArray(icons) ? icons.find((icon) => faviconSource(icon) !== null) : undefined;
-      noteWebSurfaceFavicon(surface.tabId, faviconSource(favicon));
+      const favicon = Array.isArray(icons) ? icons.find((icon) => guestFaviconSource(icon) !== null) : undefined;
+      noteWebSurfaceFavicon(surface.tabId, guestFaviconSource(favicon));
     };
     guest.addEventListener("did-attach", onAttach);
     guest.addEventListener("page-favicon-updated", onFavicon);
