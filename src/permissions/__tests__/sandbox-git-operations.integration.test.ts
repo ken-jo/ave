@@ -130,6 +130,10 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
     const project = join(root, ...Array.from({ length: depth }, (_, index) => `level-${index}`));
     repository(project);
     const metadata = join(project, ".git");
+    const checkout = join(root, "fixture-worktrees", "linked");
+    mkdirSync(dirname(checkout));
+    hostGit(project, "worktree", "add", "--quiet", "--detach", checkout, "HEAD");
+    expect(readFileSync(join(checkout, ".git"), "utf8").trim()).toBe(`gitdir: ${join(metadata, "worktrees", "linked")}`);
     for (const entry of PROTECTED_METADATA_FILES) {
       const path = join(metadata, entry);
       mkdirSync(dirname(path), { recursive: true });
@@ -147,7 +151,10 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
       const ordinaryWrites = ordinaryPaths.map(path => `printf ordinary > ${shellQuote(path)}`).join(" && ");
       const result = await execute(`${ordinaryWrites} && printf changed >> ${shellQuote(target)}`);
       expect(result.status, `${entry}: ${result.output}`).not.toBe(0);
-      for (const path of ordinaryPaths) expect(readFileSync(path, "utf8"), entry).toBe("ordinary");
+      for (const path of ordinaryPaths) {
+        expect(existsSync(path), `${entry}: ordinary write missing at ${path}\n${result.output}`).toBe(true);
+        expect(readFileSync(path, "utf8"), entry).toBe("ordinary");
+      }
       expect(readFileSync(target), entry).toEqual(original);
     }
   });
