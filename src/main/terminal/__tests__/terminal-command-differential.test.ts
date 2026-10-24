@@ -434,7 +434,6 @@ interface Session {
   run(command: string): Promise<Outcome>;
   /** Commands that left the shell unable to take the next one. */
   readonly stuck: readonly string[];
-  readonly preparationRetries: readonly string[];
   close(): Promise<void>;
 }
 
@@ -625,7 +624,6 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 
   let previous = "(start)";
   const stuck: string[] = [];
-  const preparationRetries: string[] = [];
   const typeAndWait = async (line: string): Promise<{ blockId: number | null; hung: boolean }> => {
     const expectedBlockId = tracker.nextBlockId();
     const assertUnsubmitted = (): void => {
@@ -667,35 +665,14 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       } else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
       return result;
     };
-    let typed = await typeOnce();
-    const recoveries: string[] = [];
-    // A preparation refusal must have run nothing. Retry the same line only
-    // after another fresh prompt, and keep one block baseline across attempts.
-    for (let attempt = 0; !typed.ok && ["no-fresh-prompt", "edit-line-mismatch", "between-prompts"].includes(typed.reason) && attempt < 3; attempt++) {
-      preparationRetries.push(`${name}: ${typed.reason}`);
-      assertUnsubmitted();
-      const prompts = tracker.promptEndCount();
-      const deadline = Date.now() + 3_000;
-      let ready = false;
-      let interrupts = 0;
-      // Retry interruption within the same recovery deadline, and require
-      // that every attempt has still run nothing before accepting a prompt.
-      while (!ready && Date.now() < deadline && !tracker.hasExited()) {
-        assertUnsubmitted();
-        writeInput("\u0003");
-        interrupts++;
-        ready = await until(() => tracker.promptEndCount() > prompts && tracker.promptState() === "ready", Math.min(500, Math.max(0, deadline - Date.now())));
-        assertUnsubmitted();
-      }
-      recoveries.push(`attempt=${attempt + 1},reason=${typed.reason},interrupts=${interrupts},prompts=${prompts}->${tracker.promptEndCount()},ready=${ready}`);
-      if (!ready) break;
-      typed = await typeOnce();
-    }
+    // A preparation refusal is a failure of its own: it must have run
+    // nothing, and the line is not retried behind a fresh prompt.
+    const typed = await typeOnce();
     if (!typed.ok) {
       await capturePreparationState("final-refusal", typed.reason, true);
       const detail = `${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (state ${tracker.promptState()}; edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`;
       stuck.push(detail);
-      throw new Error(`${detail}; refused ${JSON.stringify(line)}; recoveries ${JSON.stringify(recoveries)}`);
+      throw new Error(`${detail}; refused ${JSON.stringify(line)}`);
     }
     previous = line;
     const prompts = tracker.promptEndCount();
@@ -741,7 +718,6 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 
   return {
     stuck,
-    preparationRetries,
     async run(command) {
       if (tracker.currentCwd() !== rig.box) await typeAndWait(`cd '${rig.box}'`);
       truncateSync(trace, 0);
@@ -1066,7 +1042,6 @@ print -r -- "$options[trapsasync]"` };
     const recordedDiffers: string[] = [];
     const hung: string[] = [];
     const stuckAfter: string[] = [];
-    const preparationRetries: string[] = [];
     // Each shell runs the corpus in SESSIONS_PER_SHELL parts at once, each
     // session with its own sandbox, shims and call records.
     const parts = Array.from({ length: SESSIONS_PER_SHELL }, (_, part) => runs.filter((_run, i) => i % SESSIONS_PER_SHELL === part));
@@ -1085,7 +1060,6 @@ print -r -- "$options[trapsasync]"` };
           }
         }
         stuckAfter.push(...session.stuck);
-        preparationRetries.push(...session.preparationRetries);
       } finally {
         await session.close();
       }
@@ -1093,8 +1067,7 @@ print -r -- "$options[trapsasync]"` };
     const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (errors.length > 0) throw new AggregateError(errors.map((result) => result.reason), errors.map((result) => String(result.reason)).join("\n"));
 
-    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, preparation-retries=${preparationRetries.length}, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
-    for (const retry of preparationRetries) console.info(`preparation retry ${retry}`);
+    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
     for (const line of [...mismatches, ...recordedDiffers, ...hung.map((h) => `hung ${h}`), ...stuckAfter.map((h) => `stuck ${h}`)]) console.info(line);
     expect(mismatches).toEqual([]);
     expect(recordedDiffers).toEqual([]);
