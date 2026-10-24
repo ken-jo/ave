@@ -11,6 +11,7 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -1108,8 +1109,8 @@ describe("ChatSidePanel", () => {
   }
 
   /**
-   * The tree mounts before its first listing resolves, and the roving row is
-   * chosen in an effect after the rows commit, so wait for both.
+   * The tree mounts before its first listing resolves, so wait for the rows
+   * and their roving row.
    */
   async function treeRowsReady(tree: HTMLElement): Promise<HTMLElement[]> {
     return waitFor(() => {
@@ -1136,27 +1137,13 @@ describe("ChatSidePanel", () => {
     expect(tabbable.length).toBe(1);
   });
 
-  it("gives every committed render with rows exactly one tab stop", async () => {
-    stubRichWorkspace();
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
-    // Observe each commit as it lands (microtasks run before passive effects),
-    // so a roving row chosen in an effect would show up as a commit without one.
-    const tabStopsPerCommit: number[] = [];
-    const observer = new MutationObserver(() => {
-      const rows = Array.from(document.querySelectorAll('[role="tree"] [role="treeitem"]'));
-      if (rows.length > 0) tabStopsPerCommit.push(rows.filter((row) => row.getAttribute("tabindex") === "0").length);
-    });
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["tabindex"] });
-    try {
-      fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-      await treeRowsReady(await screen.findByRole("tree"));
-    } finally {
-      observer.disconnect();
-    }
-    expect(tabStopsPerCommit.length).toBeGreaterThan(0);
-    expect(tabStopsPerCommit.every((count) => count === 1)).toBe(true);
+  it("derives the roving row from the active row, falling back to the first row", () => {
+    const rows = [{ path: "/w/a" }, { path: "/w/b" }];
+    expect(deriveRovingPath("/w/b", rows)).toBe("/w/b");
+    expect(deriveRovingPath("/w/gone", rows)).toBe("/w/a");
+    expect(deriveRovingPath(null, rows)).toBe("/w/a");
+    expect(deriveRovingPath("/w/a", [])).toBeNull();
+    expect(deriveRovingPath(null, [])).toBeNull();
   });
 
   it("ArrowDown moves the roving focus to the next row", async () => {

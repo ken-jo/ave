@@ -60,6 +60,20 @@ import {
 } from "./ChatSidePanelPreview.js";
 
 
+/**
+ * The tree's roving row: the active row while it is visible, else the first
+ * row. Derived during render so the tree always has a tab stop; an effect
+ * would leave one committed render without one after the first listing, a
+ * collapse or a reload removes the active row.
+ */
+export function deriveRovingPath(
+  activeItemPath: string | null,
+  rows: ReadonlyArray<{ path: string }>,
+): string | null {
+  if (activeItemPath && rows.some((row) => row.path === activeItemPath)) return activeItemPath;
+  return rows[0]?.path ?? null;
+}
+
 type WorkspaceDirEntry = { name: string; path: string; type: "file" | "directory" };
 
 /**
@@ -245,13 +259,7 @@ function ProjectRootsBrowser({
     return out;
   }, [activeRoot, childrenByPath, expanded]);
 
-  // The roving row, derived during render so the tree always has a tab stop:
-  // an effect would leave one committed render without one after the first
-  // listing, a collapse or a reload removes the active row.
-  const rovingPath =
-    activeItemPath && flatNodes.some((n) => n.path === activeItemPath)
-      ? activeItemPath
-      : (flatNodes[0]?.path ?? null);
+  const rovingPath = deriveRovingPath(activeItemPath, flatNodes);
 
   // Move DOM focus only for keyboard-driven changes (roving tabindex).
   useEffect(() => {
