@@ -5,6 +5,7 @@ import {
   handlePluginCards,
 } from "../plugins.js";
 import type { IpcDeps } from "../../types.js";
+import { compileHookMatcher } from "../../../hooks/hook-discovery.js";
 import type { PluginCard } from "../../../plugins/runtime/index.js";
 
 function makeCard(id: string): PluginCard {
@@ -98,6 +99,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
             id: "plugin:sampleportal:audit:matching",
             event: "pre",
             matcher: "fixture_api_*",
+            matchesSubject: compileHookMatcher("fixture_api_*"),
             command: ["node", "matching.mjs"],
             source: "config",
             timeoutMs: 5_000,
@@ -114,6 +116,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
             id: "plugin:sampleportal:audit:not-matching",
             event: "pre",
             matcher: "other_*",
+            matchesSubject: compileHookMatcher("other_*"),
             command: ["node", "not-matching.mjs"],
             source: "config",
             timeoutMs: 5_000,
@@ -130,6 +133,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
             id: "plugin:other-plugin:audit:matching",
             event: "pre",
             matcher: "fixture_api_*",
+            matchesSubject: compileHookMatcher("fixture_api_*"),
             command: ["node", "other-plugin.mjs"],
             source: "config",
             timeoutMs: 5_000,
@@ -311,6 +315,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
           id: "plugin:sampleportal:audit:orphan",
           event: "pre",
           matcher: "fixture_api_*",
+          matchesSubject: compileHookMatcher("fixture_api_*"),
           command: ["node", "orphan.mjs"],
           source: "config",
           timeoutMs: 5_000,
