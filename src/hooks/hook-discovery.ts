@@ -425,6 +425,8 @@ export function disableHook(
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     dest = join(disabledDir, `${hook.fileName}.${ts}`);
   }
+  // A stale record from an earlier manual move must not survive a crash before the write.
+  clearHookDisableCause(dest);
   renameSync(hook.path, dest);
   try {
     writeHookDisableCause(dest, cause);

@@ -59,7 +59,7 @@ export function clearHookDisableCause(path: string): void {
 
 /** Review stored copies by their original name, regardless of the rename suffix. */
 export function disabledHookOriginalName(fileName: string): string | undefined {
-  if (fileName.includes(".disable-cause") || /[/\\]/u.test(fileName)) return undefined;
+  if (/\.disable-cause(?:\.[0-9a-f]{12}\.tmp)?$/u.test(fileName) || /[/\\]/u.test(fileName)) return undefined;
   return /^((?:pre|post|perm)-[A-Za-z0-9._-]+\.sh|hooks\.json)(?:\..+)?$/u.exec(fileName)?.[1];
 }
 

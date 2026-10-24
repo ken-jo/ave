@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { disableHook } from "../hook-discovery.js";
-import { hookDisableCausePath, readHookDisableCause, writeHookDisableCause } from "../hook-disable-state.js";
+import { disabledHookOriginalName, hookDisableCausePath, readHookDisableCause, writeHookDisableCause } from "../hook-disable-state.js";
 import { collectHookMatcherDiagnostics } from "../hook-matcher-diagnostics.js";
 
 /** Runs when a cause record is about to be written: plant something at the sidecar, or fail. */
@@ -46,8 +46,7 @@ function linkOrSkip(ctx: TestContext, target: string, path: string): void {
 }
 
 /** Disables an invalid guard script into `.disabled/` and returns where it went. */
-function disableGuard(): string {
-  const fileName = "pre-guard.sh";
+function disableGuard(fileName = "pre-guard.sh"): string {
   const active = join(hooksDir, fileName);
   writeFileSync(active, "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
   return disableHook({ fileName, path: active } as Parameters<typeof disableHook>[0], disabledDir, "system-quarantine");
@@ -82,6 +81,20 @@ describe("disable cause records", () => {
     expect(existsSync(hookDisableCausePath(dest))).toBe(false);
     expect(readHookDisableCause(dest)).toBe("legacy");
     expect(guards()).toHaveLength(1);
+  });
+
+  it("keeps guarding a system copy whose hook name contains the sidecar suffix", () => {
+    const dest = disableGuard("pre-a.disable-cause.sh");
+    expect(disabledHookOriginalName("pre-a.disable-cause.sh")).toBe("pre-a.disable-cause.sh");
+    expect(readHookDisableCause(dest)).toBe("system-quarantine");
+    expect(guards()).toHaveLength(1);
+  });
+
+  it("never treats a sidecar or a leftover sidecar temp file as a stored copy", () => {
+    expect(disabledHookOriginalName("pre-guard.sh.disable-cause")).toBeUndefined();
+    expect(disabledHookOriginalName("pre-guard.sh.disable-cause.0123456789ab.tmp")).toBeUndefined();
+    writeFileSync(join(disabledDir, "pre-guard.sh.disable-cause.0123456789ab.tmp"), "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
+    expect(guards()).toHaveLength(0);
   });
 
   describe.each(["file", "link"] as const)("a user record planted as a %s just before the write", (kind) => {
