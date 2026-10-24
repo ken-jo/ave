@@ -93,6 +93,19 @@ describe("disable cause records", () => {
     expect(guards()).toHaveLength(1);
   });
 
+  it("clears a stale user record before the move, so the copy is guarded until its record lands", () => {
+    const sidecar = hookDisableCausePath(join(disabledDir, "pre-guard.sh"));
+    writeFileSync(sidecar, "user\n");
+    let duringWrite: string | undefined;
+    injection.beforeWrite = () => {
+      injection.beforeWrite = undefined;
+      duringWrite = readHookDisableCause(join(disabledDir, "pre-guard.sh"));
+    };
+    const dest = disableGuard();
+    expect(duringWrite).toBe("legacy");
+    expect(readHookDisableCause(dest)).toBe("system-quarantine");
+  });
+
   it("keeps guarding a system copy whose hook name contains the sidecar suffix", () => {
     const dest = disableGuard("pre-a.disable-cause.sh");
     expect(disabledHookOriginalName("pre-a.disable-cause.sh")).toBe("pre-a.disable-cause.sh");
@@ -103,32 +116,39 @@ describe("disable cause records", () => {
   it("never treats a sidecar or a leftover sidecar temp file as a stored copy", () => {
     expect(disabledHookOriginalName("pre-guard.sh.disable-cause")).toBeUndefined();
     expect(disabledHookOriginalName("pre-guard.sh.disable-cause.0123456789ab.tmp")).toBeUndefined();
+    expect(disabledHookOriginalName(".pre-guard.sh.disable-cause.123.0f8e2c1a-5b7d-4e3f-9a6b-1c2d3e4f5a6b.tmp")).toBeUndefined();
     writeFileSync(join(disabledDir, "pre-guard.sh.disable-cause.0123456789ab.tmp"), "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
     expect(guards()).toHaveLength(0);
   });
 
   describe.each(["file", "link"] as const)("a user record planted as a %s just before the write", (kind) => {
-    function plant(ctx: TestContext, fail: boolean): void {
-      injection.beforeWrite = (path) => {
+    /** Plants at the destination sidecar, never at a path derived from the staging name. */
+    function plant(ctx: TestContext, fail: boolean): { at?: string } {
+      const planted: { at?: string } = {};
+      injection.beforeWrite = () => {
         injection.beforeWrite = undefined;
-        const sidecar = path.slice(0, path.indexOf(".disable-cause") + ".disable-cause".length);
+        const sidecar = hookDisableCausePath(join(disabledDir, "pre-guard.sh"));
         if (kind === "file") writeFileSync(sidecar, "user\n");
         else linkOrSkip(ctx, outside, sidecar);
+        planted.at = sidecar;
         if (fail) throw new Error("injected cause write failure");
       };
+      return planted;
     }
 
     it("is replaced by the system record", (ctx) => {
-      plant(ctx, false);
+      const planted = plant(ctx, false);
       const dest = disableGuard();
+      expect(planted.at).toBe(hookDisableCausePath(dest));
       expect(readHookDisableCause(dest)).toBe("system-quarantine");
       expect(readFileSync(outside, "utf8")).toBe("user\n");
       expect(guards()).toHaveLength(1);
     });
 
     it("is cleared when the write then fails", (ctx) => {
-      plant(ctx, true);
+      const planted = plant(ctx, true);
       const dest = disableGuard();
+      expect(planted.at).toBe(hookDisableCausePath(dest));
       expect(existsSync(hookDisableCausePath(dest))).toBe(false);
       expect(readHookDisableCause(dest)).toBe("legacy");
       expect(guards()).toHaveLength(1);
