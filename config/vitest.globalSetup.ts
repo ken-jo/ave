@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
-import { claimRunDir, ensureTestTmpRoot, RUN_OWNER_FILE, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
+import { claimRunDir, ensureRunTmpRoot, ensureTestTmpRoot, RUN_OWNER_FILE, runTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
 
 // Repository root: this file lives under config/.
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -115,13 +115,11 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   // Teardown names what is still in it and removes it, so a leak shows up in
   // the run that made it and cannot outlive it; it holds this run's files
   // only, so no other run sharing a temp directory can make it report, and a
-  // killed run's is swept like its other run directories. Here rather than
-  // inside the system temp directory: several suites are sized to the byte
-  // against macOS's 56-byte one (a 128-byte shebang read, the unix socket
-  // limit, a typed command line), and this one is shorter there. On Linux it
-  // is longer than `/tmp`, so a suite that binds a socket deep in its scratch
-  // roots it at `/tmp` (or `/private/tmp` on macOS) itself.
-  const tmpBase = mkdtempSync(join(testTmp, "t-"));
+  // killed run's is swept like its other run directories. Where, and why
+  // not under `~/.ave`: `runTmpRoot`.
+  const tmpRoot = runTmpRoot();
+  ensureRunTmpRoot(tmpRoot);
+  const tmpBase = mkdtempSync(join(tmpRoot, "t-"));
   let pluginChildEntryPath: string | undefined;
   process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
   process.env.AVE_TEST_RUN_HOME = aveHomeBase;
@@ -144,7 +142,8 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     }
     // App modules load only now, after AVE_HOME names this run's home.
     // What a killed run could not remove; a live run's are kept.
-    const swept = await sweepStaleRunDirs(testTmp, removeRunDir);
+    const sweeps = [await sweepStaleRunDirs(testTmp, removeRunDir), await sweepStaleRunDirs(tmpRoot, removeRunDir)];
+    const swept = { stranded: sweeps.flatMap((s) => s.stranded), leftAside: sweeps.flatMap((s) => s.leftAside) };
     for (const aside of swept.stranded) {
       console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
     }
