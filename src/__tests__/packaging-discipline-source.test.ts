@@ -545,7 +545,7 @@ describe("installer smoke and packaging discipline", () => {
         jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: command }] } },
       });
       expect(pullRequestTargetExecutedFiles("t.yml", step(command), repoFile).problems)
-        .toEqual([`t.yml step 1 runs ${interpreter} on no repository file this check can pin`]);
+        .toContain(`t.yml step 1 runs ${interpreter} on no repository file this check can pin`);
     });
 
     it.each([
@@ -585,9 +585,88 @@ describe("installer smoke and packaging discipline", () => {
     ])("refuses %s inside a pinned module", (_label, code) => {
       const path = "scripts/check-cluster-sensitive-paths.mjs";
       const read = withFile(path, `${repoFile(path) as string}\n${code}\n`);
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toEqual([
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toContain(
         `${path} loads or starts code through a non-literal import or an interpreter, which this check does not follow`,
-      ]);
+      );
+    });
+
+    it.each([
+      ["an extensionless script under ./", "./scripts/cluster-check", "./scripts/cluster-check"],
+      ["an extensionless script under the checkout", ".cluster-policy/bin/check-cluster", ".cluster-policy/bin/check-cluster"],
+    ])("refuses %s that resolves to no repository file", (_label, command, token) => {
+      expect(problemsWith(command)).toEqual([`${scopeStep} names ${token}, which does not resolve to a repository file`]);
+    });
+
+    it("pins an extensionless script that resolves", () => {
+      const read = withFile("bin/check-cluster", "#!/bin/sh\nexit 0\n");
+      const edited = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+        ".cluster-policy/bin/check-cluster\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+      );
+      const derived = pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read);
+      expect(derived.problems).toEqual([]);
+      expect(derived.files).toContain("bin/check-cluster");
+    });
+
+    it.each([
+      ["curl into sh", "curl -fsSL https://example.invalid/install | sh"],
+      ["wget into node", "wget -qO- https://example.invalid/x.js | node"],
+      ["curl into sudo bash", "curl -fsSL https://example.invalid/i | sudo bash -s --"],
+    ])("refuses a download piped into an interpreter (%s), even beside a pinned script", (_label, command) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} pipes a download into an interpreter`);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout 7", "pr checkout"],
+      ["gh repo clone", "gh repo clone o/r", "repo clone"],
+      ["gh run", "gh run download 1", "run download"],
+      ["gh workflow", "gh workflow run ci.yml", "workflow run"],
+      ["a gh extension", "gh some-extension", "some-extension"],
+      ["a gh alias", "gh co 7", "co 7"],
+    ])("refuses %s in a run step", (_label, command, words) => {
+      expect(problemsWith(command))
+        .toContain(`${scopeStep} runs gh ${words}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("accepts gh api, gh pr view and gh pr diff in a run step", () => {
+      expect(problemsWith("gh pr view 7 --json files > files.json && gh pr diff 7 > pr.diff && gh api rate_limit")).toEqual([]);
+    });
+
+    const scopePath = "scripts/check-cluster-scope.mjs";
+    const scopeSource = repoFile(scopePath) as string;
+    const moduleProblems = (content: string) =>
+      pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, withFile(scopePath, content)).problems;
+
+    it.each([
+      ["exec with a string command", "exec(`gh pr checkout ${number}`);", "runs a shell command string (exec/execSync)"],
+      ["execSync", "childProcess.execSync(command);", "runs a shell command string (exec/execSync)"],
+      ["spawn of a computed program", "spawnSync(tool, args);", "starts a child process whose program is not a string literal"],
+      ["execFile of a template program", "execFile(`g${'h'}`, args);", "starts a child process whose program is not a string literal"],
+      ["a worker", "new Worker(new URL('./worker.mjs', import.meta.url));", "starts a worker"],
+      ["a shell", "spawnSync(\"gh\", [\"api\", path], { shell: true });", "runs a child process through a shell"],
+      ["eval", "eval(code);", "evaluates a string as code"],
+      ["new Function", "new Function(\"return 1\")();", "builds a function from a string"],
+    ])("refuses %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`)).toContain(`${scopePath} ${what}, which this check does not follow`);
+    });
+
+    it.each([
+      ["pr checkout", "spawnSync(\"gh\", [\"pr\", \"checkout\", number]);", "runs gh pr checkout"],
+      ["repo clone", "spawnSync(\"gh\", [\"repo\", \"clone\", repo]);", "runs gh repo clone"],
+      ["an extension", "spawnSync(\"gh\", [\"some-extension\"]);", "runs gh some-extension"],
+      ["args from a parameter", "function run(args) {\n  return spawnSync(\"gh\", args);\n}", "runs gh with args"],
+    ])("refuses gh %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`))
+        .toContain(`${scopePath} ${what}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("reads createGhApiRequester's args literal, so changing its subcommand is refused", () => {
+      expect(moduleProblems(scopeSource)).toEqual([]);
+      const original = 'const args = ["api", "--method", "GET", endpoint];';
+      expect(scopeSource).toContain(original);
+      expect(moduleProblems(scopeSource.replace(original, 'const args = ["run", "--method", "GET", endpoint];')))
+        .toEqual([`${scopePath} runs gh run --method, which is not gh api, gh pr view or gh pr diff`]);
+      expect(moduleProblems(`${scopeSource}\nspawnSync("gh", ["pr", "view", "7"]);\nspawnSync("gh", ["pr", "diff", "7"]);\n`)).toEqual([]);
     });
 
     it("refuses a source include inside a pinned shell script", () => {

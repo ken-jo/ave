@@ -233,6 +233,66 @@ const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*imp
 const UNFOLLOWABLE_MODULE_CODE =
   /\bimport\s*\(\s*(?!["'])|\brequire\s*\(\s*(?!["'])|\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*(?:["'`](?:node|bun|deno|tsx|python3?|bash|sh|pwsh|powershell)["'`]|process\.(?:execPath|argv0))|\bfork\s*\(/u;
 
+/** In a pinned module, code that runs something this check cannot pin: a
+ *  shell command string (`exec`/`execSync`), a child process whose program is
+ *  not a string literal, a worker, a shell, or code built from a string. */
+const UNPINNABLE_MODULE_CODE: readonly (readonly [RegExp, string])[] = [
+  [/(?:^|[^.\w$]|\b(?:child_process|childProcess|cp)\.)exec(?:Sync)?\s*\(/mu, "runs a shell command string (exec/execSync)"],
+  [/(?:^|[^.\w$])(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*(?!["'])/mu, "starts a child process whose program is not a string literal"],
+  [/\bnew\s+Worker\s*\(/u, "starts a worker"],
+  [/\bshell\s*:\s*true\b/u, "runs a child process through a shell"],
+  [/(?:^|[^.\w$])eval\s*\(/mu, "evaluates a string as code"],
+  [/\bnew\s+Function\s*\(/u, "builds a function from a string"],
+];
+
+/** The gh subcommands a pull_request_target workflow may run, in a `run:`
+ *  step or a pinned module: read-only API calls and pull request reads. */
+function allowedGhSubcommand(first: string | undefined, second: string | undefined): boolean {
+  return first === "api" || (first === "pr" && (second === "view" || second === "diff"));
+}
+
+/** Every gh invocation in a script, with its first two arguments. */
+const RUN_GH = /(?:^|[\s;&|(`$])gh(?=$|\s)(?:[ \t]+([^\s;&|)]+))?(?:[ \t]+([^\s;&|)]+))?/gmu;
+
+/** A remote download piped into an interpreter. */
+const PIPED_DOWNLOAD = /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|node|python3?|deno|bun|pwsh)(?=$|[\s;&|)])/mu;
+
+/** A child process started on gh in a module: its args array literal, or the
+ *  identifier that holds it. */
+const MODULE_GH_CALL = /(?:^|[^.\w$])(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["']gh["']\s*,\s*(\[[^\]]*\]|[A-Za-z_$][\w$]*)/gmu;
+
+/** The first two string elements of an array literal's text. */
+function leadingStrings(array: string): [string | undefined, string | undefined] {
+  const match = /^\[\s*["']([^"']*)["']\s*(?:,\s*["']([^"']*)["'])?/u.exec(array);
+  return [match?.[1], match?.[2]];
+}
+
+/** The gh calls in `content` that run anything but an allowed subcommand. An
+ *  args identifier counts only when the same function (no `function` or `=>`
+ *  between) declares it from an array literal. */
+function moduleGhProblems(content: string): string[] {
+  const problems: string[] = [];
+  for (const match of content.matchAll(MODULE_GH_CALL)) {
+    const argument = match[1] as string;
+    let array: string | undefined;
+    if (argument.startsWith("[")) {
+      array = argument;
+    } else {
+      const before = content.slice(0, match.index);
+      const scopeStart = Math.max(before.lastIndexOf("function"), before.lastIndexOf("=>"));
+      const declarations = [...before.slice(scopeStart).matchAll(
+        new RegExp(`\\b(?:const|let|var)\\s+${argument.replace(/\$/gu, "\\$")}\\s*=\\s*(\\[[^\\]]*\\])`, "gu"),
+      )];
+      array = declarations.at(-1)?.[1];
+    }
+    const [first, second] = array === undefined ? [undefined, undefined] : leadingStrings(array);
+    if (!allowedGhSubcommand(first, second)) {
+      problems.push(`runs gh ${[first, second].filter(Boolean).join(" ") || `with ${argument}`}, which is not gh api, gh pr view or gh pr diff`);
+    }
+  }
+  return problems;
+}
+
 /** In a pinned shell script, a `source` or `.` include. */
 const SHELL_INCLUDE = /(?:^|[\s;&|])(?:source|\.)\s+\S/mu;
 
@@ -300,7 +360,38 @@ export function pullRequestTargetExecutedFiles(
     if (PACKAGE_SCRIPT.test(run)) {
       problems.push(`${label} runs a package manager, whose package.json scripts this check does not follow`);
     }
+    if (PIPED_DOWNLOAD.test(run)) {
+      problems.push(`${label} pipes a download into an interpreter`);
+    }
+    for (const match of run.matchAll(RUN_GH)) {
+      if (!allowedGhSubcommand(match[1], match[2])) {
+        problems.push(`${label} runs gh ${[match[1], match[2]].filter(Boolean).join(" ")}, which is not gh api, gh pr view or gh pr diff`);
+      }
+    }
     let resolved = 0;
+    // A path-like token without an extension (`./bin/check`,
+    // `.cluster-policy/tools/run`) may be an executable; it must resolve to a
+    // repository file, which is then pinned.
+    for (const token of run.split(/[\s"'=();|&<>`]+/u)) {
+      const pathLike = token.startsWith("./") || token.startsWith("../")
+        || checkoutRoots.some((root) => token.startsWith(`${root}/`));
+      const last = token.slice(token.lastIndexOf("/") + 1);
+      if (!pathLike || /\.[A-Za-z0-9]+$/u.test(last)) continue;
+      let path: string | undefined;
+      try {
+        path = normalizeRepoPath(token);
+      } catch {
+        path = undefined;
+      }
+      const root = path === undefined ? undefined : checkoutRoots.find((prefix) => (path as string).startsWith(`${prefix}/`));
+      if (path !== undefined && root !== undefined) path = path.slice(root.length + 1);
+      if (path === undefined || token.includes("$") || readFile(path) === undefined) {
+        problems.push(`${label} names ${token}, which does not resolve to a repository file`);
+        continue;
+      }
+      resolved += 1;
+      add(path);
+    }
     for (const match of run.matchAll(RUN_SCRIPT_TOKEN)) {
       const token = match[1] as string;
       if (token.startsWith("/") || token.includes("$")) {
@@ -338,6 +429,10 @@ export function pullRequestTargetExecutedFiles(
     if (UNFOLLOWABLE_MODULE_CODE.test(content)) {
       problems.push(`${file} loads or starts code through a non-literal import or an interpreter, which this check does not follow`);
     }
+    for (const [pattern, what] of UNPINNABLE_MODULE_CODE) {
+      if (pattern.test(content)) problems.push(`${file} ${what}, which this check does not follow`);
+    }
+    for (const problem of moduleGhProblems(content)) problems.push(`${file} ${problem}`);
     const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
     for (const match of content.matchAll(RELATIVE_IMPORT)) {
       const target = normalizeRepoPath(`${dir}/${match[1] as string}`);
