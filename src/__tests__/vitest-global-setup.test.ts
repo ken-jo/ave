@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { TestProject } from "vitest/node";
@@ -39,6 +39,7 @@ import {
   type ProcessProbe,
   type RunOwner,
 } from "./support/test-run-dirs.js";
+import { removeLinksUnder } from "./support/tmp-dir-teardown.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setup } from "../../config/vitest.globalSetup.js";
 
@@ -172,6 +173,38 @@ describe("vitest global setup", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("removes a link the tests left in the temp directory, never what it points to", async () => {
+    scratchTestTmp();
+    const target = scratch();
+    writeFileSync(join(target, "keep.txt"), "kept");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const teardown = await setup(project());
+      const runTmp = tmpdir();
+      const nested = mkdtempSync(join(runTmp, "linked-"));
+      symlinkSync(target, join(runTmp, "top-link"), "junction");
+      symlinkSync(target, join(nested, "deep-link"), "junction");
+      await teardown();
+      expect(existsSync(runTmp)).toBe(false);
+      expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("kept");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("takes out every link under a run directory before the tree, at any depth, and only the links", () => {
+    const target = scratch();
+    writeFileSync(join(target, "keep.txt"), "kept");
+    const runTmp = scratch();
+    mkdirSync(join(runTmp, "real", "deeper"), { recursive: true });
+    symlinkSync(target, join(runTmp, "top-link"), "junction");
+    symlinkSync(target, join(runTmp, "real", "deeper", "deep-link"), "junction");
+    removeLinksUnder(runTmp);
+    expect(readdirSync(runTmp)).toEqual(["real"]);
+    expect(readdirSync(join(runTmp, "real", "deeper"))).toEqual([]);
+    expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("kept");
   });
 
   it("says nothing about the temp directory when the tests left it empty", async () => {

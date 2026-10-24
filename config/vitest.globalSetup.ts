@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -117,8 +117,10 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   // only, so no other run sharing a temp directory can make it report, and a
   // killed run's is swept like its other run directories. Here rather than
   // inside the system temp directory: several suites are sized to the byte
-  // against that path (a 128-byte shebang read, the unix socket limit, a typed
-  // command line), and this one is shorter on every platform.
+  // against macOS's 56-byte one (a 128-byte shebang read, the unix socket
+  // limit, a typed command line), and this one is shorter there. On Linux it
+  // is longer than `/tmp`, so a suite that binds a socket deep in its scratch
+  // roots it at `/tmp` (or `/private/tmp` on macOS) itself.
   const tmpBase = mkdtempSync(join(testTmp, "t-"));
   let pluginChildEntryPath: string | undefined;
   process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
@@ -141,9 +143,8 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       );
     }
     // App modules load only now, after AVE_HOME names this run's home.
-    const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
     // What a killed run could not remove; a live run's are kept.
-    const swept = await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
+    const swept = await sweepStaleRunDirs(testTmp, removeRunDir);
     for (const aside of swept.stranded) {
       console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
     }
@@ -172,15 +173,39 @@ async function releaseRunDirs(holder: RunDirsHolder): Promise<void> {
   dirs.users -= 1;
   if (dirs.users > 0) return;
   delete holder[RUN_DIRS];
-  const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
-  await removeOwnedPluginTree(dirs.sandboxBase);
-  await removeOwnedPluginTree(dirs.aveHomeBase);
+  await removeRunDir(dirs.sandboxBase);
+  await removeRunDir(dirs.aveHomeBase);
   const leaked = leftInTmpBase(dirs.tmpBase);
   if (leaked !== "") {
     console.warn(`[vitest teardown] tests left these in the temp directory without removing them (removed now; fix the test that makes them): ${leaked}`);
   }
-  await removeOwnedPluginTree(dirs.tmpBase);
+  await removeRunDir(dirs.tmpBase);
   await rm(dirname(dirs.pluginChildEntryPath), { recursive: true, force: true });
+}
+
+/**
+ * Remove a run directory. Its links go first, one by one and never into their
+ * targets: a test's scratch can hold a junction to a real tree (the
+ * repository's scripts/, say), and a recursive removal that walks into one
+ * deletes what it points to. Then the tree, owner access restored if a
+ * confined child took it away. App modules load only when called, after
+ * AVE_HOME names the run's home.
+ */
+async function removeRunDir(path: string): Promise<void> {
+  const { removeLinksUnder } = await import("../src/__tests__/support/tmp-dir-teardown.js");
+  const { removeOwnedPluginTree, restoreOwnerAccess } = await import("../src/plugins/installed-entry-fs.js");
+  try {
+    removeLinksUnder(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" && !existsSync(path)) return;
+    if (code !== "ENOENT" && code !== "EACCES" && code !== "EPERM") throw error;
+    // An entry gone mid-walk, or a directory a confined child made
+    // unreadable: owner access back (following no link), then walk again.
+    await restoreOwnerAccess(path);
+    removeLinksUnder(path);
+  }
+  await removeOwnedPluginTree(path);
 }
 
 /** The environment names `os.tmpdir()` reads, on every platform. */
