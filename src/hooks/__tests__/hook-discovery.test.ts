@@ -22,7 +22,7 @@ import {
   discoverHooks,
   ensureHooksDirectory,
   hookMatcherError,
-  hookMatchesTool,
+  compileHookMatcher,
   persistLockfile,
   readLockfile,
   type DiscoveredHook,
@@ -268,30 +268,30 @@ describe("#811 hook matcher (exact names / regex)", () => {
     expect(discoverHooks(tmpDir)[0].matcher).toBeUndefined();
   });
 
-  it("hookMatchesTool: no matcher, '' or '*' matches everything", () => {
-    expect(hookMatchesTool(undefined, "fs_write")).toBe(true);
-    expect(hookMatchesTool("", "fs_write")).toBe(true);
-    expect(hookMatchesTool("*", "fs_write")).toBe(true);
+  it("compileHookMatcher: no matcher, '' or '*' matches everything", () => {
+    expect(compileHookMatcher(undefined)("fs_write")).toBe(true);
+    expect(compileHookMatcher("")("fs_write")).toBe(true);
+    expect(compileHookMatcher("*")("fs_write")).toBe(true);
   });
 
-  it("hookMatchesTool: plain names are exact, split on | or ,", () => {
-    expect(hookMatchesTool("Edit|Write", "Write")).toBe(true);
-    expect(hookMatchesTool("Edit, Write", "Edit")).toBe(true);
-    expect(hookMatchesTool("Edit|Write", "NotebookEdit")).toBe(false);
-    expect(hookMatchesTool("code-reviewer", "code-reviewer")).toBe(true);
+  it("compileHookMatcher: plain names are exact, split on | or ,", () => {
+    expect(compileHookMatcher("Edit|Write")("Write")).toBe(true);
+    expect(compileHookMatcher("Edit, Write")("Edit")).toBe(true);
+    expect(compileHookMatcher("Edit|Write")("NotebookEdit")).toBe(false);
+    expect(compileHookMatcher("code-reviewer")("code-reviewer")).toBe(true);
     // exact: a partial name does not pass
-    expect(hookMatchesTool("query", "mcp_hr_query")).toBe(false);
+    expect(compileHookMatcher("query")("mcp_hr_query")).toBe(false);
   });
 
-  it("hookMatchesTool: other matchers are unanchored regular expressions", () => {
-    expect(hookMatchesTool("mcp__.*", "mcp__hr__query")).toBe(true);
-    expect(hookMatchesTool("mcp__.*", "fs_write")).toBe(false);
-    expect(hookMatchesTool("^mcp_hr_", "mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("^mcp_hr_", "mcp_payroll_query")).toBe(false);
-    expect(hookMatchesTool("Edit.*", "NotebookEdit")).toBe(true);
-    expect(hookMatchesTool("^Edit$", "NotebookEdit")).toBe(false);
-    expect(hookMatchesTool("mcp_hr_*", "prefix_mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("^mcp_hr_.*$", "prefix_mcp_hr_query")).toBe(false);
+  it("compileHookMatcher: other matchers are unanchored regular expressions", () => {
+    expect(compileHookMatcher("mcp__.*")("mcp__hr__query")).toBe(true);
+    expect(compileHookMatcher("mcp__.*")("fs_write")).toBe(false);
+    expect(compileHookMatcher("^mcp_hr_")("mcp_hr_query")).toBe(true);
+    expect(compileHookMatcher("^mcp_hr_")("mcp_payroll_query")).toBe(false);
+    expect(compileHookMatcher("Edit.*")("NotebookEdit")).toBe(true);
+    expect(compileHookMatcher("^Edit$")("NotebookEdit")).toBe(false);
+    expect(compileHookMatcher("mcp_hr_*")("prefix_mcp_hr_query")).toBe(true);
+    expect(compileHookMatcher("^mcp_hr_.*$")("prefix_mcp_hr_query")).toBe(false);
   });
 
   it("parses an exact name list with spaces from script frontmatter", () => {
@@ -303,7 +303,7 @@ describe("#811 hook matcher (exact names / regex)", () => {
     expect(filterRegistryByEventAndTool(registry, "pre", "NotebookWrite")).toEqual([]);
   });
 
-  it("an invalid regex matcher is reported and never loads", () => {
+  it("an invalid regex matcher is reported and retains a denial guard", () => {
     expect(hookMatcherError("*danger*")).toMatch(/.+/);
     expect(hookMatcherError("mcp__.*")).toBeUndefined();
     expect(hookMatcherError("Edit|Write")).toBeUndefined();
@@ -313,8 +313,8 @@ describe("#811 hook matcher (exact names / regex)", () => {
       "#!/bin/sh\n# ave-hook-matcher: (unclosed\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
     );
     const hooks = discoverHooks(tmpDir);
-    // Still discovered so trust review sees it, but the registry leaves it out.
+    // Still discovered for trust review; blocking events retain an inert guard.
     expect(hooks).toHaveLength(1);
-    expect(buildHookRegistry(hooks, [])).toEqual([]);
+    expect(buildHookRegistry(hooks, [])[0].matcherError).toContain("(unclosed");
   });
 });

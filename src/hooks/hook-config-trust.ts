@@ -148,7 +148,7 @@ export function loadHookConfig(
   return {
     path: configPath,
     exists: true,
-    entries: parsed.entries,
+    entries: parsed.entries.map((entry) => ({ ...entry, configPath })),
     warnings: parsed.warnings,
     errors: parsed.errors,
     trustHash: hasher.digest("hex"),

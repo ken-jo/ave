@@ -23,7 +23,8 @@
  * (alphabetical, as `discoverHooks` already returns them) first, then config
  * entries (file order).
  */
-import { compileHookMatcher, type DiscoveredHook } from "./hook-discovery.js";
+import { compileHookMatcher, HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
+import { hookEventSupportsMatcher } from "./hook-contract.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
 
@@ -53,6 +54,8 @@ interface BaseHookRegistryEntry {
   matcher?: string;
   /** Compiled once when this registry entry is built; never serialized. */
   matchesSubject: (subject: string) => boolean;
+  /** Inert guard: refuses the event without executing a command. */
+  matcherError?: string;
   /** argv form of the command to execute (always ≥1 element). */
   command: string[];
   env?: Record<string, string>;
@@ -76,17 +79,32 @@ export interface ConfigHookRegistryEntry extends BaseHookRegistryEntry {
   timeoutMs: number;
 }
 
-/**
- * Normalize one legacy `.sh` `DiscoveredHook` into a registry entry. The `.sh`
- * file IS the local script, so `command` is its absolute path as a single-element
- * argv. `event` is the prefix-derived `hookType`; `matcher` carries the optional
- * `# ave-hook-matcher:` frontmatter matcher unchanged.
- */
+/** Compile a bounded predicate, retaining only expected matcher failures. */
+function matcherFields(event: HookEvent, matcher: string | undefined, file: string, invalid?: string): Pick<BaseHookRegistryEntry, "matchesSubject" | "matcherError"> {
+  if (!hookEventSupportsMatcher(event)) return { matchesSubject: () => true };
+  try {
+    if (invalid !== undefined) throw new HookMatcherError(invalid);
+    const predicate = compileHookMatcher(matcher);
+    return { matchesSubject: (subject) => {
+      try {
+        return predicate(subject);
+      } catch (error) {
+        if (!(error instanceof HookMatcherError)) throw error;
+        throw new HookMatcherError(`${file}: matcher ${JSON.stringify(matcher)}: ${error.message}`);
+      }
+    } };
+  } catch (error) {
+    if (!(error instanceof HookMatcherError)) throw error;
+    return { matchesSubject: () => false, matcherError: `${file}: matcher ${JSON.stringify(matcher)}: ${error.message}` };
+  }
+}
+
+/** Normalize a legacy script, preserving its path and trust identity. */
 function fromDiscoveredHook(hook: DiscoveredHook): ShHookRegistryEntry {
   return {
     id: `sh:${hook.fileName}`,
     event: hook.hookType,
-    matchesSubject: compileHookMatcher(hook.matcher),
+    ...matcherFields(hook.hookType, hook.matcher, hook.path),
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     command: [hook.path],
     source: "sh",
@@ -99,7 +117,7 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
   return {
     id: `config:${entry.id}`,
     event: entry.event,
-    matchesSubject: compileHookMatcher(entry.matcher),
+    ...matcherFields(entry.event, entry.matcher, entry.configPath ?? `hooks.json:${entry.id}`, entry.matcherError),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     command: entry.command,
     ...(entry.env ? { env: entry.env } : {}),
@@ -111,8 +129,8 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
 /**
  * Build the unified registry: legacy `.sh` hooks first (alphabetical — preserved
  * from `discoverHooks`), then declarative config entries (file order). An entry
- * whose matcher is an invalid regular expression is left out (`discoverHooks`
- * and `parseHookConfig` report it). Pure — does no I/O and does not mutate its
+ * with an invalid matcher becomes an inert denial guard for pre/perm; other
+ * events refuse it. Pure — does no I/O and does not mutate its
  * inputs.
  */
 export function buildHookRegistry(
@@ -121,18 +139,12 @@ export function buildHookRegistry(
 ): HookRegistryEntry[] {
   const registry: HookRegistryEntry[] = [];
   for (const hook of shHooks) {
-    try {
-      registry.push(fromDiscoveredHook(hook));
-    } catch {
-      // Discovery retains invalid matchers for review, never for execution.
-    }
+    const entry = fromDiscoveredHook(hook);
+    if (!entry.matcherError || entry.event === "pre" || entry.event === "perm") registry.push(entry);
   }
   for (const entry of configEntries) {
-    try {
-      registry.push(fromConfigEntry(entry));
-    } catch {
-      // Config parsing reports the rejected matcher to the review surface.
-    }
+    const normalized = fromConfigEntry(entry);
+    if (!normalized.matcherError || normalized.event === "pre" || normalized.event === "perm") registry.push(normalized);
   }
   return registry;
 }
@@ -148,9 +160,7 @@ export function filterRegistryByEventAndTool(
   event: HookEvent,
   toolName: string,
 ): HookRegistryEntry[] {
-  return registry.filter(
-    (entry) => entry.event === event && entry.matchesSubject(toolName),
-  );
+  return filterRegistryByEventAndSubject(registry, event, toolName);
 }
 
 /**
@@ -165,7 +175,13 @@ export function filterRegistryByEventAndSubject(
   event: HookEvent,
   subject: string,
 ): HookRegistryEntry[] {
-  return registry.filter(
-    (entry) => entry.event === event && entry.matchesSubject(subject),
-  );
+  return registry.filter((entry) => {
+    if (entry.event !== event) return false;
+    try {
+      return entry.matchesSubject(subject);
+    } catch (error) {
+      if (!(error instanceof HookMatcherError) || event === "pre" || event === "perm") throw error;
+      return false;
+    }
+  });
 }

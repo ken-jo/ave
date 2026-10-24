@@ -323,7 +323,7 @@ async function runTurnInSpan(
       self.sessionStartFiredFor = effectiveSessionId;
       await self.fireLifecycleEvent(
         "SessionStart",
-        { sessionMeta: self.sessionMetaForLifecycle() },
+        { sessionMeta: self.sessionMetaForLifecycle(), sessionSource: self.sessionSource },
         effectiveSessionId,
       );
     }
@@ -1148,7 +1148,7 @@ async function runTurnInSpan(
         });
         // Notification lifecycle hook (#811) — observe-only; mirrors the
         // turn-end message shown to the user so a hook can react to it.
-        await self.fireLifecycleEvent("Notification", { message: result.text });
+        await self.fireLifecycleEvent("Notification", { message: result.text, notificationType: "agent_completed" });
       } catch {
         // notification failure must never block turn completion
       }

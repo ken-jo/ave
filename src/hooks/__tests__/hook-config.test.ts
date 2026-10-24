@@ -128,7 +128,8 @@ describe("parseHookConfig — valid parse", () => {
         ],
       },
     });
-    expect(r.entries.map((e) => e.matcher)).toEqual(["Edit|Write"]);
+    expect(r.entries.map((e) => e.matcher)).toEqual(["*danger*", "Edit|Write"]);
+    expect(r.entries[0].matcherError).toBeDefined();
     expect(r.errors).toHaveLength(1);
     expect(r.errors[0]).toContain('PreToolUse[0].matcher "*danger*" is not a valid regular expression');
   });

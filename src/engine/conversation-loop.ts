@@ -150,6 +150,7 @@ export class ConversationLoop {
    * re-announces its start.
    */
   sessionStartFiredFor: string | null = null;
+  sessionSource: "startup" | "resume" | "clear" = "startup";
 
   tracer: ConversationTracer = createTracer(this.sessionId);
   cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };

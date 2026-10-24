@@ -23,6 +23,7 @@ import {
 } from "./hook-config-trust.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import type { ScriptHookManager } from "./script-hook-manager.js";
+import { collectHookMatcherDiagnostics } from "./hook-matcher-diagnostics.js";
 
 export interface HookTrustCommandOptions {
   hooksDir?: string;
@@ -126,12 +127,13 @@ function rowFromHook(hook: DiscoveredHook, state: HookTrustRow["state"]): HookTr
 
 /** Summarize parsed config entries onto a trust row (STEP 6 additive fields). */
 function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[], errors: string[]): HookTrustRow {
+  const runnable = entries.filter((entry) => entry.matcherError === undefined);
   return {
     ...row,
     source: "config",
-    entryCount: entries.length,
+    entryCount: runnable.length,
     ...(errors.length ? { errors } : {}),
-    entries: entries.map((e) => ({
+    entries: runnable.map((e) => ({
       event: e.event,
       ...(e.matcher !== undefined ? { matcher: e.matcher } : {}),
       command: e.command.join(" "),
@@ -222,6 +224,7 @@ function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustComman
   const configTrusted = trusted.some((h) => h.fileName === HOOKS_CONFIG_FILENAME);
   const configEntries = configTrusted ? loadHookConfig(configPath(opts)).entries : [];
   opts.manager.setTrustedRegistry(shHooks, configEntries);
+  opts.manager.setMatcherGuards(collectHookMatcherDiagnostics(hooksDir(opts), disabledDir(opts)).guards);
 }
 
 export function listHookTrustState(

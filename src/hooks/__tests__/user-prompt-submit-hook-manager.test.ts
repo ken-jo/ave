@@ -11,7 +11,7 @@
  *   - timeout / nonzero-exit / bad-json → "deny" (fail-closed)
  *   - NO matching trusted hook → "allow" (back-compat: turn proceeds)
  *   - an untrusted / quarantined hook never fires (registry is the trust gate)
- *   - matcher subject is the PROMPT TEXT
+ *   - matchers are ignored and every trusted prompt hook runs
  *   - inputText is DLP-redacted before it reaches the hook
  *   - the observe-only runLifecycleEvent path refuses (deny) the blocking event
  *
@@ -115,22 +115,22 @@ describe("#811 m2 — UserPromptSubmit (BLOCKING) dispatch", () => {
     expect(m.size()).toBe(0);
   });
 
-  it.skipIf(!HAS_NODE)("matcher subject is the PROMPT TEXT — a non-matching prompt is skipped (proceeds)", async () => {
+  it.skipIf(!HAS_NODE)("ignores the matcher and runs on every prompt", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [upsEntry(["node", DENY], { matcher: ".*danger.*" })]);
 
-    // Matches the matcher regex → the deny hook runs → refused.
+    // The hook decides whether a prompt is permitted.
     const matched = await m.runUserPromptSubmit("s1", "user-keyboard", {
       inputText: "this is danger zone",
     });
     expect(matched.decision).toBe("deny");
 
-    // Does NOT match → no hook runs → proceeds (back-compat for unrelated prompts).
+    // Matchers do not filter prompt hooks.
     const skipped = await m.runUserPromptSubmit("s1", "user-keyboard", {
       inputText: "a friendly prompt",
     });
-    expect(skipped.decision).toBe("allow");
-    expect(skipped.results).toEqual([]);
+    expect(skipped.decision).toBe("deny");
+    expect(skipped.results).toHaveLength(1);
   });
 
   it.skipIf(!HAS_NODE)("inputText is DLP-redacted before it reaches the hook", async () => {

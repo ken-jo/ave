@@ -214,6 +214,8 @@ describe("#811 m2 — trust boundary + matcher", () => {
     { event: "SubagentStart", matcher: "worker", payload: { agentType: "worker" }, other: { agentType: "reviewer" } },
     { event: "SubagentStop", matcher: "worker", payload: { agentType: "worker" }, other: { agentType: "reviewer" } },
     { event: "SessionEnd", matcher: "load-session", payload: { reason: "load-session" }, other: { reason: "new-conversation" } },
+    { event: "SessionStart", matcher: "resume", payload: { sessionSource: "resume" }, other: { sessionSource: "clear" } },
+    { event: "Notification", matcher: "permission_prompt", payload: { notificationType: "permission_prompt" }, other: { notificationType: "agent_completed" } },
   ])("filters $event by its event payload ($matcher)", async ({ event, matcher, payload, other }) => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry(event, ["node", ECHO], { matcher })]);
@@ -222,10 +224,10 @@ describe("#811 m2 — trust boundary + matcher", () => {
     expect((await m.runLifecycleEvent(event, matcher, "unknown", {})).results).toEqual([]);
   });
 
-  it.each(["SessionStart", "Notification", "Stop"] as const)("keeps %s matching the session ID", async (event) => {
+  it.each(["SessionStart", "Notification"] as const)("never uses the session ID for %s matching", async (event) => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry(event, ["node", ECHO], { matcher: "^session-allowed$" })]);
-    expect((await m.runLifecycleEvent(event, "session-allowed", "unknown")).results).toHaveLength(1);
+    expect((await m.runLifecycleEvent(event, "session-allowed", "unknown")).results).toEqual([]);
     expect((await m.runLifecycleEvent(event, "session-other", "unknown", { reason: "session-allowed" })).results).toEqual([]);
   });
 
@@ -239,7 +241,7 @@ describe("#811 m2 — trust boundary + matcher", () => {
     expect(m.size()).toBe(0);
   });
 
-  it.skipIf(!HAS_NODE)("matcher subject is the sessionId — a non-matching session is skipped", async () => {
+  it.skipIf(!HAS_NODE)("Stop ignores the matcher for every session", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry("Stop", ["node", ECHO], { matcher: "^sess-allowed.*$" })]);
 
@@ -247,7 +249,7 @@ describe("#811 m2 — trust boundary + matcher", () => {
     expect(matched.results).toHaveLength(1);
 
     const skipped = await m.runLifecycleEvent("Stop", "sess-other", "unknown");
-    expect(skipped.results).toEqual([]);
+    expect(skipped.results).toHaveLength(1);
     expect(skipped.decision).toBe("allow");
   });
 

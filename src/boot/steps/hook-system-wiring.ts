@@ -33,10 +33,13 @@ import { createLogger } from "../../lib/logger.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { randomUUID } from "node:crypto";
 import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
+import { collectHookMatcherDiagnostics } from "../../hooks/hook-matcher-diagnostics.js";
+import type { NotificationService } from "../../main/notification-service.js";
 
 const log = createLogger("hook-system-wiring");
 
 export interface WireHookSystemDeps {
+  notificationService?: Pick<NotificationService, "fire">;
   authorizeCommand?: HookCommandAuthorizer;
   /** Override hook directory (test). */
   hooksDir?: string;
@@ -70,6 +73,7 @@ export interface HookSystemBootResult {
 export async function wireHookSystem(
   deps: WireHookSystemDeps = {},
 ): Promise<HookSystemBootResult> {
+  const diagnostics = collectHookMatcherDiagnostics(deps.hooksDir, deps.disabledDir);
   const trust = await runHookTrustWorkflow({
     hooksDir: deps.hooksDir,
     lockfilePath: deps.lockfilePath,
@@ -87,6 +91,15 @@ export async function wireHookSystem(
   // config can never contribute a runnable command here.
   const shHooks = trust.trustedHooks.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
   manager.setTrustedRegistry(shHooks, trust.trustedConfigEntries);
+  manager.setMatcherGuards(diagnostics.guards);
+  for (const notice of diagnostics.notices) {
+    log.warn("%s", notice);
+    // The existing notification service caps each body at 80 characters.
+    const parts = notice.match(/[\s\S]{1,80}/gu) ?? [];
+    parts.forEach((body, index) => deps.notificationService?.fire({
+      kind: "system", title: `Hook configuration (${index + 1}/${parts.length})`, body, sticky: true,
+    }));
+  }
   log.info(
     "boot: hook system ready (sh=%d, config-entries=%d, disabled=%d)",
     shHooks.length,

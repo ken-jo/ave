@@ -21,7 +21,7 @@
  *     Caller MUST NOT promote this allow over an upstream deny.
  *   - `modify` is **NOT** supported in v1.
  */
-import { type DiscoveredHook } from "./hook-discovery.js";
+import { HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
 import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
   buildHookRegistry,
@@ -82,6 +82,7 @@ export interface PreparedPluginHookGenerationPublication {
 
 export class ScriptHookManager {
   private registry: HookRegistryEntry[] = [];
+  private matcherGuards: readonly HookRegistryEntry[] = [];
   private pluginRegistries = new Map<string, readonly HookRegistryEntry[]>();
   private generation = 0;
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
@@ -127,6 +128,11 @@ export class ScriptHookManager {
    */
   setTrustedRegistry(shHooks: DiscoveredHook[], configEntries: HookConfigEntry[]): void {
     this.registry = buildHookRegistry(shHooks, configEntries);
+    this.generation += 1;
+  }
+
+  setMatcherGuards(guards: readonly HookRegistryEntry[]): void {
+    this.matcherGuards = guards.filter((entry) => entry.matcherError && (entry.event === "pre" || entry.event === "perm"));
     this.generation += 1;
   }
 
@@ -305,9 +311,7 @@ export class ScriptHookManager {
       };
     }
     try {
-      // Subject for lifecycle matchers follows the hooks reference where Ave has
-      // the value (tool name, compaction trigger, agent type, end reason), else
-      // the sessionId. (`'*'` / absent matcher ⇒ match every occurrence.)
+      // Subjects are bounded event values; Stop ignores matchers entirely.
       const entries = filterRegistryByEventAndSubject(
         this.snapshotRegistry(),
         event,
@@ -321,6 +325,8 @@ export class ScriptHookManager {
         event,
         sessionId,
         trustOrigin,
+        ...(event === "SessionStart" ? { sessionSource: payload.sessionSource ?? "startup" } : {}),
+        ...(event === "Notification" ? { notificationType: payload.notificationType ?? "agent_completed" } : {}),
         ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
         // DLP-redact free-text fields (§6.6): a tool error message can echo
         // user/secret data. No tool inputs flow through lifecycle events.
@@ -394,9 +400,8 @@ export class ScriptHookManager {
    *     blocking event must fail closed.
    *
    * BACK-COMPAT: when NO trusted hook matches, returns `allow` with an empty
-   * `results` so the caller proceeds byte-identically to today. The matcher
-   * subject is the prompt text (or `'*'`), matched via the same matcher as `.sh` /
-   * tool-use matchers.
+   * `results` so the caller proceeds byte-identically to today. This event has
+   * no matcher support: every trusted prompt hook runs on every prompt.
    *
    * DLP: `inputText` is DLP-redacted here (§6.6, via {@link redactForLLM}) before
    * it reaches the hook stdin / env — exactly as the observe path redacts
@@ -410,13 +415,7 @@ export class ScriptHookManager {
   ): Promise<HookDispatchResult> {
     if (!areExternalTurnHooksAllowed()) return externalHooksSuppressed();
     try {
-      // Matcher subject = the prompt text (design §5). Reuse the same matcher as
-      // tool-use / lifecycle matchers (`'*'` / absent matcher ⇒ match every prompt).
-      const entries = filterRegistryByEventAndSubject(
-        this.snapshotRegistry(),
-        USER_PROMPT_SUBMIT_EVENT,
-        payload.inputText,
-      );
+      const entries = this.snapshotRegistry().filter((entry) => entry.event === USER_PROMPT_SUBMIT_EVENT);
       if (entries.length === 0) {
         // No trusted matching hook ⇒ ALLOW (back-compat: turn proceeds as today).
         return { decision: "allow", reason: "no matching UserPromptSubmit hooks", results: [] };
@@ -461,7 +460,16 @@ export class ScriptHookManager {
   ): Promise<HookDispatchResult> {
     // #811 — filter by event + matcher (the same matcher as `.sh` frontmatter).
     // A config/`.sh` entry with no matcher runs for every tool.
-    const entries = filterRegistryByEventAndTool(this.snapshotRegistry(), type, payload.toolName);
+    const registry = this.snapshotRegistry();
+    const invalid = [...this.matcherGuards, ...registry].find((entry) => entry.event === type && entry.matcherError);
+    if (invalid) return { decision: "deny", reason: invalid.matcherError!, results: [] };
+    let entries: HookRegistryEntry[];
+    try {
+      entries = filterRegistryByEventAndTool(registry, type, payload.toolName);
+    } catch (error) {
+      if (!(error instanceof HookMatcherError)) throw error;
+      return { decision: "deny", reason: error.message, results: [] };
+    }
     if (entries.length === 0) {
       return { decision: "allow", reason: "no matching hooks of this type", results: [] };
     }

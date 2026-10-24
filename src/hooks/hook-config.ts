@@ -10,11 +10,9 @@
  * Configuration decisions:
  *
  *   (a) MATCHER ENGINE = an exact name list, or else an unanchored JavaScript
- *       regular expression, replacing anchored globs for Claude Code reference
- *       compatibility. `compileHookMatcher` in `hook-discovery.ts` compiles
- *       `hooks.json` and `.sh` frontmatter alike. A matcher that is not a valid
- *       regular expression rejects its block here, so it never silently matches
- *       nothing.
+ *       regular expression. `compileHookMatcher` in `hook-discovery.ts` compiles
+ *       `hooks.json` and `.sh` frontmatter alike. Invalid matchers are reported
+ *       and retained as inert denial guards for blocking tool events.
  *
  *   (b) EVENT KEYS = CLOSED SET. `PreToolUse → "pre"`, `PostToolUse → "post"`,
  *       `PermissionRequest → "perm"`. An unknown event key is IGNORED with a
@@ -41,7 +39,7 @@ import {
   type HookEvent,
 } from "./script-hook-types.js";
 import { isRecord } from "../shared/is-record.js";
-import { HOOK_EVENT_TYPES } from "./hook-contract.js";
+import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
 import { hookMatcherError } from "./hook-discovery.js";
 
 /**
@@ -61,9 +59,13 @@ export interface HookConfigEntry {
   event: HookEvent;
   /**
    * Optional matcher over the tool name or lifecycle subject (decision (a)).
-   * Absent ⇒ matches everything. Matched later via `hookMatchesTool`.
+   * Absent ⇒ matches everything. Compiled when the registry is built.
    */
   matcher?: string;
+  /** Invalid entries remain inert denial guards for blocking tool events. */
+  matcherError?: string;
+  /** Originating config file, when loaded from disk. */
+  configPath?: string;
   /** argv form of the command (always ≥1 element; argv[0] is the program). */
   command: string[];
   env?: Record<string, string>;
@@ -215,22 +217,24 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
       // matcher is optional; when present it must be a string and, when it is
       // not an exact name list, a valid regular expression (decision (a)).
       let matcher: string | undefined;
-      if (matcherBlock.matcher !== undefined) {
+      let matcherError: string | undefined;
+      if (matcherBlock.matcher !== undefined && !hookEventSupportsMatcher(event)) {
+        warnings.push(`hooks.json: ${eventKey}[${blockIdx}].matcher ${JSON.stringify(matcherBlock.matcher)} ignored: event has no matcher support`);
+      } else if (matcherBlock.matcher !== undefined) {
         if (typeof matcherBlock.matcher !== "string") {
-          warnings.push(
-            `hooks.json: ${eventKey}[${blockIdx}].matcher is not a string — matcher ignored`,
-          );
+          matcherError = `matcher ${JSON.stringify(matcherBlock.matcher)} is not a string`;
+          errors.push(`hooks.json: ${eventKey}[${blockIdx}].${matcherError}`);
         } else {
           const trimmed = matcherBlock.matcher.trim();
           // "*" and "" both mean "match all" → leave matcher undefined so the
-          // registry's hookMatchesTool short-circuits to true.
+          // registry's compiled predicate matches every bounded subject.
           matcher = trimmed === "" || trimmed === "*" ? undefined : trimmed;
           const invalid = hookMatcherError(matcher);
           if (invalid !== undefined) {
+            matcherError = invalid;
             errors.push(
               `hooks.json: ${eventKey}[${blockIdx}].matcher ${JSON.stringify(trimmed)} is not a valid regular expression (${invalid}) — rejected`,
             );
-            return;
           }
         }
       }
@@ -309,6 +313,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           id,
           event,
           ...(matcher !== undefined ? { matcher } : {}),
+          ...(matcherError !== undefined ? { matcherError } : {}),
           command,
           ...(env ? { env } : {}),
           timeoutMs,

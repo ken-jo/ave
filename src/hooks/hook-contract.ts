@@ -26,17 +26,18 @@ function compactTrigger(reason: string | undefined): "manual" | "auto" | undefin
 }
 
 /**
- * The value a lifecycle hook's matcher is tested against. It follows the Claude
- * Code hooks reference where Ave has the value: the tool name, the compaction
- * trigger, the agent type, or Ave's SessionEnd reason. Events without such a
- * value in Ave (SessionStart, Notification, Stop) keep matching the session ID.
+ * Matcher subjects are event values, never session identifiers or free text.
  */
 export function lifecycleMatcherSubject(
   event: LifecycleHookEvent,
-  sessionId: string,
+  _sessionId: string,
   payload: LifecycleEventPayload,
 ): string {
   switch (event) {
+    case "SessionStart":
+      return payload.sessionSource ?? "startup";
+    case "Notification":
+      return payload.notificationType ?? "agent_completed";
     case "PostToolUseFailure":
     case "PermissionDenied":
       return payload.toolName ?? "";
@@ -49,8 +50,12 @@ export function lifecycleMatcherSubject(
     case "SessionEnd":
       return payload.reason ?? "";
     default:
-      return sessionId;
+      return "";
   }
+}
+
+export function hookEventSupportsMatcher(event: HookEvent): boolean {
+  return event !== "UserPromptSubmit" && event !== "Stop";
 }
 
 /** Public configuration keys; internal tool aliases remain stable for audit readers. */
@@ -95,9 +100,9 @@ interface HookJsonFields {
   UserPromptSubmit: { prompt: string };
   PostToolUseFailure: { tool_name?: string; error?: string; duration_ms?: number };
   PermissionDenied: { tool_name?: string; deny_reason?: { layer: number | undefined; source: string; reason?: string } };
-  SessionStart: { session_meta?: Record<string, unknown> };
+  SessionStart: { source?: "startup" | "resume" | "clear"; session_meta?: Record<string, unknown> };
   SessionEnd: { reason?: string; session_meta?: Record<string, unknown>; stop_reason?: string };
-  Notification: { message?: string };
+  Notification: { message?: string; notification_type?: string };
   Stop: { stop_reason?: string; tool_count?: number; duration_ms?: number; stop_hook_active?: boolean };
   PreCompact: { reason?: string; trigger?: "manual" | "auto"; token_estimate?: number };
   PostCompact: { trigger?: "manual" | "auto"; messages_before?: number; messages_after?: number; tokens_before?: number; tokens_after?: number };
@@ -141,12 +146,12 @@ export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonIn
     case "PermissionDenied":
       return { ...common, hook_event_name: payload.hookType, tool_name: payload.toolName, deny_reason: payload.denyReason };
     case "SessionStart":
-      return { ...common, hook_event_name: payload.hookType, session_meta: payload.sessionMeta };
+      return { ...common, hookType: "SessionStart", event: "SessionStart", hook_event_name: "SessionStart", source: payload.sessionSource, session_meta: payload.sessionMeta };
     case "SessionEnd":
       return { ...common, hook_event_name: payload.hookType, reason: payload.reason,
         session_meta: payload.sessionMeta, stop_reason: payload.stopReason };
     case "Notification":
-      return { ...common, hook_event_name: payload.hookType, message: payload.message };
+      return { ...common, hook_event_name: payload.hookType, message: payload.message, notification_type: payload.notificationType };
     case "Stop":
       return { ...common, hook_event_name: payload.hookType, stop_reason: payload.stopReason,
         tool_count: payload.toolCount, duration_ms: payload.durationMs, stop_hook_active: payload.stopHookActive };

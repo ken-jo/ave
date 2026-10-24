@@ -170,6 +170,10 @@ export interface ToolHookStdin extends HookDispatchPayload {
  * non-blocking events.
  */
 export interface LifecycleEventPayload {
+  /** How the session entered the current conversation. */
+  sessionSource?: "startup" | "resume" | "clear";
+  /** Notification category; turn completion uses agent_completed. */
+  notificationType?: string;
   /** PostToolUseFailure — the failing tool's name. */
   toolName?: string;
   /** PostToolUseFailure — tool error message (DLP-redacted before dispatch). */

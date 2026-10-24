@@ -148,9 +148,53 @@ function sha256OfFile(path: string): { sha256: string; size: number; matcher?: s
 /** Matchers made only of these characters are exact names, split on `|` or `,`. */
 const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]+$/u;
 
+export const HOOK_MATCHER_PATTERN_MAX = 256;
+export const HOOK_MATCHER_SUBJECT_MAX = 256;
+
+export class HookMatcherError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HookMatcherError";
+  }
+}
+
+/** Bound backtracking without changing the regular expression engine. */
+function validateMatcherRepetition(pattern: string): void {
+  let inClass = false;
+  let repetitions = 0;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    if (char === "\\") {
+      if (!inClass && /[1-9k]/u.test(pattern[i + 1] ?? "")) {
+        throw new HookMatcherError("matcher backreferences are not supported");
+      }
+      i += 1;
+      continue;
+    }
+    if (char === "[") inClass = true;
+    if (char === "]") inClass = false;
+    if (inClass) continue;
+    const counted = char === "{" ? /^\{\d+(?:,\d*)?\}/u.exec(pattern.slice(i))?.[0] : undefined;
+    const quantified = char === "*" || char === "+" || (char === "?" && pattern[i - 1] !== "(") || counted !== undefined;
+    if (!quantified) continue;
+    if (pattern[i - 1] === ")") {
+      throw new HookMatcherError("matcher quantified groups are not supported");
+    }
+    repetitions += 1;
+    if (repetitions > 2) throw new HookMatcherError("matcher supports at most two quantified atoms");
+    if (counted) {
+      if (counted.match(/\d+/gu)!.some((value) => Number(value) > HOOK_MATCHER_SUBJECT_MAX)) {
+        throw new HookMatcherError("matcher repetition exceeds subject limit");
+      }
+      i += counted.length - 1;
+    }
+    if (pattern[i + 1] === "?") i += 1;
+  }
+}
+
 /**
  * Why a matcher cannot load, or undefined when it is usable. Matchers follow the
- * Claude Code hooks reference (https://code.claude.com/docs/en/hooks): an exact
+ * public matcher contract: an exact
  * name list, or else a JavaScript regular expression. An invalid regular
  * expression must refuse the hook rather than silently match nothing.
  */
@@ -159,7 +203,8 @@ export function hookMatcherError(matcher: string | undefined): string | undefine
     compileHookMatcher(matcher);
     return undefined;
   } catch (err) {
-    return (err as Error).message;
+    if (!(err instanceof HookMatcherError)) throw err;
+    return err.message;
   }
 }
 
@@ -169,26 +214,35 @@ export function hookMatcherError(matcher: string | undefined): string | undefine
  * `_`, `-`, spaces, `,` and `|` is a list of exact names (`Edit|Write`,
  * `Edit, Write`). Anything else is an unanchored regular expression
  * (`mcp__.*`, `^Notebook`). Loading rejects invalid regular expressions through
- * {@link hookMatcherError}. The user-authored regex runs as written, without
- * a complexity bound. Registries compile it once when built, outside dispatch.
+ * {@link hookMatcherError}. Length and repetition bounds apply before dispatch.
+ * Registries compile it once when built, outside dispatch.
  */
 export function compileHookMatcher(matcher: string | undefined): (subject: string) => boolean {
-  if (!matcher || matcher === "*") return () => true;
-  if (EXACT_MATCHER.test(matcher)) {
+  if (matcher !== undefined && matcher.length > HOOK_MATCHER_PATTERN_MAX) {
+    throw new HookMatcherError(`matcher exceeds ${HOOK_MATCHER_PATTERN_MAX} characters`);
+  }
+  let matches: (subject: string) => boolean;
+  if (!matcher || matcher === "*") matches = () => true;
+  else if (EXACT_MATCHER.test(matcher)) {
     const names = new Set(matcher.split(/[|,]/u).map((name) => name.trim()));
-    return (subject) => names.has(subject);
+    matches = (subject) => names.has(subject);
+  } else {
+    validateMatcherRepetition(matcher);
+    let regex: RegExp;
+    try {
+      regex = new RegExp(matcher);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new HookMatcherError(error.message);
+    }
+    matches = (subject) => regex.test(subject);
   }
-  const regex = new RegExp(matcher);
-  return (subject) => regex.test(subject);
-}
-
-/** Direct matching for callers without a registry; invalid regexes never match. */
-export function hookMatchesTool(matcher: string | undefined, toolName: string): boolean {
-  try {
-    return compileHookMatcher(matcher)(toolName);
-  } catch {
-    return false;
-  }
+  return (subject) => {
+    if (subject.length > HOOK_MATCHER_SUBJECT_MAX) {
+      throw new HookMatcherError(`matcher subject exceeds ${HOOK_MATCHER_SUBJECT_MAX} characters`);
+    }
+    return matches(subject);
+  };
 }
 
 /**
@@ -198,7 +252,7 @@ export function hookMatchesTool(matcher: string | undefined, toolName: string): 
  *
  * The `.disabled/` subfolder is NEVER walked.
  */
-export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[] {
+export function discoverHooks(dir: string = defaultHooksDir(), quarantined = false): DiscoveredHook[] {
   if (!existsSync(dir)) return [];
   let entries: string[];
   try {
@@ -218,7 +272,7 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
       continue;
     }
     if (!st.isFile()) continue;
-    const hookType = hookTypeFromName(fileName);
+    const hookType = hookTypeFromName(quarantined ? fileName.replace(/(\.sh)\..+$/u, "$1") : fileName);
     if (!hookType) continue;
     let h: { sha256: string; size: number; matcher?: string };
     try {
@@ -229,8 +283,8 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
     }
     const matcherError = hookMatcherError(h.matcher);
     if (matcherError !== undefined) {
-      // Kept for trust review, but the registry will not load it.
-      log.warn("hook-discovery: %s matcher is not a valid regular expression (%s) — hook not loaded", path, matcherError);
+      // Retained for review and for a denial guard on blocking tool events.
+      log.warn("hook-discovery: %s matcher %s is invalid (%s)", path, JSON.stringify(h.matcher), matcherError);
     }
     out.push({ path, fileName, hookType, sha256: h.sha256, size: h.size, matcher: h.matcher });
   }

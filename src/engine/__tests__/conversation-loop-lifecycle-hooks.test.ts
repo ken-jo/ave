@@ -119,6 +119,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     expect(starts).toHaveLength(1);
     const [, sessionId, , payload] = starts[0];
     expect(typeof sessionId).toBe("string");
+    expect(payload).toMatchObject({ sessionSource: "startup" });
     expect((payload as { sessionMeta: Record<string, unknown> }).sessionMeta,
     ).toMatchObject({
       sessionKind: "main",
@@ -140,6 +141,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const starts = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "SessionStart",
     );
     expect(starts).toHaveLength(2);
+    expect((starts[1] as unknown[])[3]).toMatchObject({ sessionSource: "clear" });
   });
 
   it("fires Stop after each turn with stopReason + toolCount + durationMs", async () => {

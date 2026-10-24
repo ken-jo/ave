@@ -25,6 +25,11 @@ describe("hook import and export review", () => {
     expect(() => clearedImportedHooks(result.entries)).toThrow(/needs adaptation/);
     const cleared = result.entries.map((entry) => ({ ...entry, needsAdaptation: false }));
     expect(Object.keys(clearedImportedHooks(cleared).hooks)).toEqual(names);
+    for (const event of ["UserPromptSubmit", "Stop"] as const) {
+      expect(result.entries.find((entry) => entry.event === event)?.matcher).toBeUndefined();
+      expect(clearedImportedHooks(cleared).hooks[event][0]).not.toHaveProperty("matcher");
+    }
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ entry: "Stop[0]", message: expect.stringContaining("matcher ignored") }));
   });
 
   it.each([
