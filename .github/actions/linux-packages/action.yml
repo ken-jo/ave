@@ -61,18 +61,24 @@ runs:
         # apt only creates partial/ itself under Dir::Cache; elsewhere it must exist.
         mkdir -p "$archives/partial"
         find "$archives" -maxdepth 1 -type f -name '*.deb' -delete
+        image_os=${ImageOS:-}
+        image_version=${ImageVersion:-}
+        if [ -z "$image_os" ] || [ -z "$image_version" ]; then
+          image_os=installed
+          image_version=$({ cat /etc/os-release; LC_ALL=C dpkg-query -W; } | sha256sum | cut -d ' ' -f 1)
+        fi
         {
           echo "install=true"
           echo "archives=$archives"
           echo "packages-hash=$packages_hash"
-          echo "image-os=${ImageOS:-unknown}"
-          echo "image-version=${ImageVersion:-unknown}"
+          echo "image-os=$image_os"
+          echo "image-version=$image_version"
         } >> "$GITHUB_OUTPUT"
 
     - name: Restore downloaded package archives
       id: cache
       if: steps.prepare.outputs.install == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # The downloader's partial directory is private to its system account.
         # Only completed archives belong in the cache.
@@ -104,6 +110,7 @@ runs:
         PACKAGES: ${{ inputs.packages }}
         ARCHIVES: ${{ steps.prepare.outputs.archives }}
       run: |
+        find "$ARCHIVES" -maxdepth 1 -type f -name '*.deb' -delete
         read -r -a packages <<< "$PACKAGES"
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends --fix-broken --download-only \
@@ -113,3 +120,12 @@ runs:
         if [ "${#archives[@]}" -gt 0 ]; then
           sudo dpkg -i "${archives[@]}"
         fi
+
+    # Save before dependency scripts or tests can modify the downloaded archives.
+    - name: Save downloaded package archives
+      if: steps.prepare.outputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ steps.prepare.outputs.archives }}/*.deb
+        key: linux-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.image-os }}-${{ steps.prepare.outputs.image-version }}-${{ steps.prepare.outputs.packages-hash }}

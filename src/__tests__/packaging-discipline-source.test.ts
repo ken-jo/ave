@@ -1131,6 +1131,18 @@ describe("installer smoke and packaging discipline", () => {
     if (jobId === "build-and-test") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
   });
 
+  it.each(["build-and-test", "linux-confinement-tests"])("installs and saves packages before dependency code in %s", (jobId) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const steps = workflow.jobs[jobId].steps;
+    const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
+    expect(install).toBeDefined();
+    const dependencySteps = steps.filter((step: { run?: string }) => /\bbun\s+(?:install|run)\b/u.test(step.run ?? ""));
+    expect(dependencySteps.length).toBeGreaterThan(0);
+    for (const step of dependencySteps) {
+      expect(steps.indexOf(step)).toBeGreaterThan(steps.indexOf(install));
+    }
+  });
+
   it("caches image-specific package archives and recovers an incomplete cache", () => {
     const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
     expect(action.runs.using).toBe("composite");
@@ -1147,7 +1159,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(prepare.run).toContain('archives="$RUNNER_TEMP/linux-packages-$packages_hash"');
     expect(prepare.run).not.toContain("mktemp");
     const cache = steps.find((step: { id?: string }) => step.id === "cache");
-    expect(cache.uses).toBe("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
+    expect(cache.uses).toBe("actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
     expect(cache.if).toBe("steps.prepare.outputs.install == 'true'");
     expect(cache.with.path).toBe("${{ steps.prepare.outputs.archives }}/*.deb");
     for (const field of ["runner.os", "runner.arch", "steps.prepare.outputs.image-os", "steps.prepare.outputs.image-version", "steps.prepare.outputs.packages-hash"]) {
@@ -1167,6 +1179,48 @@ describe("installer smoke and packaging discipline", () => {
     expect(miss.run).toContain('Dir::Cache::archives=');
     expect(miss.run).toContain('sudo dpkg -i');
     expect(miss.env.ARCHIVES).toBe("${{ steps.prepare.outputs.archives }}");
+  });
+
+  it("saves package archives immediately after installation before returning to the caller", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    const steps = action.runs.steps;
+    const cacheSteps = steps.filter((step: { uses?: string }) => step.uses?.startsWith("actions/cache"));
+    expect(cacheSteps.map((step: { uses: string }) => step.uses)).toEqual([
+      "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    ]);
+    expect(steps.some((step: { uses?: string }) => step.uses?.startsWith("actions/cache@"))).toBe(false);
+    const installIndex = steps.findIndex((step: { id?: string }) => step.id === "download-install");
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(steps[installIndex].run).toContain('sudo dpkg -i "${archives[@]}"');
+    const save = steps[installIndex + 1];
+    expect(save.uses).toBe(cacheSteps[1].uses);
+    expect(save.if).toBe("steps.prepare.outputs.install == 'true' && steps.cache.outputs.cache-hit != 'true'");
+    expect(save["continue-on-error"]).toBe(true);
+    expect(save.with.key).toBe(cacheSteps[0].with.key);
+    expect(save.with.path).toBe(cacheSteps[0].with.path);
+  });
+
+  it("clears stale package archives before downloading replacements", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    const miss = action.runs.steps.find((step: { id?: string }) => step.id === "download-install");
+    const cleanup = 'find "$ARCHIVES" -maxdepth 1 -type f -name \'*.deb\' -delete';
+    expect(miss.run.trimStart().startsWith(cleanup)).toBe(true);
+    expect(miss.run.indexOf(cleanup)).toBeLessThan(miss.run.indexOf("sudo apt-get install"));
+  });
+
+  it("derives missing image identity from the operating system and installed package set", () => {
+    const source = readRepoFile(".github/actions/linux-packages/action.yml");
+    const action = parseYaml(source);
+    const prepare = action.runs.steps.find((step: { id?: string }) => step.id === "prepare");
+    expect(source).not.toContain("unknown");
+    expect(prepare.run).toContain('image_os=${ImageOS:-}');
+    expect(prepare.run).toContain('image_version=${ImageVersion:-}');
+    expect(prepare.run).toContain('if [ -z "$image_os" ] || [ -z "$image_version" ]; then');
+    expect(prepare.run).toContain('image_os=installed');
+    expect(prepare.run).toContain('image_version=$({ cat /etc/os-release; LC_ALL=C dpkg-query -W; } | sha256sum | cut -d \' \' -f 1)');
+    expect(prepare.run).toContain('echo "image-os=$image_os"');
+    expect(prepare.run).toContain('echo "image-version=$image_version"');
   });
 
   it("requires shared temporary write regressions in the Linux confinement job", () => {
