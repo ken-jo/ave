@@ -889,10 +889,13 @@ describe("one conversation per installed plugin's surface", () => {
  */
 describe.runIf(process.platform !== "win32")("the python smoke's conversation, over real pipes", () => {
   const PYTHON_SMOKE_GOLDEN = join(GOLDEN_ROOT, "plugins", "python-smoke", "expected.jsonl");
-  let templateRoot: string | undefined;
+  let templateRoot: string;
+
+  beforeAll(() => {
+    templateRoot = installPythonSmoke(join(aveHomeRoot, "python-template"));
+  });
 
   function copyPythonFixture(root: string): void {
-    templateRoot ??= installPythonSmoke(join(aveHomeRoot, "python-template"));
     cpSync(templateRoot, root, { recursive: true, preserveTimestamps: true });
   }
 
@@ -1016,8 +1019,16 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
   }
 
   it("is the committed golden, recorded twice in independently allocated roots", async () => {
-    const first = await recordPythonConversation();
-    const second = await recordPythonConversation();
+    // Each recording owns its install, data roots, host and real child. Wait
+    // for both cleanups even when one fails, before the shared template is removed.
+    const [firstResult, secondResult] = await Promise.allSettled([
+      recordPythonConversation(),
+      recordPythonConversation(),
+    ]);
+    if (firstResult.status === "rejected") throw firstResult.reason;
+    if (secondResult.status === "rejected") throw secondResult.reason;
+    const first = firstResult.value;
+    const second = secondResult.value;
     reportSmoke("measurement", {
       platform: process.platform,
       ruMaxrssBytes: [first.ruMaxrssBytes, second.ruMaxrssBytes],

@@ -379,6 +379,7 @@ export const CHANNELS = {
   mcp: {
     servers: "ave:mcp:servers",
     kill: "ave:mcp:kill",
+    authenticate: "ave:mcp:authenticate",
     configGet: "ave:mcp:config:get",
     configPath: "ave:mcp:config:path",
     configAdd: "ave:mcp:config:add",

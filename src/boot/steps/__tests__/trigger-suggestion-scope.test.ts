@@ -25,6 +25,8 @@ const DAY = 24 * 60 * 60 * 1000;
 const DECLARED = "overlay:fixturemail-routine";
 
 let dir: string;
+/** Every ledger a test opened: an acceptance persists in the background. */
+const ledgers: SuggestionLedger[] = [];
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "trigger-suggestion-scope-"));
@@ -32,11 +34,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  // A write still in flight would recreate the directory after the removal.
+  for (const ledger of ledgers.splice(0)) await ledger.flush();
   await rm(dir, { recursive: true, force: true });
 });
 
 async function loadedLedger(): Promise<SuggestionLedger> {
   const ledger = new SuggestionLedger(() => dir);
+  ledgers.push(ledger);
   await ledger.load();
   return ledger;
 }

@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +40,29 @@ import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../shared/llm
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH } from "../../shared/subscription-runtime.js";
 import { routeExternalUrl } from "../../boot/steps/plugin-runtime/external-url.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+
+let currentSettingsPath: string;
+let currentMigrations: readonly string[];
+
+beforeAll(() => {
+  currentSettingsPath = mkdtempSync(join(tmpdir(), "settings-store-current-"));
+  const settings = new SettingsService({
+    encryption: mockedElectron.safeStorage,
+    userDataPath: currentSettingsPath,
+  }).getAll();
+  expect(settings.appliedMigrations).toBeDefined();
+  currentMigrations = Object.freeze(settings.appliedMigrations!);
+});
+
+afterAll(async () => {
+  await cleanupTmpDir(currentSettingsPath);
+});
+
+/** Current-format normalization fixtures do not need unrelated migration writes. */
+function currentSettingsJson(settings: Record<string, unknown>): string {
+  return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
+}
 
 describe("SettingsService remote A2A canonical route-control origin", () => {
   let userDataPath: string;
@@ -130,7 +153,7 @@ describe("SettingsService marketplace defaults", () => {
 
   it("normalizes the automatic-update switches, dropping invalid entries, and leaves the discovery interval as stored (design §18.9)", async () => {
     const load = (marketplace: unknown) => {
-      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace }), "utf-8");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace }), "utf-8");
       return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace");
     };
     const read = load({
@@ -164,7 +187,7 @@ describe("SettingsService marketplace defaults", () => {
 
   it("keeps a valid git runtime mode and drops anything else", () => {
     const load = (git: unknown) => {
-      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace: { git } }), "utf-8");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace: { git } }), "utf-8");
       return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace").git;
     };
     expect(load({ mode: "managed" })).toEqual({ mode: "managed" });
@@ -803,9 +826,11 @@ describe("SettingsService marketplace defaults", () => {
       secretStore: { set(key: string, value: string): Promise<void>; deleteMany(keys: string[]): Promise<number> };
     }).secretStore;
     const realSet = secrets.set.bind(secrets);
-    vi.spyOn(secrets, "set").mockImplementationOnce((k, v) => new Promise((resolve, reject) => {
-      setTimeout(() => realSet(k, v).then(resolve, reject), 20);
-    }));
+    const entryMayCommit = deferred<void>();
+    vi.spyOn(secrets, "set").mockImplementationOnce(async (k, v) => {
+      await entryMayCommit.promise;
+      await realSet(k, v);
+    });
     let entry: Promise<void> | undefined;
     vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
       // The user starts entering a key for the new address; the deletion
@@ -814,7 +839,11 @@ describe("SettingsService marketplace defaults", () => {
       throw new Error("keychain locked");
     });
 
-    await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+    try {
+      await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+    } finally {
+      entryMayCommit.resolve();
+    }
     await entry;
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
@@ -888,8 +917,9 @@ describe("SettingsService marketplace defaults", () => {
     lease.onClosed(closed);
     const secrets = (service as unknown as { secretStore: { set(key: string, value: string): Promise<void> } }).secretStore;
     // The entry's write fails only after the move's deletion has run.
+    let rejectEntry!: (error: Error) => void;
     vi.spyOn(secrets, "set").mockImplementationOnce(
-      () => new Promise((_, reject) => setTimeout(() => reject(new Error("keychain locked")), 30)),
+      () => new Promise((_, reject) => { rejectEntry = reject; }),
     );
     type Internals = { saveSettings(settings: unknown): Promise<void> };
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
@@ -918,6 +948,7 @@ describe("SettingsService marketplace defaults", () => {
       releaseSave();
     }
     await moving;
+    rejectEntry(new Error("keychain locked"));
     await expect(entry).rejects.toThrow("keychain locked");
 
     // The key kept for the entry is the old address's: it is not handed out.
@@ -1485,7 +1516,7 @@ describe("SettingsService role presets", () => {
   it("ignores unknown on-disk sections without resetting unrelated sections", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         unknownSection: { foo: "bar" },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
       }),
@@ -1546,7 +1577,7 @@ describe("SettingsService role presets", () => {
     try {
       writeFileSync(
         join(corruptPath, "ave-settings.json"),
-        JSON.stringify({ features: { memoryCaptureMode: "always" } }),
+        currentSettingsJson({ features: { memoryCaptureMode: "always" } }),
         "utf-8",
       );
       expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: corruptPath }).get("features")?.memoryCaptureMode).toBe("off");
@@ -2269,7 +2300,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   ])("falls back to default when preferredFlow is invalid (%s) without resetting unrelated settings", (_label, badValue) => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         webView: { preferredFlow: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
         marketplace: { updateCheckEnabled: false },
@@ -2287,7 +2318,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   it("falls back to default when webView block is not an object", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ webView: "garbage" }),
+      currentSettingsJson({ webView: "garbage" }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2419,7 +2450,7 @@ describe("SettingsService system preferences", () => {
   ])("falls back to default when closeBehavior is invalid on disk (%s) without resetting unrelated settings", (_label, badValue) => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         system: { closeBehavior: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
         marketplace: { updateCheckEnabled: false },
@@ -2436,7 +2467,7 @@ describe("SettingsService system preferences", () => {
   it("falls back to default when system block is not an object", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: "garbage" }),
+      currentSettingsJson({ system: "garbage" }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2534,7 +2565,7 @@ describe("SettingsService system — workspace appMode", () => {
   it("normalizes appMode and closeBehavior independently (one invalid, one valid)", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
+      currentSettingsJson({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2686,7 +2717,7 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   it("malformed bundleId coerces to DEFAULT_BUNDLE_ID", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2698,7 +2729,7 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   it("keeps a well-formed installed theme id and language tag it cannot resolve yet", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2828,7 +2859,7 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID } }),
       "utf-8",
     );
     // Even if OS is Korean, the stored "en" is the user's explicit choice — respect it.
@@ -2839,7 +2870,7 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with language='ko' is preserved regardless of systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "ko", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "ko", bundleId: DEFAULT_BUNDLE_ID } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "en-US" });
@@ -2851,28 +2882,59 @@ describe("SettingsService system locale detection", () => {
 
 describe("SettingsService appearance v1 → v2 migration", () => {
   let userDataPath: string;
+  let migrationWrites: Array<{ promise: Promise<void>; settled: boolean }>;
+  let restoreWriteObserver: () => void;
 
   async function waitForV2WriteBack(): Promise<void> {
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-        appearance?: { schemaVersion?: unknown };
-      };
-      if (onDisk.appearance?.schemaVersion === 2) return;
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50));
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(migrationWrites.map((writing) => writing.promise)),
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("Settings migration write-back did not settle before teardown")), 1_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
     }
-    throw new Error("Settings migration write-back did not settle before teardown");
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      appearance?: { schemaVersion?: unknown };
+    };
+    expect(onDisk.appearance?.schemaVersion).toBe(2);
   }
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-migration-"));
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    migrationWrites = [];
+    type SettingsWriter = { saveSettings(settings: unknown): Promise<void> };
+    const prototype = SettingsService.prototype as unknown as SettingsWriter;
+    const realSave = prototype.saveSettings;
+    const observer = vi.spyOn(prototype, "saveSettings").mockImplementation(function (this: SettingsWriter, settings) {
+      const writing = realSave.call(this, settings);
+      const tracked = { promise: writing, settled: false };
+      migrationWrites.push(tracked);
+      const markSettled = () => { tracked.settled = true; };
+      void writing.then(markSettled, markSettled);
+      return writing;
+    });
+    restoreWriteObserver = () => observer.mockRestore();
   });
 
   afterEach(async () => {
-    await waitForV2WriteBack();
-    vi.clearAllMocks();
-    await cleanupTmpDir(userDataPath);
+    try {
+      await waitForV2WriteBack();
+    } finally {
+      restoreWriteObserver();
+      vi.clearAllMocks();
+      if (migrationWrites.every((writing) => writing.settled)) {
+        await cleanupTmpDir(userDataPath);
+      } else {
+        // A timed-out write still owns this root until its real I/O settles.
+        console.warn("Settings migration writes are pending; retained temporary directory: %s", userDataPath);
+      }
+    }
   });
 
   function writeV1(appearance: Record<string, unknown>): void {
@@ -2952,18 +3014,36 @@ describe("SettingsService appearance v1 → v2 migration", () => {
   it("v1 write-back: migrated appearance is written to disk as v2", async () => {
     writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // The constructor triggers async write-back — poll until disk reflects v2
-    let onDisk: Record<string, unknown> = {};
-    for (let i = 0; i < 20; i++) {
-      await new Promise<void>((res) => setTimeout(res, 50));
-      onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-      if ((onDisk.appearance as Record<string, unknown>).schemaVersion === 2) break;
-    }
+    // Await the constructor's actual atomic write, including lock release.
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
     expect(onDisk.appearance).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
     // No legacy keys remain after write-back
     expect(onDisk.appearance.theme).toBeUndefined();
     expect(onDisk.appearance.chatTheme).toBeUndefined();
     expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
+  });
+
+  it("persists migrations and normalized fields from an unmarked legacy file", async () => {
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    writeFileSync(settingsPath, JSON.stringify({
+      appearance: { theme: "dark", chatTheme: "lg", codeTheme: "auto" },
+      features: { subAgentAutonomousWake: false },
+      shortcuts: { toggleWindow: 42, enabled: "nope" },
+    }), "utf-8");
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("appliedMigrations");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
+    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
+    expect(service.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+    expect(onDisk.appearance).toEqual(service.get("appearance"));
+    expect(onDisk.features).toMatchObject({ subAgentAutonomousWake: true });
+    expect(onDisk.shortcuts).toEqual({ toggleWindow: null, enabled: false });
+    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
   });
 
   it("v2 file loads without re-migration", () => {
@@ -2993,12 +3073,8 @@ describe("SettingsService appearance v1 → v2 migration", () => {
   it("codeTheme-only v1 triggers write-back (needsV2WriteBack includes codeTheme)", async () => {
     writeV1({ codeTheme: "light" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    let onDisk: Record<string, unknown> = {};
-    for (let i = 0; i < 20; i++) {
-      await new Promise<void>((res) => setTimeout(res, 50));
-      onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-      if ((onDisk.appearance as Record<string, unknown>).schemaVersion === 2) break;
-    }
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
     expect((onDisk.appearance as Record<string, unknown>).codeTheme).toBeUndefined();
     expect(service.get("appearance")).toMatchObject({ schemaVersion: 2 });
   });
@@ -3017,7 +3093,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
   function writeAppearance(font: unknown): void {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font } }),
     );
   }
 
@@ -3061,7 +3137,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
       try {
         writeFileSync(
           join(dir, "ave-settings.json"),
-          JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: value } } }),
+          currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: value } } }),
         );
         const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: dir });
         expect(s.get("appearance")).toMatchObject({ font: { sizeScale: value } });
@@ -3221,7 +3297,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
   it("normalizes a corrupt shortcuts block on load", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ shortcuts: { toggleWindow: 42, enabled: "nope" } }),
+      currentSettingsJson({ shortcuts: { toggleWindow: 42, enabled: "nope" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3266,7 +3342,7 @@ describe("SettingsService diagnostics (#1499 E2)", () => {
   it("corrupt on-disk diagnostics falls back to defaults", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ diagnostics: { includeCrashDumps: 1, logRetentionDays: "seven" } }),
+      currentSettingsJson({ diagnostics: { includeCrashDumps: 1, logRetentionDays: "seven" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3324,7 +3400,7 @@ describe("SettingsService telemetry normalization", () => {
   it("corrupt on-disk telemetry falls back to defaults field by field", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         telemetry: {
           enabled: "true",
           crashReportingEnabled: true,
@@ -3369,7 +3445,7 @@ describe("SettingsService chat normalization", () => {
   it("falls back to full for a malformed processing detail value", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ chat: { processingDisplayLevel: "everything" } }),
+      currentSettingsJson({ chat: { processingDisplayLevel: "everything" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3443,7 +3519,7 @@ describe("SettingsService chat normalization", () => {
   it("corrupt on-disk chat falls back to defaults", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         chat: { subAgentMaxRounds: "many", autoCompact: 1, systemPrompt: [] },
       }),
       "utf-8",
@@ -4233,7 +4309,7 @@ describe("SettingsService llm.modelCatalogRefresh", () => {
   });
 
   const stored = (llm: Record<string, unknown>) => {
-    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ llm }), "utf-8");
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm }), "utf-8");
     return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
   };
 
@@ -4305,7 +4381,7 @@ describe("SettingsService system — main window layout", () => {
   it("drops a corrupt layout on disk whole, leaving the rest of system intact", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", mainLayout: { ...layout, version: 99 } } }),
+      currentSettingsJson({ system: { closeBehavior: "quit", mainLayout: { ...layout, version: 99 } } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
