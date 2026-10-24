@@ -145,6 +145,7 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-runtime-not-configured": "subscriptionProvidersSection.errorRuntimeNotConfigured",
   "subscription-runtime-unavailable": "subscriptionProvidersSection.errorRuntimeUnavailable",
   "subscription-runtime-unsafe-location": "subscriptionProvidersSection.errorRuntimeUnsafeLocation",
+  "subscription-runtime-unsafe-npm-location": "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation",
   "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
   "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",
@@ -225,9 +226,12 @@ export function SubscriptionAuthControls({
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
   const pending = connection === "pending";
   const connected = connection === "connected";
+  // Login admits the executable before spawning; chat still needs verification.
+  const signedOutUnverified = runtime === "unverified" && connection === "signed-out";
   const hasRuntimeSelection = runtime !== "not-configured" && runtime !== "checking";
   const needsRuntimeSelection = runtime === "not-configured";
-  const needsVerification = runtime === "unverified" || (runtime === "ready" && connected && !chatReady);
+  const needsVerification = (runtime === "unverified" && !signedOutUnverified)
+    || (runtime === "ready" && connected && !chatReady);
   const isBusy = provider.busyAction !== null && provider.busyAction !== undefined;
   const disabled = provider.disabled === true || isBusy || provider.refreshPending === true;
   const safeDeviceCode = isSafeDeviceCode(status?.pendingDeviceCode)
@@ -455,7 +459,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {!pending && !connected && runtime === "ready" ? descriptor.loginMethods.map((method) => (
+        {!pending && !connected && (runtime === "ready" || signedOutUnverified) ? descriptor.loginMethods.map((method) => (
           <Button
             key={method}
             type="button"

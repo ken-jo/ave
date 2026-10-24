@@ -15,7 +15,7 @@ import type {
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
-import type { McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpAuthenticationResult, McpConfigMutationResult, McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
 import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
@@ -88,7 +88,7 @@ import type { EgressDenialRow } from "../../shared/egress-denials.js";
 import type { EgressGrantNetwork, ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
-export type { McpServerConfig, McpServerConfigDto, McpServerState };
+export type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState };
 export type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 export type { ExecutionMode } from "../../shared/permission-mode.js";
 
@@ -1783,9 +1783,10 @@ export type AveHostApi = {
 export type AveMcpApi = {
   servers: () => Promise<McpServerState[]>;
   kill: (id: string) => Promise<void>;
+  authenticate: (id: string) => Promise<McpAuthenticationResult>;
   getConfigs: () => Promise<McpServerConfigDto[]>;
   getConfigPath: () => Promise<string>;
-  addConfig: (config: McpServerConfig) => Promise<{ connected: boolean; warning?: string }>;
+  addConfig: (config: McpServerConfig) => Promise<McpConfigMutationResult>;
   setApiKey: (id: string, apiKey: string) => Promise<{ connected: boolean; warning?: string }>;
   removeConfig: (id: string) => Promise<void>;
   /**

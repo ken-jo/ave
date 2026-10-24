@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { PassThrough } from "node:stream";
@@ -42,9 +42,12 @@ interface LoginHarness {
 }
 
 const harnesses: LoginHarness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
-function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"): LoginHarness {
+function createLoginHarness(
+  provider: "kimi-code" | "grok-build" = "kimi-code",
+  resolveExecutable?: AcpSubscriptionRuntimeClientOptions["resolveExecutable"],
+): LoginHarness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-subscription-client-"));
   const runtimeHome = join(runtimeRoot, "home");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -62,7 +65,7 @@ function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"):
     workspaceDir,
     executablePath: `C:\\approved\\${provider}.exe`,
     runtimeTempDir,
-    resolveExecutable: async () => `C:\\approved\\${provider}.exe`,
+    resolveExecutable: resolveExecutable ?? (async () => `C:\\approved\\${provider}.exe`),
     spawn,
     platform: "win32",
     clientVersion: "test-version",
@@ -84,6 +87,27 @@ afterEach(async () => {
 });
 
 describe("AcpSubscriptionRuntimeClient security boundary", () => {
+  it.each(["kimi-code", "grok-build"] as const)("revalidates the executable before starting sign-in (%s)", async (provider) => {
+    const resolveExecutable = vi.fn(async (path: string) => path);
+    const { client, spawnCalls } = createLoginHarness(provider, resolveExecutable);
+    await client.getStatus();
+    resolveExecutable.mockClear();
+    resolveExecutable.mockRejectedValueOnce(new Error("Executable rejected"));
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-runtime-invalid-executable" });
+    expect(spawnCalls).toHaveLength(0);
+    expect(resolveExecutable).toHaveBeenCalledOnce();
+    expect((await client.startDeviceCodeLogin()).connection).toBe("pending");
+    expect(spawnCalls).toHaveLength(1);
+    expect(resolveExecutable).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects missing runtime directories before starting sign-in", async () => {
+    const { client, runtimeTempDir, spawnCalls } = createLoginHarness();
+    renameSync(runtimeTempDir, `${runtimeTempDir}-moved`);
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-operation-failed" });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it("uses only the fixed Kimi device-code argv and never projects untrusted runtime output", async () => {
     const { client, child, runtimeTempDir, spawnCalls } = createLoginHarness();
 

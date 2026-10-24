@@ -113,7 +113,7 @@ jobs:
       # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
       # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
       # no step relies on the runner image's own python3.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: python
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -409,6 +409,7 @@ jobs:
           bun run test --
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
+          src/permissions/__tests__/policy-home.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/executor.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -422,6 +423,15 @@ jobs:
           src/audit/__tests__/rationale-audit-adapter.test.ts
           src/boot/__tests__/plugin-surface-permissions.test.ts
           src/main/__tests__/windows-job-launcher.test.ts
+          src/main/__tests__/codex-executable-location.test.ts
+          src/main/__tests__/codex-executable-location.windows.test.ts
+          src/main/__tests__/codex-user-runtime.test.ts
+          src/main/__tests__/claude-code-executable.test.ts
+          src/main/__tests__/claude-code-runtime.test.ts
+          src/main/__tests__/subscription-package-artifact.test.ts
+          src/main/__tests__/subscription-runtime-service.test.ts
+          src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
+          src/__tests__/support/native-executable.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts
@@ -685,7 +695,7 @@ jobs:
       # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
       # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
       # no step relies on the runner image's own python3.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: python
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:

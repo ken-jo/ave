@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
@@ -63,9 +63,11 @@ describe("configured saved-session access", () => {
     ];
     for (const result of results) expect(result.output).toContain("Sensitive path:");
     expect(readFileSync(transcript, "utf8")).toBe(CONTENT);
-    expect(getDefaultSensitiveReadDenyPaths()).toContain(sessions);
-    expect(getBuiltinShellSessionReadPolicy().denyRead).not.toContain(sessions);
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(sessions);
+    // Windows directory rows keep their separator for srt-win.
+    const sessionsRow = sessions + (process.platform === "win32" ? sep : "");
+    expect(getDefaultSensitiveReadDenyPaths()).toContain(sessionsRow);
+    expect(getBuiltinShellSessionReadPolicy().denyRead).not.toContain(sessionsRow);
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(sessionsRow);
     expect(isSensitivePath(canonical(transcript))).not.toBeNull();
   });
 

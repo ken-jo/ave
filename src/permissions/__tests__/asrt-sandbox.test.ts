@@ -43,6 +43,11 @@ vi.mock("node:os", async (importOriginal) => {
       const isolated = process.env.AVE_ASRT_TEST_HOME;
       return process.platform === "win32" && isolated ? isolated : original.homedir();
     },
+    userInfo: () => {
+      const info = original.userInfo();
+      const isolated = process.env.AVE_ASRT_TEST_HOME;
+      return process.platform === "win32" && isolated ? { ...info, homedir: isolated } : info;
+    },
   };
 });
 
@@ -91,6 +96,7 @@ useVerifiedAveHomePrivacy();
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
+let originalHome: string | undefined;
 let isolatedWindowsHome: string | undefined;
 
 beforeAll(() => {
@@ -98,13 +104,18 @@ beforeAll(() => {
 
   originalAsrtTestHome = process.env.AVE_ASRT_TEST_HOME;
   originalAveHome = process.env.AVE_HOME;
+  originalHome = process.env.HOME;
   isolatedWindowsHome = mkdtempSync(join(tmpdir(), "ave-asrt-test-home-"));
   process.env.AVE_ASRT_TEST_HOME = isolatedWindowsHome;
-  process.env.AVE_HOME = join(isolatedWindowsHome, ".ave");
+  process.env.AVE_HOME = join(isolatedWindowsHome, "app");
+  process.env.HOME = isolatedWindowsHome;
 });
 
 afterAll(async () => {
   if (process.platform !== "win32" || isolatedWindowsHome === undefined) return;
+
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
 
   if (originalAsrtTestHome === undefined) {
     delete process.env.AVE_ASRT_TEST_HOME;
@@ -974,7 +985,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   });
 
   it("returns the expected absolute sensitive paths (Ave namespaces + standard credential stores)", () => {
-    const paths = getDefaultSensitiveReadDenyPaths();
+    const paths = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
     const home = homedir();
 
     // Every entry is an absolute path with NO glob char (literal — works on both
@@ -987,7 +998,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Ave host-domain sensitive namespaces, derived from the (overridden) aveHome.
     expect(paths).toContain(join(FAKE_AVE_HOME, "secrets"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions") + (process.platform === "win32" ? sep : ""));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
@@ -1052,7 +1063,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
     process.env.AVE_HOME = profile;
-    const runtime = join(profile, "subscription-runtimes");
+    const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
     expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
@@ -1085,16 +1096,17 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("FIX 2 — userDataDir param: exact path is denied when provided (handles --user-data-dir)", () => {
     const customUserData = join(tmpdir(), "custom-electron-userData-for-test");
+    const expected = customUserData + (process.platform === "win32" ? sep : "");
     const paths = getDefaultSensitiveReadDenyPaths(customUserData);
     // The exact provided path must be denied.
-    expect(paths).toContain(customUserData);
+    expect(paths).toContain(expected);
     // No duplicates.
     expect(new Set(paths).size).toBe(paths.length);
     // Over-deny safety: the derived fallback is NOT additionally added when
     // the exact path is provided (the dedup set handles this if they collide,
     // but the function uses the provided value exclusively for the userData slot).
     // Verify the provided path is present exactly once.
-    expect(paths.filter((p) => p === customUserData).length).toBe(1);
+    expect(paths.filter((p) => p === expected).length).toBe(1);
   });
 
   it("FIX 2 — userDataDir absent: falls back to per-platform derived path (no electron import)", () => {
@@ -1105,7 +1117,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       process.platform === "darwin"
         ? join(home, "Library", "Application Support", "Ave")
         : process.platform === "win32"
-          ? join(home, "AppData", "Roaming", "Ave")
+          ? join(home, "AppData", "Roaming", "Ave") + sep
           : join(xdgBase, "Ave");
     expect(paths).toContain(fallback);
   });
@@ -1127,7 +1139,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       // On macOS the sandbox private roots reach ASRT as exact globs, which it
       // re-emits after the allows minus a wrap's own directory under them.
       const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
-      if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(spelled);
+      if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
@@ -1143,7 +1155,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Passing a path already on the floor does not duplicate it.
     const dupConfig = buildSandboxConfig({
       allowedDomains: [],
-      denyRead: [join(FAKE_AVE_HOME, "secrets")],
+      denyRead: [join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : "")],
     });
     const occurrences = bare(dupConfig.filesystem.denyRead).filter(
       (p) => p === join(FAKE_AVE_HOME, "secrets"),
@@ -1155,7 +1167,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveWriteDenyPaths();
     for (const p of sensitive) {
-      if (reachesAsrt(p)) expect(bare(config.filesystem.denyWrite)).toContain(p);
+      if (reachesAsrt(p)) expect(bare(config.filesystem.denyWrite)).toContain(bare([p])[0]);
     }
     if (reachesAsrt(join(homedir(), ".config"))) {
       expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".config"));
@@ -1184,8 +1196,9 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
       const denyWrite = config.filesystem.denyWrite.map(String);
       // A missing target is created by `srt-win acl stamp`: a trailing
-      // separator makes it a directory instead of a 0-byte file.
-      expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}\\`);
+      // separator makes it a directory instead of a 0-byte file. The floor
+      // appends the host separator (a backslash on a real Windows host).
+      expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}${sep}`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
       expect(denyWrite).not.toContain("/etc/shadow");
@@ -1350,7 +1363,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         allowedDomains: [],
         allowWrite: [project],
       });
-      expect(config.filesystem.denyWrite).toContain(`${configRoot}\\`);
+      expect(config.filesystem.denyWrite).toContain(`${configRoot}${sep}`);
       expect(bare(config.filesystem.denyWrite)).not.toContain(join(profile, ".ssh"));
       const ranked = rankWindowsFsAccess({
         allowRead: [],

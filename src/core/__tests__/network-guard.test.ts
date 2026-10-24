@@ -168,14 +168,14 @@ describe("ensurePublicHttpUrl — IP literal blocking", () => {
 
 describe("ensurePublicHttpUrl — explicit private network access", () => {
   it("allows RFC1918 IPv4 literals when explicitly enabled", async () => {
-    const url = await ensurePublicHttpUrl("http://10.185.177.209/", {
+    const url = await ensurePublicHttpUrl("http://10.10.1.209/", {
       allowPrivateNetworks: true,
     });
-    expect(url.hostname).toBe("10.185.177.209");
+    expect(url.hostname).toBe("10.10.1.209");
   });
 
   it("allows DNS hosts that resolve to RFC1918 IPv4 when explicitly enabled", async () => {
-    lookupMock.mockResolvedValueOnce([{ address: "10.185.177.209", family: 4 }]);
+    lookupMock.mockResolvedValueOnce([{ address: "10.10.1.209", family: 4 }]);
     const url = await ensurePublicHttpUrl("https://internal.example.com/", {
       allowPrivateNetworks: true,
     });
@@ -228,7 +228,7 @@ describe("ensurePublicHttpUrl — explicit private network access", () => {
 
   it("keeps RFC1918 blocked when only the tailnet gate is enabled", async () => {
     await expect(
-      ensurePublicHttpUrl("http://10.185.177.209/", { allowCarrierGradeNat: true }),
+      ensurePublicHttpUrl("http://10.10.1.209/", { allowCarrierGradeNat: true }),
     ).rejects.toThrowError(/non-public/);
   });
 

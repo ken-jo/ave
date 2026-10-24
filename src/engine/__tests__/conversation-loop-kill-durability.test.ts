@@ -70,8 +70,8 @@ function reopen(): GenericMessage[] {
 
 describe("SIGKILL mid-turn", () => {
   it("keeps every completed round, every tool result, and the streaming text", async () => {
-    // ~40 chunks at 25 ms: well past the first snapshot and one throttle interval.
-    const writer = startWriter("stream", /STREAMED 40\n/);
+    // ~40 chunks at 25 ms, with at least one snapshot of them on disk.
+    const writer = startWriter("stream", /CHUNK_SNAPSHOT_SAVED\n[\s\S]*STREAMED 40\n|STREAMED 40\n[\s\S]*CHUNK_SNAPSHOT_SAVED\n/);
     await writer.ready;
     child!.kill("SIGKILL");
     expect(await writer.exited).toBe("SIGKILL");
@@ -89,13 +89,17 @@ describe("SIGKILL mid-turn", () => {
     }
     const partial = messages[1 + TOOL_ROUNDS * 2];
     expect(partial).toMatchObject({ role: "assistant", meta: { interrupted: true, interruptedBy: "host-exit" } });
-    // The text is the streamed chunks in order, at most one throttle interval behind.
-    expect(String(partial.content)).toMatch(/^chunk-0 chunk-1 chunk-2 /);
-    const chunks = String(partial.content).trim().split(" ").length;
-    // 41+ chunks were streamed over ~1 s before the kill; the snapshot is
-    // throttled to one per second, so at least the first snapshot is there.
-    process.stderr.write(`[kill-test] streamed>=41 chunks before SIGKILL, recovered ${chunks}\n`);
-    expect(chunks).toBeGreaterThanOrEqual(1);
+    // The snapshot is a prefix of the stream: chunk-0 … chunk-k in order, k >= 0.
+    // The first snapshot is taken on the first delta, so it may hold chunk-0
+    // alone; the next cannot start until one 1 s throttle interval later, which
+    // is about when chunk 40 is streamed, so how far past chunk-0 the recovered
+    // text reaches depends on scheduling and is not part of the guarantee.
+    // Each chunk is `chunk-<n> `; the stored text is trimmed at its end.
+    const content = String(partial.content);
+    const chunks = content.split(" ");
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    expect(content).toBe(chunks.map((_, i) => `chunk-${i}`).join(" "));
+    process.stderr.write(`[kill-test] streamed>=41 chunks before SIGKILL, recovered ${chunks.length}\n`);
     expect(messages).toHaveLength(2 + TOOL_ROUNDS * 2);
     expect(new Set(messages.map((m) => m.meta?.messageId)).size).toBe(messages.length);
 

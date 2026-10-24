@@ -459,6 +459,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
   | "subscription-runtime-unsafe-location"
+  | "subscription-runtime-unsafe-npm-location"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"

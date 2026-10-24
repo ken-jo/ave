@@ -103,6 +103,31 @@ describe("claude-code subscription contract", () => {
       .rejects.toMatchObject({ code: "claude-code-runtime-invalid-executable" });
   });
 
+  it.each(["ready", "unverified"] as const)("drops chat trust when a verified account signs out (%s)", async (runtime) => {
+    let status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
+    const client = {
+      getStatus: vi.fn(async () => status),
+      verify: vi.fn(async () => status),
+      stop: vi.fn(async () => undefined),
+    } as unknown as ClaudeCodeSubscriptionClient;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(),
+      codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      claudeCodeClient: client,
+    });
+    try {
+      expect((await service.verify("claude-code")).capabilities.chat).toBe(true);
+      status = claudeCodeSubscriptionStatus(runtime, "signed-out", "2.1.0");
+      expect((await service.getStatus("claude-code")).capabilities.chat).toBe(false);
+      expect((await service.verify("claude-code")).capabilities.chat).toBe(false);
+      await expect(service.openTextSession({ kind: "subscription", provider: "claude-code" }))
+        .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("projects connected Claude Code status only after verify", async () => {
     const claudeCodeClient = {
       getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),

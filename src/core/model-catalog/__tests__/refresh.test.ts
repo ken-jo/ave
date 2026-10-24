@@ -10,7 +10,7 @@ import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability
  * where relevant, next-boot selection separately from attempted-check metadata.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +28,7 @@ import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
+import { withFileLock } from "../../../lib/with-file-lock.js";
 
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
@@ -107,6 +108,28 @@ async function seedGoodCopy(at = NOW): Promise<string> {
 const STALE = new Date(NOW.getTime() + MODEL_CATALOG_REFRESH_INTERVAL_MS + 1000);
 
 describe("refreshModelCatalogCache", () => {
+  it("a waiting refresh does not create a missing anchor before it holds the lock", async () => {
+    const anchor = join(dir, ".refresh-lock");
+    const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    let refresh: ReturnType<typeof refreshModelCatalogCache> | undefined;
+    try {
+      await withFileLock(anchor, async () => {
+        rmSync(anchor);
+        refresh = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(existsSync(anchor)).toBe(false);
+        expect(calls).toHaveLength(0);
+      });
+    } finally {
+      if (refresh) {
+        expect(await refresh).toMatchObject({ status: "updated" });
+      }
+    }
+    expect(existsSync(anchor)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
   it("keeps the installed process catalog unchanged until another boot", async () => {
     const installed = activeModelCatalog();
     const { fetchImpl } = respondWith(() => json(rawDocument()));
