@@ -89,7 +89,10 @@ describe("command-line budget", () => {
 });
 
 describe("pre-push Vitest spawns under the budget", () => {
-  const sandbox = (runs: string[][], reports: Map<string, object> | null = null) => runInNewContext(
+  // Hook Git context must be stripped on every chunk (pre-push-markdown-policy.test.ts).
+  const STRIPPED = Object.freeze({ STRIPPED: "1" });
+  let envs: unknown[] = [];
+  const sandbox = (runs: string[][], reports: Map<string, object> | null = null) => (envs = [], runInNewContext(
     `${hook.slice(hook.indexOf("function runVitestWithReport("), hook.indexOf("// Per-module related-test discovery"))}; runAppFastSourceChecks`,
     {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
@@ -97,11 +100,12 @@ describe("pre-push Vitest spawns under the budget", () => {
       runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 1 }),
       withHostLock: (_options: object, callback: () => unknown) => callback(),
-      run: (_command: string, args: string[]) => { runs.push(args); }, withoutGitContext: () => ({}),
+      run: (_command: string, args: string[], _dir: string, env: unknown) => { runs.push(args); envs.push(env); },
+      withoutGitContext: () => STRIPPED,
       readJsonFile: (path: string) => reports?.get(path.slice(-16)) ?? { numTotalTests: 1, numPassedTests: 1 },
       splitArgumentsWithinBudget,
     },
-  );
+  ));
   const fileArgs = (args: string[]) => args.filter((arg) => arg.startsWith("./"));
   const noRelated = { tests: [], narrowed: [], sources: [] };
 
@@ -116,6 +120,7 @@ describe("pre-push Vitest spawns under the budget", () => {
       expect(commandLineLength("bun", args)).toBeLessThanOrEqual(COMMAND_LINE_BUDGET_CHARS);
     }
     expect(vitestRuns.flatMap(fileArgs)).toEqual(tests.map((file) => `./${file}`));
+    expect(envs.filter((_env, index) => runs[index][1] === "test:vitest").every((env) => env === STRIPPED)).toBe(true);
   });
 
   it("runs a direct test list exactly at the budget as a single spawn", () => {
@@ -143,6 +148,7 @@ describe("pre-push Vitest spawns under the budget", () => {
       expect(commandLineLength("bun", args)).toBeLessThanOrEqual(COMMAND_LINE_BUDGET_CHARS);
     }
     expect(vitestRuns.flatMap(fileArgs)).toEqual(tests.map((file) => `./${file}`));
+    expect(envs.filter((_env, index) => runs[index][1] === "test:vitest")).toEqual(vitestRuns.map(() => STRIPPED));
 
     const empty = new Map<string, object>();
     for (let index = 0; index < vitestRuns.length; index += 1) {
@@ -155,12 +161,15 @@ describe("pre-push Vitest spawns under the budget", () => {
     const sources = filesTotalling("node", ["/fixture/scripts/hooks/pre-push-related-tests.mjs"], 40_000)
       .map((file) => file.slice(2).replace(".test.ts", ".ts"));
     const spawns: string[][] = [];
+    const spawnEnvs: unknown[] = [];
+    const STRIPPED_DISCOVERY = Object.freeze({ STRIPPED: "discovery" });
     const select = runInNewContext(
       `${hook.slice(hook.indexOf("// Per-module related-test discovery"), hook.indexOf("function runAppCommentOnlyChecks"))}; getFastSourceRelatedSelection`,
       {
-        commands: { node: "node" }, join, withoutGitContext: () => ({}), readFileSync: () => "", splitArgumentsWithinBudget,
-        spawnSync: (command: string, args: string[]) => {
+        commands: { node: "node" }, join, withoutGitContext: () => STRIPPED_DISCOVERY, readFileSync: () => "", splitArgumentsWithinBudget,
+        spawnSync: (command: string, args: string[], options: { env: unknown }) => {
           spawns.push([command, ...args]);
+          spawnEnvs.push(options.env);
           return { status: 0, stdout: JSON.stringify(args.slice(1).map((source) => ({ source, tests: [] }))) };
         },
         getRelatedCoverageFullReason,
@@ -174,6 +183,7 @@ describe("pre-push Vitest spawns under the budget", () => {
     }
     expect(spawns.flatMap((args) => args.slice(2))).toEqual(sources);
     expect(result.untestedConsumers).toEqual(sources);
+    expect(spawnEnvs).toEqual(spawns.map(() => STRIPPED_DISCOVERY));
   });
 
   it("leaves no file-list spawn of the hook outside the budgeted split", () => {
