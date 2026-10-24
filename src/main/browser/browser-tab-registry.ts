@@ -320,6 +320,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!this.bindingPersistence || this.restoredBindingWindows.has(windowId)) return;
     const layout = this.bindingPersistence.load(windowId);
     if (!layout) { this.restoredBindingWindows.add(windowId); return; }
+    let changed = false;
     for (const surface of [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()]) {
       const binding = this.workspaceBinding(windowId, { kind: surface.kind, tabId: surface.tabId });
       const owner = surface.binding?.owner;
@@ -327,21 +328,30 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       const paneSessionId = surface.binding === undefined
         ? this.bindingPersistence.legacyPaneSession?.(surface.tabId)
         : surface.binding.paneSessionId;
+      if (surface.binding === undefined) changed = true;
       if (owner) {
         if (this.bindingPersistence.sessionExists(owner.sessionId)) {
           if (owner.directParentSessionId !== undefined && !this.bindingPersistence.sessionExists(owner.directParentSessionId)) {
             binding.owner = copyActor({ sessionId: owner.sessionId });
+            changed = true;
             log.info("Pruned tab binding: session-missing (tab=%s, session=%s)", surface.tabId, owner.directParentSessionId);
           } else binding.owner = copyActor(owner);
-        } else log.info("Pruned tab binding: session-missing (tab=%s, session=%s)", surface.tabId, owner.sessionId);
+        } else {
+          changed = true;
+          log.info("Pruned tab binding: session-missing (tab=%s, session=%s)", surface.tabId, owner.sessionId);
+        }
       }
       if (paneSessionId) {
         if (this.bindingPersistence.sessionExists(paneSessionId)) binding.paneSessionId = paneSessionId;
-        else log.info("Pruned tab binding: session-missing (tab=%s, session=%s)", surface.tabId, paneSessionId);
+        else {
+          changed = true;
+          log.info("Pruned tab binding: session-missing (tab=%s, session=%s)", surface.tabId, paneSessionId);
+        }
       }
     }
     this.restoredBindingWindows.add(windowId);
-    this.bindingsChanged(windowId);
+    if (changed) this.bindingsChanged(windowId);
+    else this.publishBindings(windowId);
   }
 
   private restoreSavedBindings(): void {
@@ -366,13 +376,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         if (binding.closed) { delete binding.closed; changed = true; }
         continue;
       }
-      if (binding.closed) continue;
-      if (binding.owner || binding.paneSessionId) {
+      if (!binding.closed && (binding.owner || binding.paneSessionId)) {
         log.info("Pruned tab binding: tab-missing (tab=%s)", binding.surface.tabId);
         changed = true;
       }
-      if (binding.owner || binding.paneSessionId) binding.closed = true;
-      else this.workspaceBindings.delete(key);
+      binding.closed = true;
+      // Ending pane turns still need their original target. Browser records retain
+      // creator identity themselves until remount or final close.
+      if (!binding.paneSessionId) this.workspaceBindings.delete(key);
+      else if (!this.handleByWindowTab.has(key)) binding.owner = null;
     }
     if (changed) this.publishBindings(windowId);
     return this.layoutWithBindings(windowId, layout);
@@ -470,7 +482,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     let tab = handle === undefined ? undefined : this.tabs.get(handle);
     const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
     if (pendingNew?.request.op === "new" && pendingNew.windowId === senderWindowId) {
-      if (entry.sequence <= pendingNew.attachmentSequence || tab?.guest || this.workspaceBindings.get(key)?.owner
+      if (entry.sequence <= pendingNew.attachmentSequence || tab?.guest || tab?.owner || this.workspaceBindings.get(key)?.owner
         || [...this.tabs.values()].some((other) => other.guest?.id === entry.guest.id)) {
         return { ok: false, error: "guest-not-hosted" };
       }
@@ -990,8 +1002,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   isConversationSurfaceKnown(windowId: number, tabId: string): boolean {
     this.restoreBindings(windowId);
     const key = windowTabKey(windowId, tabId);
-    // The durable model owns absence too, once legacy saved slots have been imported.
-    return this.bindingPersistence !== null || this.workspaceBindings.has(key) || this.retiredWorkspaceTabs.has(key);
+    // Imported slots own explicit clears; persistence alone says nothing about this tab.
+    return this.workspaceBindings.has(key) || this.retiredWorkspaceTabs.has(key);
   }
 
   /** Whether `sessionId` is a pane chat's conversation (bound to a pane's tab). */
