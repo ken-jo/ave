@@ -33,6 +33,14 @@ vi.mock("../../shared/ave-scratch.js", () => ({
 }));
 
 
+describe("unconfigured reviewer model", () => {
+  it.each([undefined, "", "   "])("requires a selected model before constructing the classifier: %j", (model) => {
+    const provider = { complete: vi.fn() };
+    expect(() => createRiskClassifier({ mode: "llm", provider, model })).toThrow(/model.*not configured/i);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+});
+
 describe("DisabledRiskClassifier", () => {
   // Issue #664: post-fix `disabled` is pass-through-LOW (not defer-all-HIGH).
   // The fail-closed semantic moved to {@link StrictRiskClassifier}.
@@ -1083,6 +1091,15 @@ describe("LlmRiskClassifier — sandbox capability surface (issue #691)", () => 
       "MUST NOT downgrade a rule-based MEDIUM/HIGH verdict to LOW",
     );
   });
+
+  it("v3 prompt asks for the JSON object only and carries no developer notes", () => {
+    expect(PERMISSION_REVIEWER_FRAMEWORK.version).toBe("permission-reviewer-framework/v3");
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt.endsWith(
+      "Emit the JSON object first, with no preamble. Return only the JSON object.",
+    )).toBe(true);
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt).not.toContain("step-by-step");
+    expect(PERMISSION_REVIEWER_FRAMEWORK.systemPrompt).not.toContain("Mirrors weak-sandbox");
+  });
 });
 
 describe("LlmRiskClassifier — DLP filter on input (security threat-gap #3)", () => {
@@ -1162,6 +1179,30 @@ describe("LlmRiskClassifier — fallbackOnError", () => {
     expect(v.level).toBe("high");
     expect(v.reason).toMatch(/parse failure/);
   });
+
+  // The reviewer runs under a small output-token cap; a reply cut off before its
+  // closing brace must count as a parse failure, never as a partial verdict.
+  it.each([
+    ["deny", "low", "high"],
+    ["rule", "high", "low"],
+  ] as const)(
+    "truncated reply (no closing brace) + fallbackOnError='%s' → fallback, not the partial verdict",
+    async (fallback, truncatedLevel, expected) => {
+      const onCall = vi.fn();
+      const provider: LlmReviewerProvider = {
+        complete: vi.fn(async () => ({
+          text: `{"level":"${truncatedLevel}","reason":"reads one file inside the allowed`,
+          tokensIn: 1,
+          tokensOut: 256,
+          costUsd: 0,
+        })),
+      };
+      const c = new LlmRiskClassifier(provider, "gpt-4o-mini", fallback, { onCall });
+      const v = await c.classify(ctx({ category: "read", finalInput: { path: "/Users/example/work/a" } }));
+      expect(onCall).toHaveBeenCalledWith(expect.objectContaining({ parseFailed: true }));
+      expect(v.level).toBe(expected);
+    },
+  );
 
   it("provider throws + fallbackOnError='rule' → returns rule verdict", async () => {
     const provider: LlmReviewerProvider = {
@@ -1277,11 +1318,11 @@ describe("createRiskClassifier — atomic cutover", () => {
     );
   });
 
-  it("mode='llm' with provider returns LlmRiskClassifier with default model", () => {
+  it("mode='llm' with a selected model returns LlmRiskClassifier", () => {
     const provider: LlmReviewerProvider = {
       complete: vi.fn(async () => ({ text: "{}", tokensIn: 0, tokensOut: 0, costUsd: 0 })),
     };
-    const c = createRiskClassifier({ mode: "llm", provider });
+    const c = createRiskClassifier({ mode: "llm", provider, model: "selected-model" });
     expect(c).toBeInstanceOf(LlmRiskClassifier);
   });
 
@@ -1293,6 +1334,7 @@ describe("createRiskClassifier — atomic cutover", () => {
       createRiskClassifier({
         mode: "llm",
         provider,
+        model: "selected-model",
         // @ts-expect-error — intentionally bad
         fallbackOnError: "allow-and-audit",
       }),

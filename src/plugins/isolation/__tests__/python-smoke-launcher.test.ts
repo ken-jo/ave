@@ -15,10 +15,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { installPythonSmoke, provisionPythonSmoke } from "./python-smoke-harness.js";
+import { installPythonSmoke, provisionPythonSmoke, removeAppleDoubleSidecars } from "./python-smoke-harness.js";
 
 let scratch: string;
 
@@ -28,6 +28,37 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe("the python smoke's cached vendor directory", () => {
+  it("loses the AppleDouble sidecars a bsdtar-made cache leaves, and nothing else", () => {
+    const vendor = mkdtempSync(join(scratch, "vendor-"));
+    const distInfo = join(vendor, "mcp-2.2.0.dist-info");
+    mkdirSync(distInfo);
+    writeFileSync(join(distInfo, "METADATA"), "Metadata-Version: 2.4\nName: mcp\nVersion: 2.2.0\n");
+    // The first 48 bytes of the sidecar macOS bsdtar wrote for this directory:
+    // the AppleDouble header, whose byte 0xa3 at offset 45 is what
+    // importlib.metadata failed to decode as UTF-8.
+    const header = Buffer.from(
+      "00051607000200004d6163204f5320582020202020202020"
+        + "000200000009000000320000007100000002000000a30000",
+      "hex",
+    );
+    expect(header[45]).toBe(0xa3);
+    writeFileSync(join(vendor, "._mcp-2.2.0.dist-info"), header);
+    writeFileSync(join(distInfo, "._RECORD"), header);
+    writeFileSync(join(vendor, "._ordinary.py"), header);
+    writeFileSync(join(vendor, "_private.py"), "");
+
+    expect(removeAppleDoubleSidecars(vendor)).toEqual([
+      "._mcp-2.2.0.dist-info",
+      "._ordinary.py",
+      join("mcp-2.2.0.dist-info", "._RECORD"),
+    ]);
+    expect(existsSync(join(distInfo, "METADATA"))).toBe(true);
+    expect(existsSync(join(vendor, "_private.py"))).toBe(true);
+    expect(removeAppleDoubleSidecars(vendor)).toEqual([]);
+  });
 });
 
 // A `process` entry never runs on win32, and `bin/plugin` is a POSIX shell script.

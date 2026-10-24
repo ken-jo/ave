@@ -607,12 +607,11 @@ export class SystemPromptBuilder {
     // Employee Profile — SSO/LDAP 의존
     // Org Context — 서버 인프라 의존
 
-    // ④-b Tool Use Strategy (정적) — 모델이 도구를 어떻게 쓸지에 대한
-    // Think→Act→Observe→Reflect 가이드. 특히 소형 reasoning 모델에서 도구
-    // 호출 사이에 추론 흐름이 드러나도록 유도하는 목적 (migration doc lever 2).
-    // 한 메시지 안의 다중 호출/단일 호출 전략은 LLM이 문맥에 맞게
-    // 스스로 선택하도록 한다. 실제 실행은 LLM이 나열한 tool_call 순서를
-    // 보존한다 (lever 1 — LLM 결정 사항).
+    // ④-b Tool Use Strategy (정적) — 매 라운드 다시 보내지는 호출 규칙만 둔다:
+    // 독립 호출은 한 메시지에 함께, 결과가 다음 호출을 정하면 기다리고, 정보가
+    // 충분하면 멈춘다. host 는 LLM 이 나열한 tool_call 순서를 보존한다. 도구별
+    // 사용법(session_tasks 호출 순서, routine_schedule, agent_*, skill_*)은 각 도구
+    // 설명과 skills 카탈로그 절에 있으므로 여기서 반복하지 않는다.
     //
     // id=4.5: Org Context (id=4) 와 충돌하지 않도록 분수형 id 사용.
     // 정렬은 1 < 2 < 3 < 4 < 4.5 < 5 < 6 ... 로 자연스럽게 삽입된다.

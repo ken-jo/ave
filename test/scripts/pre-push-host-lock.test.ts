@@ -177,7 +177,10 @@ describe("pre-push host lock", () => {
     first.release();
     expect(await first.exited).toBe(0);
     await waitFor(second.held, "the second holder");
-    expect(second.output()).toMatch(/acquired the full host lock after \d+s/);
+    // The holder logs before it writes its marker, but the log crosses a pipe
+    // this process reads asynchronously while the marker is a file it reads
+    // synchronously, so the marker can be visible first; wait for the line.
+    await waitFor(() => /acquired the full host lock after \d+s/.test(second.output()), "the acquired message");
     second.release();
     expect(await second.exited).toBe(0);
     expect(existsSync(join(directory, "ave-prepush-full.lock"))).toBe(false);

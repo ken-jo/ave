@@ -1,4 +1,5 @@
 import type { BootHost } from "../boot/host-runtime.js";
+import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 /**
  * App shutdown cleanup pipeline.
  *
@@ -265,6 +266,9 @@ export async function runAppShutdownCleanup(options: {
       }
       if (signal.aborted) return;
       await disposeBrowserUploads();
+      await browserTabRegistry.flushBindingWrites().catch((error: unknown) => {
+        log.error({ error }, "shutdown: tab bindings could not be persisted");
+      });
       if (signal.aborted) return;
       // Stop the opt-in local API server EARLY — it's fast (destroys idle
       // sockets + ends live SSE streams) and blanks its on-disk discovery file

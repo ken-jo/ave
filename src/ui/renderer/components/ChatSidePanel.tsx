@@ -712,6 +712,8 @@ function WorkspaceLauncherMenu({ onOpen }: { onOpen: (kind: WorkspaceTabKind) =>
 
 export interface ChatSidePanelProps {
   api: AveApi;
+  /** Whether the column fits and is drawn, independent of retained tab state. */
+  visible?: boolean;
   sessionId?: string;
   targets: ChatPreviewTarget[];
   files: WorkspaceFileItem[];
@@ -775,6 +777,7 @@ export interface ChatSidePanelProps {
 
 export function ChatSidePanel({
   api,
+  visible = true,
   sessionId,
   targets,
   files,
@@ -1321,7 +1324,7 @@ export function ChatSidePanel({
                 api={api}
                 openRequest={sideChatOpenRequest}
                 onSessionsChanged={onSessionsChanged}
-                shown={sideChatActive}
+                shown={sideChatActive && visible}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
                 targetChip={<ActiveSurfaceChip />}

@@ -94,7 +94,13 @@ function projectStatus(
   state: ProviderState,
 ): SubscriptionProviderStatus | undefined {
   const status = state.status;
-  if (!status) return undefined;
+  if (!status) {
+    // Failed actions and reads may have no status payload. Keep their safe
+    // error visible without retaining stale connection or chat capabilities.
+    return state.errorCode
+      ? { runtime: "unavailable", connection: "unknown", errorCode: state.errorCode }
+      : undefined;
+  }
   return {
     runtime: status.runtime,
     connection: status.connection,

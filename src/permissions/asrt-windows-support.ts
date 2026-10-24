@@ -34,6 +34,7 @@
  *   keep the main-process event loop live — the synchronous install froze the UI
  *   during the modal UAC wait (issue #1608 class).
  */
+import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import type {
   SandboxWindowsInstallResult,
   SandboxWindowsStatusInfo,
@@ -261,11 +262,11 @@ export async function grantAsrtWindowsBackendAcl(
         ELEVATED_ACL_ENCODED_COMMAND,
       ],
       {
-        env: {
+        env: windowsPowerShellEnv({
           ...process.env,
           [ACL_TARGET_ENV]: packageRoot,
           [ICACLS_PATH_ENV]: icaclsPath,
-        },
+        }),
         windowsHide: true,
       },
     );

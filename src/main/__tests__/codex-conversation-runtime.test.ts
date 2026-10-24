@@ -11,6 +11,7 @@ import { buildImagePreparationEntry } from "../../__tests__/support/image-prepar
 import {
   CodexConversationRuntime,
   attachCodexStdioTransport,
+  CODEX_APP_SERVER_ARGV,
   CODEX_MAX_RPC_LINE_BYTES,
   CODEX_RPC_REQUEST_TIMEOUT_MS,
   isCodexAppServerRequestId,
@@ -35,7 +36,7 @@ import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
-  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+  (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
 const imageRuntime = vi.hoisted(() => ({ directory: undefined as string | undefined }));
 vi.mock("../main-paths.js", async (original) => {
@@ -74,7 +75,7 @@ const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));
-  normalizeFixtureAncestorPermissions(runtimeRoot);
+  if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -178,6 +179,28 @@ afterEach(async () => {
     imageRuntime.directory = undefined;
   }
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("app-server argv", () => {
+  it.each(["win32", "darwin", "linux"] as const)("selects a frozen boundary for %s", async (platform) => {
+    vi.resetModules();
+    vi.stubGlobal("process", { ...process, platform });
+    try {
+      const { CODEX_APP_SERVER_ARGV: args } = await import("../codex-conversation-runtime.js");
+      const override = 'windows.sandbox="unelevated"';
+      expect(Object.isFrozen(args)).toBe(true);
+      expect(args.filter((arg) => arg === override)).toHaveLength(platform === "win32" ? 1 : 0);
+      if (platform === "win32") {
+        expect(args[args.indexOf(override) - 1]).toBe("-c");
+        expect(args.indexOf(override)).toBeLessThan(args.indexOf("--strict-config"));
+      }
+      expect(args).not.toContain('windows.sandbox="elevated"');
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
 });
 
 describe("isCodexAppServerRequestId", () => {
@@ -621,6 +644,7 @@ describe("CodexConversationRuntime", () => {
     expect(completions).toEqual([result]);
 
     expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.spawnCalls[0]?.args).toBe(CODEX_APP_SERVER_ARGV);
     expect(harness.spawnCalls[0]).toMatchObject({
       command: harness.artifact.executable,
       options: {
@@ -636,6 +660,7 @@ describe("CodexConversationRuntime", () => {
       'cli_auth_credentials_store="file"',
       "-c",
       'web_search="disabled"',
+      ...(process.platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
       "--strict-config",
       "--disable",
       "plugins",
@@ -684,6 +709,7 @@ describe("CodexConversationRuntime", () => {
     expect(JSON.stringify({ threadStart, turnStart })).not.toContain("workspace-write");
     expect(JSON.stringify({ threadStart, turnStart })).not.toContain("writableRoots");
     expect(JSON.stringify({ threadStart, turnStart })).not.toContain("danger-full-access");
+    expect(methodMessages(harness, "windowsSandbox/setupStart")).toHaveLength(0);
   });
 
   it("keeps only the newest exact Codex last usage snapshot across the turn/start reply race", async () => {
@@ -1178,29 +1204,38 @@ describe("CodexConversationRuntime", () => {
     expect(JSON.stringify(result)).not.toContain("private conversation history");
   });
 
-  it.skipIf(process.platform !== "win32")(
-    "fails closed when Windows sandbox readiness is unavailable without configuring it",
-    async () => {
-      const harness = createHarness((message, current) => {
-        if (message.method === "initialize") {
-          reply(current.child, requestId(message), {});
-          return;
-        }
-        if (message.method === "windowsSandbox/readiness") {
-          reply(current.child, requestId(message), { status: "notConfigured" });
-          return true;
-        }
-      });
+  it.skipIf(process.platform !== "win32").each([
+    { response: { status: "notConfigured" }, readiness: "notConfigured" },
+    { response: { status: "updateRequired" }, readiness: "updateRequired" },
+    { response: { status: "private-provider-text\n".repeat(100) }, readiness: "unknown" },
+    { response: { status: 42 }, readiness: "unknown" },
+    { response: {}, readiness: "unknown" },
+    { response: null, readiness: "unknown" },
+  ])("fails closed with bounded internal readiness $readiness", async ({ response, readiness }) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const harness = createHarness((message, current) => {
+      if (message.method === "initialize") {
+        reply(current.child, requestId(message), {});
+        return;
+      }
+      if (message.method === "windowsSandbox/readiness") {
+        reply(current.child, requestId(message), response);
+        return true;
+      }
+    });
 
-      await expect(harness.runtime.startTurn({ text: "Fail closed" })).rejects.toMatchObject({
-        code: "codex-runtime-start-failed",
-      });
+    await expect(harness.runtime.startTurn({ text: "Fail closed" })).rejects.toMatchObject({
+      code: "codex-runtime-start-failed",
+      message: "codex-runtime-start-failed",
+      detail: `Windows sandbox readiness: ${readiness}`,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows sandbox readiness failed"), { readiness });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private-provider-text");
 
-      expect(methodMessages(harness, "windowsSandbox/setupStart")).toHaveLength(0);
-      expect(methodMessages(harness, "thread/start")).toHaveLength(0);
-      expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
-    },
-  );
+    expect(methodMessages(harness, "windowsSandbox/setupStart")).toHaveLength(0);
+    expect(methodMessages(harness, "thread/start")).toHaveLength(0);
+    expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
 
   it("verifies the shared ChatGPT account without creating a thread or a billable turn", async () => {
     const harness = createHarness((message, current) => {

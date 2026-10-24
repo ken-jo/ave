@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeFailure, type JudgeVerdict, type PermissionJudge } from "../judge-contract.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { resolveJudge, type JudgeChainStage, type JudgeEngineDeps, type JudgeGate } from "../judge-engine.js";
@@ -7,7 +7,7 @@ import type { JudgeSettings, JudgeStageSettings } from "../judge-settings.js";
 import { collectingAudit, judgeRecords, judgeRequest, judgeSettings, scriptedStage, type CollectingAudit } from "./judge-request-fixture.js";
 
 const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false };
-const PICKER_MODEL = LLM_VENDOR_MODEL_OPTIONS.claude[0]!;
+const PICKER_MODEL = llmVendorModelOptions("claude")[0]!;
 
 type Script = JudgeVerdict | Error;
 

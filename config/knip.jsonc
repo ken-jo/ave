@@ -144,6 +144,9 @@
     "pgrep",
     "plutil",
     "powershell.exe",
+    // PowerShell 7: the PSModulePath regression spawns it to prove the
+    // Windows PowerShell 5.1 env helper survives an inherited 7.x module path.
+    "pwsh.exe",
     "python3",
     "subst",
     "taskkill",

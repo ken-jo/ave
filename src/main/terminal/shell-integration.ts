@@ -133,6 +133,17 @@ const ZSH_RC = (noncePath: string): string => [
   "  done",
   '  REPLY="$out"',
   "}",
+  ...(process.platform === "darwin" ? [
+    "__ave_rearm_interrupt() {",
+    "  emulate -L zsh",
+    "  local ave_traps",
+    // A synchronous pipeline preserves the producer's traps; a command
+    // substitution would discard command-list and ignored traps.
+    // Require the complete dump, including its delimiter, before resetting.
+    "  { builtin trap && builtin printf '\\0'; } | IFS= builtin read -r -d '' ave_traps",
+    "  if (( pipestatus[1] == 0 && pipestatus[2] == 0 )) && [[ -z \"$ave_traps\" ]]; then builtin trap - INT; fi",
+    "}",
+  ] : []),
   "__ave_precmd() {",
   "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
@@ -151,6 +162,12 @@ const ZSH_RC = (noncePath: string): string => [
   '  ave_token="${ave_token//[^0-9a-f]/}"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
+  // A child wait can leave SIGINT blocked on this platform. Resetting its
+  // default handler also unblocks it. Never replace a configured trap, and
+  // finish all child waits before rearming delivery and advertising readiness.
+  ...(process.platform === "darwin" ? [
+    "  __ave_rearm_interrupt",
+  ] : []),
   "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
@@ -300,6 +317,9 @@ export function installShellIntegration(
   const writeNonce = (): void => writeFileSync(noncePath, options.nonce, { mode: 0o600 });
   switch (shell) {
     case "zsh":
+      // Global completion setup precedes .zshrc and can wait for approval of
+      // host completion paths. This isolated HOME owns its completion setup.
+      writeFileSync(join(homePath, ".zshenv"), HEADER + "\nskip_global_compinit=1\n", { mode: 0o600 });
       writeFileSync(join(homePath, ".zshrc"), ZSH_RC(noncePath), { mode: 0o600 });
       writeNonce();
       // zsh reads its startup files from ZDOTDIR when set; pin it to this HOME

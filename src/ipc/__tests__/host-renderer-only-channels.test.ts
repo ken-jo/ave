@@ -182,6 +182,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["plugins", CHANNELS.plugins.configSecretSet, ["p", "k", "v"]],
   ["plugins", CHANNELS.runtime.counts, []],
   ["plugins", CHANNELS.mcp.servers, []],
+  ["plugins", CHANNELS.mcp.authenticate, ["server-a"]],
   // The host renderer registers plugin webviews on the shell's behalf, so this
   // one lives on the bridge channel prefix but is host-only: a shell that could
   // call it would be minting its own plugin binding.
@@ -220,7 +221,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Filesystem reach: workspace roots, attachment picking, file preview.
   ["workspace", CHANNELS.workspace.listRoots, []],
   ["workspace", CHANNELS.workspace.listDir, [{ path: "/" }]],
-  ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
+  // Query validation follows the sender guard; avoid filesystem work in this table.
+  ["workspace", CHANNELS.workspace.searchFiles, [null]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
