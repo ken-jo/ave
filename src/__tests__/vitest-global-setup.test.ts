@@ -9,17 +9,22 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { TestProject } from "vitest/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const failSweep = vi.hoisted(() => ({ next: false }));
+const refuseRunTmpRoot = vi.hoisted(() => ({ next: false }));
 vi.mock("./support/test-run-dirs.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./support/test-run-dirs.js")>();
   return {
     ...actual,
+    ensureRunTmpRoot: vi.fn((root: string) => {
+      if (refuseRunTmpRoot.next) throw new Error(`refusing ${root} as the tests' temp root: injected`);
+      actual.ensureRunTmpRoot(root);
+    }),
     sweepStaleRunDirs: vi.fn(async (...args: Parameters<typeof actual.sweepStaleRunDirs>) => {
       if (failSweep.next) throw new Error("injected setup failure");
       return actual.sweepStaleRunDirs(...args);
@@ -28,10 +33,12 @@ vi.mock("./support/test-run-dirs.js", async (importOriginal) => {
 });
 
 import {
+  ensureRunTmpRoot,
   ensureTestTmpRoot,
   parsePsLstartUtc,
   RUN_OWNER_FILE,
   RUN_OWNER_VERSION,
+  runTmpRoot,
   STALE_RUN_DIR_AGE_MS,
   sweepStaleRunDirs,
   systemProcessProbe,
@@ -53,6 +60,7 @@ const link = useScratchLinks();
 
 afterEach(() => {
   failSweep.next = false;
+  refuseRunTmpRoot.next = false;
   for (const name of RUN_ENV) {
     const value = savedEnv[name];
     if (value === undefined) delete process.env[name];
@@ -134,7 +142,12 @@ describe("vitest global setup", () => {
     const jsdomProvided: Provided = new Map();
     const teardownNode = await setup(project(true, "forks", nodeProvided));
     const teardownJsdom = await setup(project(true, "forks", jsdomProvided));
-    expect(runDirs(testTmp)).toHaveLength(3);
+    expect(runDirs(testTmp)).toHaveLength(2);
+    // The temp directory is the third, outside ~/.ave (`runTmpRoot`).
+    const runTmp = tmpdir();
+    expect(dirname(runTmp)).toBe(runTmpRoot());
+    expect(validRunOwner(JSON.parse(readFileSync(join(runTmp, RUN_OWNER_FILE), "utf8")) as unknown))
+      .toEqual(owner(process.pid, ownStart()));
     // Both projects run the one plugin child bundle this run built.
     const childEntry = nodeProvided.get("pluginChildEntryPath");
     expect(typeof childEntry).toBe("string");
@@ -148,20 +161,22 @@ describe("vitest global setup", () => {
     }
 
     await teardownNode();
-    expect(runDirs(testTmp)).toHaveLength(3);
+    expect(runDirs(testTmp)).toHaveLength(2);
+    expect(existsSync(runTmp)).toBe(true);
     expect(existsSync(childEntry as string)).toBe(true);
     await teardownJsdom();
     expect(runDirs(testTmp)).toEqual([]);
+    expect(existsSync(runTmp)).toBe(false);
     expect(existsSync(childEntry as string)).toBe(false);
   });
 
   it("gives the run its own temp directory, and at teardown names what the tests left in it and removes it", async () => {
-    const testTmp = scratchTestTmp();
+    scratchTestTmp();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const teardown = await setup(project());
       const runTmp = tmpdir();
-      expect(dirname(runTmp)).toBe(testTmp);
+      expect(dirname(runTmp)).toBe(runTmpRoot());
       expect(basename(runTmp)).toMatch(/^t-/);
       mkdtempSync(join(tmpdir(), "leaky-"));
       mkdtempSync(join(tmpdir(), "leaky-"));
@@ -270,6 +285,13 @@ describe("vitest global setup", () => {
     await expect(setup(project())).rejects.toThrow(/refusing .* as the tests' scratch root: it is not a real directory/);
     expect(existsSync(sentinel)).toBe(true);
     expect(runDirs(elsewhere)).toEqual(["h-Else01"]);
+  });
+
+  it("makes no run directory when it refuses the temp root", async () => {
+    const testTmp = scratchTestTmp();
+    refuseRunTmpRoot.next = true;
+    await expect(setup(project())).rejects.toThrow(/refusing .* as the tests' temp root/);
+    expect(runDirs(testTmp)).toEqual([]);
   });
 
   it("removes its run directories when setup fails before returning a teardown", async () => {
@@ -537,6 +559,53 @@ describe("sweepStaleRunDirs", () => {
     const root = link(elsewhere, join(scratch(), "test-tmp"));
     await expect(sweep(root)).rejects.toThrow(/not a real directory/);
     expect(existsSync(sentinel)).toBe(true);
+  });
+});
+
+describe("runTmpRoot", () => {
+  /**
+   * The run's temp directory stands in for the user's: a confined command
+   * writes there as it would in its own temp directory. So no sandbox write
+   * floor may cover it, and on POSIX it sits inside the shared /tmp grant the
+   * Linux wrap gives. `~/.ave/test-tmp`, where it was, fails the second.
+   */
+  it.each(["linux", "darwin", "win32"] as const)("is covered by no %s sandbox write floor", async (platform) => {
+    const { getDefaultSensitiveWriteDenyPaths, isGrantPathWithin } = await import("../permissions/asrt-sandbox.js");
+    const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    try {
+      const floor = getDefaultSensitiveWriteDenyPaths();
+      const inRun = join(runTmpRoot(platform), "t-AbC123", "scratch-file");
+      expect(floor.filter((denied) => isGrantPathWithin(denied, inRun))).toEqual([]);
+      // The check finds a floor where there is one.
+      expect(floor.some((denied) => isGrantPathWithin(denied, join(homedir(), ".ssh", "x")))).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", realPlatform);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("sits inside the shared temp directory every confined command may write", async () => {
+    const { isGrantPathWithin } = await import("../permissions/asrt-sandbox.js");
+    const { POSIX_SHARED_TMP } = await import("../permissions/base-allowed-directories.js");
+    const root = runTmpRoot();
+    ensureRunTmpRoot(root);
+    const sharedTmp = realpathSync(POSIX_SHARED_TMP);
+    expect(isGrantPathWithin(sharedTmp, realpathSync(root))).toBe(true);
+    // Where it was: outside that grant, so a confined write there failed.
+    expect(isGrantPathWithin(sharedTmp, join(homedir(), ".ave", "test-tmp", "t-AbC123"))).toBe(false);
+  });
+
+  // The other-account refusal needs a directory another uid owns, which only
+  // root can make; it is not exercised here.
+  it("is refused when it is a link, and made owner-only", () => {
+    const parent = scratch();
+    const elsewhere = scratch();
+    const linked = join(parent, "linked");
+    link(elsewhere, linked);
+    expect(() => ensureRunTmpRoot(linked)).toThrow(/not a real directory/);
+    const own = join(parent, "own");
+    ensureRunTmpRoot(own);
+    if (process.platform !== "win32") expect(statSync(own).mode & 0o777).toBe(0o700);
   });
 });
 
