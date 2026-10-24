@@ -30,27 +30,19 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-and-test:
-    # Runner rule for every job a fork can trigger, in every workflow (the
-    # same runs-on expression, checked by
-    # src/__tests__/support/workflow-runner-policy.ts): only a trusted event
-    # may take the self-hosted runner a repo variable such as AVE_LINUX_RUNNER
-    # names. Trusted means push, schedule or workflow_dispatch, or a pull
-    # request whose head branch lives in this repository and that Dependabot
-    # did not open (GitHub treats Dependabot runs as fork runs). Every other
-    # event, including any event added later, gets the GitHub-hosted label,
-    # which is also the fallback when the variable is unset. Hosted runners
-    # are ephemeral VMs, so a fork's package.json postinstall cannot persist
-    # on, or read state from, the owner's machines.
-    # The guard lives in workflow files, which a fork pull request can edit;
-    # the boundary against a hostile workflow edit is the repository setting
-    # that holds fork pull request workflows for approval, plus reviewing
-    # .github/ changes before approving. ARM64 keeps native-module
+    # Every job in every workflow runs on a GitHub-hosted runner
+    # (src/__tests__/support/workflow-runner-policy.ts fails on anything
+    # else). Hosted runners are ephemeral VMs, so a fork's package.json
+    # postinstall cannot persist on, or read state from, any machine of the
+    # owner's. The repository must also register no self-hosted runner: a
+    # fork pull request runs its own edited copy of this file and could name
+    # one. ARM64 keeps native-module
     # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
     # secret-free and does not clone private sibling repositories;
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -191,10 +183,8 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Three workers, not the config's four: the self-hosted runners share
-        # one cgroup slice capped at three CPUs (CPUQuota=300%), where 80% of
-        # scheduling periods were throttled with four workers plus their
-        # subprocesses.
+        # Three workers, not the config's four: a standard hosted runner has
+        # four vCPUs, and each Vitest worker spawns subprocesses of its own.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
@@ -290,13 +280,13 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}
+    runs-on: windows-latest
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -443,13 +433,13 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}
+    runs-on: macos-15
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -558,8 +548,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

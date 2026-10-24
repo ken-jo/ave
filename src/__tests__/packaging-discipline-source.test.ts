@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -7,10 +6,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
-  TRUSTED_RUNNER_GUARD,
-  forkRunnerViolations,
-  forkSafeRunsOn,
   workflowEvents,
+  workflowRunnerViolations,
 } from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
@@ -407,66 +404,60 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("keeps every job a fork can trigger off self-hosted runners and away from write tokens", () => {
+  it("runs every workflow job on a hosted runner and keeps fork-triggered jobs away from write tokens", () => {
     const violations = workflowFileNames()
-      .flatMap((name) => forkRunnerViolations(readRepoFile(`.github/workflows/${name}`), name));
+      .flatMap((name) => workflowRunnerViolations(readRepoFile(`.github/workflows/${name}`), name));
     expect(violations).toEqual([]);
-    // The rule is read, not vacuous: these workflows are fork-reachable and
-    // their jobs are the ones checked above.
+    // The fork rules are read, not vacuous: these workflows are fork-reachable.
     const reachable = workflowFileNames().filter((name) => {
       const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
       return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
     });
     expect(reachable).toEqual(["ci.yml", "cluster-detector.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
-    // Every runner variable a fork-reachable job reads goes through the guard.
-    for (const name of reachable) {
-      const source = readRepoFile(`.github/workflows/${name}`);
-      expect(source.match(/fromJSON\(vars\./gu)?.length ?? 0, name)
-        .toBe(source.split(TRUSTED_RUNNER_GUARD).length - 1);
-    }
   });
 
-  describe("fork runner policy mutations", () => {
-    const guarded = forkSafeRunsOn("AVE_LINUX_RUNNER", "ubuntu-latest");
+  describe("workflow runner policy mutations", () => {
     const base = (job: Record<string, unknown>, on: unknown = { pull_request: null, push: null }) =>
       stringifyYaml({ on, permissions: { contents: "read" }, jobs: { check: { steps: [{ run: "true" }], ...job } } });
+    const matrix = (os: unknown[]) => ({ "runs-on": "${{ matrix.os }}", strategy: { matrix: { include: os.map((label) => ({ os: label })) } } });
 
-    it("accepts a hosted label and the shared guarded form", () => {
-      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest" }), "ok.yml")).toEqual([]);
-      expect(forkRunnerViolations(base({ "runs-on": guarded }), "ok.yml")).toEqual([]);
-      // A trusted-only workflow keeps its self-hosted release runner.
-      expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { workflow_dispatch: null }), "ok.yml"))
+    it("accepts a hosted label and a static matrix of hosted labels", () => {
+      expect(workflowRunnerViolations(base({ "runs-on": "ubuntu-latest" }), "ok.yml")).toEqual([]);
+      expect(workflowRunnerViolations(base(matrix(["macos-15", "windows-2025"]), { workflow_dispatch: null }), "ok.yml"))
         .toEqual([]);
     });
 
     it.each([
-      ["a self-hosted literal", "self-hosted"],
-      ["a label array", ["self-hosted", "Linux"]],
-      ["an unguarded variable", "${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
-      ["the fork-only guard that lets Dependabot through", "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
-      ["the guard with a self-hosted fallback", forkSafeRunsOn("AVE_LINUX_RUNNER", "self-hosted")],
-      ["a matrix runner", "${{ matrix.os }}"],
-    ])("rejects %s on a fork-reachable job", (_label, runsOn) => {
-      expect(forkRunnerViolations(base({ "runs-on": runsOn }), "bad.yml")).toHaveLength(1);
+      ["a self-hosted literal", { "runs-on": "self-hosted" }],
+      ["a label array", { "runs-on": ["self-hosted", "Linux"] }],
+      ["a repository variable", { "runs-on": "${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}" }],
+      ["a guarded repository variable", { "runs-on": "${{ github.event_name == 'push' && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}" }],
+      ["a matrix entry that is not hosted", matrix(["macos-15", "self-hosted"])],
+      ["a matrix entry from a variable", matrix(["${{ fromJSON(vars.AVE_MACOS_RUNNER) }}"])],
+      ["a computed matrix", { "runs-on": "${{ matrix.os }}", strategy: { matrix: "${{ fromJSON(needs.plan.outputs.matrix) }}" } }],
+    ])("rejects %s, on trusted and fork-reachable workflows alike", (_label, job) => {
+      expect(workflowRunnerViolations(base(job), "bad.yml")).toHaveLength(1);
+      expect(workflowRunnerViolations(base(job, { workflow_dispatch: null }), "bad.yml")).toHaveLength(1);
     });
 
     it.each(["issue_comment", "pull_request_review", "workflow_run", "discussion_comment", "a_future_event"])(
       "treats %s as fork-reachable",
       (event) => {
-        expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { [event]: null }), "bad.yml")).toHaveLength(1);
+        const noPermissions = stringifyYaml({ on: { [event]: null }, jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: "true" }] } } });
+        expect(workflowRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
       },
     );
 
     it("requires a permissions block and refuses write-all", () => {
       const noPermissions = stringifyYaml({ on: "pull_request", jobs: { check: { "runs-on": "ubuntu-latest" } } });
-      expect(forkRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
-      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest", permissions: "write-all" }), "bad.yml"))
+      expect(workflowRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
+      expect(workflowRunnerViolations(base({ "runs-on": "ubuntu-latest", permissions: "write-all" }), "bad.yml"))
         .toEqual(["bad.yml:check grants write-all"]);
     });
 
     it("refuses pull request code, write tokens and secrets under pull_request_target", () => {
       const target = (step: Record<string, unknown>, job: Record<string, unknown> = {}) =>
-        forkRunnerViolations(
+        workflowRunnerViolations(
           base({ "runs-on": "ubuntu-latest", steps: [step], ...job }, { pull_request_target: null }),
           "t.yml",
         );
@@ -639,75 +630,26 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("runs every release Linux job on the runner the repo variable names", () => {
-    // Only a job with nothing before it falls back, and only to a self-hosted
-    // runner so its check step can name the unset variable; never to a
-    // billing-blocked hosted label.
-    const entryRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}";
-    const linuxRunner = "runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}";
+  it("runs every release Linux job on the pinned hosted ARM64 image", () => {
+    const linuxRunner = "runs-on: ubuntu-24.04-arm";
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
-    for (const [id, runner] of [
-      ["release-profile", entryRunner],
-      ["publish-release", linuxRunner],
-      ["publish-r2", linuxRunner],
-    ] as const) {
+    for (const id of ["release-profile", "publish-release", "publish-r2", "publish-contract"]) {
       const body = installers.get(id);
       if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
-      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${runner}`]);
+      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${linuxRunner}`]);
     }
     for (const id of ["installers", "publish-release", "publish-r2"]) {
       expect(installers.get(id), id).toMatch(/^ {4}needs: (?:release-profile|\[release-profile, installers\])$/mu);
     }
     const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
     if (probe === undefined) throw new Error("r2-probe.yml has no probe job");
-    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${entryRunner}`]);
-  });
-
-  it("fails a release run naming any unset runner variable before a job needs it", () => {
-    const check = "bash .github/scripts/require-runner-vars.sh";
-    const profile = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("release-profile");
-    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
-    if (profile === undefined || probe === undefined) throw new Error("missing release-profile or probe job");
-    const names = ["AVE_LINUX_RUNNER", "AVE_MACOS_RUNNER", "AVE_WINDOWS_RUNNER"];
-    expect(jobRunCommands(profile)).toContain(`${check} ${names.join(" ")}`);
-    expect(jobRunCommands(probe)).toContain(`${check} AVE_LINUX_RUNNER`);
-    for (const name of names) expect(profile).toContain(`${name}: \${{ vars.${name} }}`);
-    expect(probe).toContain("AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}");
-    // The check precedes every other step that could depend on the runner.
-    expect(profile.indexOf(check)).toBeLessThan(profile.indexOf("Verify exact source head"));
-    expect(probe.indexOf(check)).toBeLessThan(probe.indexOf("install-aws-cli"));
-    // No workflow job that a runner variable chooses falls back to a hosted label.
-    for (const name of ["build-installers.yml", "r2-probe.yml"]) {
-      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/fromJSON\(vars\.AVE_[A-Z]+_RUNNER\) \|\| '(?!self-hosted')/u);
+    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${linuxRunner}`]);
+    // No workflow reads a runner from a repository variable any more, so the
+    // AVE_*_RUNNER variables can be deleted without changing any run.
+    for (const name of workflowFileNames()) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/vars\.AVE_[A-Z]+_RUNNER/u);
     }
-
-    const run = (env: Record<string, string>, ...args: string[]) => {
-      const clean = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !/^AVE_[A-Z]+_RUNNER$/u.test(key)),
-      );
-      return spawnSync("bash", [".github/scripts/require-runner-vars.sh", ...args], {
-        cwd: root,
-        encoding: "utf8",
-        env: { ...clean, ...env },
-      });
-    };
-    const selfHosted = '["self-hosted","Linux","ARM64","ave"]';
-    const ok = run({ AVE_LINUX_RUNNER: selfHosted, AVE_MACOS_RUNNER: '"macos-15"', AVE_WINDOWS_RUNNER: '["windows-latest"]' }, ...names);
-    expect(ok.status, ok.stdout + ok.stderr).toBe(0);
-    expect(ok.stdout).toContain(`AVE_LINUX_RUNNER = ${selfHosted}`);
-
-    const unset = run({ AVE_LINUX_RUNNER: selfHosted, AVE_WINDOWS_RUNNER: "" }, ...names);
-    expect(unset.status).toBe(1);
-    expect(unset.stdout).toContain("::error::Repository variable AVE_MACOS_RUNNER is not set.");
-    expect(unset.stdout).toContain("::error::Repository variable AVE_WINDOWS_RUNNER is not set.");
-    expect(unset.stdout).not.toContain("AVE_LINUX_RUNNER is not set");
-
-    for (const bad of ["ubuntu-latest", "[]", '[""]', "[1]", "{}", "null"]) {
-      const malformed = run({ AVE_LINUX_RUNNER: bad }, "AVE_LINUX_RUNNER");
-      expect(malformed.status, bad).toBe(1);
-      expect(malformed.stdout, bad).toContain("::error::Repository variable AVE_LINUX_RUNNER must be a JSON label string");
-    }
-    expect(run({}).status).toBe(2);
+    expect(existsSync(resolve(root, ".github/scripts/require-runner-vars.sh"))).toBe(false);
   });
 
   it("ships x64 Linux installers from any runner arch and refuses a foreign-arch binary", () => {
@@ -752,17 +694,16 @@ describe("installer smoke and packaging discipline", () => {
     expect(afterPack).toContain("if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });");
   });
 
-  it("builds macOS and Windows installers on the runners the repo variables name", () => {
+  it("builds macOS and Windows installers on pinned hosted images", () => {
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
 
-    // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
-    // carries its own runner, with no hosted fallback; the Linux entry
-    // cross-builds x64 on the ARM64 self-hosted runners.
+    // Each matrix entry names a pinned hosted image; the Linux entry
+    // cross-builds x64 on the ARM64 image.
     expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
-      "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
-      "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
+      "            os: macos-15",
+      "            os: ubuntu-24.04-arm",
+      "            os: windows-2025",
     ]);
     expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
 

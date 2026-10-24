@@ -26,7 +26,7 @@ on:
     tags:
       - "v*.*.*"
 
-# One build per ref at a time on the shared self-hosted runners. GitHub keeps
+# One build per ref at a time. GitHub keeps
 # one running and at most one pending run per group: cancel-in-progress: false
 # protects only the running build, and a newer run cancels the pending one
 # rather than queueing behind it.
@@ -39,17 +39,10 @@ jobs:
   # never controls secret injection; public tag secrets are fixed in workflow.
   release-profile:
     name: Verify immutable unsigned release profile
-    # Every job takes its runner from a repo variable: AVE_LINUX_RUNNER,
-    # AVE_MACOS_RUNNER, AVE_WINDOWS_RUNNER (a JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
-    # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Every
-    # other job needs this one, so the check below fails the run naming any
-    # unset variable instead of falling back to a billing-blocked hosted label.
-    # Only this job falls back when AVE_LINUX_RUNNER is unset, and to any
-    # self-hosted runner, so the check can still run and say so. Only a tag
-    # push or a dispatch by a user with write access starts this workflow;
-    # no fork event reaches it (workflow-runner-policy.ts).
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
+    # Every job runs on a pinned GitHub-hosted image, as every workflow job
+    # does (workflow-runner-policy.ts). Only a tag push or a dispatch by a
+    # user with write access starts this workflow; no fork event reaches it.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:
@@ -57,13 +50,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Require the release runner variables
-        shell: bash
-        env:
-          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
-          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
-          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER AVE_MACOS_RUNNER AVE_WINDOWS_RUNNER
       - name: Verify exact source head
         shell: bash
         env:
@@ -118,28 +104,22 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # macOS and Windows take their runner from repo variables AVE_MACOS_RUNNER
-      # and AVE_WINDOWS_RUNNER (JSON label arrays, e.g.
-      # ["self-hosted","macOS","ARM64","ave-release"] and
-      # ["self-hosted","Windows","X64","ave-release"], or a hosted label).
-      # release-profile has already failed the run if either is unset.
-      #
-      # Linux takes AVE_LINUX_RUNNER (the ARM64 self-hosted runners) like the
-      # other release Linux jobs, and always ships x64: `--arch x64` pins the
-      # target, so on an ARM64 host build-installers cross-builds (target-arch
-      # node_modules, node-pty compiled with x86_64-linux-gnu-gcc) and the arch
-      # audit below refuses any non-x64 binary. On an x64 runner the same
-      # command is a native build.
+      # Pinned GitHub-hosted images: macos-15 (Apple silicon), windows-2025
+      # and ubuntu-24.04-arm. Linux always ships x64: `--arch x64` pins the
+      # target, so on the ARM64 image build-installers cross-builds
+      # (target-arch node_modules, node-pty compiled with
+      # x86_64-linux-gnu-gcc) and the arch audit below refuses any non-x64
+      # binary.
       matrix:
         include:
           - name: macOS installer
-            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}
+            os: macos-15
             target: mac
           - name: Linux installer
-            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+            os: ubuntu-24.04-arm
             target: linux
           - name: Windows installer
-            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}
+            os: windows-2025
             target: win
     runs-on: ${{ matrix.os }}
     # One shell on every OS. On Windows `bash` is the Git for Windows shell,
@@ -436,7 +416,7 @@ jobs:
     name: Publish GitHub Release assets (atomic)
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     steps:
@@ -542,7 +522,7 @@ jobs:
     name: Publish to the R2 release channel
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    runs-on: ubuntu-24.04-arm
     environment: release
     permissions:
       contents: read
@@ -654,7 +634,7 @@ jobs:
     name: Publish the signed contract bundle
     needs: release-profile
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true')
-    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    runs-on: ubuntu-24.04-arm
     environment: release
     # id-token: write is the keyless signing identity; no other job has it.
     permissions:

@@ -17,8 +17,8 @@ concurrency:
 jobs:
   cluster-detector:
     name: Trusted Cluster Policy Evaluation
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-latest
     steps:
       - name: Capture live pull request snapshot
         id: pr-snapshot

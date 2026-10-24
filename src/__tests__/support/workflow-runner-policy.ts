@@ -14,15 +14,14 @@ import { parse as parseYaml } from "yaml";
  * fork-reachable until it is listed here: push, schedule, workflow_dispatch
  * and repository_dispatch need write access to the repository.
  *
- * A workflow with any fork-reachable trigger takes, for every job, either a
- * GitHub-hosted label or exactly {@link forkSafeRunsOn}: the runner a repo
- * variable names for a trusted event, the hosted label otherwise. That one
- * expression is the shared form; Actions has no cross-workflow expression
- * reuse, so this check is what keeps the copies identical.
+ * Every job in every workflow runs on a pinned GitHub-hosted label: the
+ * repository registers no self-hosted runner, and a job that named one would
+ * reopen the path for a fork pull request. A matrix runner counts only when
+ * every matrix entry names a hosted label.
  *
  * This check reads the workflow files on the default branch. A fork pull
- * request runs its own edited copy, so the repository setting that holds fork
- * workflows for approval stays the boundary against a hostile workflow edit.
+ * request runs its own edited copy, so registering no self-hosted runner is
+ * what keeps an edited `runs-on` from reaching one.
  */
 
 /** Events only a user with write access can start. */
@@ -44,23 +43,14 @@ const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "macos-15",
 ]);
 
-/** True for the events whose job may take the self-hosted runner: a trusted
- *  event, or a pull request whose head branch is in this repository and that
- *  Dependabot did not open (GitHub runs Dependabot pull requests as fork
- *  runs). */
-export const TRUSTED_RUNNER_GUARD =
-  "(contains(fromJSON('[\"push\",\"schedule\",\"workflow_dispatch\"]'), github.event_name)"
-  + " || contains(fromJSON('[\"pull_request\",\"pull_request_target\"]'), github.event_name)"
-  + " && github.event.pull_request.head.repo.full_name == github.repository"
-  + " && github.event.pull_request.user.login != 'dependabot[bot]')";
-
-/** The one runs-on form a fork-reachable job may use besides a hosted label. */
-export function forkSafeRunsOn(variable: string, hosted: string): string {
-  return `\${{ ${TRUSTED_RUNNER_GUARD} && vars.${variable} && fromJSON(vars.${variable}) || '${hosted}' }}`;
-}
-
 type Step = { uses?: unknown; with?: Record<string, unknown> };
-type Job = { "runs-on"?: unknown; uses?: unknown; permissions?: unknown; steps?: Step[] };
+type Job = {
+  "runs-on"?: unknown;
+  uses?: unknown;
+  permissions?: unknown;
+  steps?: Step[];
+  strategy?: { matrix?: Record<string, unknown> };
+};
 
 /** The events a workflow's `on:` names, whatever its form. */
 export function workflowEvents(on: unknown): string[] {
@@ -70,14 +60,38 @@ export function workflowEvents(on: unknown): string[] {
   throw new Error("workflow has no `on:` triggers");
 }
 
-function runnerProblem(runsOn: unknown): string | null {
-  if (typeof runsOn !== "string") return "runs-on is not a single label or the fork-safe expression";
-  if (HOSTED_LABELS.has(runsOn)) return null;
-  const match = /^\$\{\{ .* && vars\.(AVE_[A-Z]+_RUNNER) && fromJSON\(vars\.\1\) \|\| '([^']+)' \}\}$/u.exec(runsOn);
-  if (match && runsOn === forkSafeRunsOn(match[1] as string, match[2] as string)) {
-    return HOSTED_LABELS.has(match[2] as string) ? null : `falls back to ${match[2]}, not a hosted label`;
+/** The labels `${{ matrix.<key> }}` can take: every value of that key in the
+ *  matrix, its `include` entries among them; null when the matrix cannot be
+ *  read statically (a computed matrix or key). */
+function matrixLabels(job: Job, key: string): unknown[] | null {
+  const matrix = job.strategy?.matrix;
+  if (matrix === null || typeof matrix !== "object") return null;
+  const values: unknown[] = [];
+  const direct = matrix[key];
+  if (Array.isArray(direct)) values.push(...direct);
+  else if (direct !== undefined) return null;
+  const include = matrix.include;
+  if (include !== undefined) {
+    if (!Array.isArray(include)) return null;
+    for (const entry of include) {
+      if (entry !== null && typeof entry === "object" && key in entry) values.push((entry as Record<string, unknown>)[key]);
+    }
   }
-  return `runs-on ${runsOn} is not a hosted label or the fork-safe expression`;
+  return values.length > 0 ? values : null;
+}
+
+function runnerProblem(job: Job): string | null {
+  const runsOn = job["runs-on"];
+  if (typeof runsOn !== "string") return "runs-on is not a single hosted label";
+  if (HOSTED_LABELS.has(runsOn)) return null;
+  const matrixKey = /^\$\{\{ matrix\.([A-Za-z_][A-Za-z0-9_-]*) \}\}$/u.exec(runsOn)?.[1];
+  if (matrixKey !== undefined) {
+    const labels = matrixLabels(job, matrixKey);
+    if (labels === null) return `runs-on ${runsOn} is not a static matrix of hosted labels`;
+    const foreign = labels.filter((label) => typeof label !== "string" || !HOSTED_LABELS.has(label));
+    return foreign.length === 0 ? null : `matrix runner ${JSON.stringify(foreign)} is not a hosted label`;
+  }
+  return `runs-on ${runsOn} is not a hosted label`;
 }
 
 function grantsWrite(permissions: unknown): boolean {
@@ -86,9 +100,9 @@ function grantsWrite(permissions: unknown): boolean {
   return Object.values(permissions).some((level) => level === "write");
 }
 
-/** Every violation of the fork-safety rule in one workflow, as
- *  `<name>:<job> <reason>`; empty for a compliant or trusted-only workflow. */
-export function forkRunnerViolations(source: string, name: string): string[] {
+/** Every violation of the runner and fork-safety rules in one workflow, as
+ *  `<name>:<job> <reason>`; empty for a compliant workflow. */
+export function workflowRunnerViolations(source: string, name: string): string[] {
   const workflow = parseYaml(source, { merge: true }) as {
     on?: unknown;
     permissions?: unknown;
@@ -96,10 +110,14 @@ export function forkRunnerViolations(source: string, name: string): string[] {
   };
   if (workflow.jobs === undefined) throw new Error(`${name} has no jobs`);
   const events = workflowEvents(workflow.on);
-  const untrusted = events.filter((event) => !TRUSTED_EVENTS.has(event));
-  if (untrusted.length === 0) return [];
-  const privileged = events.includes("pull_request_target");
   const violations: string[] = [];
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (job.uses !== undefined) continue;
+    const problem = runnerProblem(job);
+    if (problem) violations.push(`${name}:${id} ${problem}`);
+  }
+  if (events.every((event) => TRUSTED_EVENTS.has(event))) return violations;
+  const privileged = events.includes("pull_request_target");
   if (workflow.permissions === "write-all") violations.push(`${name} grants write-all`);
   if (privileged && grantsWrite(workflow.permissions)) {
     violations.push(`${name} grants a write permission to pull_request_target`);
@@ -112,8 +130,6 @@ export function forkRunnerViolations(source: string, name: string): string[] {
       violations.push(`${name}:${id} calls a reusable workflow this check cannot read`);
       continue;
     }
-    const problem = runnerProblem(job["runs-on"]);
-    if (problem) violations.push(`${name}:${id} ${problem}`);
     if (workflow.permissions === undefined && job.permissions === undefined) {
       violations.push(`${name}:${id} has no permissions block`);
     }
