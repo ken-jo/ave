@@ -16,7 +16,7 @@ import {
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
-import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";
+import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
 import {
   launchSucceeded,
   readProductionLogsSince,
@@ -359,7 +359,7 @@ async function launchSmoke(executable, timeoutMs) {
   } finally {
     removeTempDirBestEffort(userDataDir);
     removeTempDirBestEffort(aveHomeDir);
-    cleanupOwnedWindowsProtocolHandler(executable);
+    assertNoWindowsProtocolClaim(executable);
   }
 }
 

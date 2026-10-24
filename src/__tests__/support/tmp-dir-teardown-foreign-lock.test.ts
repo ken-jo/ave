@@ -17,6 +17,7 @@
  * assert there.
  */
 import { describe, it, expect } from "vitest";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -72,7 +73,7 @@ async function holdForeignLock(file: string, holdMs?: number): Promise<ChildProc
     ],
     // With no duration the parent owns the lock lifetime, including while
     // synchronous removal blocks its event loop. Teardown stops the owner.
-    { stdio: ["pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"], env: windowsPowerShellEnv() },
   );
   let stderr = "";
   child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });

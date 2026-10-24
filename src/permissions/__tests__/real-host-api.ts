@@ -20,14 +20,13 @@ import { expect, vi } from "vitest";
 import { initPluginRuntime } from "../../boot/steps/plugin-runtime.js";
 import { KNOWN_CAPABILITIES } from "../../plugins/capabilities.js";
 import { isPlainNamespace } from "../hostapi-effect-recorder.js";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { AlertsService } from "../../alerts/service.js";
 import type { AlertSettings } from "../../shared/alerts-types.js";
 import type { PluginHostApi } from "../../plugins/types.js";
 import { pluginDataDirIn } from "../../plugins/__tests__/test-helpers.js";
+import type { PermissionTestResources } from "./test-resources.js";
 
 /**
  * The one field this module needs from the caller's `vi.hoisted` harness: the
@@ -79,19 +78,25 @@ function capturedCreateHostApi(
  * never be enumerated, and would therefore escape every assertion made about
  * this surface. Declare the maximal capability set so conditionally-wired
  * members are present.
+ *
+ * Every scratch directory — the plugin's data directory and the alerts and
+ * board stores behind it — comes from `resources`, so the caller's `afterEach`
+ * removes them with the rest of its directories.
  */
 export async function buildRealHostApi(
   harness: RealHostApiHarness,
-  pluginDataDir: string,
+  resources: PermissionTestResources,
+  pluginDataPrefix: string,
 ): Promise<PluginHostApi> {
   harness.capturedRuntimeOptions = null;
   const bootAuditLogger = { log: vi.fn() };
   // A real alerts service over a temp directory, for the same reason as the
   // board below: `raiseAlert` must return a genuine envelope, and the probe's
   // kind is undeclared so it refuses before anything is rendered or stored.
-  const alertsDir = mkdtempSync(join(tmpdir(), "ave-probe-alerts-"));
+  const alertsDir = resources.makeTmpDir("ave-probe-alerts-");
   let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
-  const alertsService = new AlertsService({
+  // Flushed before the directory goes: a write still queued would recreate it.
+  const alertsService = resources.trackFlushable(new AlertsService({
     migration: createAlertMigrationPorts(),
     dir: () => alertsDir,
     settings: { get: () => alertSettings, set: async (next) => { alertSettings = next; } },
@@ -103,7 +108,7 @@ export async function buildRealHostApi(
     notifications: { isFocusGateActive: () => false, fire: vi.fn() },
     emit: vi.fn(),
     audit: vi.fn(),
-  });
+  }));
   await alertsService.load();
   await initPluginRuntime({
     host: createBootHostFixture(),
@@ -144,7 +149,7 @@ export async function buildRealHostApi(
     // envelope for the JSON-representability probe, and the probe's kind is
     // undeclared so it refuses before it ever touches the file.
     getWorkBoardStore: () =>
-      new WorkBoardStore(join(mkdtempSync(join(tmpdir(), "ave-probe-wb-")), "board.json")),
+      new WorkBoardStore(join(resources.makeTmpDir("ave-probe-wb-"), "board.json")),
     getAlertsService: () => alertsService,
   });
 
@@ -160,7 +165,7 @@ export async function buildRealHostApi(
       config: {},
       capabilities: [...KNOWN_CAPABILITIES],
     },
-    pluginDataDirIn(pluginDataDir),
+    pluginDataDirIn(resources.makeTmpDir(pluginDataPrefix)),
     {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,

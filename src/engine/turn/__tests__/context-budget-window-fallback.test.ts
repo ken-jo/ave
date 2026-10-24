@@ -189,13 +189,19 @@ describe("reasoning — effort levels nobody states", () => {
     expect(message).toContain("llm.vendors.azure-foundry.catalogModel");
   });
 
-  it("says nothing when the levels are stated, thinking is off, or the shape decides", () => {
+  it("says nothing when the levels are stated or thinking is off", () => {
     const route = { identity: "azure-foundry/named-deployment", vendor: "azure-foundry", model: "named-deployment" };
     warnUnstatedReasoningOnce(route, plan("azure-foundry", "named-deployment", { catalogModel: "azure/gpt-5.4" }));
     warnUnstatedReasoningOnce(route, plan("azure-foundry", "named-deployment", { enableThinking: false }));
     warnUnstatedReasoningOnce({ identity: "openai/gpt-5.4", vendor: "openai", model: "gpt-5.4" }, plan("openai", "gpt-5.4"));
-    warnUnstatedReasoningOnce({ identity: "claude/claude-sonnet-4-20250514", vendor: "claude", model: "claude-sonnet-4-20250514" }, plan("claude", "claude-sonnet-4-20250514"));
     expect(logged.warn).not.toHaveBeenCalled();
+  });
+
+  it("warns when only an unlisted model name suggests a reasoning control", () => {
+    const route = { identity: "claude/claude-sonnet-4-20250514", vendor: "claude", model: "claude-sonnet-4-20250514" };
+    warnUnstatedReasoningOnce(route, plan("claude", route.model));
+    expect(logged.warn).toHaveBeenCalledOnce();
+    expect(String(logged.warn.mock.calls[0]?.[0])).toContain("llm.vendors.claude.catalogModel");
   });
 });
 

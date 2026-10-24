@@ -65,7 +65,7 @@ describe("VercelUnifiedProvider azure-foundry", () => {
   });
 
   it.each([
-    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed" } } },
+    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed", forceReasoning: true } } },
     // A deployment alias does not establish its model, and no level is guessed
     // from the alias: without a named entry the request carries no effort.
     { catalogModel: undefined, expected: undefined },

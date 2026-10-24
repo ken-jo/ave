@@ -18,15 +18,10 @@ jobs:
   # fails when the two disagree instead of letting both jobs skip silently.
   build:
     if: github.repository == 'ken-jo/ave'
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
-    # "ubuntu-latest" to opt into a GitHub-hosted runner explicitly). Unset
-    # falls back to any self-hosted runner only so the check below can fail
-    # naming the variable, never to a billing-blocked hosted label; deploy
-    # needs this job, so it never evaluates an unset variable. Only
-    # default-branch pushes and repository_dispatch reach this workflow,
-    # never a fork PR.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
+    # A GitHub-hosted runner, as every workflow job is
+    # (workflow-runner-policy.ts). Only default-branch pushes and
+    # repository_dispatch reach this workflow, never a fork PR.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     outputs:
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -35,8 +30,8 @@ jobs:
       source_sha: ${{ steps.verify.outputs.source_sha }}
     env:
       REQUESTED_HEAD: ${{ github.event.client_payload.head_sha || github.sha }}
-      # Bun's package cache defaults to the runner user's home, which on a
-      # self-hosted runner is the owner's own cache. Keep it in the workspace.
+      # Bun's package cache defaults to the runner user's home; keep it in the
+      # workspace.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,18 +40,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The runner check and the home isolation below run on Node; a
-      # self-hosted runner has no toolcache to rely on.
+      # The home isolation below runs on this pinned Node, not on whatever
+      # Node the runner image carries.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-
-      - name: Require the runner variable
-        shell: bash
-        env:
-          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER
 
       - id: verify
         name: Verify exact default-branch source
@@ -72,15 +61,15 @@ jobs:
             refs/remotes/origin/main
           printf 'source_sha=%s\n' "$REQUESTED_HEAD" >> "$GITHUB_OUTPUT"
 
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./.github/actions/setup-bun
         with:
           bun-version-file: .bun-version
 
       # The install scripts and the Next build resolve os.homedir() and
-      # os.tmpdir(): on the owner's machine those are the owner's own.
+      # os.tmpdir(); keep them job-local.
       - name: Isolate home and temp directories in the runner temp
         shell: bash
         run: node .github/scripts/isolate-job-home.mjs
@@ -138,8 +127,7 @@ jobs:
   deploy:
     needs: build
     if: github.repository == 'ken-jo/ave'
-    # The runner build checked for; see the build job.
-    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    runs-on: ubuntu-24.04-arm
     environment: web-production
     timeout-minutes: 15
     permissions:
@@ -149,10 +137,8 @@ jobs:
       # workspace instead of the runner user's ~/.npm.
       npm_config_cache: ${{ github.workspace }}/.cache/npm
     steps:
-      # This job has no checkout to clean the workspace, so a persistent
-      # self-hosted runner would still hold the previous run's bundle. Start
-      # empty, and give wrangler a home under RUNNER_TEMP for its config and
-      # logs instead of the owner's.
+      # Start from an empty workspace, and give wrangler a home under
+      # RUNNER_TEMP for its config and logs instead of the runner user's.
       - name: Start from an empty workspace and a job-local home
         shell: bash
         run: |
@@ -161,8 +147,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/job-home"
           printf 'HOME=%s\n' "$RUNNER_TEMP/job-home" >> "$GITHUB_ENV"
 
-      # wrangler-action runs wrangler with npm; take Node and npm from the
-      # runner's tool cache rather than whatever the machine has installed.
+      # wrangler-action runs wrangler with npm; pin Node 24 and its npm rather
+      # than whichever the runner image ships.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"

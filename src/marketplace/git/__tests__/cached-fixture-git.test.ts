@@ -112,17 +112,45 @@ describe("cached fixture repositories", () => {
     }
   });
 
-  it("replays streamed archive bytes exactly as the real command emits them", async () => {
-    const target = await client();
-    const commit = await target.fetchRef(remote, undefined, "candidate");
-    const args = ["archive", "--format=tar", "--prefix=export/", `${commit}^{tree}`];
-    const options = { gitDir: target.dir, timeoutMs: GIT_TIMEOUTS_MS.export };
-    const actual = await git.runner.run(args, options);
-    for (let index = 0; index < 2; index++) {
-      const chunks: Buffer[] = [];
-      const result = await commands.run(args, { ...options, onStdout: (chunk) => chunks.push(chunk) });
-      expect(Buffer.concat(chunks)).toEqual(actual.stdout);
-      expect(result.stdout).toEqual(Buffer.alloc(0));
+  // The two tree-ish forms BareRepo.export emits. For a tree-ish `git archive`
+  // stamps every entry with the current time, so a second real run is no
+  // reference: the replay must equal the bytes the one real run streamed.
+  it.each([
+    { form: "root tree", treeish: (commit: string) => `${commit}^{tree}`,
+      files: { "export/README.md": "root\n", "export/plugin/tool.txt": "tool\n" } },
+    { form: "subtree path", treeish: (commit: string) => `${commit}:plugin`,
+      files: { "export/tool.txt": "tool\n" } },
+  ])("replays a $form archive with the bytes its one real run streamed", async ({ treeish, files }) => {
+    const name = `archive-${++sequence}`;
+    const source = copyFixtureRepo(root, name, repo, { publishByCopy: true });
+    const real = git.runner.run.bind(git.runner);
+    const run = vi.spyOn(git.runner, "run");
+    try {
+      source.commit({ "README.md": "root\n", "plugin/tool.txt": "tool\n" }, "archive layout");
+      const sourceRemote = { ...remote, url: normalizeSourceUrl(server.url(name)) };
+      const target = await client();
+      const commit = await target.fetchRef(sourceRemote, undefined, "candidate");
+      const args = ["archive", "--format=tar", "--prefix=export/", treeish(commit)];
+      const options = { gitDir: target.dir, timeoutMs: GIT_TIMEOUTS_MS.export };
+      const streamed: Buffer[] = [];
+      run.mockImplementation((runArgs, runOptions) => runArgs[0] !== "archive" || !runOptions.onStdout
+        ? real(runArgs, runOptions)
+        : real(runArgs, { ...runOptions, onStdout: (chunk) => { streamed.push(Buffer.from(chunk)); runOptions.onStdout!(chunk); } }));
+      const delivered: Buffer[] = [];
+      for (let index = 0; index < 2; index++) {
+        const chunks: Buffer[] = [];
+        const result = await commands.run(args, { ...options, onStdout: (chunk) => chunks.push(Buffer.from(chunk)) });
+        expect(result.stdout).toEqual(Buffer.alloc(0));
+        delivered.push(Buffer.concat(chunks));
+      }
+      expect(run.mock.calls.filter(([runArgs]) => runArgs[0] === "archive")).toHaveLength(1);
+      expect(Buffer.concat(streamed).length).toBeGreaterThan(0);
+      expect(delivered[0]).toEqual(Buffer.concat(streamed));
+      expect(delivered[1]).toEqual(Buffer.concat(streamed));
+      expect(tarFiles(delivered[1]!)).toEqual(files);
+    } finally {
+      run.mockRestore();
+      await removeFixtureRepo(source);
     }
   });
 
@@ -145,3 +173,18 @@ describe("cached fixture repositories", () => {
     }
   });
 });
+
+/** Regular files of a tar stream, by entry name. */
+function tarFiles(tar: Buffer): Record<string, string> {
+  const files: Record<string, string> = {};
+  for (let offset = 0; offset + 512 <= tar.length;) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const field = (start: number, length: number) => header.subarray(start, start + length).toString("utf8").replace(/\0.*$/su, "");
+    const size = Number.parseInt(field(124, 12).trim() || "0", 8);
+    const type = field(156, 1);
+    if (type === "0" || type === "") files[field(345, 155) ? `${field(345, 155)}/${field(0, 100)}` : field(0, 100)] = tar.subarray(offset + 512, offset + 512 + size).toString("utf8");
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}

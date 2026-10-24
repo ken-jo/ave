@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { buildModelCatalogDocument } from "../document-builder.js";
 import { selectBootModelCatalog } from "../bundled.js";
 import { MODEL_CATALOG_CACHE_MAX_ENTRIES, modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
@@ -448,7 +449,8 @@ describe("selectBootModelCatalog", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
+  it.for(["current.json", "entry"])("refuses a linked cache %s", async (name, { skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const sha256 = await seedGoodCopy();
     const path = join(dir, name === "entry" ? `${sha256}.json` : name);
     const external = join(dir, "outside.json");
@@ -458,14 +460,16 @@ describe("selectBootModelCatalog", () => {
     expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses a linked cache directory", async () => {
+  it("refuses a linked cache directory", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     await seedGoodCopy();
     const linked = join(dir, "linked");
     symlinkSync(dir, linked, "dir");
     expect(await selectBootModelCatalog({ env: {}, dir: linked, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses to publish through a linked cache parent", async () => {
+  it("refuses to publish through a linked cache parent", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     const home = join(dir, "home");
     const outside = join(dir, "outside");
     mkdirSync(home);

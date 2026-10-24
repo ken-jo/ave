@@ -35,18 +35,6 @@ export function applyWindowsSafeElectronFlags(
   return next;
 }
 
-export function applyWindowsNoSandboxEnv(
-  env,
-  platform = process.platform,
-) {
-  if (windowsSafeLaunchRequired(env, platform)) {
-    env.AVE_WIN_NO_SANDBOX = "1";
-  } else {
-    delete env.AVE_WIN_NO_SANDBOX;
-  }
-  return env;
-}
-
 export function ensureWindowsUserDataDir(
   args,
   env,
@@ -74,13 +62,10 @@ export function applyUtf8Env(env) {
   return env;
 }
 
-export function prepareElectronLaunchEnv(
-  env,
-  {
-    platform = process.platform,
-  } = {},
-) {
-  applyWindowsNoSandboxEnv(env, platform);
+export function prepareElectronLaunchEnv(env) {
+  // Retired: it only fed the unpackaged ave:// registration, which no longer
+  // runs. Dropped so a stale shell value never reaches the app.
+  delete env.AVE_WIN_NO_SANDBOX;
   applyUtf8Env(env);
   delete env.ELECTRON_RUN_AS_NODE;
   return env;

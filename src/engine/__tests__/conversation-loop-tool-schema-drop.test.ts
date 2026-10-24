@@ -92,9 +92,21 @@ function makeLoop(
  * A GPT-5.x route on Chat Completions: an OpenAI alias that names no Responses
  * family, declared as GPT-5.4 in the catalog.
  */
+/**
+ * A reasoning model on Chat Completions: the endpoint's own report names
+ * `reasoning_effort`, the Chat Completions parameter, for an id the catalog
+ * does not list. (A declared catalog entry would pick the Responses wire.)
+ */
 function chatCompletionsGpt5Settings(): ReturnType<typeof fakeLlmSettings> {
-  const settings = fakeLlmSettings({ provider: "openai", model: "team-alias", outputTokenLimit: 32_000 });
-  settings.vendors.openai.catalogModel = "openai/gpt-5.4";
+  const model = "team-alias";
+  const settings = fakeLlmSettings({ provider: "openai", model, outputTokenLimit: 32_000 });
+  settings.modelListCache = {
+    [llmModelListCacheKey("openai", settings.vendors.openai.baseUrl)]: {
+      vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [model],
+      modelEntries: [{ id: model, supportedParameters: ["tools", "reasoning_effort"] }],
+      fetchedAt: "2026-10-13T00:00:00.000Z",
+    },
+  };
   settings.vendors.openai.enableThinking = true;
   settings.vendors.openai.thinkingBudgetTokens = 16_000;
   return settings;
@@ -155,7 +167,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
     expect(result.stopReason).toBe("interrupted");
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
-      reasoning: expect.objectContaining({ kind: "none", suppressed: "chat-completions-tool-turn" }),
+      reasoning: expect.objectContaining({ kind: "openai-effort", effort: "high" }),
     }) }));
   });
 

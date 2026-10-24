@@ -17,16 +17,19 @@ concurrency:
 jobs:
   cluster-detector:
     name: Trusted Cluster Policy Evaluation
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-latest
     steps:
+      # The live pull request, read through the API with the job token. This
+      # step names no head commit from the event payload: under
+      # pull_request_target a step that both runs gh or git and names the head
+      # (the event's, or `.head.sha` read from the snapshot) is refused, and a
+      # step that names it taints its outputs (workflow-runner-policy.ts). So
+      # the head comparison is the next step, which runs neither, and this
+      # step's outputs stay untainted for the trusted checkout's base_sha.
       - name: Capture live pull request snapshot
         id: pr-snapshot
         env:
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -35,19 +38,41 @@ jobs:
           SNAPSHOT="${RUNNER_TEMP}/cluster-advisory-pr.json"
           gh api "repos/${REPO}/pulls/${PR_NUMBER}" > "$SNAPSHOT"
 
-          LIVE_HEAD_SHA=$(jq -er '.head.sha' "$SNAPSHOT")
           LIVE_BASE_SHA=$(jq -er '.base.sha' "$SNAPSHOT")
           LIVE_BASE_REF=$(jq -er '.base.ref | if type == "string" and . != "" then . else error("invalid .base.ref") end' "$SNAPSHOT")
           LIVE_BASE_REPO=$(jq -er '.base.repo.full_name | if type == "string" and . != "" then . else error("invalid .base.repo.full_name") end' "$SNAPSHOT")
-          if ! [[ "$LIVE_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "::error::Invalid live pull request head SHA"
-            exit 1
-          fi
           if ! [[ "$LIVE_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
             echo "::error::Invalid live pull request base SHA"
             exit 1
           fi
           if [ "$LIVE_BASE_REF" != "main" ] || [ "$LIVE_BASE_REPO" != "$REPO" ]; then
+            retargeted=true
+          else
+            retargeted=false
+          fi
+
+          {
+            echo "path=${SNAPSHOT}"
+            echo "base_sha=${LIVE_BASE_SHA}"
+            echo "retargeted=${retargeted}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Names the head, so its one output (superseded) is tainted under
+      # workflow-runner-policy.ts: later steps read it only in `if:`.
+      - name: Drop a retargeted or superseded pull request
+        id: pr-current
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RETARGETED: ${{ steps.pr-snapshot.outputs.retargeted }}
+          SNAPSHOT: ${{ steps.pr-snapshot.outputs.path }}
+        run: |
+          set -euo pipefail
+          LIVE_HEAD_SHA=$(jq -er '.head.sha' "$SNAPSHOT")
+          if ! [[ "$LIVE_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Invalid live pull request head SHA"
+            exit 1
+          fi
+          if [ "$RETARGETED" = "true" ]; then
             echo "::notice::Cluster advisory no longer applies to this pull request base"
             {
               echo "## Sensitive-area advisory"
@@ -67,17 +92,12 @@ jobs:
             echo "superseded=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          {
-            echo "path=${SNAPSHOT}"
-            echo "base_sha=${LIVE_BASE_SHA}"
-            echo "superseded=false"
-          } >> "$GITHUB_OUTPUT"
+          echo "superseded=false" >> "$GITHUB_OUTPUT"
 
       # Run policy only from the trusted live base commit. Pull-request content
       # is inspected through read-only GitHub API data and is never executed.
       - name: Checkout trusted cluster policy
-        if: steps.pr-snapshot.outputs.superseded != 'true'
+        if: steps.pr-current.outputs.superseded != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
@@ -86,7 +106,7 @@ jobs:
           ref: ${{ steps.pr-snapshot.outputs.base_sha }}
 
       - name: Verify trusted cluster policy checkout
-        if: steps.pr-snapshot.outputs.superseded != 'true'
+        if: steps.pr-current.outputs.superseded != 'true'
         env:
           EXPECTED_BASE_SHA: ${{ steps.pr-snapshot.outputs.base_sha }}
         run: |
@@ -99,7 +119,7 @@ jobs:
 
       - name: Check sensitive area changes and cluster window
         id: cluster-check
-        if: steps.pr-snapshot.outputs.superseded != 'true'
+        if: steps.pr-current.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_SNAPSHOT: ${{ steps.pr-snapshot.outputs.path }}
@@ -134,7 +154,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish cluster advisory
-        if: steps.pr-snapshot.outputs.superseded != 'true'
+        if: steps.pr-current.outputs.superseded != 'true'
         env:
           REASON: ${{ steps.cluster-check.outputs.violation_reason }}
           VIOLATION: ${{ steps.cluster-check.outputs.violation }}

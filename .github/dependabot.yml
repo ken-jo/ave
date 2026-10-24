@@ -1,12 +1,12 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "weekly"
-    # One PR per ecosystem each week: every PR costs a full CI run on the two self-hosted runners.
+    # One PR per ecosystem each week: every PR costs a full CI run.
     groups:
-      npm:
+      bun:
         patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -14,4 +14,14 @@ updates:
       interval: "weekly"
     groups:
       github-actions:
+        patterns: ["*"]
+  # The site under web/ has its own bun.lock. Dependabot's npm updater refuses
+  # a directory whose only lockfile is bun.lock, so every directory holding
+  # one is a "bun" entry (GitHub's Dependabot options reference: Bun >= 1.1.39).
+  - package-ecosystem: "bun"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    groups:
+      web-bun:
         patterns: ["*"]

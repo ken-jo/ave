@@ -70,6 +70,8 @@ describe("installShellIntegration", () => {
       env: { ZDOTDIR: home },
     });
     expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(statSync(join(home, ".zshenv")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(readFileSync(join(home, ".zshenv"), "utf-8")).toContain("skip_global_compinit=1\n");
     expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "bash", env: {} });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
     expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "fish", env: {} });
@@ -95,7 +97,7 @@ describe("installShellIntegration", () => {
   it("never writes the nonce into a startup file and refuses a weak one", () => {
     const home = makeHome();
     for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
-    for (const file of [".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
+    for (const file of [".zshenv", ".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
       expect(readFileSync(join(home, file), "utf-8")).not.toContain(NONCE);
     }
     expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "", sandboxEnv: sandboxEnvFor(home) })).toThrow(/nonce/u);

@@ -32,6 +32,7 @@ import {
 import type { LLMProvider, StreamEvent } from "../../../engine/llm/types.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { readPermissionSettings, setReviewerSettingsPersist } from "../../../permissions/permission-settings-store.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import {
   LlmParentAdjudicator,
@@ -74,6 +75,44 @@ const PARENT_ADJUDICATION = {
 } as const;
 
 describe("Permission policy P4 reviewer-wiring", () => {
+  it("persists an empty reviewer selection and preserves an existing model until explicitly cleared", async () => {
+    const file = join(tmpDir, "settings.json");
+    await setReviewerSettingsPersist({ model: "saved-reviewer-model" }, file);
+    expect(readPermissionSettings(file).permissions.reviewer.model).toBe("saved-reviewer-model");
+    await setReviewerSettingsPersist({ model: "" }, file);
+    expect(readPermissionSettings(file).permissions.reviewer.model).toBe("");
+  });
+  it("leaves a fresh reviewer model unset and reports the existing unconfigured state", () => {
+    const file = join(tmpDir, "permissions.json");
+    const settings = readPermissionSettings(file).permissions.reviewer;
+    expect(settings.model).toBe("");
+    const streamProviderFor = vi.fn(() => stubProvider([]));
+    const result = wireReviewerAgent({
+      networkFetch: unusedNetworkFetch,
+      permissionManager: new PermissionManager(file),
+      readSettings: () => ({ ...settings, model: "" }),
+      streamProviderFor,
+      verdictCachePath: join(tmpDir, "cache.jsonl"),
+      deferredQueuePath: join(tmpDir, "queue.jsonl"),
+    });
+    expect(result.runtimeMode).toBe("llm-degraded-to-rule");
+    expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
+    expect(streamProviderFor).not.toHaveBeenCalled();
+  });
+
+  it("reports an empty active chat model as unconfigured despite a saved legacy reviewer model", () => {
+    const result = wireReviewerAgent({
+      networkFetch: unusedNetworkFetch,
+      permissionManager: new PermissionManager(join(tmpDir, "permissions.json")),
+      readSettings: () => ({ ...readPermissionSettings(join(tmpDir, "settings.json")).permissions.reviewer, model: "saved-reviewer-model" }),
+      readActiveLlm: () => ({ provider: "openai", model: "" }),
+      streamProviderFor: () => stubProvider([]),
+      verdictCachePath: join(tmpDir, "cache.jsonl"),
+      deferredQueuePath: join(tmpDir, "queue.jsonl"),
+    });
+    expect(result.effectiveSettings.model).toBe("");
+    expect(result.runtimeMode).toBe("llm-degraded-to-rule");
+  });
   it("settings mode=rule wires RuleBasedRiskClassifier", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const setReviewerSpy = vi.spyOn(pm, "setReviewer");

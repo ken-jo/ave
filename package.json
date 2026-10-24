@@ -38,7 +38,7 @@
   },
   "main": "dist/src/main/main.js",
   "scripts": {
-    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
     "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
     "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",
@@ -114,7 +114,7 @@
     "dist:linux:fast": "node scripts/build-installers.mjs --linux --fast",
     "dist:win:fast": "node scripts/build-installers.mjs --win --fast",
     "release": "node scripts/release.mjs",
-    "build:windows-job": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1"
+    "build:windows-job": "node scripts/build-windows-job.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~4.0.87",
@@ -127,7 +127,7 @@
     "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@modelcontextprotocol/ext-apps": "1.7.5",
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.12.0",

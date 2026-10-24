@@ -31,6 +31,11 @@ describe("validateAuthApiKey", () => {
     expect(validateAuthApiKey("api-key", "  sk-abc  ")).toBeNull();
   });
 
+  it("accepts browser authentication only without a pasted key", () => {
+    expect(validateAuthApiKey("oauth", "")).toBeNull();
+    expect(validateAuthApiKey("oauth", "private-value")).not.toBeNull();
+  });
+
   it("returns an error for sso until runtime support is implemented", () => {
     expect(validateAuthApiKey("sso", "")).toMatch(/SSO/);
     expect(validateAuthApiKey("sso", "some-key")).toMatch(/SSO/);

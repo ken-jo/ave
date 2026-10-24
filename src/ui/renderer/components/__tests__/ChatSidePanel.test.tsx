@@ -11,6 +11,7 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -1107,14 +1108,16 @@ describe("ChatSidePanel", () => {
     return { listDir, reveal, removeRoot, writeText };
   }
 
-  async function findReadyWorkspaceTree(): Promise<HTMLElement> {
-    const tree = await screen.findByRole("tree");
-    // The tree shell mounts before its asynchronous listing and focus effect.
-    // Wait for the initial tab stop before sending keys or inspecting rows.
-    await waitFor(() => {
-      expect(within(tree).getByRole("treeitem", { name: "alpha" })).toHaveAttribute("tabindex", "0");
+  /**
+   * The tree mounts before its first listing resolves, so wait for the rows
+   * and their roving row.
+   */
+  async function treeRowsReady(tree: HTMLElement): Promise<HTMLElement[]> {
+    return waitFor(() => {
+      const rows = within(tree).getAllByRole("treeitem");
+      expect(rows.some((row) => row.getAttribute("tabindex") === "0")).toBe(true);
+      return rows;
     });
-    return tree;
   }
 
   it("renders rows as ARIA treeitems with level/setsize/posinset and a single roving tabindex", async () => {
@@ -1123,8 +1126,8 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await findReadyWorkspaceTree();
-    const items = within(tree).getAllByRole("treeitem");
+    const tree = await screen.findByRole("tree");
+    const items = await treeRowsReady(tree);
     expect(items.length).toBe(3);
     expect(items[0].getAttribute("aria-level")).toBe("1");
     expect(items[0].getAttribute("aria-setsize")).toBe("3");
@@ -1134,13 +1137,23 @@ describe("ChatSidePanel", () => {
     expect(tabbable.length).toBe(1);
   });
 
+  it("derives the roving row from the active row, falling back to the first row", () => {
+    const rows = [{ path: "/w/a" }, { path: "/w/b" }];
+    expect(deriveRovingPath("/w/b", rows)).toBe("/w/b");
+    expect(deriveRovingPath("/w/gone", rows)).toBe("/w/a");
+    expect(deriveRovingPath(null, rows)).toBe("/w/a");
+    expect(deriveRovingPath("/w/a", [])).toBeNull();
+    expect(deriveRovingPath(null, [])).toBeNull();
+  });
+
   it("ArrowDown moves the roving focus to the next row", async () => {
     stubRichWorkspace();
     renderPanel(
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await findReadyWorkspaceTree();
+    const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     const items = within(tree).getAllByRole("treeitem");
     // Second row (beta) becomes the roving-focus row (tabindex=0). Roving focus
@@ -1157,7 +1170,8 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await findReadyWorkspaceTree();
+    const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     // First row is "alpha" (a directory) and is the active item.
     fireEvent.keyDown(tree, { key: "Enter" });
     await screen.findByText("a1.md");
@@ -1170,7 +1184,8 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await findReadyWorkspaceTree();
+    const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
