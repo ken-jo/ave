@@ -208,14 +208,33 @@ function workflowContentHash(source: string): string {
   return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
 }
 
-/** A repository path a `run:` script names: a relative path with a script
- *  extension, as `node .cluster-policy/scripts/x.mjs` or `bash ./tools/x.sh`
- *  writes it. A path built from a variable (`"$DIR/x.mjs"`) is not seen; the
- *  workflow's own pin covers that edit. */
-const RUN_SCRIPT_PATH = /(?:^|[\s"'=(])((?:\.\/)?[\w.-]+(?:\/[\w.-]+)+\.(?:mjs|cjs|js|mts|cts|ts|sh|py|ps1))(?=$|[\s"';)|&])/gmu;
+/** Every token in a `run:` script that ends in a script extension. Each must
+ *  resolve to a repository file: one that does not (a typo, an absolute
+ *  path, a path built from a variable) fails rather than going unpinned. */
+const RUN_SCRIPT_TOKEN = /([^\s"'=();|&<>`]*\.(?:mjs|cjs|js|mts|cts|ts|sh|py|ps1))(?=$|[\s"';)|&<>`])/gmu;
+
+/** The two spellings of the workspace root a script path may start with,
+ *  resolved to the repository root. */
+const WORKSPACE_ROOT = /\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE\b/gu;
+
+/** An interpreter or launcher invocation in a `run:` script. */
+const INTERPRETER = /(?:^|[\s;&|(`])(node|bun|npm|npx|pnpm|yarn|tsx|deno|python3?|bash|sh|pwsh|powershell)(?=$|\s)/mu;
+
+/** package.json indirection: a package manager running a script, a binary
+ *  or an install (whose lifecycle scripts run too). Never followed. */
+const PACKAGE_SCRIPT = /(?:^|[\s;&|(`])(?:npm|npx|pnpm|yarn|bunx)(?=$|\s)|(?:^|[\s;&|(`])bun\s+(?!\S+\.(?:mjs|cjs|js|mts|cts|ts)(?=$|[\s"';)|&]))/mu;
 
 /** A static relative import or require in a JavaScript or TypeScript module. */
 const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gmu;
+
+/** In a pinned module, code this derivation cannot follow: a dynamic import
+ *  or require whose target is not a string literal, a child process started
+ *  on an interpreter (or on this Node), and `fork`. */
+const UNFOLLOWABLE_MODULE_CODE =
+  /\bimport\s*\(\s*(?!["'])|\brequire\s*\(\s*(?!["'])|\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*(?:["'`](?:node|bun|deno|tsx|python3?|bash|sh|pwsh|powershell)["'`]|process\.(?:execPath|argv0))|\bfork\s*\(/u;
+
+/** In a pinned shell script, a `source` or `.` include. */
+const SHELL_INCLUDE = /(?:^|[\s;&|])(?:source|\.)\s+\S/mu;
 
 function normalizeRepoPath(path: string): string {
   const parts: string[] = [];
@@ -232,16 +251,28 @@ function normalizeRepoPath(path: string): string {
 }
 
 /** The repository files a workflow executes, sorted, the workflow itself
- *  first: every script a `run:` step names (with an actions/checkout `path:`
- *  prefix mapped back to the repository root), every local action's
- *  action.yml, and transitively every static relative import of those
- *  modules. `readFile` answers a repository path's content, or undefined when
- *  there is no such file; a relative import that resolves to nothing fails. */
+ *  first, and every way the derivation could not follow one. It fails closed:
+ *
+ *  - every script path a `run:` step names must resolve to a repository file
+ *    (an actions/checkout `path:` prefix and the workspace root map back to
+ *    the repository root); an absolute or variable-built path is a problem;
+ *  - a `run:` step that invokes an interpreter or launcher must resolve at
+ *    least one file;
+ *  - package.json indirection (`npm run`, `yarn <script>`, `npx`, an install)
+ *    is a problem outright; package.json is never followed;
+ *  - every local action's action.yml is included;
+ *  - every static relative import of an included module is included,
+ *    transitively, and must resolve; a non-literal dynamic import or require,
+ *    or a child process started on an interpreter, in an included module is a
+ *    problem, as is a `source` in an included shell script.
+ *
+ *  `readFile` answers a repository path's content, or undefined when there is
+ *  no such file. */
 export function pullRequestTargetExecutedFiles(
   name: string,
   source: string,
   readFile: (path: string) => string | undefined,
-): string[] {
+): { files: string[]; problems: string[] } {
   const workflow = parseYaml(source, { merge: true }) as { jobs?: Record<string, Job> };
   const steps = Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
   const checkoutRoots = steps
@@ -249,38 +280,75 @@ export function pullRequestTargetExecutedFiles(
     .map((step) => (typeof step.with?.path === "string" ? normalizeRepoPath(step.with.path) : ""))
     .filter((root) => root !== "");
   const found = new Set<string>();
+  const problems: string[] = [];
   const queue: string[] = [];
   const add = (path: string): void => {
     if (found.has(path)) return;
     found.add(path);
     queue.push(path);
   };
-  for (const step of steps) {
+  steps.forEach((step, index) => {
+    const label = `${name} step ${index + 1}`;
     if (typeof step.uses === "string" && step.uses.startsWith("./")) {
       const dir = normalizeRepoPath(step.uses);
       const action = [`${dir}/action.yml`, `${dir}/action.yaml`].find((path) => readFile(path) !== undefined);
-      if (action === undefined) throw new Error(`${name} uses ${step.uses}, which has no action.yml`);
-      add(action);
+      if (action === undefined) problems.push(`${label} uses ${step.uses}, which has no action.yml`);
+      else add(action);
     }
-    if (typeof step.run !== "string") continue;
-    for (const match of step.run.matchAll(RUN_SCRIPT_PATH)) {
-      let path = normalizeRepoPath(match[1] as string);
+    if (typeof step.run !== "string") return;
+    const run = step.run.replace(WORKSPACE_ROOT, ".");
+    if (PACKAGE_SCRIPT.test(run)) {
+      problems.push(`${label} runs a package manager, whose package.json scripts this check does not follow`);
+    }
+    let resolved = 0;
+    for (const match of run.matchAll(RUN_SCRIPT_TOKEN)) {
+      const token = match[1] as string;
+      if (token.startsWith("/") || token.includes("$")) {
+        problems.push(`${label} names ${token}, which does not resolve to a repository file`);
+        continue;
+      }
+      let path: string;
+      try {
+        path = normalizeRepoPath(token);
+      } catch {
+        problems.push(`${label} names ${token}, which leaves the repository`);
+        continue;
+      }
       const root = checkoutRoots.find((prefix) => path.startsWith(`${prefix}/`));
       if (root !== undefined) path = path.slice(root.length + 1);
-      if (readFile(path) !== undefined) add(path);
+      if (readFile(path) === undefined) {
+        problems.push(`${label} names ${token}, which does not resolve to a repository file`);
+        continue;
+      }
+      resolved += 1;
+      add(path);
     }
-  }
+    const interpreter = INTERPRETER.exec(run)?.[1];
+    if (interpreter !== undefined && resolved === 0) {
+      problems.push(`${label} runs ${interpreter} on no repository file this check can pin`);
+    }
+  });
   while (queue.length > 0) {
     const file = queue.shift() as string;
+    const content = readFile(file) as string;
+    if (/\.(?:sh|bash)$/u.test(file) && SHELL_INCLUDE.test(content)) {
+      problems.push(`${file} sources another file, which this check does not follow`);
+    }
     if (!/\.(?:mjs|cjs|js|mts|cts|ts)$/u.test(file)) continue;
+    if (UNFOLLOWABLE_MODULE_CODE.test(content)) {
+      problems.push(`${file} loads or starts code through a non-literal import or an interpreter, which this check does not follow`);
+    }
     const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
-    for (const match of (readFile(file) as string).matchAll(RELATIVE_IMPORT)) {
+    for (const match of content.matchAll(RELATIVE_IMPORT)) {
       const target = normalizeRepoPath(`${dir}/${match[1] as string}`);
-      if (readFile(target) === undefined) throw new Error(`${file} imports ${match[1]}, which resolves to no file`);
+      if (readFile(target) === undefined) {
+        problems.push(`${file} imports ${match[1]}, which resolves to no file`);
+        continue;
+      }
       add(target);
     }
   }
-  return [`.github/workflows/${name}`, ...[...found].sort()];
+  return { files: [`.github/workflows/${name}`, ...[...found].sort()], problems };
 }
 
 /** The allow-list violations of one workflow, if it runs on
@@ -299,8 +367,8 @@ export function pullRequestTargetAllowListViolations(
   if (pinned === undefined) return [`${name} is not on the pull_request_target allow-list: ${why}`];
   const workflowPath = `.github/workflows/${name}`;
   const read = (path: string): string | undefined => (path === workflowPath ? source : readFile(path));
-  const executed = pullRequestTargetExecutedFiles(name, source, read);
-  const violations: string[] = [];
+  const { files: executed, problems } = pullRequestTargetExecutedFiles(name, source, read);
+  const violations: string[] = problems.map((problem) => `${problem}: ${why}`);
   const unpinned = executed.filter((path) => !(path in pinned));
   if (unpinned.length > 0) violations.push(`${name} executes files the allow-list does not pin (${unpinned.join(", ")}): ${why}`);
   const stale = Object.keys(pinned).filter((path) => !executed.includes(path));
