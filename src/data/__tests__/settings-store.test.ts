@@ -3011,6 +3011,28 @@ describe("SettingsService appearance v1 → v2 migration", () => {
     expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
   });
 
+  it("persists migrations and normalized fields from an unmarked legacy file", async () => {
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    writeFileSync(settingsPath, JSON.stringify({
+      appearance: { theme: "dark", chatTheme: "lg", codeTheme: "auto" },
+      features: { subAgentAutonomousWake: false },
+      shortcuts: { toggleWindow: 42, enabled: "nope" },
+    }), "utf-8");
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("appliedMigrations");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
+    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
+    expect(service.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+    expect(onDisk.appearance).toEqual(service.get("appearance"));
+    expect(onDisk.features).toMatchObject({ subAgentAutonomousWake: true });
+    expect(onDisk.shortcuts).toEqual({ toggleWindow: null, enabled: false });
+    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
+  });
+
   it("v2 file loads without re-migration", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),

