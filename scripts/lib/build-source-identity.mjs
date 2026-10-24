@@ -13,7 +13,7 @@ const ambientGitVariables = [
 /**
  * Describe the committed build inputs and separately inventory encoder-only
  * generated output differences. `dirty` never exempts handwritten or untracked
- * files. The generator's manifest and its existing decoded-image checker own
+ * files. The generator's manifest and check-generated-assets.mjs (same decoded image) own
  * which tracked outputs qualify; the packager consumes this same function.
  */
 export function readBuildSourceIdentity(repoRoot) {
