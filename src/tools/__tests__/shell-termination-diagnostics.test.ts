@@ -23,7 +23,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
-import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool } from "../shell-tools.js";
+import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool, createBashKillTool, endShellSession } from "../shell-tools.js";
 
 function childProcess() {
   return Object.assign(new ChildProcess(), {
@@ -174,5 +174,21 @@ describe("background terminal diagnostics", () => {
     expect(manager.kill("owner", shellId)).toMatchObject({ status: "killed", exitCode: null, signal: null });
     close(child, null, "SIGKILL");
     expect(manager.read("owner", shellId)).toMatchObject({ status: "killed", exitCode: null, signal: "SIGKILL" });
+  });
+
+  it.each(["kill", "session end"])("awaits local tree termination on %s", async (action) => {
+    const child = childProcess();
+    const shellId = manager.register({ child, command: "work", sessionId: "owner", startedAt: "t" });
+    let completeKill: () => void = () => {};
+    vi.mocked(forceKillManagedChildProcess).mockReturnValueOnce(new Promise<void>((resolve) => { completeKill = resolve; }));
+    let settled = false;
+    const completion = (action === "kill"
+      ? createBashKillTool().execute({ shellId }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId: "owner" } })
+      : endShellSession("owner")).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(settled).toBe(false);
+    completeKill();
+    await completion;
+    expect(forceKillManagedChildProcess).toHaveBeenCalledOnce();
   });
 });

@@ -1312,6 +1312,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     return { ...DEFAULT_SETTINGS.system };
   }
   const obj = input as {
+    turnCompletionSoundEnabled?: unknown;
     closeBehavior?: unknown;
     appMode?: unknown;
     localApiServer?: unknown;
@@ -1336,6 +1337,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
   // back to its default while a valid sibling is preserved (mirrors the
   // per-field patch path in `update`).
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
+  acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
   const rawAppMode = obj.appMode;
   const normalizedAppMode = normalizeAppMode(rawAppMode);

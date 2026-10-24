@@ -1,12 +1,17 @@
 import type * as ChildProcessModule from "node:child_process";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, promises as fs, type Stats, writeFileSync } from "node:fs";
-import { dirname, join, resolve, win32 } from "node:path";
+import { chmodSync, mkdirSync, mkdtempSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
+import { tmpdir } from "node:os";
 import { vi } from "vitest";
 import type { CodexExecutableArtifact } from "../../main/codex-executable-artifact.js";
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
+// Captured at load: tests may stub TEMP before building fixtures.
+const fixtureTempRoot = tmpdir();
+let fixtureCurrentSid: Promise<string> | undefined;
 
 /** Loader-shaped bytes for format tests; probes use an injected runner. */
 export function nativeExecutableBytes(platform: NodeJS.Platform = process.platform, arch: NodeJS.Architecture = process.arch): Buffer {
@@ -81,7 +86,33 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     fixtureAncestors.add(process.platform === "win32" ? windowsPathKey(current) : current);
     if (dirname(current) === current) break;
   }
-  if (process.platform === "win32") return;
+  if (process.platform === "win32") {
+    // Load only when the fixture is built; importing the mocked process module
+    // here at module evaluation would cycle through its mock factory.
+    const { execFileSync } = createRequire(import.meta.url)("node:child_process") as typeof ChildProcessModule;
+    // Only the fixture's own temp tree changes ACLs. Inherited drive-wide
+    // Modify grants otherwise make every private-copy fixture invalid.
+    const fixtureRoot = realpathSync(root);
+    const insideTemp = relative(realpathSync(fixtureTempRoot), fixtureRoot);
+    if (!insideTemp || insideTemp === ".." || insideTemp.startsWith(`..${win32.sep}`) || isAbsolute(insideTemp)) {
+      throw new Error("Private fixture must be inside the test temporary directory");
+    }
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+      "$acl = [System.Security.AccessControl.DirectorySecurity]::new()",
+      "$acl.SetOwner($sid)",
+      "$acl.SetAccessRuleProtection($true, $false)",
+      "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
+      "$acl.AddAccessRule($rule)",
+      "Set-Acl -LiteralPath $env:AVE_PRIVATE_FIXTURE -AclObject $acl",
+    ].join("\n");
+    execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { windowsHide: true, env: { ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot } });
+    return;
+  }
   vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
     const stat = await readLstat(...args) as Stats;
     if (!fixtureAncestors.has(String(args[0]))) return stat;
@@ -127,6 +158,56 @@ export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeo
       }
       callback(error, masked, stderr);
     });
+  }) as typeof actual.execFile;
+  return { ...actual, execFile };
+}
+
+/** Locator tests need existing path objects, while access-policy tests keep real probes. */
+export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
+  if (process.platform !== "win32") return actual;
+  const execFile = ((...args: unknown[]) => {
+    const [file, argv, options, callback] = args as [string, string[], ChildProcessModule.ExecFileOptions, Function];
+    const pathsJson = options?.env?.AVE_EXECUTABLE_ACL_PATHS;
+    if (typeof pathsJson !== "string" || typeof callback !== "function") {
+      return (actual.execFile as (...rest: unknown[]) => ChildProcessModule.ChildProcess)(...args);
+    }
+    const child = new actual.ChildProcess();
+    const respond = async (): Promise<string> => {
+      const paths = JSON.parse(pathsJson) as string[];
+      // The native probe opens the path object itself, including reparse points.
+      for (const path of paths) await readLstat(path);
+      fixtureCurrentSid ??= new Promise<string>((resolveSid, reject) => {
+        actual.execFile(win32.join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+          windowsHide: true,
+          encoding: "utf8",
+        }, (error, stdout) => {
+          if (error) return reject(error);
+          const sid = /\bS-1-(?:\d+-)*\d+\b/.exec(stdout)?.[0];
+          if (!sid) return reject(new Error("Current account SID is unavailable"));
+          resolveSid(sid);
+        });
+      }).catch((error: unknown) => {
+        fixtureCurrentSid = undefined;
+        throw error;
+      });
+      const currentSid = await fixtureCurrentSid;
+      return JSON.stringify({
+        currentSid,
+        paths: paths.map((path) => ({
+          path, owner: currentSid, daclPresent: true,
+          entries: [{ sid: currentSid, mask: 0x1f01ff, flags: 0, type: 0 }],
+        })),
+        // No desktop-package exemption: fixtures are owner-only.
+        desktopPackage: options.env?.AVE_ACL_DESKTOP_PACKAGE === "skip"
+          ? { status: "skipped" } : { status: "unavailable", reason: "mapping-not-found" },
+      });
+    };
+    void respond().then(
+      (stdout) => callback(null, stdout, ""),
+      // A failed path open terminates the probe process, rather than reporting a spawn ENOENT.
+      (cause: unknown) => callback(Object.assign(new Error(String(cause)), { code: 1, cmd: [file, ...argv].join(" ") }), "", String(cause)),
+    );
+    return child;
   }) as typeof actual.execFile;
   return { ...actual, execFile };
 }

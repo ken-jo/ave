@@ -460,6 +460,14 @@ describe("preload — plugin webview asset URLs", () => {
     );
   });
 
+  it("forwards only the server id for remote authentication", async () => {
+    const api = await loadAveApi();
+    const mcp = api["mcp"] as { authenticate(id: string): Promise<unknown> };
+    mockInvoke.mockResolvedValueOnce({ connected: false, errorCode: "mcp-auth-required" });
+    await expect(mcp.authenticate("remote-a")).resolves.toEqual({ connected: false, errorCode: "mcp-auth-required" });
+    expect(mockInvoke).toHaveBeenCalledWith("ave:mcp:authenticate", "remote-a");
+  });
+
   it("pins MCP app resource and tool calls to the supplied generation", async () => {
     const api = await loadAveApi();
     const mcp = api["mcp"] as {

@@ -10,6 +10,7 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1394,20 +1395,31 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
   }
 }
 
-function electronUserDataDir(userDataDir: string | undefined): string {
-  const home = homedir();
-  return (
-    userDataDir ??
+function sensitiveDenyHomes(): string[] {
+  return policyHomeAnchors();
+}
+
+/**
+ * The Electron userData dirs to deny: the exact dir when a trusted caller
+ * provides it; otherwise derived from each policy home and the platform
+ * layout, without a desktop runtime import — safe for any non-renderer
+ * context. On win32 each carries its trailing separator so srt-win never
+ * materializes the deny as an empty file.
+ */
+function electronUserDataDirs(userDataDir: string | undefined, homes: readonly string[]): string[] {
+  if (userDataDir !== undefined) {
+    return [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir];
+  }
+  return homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
-        ? join(home, "AppData", "Roaming", "Ave")
+        ? join(home, "AppData", "Roaming", "Ave") + sep
         : join(
-            // Linux: honor XDG_CONFIG_HOME.
+            // Linux: honor XDG_CONFIG_HOME, mirroring Electron's own resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
-          ))
-  );
+          )));
 }
 
 const POSIX_CRON_DENIES = [
@@ -1419,16 +1431,27 @@ const POSIX_CRON_DENIES = [
 const POSIX_ASRT_TEMP_DENIES = ["/tmp/claude", "/private/tmp/claude"] as const;
 
 /** The directories among the write-persistence denies (see getDefaultSensitiveWriteDenyPaths). */
-function writePersistenceDirectories(): string[] {
-  const home = homedir();
+function writePersistenceDirectories(homes: readonly string[]): string[] {
   return [
     ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
-    join(home, ".config"),
-    join(home, "Library", "LaunchAgents"),
+    ...homes.flatMap((home) => [
+      join(home, ".config"),
+      join(home, "Library", "LaunchAgents"),
+      join(home, ".npm", "_logs"),
+      join(home, ".claude", "debug"),
+    ]),
     dirname(dirname(getVendoredSrtWinExePath())),
-    join(home, ".npm", "_logs"),
-    join(home, ".claude", "debug"),
   ];
+}
+
+/** The Windows user profile, or undefined when it cannot be resolved. */
+function windowsProfileHome(): string | undefined {
+  try {
+    const home = homedir();
+    return home === "" ? undefined : home;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1464,18 +1487,22 @@ function windowsDenyTargets(
   grants: readonly string[],
 ): string[] {
   if (process.platform !== "win32") return [...paths];
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
+  // Only the OS profile has the DACL that makes a disjoint deny redundant; a
+  // HOME elsewhere keeps every row. An unresolved profile drops nothing.
+  const profile = windowsProfileHome();
   // Match runtime home expansion before judging whether a deny is disjoint.
-  const expandedGrants = grants.map((grant) => grant === "~" ? home
-    : /^~[\\/]/.test(grant) ? home + grant.slice(1) : grant);
-  const ave = aveHome();
+  const expandedGrants = grants.map((grant) => profile === undefined ? grant
+    : grant === "~" ? profile
+      : /^~[\\/]/.test(grant) ? profile + grant.slice(1) : grant);
+  const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
   const directories = new Set(
     [
-      ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.kind === "dir" && entry.anchor !== "root").map((entry) =>
-        join(entry.anchor === "ave-home" ? ave : home, ...entry.segments),
+      ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.kind === "dir" && entry.anchor !== "root").flatMap((entry) =>
+        (entry.anchor === "ave-home" ? aveHomes : homes).map((home) => join(home, ...entry.segments)),
       ),
-      electronUserDataDir(userDataDir),
-      ...writePersistenceDirectories(),
+      ...electronUserDataDirs(userDataDir, homes).map((path) => path.replace(/[\\/]+$/, "")),
+      ...writePersistenceDirectories(homes),
     ].map(caseFoldForMatch),
   );
   const posixRooted = new Set<string>([
@@ -1491,7 +1518,7 @@ function windowsDenyTargets(
         // Patterns and unresolved short names cannot prove disjointness.
         if ([path, ...expandedGrants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
           .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
-        return !isGrantPathWithin(home, path)
+        return profile === undefined || !isGrantPathWithin(profile, path)
           || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
       } catch {
         // An unproven identity must never remove a deny.
@@ -1502,33 +1529,33 @@ function windowsDenyTargets(
 }
 
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const ave = aveHome();
-  // Exact runtime data dir when provided by a trusted caller; otherwise
-  // derive the platform default without importing main-process modules.
-  const electronUserData = electronUserDataDir(userDataDir);
+  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
+  // Electron userData dir — see electronUserDataDirs.
+  const electronUserData = electronUserDataDirs(userDataDir, homes);
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
     // src/permissions/sensitive-paths.ts, which the in-process host-tool guard
     // projects into globs. Do NOT hand-add a `join(home, …)` entry here — add a
     // row to that table and BOTH surfaces deny it.
-    ...SENSITIVE_PATH_ENTRIES.filter((entry) => {
-      if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
-      const entryPath = canonicalizePathForMatch(join(ave, ...entry.segments));
-      return caseFoldForMatch(entryPath) !== caseFoldForMatch(readablePrimarySessionRoot);
-    }).map((entry) => {
+    ...SENSITIVE_PATH_ENTRIES.flatMap((entry) => {
+      let paths: string[];
       switch (entry.anchor) {
         case "ave-home":
-          return join(ave, ...entry.segments);
+          paths = aveHomes.map((home) => join(home, ...entry.segments));
+          break;
         case "home":
-          return join(home, ...entry.segments);
+          paths = homes.map((home) => join(home, ...entry.segments));
+          break;
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
           // it. On win32 srt-win would create it on the current drive, so
           // windowsDenyTargets drops it at the ASRT boundary.
-          return "/" + entry.segments.join("/");
+          paths = ["/" + entry.segments.join("/")];
+          break;
         default: {
           // Fail closed: an unrecognised anchor must not silently push
           // `undefined` into the deny list ASRT is configured from.
@@ -1538,6 +1565,11 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
           );
         }
       }
+      // A missing directory leaf needs its separator to avoid a file placeholder.
+      return paths.filter((path) => {
+        if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
+        return caseFoldForMatch(canonicalizePathForMatch(path)) !== caseFoldForMatch(readablePrimarySessionRoot);
+      }).map((path) => process.platform === "win32" && entry.kind === "dir" ? path + sep : path);
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
@@ -1548,13 +1580,15 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
     // Not a table row: the EXACT dir is only knowable at runtime from
     // `app.getPath("userData")`. The host guard pins the per-platform DEFAULT
     // locations as static globs in SENSITIVE_PATH_PATTERNS instead.
-    electronUserData,
+    ...electronUserData,
   ];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of raw) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }
@@ -1604,11 +1638,10 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
 export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
-  const writePersistence = [
-    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
+  const homeWritePersistence = homes.flatMap((home) => [
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
     join(home, ".zprofile"),
@@ -1621,9 +1654,13 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, ".bash_logout"),
     join(home, ".profile"),
     // ── XDG config root — autostart entries, systemd --user units, app config ──
-    join(home, ".config"),
+    join(home, ".config") + (process.platform === "win32" ? sep : ""),
     // ── macOS per-user Launch Agents — launchd runs the plist at login ──
-    join(home, "Library", "LaunchAgents"),
+    join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
+  ]);
+  const writePersistence = [
+    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
+    ...homeWritePersistence,
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
     ...POSIX_CRON_DENIES,
@@ -1639,8 +1676,10 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of [...readDeny, ...writePersistence]) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }

@@ -58,7 +58,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AuditLogger } from "../../../audit/audit-logger.js";
@@ -87,6 +87,14 @@ import { installPythonSmoke } from "./python-smoke-harness.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "./sandbox-cases.js";
 
 useVerifiedAveHomePrivacy();
+
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return {
+    ...original,
+    userInfo: vi.fn(original.userInfo),
+  };
+});
 
 const FIXTURE_SOURCE = fileURLToPath(new URL("./fixtures/adversarial/", import.meta.url));
 const PLUGIN_ID = "adversarial";
@@ -262,6 +270,8 @@ beforeAll(async () => {
     // 60s stamp budget on a developer machine. A home inside the staged root
     // keeps the same floor over a tree the test owns.
     vi.stubEnv("USERPROFILE", join(root, "home"));
+    vi.stubEnv("HOME", join(root, "home"));
+    vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, "home") });
     mkdirSync(join(root, "home"));
   }
   listener = createServer((socket) => {

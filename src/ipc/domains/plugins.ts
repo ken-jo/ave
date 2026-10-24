@@ -62,7 +62,21 @@ import {
   createExternalToolCallSource,
   createLoopbackToolCallSource,
 } from "../../mcp/mcp-ui-tool-call.js";
-import type { McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+
+/** A settings-row id for a plugin-bundled server that is not running (see `bundledConfigId`). */
+function isBundledMcpConfigId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 1024) return false;
+  try { return parseBundledConfigId(value) !== null; }
+  catch { return false; }
+}
+
+/** Authorization outcomes the renderer may see; anything else collapses to a generic failure. */
+const MCP_AUTH_ERROR_CODES: ReadonlySet<McpAuthErrorCode> = new Set<McpAuthErrorCode>([
+  "mcp-auth-required", "mcp-auth-failed", "mcp-auth-storage-unavailable",
+  "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported", "mcp-auth-resource-mismatch",
+  "mcp-auth-index-unreadable",
+]);
 import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import { parseMcpAppDownload, type McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
@@ -79,6 +93,7 @@ import {
   MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS,
 } from "../../shared/mcp-resource-template-bounds.js";
 import { isUsableMcpServerId } from "../../shared/mcp-app-partition.js";
+import { parseBundledConfigId } from "../../mcp/bundled-credential.js";
 import { scrubShortError } from "../../shared/dlp.js";
 import {
   isUsablePromptName,
@@ -386,6 +401,8 @@ export function pluginLifecycleServices(deps: IpcDeps) {
         drainPluginInstallLockOperations,
       refreshPluginEventBridge,
       emitHostEvent,
+      // Its MCP sign-ins go the moment the registry stops naming it, whatever is reinstalled under the same id later.
+      onRegistryRemovalCommitted: (removed) => void deps.mcpManager.reconcileBundledCredentials("plugin", { removed }),
       log,
     }, retain);
   return { ensureInstallStateReady, uninstall, retirement };
@@ -1029,6 +1046,20 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.mcp.kill, (e, serverId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.kill, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.killSwitch(serverId);
+  });
+  ipcMain.handle(CHANNELS.mcp.authenticate, async (e, serverId: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e); return UNAUTHORIZED_FRAME; }
+    if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
+    try {
+      const result = await deps.mcpManager.authenticate(serverId);
+      if (result.connected) return { connected: true };
+      const errorCode = MCP_AUTH_ERROR_CODES.has(result.errorCode as McpAuthErrorCode) ? result.errorCode : "mcp-auth-failed";
+      return { connected: false, errorCode };
+    } catch {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
   });
   ipcMain.handle(CHANNELS.mcp.configGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configGet, e); return UNAUTHORIZED_FRAME; }

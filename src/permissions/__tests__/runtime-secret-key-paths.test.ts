@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
@@ -85,10 +85,10 @@ describe("native host external key path protection", () => {
     expect(shellViolation("rm -f ./host-runtime/instance.sqlite", false)).toContain("Sensitive path:");
     expect(shellViolation("printf x > ./host-runtime/instance.sqlite", false)).toContain("Sensitive path:");
     const config = buildSandboxConfig({ allowedDomains: [], allowRead: [root], allowWrite: [root], denyRead: [], denyWrite: [] });
-    // A trailing separator preserves a directory deny at the Windows boundary.
-    const deniedDirectory = process.platform === "win32" ? `${directory}\\` : directory;
-    expect(config.filesystem.denyWrite).toContain(deniedDirectory);
-    expect(config.filesystem.denyRead).toContain(deniedDirectory);
+    // Windows directory rows keep their separator for srt-win.
+    const directoryRow = directory + (process.platform === "win32" ? sep : "");
+    expect(config.filesystem.denyWrite).toContain(directoryRow);
+    expect(config.filesystem.denyRead).toContain(directoryRow);
   });
 
   it("protects canonical aliases and retains the original target after an ancestor link changes", () => {
