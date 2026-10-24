@@ -1,0 +1,115 @@
+# Cache archives rather than installed files: package scripts and the package
+# database still need to run on each fresh image. Image identity and the sorted
+# request isolate archives whose dependencies were resolved on different images.
+# Runtime namespace settings and backend proofs belong to each calling job.
+name: Install cached Linux packages
+description: Reuses downloaded package archives while preserving package installation semantics.
+
+inputs:
+  packages:
+    description: Space-separated package names to install.
+    required: true
+  commands:
+    description: Optional space-separated executable names that prove the packages are present.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check installed tools and identify the package cache
+      id: prepare
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        COMMANDS: ${{ inputs.commands }}
+      run: |
+        read -r -a packages <<< "$PACKAGES"
+        if [ "${#packages[@]}" -eq 0 ]; then
+          echo "::error::At least one package is required"
+          exit 1
+        fi
+        for package in "${packages[@]}"; do
+          if [[ ! "$package" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9]+)?$ ]]; then
+            echo "::error::Invalid package name"
+            exit 1
+          fi
+        done
+        missing=0
+        if [ -n "$COMMANDS" ]; then
+          read -r -a commands <<< "$COMMANDS"
+          for command in "${commands[@]}"; do
+            command -v "$command" >/dev/null 2>&1 || missing=1
+          done
+        else
+          for package in "${packages[@]}"; do
+            status=$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+            [ "$status" = "install ok installed" ] || missing=1
+          done
+        fi
+        if [ "$missing" = 0 ]; then
+          echo "Requested packages already present"
+          exit 0
+        fi
+        if ! sudo -n true 2>/dev/null; then
+          echo "::notice::Packages are missing and passwordless sudo is unavailable; skipping installation"
+          exit 0
+        fi
+        packages_hash=$(printf '%s\n' "${packages[@]}" | LC_ALL=C sort -u | sha256sum | cut -d ' ' -f 1)
+        # The cache also versions its path: keep it stable across jobs, while
+        # clearing archives left by a previous job on a persistent runner.
+        archives="$RUNNER_TEMP/linux-packages-$packages_hash"
+        # apt only creates partial/ itself under Dir::Cache; elsewhere it must exist.
+        mkdir -p "$archives/partial"
+        find "$archives" -maxdepth 1 -type f -name '*.deb' -delete
+        {
+          echo "install=true"
+          echo "archives=$archives"
+          echo "packages-hash=$packages_hash"
+          echo "image-os=${ImageOS:-unknown}"
+          echo "image-version=${ImageVersion:-unknown}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore downloaded package archives
+      id: cache
+      if: steps.prepare.outputs.install == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # The downloader's partial directory is private to its system account.
+        # Only completed archives belong in the cache.
+        path: ${{ steps.prepare.outputs.archives }}/*.deb
+        key: linux-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.prepare.outputs.image-os }}-${{ steps.prepare.outputs.image-version }}-${{ steps.prepare.outputs.packages-hash }}
+
+    # Never refresh package indexes on a healthy cache hit. A failed unpack or
+    # configuration can leave dependencies pending; the next step repairs them.
+    - name: Install cached archives
+      id: install-cache
+      if: steps.prepare.outputs.install == 'true' && steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        ARCHIVES: ${{ steps.prepare.outputs.archives }}
+      run: |
+        shopt -s nullglob
+        archives=("$ARCHIVES"/*.deb)
+        if [ "${#archives[@]}" -gt 0 ] && sudo dpkg -i "${archives[@]}"; then
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::Cached archives could not be installed; resolving packages again"
+        fi
+
+    - name: Download missing packages and install archives
+      id: download-install
+      if: steps.prepare.outputs.install == 'true' && steps.install-cache.outputs.installed != 'true'
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        ARCHIVES: ${{ steps.prepare.outputs.archives }}
+      run: |
+        read -r -a packages <<< "$PACKAGES"
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends --fix-broken --download-only \
+          -o "Dir::Cache::archives=$ARCHIVES" "${packages[@]}"
+        shopt -s nullglob
+        archives=("$ARCHIVES"/*.deb)
+        if [ "${#archives[@]}" -gt 0 ]; then
+          sudo dpkg -i "${archives[@]}"
+        fi
