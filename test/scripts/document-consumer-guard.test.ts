@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFile, copyFileSync, existsSync, globSync, mkdirSync, mkdtempSync, open, readFile as readFileCallback, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -113,6 +113,19 @@ describe("documentation consumer guard", () => {
     expect(() => readFileSync(guide, "utf8")).toThrow(/document-consumer/);
     await expect(readFile(guide, "utf8")).rejects.toThrow(/document-consumer/);
     expect(() => copyFileSync(guide, join(tmpdir(), "unused-document-copy.md"))).toThrow(/document-consumer/);
+  });
+
+  it("reports callback refusals through the callback instead of throwing", async () => {
+    // A synchronous throw from a callback API leaves callers such as webpack's
+    // input file system unsettled, so the build exits 0 without failing.
+    const refusal = (call: (callback: (error: NodeJS.ErrnoException | null) => void) => void) =>
+      new Promise<unknown>((resolveRefusal) => {
+        expect(() => call((error) => resolveRefusal(error))).not.toThrow();
+      });
+    await expect(refusal((callback) => readFileCallback(guide, "utf8", callback))).resolves.toHaveProperty("message", expect.stringMatching(/document-consumer/));
+    await expect(refusal((callback) => open(guide, "r", callback))).resolves.toHaveProperty("message", expect.stringMatching(/document-consumer/));
+    await expect(refusal((callback) => copyFile(guide, join(tmpdir(), "unused-document-copy.md"), callback)))
+      .resolves.toHaveProperty("message", expect.stringMatching(/document-consumer/));
   });
 
   it("rejects reads after directory and glob discovery", () => {
