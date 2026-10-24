@@ -18,6 +18,7 @@ export const TEST_IDS = {
   approvalReviewDetails: "approval-review-details",
   approveButton: "approve-button",
   panePanelToggle: "pane-panel-toggle",
+  paneThumbnailToggle: "pane-thumbnail-toggle",
   chatSidePanel: "chat-side-panel",
   chatViewRoot: "chat-view-root",
   composer: "composer",
