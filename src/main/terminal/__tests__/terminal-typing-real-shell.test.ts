@@ -40,14 +40,16 @@ interface LiveShell {
   type(line: string): Promise<TypeTerminalCommandResult>;
 }
 
-const opened: Array<{ pty: nodePty.IPty; home: string; exited: Promise<void> }> = [];
+const opened: Array<{ pty: nodePty.IPty; exited: Promise<void> }> = [];
+/** Every shell HOME, tracked from creation: a start that throws before the spawn still owns one. */
+const homes: string[] = [];
 afterEach(async () => {
-  for (const { pty, home, exited } of opened.splice(0)) {
+  for (const { pty, exited } of opened.splice(0)) {
     try { pty.kill("SIGKILL"); } catch { /* gone */ }
     // Reap the isolated shell before removing its HOME.
     await Promise.race([exited, sleep(3_000)]);
-    rmSync(home, { recursive: true, force: true, maxRetries: 5 });
   }
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true, maxRetries: 5 });
 });
 
 const until = waitForTerminal;
@@ -59,6 +61,7 @@ const until = waitForTerminal;
  */
 async function startShell(shellPath: string, options: { notFoundProgram?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
+  homes.push(home);
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
   // The host distro's command-not-found handler is removed (Ubuntu's
   // /etc/bash.bashrc, read before this file, defines one for bash), so a case
@@ -81,7 +84,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   let output = "";
   pty.onData((data) => { output += data; tracker.recordOutput(data); });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
-  opened.push({ pty, home, exited });
+  opened.push({ pty, exited });
   await until(() => tracker.promptEndCount() > 0);
   // No user input has been recorded yet: the authenticated prompt is the
   // readiness barrier, not an elapsed quiet-input window.
