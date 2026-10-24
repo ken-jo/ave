@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { promises as dnsPromises } from "node:dns";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -67,12 +68,14 @@ describe("SourceSyncer", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-sync-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
   });
@@ -80,6 +83,7 @@ describe("SourceSyncer", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -96,7 +100,7 @@ describe("SourceSyncer", () => {
   function fixture(): { repo: FixtureRepo; name: string } {
     counter += 1;
     const name = `market-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     return { repo, name };
   }

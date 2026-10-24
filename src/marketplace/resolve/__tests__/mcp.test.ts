@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -184,12 +185,14 @@ describe("resolveMcpPackage", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-mcp-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
   });
@@ -197,6 +200,7 @@ describe("resolveMcpPackage", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -213,7 +217,7 @@ describe("resolveMcpPackage", () => {
   async function resolveFrom(files: Record<string, string>, executable: string[] = []) {
     counter += 1;
     const name = `mcp-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     repo.commit(
       {

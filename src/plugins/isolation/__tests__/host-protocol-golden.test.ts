@@ -35,7 +35,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { PassThrough, Writable, type Readable } from "node:stream";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -889,6 +889,12 @@ describe("one conversation per installed plugin's surface", () => {
  */
 describe.runIf(process.platform !== "win32")("the python smoke's conversation, over real pipes", () => {
   const PYTHON_SMOKE_GOLDEN = join(GOLDEN_ROOT, "plugins", "python-smoke", "expected.jsonl");
+  let templateRoot: string | undefined;
+
+  function copyPythonFixture(root: string): void {
+    templateRoot ??= installPythonSmoke(join(aveHomeRoot, "python-template"));
+    cpSync(templateRoot, root, { recursive: true, preserveTimestamps: true });
+  }
 
   /** The two spellings of a path: as given, and after `realpath`. */
   const spellings = (path: string): string[] => [...new Set([path, realpathSync(path)])];
@@ -936,7 +942,9 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     const pluginRoot = mkdtempSync(join(tmpdir(), "python-smoke-plugin-"));
     const pluginDataDir = mkdtempSync(join(tmpdir(), "python-smoke-data-"));
     try {
-      installPythonSmoke(pluginRoot);
+      // Each recording gets its own roots and process, with the already
+      // verified dependency tree copied rather than imported again in setup.
+      copyPythonFixture(pluginRoot);
       const manifest = flattenAgentPluginsManifest(
         JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
       );
@@ -1039,7 +1047,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     const pluginRoot = mkdtempSync(join(tmpdir(), "python-smoke-plugin-"));
     const pluginDataDir = mkdtempSync(join(tmpdir(), "python-smoke-data-"));
     try {
-      installPythonSmoke(pluginRoot);
+      copyPythonFixture(pluginRoot);
       const manifest = flattenAgentPluginsManifest(
         JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
       );

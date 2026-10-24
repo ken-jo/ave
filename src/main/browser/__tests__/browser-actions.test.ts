@@ -120,6 +120,27 @@ class FakeCdp implements CdpSession {
   }
 }
 
+/**
+ * Run `work` with setTimeout, clearTimeout and Date on a fake clock, stepping
+ * it until `work` settles. The budgets these tests exercise (press, dispatch,
+ * focus, echo) are clock waits; on a fake clock they run in no real time and
+ * `Date.now()` differences still measure them.
+ */
+async function onFakeClock<T>(work: () => Promise<T>, maxMs = 30_000): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    let settled = false;
+    const running = work().finally(() => { settled = true; });
+    running.catch(() => undefined);
+    for (let advanced = 0; !settled && advanced < maxMs; advanced += 10) await vi.advanceTimersByTimeAsync(10);
+    // A hang must fail here, where the real clock is still restored below.
+    if (!settled) throw new Error(`work did not settle within ${maxMs} fake ms`);
+    return await running;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: AbortSignal } = {}) {
   let url = options.url ?? "https://a.example/form";
   const injected: number[] = [];
@@ -505,19 +526,19 @@ describe("focus before keyboard input", () => {
 
   it("types nothing and says so when the page never takes focus", async () => {
     const { cdp, ref, refs } = await textField(Number.POSITIVE_INFINITY);
-    await expect(typeInto(target(cdp), ref, "Ada", {}, refs)).rejects.toMatchObject({ code: "no-focus" });
+    await expect(onFakeClock(() => typeInto(target(cdp), ref, "Ada", {}, refs))).rejects.toMatchObject({ code: "no-focus" });
     expect(cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" || call.method === "Input.insertText")).toBe(false);
   }, 10_000);
 
   it("types again when the text was lost to a focus change, and reports a field it never reaches", async () => {
     const lost = await textField(0);
     lost.cdp.dropTexts = 1;
-    await typeInto(target(lost.cdp), lost.ref, "Ada", {}, lost.refs);
+    await onFakeClock(() => typeInto(target(lost.cdp), lost.ref, "Ada", {}, lost.refs));
     expect(lost.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(2);
 
     const never = await textField(0);
     never.cdp.dropTexts = 99;
-    await expect(typeInto(target(never.cdp), never.ref, "Ada", { submit: true }, never.refs)).rejects.toMatchObject({ code: "not-typed" });
+    await expect(onFakeClock(() => typeInto(target(never.cdp), never.ref, "Ada", { submit: true }, never.refs))).rejects.toMatchObject({ code: "not-typed" });
     expect(never.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(3);
     // No Enter after text that never landed.
     expect(never.cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" && call.params?.key === "Enter")).toBe(false);
@@ -552,7 +573,7 @@ describe("focus hand-back", () => {
     const failing = await field();
     failing.cdp.dropTexts = 99;
     const failingTab = target(failing.cdp);
-    await expect(typeInto(failingTab, failing.ref, "Ada", {}, failing.refs)).rejects.toMatchObject({ code: "not-typed" });
+    await expect(onFakeClock(() => typeInto(failingTab, failing.ref, "Ada", {}, failing.refs))).rejects.toMatchObject({ code: "not-typed" });
     expect(failingTab.released).toHaveLength(1);
   }, 10_000);
 
@@ -819,6 +840,27 @@ class WindowTouchRouter {
 /** What the router needs of a page: where its native touch input is reported. */
 interface FixtureGuest { report(input: { type: string; _modifiers: number }): void }
 
+/**
+ * The renderer's answer to a focus release: the page lets go of keyboard
+ * focus. Without it every press that took focus would wait out the release
+ * budget for a page that never lets go.
+ */
+const focusReleases = new WeakMap<BrowserTabRegistry<never>, Map<number, FakeCdp>>();
+function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number, cdp: FakeCdp): void {
+  let pages = focusReleases.get(registry);
+  if (!pages) {
+    const known = new Map<number, FakeCdp>();
+    pages = known;
+    focusReleases.set(registry, known);
+    const release = registry.releaseFocus.bind(registry);
+    registry.releaseFocus = (id) => {
+      release(id);
+      known.get(id)?.loseFocus();
+    };
+  }
+  pages.set(guestId, cdp);
+}
+
 function adapterFixture(options: {
   hostKnown?: boolean;
   registry?: BrowserTabRegistry<never>;
@@ -872,6 +914,7 @@ function adapterFixture(options: {
   });
   registry.guestAttached(guest as never, 1);
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
+  modelFocusRelease(registry, guest.id, cdp);
   const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
   const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
@@ -985,7 +1028,7 @@ describe("tap placement", () => {
       if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && ++moves > 1) echo.on = false;
       return send(method, params);
     });
-    await expect(actions.type(live, ref, "Ada", {})).rejects.toMatchObject({ code: "no-pointer-position" });
+    await expect(onFakeClock(() => actions.type(live, ref, "Ada", {}))).rejects.toMatchObject({ code: "no-pointer-position" });
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toHaveLength(1);
   }, 10_000);
 
@@ -1043,10 +1086,10 @@ describe("one press at a time in a window", () => {
   it("fails a press its own page never reported", async () => {
     const { router, pages: [a] } = await twoPages();
     vi.spyOn(router, "dispatch").mockResolvedValue(undefined);
-    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
-    const result = await a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
+    await expect(onFakeClock(() => a.click())).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
+    const result = await onFakeClock(() => a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
       cwd: tmpdir(), extraAllowedDirectories: [], metadata: { sessionId: "conversation" },
-    });
+    }));
     expect(result.isError).toBe(true);
   });
 
@@ -1069,20 +1112,24 @@ describe("one press at a time in a window", () => {
     const { pages: [a, c] } = await twoPages();
     const send = c.cdp.send.bind(c.cdp);
     // Page C stops answering the guard's hit test, a read made while its press holds the window.
-    let hung = false;
+    let markHung!: () => void;
+    const hung = new Promise<void>((resolve) => { markHung = resolve; });
     vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
       if (method !== "DOM.getNodeForLocation") return send(method, params);
-      hung = true;
+      markHung();
       return new Promise(() => {});
     });
-    // Settled into a value at once: it fails while page A's click runs.
-    const stuck = c.click().then(() => null, (err: unknown) => err);
-    await vi.waitFor(() => expect(hung).toBe(true));
-    const started = Date.now();
-    await expect(a.click()).resolves.toBeUndefined();
+    const { stuck, elapsed } = await onFakeClock(async () => {
+      // Settled into a value at once: it fails while page A's click runs.
+      const stuck = c.click().then(() => null, (err: unknown) => err);
+      await hung;
+      const started = Date.now();
+      await expect(a.click()).resolves.toBeUndefined();
+      return { stuck: await stuck, elapsed: Date.now() - started };
+    });
     // One press budget (5 s) and margin, not the life of the hung page.
-    expect(Date.now() - started).toBeLessThan(6_500);
-    await expect(stuck).resolves.toMatchObject({ code: "input-not-delivered" });
+    expect(elapsed).toBeLessThan(6_500);
+    expect(stuck).toMatchObject({ code: "input-not-delivered" });
     expect(a.guest.touches).toEqual(["touchStart"]);
     expect(c.guest.touches).toEqual([]);
   }, 15_000);
@@ -1091,7 +1138,10 @@ describe("one press at a time in a window", () => {
   async function wedgedByA() {
     const fixture = await twoPages();
     fixture.router.hang = true;
-    await expect(fixture.pages[0].click()).rejects.toMatchObject({ code: "input-not-delivered" });
+    // A's press runs out its press budget and then its closing cancel's
+    // dispatch budget. Those are clock waits, so they run on a fake clock;
+    // everything after the wedge runs on real time.
+    await expect(onFakeClock(() => fixture.pages[0].click())).rejects.toMatchObject({ code: "input-not-delivered" });
     return fixture;
   }
 
@@ -1284,7 +1334,7 @@ it("fails hover when the native pointer move is not reported", async () => {
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
   echo.on = false;
-  await expect(actions.hover(live, ref)).rejects.toMatchObject({ code: "no-pointer-position" });
+  await expect(onFakeClock(() => actions.hover(live, ref))).rejects.toMatchObject({ code: "no-pointer-position" });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
 });
 
@@ -1294,7 +1344,7 @@ it("fails scroll when the intended guest reports no native wheel sequence", asyn
   const live = await approve("browser_scroll");
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
-  await expect(actions.scroll(live, ref, "down", 200)).rejects.toMatchObject({ code: "input-not-delivered" });
+  await expect(onFakeClock(() => actions.scroll(live, ref, "down", 200))).rejects.toMatchObject({ code: "input-not-delivered" });
 });
 
 it("releases the native pointer observer when dispatch fails", async () => {
@@ -1396,7 +1446,7 @@ describe("native intercepted drag lifetime", () => {
     { stop: "navigation" as const, code: "document-changed" },
   ])("refuses an unproven or cancelled source before any destination drop ($code)", async (options) => {
     const f = await fixture(options);
-    await expect(f.run()).rejects.toMatchObject({ code: options.code });
+    await expect(onFakeClock(() => f.run())).rejects.toMatchObject({ code: options.code });
     expect(f.drops()).toHaveLength(0);
     expect(f.cdp.calls).toContainEqual({ method: "Input.setInterceptDrags", params: { enabled: false } });
     expect(f.cdp.events.listenerCount("message")).toBe(1);
