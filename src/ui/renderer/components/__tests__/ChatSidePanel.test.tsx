@@ -1136,6 +1136,29 @@ describe("ChatSidePanel", () => {
     expect(tabbable.length).toBe(1);
   });
 
+  it("gives every committed render with rows exactly one tab stop", async () => {
+    stubRichWorkspace();
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    // Observe each commit as it lands (microtasks run before passive effects),
+    // so a roving row chosen in an effect would show up as a commit without one.
+    const tabStopsPerCommit: number[] = [];
+    const observer = new MutationObserver(() => {
+      const rows = Array.from(document.querySelectorAll('[role="tree"] [role="treeitem"]'));
+      if (rows.length > 0) tabStopsPerCommit.push(rows.filter((row) => row.getAttribute("tabindex") === "0").length);
+    });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["tabindex"] });
+    try {
+      fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+      await treeRowsReady(await screen.findByRole("tree"));
+    } finally {
+      observer.disconnect();
+    }
+    expect(tabStopsPerCommit.length).toBeGreaterThan(0);
+    expect(tabStopsPerCommit.every((count) => count === 1)).toBe(true);
+  });
+
   it("ArrowDown moves the roving focus to the next row", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1160,6 +1183,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     // First row is "alpha" (a directory) and is the active item.
     fireEvent.keyDown(tree, { key: "Enter" });
     await screen.findByText("a1.md");

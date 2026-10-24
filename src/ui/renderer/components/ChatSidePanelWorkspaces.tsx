@@ -245,16 +245,13 @@ function ProjectRootsBrowser({
     return out;
   }, [activeRoot, childrenByPath, expanded]);
 
-  // Clamp the roving pointer when the tree changes (collapse / reload / switch).
-  useEffect(() => {
-    if (flatNodes.length === 0) {
-      if (activeItemPath !== null) setActiveItemPath(null);
-      return;
-    }
-    if (!activeItemPath || !flatNodes.some((n) => n.path === activeItemPath)) {
-      setActiveItemPath(flatNodes[0].path);
-    }
-  }, [flatNodes, activeItemPath]);
+  // The roving row, derived during render so the tree always has a tab stop:
+  // an effect would leave one committed render without one after the first
+  // listing, a collapse or a reload removes the active row.
+  const rovingPath =
+    activeItemPath && flatNodes.some((n) => n.path === activeItemPath)
+      ? activeItemPath
+      : (flatNodes[0]?.path ?? null);
 
   // Move DOM focus only for keyboard-driven changes (roving tabindex).
   useEffect(() => {
@@ -300,7 +297,7 @@ function ProjectRootsBrowser({
 
   const onTreeKeyDown = (e: ReactKeyboardEvent) => {
     if (flatNodes.length === 0) return;
-    const idx = flatNodes.findIndex((n) => n.path === activeItemPath);
+    const idx = flatNodes.findIndex((n) => n.path === rovingPath);
     const i = idx >= 0 ? idx : 0;
     const cur = flatNodes[i];
     switch (e.key) {
@@ -541,7 +538,7 @@ function ProjectRootsBrowser({
         const isDir = entry.type === "directory";
         const isOpen = expanded.has(entry.path);
         const opened = !isDir && entry.path === selectedPath;
-        const isActiveItem = entry.path === activeItemPath;
+        const isActiveItem = entry.path === rovingPath;
         return (
           <div key={entry.path}>
                 <div
