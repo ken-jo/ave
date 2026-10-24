@@ -1,4 +1,4 @@
-import { readPluginRegistry } from "./plugins/registry.js";
+import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { promptSurfaceResolver, requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
@@ -901,6 +901,12 @@ export async function bootstrap(
   ctx.pluginBundleLifecycle = pluginBundleLifecycle;
   pluginRuntime.setGenerationAccess(pluginBundleLifecycle);
   ctx.mcpManager.setPluginGenerationAccess(pluginBundleLifecycle);
+  // App-plugin OAuth servers authenticate and reconnect through their generation; the
+  // registry names every installed plugin, enabled or not. A missing, unreadable or
+  // mid-replacement registry cannot vouch for that, so no stored sign-in is pruned then.
+  ctx.mcpManager.registerBundledCredentialSource("plugin", pluginBundleLifecycle.bundledMcpCredentialSource(
+    () => vouchedInstalledPluginIds(pluginPaths.registryPath),
+  ));
   ctx.scriptHookManager.setPluginGenerationAccess(pluginBundleLifecycle);
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();

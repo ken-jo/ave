@@ -44,16 +44,6 @@ if (!env.NODE_ENV) {
 if (!env.AVE_DEV_CONSOLE) {
   env.AVE_DEV_CONSOLE = "0";
 }
-// `bun run start` already injects --no-sandbox via WINDOWS_SAFE_ELECTRON_FLAGS
-// below; tell main.ts to mirror that into the ave:// protocol registration so
-// OS-launched second instances on corp boxes don't silently crash before
-// requestSingleInstanceLock(). Mirror the same gate as the runtime flag
-// injection (win32 + AVE_KEEP_GPU !== "1") so the foreground process and
-// the protocol-registered command always agree on sandbox posture. The dev-
-// flags.ts SoT in main.ts hard-gates this on `!app.isPackaged` regardless,
-// so a packaged binary that inherits AVE_WIN_NO_SANDBOX=1 still keeps
-// Chromium sandboxing.
-//
 // The shared helper applies platform launch flags and UTF-8 subprocess defaults.
 prepareElectronLaunchEnv(env);
 

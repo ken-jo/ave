@@ -35,6 +35,7 @@
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { isAbsolute, resolve } from "node:path";
 import {
   staticShellWord,
@@ -671,29 +672,28 @@ function expandBraces(text: string, spend?: ScanWork): string[] {
 }
 
 /** Glob texts for shell text the AST did not lower (`~user/…`, `{a,b}`) or for a code token. */
-function rawGlobs(raw: string, spend?: ScanWork): string[] {
+function rawGlobs(raw: string, home: () => string, spend?: ScanWork): string[] {
   spend?.(1, raw.length);
-  return expandBraces(rawGlobText(raw), spend);
+  return expandBraces(rawGlobText(raw, home), spend);
 }
 
-function rawGlobText(raw: string): string {
-  const home = escapeGlob(homedir());
+function rawGlobText(raw: string, home: () => string): string {
   return raw
     .replace(/["']/g, "")
-    .replace(/^~([A-Za-z0-9._-]*)(?=\/|$)/, (_match, user: string) => (user ? `/home/${user}` : home))
-    .replace(/\$\{HOME\}|\$HOME\b/g, home)
+    .replace(/^~([A-Za-z0-9._-]*)(?=\/|$)/, (_match, user: string) => (user ? `/home/${user}` : escapeGlob(home())))
+    .replace(/\$\{HOME\}|\$HOME\b/g, () => escapeGlob(home()))
     .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, DYNAMIC_SEGMENT);
 }
 
 /** Glob text of a word from the AST, or null when part of it was not lowered. */
-function wordGlob(word: ShellWord): string | null {
+function wordGlob(word: ShellWord, home: () => string): string | null {
   let text = "";
   for (const part of word.parts) {
     switch (part.kind) {
       case "literal": case "unicode-escaped": text += escapeGlob(part.value); break;
       case "pattern": text += part.value; break;
       case "parameter":
-        text += part.name === "HOME" && part.index === undefined ? escapeGlob(homedir()) : DYNAMIC_SEGMENT;
+        text += part.name === "HOME" && part.index === undefined ? escapeGlob(home()) : DYNAMIC_SEGMENT;
         break;
       case "parameter-choice": case "substitution": case "arithmetic-data": text += DYNAMIC_SEGMENT; break;
       case "unknown": return null;
@@ -780,15 +780,24 @@ function checkGlob(glob: string, state: ScanState, braceExpansion = false): void
   }
 }
 
+/** Runs `scan` once per shell home anchor, resolving the anchors only if the scan reads one. */
+function scanEachHome(scan: (home: () => string) => void): void {
+  let homes: string[] | undefined;
+  scan(() => (homes ??= expandShellTildePaths("~"))[0]!);
+  for (const home of homes?.slice(1) ?? []) scan(() => home);
+}
+
 function checkRawText(raw: string, state: ScanState): void {
-  let globs: string[];
-  try { globs = state.ordinaryAsk ? [rawGlobText(raw)] : rawGlobs(raw, state.spend); }
-  catch (error) {
-    if (!(error instanceof ShellScanBudgetError)) throw error;
-    state.ordinaryAsk = error.message;
-    globs = [rawGlobText(raw)];
-  }
-  for (const glob of globs) checkGlob(glob, state, true);
+  scanEachHome((home) => {
+    let globs: string[];
+    try { globs = state.ordinaryAsk ? [rawGlobText(raw, home)] : rawGlobs(raw, home, state.spend); }
+    catch (error) {
+      if (!(error instanceof ShellScanBudgetError)) throw error;
+      state.ordinaryAsk = error.message;
+      globs = [rawGlobText(raw, home)];
+    }
+    for (const glob of globs) checkGlob(glob, state, true);
+  });
 }
 
 function checkWord(word: ShellWord, state: ScanState): void {
@@ -797,9 +806,13 @@ function checkWord(word: ShellWord, state: ScanState): void {
     else if (part.kind === "parameter-choice") checkWord(part.operand, state);
   }
   if (state.sensitive) return;
-  const glob = wordGlob(word);
-  if (glob === null) checkRawText(word.source.raw, state);
-  else checkGlob(glob, state);
+  let raw = false;
+  scanEachHome((home) => {
+    if (raw) return;
+    const glob = wordGlob(word, home);
+    if (glob === null) { raw = true; checkRawText(word.source.raw, state); }
+    else checkGlob(glob, state);
+  });
 }
 
 /** Path-like tokens inside code the matcher cannot parse (`open("/home/u/.ssh/id_rsa")`). */

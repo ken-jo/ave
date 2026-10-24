@@ -19,7 +19,7 @@
  * one that must stay green.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -664,6 +664,8 @@ check("the gate's program is not incremental", effectiveIncremental("tsconfig.te
 // The three unused imports left behind were the fingerprint, and nothing caught them because
 // `.mjs` is outside what `tsc` checks here.
 const scratch = mkdtempSync(join(tmpdir(), "typecheck-gate-selftest-"));
+// On every way out — the `process.exit(1)` below, an uncaught throw, or the end.
+process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
 const goodPath = join(scratch, "good.json");
 writeFileSync(goodPath, JSON.stringify({ schemaVersion: 1, files: { "a.test.ts": 2 } }), "utf8");
 const badPath = join(scratch, "bad.json");

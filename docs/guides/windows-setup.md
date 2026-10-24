@@ -40,10 +40,15 @@ Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window 
 | Setting | Default | Purpose |
 |---|---|---|
 | `--disable-gpu`, `--disable-software-rasterizer`, `--disable-gpu-compositing`, `--no-sandbox` | Added unless `AVE_KEEP_GPU=1` | Avoids the "GPU process isn't usable" crash on machines with restricted GPU drivers. |
-| `AVE_WIN_NO_SANDBOX=1` | Set with the flags above | Lets the `ave://` protocol registration match the launch flags. Ignored by packaged builds. |
 | `--user-data-dir` | `%APPDATA%\Electron-Ave-Run`, or `AVE_USER_DATA_DIR` | Separate profile for source runs. |
 | `PYTHONIOENCODING`, `PYTHONUTF8`, `LANG`, `LC_ALL` | `utf-8`, `1`, `en_US.UTF-8` | UTF-8 output from Python and other children. |
 | `chcp 65001` | Electron starts through `cmd.exe` in the same console | Console output stays UTF-8. |
+
+A source run never registers itself as the `ave://` handler, so it cannot take
+an installed Ave's deep links in HKCU. Only a packaged app on its real profile
+registers; unpackaged, E2E, `AVE_HOME`-relocated and `--user-data-dir` launches
+skip and log the reason (`decideAveProtocolClientRegistration`,
+`src/main/ave-protocol-registration.ts`).
 
 Overrides:
 

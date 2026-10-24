@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile, lst
 import { read } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { requireSymlinkCapability } from "../../__tests__/support/symlink-capability.js";
 import { copyPath, runOwnedTransfer, _OwnedTransferForTest } from "../guarded-file-transfer.js";
 import { FILE_TRANSFER_LIMITS } from "../file-transfer-policy.js";
 import type { ToolExecutionContext } from "../types.js";
@@ -271,7 +272,8 @@ describe("detected replacement and cleanup faults", () => {
     expect(vi.mocked(unlink)).not.toHaveBeenCalledWith(join(destination, "owned"));
   });
 
-  it("detects a swapped destination parent before another mutation", async () => {
+  it("detects a swapped destination parent before another mutation", async ({ skip }) => {
+    requireSymlinkCapability(root, "dir", skip);
     const parent = join(root, "parent");
     await mkdir(parent);
     destination = join(parent, "output");
@@ -282,7 +284,7 @@ describe("detected replacement and cleanup faults", () => {
     const result = await transfer(async ({ sink }) => {
       await sink.file("first", body(), attributes);
       await rename(parent, join(root, "moved-parent"));
-      await symlink(foreign, parent);
+      await symlink(foreign, parent, "dir");
       await sink.file("second", body(), attributes);
     });
     expect(result).toMatchObject({ ok: false, code: "source-changed", cleanup: "incomplete" });

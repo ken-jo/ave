@@ -54,8 +54,8 @@ runs:
         # copied from that release's SHASUMS256.txt; a version without one
         # fails here.
         case "$version:$asset" in
-          1.4.3:bun-windows-x64) pinned=0bf84e808552beea67bf1202a287a35c6c825d837b287b3f8e9dd513dba35d3d ;;
-          1.4.3:bun-windows-aarch64) pinned=5e8f142ef722cbc9f67dc068a166e46ee72be8307b38cac7186589d2face668f ;;
+          1.4.4:bun-windows-x64) pinned=cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5 ;;
+          1.4.4:bun-windows-aarch64) pinned=2d57a0eec0cb44d95c918c3f9734f60455a1306ae5085d76fc68f44e3ee30d09 ;;
           *) echo "no pinned SHA-256 for $asset.zip of bun v$version in this action" >&2; exit 1 ;;
         esac
         base="https://github.com/oven-sh/bun/releases/download/bun-v${version}"

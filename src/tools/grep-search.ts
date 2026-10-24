@@ -217,11 +217,12 @@ function runRipgrep(
     let stderr = "";
     let stoppedEarly = false;
     let failure: Error | undefined;
+    let termination: void | Promise<void>;
     const decoder = new TextDecoder("utf-8");
 
     const stop = (error?: Error): void => {
       if (error) failure ??= error;
-      forceKillManagedChildProcess(child, "grep-files-stop");
+      termination = forceKillManagedChildProcess(child, "grep-files-stop");
     };
     const onAbort = (): void => {
       stop(signal?.reason instanceof Error ? signal.reason : new Error("grep_files was cancelled."));
@@ -269,7 +270,8 @@ function runRipgrep(
       failure ??= new Error(`grep_files could not start ripgrep: ${error.message}`);
       if (child.pid) stop();
     });
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
+      if (termination) await termination;
       signal?.removeEventListener("abort", onAbort);
       consume(decoder.decode());
       if (pending.length > 0 && !stoppedEarly) accept(pending);

@@ -19,10 +19,12 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
   type RefObject,
+  useRef,
 } from "react";
 import type { PluginOnboardingAction } from "../../../plugins/public-contract.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
@@ -158,6 +160,9 @@ export interface OverlayItem {
 }
 
 export interface OverlayContextValue {
+  /** Visible preview columns, in mount order; one column owns each routine card. */
+  thumbnailSessions: readonly { token: symbol; sessionId: string }[];
+  registerThumbnailSession: (token: symbol, sessionId: string) => () => void;
   /**
    * Every live card, in priority bands and oldest first within a band. The WINDOW's queue: which of these a given
    * tile shows, and which one of those is active there, is that tile's own
@@ -219,6 +224,11 @@ export function OverlayContextProvider({
   onQueueChange?: (queue: readonly OverlayItem[]) => void;
 }) {
   const [queue, setQueue] = useState<OverlayItem[]>([]);
+  const [thumbnailSessions, setThumbnailSessions] = useState<OverlayContextValue["thumbnailSessions"]>([]);
+  const registerThumbnailSession = useCallback((token: symbol, sessionId: string) => {
+    setThumbnailSessions((previous) => [...previous, { token, sessionId }]);
+    return () => setThumbnailSessions((previous) => previous.filter((entry) => entry.token !== token));
+  }, []);
   const [expandedCardIds, setExpandedCardIds] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
     onQueueChange?.(queue);
@@ -333,11 +343,28 @@ export function OverlayContextProvider({
   );
 
   const value = useMemo<OverlayContextValue>(
-    () => ({ queue, dismiss, addFire, openSession, expandedCardIds, setCardExpanded }),
-    [queue, dismiss, addFire, openSession, expandedCardIds, setCardExpanded],
+    () => ({ queue, dismiss, addFire, openSession, expandedCardIds, setCardExpanded, thumbnailSessions, registerThumbnailSession }),
+    [queue, dismiss, addFire, openSession, expandedCardIds, setCardExpanded, thumbnailSessions, registerThumbnailSession],
   );
 
   return <OverlayContext.Provider value={value}>{children}</OverlayContext.Provider>;
+}
+
+/** Prefer the origin's visible column, then the result's, otherwise the floating lane. */
+export function routineThumbnailOwner(item: OverlayItem, sessions: OverlayContextValue["thumbnailSessions"]): symbol | null {
+  if (item.source.kind !== "routine") return null;
+  return (sessions.find((entry) => entry.sessionId === item.originSessionId)
+    ?? sessions.find((entry) => entry.sessionId === item.routineSessionId))?.token ?? null;
+}
+
+export function useRoutineThumbnailOwner(sessionId: string | null, visible: boolean): symbol {
+  const { registerThumbnailSession } = useOverlayContext();
+  const token = useRef(Symbol("routine-thumbnail-column")).current;
+  useLayoutEffect(() => {
+    if (sessionId && visible) return registerThumbnailSession(token, sessionId);
+    return undefined;
+  }, [registerThumbnailSession, token, sessionId, visible]);
+  return token;
 }
 
 export function useOverlayContext(): OverlayContextValue {

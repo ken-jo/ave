@@ -58,7 +58,7 @@ import {
   withProviderErrorClassification,
   type ProviderErrorDiagnostics,
 } from "../provider-error-diagnostics.js";
-import { claudeBetaHeaders, claudeRequestShape, usesOpenAIResponsesWire } from "../../../shared/model-host-policy.js";
+import { claudeBetaHeaders, claudeRequestShape } from "../../../shared/model-host-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import {
   normalizeProviderToolAliasText,
@@ -69,8 +69,9 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
-import { planReasoning } from "../reasoning-plan.js";
+import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
 import {
+  catalogModelFor,
   resolveInputModalities,
   resolveOutputCeiling,
   resolveReasoningSupport,
@@ -333,7 +334,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
-      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
+      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model, capabilities.reasoning, baseUrl);
       // Only this slot's provider caches up to explicit breakpoints; the
       // `openai` / `azure-foundry` slots cache automatically, keyed by
       // `promptCacheKey` below.
@@ -393,9 +394,8 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Which reasoning control and level: the catalog's accepted effort
       // levels where it states them, no effort where nobody does
       // (reasoning-plan.ts). The turn summary records this same answer.
-      // The plan also drops the effort on a GPT-5.x tool turn over Chat
-      // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
-      // turn's record is planned with.
+      // Explicitly declared effort remains available on tool turns; the
+      // selected protocol determines its field on the wire.
       const reasoningPlan = planReasoning({
         vendor: this.vendor,
         model: params.model,
@@ -413,12 +413,14 @@ export class VercelUnifiedProvider implements LLMProvider {
       const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
         && params.outputCeilingSource === "provider-reported";
       // Request shape is a host rule (model-host-policy.ts), not a catalog fact.
-      const claudeShape = slot === "claude" ? claudeRequestShape(params.model) : undefined;
+      const claudeShape = slot === "claude"
+        ? claudeRequestShape(catalogModelFor(slot, params.model, params.catalogModel, baseUrl)?.model)
+        : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
         && claudeShape?.interleavedNumericThinking === true;
       const model = this.resolveModel(
         params.model,
-        hasTools,
+        useOpenAIResponsesAliases,
         slot === "claude" && outputTokenLimit !== undefined
           && (numericThinking || reportedCeiling)
           ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
@@ -438,6 +440,12 @@ export class VercelUnifiedProvider implements LLMProvider {
               [slot === "azure-foundry" ? "azure" : "openai"]: {
                 reasoningEffort,
                 reasoningSummary: "detailed",
+                // The plan already established that this model reasons (its
+                // catalog entry, the entry the user named, or the endpoint's
+                // report). Without this the SDK re-decides from the id's
+                // spelling and drops the effort for an alias or deployment
+                // name it does not recognise.
+                forceReasoning: true,
               },
             }
           : undefined;
@@ -564,10 +572,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         }
         // Beta header set: comma-joined per Anthropic's API convention. We
         // gather them in an array and emit one `anthropic-beta` value.
-        const betas = claudeBetaHeaders({
-          context1MBeta: claudeShape?.context1MBeta === true,
-          interleavedThinking: interleavedNumericThinking,
-        });
+        const betas = claudeBetaHeaders({ interleavedThinking: interleavedNumericThinking });
         if (betas.length > 0) {
           headers = { "anthropic-beta": betas.join(",") };
         }
@@ -691,7 +696,7 @@ export class VercelUnifiedProvider implements LLMProvider {
 
   private resolveModel(
     modelId: string,
-    _hasTools: boolean,
+    openAIResponsesWire: boolean,
     outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
@@ -733,10 +738,9 @@ export class VercelUnifiedProvider implements LLMProvider {
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
         ...(this.customFetch ? { fetch: this.customFetch } : {}),
       });
-      // Responses API for reasoning families (gpt-5.x / o-series); Chat
-      // Completions for legacy gpt-4.x. This matches the Vercel SDK's
-      // documented routing and avoids silent 400s on tool turns.
-      return usesOpenAIResponsesWire(slot, modelId)
+      // Responses API for every model the catalog says reasons; Chat
+      // Completions for the rest (reasoning-plan.ts usesOpenAIResponsesWire).
+      return openAIResponsesWire
         ? openai.responses(modelId)
         : openai.chat(modelId);
     }

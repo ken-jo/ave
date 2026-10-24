@@ -379,7 +379,7 @@ describe("PostTurnHookChain", () => {
       } as unknown as import("../../audit/audit-logger.js").AuditLogger;
       const settingsService = {
         get: vi.fn((key: string) => {
-          if (key === "llm") return fakeLlmSettings();
+          if (key === "llm") return fakeLlmSettings({ model: "gpt-5.4-mini" });
           return { systemPrompt: "", autoCompact: opts.autoCompact };
         }),
       } as unknown as SettingsService;
@@ -403,7 +403,7 @@ describe("PostTurnHookChain", () => {
       // Audit route should be transformed from the bare classification
       // "llm" into the `${provider}/${model}` form so usage-stats.parseRoute
       // can attribute cost per vendor/model. The exact provider/model
-      // depends on what `fakeLlmSettings()` seeds — assert structural
+      // is selected explicitly in the fixture — assert structural
       // shape (`vendor/model`) rather than a specific vendor.
       expect(logTurn).toHaveBeenCalledOnce();
       const call = logTurn.mock.calls[0]![0] as { route: string };

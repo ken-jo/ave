@@ -21,7 +21,7 @@
  * skips.
  */
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBundledUvBinaryPath } from "../../../main/uv-runtime.js";
@@ -185,13 +185,43 @@ function wheelSet(python: string, dir: string): string[] {
 }
 
 /**
+ * Delete every AppleDouble sidecar (`._<name>`) under `dir`; the paths removed,
+ * relative to `dir`.
+ *
+ * macOS bsdtar writes a file's extended attributes as a `._<name>` entry next
+ * to it, and GNU tar extracts that entry as an ordinary file. The CI
+ * node_modules cache, which carries this directory, was saved by bsdtar
+ * (libarchive) and is restored by the hosted image's GNU tar, so the vendor
+ * directory came back with `._mcp-2.2.0.dist-info` beside the real one.
+ * `importlib.metadata` takes any name ending in `.dist-info` for a
+ * distribution; for a file it falls through to reading the file itself as
+ * metadata, and the AppleDouble header (byte 0xa3 at offset 45) is not UTF-8.
+ * A sidecar is never part of an installed distribution, so removing it changes
+ * nothing that `uv pip install` wrote.
+ */
+export function removeAppleDoubleSidecars(dir: string): string[] {
+  const removed: string[] = [];
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.name.startsWith("._") || entry.isDirectory()) continue;
+    const path = join(entry.parentPath, entry.name);
+    rmSync(path, { force: true });
+    removed.push(path.slice(dir.length + 1));
+  }
+  return removed.sort();
+}
+
+/**
  * `mcp==2.2.0` for exactly this interpreter, cached by its version. Installed
  * into a staging directory and renamed into place, so a concurrent suite
  * either finds the finished directory or installs its own.
  */
 function vendorFor(uv: string, cache: string, python: string, version: string): string {
   const vendor = join(cache, `${version}-mcp-${MCP_VERSION}`);
-  if (existsSync(vendor)) return vendor;
+  if (existsSync(vendor)) {
+    const removed = removeAppleDoubleSidecars(vendor);
+    if (removed.length > 0) reportSmoke("removed AppleDouble sidecars from the cached vendor directory", removed);
+    return vendor;
+  }
   const staging = join(cache, `.staging-${process.pid}-${Date.now()}`);
   try {
     run(

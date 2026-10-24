@@ -1,7 +1,7 @@
 /**
- * The per-run directories `vitest.globalSetup.ts` makes under
- * `~/.ave/test-tmp`: the run's Ave homes (`h-*`) and its sandbox base
- * (`sbx-*`).
+ * The per-run directories `vitest.globalSetup.ts` makes: the run's Ave homes
+ * (`h-*`) and its sandbox base (`sbx-*`) under `~/.ave/test-tmp`, and its temp
+ * directory (`t-*`) under {@link runTmpRoot}.
  *
  * A run removes its own at teardown, and on a failed setup before returning.
  * One that was killed cannot, so each run also removes what a run left behind
@@ -13,13 +13,16 @@
  * owner cannot be read, parsed or checked is kept.
  */
 import { execFileSync } from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { randomUUID } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { POSIX_SHARED_TMP } from "../../permissions/base-allowed-directories.js";
+
 /** Run directory names: `mkdtemp` adds six characters after the prefix. */
-const RUN_DIR_RE = /^(?:h|sbx)-[A-Za-z0-9]{6}$/;
+const RUN_DIR_RE = /^(?:h|sbx|t)-[A-Za-z0-9]{6}$/;
 
 /** A run directory a sweep renamed aside to remove (`.del-<uuid>`). */
 const ASIDE_DIR_RE = /^\.del-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -131,7 +134,7 @@ function processStartIdentity(pid: number): string | undefined {
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToFileTimeUtc()`],
       // A pid with no process is an answer here, not news for the console.
-      { encoding: "utf8", timeout: 15_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", timeout: 15_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"], env: windowsPowerShellEnv() },
     ).trim();
     return `win32:${out}`;
   }
@@ -160,6 +163,44 @@ export function assertTestTmpRoot(testTmp: string): void {
   if (canonical !== expected) {
     throw new Error(`refusing ${testTmp} as the tests' scratch root: it resolves to ${canonical}, not ${expected}`);
   }
+}
+
+/**
+ * Where a run's temp directory (`t-*`, which `os.tmpdir()` names in every
+ * worker) lives. It must be somewhere the sandbox grants as ordinary temp,
+ * as the user's own temp directory is: a confined command writes there, and
+ * under `~/.ave` the Linux bubblewrap wrap, whose temp grant is `/tmp`, left
+ * it read-only. On POSIX that is a per-user directory in the shared `/tmp`
+ * (canonical `/private/tmp` on macOS), shorter than macOS's own 56-byte temp
+ * directory, which several suites are sized against (a 128-byte shebang read,
+ * the unix socket limit, a typed command line). On Windows, beside
+ * `~/.ave` and outside it, for the 8.3 short names of the system temp path.
+ */
+export function runTmpRoot(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
+  if (platform === "win32") return join(home, ".ave-test-tmp");
+  // macOS's `/tmp` is a link to `/private/tmp`; the root is named canonically.
+  const sharedTmp = platform === "darwin" ? join("/private", POSIX_SHARED_TMP) : POSIX_SHARED_TMP;
+  return join(sharedTmp, `ave-test-${process.getuid!()}`);
+}
+
+/**
+ * Make {@link runTmpRoot} if missing, and refuse one this account does not
+ * own or that is a link: in a shared `/tmp` another account could have made
+ * it first, and the sweep removes what is in it. Mode 0700 on POSIX.
+ */
+export function ensureRunTmpRoot(root: string): void {
+  try {
+    mkdirSync(root, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  assertTestTmpRoot(root);
+  if (process.platform === "win32") return;
+  const owner = lstatSync(root).uid;
+  if (owner !== process.getuid!()) {
+    throw new Error(`refusing ${root} as the tests' temp root: it belongs to uid ${owner}, not this account`);
+  }
+  chmodSync(root, 0o700);
 }
 
 /** Make `~/.ave/test-tmp` if missing, then {@link assertTestTmpRoot}. */
