@@ -1,13 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
-import { BACKGROUND_ATTEMPTS, RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
-import { sleep } from "../shared/abortable-deadline.js";
+import { renameFile, retryOnFileLock } from "../lib/transient-fs-lock-retry.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import type { ToolExecutionContext } from "../tools/types.js";
@@ -135,7 +134,7 @@ async function quarantineLedger(): Promise<void> {
   const images = (await readdir(namespace.dir)).filter((name) => IMAGE_NAME_PATTERN.test(name));
   await namespace.writeJson(`${backupName}.images.json`, images);
   const backup = join(namespace.dir, backupName);
-  await retryFileLock(() => rename(join(namespace.dir, FILE_NAME), backup));
+  await renameFile(join(namespace.dir, FILE_NAME), backup);
   if (process.platform !== "win32" && typeof process.getuid === "function") {
     const info = await lstat(backup, { bigint: true });
     if (info.isFile() && info.nlink === 1n && info.uid === BigInt(process.getuid())) {
@@ -155,7 +154,7 @@ async function storeImage(bytes: Buffer | null): Promise<Pick<StoredChange, "bef
   const encoded = bytes.toString("base64");
   try { await namespace.writeJson(before, encoded); }
   catch (error) {
-    await retryFileLock(() => unlink(join(namespace.dir, before)))
+    await retryOnFileLock(() => unlink(join(namespace.dir, before)))
       .catch((cleanup: NodeJS.ErrnoException) => { if (cleanup.code !== "ENOENT") log.warn("checkpoint image cleanup failed: %s", cleanup.message); });
     throw error;
   }
@@ -174,7 +173,7 @@ async function hydrate(change: StoredChange): Promise<Change> {
 
 async function loadLedger(): Promise<Turn[]> {
   let parsed: unknown;
-  try { parsed = await retryFileLock(() => readStorage(FILE_NAME)); }
+  try { parsed = await retryOnFileLock(() => readStorage(FILE_NAME)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     if (!(error instanceof SyntaxError || error instanceof InvalidCheckpointStorageError)) throw error;
@@ -206,7 +205,7 @@ async function loadLedger(): Promise<Turn[]> {
   } catch (error) {
     // A writer can report a durability error after its index rename committed.
     const untouched = await readStorage(FILE_NAME).then((current) => JSON.stringify(current) === JSON.stringify(parsed), () => false);
-    if (untouched) await Promise.all(images.map((name) => retryFileLock(() => unlink(join(namespace.dir, name)))));
+    if (untouched) await Promise.all(images.map((name) => retryOnFileLock(() => unlink(join(namespace.dir, name)))));
     throw error;
   }
 }
@@ -236,7 +235,7 @@ async function sweepImages(turns: Turn[]): Promise<void> {
   const retained = new Set(turns.flatMap((turn) => turn.changes.map((change) => change.before)));
   const evidence: Array<{ backup: string; images: string[]; bytes: number }> = [];
   const imageSizes = new Map<string, number>();
-  const remove = async (name: string) => retryFileLock(() => unlink(join(namespace.dir, name)))
+  const remove = async (name: string) => retryOnFileLock(() => unlink(join(namespace.dir, name)))
     .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
   const discard = async (backup: string) => {
     await remove(backup);
@@ -244,7 +243,7 @@ async function sweepImages(turns: Turn[]): Promise<void> {
   };
   for (const backup of names.filter((name) => name.startsWith(`${FILE_NAME}.corrupt-`) && name.endsWith(".bak")).sort()) {
     try {
-      const images = QuarantineManifestSchema.parse(await retryFileLock(() => readStorage(`${backup}.images.json`)));
+      const images = QuarantineManifestSchema.parse(await retryOnFileLock(() => readStorage(`${backup}.images.json`)));
       const info = await lstat(join(namespace.dir, backup));
       if (!info.isFile() || info.isSymbolicLink()) throw new Error("Code checkpoint backup is invalid");
       for (const image of images) {
@@ -298,19 +297,6 @@ async function save(turns: Turn[], retained?: Turn): Promise<void> {
   await namespace.writeJson(FILE_NAME, { version: 2, turns });
   for (const [key, pending] of pendingUnavailable) if (pending.dir === namespace.dir) pendingUnavailable.delete(key);
   await sweepImages(turns).catch((error: unknown) => log.warn("checkpoint image cleanup failed: %s", (error as Error).message));
-}
-
-/** Retry only Windows file locks, matching the ledger's staged rename; POSIX fails at once. */
-async function retryFileLock<T>(op: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt += 1) {
-    try { return await op(); }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (process.platform !== "win32" || code === undefined || !RENAME_FILE_LOCK_CODES.has(code)
-        || attempt >= BACKGROUND_ATTEMPTS) throw error;
-      await sleep(transientFsLockDelayMs(attempt));
-    }
-  }
 }
 
 /** Resolve an absent leaf through its existing ancestors without following it later. */
@@ -437,7 +423,7 @@ export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
     // Damaged ledgers cannot safely identify the owners of their originals.
     for (const name of await readdir(namespace.dir)) {
       if (name.startsWith(`${FILE_NAME}.corrupt-`) && name.endsWith(".bak")) {
-        await retryFileLock(() => unlink(join(namespace.dir, name)));
+        await retryOnFileLock(() => unlink(join(namespace.dir, name)));
       }
     }
     await sweepImages(turns);
@@ -583,8 +569,8 @@ export async function restoreCodeCheckpoint(
         for (const [path, change] of plan) {
           if (!changed.has(path)) continue;
           if (change.before === null) {
-            if (present.has(path)) await retryFileLock(() => unlink(path));
-          } else await retryFileLock(() => rename(staged.get(path)!, path));
+            if (present.has(path)) await retryOnFileLock(() => unlink(path));
+          } else await renameFile(staged.get(path)!, path);
         }
         // Keep the restored baseline guarded on repeat calls. Later points no
         // longer describe the current code and cannot act as forward restores.

@@ -4,7 +4,6 @@ import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_ATTEMPTS } from "../../lib/transient-fs-lock-retry.js";
-import * as deadlines from "../../shared/abortable-deadline.js";
 
 const faults = vi.hoisted(() => ({
   readCode: "", reads: 0, remainingReads: Infinity, readBarrier: undefined as Promise<void> | undefined,
@@ -40,9 +39,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   return { ...actual, ...overrides, default: { ...actual, ...overrides } };
 });
+const retrySleep = vi.hoisted(() => ({ impl: undefined as ((ms: number) => Promise<void>) | undefined }));
 vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../shared/abortable-deadline.js")>(),
-  sleep: async () => {},
+  sleep: async (ms: number) => retrySleep.impl?.(ms),
 }));
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
@@ -138,17 +138,18 @@ describe("checkpoint storage recovery", () => {
     let sleeping!: () => void;
     const sleepStarted = new Promise<void>((resolve) => { sleeping = resolve; });
     vi.useFakeTimers();
-    const retrySleep = vi.spyOn(deadlines, "sleep").mockImplementation((ms) => {
+    const sleep = vi.fn((ms: number) => {
       sleeping();
       return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
     });
+    retrySleep.impl = sleep;
     let settled = false;
     const pending = turn("delayed").then(() => { settled = true; });
     try {
       await vi.advanceTimersByTimeAsync(5_000);
       release();
       await Promise.race([sleepStarted, pending]);
-      expect(retrySleep).toHaveBeenCalled();
+      expect(sleep).toHaveBeenCalled();
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1_000);
       await pending;
@@ -157,7 +158,7 @@ describe("checkpoint storage recovery", () => {
       release();
       await vi.runAllTimersAsync();
       await pending;
-      retrySleep.mockRestore();
+      retrySleep.impl = undefined;
       vi.useRealTimers();
     }
   });
