@@ -20,6 +20,7 @@ import {
   isMessageCatalogPath,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
+  readMessageCatalogEntriesByPath,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
@@ -423,16 +424,34 @@ describe("pre-push message catalog selection", () => {
   });
 
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
+    // One compiler session for the whole catalog: each session is a native
+    // child process, and one per module (~190 spawns) timed out under load.
+    const texts = new Map(catalogFiles().map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
+    const byPath = readMessageCatalogEntriesByPath(texts);
+    expect([...byPath.keys()]).toEqual([...texts.keys()]);
     const keys = new Set<string>();
-    for (const path of catalogFiles()) {
-      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"), path);
+    for (const [path, entries] of byPath) {
       expect(entries, path).not.toBeNull();
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
+    // The batch reader validates each module exactly as the single-module reader.
+    for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`]) {
+      expect(byPath.get(path), path).toEqual(readMessageCatalogEntries(texts.get(path)!, path));
+    }
     // The barrels carry no keys; the barrel check proves they match the fragments.
-    expect(readMessageCatalogEntries(readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8"))).toBeNull();
-  }, 30_000);
+    const barrel = readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8");
+    expect(readMessageCatalogEntries(barrel)).toBeNull();
+    expect(readMessageCatalogEntriesByPath(new Map([
+      [`${MESSAGES}/generated/index.ts`, barrel],
+      [`${MESSAGES}/generated/panel.ts`, "export const en = {"],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]))).toEqual(new Map([
+      [`${MESSAGES}/generated/index.ts`, null],
+      [`${MESSAGES}/generated/panel.ts`, null],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]));
+  });
 
   it("refuses catalog shapes whose keys it cannot read", () => {
     expect(readMessageCatalogEntries('export const en = { "a.b": "x" + "y", "a.c": `z` } as const;')).toEqual(
