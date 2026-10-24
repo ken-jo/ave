@@ -115,7 +115,8 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
   it("every function-valued method of the REAL hostApi is classified in the SOT", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-completeness-"),
+      resources,
+      "ave-hostapi-completeness-",
     );
     const paths: string[] = [];
     const nonPlainNamespaces: string[] = [];
@@ -171,7 +172,8 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
   it("records a fail-closed WRITE + the SOT entry's effect is honored for a known method", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-completeness-"),
+      resources,
+      "ave-hostapi-completeness-",
     );
     const ledger: EffectLedger = createEffectLedger("cid-known");
     await runWithEffectLedger(ledger, async () => {

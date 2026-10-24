@@ -36,8 +36,9 @@
  */
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { rmdirSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
 
@@ -65,6 +66,21 @@ export function removeLinkOnly(path: string): void {
     if (code === "ENOENT") return;
     if (code !== "EPERM" && code !== "EISDIR") throw error;
     rmdirSync(path);
+  }
+}
+
+/**
+ * Remove every link under `dir`, at any depth, with {@link removeLinkOnly},
+ * so a recursive removal of `dir` after it has no link left to walk into.
+ * Each entry is judged by `lstat`, which reports a Windows junction as a link;
+ * a directory is descended into only when it is not one.
+ */
+export function removeLinksUnder(dir: string): void {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const entry = lstatSync(path);
+    if (entry.isSymbolicLink()) removeLinkOnly(path);
+    else if (entry.isDirectory()) removeLinksUnder(path);
   }
 }
 

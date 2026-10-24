@@ -198,9 +198,11 @@ async function validateDroppedPath(
  */
 const MAX_CLIPBOARD_BASE64_INPUT_CHARS = MAX_COMPOSER_IMAGE_BYTES * 2;
 
+/** The file name's extension; a dot in a directory name (`~/.config/notes`) is not one. */
 function getExt(p: string): string {
-  const i = p.lastIndexOf(".");
-  return i >= 0 ? p.slice(i + 1).toLowerCase() : "";
+  const name = path.basename(p);
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
 }
 
 /**
