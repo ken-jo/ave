@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { constants, promises as fs, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
@@ -567,7 +568,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
   const launch: WindowsAclHostLaunch = {
     command,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
-    options: { windowsHide: true, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` } },
+    options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
   };
   // Captured before queueing, so concurrent first lookups each resolve the
   // package and are compared with the cached outcome below.

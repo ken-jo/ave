@@ -1,4 +1,5 @@
 import type * as ChildProcessModule from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
@@ -112,7 +113,7 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     ].join("\n");
     execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { windowsHide: true, env: { ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot } });
+      { windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot }) });
     return;
   }
   vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {

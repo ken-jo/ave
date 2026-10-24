@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { EventEmitter } from "node:events";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, promises as fs, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
@@ -666,8 +667,8 @@ describe("native access-rule admission", () => {
     const stdout = await new Promise<string>((resolve, reject) => {
       childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(mockedScript, "utf16le").toString("base64")], {
         windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-        env: { ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
-          AVE_ACL_REQUEST_FIXTURE: JSON.stringify({ skipPackage: testCase.skip === true }) },
+        env: windowsPowerShellEnv({ ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
+          AVE_ACL_REQUEST_FIXTURE: JSON.stringify({ skipPackage: testCase.skip === true }) }),
       }, (error, output) => error ? reject(error) : resolve(output));
     });
     fixture.probe.desktopPackage = JSON.parse(stdout);
@@ -811,7 +812,7 @@ describe("native access-rule admission", () => {
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const stdout = await new Promise<string>((resolve, reject) => {
       childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(query, "utf16le").toString("base64")], {
-        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
+        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, env: windowsPowerShellEnv(),
       }, (error, output) => error ? reject(error) : resolve(output));
     });
     const result = JSON.parse(stdout) as { currentSid: string; accounts: { sid: string; resolvesToAccount: boolean }[] };
@@ -1253,6 +1254,8 @@ function corruptReply(fixture: ReturnType<typeof windowsFixture>, request: Windo
 
 describe("Windows ACL host", () => {
   it("launches the host with the per-probe binary, argument shape and environment", async () => {
+    vi.stubEnv("PSModulePath", String.raw`C:\module-fixture`);
+    vi.stubEnv("PSMODULEPATH", String.raw`C:\other-module-fixture`);
     const fixture = windowsFixture(String.raw`C:\Tools\한글 $(Write-Output injected).exe`);
     const hosts = aclHostFixture(fixture);
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
@@ -1266,6 +1269,7 @@ describe("Windows ACL host", () => {
       windowsHide: true,
       env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
     });
+    expect(Object.keys(options!.env!)).not.toContain("PSModulePath");
     const script = Buffer.from((args as string[])[4]!, "base64").toString("utf16le");
     expect(script).toContain("[Console]::In.ReadLine()");
     for (const stream of ["Progress", "Warning", "Verbose", "Information"]) {
