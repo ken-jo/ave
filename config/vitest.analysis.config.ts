@@ -114,6 +114,13 @@ export default defineConfig({
     // count (a CI runner under a cgroup CPU quota) size the pool to that
     // budget; anything but a positive integer is refused, not ignored.
     maxWorkers: vitestMaxWorkers(process.env.AVE_VITEST_MAX_WORKERS),
+    // The vm pools (the jsdom project) retain VM contexts until a worker is
+    // recycled; a worker whose heap passes this limit is replaced. Vitest
+    // reads it from this root block only, not per project, and the forks
+    // pool ignores it. Three CI workers at 2 GiB of heap stay well inside the
+    // runner slice's 12 GiB MemoryHigh (jsdom's native memory sits outside
+    // the heap, hence the margin).
+    vmMemoryLimit: "2048MB",
     // Node v25 enabled experimental WebStorage by default. Its
     // `localStorage` getter trips `Warning: --localstorage-file was
     // provided without a valid path` and shadows the jsdom implementation,
@@ -177,12 +184,21 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
+          // A fresh VM context per file inside a reused worker, instead of a
+          // fresh worker process per file. The default pool started a process
+          // and loaded jsdom (~0.9 s) for each of the ~300 renderer files; on
+          // the renderer component suite this ran 127 s -> 40 s with every
+          // test passing. Each file still gets its own module graph and
+          // globals (vitest.globalSetup.ts accepts vm pools for that reason).
+          // The node project stays on forks: under vm its native-module,
+          // sandbox and mock-identity suites fail and it gains ~14%.
+          pool: "vmForks",
           // Renderer tests were authored against the original Korean UI
           // strings. After the i18n migration those strings resolve through
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },

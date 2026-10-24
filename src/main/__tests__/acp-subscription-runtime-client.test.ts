@@ -458,17 +458,26 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
   it("rejects a Grok Build prerelease at the governed minimum", async () => {
-    const { client, child, spawnCalls } = createLoginHarness("grok-build");
-    const verification = client.verify();
+    // The version probe's own timeout rejects with the same code. With
+    // setTimeout faked it cannot fire, so only the version check can reject.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const { client, child, spawnCalls } = createLoginHarness("grok-build");
+      const verification = client.verify();
 
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-    child.stdout.write("grok-build 0.2.116-alpha.1\n");
-    child.emit("close", 0);
+      // Answer the probe once it is running: output written before the spawn
+      // reaches no listener.
+      await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
+      child.stdout.write("grok-build 0.2.116-alpha.1\n");
+      child.emit("close", 0);
 
-    await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
-    expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
-    expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+      await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
+      expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 

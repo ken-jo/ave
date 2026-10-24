@@ -86,12 +86,13 @@
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accessSync,
   chmodSync,
   constants,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -116,11 +117,10 @@ import {
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome } from "../../../shared/ave-home.js";
-// The child entry is bundled by the shared module rather than here: its
-// externals, banner and target are the shipped build's, and a second copy of
-// them is a second chance for one case to prove something about a child that
-// does not ship.
-import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
+// Global setup builds this entry once with the shipped bundle boundary.
+// Every confinement case still spawns that real bundle through the real wrap.
+import { repositoryRoot } from "./child-entry-bundle.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
@@ -160,6 +160,7 @@ import { FRAME_BYTES_MAX } from "../host-api-wire.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import {
   buildGitInstallReceipt,
+  hashReceiptFiles,
   listFilesRecursive,
   writeInstallReceipt,
 } from "../../plugin-install-receipt.js";
@@ -1744,9 +1745,6 @@ describe("a child the host widened reaches exactly what the host widened it with
   );
 });
 
-/** Emitted inside the repository, under a name only this suite cleans up. */
-const CHILD_BUNDLE_CACHE = "plugin-child-confined-e2e";
-
 /**
  * The pilot's own tool, invoked out of process AND confined, through the
  * production factory.
@@ -1765,8 +1763,7 @@ describe("the pilot's tools, out of process and confined", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const repoRoot = repositoryRoot();
-      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
-      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const childEntryPath = pluginChildEntryPath();
 
       // The plugin lives inside the child's own read carve-out, which is where
       // an installed plugin lives in production.
@@ -1836,7 +1833,6 @@ export const createPlugin = async (context) => ({
         expect(String(result.secretRead)).toMatch(/^DENIED:/);
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
     },
     120_000,
@@ -1921,8 +1917,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const plugin = installPlugin(fx, "meeting");
-      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
-      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const childEntryPath = pluginChildEntryPath();
       // Copied into the plugin's own root, which is where an installed entry
       // lives and what the child's read grant covers.
       const entryPath = join(plugin.pluginRoot, "entry.mjs");
@@ -1960,7 +1955,6 @@ describe("the host protocol, spoken by a real confined child", () => {
         );
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
       const measured = await tree!;
       reportSmoke("confined measurement", {
@@ -1980,8 +1974,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
-      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
-      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const childEntryPath = pluginChildEntryPath();
       const { plugin, entryPath, manifest } = installOneToolPlugin(
         fx,
         "stdinprobe",
@@ -2021,7 +2014,6 @@ describe("the host protocol, spoken by a real confined child", () => {
         expect(outcome).toBe("exited");
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
     },
     120_000,
@@ -2032,8 +2024,7 @@ describe("the host protocol, spoken by a real confined child", () => {
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
-      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
-      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const childEntryPath = pluginChildEntryPath();
       // Both ways a plugin reaches stdout, at import, in the factory and in a
       // tool: a stray line anywhere joins the next frame's line and takes that
       // frame with it.
@@ -2082,7 +2073,6 @@ export const createPlugin = async () => {
         expect(spoke).toBe("spoke");
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
       const lines = stdout.split("\n");
       // The stream ends on a newline, so the last element is the empty tail.
@@ -2114,8 +2104,7 @@ describe("the lossy and stateful members, across a real confined boundary", () =
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const repoRoot = repositoryRoot();
-      const childOutDir = childBundleDir(CHILD_BUNDLE_CACHE);
-      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const childEntryPath = pluginChildEntryPath();
 
       const entryPath = join(fx.pluginRoot, "plugin.mjs");
       writeFileSync(
@@ -2365,7 +2354,6 @@ export const createPlugin = async (context) => {
         await expect(instance.handlers.probe_config!()).resolves.toBe("after");
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
     },
     120_000,
@@ -2450,9 +2438,7 @@ describe("a refused candidate's members, out of process and confined", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const plugin = installPlugin(fx, "meeting");
-      const repoRoot = repositoryRoot();
-      const childOutDir = childBundleDir(repoRoot);
-      const childEntryPath = await buildChildEntry(repoRoot);
+      const childEntryPath = pluginChildEntryPath();
 
       // The un-migrated state the plugin's own guard requires before it will
       // attempt the move at all, planted from the HOST side because a confined
@@ -2835,7 +2821,6 @@ export const createPlugin = async (context) => {
         expect(temp.create, JSON.stringify(temp.create)).toMatchObject({ ok: true });
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
     },
     120_000,
@@ -3218,9 +3203,7 @@ describe("the indexer's host-supplied answers, out of process and confined", () 
       const fx = fixture!;
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const plugin = installPlugin(fx, "local-indexer");
-      const repoRoot = repositoryRoot();
-      const childOutDir = childBundleDir(repoRoot);
-      const childEntryPath = await buildChildEntry(repoRoot);
+      const childEntryPath = pluginChildEntryPath();
       const entryPath = join(plugin.pluginRoot, "plugin.mjs");
 
       writeFileSync(
@@ -3328,7 +3311,6 @@ export default async function createPlugin(context) {
         expect(askedFor).toEqual(["Z:"]);
       } finally {
         await instance.stop?.();
-        rmSync(childOutDir, { recursive: true, force: true });
       }
     },
     120_000,
@@ -3819,6 +3801,12 @@ describe("the python smoke, confined by the production factory", () => {
   const PYTHON_SMOKE_ID = "python-smoke";
   /** Stands in for the pinned release zip's hash; the gate reads that it is pinned. */
   const ARTIFACT_SHA256 = "c".repeat(64);
+  let templateRoot: string | undefined;
+  let templateReceipt: Awaited<ReturnType<typeof buildGitInstallReceipt>>["receipt"] | undefined;
+
+  afterAll(() => {
+    if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
+  });
 
   /**
    * Install the smoke, pinned. `launcherPreamble` is shell put ahead of the
@@ -3830,7 +3818,14 @@ describe("the python smoke, confined by the production factory", () => {
     launcherPreamble = "",
   ): Promise<{ plugin: InstalledPlugin; manifest: PluginManifest }> {
     const plugin = installPlugin(fx, PYTHON_SMOKE_ID);
-    installPythonSmoke(plugin.pluginRoot);
+    // Provision and verify the dependency tree once, then copy its compiled
+    // modules into each independent install. Integrity still verifies every
+    // copied byte against the receipt before the real child runs.
+    if (templateRoot === undefined) {
+      templateRoot = mkdtempSync(join(tmpdir(), "confined-python-template-"));
+      installPythonSmoke(templateRoot);
+    }
+    cpSync(templateRoot, plugin.pluginRoot, { recursive: true, preserveTimestamps: true });
     if (launcherPreamble !== "") {
       const launcher = join(plugin.pluginRoot, "bin", "plugin");
       writeFileSync(
@@ -3843,7 +3838,7 @@ describe("the python smoke, confined by the production factory", () => {
       JSON.parse(readFileSync(join(plugin.pluginRoot, "plugin.json"), "utf-8")),
     );
     const cacheRoot = join(fx.root, "receipts");
-    const { receipt } = await buildGitInstallReceipt(plugin.pluginRoot, {
+    templateReceipt ??= (await buildGitInstallReceipt(templateRoot, {
       pluginId: PYTHON_SMOKE_ID,
       version: manifest.version,
       artifactSha256: ARTIFACT_SHA256,
@@ -3856,8 +3851,14 @@ describe("the python smoke, confined by the production factory", () => {
         rung: "release",
         rungs: [{ rung: "release", outcome: "used" }],
       },
-      files: await listFilesRecursive(plugin.pluginRoot, PLUGIN_RUNTIME_DIR_NAMES),
-    });
+      files: await listFilesRecursive(templateRoot, PLUGIN_RUNTIME_DIR_NAMES),
+    })).receipt;
+    const changedLauncher = launcherPreamble === "" ? undefined
+      : (await hashReceiptFiles(plugin.pluginRoot, ["bin/plugin"]))[0]!;
+    const receipt = {
+      ...templateReceipt,
+      files: templateReceipt.files.map((file) => file.path === "bin/plugin" && changedLauncher ? changedLauncher : file),
+    };
     await writeInstallReceipt(cacheRoot, receipt);
     const integrity = await verifyPluginIntegrity(cacheRoot, PYTHON_SMOKE_ID, plugin.pluginRoot);
     expect(integrity).toEqual({
