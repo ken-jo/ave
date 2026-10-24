@@ -539,6 +539,61 @@ describe("installer smoke and packaging discipline", () => {
       expect(underTarget({ env: { H: head }, run: "echo \"$H\"" })).toEqual([]);
     });
 
+    describe("pull request references passed between steps", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      const writeHead = { id: "a", run: `echo "sha=${head}" >> "$GITHUB_OUTPUT"` };
+      const steps = (...list: Record<string, unknown>[]) => forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const job = (extra: Record<string, unknown>, ...list: Record<string, unknown>[]) => forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list, ...extra }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const reason = (text: string) => [`t.yml:check ${text} under pull_request_target`];
+      const fetches = reason("fetches pull request code in a run step");
+
+      it.each<[string, Record<string, unknown>[], string[]]>([
+        ["an output read in a later script", [writeHead, { run: "git fetch origin ${{ steps.a.outputs.sha }}" }], fetches],
+        ["an output read through a later step's env", [
+          { id: "a", env: { H: head }, run: "echo \"sha=$H\" >> $GITHUB_OUTPUT" },
+          { env: { S: "${{ steps.a.outputs.sha }}" }, run: "set -e\ngit checkout \"$S\"" },
+        ], fetches],
+        ["an output relayed through a step that runs no git", [
+          writeHead,
+          { id: "b", run: "echo \"relay=${{ steps.a.outputs.sha }}\" >> \"$GITHUB_OUTPUT\"" },
+          { run: "gh pr diff ${{ steps.b.outputs.relay }}" },
+        ], fetches],
+        ["the head the API returned, written by the step that fetched it", [
+          { id: "a", run: "gh api repos/o/r/pulls/7 --jq .head.sha >> \"$GITHUB_OUTPUT\"" },
+        ], fetches],
+        ["$GITHUB_ENV", [{ run: `echo "PR_SHA=${head}" >> "$GITHUB_ENV"` }, { run: "git fetch origin \"$PR_SHA\"" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["$GITHUB_PATH", [{ env: { REF: "${{ github.head_ref }}" }, run: "echo \"$RUNNER_TEMP/$REF\" >> $GITHUB_PATH" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["an action input", [writeHead, {
+          uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          with: { ref: "${{ steps.a.outputs.sha }}", "persist-credentials": false },
+        }], reason("passes a pull request reference from an earlier step to an action")],
+      ])("refuses a pull request reference handed on through %s", (_label, list, expected) => {
+        expect(steps(...list)).toEqual(expected);
+      });
+
+      it("refuses a job output that maps a tainted step output", () => {
+        expect(job({ outputs: { sha: "${{ steps.a.outputs.sha }}" } }, writeHead))
+          .toEqual(reason("maps a pull request reference to a job output"));
+      });
+
+      it("lets a tainted output gate a later git step, and an untainted one feed it", () => {
+        expect(steps(
+          { id: "snapshot", run: "gh api repos/o/r/pulls/7 --jq .base.sha | sed 's/^/base_sha=/' >> \"$GITHUB_OUTPUT\"" },
+          { id: "current", env: { H: head }, run: "echo \"superseded=$([ \"$H\" = x ] && echo true || echo false)\" >> \"$GITHUB_OUTPUT\"" },
+          { if: "steps.current.outputs.superseded != 'true'", env: { B: "${{ steps.snapshot.outputs.base_sha }}" },
+            run: "git -C policy rev-parse HEAD | grep -qx \"$B\"" },
+        )).toEqual([]);
+      });
+    });
+
     it("reads secrets as an expression context, not as a word in a script", () => {
       expect(underTarget({ run: "cat secrets.txt && git log --oneline -1" })).toEqual([]);
     });

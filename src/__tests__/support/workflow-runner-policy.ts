@@ -60,32 +60,81 @@ export function forkSafeRunsOn(variable: string, hosted: string): string {
   return `\${{ ${TRUSTED_RUNNER_GUARD} && vars.${variable} && fromJSON(vars.${variable}) || '${hosted}' }}`;
 }
 
-type Step = { uses?: unknown; with?: Record<string, unknown>; run?: unknown; if?: unknown; env?: unknown };
-type Job = { "runs-on"?: unknown; uses?: unknown; permissions?: unknown; if?: unknown; env?: unknown; steps?: Step[] };
+type Step = { id?: unknown; uses?: unknown; with?: Record<string, unknown>; run?: unknown; if?: unknown; env?: unknown };
+type Job = {
+  "runs-on"?: unknown;
+  uses?: unknown;
+  permissions?: unknown;
+  if?: unknown;
+  env?: unknown;
+  outputs?: unknown;
+  steps?: Step[];
+};
 
 /** Text that names the pull request's own code: the head commit, branch or
  *  repository from the event payload (`github.event.pull_request.head.*`, or
- *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`), the head branch
+ *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`, or `.head.sha` /
+ *  `.head.ref` read from a pull request the API returned), the head branch
  *  (`github.head_ref`, `$GITHUB_HEAD_REF`), a `refs/pull/...` ref or a
  *  `pull/<n>/head|merge` refspec. */
 const PULL_REQUEST_CODE_REFERENCE =
-  /pull_request\.head\b|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
+  /pull_request\.head\b|(?:^|[\s'"(|])\.head\.(?:sha|ref)\b|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
 
 /** A git or gh invocation anywhere in a script. */
 const GIT_OR_GH = /\b(?:git|gh)\b/u;
 
-/** True when a `run:` step could fetch or check out pull request code: the
- *  step's script, its own env or the env it inherits from the job and the
- *  workflow names that code anywhere (so a variable set on one line, or in
- *  `env:`, and used on another counts), and the script invokes git or gh
- *  anywhere, or runs `gh pr checkout`. Deliberately strict: the whole step
- *  is one unit. */
-function runStepFetchesPullRequestCode(step: Step, inherited: readonly unknown[]): boolean {
-  if (typeof step.run !== "string" || !GIT_OR_GH.test(step.run)) return false;
-  // `gh pr checkout` needs no reference: the pull request number is enough.
-  if (/\bgh\s+pr\s+checkout\b/u.test(step.run)) return true;
-  const scope = [step.run, JSON.stringify([step.env ?? null, ...inherited])].join("\n");
-  return PULL_REQUEST_CODE_REFERENCE.test(scope);
+/** A script that writes a value a later step reads: an output, the job's
+ *  environment or its PATH. */
+const RUNNER_FILE_WRITE = /\bGITHUB_(OUTPUT|ENV|PATH)\b/gu;
+
+/** The pull_request_target violations of one job's steps.
+ *
+ *  A step "names pull request code" when its script, its own env, the env it
+ *  inherits from the job and the workflow, or (for an action) its `with:`
+ *  names {@link PULL_REQUEST_CODE_REFERENCE}, or reads `steps.<id>.outputs`
+ *  of a tainted step. The whole step is one unit, so a variable set on one
+ *  line, or in `env:`, and used on another counts.
+ *
+ *  - A run step that names pull request code and invokes git or gh anywhere,
+ *    or that runs `gh pr checkout`, is refused.
+ *  - A step that names pull request code and writes `$GITHUB_ENV` or
+ *    `$GITHUB_PATH` is refused outright: every later step inherits those.
+ *  - One that writes `$GITHUB_OUTPUT` taints its outputs; a later run step
+ *    that reads them and invokes git or gh is refused as above, an action that
+ *    reads them is refused, and a step that reads them and writes an output
+ *    taints its own in turn. A job output that maps a tainted step output is
+ *    refused, since this check does not follow `needs.<job>.outputs`.
+ *
+ *  Reading a tainted output in an `if:` is allowed: a condition only gates. */
+function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[]): string[] {
+  const reasons: string[] = [];
+  const tainted = new Set<string>();
+  const readsTainted = (text: string): boolean =>
+    [...tainted].some((id) => text.includes(`steps.${id}.outputs.`));
+  for (const step of job.steps ?? []) {
+    const run = typeof step.run === "string" ? step.run : "";
+    const actionInputs = typeof step.uses === "string" ? JSON.stringify(step.with ?? null) : "";
+    const scope = [run, JSON.stringify([step.env ?? null, ...inheritedEnv]), actionInputs].join("\n");
+    const namesCode = PULL_REQUEST_CODE_REFERENCE.test(scope) || readsTainted(scope);
+    if (run !== "" && GIT_OR_GH.test(run) && (/\bgh\s+pr\s+checkout\b/u.test(run) || namesCode)) {
+      reasons.push("fetches pull request code in a run step under pull_request_target");
+    }
+    if (typeof step.uses === "string" && readsTainted(actionInputs + JSON.stringify(step.env ?? null))) {
+      reasons.push("passes a pull request reference from an earlier step to an action under pull_request_target");
+    }
+    if (!namesCode) continue;
+    const writes = new Set([...run.matchAll(RUNNER_FILE_WRITE)].map((match) => match[1]));
+    if (writes.has("ENV") || writes.has("PATH")) {
+      reasons.push("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH under pull_request_target");
+    }
+    if (writes.has("OUTPUT") && typeof step.id === "string") {
+      tainted.add(step.id);
+    }
+  }
+  if (job.outputs !== undefined && readsTainted(JSON.stringify(job.outputs))) {
+    reasons.push("maps a pull request reference to a job output under pull_request_target");
+  }
+  return reasons;
 }
 
 /** True when the workflow reads the `secrets` context anywhere, in any form. */
@@ -156,10 +205,10 @@ export function forkRunnerViolations(source: string, name: string): string[] {
       violations.push(`${name}:${id} grants a write permission to pull_request_target`);
     }
     if (!privileged) continue;
+    for (const reason of pullRequestCodeStepViolations(job, [job.env ?? null, workflow.env ?? null])) {
+      violations.push(`${name}:${id} ${reason}`);
+    }
     for (const step of job.steps ?? []) {
-      if (runStepFetchesPullRequestCode(step, [job.env ?? null, workflow.env ?? null])) {
-        violations.push(`${name}:${id} fetches pull request code in a run step under pull_request_target`);
-      }
       if (typeof step.uses !== "string" || !step.uses.startsWith("actions/checkout@")) continue;
       const inputs = step.with ?? {};
       const ref = String(inputs.ref ?? "");
