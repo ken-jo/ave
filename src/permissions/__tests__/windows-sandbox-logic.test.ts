@@ -8,7 +8,7 @@
  * actual WFP egress enforcement — those need a real Windows box (see the PR
  * body's "not verifiable" section).
  *
- * Added to the CI `windows-permission-tests` job (ci.yml, windows-latest) AND
+ * Added to the CI `windows-permission-tests` job (ci.yml, windows-2025) AND
  * runs on darwin/linux too — the platform is faked, so the logic is the same.
  */
 import { win32 as win32Path } from "node:path";

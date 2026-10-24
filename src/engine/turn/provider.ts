@@ -14,7 +14,6 @@ import {
   canUseLlmVendorWithoutApiKey,
   getLlmVendorSettings,
   activeLlmRouteModel,
-  isOpenAICompatibleVendor,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import type { AiProviderPingResult } from "../../shared/ai-provider-ping.js";
@@ -207,13 +206,9 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
       return null;
     }
 
-    // Handshake-only providers (openai-compatible family) ship no default model
-    // (llm-vendor-defaults CORE_DEFAULT_MODEL["openai-compatible"] === ""). Treat
-    // an empty model as "not configured" so we never send a fabricated/seed id
-    // the endpoint does not serve — the user selects a model from the live
-    // /models handshake list first.
+    // A credential connects the route; only a selected model configures chat.
     const effectiveModel = activeLlmRouteModel(llmSettings, deps.modelOverride);
-    if (!effectiveModel && isOpenAICompatibleVendor(vendor)) {
+    if (!effectiveModel) {
       return null;
     }
 
@@ -290,7 +285,10 @@ export async function generateText(
   options?: GenerateTextOptions,
 ): Promise<string> {
     const llm = settingsService.get("llm");
-    if (!provider || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
+    const model = provider?.subscriptionRuntime
+      ? provider.subscriptionRuntime.model ?? "default"
+      : activeLlmRouteModel(llm);
+    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
       throw new Error("LLM provider not configured");
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");
@@ -308,9 +306,6 @@ export async function generateText(
       : abortSignal;
     let outputLimitReached = false;
     let text = "";
-    const model = provider.subscriptionRuntime
-      ? provider.subscriptionRuntime.model ?? "default"
-      : activeLlmRouteModel(llm);
     try {
     for await (const ev of provider.streamTurn({
       systemPrompt,
@@ -366,7 +361,7 @@ export async function pingProvider(
     const model = subscription
       ? subscription.model || "default"
       : activeLlmRouteModel(llm);
-    if (!provider || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
+    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
       return {
         configured: false,
         online: false,

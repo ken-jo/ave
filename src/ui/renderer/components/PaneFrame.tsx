@@ -748,6 +748,8 @@ export interface ChatGroupState {
   id: string;
   /** The work panel, per pane — its own right-hand rail. */
   panelOpen: boolean;
+  /** Session routine and browser thumbnails, independent of the work panel. */
+  thumbnailOpen: boolean;
   /** Where this tile sits, in percentages of the main area. */
   box: PaneBox;
   /**
@@ -807,6 +809,7 @@ function visibleTreeFor(tree: PaneNode, appMode: "chat" | "work" | undefined, fo
 export function useChatGroups(appMode?: "chat" | "work") {
   const [tree, setTree] = useState<PaneNode>(() => leaf(MAIN_CHAT_GROUP_ID));
   const [panelOpenIds, setPanelOpenIds] = useState<readonly string[]>([]);
+  const [thumbnailOpenIds, setThumbnailOpenIds] = useState<readonly string[]>([]);
   const [focusedId, setFocusedId] = useState(MAIN_CHAT_GROUP_ID);
   // The one tile shown alone, if any. A view choice, like chat mode's: the
   // others keep their conversations and their places until restored.
@@ -852,6 +855,14 @@ export function useChatGroups(appMode?: "chat" | "work") {
 
   const setPanelOpen = useCallback((id: string, open: boolean) => {
     setPanelOpenIds((current) => {
+      const has = current.includes(id);
+      if (has === open) return current;
+      return open ? [...current, id] : current.filter((each) => each !== id);
+    });
+  }, []);
+
+  const setThumbnailOpen = useCallback((id: string, open: boolean) => {
+    setThumbnailOpenIds((current) => {
       const has = current.includes(id);
       if (has === open) return current;
       return open ? [...current, id] : current.filter((each) => each !== id);
@@ -960,6 +971,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
       id,
     ));
     setPanelOpenIds((current) => (spare === null ? current : current.filter((each) => each !== spare)));
+    setThumbnailOpenIds((current) => (spare === null ? current : current.filter((each) => each !== spare)));
     setContentById((current) => {
       const next = { ...current, [id]: PANE_HOME };
       if (spare !== null) delete next[spare];
@@ -1001,6 +1013,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     setFocusedId((focused) => (survivors.includes(focused) ? focused : survivors[0]!));
     setMaximizedId((current) => (current === id ? null : current));
     setPanelOpenIds((current) => current.filter((each) => each !== id));
+    setThumbnailOpenIds((current) => current.filter((each) => each !== id));
     setContentById((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
@@ -1190,6 +1203,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
         return {
           id,
           panelOpen: panelOpenIds.includes(id),
+          thumbnailOpen: thumbnailOpenIds.includes(id),
           // A hidden tile keeps the whole canvas as its box: it is not laid out
           // against its neighbours, and a zero-size one would have its own
           // layout effects measure nonsense on the way back into view.
@@ -1201,7 +1215,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     // `visibleTree` is rebuilt each render in chat mode, so the tree and the
     // mode are the honest dependencies here, not the derived node.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tree, appMode, focusedId, maximizedId, panelOpenIds],
+    [tree, appMode, focusedId, maximizedId, panelOpenIds, thumbnailOpenIds],
   );
 
   // Once split, every tile can be closed and any one can be shown alone —
@@ -1261,6 +1275,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     tree: PaneNode;
     focusedId: string;
     panelOpenIds: readonly string[];
+    thumbnailOpenIds: readonly string[];
     content: Readonly<Record<string, ViewLocation>>;
   }) => {
     const ids = leafIds(layout.tree);
@@ -1272,6 +1287,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     setFocusedId(layout.focusedId);
     setMaximizedId(null);
     setPanelOpenIds([...layout.panelOpenIds]);
+    setThumbnailOpenIds([...layout.thumbnailOpenIds]);
     setConversationIds(new Set(ids));
     setContentById((current) => Object.fromEntries(ids.map((id) => [id, layout.content[id] ?? current[id] ?? PANE_HOME])));
   }, []);
@@ -1316,6 +1332,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     conversationIds,
     focusedConversationId,
     setPanelOpen,
+    setThumbnailOpen,
     canSplit,
     split,
     splitFits,
@@ -1330,6 +1347,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     maximizedId,
     toggleMaximize,
     panelOpenIds,
+    thumbnailOpenIds,
     restore,
   };
 }

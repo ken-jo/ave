@@ -12,6 +12,26 @@ import type { StreamTurnParams, ToolSchema } from "../../types.js";
 import { createGuardedModelProviderFetch } from "../../marketplace-provider-fetch.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { collectStreamEvents } from "./test-helpers.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+
+const NUMERIC_CATALOG_KEY = "anthropic/fixture-numeric";
+const INTERLEAVED_CATALOG_KEY = "anthropic/fixture-interleaved";
+const ADAPTIVE_CATALOG_KEY = "anthropic/fixture-adaptive";
+const originalCatalog = activeModelCatalog();
+
+function installRequestControlCatalog(): void {
+  const numeric = {
+    id: "fixture-numeric", limits: { context: 200_000, output: 128_000 },
+    reasoning: { supported: true, budgetTokens: { min: 1_024 } },
+  };
+  installModelCatalog({ ...originalCatalog, providers: { ...originalCatalog.providers, anthropic: { models: {
+    ...originalCatalog.providers.anthropic!.models,
+    [numeric.id]: numeric,
+    "fixture-interleaved": { ...numeric, id: "fixture-interleaved", interleaved: true },
+    "fixture-adaptive": { id: "fixture-adaptive", limits: numeric.limits,
+      reasoning: { supported: true, effort: ["low", "medium", "high"] } },
+  } } } });
+}
 
 const TOOL_SCHEMAS: ToolSchema[] = [{
   name: "read_value",
@@ -37,12 +57,13 @@ function responseBody(vendor: "openai-compatible" | "claude"): string {
 async function collectRequest(
   vendor: "openai-compatible" | "claude",
   model: string,
-  overrides: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean } = {},
+  overrides: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; catalogModel?: string } = {},
   toolSchemas: ToolSchema[] = [],
 ) {
   // What the conversation loop sends: the block with its effective output
   // limit (requested, clamped to the model's ceiling) and the budget bounded to it.
-  const block = getLlmVendorSettings({ [vendor]: { model, enableThinking: true, thinkingBudgetTokens: 10_000, ...overrides } }, vendor);
+  const block = getLlmVendorSettings({ [vendor]: { model, enableThinking: true, thinkingBudgetTokens: 10_000,
+    ...(vendor === "claude" ? { catalogModel: NUMERIC_CATALOG_KEY } : {}), ...overrides } }, vendor);
   const output = resolveOutputTokenLimit({ vendor, model, requested: requestedLlmOutputTokenLimit(block) });
   return collectInternalRequest(vendor, model, apiRoundLlmSettings(block, output, "none"), toolSchemas);
 }
@@ -51,7 +72,7 @@ async function collectRequest(
 async function collectInternalRequest(
   vendor: "openai-compatible" | "claude",
   model: string,
-  params: { outputTokenLimit?: number; thinkingBudgetTokens: number; enableThinking?: boolean; onRequestControls?: StreamTurnParams["onRequestControls"] },
+  params: { outputTokenLimit?: number; thinkingBudgetTokens: number; enableThinking?: boolean; catalogModel?: string; onRequestControls?: StreamTurnParams["onRequestControls"] },
   toolSchemas: ToolSchema[] = [],
 ) {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response(responseBody(vendor), {
@@ -61,7 +82,9 @@ async function collectInternalRequest(
   const result = await collectRoundStream({
     provider, model, systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }], toolSchemas,
-    llmSettings: { enableThinking: true, ...params, streamSmoothing: "none" },
+    llmSettings: { enableThinking: true,
+      ...(vendor === "claude" ? { catalogModel: NUMERIC_CATALOG_KEY } : {}),
+      ...params, streamSmoothing: "none" },
     onRequestControls: params.onRequestControls,
   });
   expect(fetchResponse).toHaveBeenCalledTimes(1);
@@ -84,8 +107,14 @@ describe("resolved output ceiling on the native wire", () => {
     expect(result).toMatchObject({ kind: "ok", text: "ok" });
   });
 
-  beforeEach(forbidAmbientFetch);
-  afterEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    forbidAmbientFetch();
+    installRequestControlCatalog();
+  });
+  afterEach(() => {
+    installModelCatalog(originalCatalog);
+    vi.unstubAllGlobals();
+  });
 
   it("sends the default from existing settings and preserves a completed response", async () => {
     const { body, result } = await collectRequest("openai-compatible", "fixture-model");
@@ -144,7 +173,7 @@ describe("resolved output ceiling on the native wire", () => {
     const fetchResponse = vi.fn<typeof fetch>();
     const provider = new VercelUnifiedProvider("claude", "fixture-key", "https://provider.invalid/v1", fetchResponse);
     const block = getLlmVendorSettings({ claude: {
-      model: "claude-3-7-sonnet-latest", enableThinking: true, thinkingBudgetTokens: 8_000, outputTokenLimit,
+      model: "claude-3-7-sonnet-latest", catalogModel: NUMERIC_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 8_000, outputTokenLimit,
     } }, "claude");
     expect(block.enableThinking).toBe(true);
     const result = await collectRoundStream({
@@ -157,13 +186,13 @@ describe("resolved output ceiling on the native wire", () => {
   });
 
   it("transmits adaptive effort in the provider's output configuration", async () => {
-    const { body } = await collectRequest("claude", "claude-sonnet-4-6", { thinkingBudgetTokens: 16_000 });
+    const { body } = await collectRequest("claude", "claude-sonnet-4-6", { thinkingBudgetTokens: 16_000, catalogModel: ADAPTIVE_CATALOG_KEY });
     expect(body.max_tokens).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
     expect(body.thinking).toEqual({ type: "adaptive" });
     expect(body.output_config).toMatchObject({ effort: "high" });
   });
 
-  it("uses numeric thinking for model generations without adaptive mode", async () => {
+  it("uses numeric thinking when the selected entry declares a numeric budget", async () => {
     const { body } = await collectRequest("claude", "claude-sonnet-4-5", { thinkingBudgetTokens: 16_000 });
     expect(body.max_tokens).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
     expect(body.thinking).toMatchObject({ type: "enabled", budget_tokens: 16_000 });
@@ -177,7 +206,7 @@ describe("resolved output ceiling on the native wire", () => {
     "claude-opus-4-5-20251101",
   ])("keeps a raw internal interleaved budget above a small total for %s", async (model) => {
     const { body, headers, result } = await collectInternalRequest(
-      "claude", model, { outputTokenLimit: 1_024, thinkingBudgetTokens: 2_048 }, TOOL_SCHEMAS,
+      "claude", model, { outputTokenLimit: 1_024, thinkingBudgetTokens: 2_048, catalogModel: INTERLEAVED_CATALOG_KEY }, TOOL_SCHEMAS,
     );
     expect(body.max_tokens).toBe(1_024);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 2_048 });
@@ -187,7 +216,7 @@ describe("resolved output ceiling on the native wire", () => {
 
   it.each([1, 1_024, 32_000])("preserves a raw internal interleaved budget with total %i", async (outputTokenLimit) => {
     const { body } = await collectInternalRequest(
-      "claude", "claude-sonnet-4-5", { outputTokenLimit, thinkingBudgetTokens: 32_000 }, TOOL_SCHEMAS,
+      "claude", "claude-sonnet-4-5", { outputTokenLimit, thinkingBudgetTokens: 32_000, catalogModel: INTERLEAVED_CATALOG_KEY }, TOOL_SCHEMAS,
     );
     expect(body.max_tokens).toBe(outputTokenLimit);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 32_000 });
@@ -195,7 +224,7 @@ describe("resolved output ceiling on the native wire", () => {
 
   it("preserves the SDK's lower model limit before projecting a raw interleaved total", async () => {
     const { body } = await collectInternalRequest(
-      "claude", "claude-opus-4-1", { outputTokenLimit: 64_000, thinkingBudgetTokens: 48_000 }, TOOL_SCHEMAS,
+      "claude", "claude-opus-4-1", { outputTokenLimit: 64_000, thinkingBudgetTokens: 48_000, catalogModel: INTERLEAVED_CATALOG_KEY }, TOOL_SCHEMAS,
     );
     expect(body.max_tokens).toBe(32_000);
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 48_000 });
@@ -237,7 +266,7 @@ describe("resolved output ceiling on the native wire", () => {
     const result = await collectRoundStream({
       provider, model, systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas,
-      llmSettings: { streamSmoothing: "none", enableThinking: true, thinkingBudgetTokens: 1_024, outputTokenLimit: 1_024 },
+      llmSettings: { streamSmoothing: "none", catalogModel: NUMERIC_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 1_024, outputTokenLimit: 1_024 },
     });
     expect(fetchResponse).not.toHaveBeenCalled();
     expect(result).toMatchObject({ kind: "stream_error", userMessage: expect.stringContaining("Output token limit") });
@@ -254,7 +283,7 @@ describe("resolved output ceiling on the native wire", () => {
     const result = await collectRoundStream({
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: TOOL_SCHEMAS,
-      llmSettings: { streamSmoothing: "none", enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
+      llmSettings: { streamSmoothing: "none", catalogModel: INTERLEAVED_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
     });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const [url, init] = fetchResponse.mock.calls[0]!;
@@ -277,7 +306,7 @@ describe("resolved output ceiling on the native wire", () => {
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: TOOL_SCHEMAS,
       abortSignal: controller.signal,
-      llmSettings: { streamSmoothing: "none", enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
+      llmSettings: { streamSmoothing: "none", catalogModel: INTERLEAVED_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
     });
     expect(fetchResponse).toHaveBeenCalledOnce();
     expect(fetchResponse.mock.calls[0]![1]?.signal?.aborted).toBe(true);
@@ -292,7 +321,7 @@ describe("resolved output ceiling on the native wire", () => {
     const result = await collectRoundStream({
       provider, model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
       messages: [{ role: "user", content: "Report the value." }], toolSchemas: TOOL_SCHEMAS,
-      llmSettings: { streamSmoothing: "none", enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
+      llmSettings: { streamSmoothing: "none", catalogModel: INTERLEAVED_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 1_024 },
     });
     expect(fetchResponse).toHaveBeenCalledOnce();
     expect(result).toMatchObject({
@@ -323,7 +352,7 @@ describe("resolved output ceiling on the native wire", () => {
       await collectStreamEvents(provider.streamTurn({
         model: "claude-sonnet-4-5", systemPrompt: "Return the result.",
         messages: [{ role: "user", content: "Report the value." }],
-        enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 4_096,
+        catalogModel: NUMERIC_CATALOG_KEY, enableThinking: true, thinkingBudgetTokens: 2_048, outputTokenLimit: 4_096,
       }));
       expect(fetchResponse).toHaveBeenCalledOnce();
       expect(projectedFetch).toBeTypeOf("function");

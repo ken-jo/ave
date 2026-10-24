@@ -5,6 +5,8 @@ import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
 import {
+  isSubscriptionRuntimeId,
+  subscriptionRuntimeDescriptor,
   type SubscriptionConnectionState,
   type SubscriptionLoginMethod,
   type SubscriptionRuntimeCapabilities,
@@ -265,8 +267,21 @@ export function SubscriptionAuthControls({
     </Button>
   ) : null;
 
+  // A runtime reached through the user's own installed CLI bills the user's
+  // own subscription; the card says so, and says the credentials stay there.
+  const usesOwnCli = isSubscriptionRuntimeId(descriptor.id)
+    && subscriptionRuntimeDescriptor(descriptor.id).transport === "claude-cli";
+
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
+      {usesOwnCli ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:billing-disclosure`}
+        >
+          {t("subscriptionProvidersSection.claudeCliBillingDisclosure")}
+        </p>
+      ) : null}
       {status?.errorCode && !(cliMissing && status.errorCode === "subscription-runtime-not-configured") ? (
         <p
           role="alert"

@@ -488,7 +488,11 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     llmModelListCacheKey(activeAddress.vendor, activeAddress.baseUrl, activeAddress.credentialScope)
   ];
   // A retired model is not a choice (design `model-capability-catalog.md` §6.1).
+  // The load's retirement marker counts too: it names a model the route's own
+  // listing dropped, even while the catalog still lists that model.
+  const marker = isRetiredLlmModelMarker(llm.retiredProvider) ? llm.retiredProvider : null;
   const retired = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) =>
+    (marker !== null && marker.vendor === vendor && marker.model === modelId) ||
     resolveModelRetirement({ vendor, model: modelId, ...(baseUrl ? { baseUrl } : {}), ...(listing ? { listing } : {}) }) !== undefined;
   const offer = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) => {
     if (retired(vendor, modelId, baseUrl, listing)) return;
