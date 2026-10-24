@@ -8,8 +8,8 @@
  * subscribed per tile or once, and which tile gets to show it.
  */
 import "./setup.js";
-import { describe, it, expect, vi } from "vitest";
-import { act, createEvent, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { act, cleanup, createEvent, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp, startInChatMode } from "./render-app.js";
 import {
   approvalRequest,
@@ -33,6 +33,24 @@ import { CHAT_SESSION_DRAG_TYPE } from "../../src/ui/renderer/components/pane-dr
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import { A2ATaskState } from "../../src/shared/a2a.js";
 import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
+
+// Surface ownership needs committed DOM, while guest placement repeatedly
+// measures layout over animation frames. Advance frames where focus is proved.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+});
+
+afterEach(() => {
+  try {
+    cleanup();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+async function advanceAnimationFrame(): Promise<void> {
+  await act(async () => { vi.advanceTimersToNextFrame(); });
+}
 
 /** The permission namespace's subscriptions, as the mock records them. */
 function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
@@ -879,6 +897,7 @@ describe("a turn parked on an approval, with two tiles", () => {
       await act(async () => {
         input.focus();
       });
+      await advanceAnimationFrame();
       expect(document.activeElement).toBe(input);
     }
   });
@@ -1147,6 +1166,8 @@ describe("a turn parked on an approval, with two tiles", () => {
   });
 
   it("draws a side chat's approval over the side composer, and marks the panel toggle and the tab while it is out of sight", async () => {
+    // This case owns its timeout clock for the settled panel-close assertion.
+    vi.useRealTimers();
     const { container, api, emitApproval } = await renderApp({ hasApiKey: true, sideChat: true });
     const toggle = () => container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
     await act(async () => { fireEvent.click(toggle()); });
@@ -1326,6 +1347,7 @@ describe("cards raised by one of three tiles", () => {
       await act(async () => {
         input.focus();
       });
+      await advanceAnimationFrame();
       expect(document.activeElement).toBe(input);
       fireEvent.change(input, { target: { value: "옆 타일은 계속 입력" } });
       expect(input.value).toBe("옆 타일은 계속 입력");
@@ -1341,6 +1363,7 @@ describe("cards raised by one of three tiles", () => {
     await act(async () => {
       textarea(first!)!.focus();
     });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
 
     await act(async () => {
@@ -1353,6 +1376,7 @@ describe("cards raised by one of three tiles", () => {
     expect(dock(container)).toHaveLength(1);
 
     // No focus steal: the caret stays where the user was typing.
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     // The card's nearest tile ancestor is the tile that asked.
     expect(tileCell(dock(container)[0]!)).toBe(middle!.element);
@@ -1387,6 +1411,7 @@ describe("cards raised by one of three tiles", () => {
     await act(async () => {
       textarea(first!)!.focus();
     });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
 
     await act(async () => {
@@ -1405,9 +1430,7 @@ describe("cards raised by one of three tiles", () => {
     expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
     // The card seats its first answer a frame after mounting; let that frame
     // pass, then the caret must still be where the user was typing.
-    await act(async () => {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     await expectUntouched(first!, third!);
 
@@ -1449,6 +1472,7 @@ describe("cards raised by one of three tiles", () => {
     expect(band(first!)).toBeNull();
     expect(band(third!)).toBeNull();
 
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     expect(composer(middle!)).toHaveAttribute("inert");
     await expectUntouched(first!, third!);

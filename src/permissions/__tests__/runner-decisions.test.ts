@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager } from "../permission-manager.js";
+import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
@@ -41,6 +43,22 @@ beforeAll(async () => {
   accountDirectory = join(directory, "accounts");
   mkdirSync(accountDirectory);
   accountDirectory = realpathSync.native(accountDirectory).replaceAll("\\", "/");
+  // These cases classify command text, so application roots only supply path
+  // identities. Prepare them once instead of rediscovering missing ancestors
+  // for every scalar. They stay immutable until the run-home teardown; the
+  // persistence cases below write their own files outside this fixture.
+  const home = aveHome();
+  const applicationRoots = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home")
+    .map((entry) => ({ entry, path: join(home, ...entry.segments) }));
+  const canonicalRoots = applicationRoots.map(({ path }) => canonicalizePathForMatch(path));
+  for (const { entry, path } of applicationRoots) {
+    if (entry.kind === "dir") mkdirSync(path, { recursive: true, mode: 0o700 });
+    else {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, path.endsWith(".json") ? "{}\n" : "", { flag: "wx", mode: 0o600 });
+    }
+  }
+  expect(applicationRoots.map(({ path }) => canonicalizePathForMatch(path))).toEqual(canonicalRoots);
   // These checks only read policy. Persist each dialect's grant once; the
   // saved-grant cases below still exercise mutation and reload independently.
   for (const dialect of DIALECTS) {

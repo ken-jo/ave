@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -28,7 +28,7 @@ import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
 import { mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
-  makeTestPluginRuntime,
+  makeTestPluginRuntime as constructTestPluginRuntime,
   makeTestPluginRuntimeFixture,
   makeTestTreeWritable,
   bindTestPluginRuntimeGeneration,
@@ -37,7 +37,7 @@ import {
   writeTestPluginRegistry,
 } from "./test-helpers.js";
 import { agentPluginsDocument, childProcessGate, patchAveFields, pluginDataDirIn } from "./test-helpers.js";
-import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
+import { buildManifestValidator, manifestDocumentSha256 } from "../runtime/manifest-validation.js";
 import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
@@ -45,6 +45,49 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { raceWithTimeout } from "../../shared/abortable-deadline.js";
+
+let manifestValidator: Awaited<ReturnType<typeof buildManifestValidator>>;
+const testRuntimes = new Set<PluginRuntime>();
+const retainedRuntimes = new Set<PluginRuntime>();
+
+beforeAll(async () => {
+  manifestValidator = await buildManifestValidator();
+});
+
+function prepareTestRuntime(runtime: PluginRuntime): PluginRuntime {
+  // All cases validate against the same schema. Validation and error reads are
+  // synchronous, so only its compiled code is shared, never a cached verdict.
+  (runtime as unknown as { manifestValidator: typeof manifestValidator }).manifestValidator = manifestValidator;
+  testRuntimes.add(runtime);
+  return runtime;
+}
+
+function makeTestPluginRuntime(...args: Parameters<typeof constructTestPluginRuntime>): PluginRuntime {
+  return prepareTestRuntime(constructTestPluginRuntime(...args));
+}
+
+async function stopTestRuntimes(): Promise<boolean> {
+  const runtimes = [...testRuntimes];
+  const results = await Promise.allSettled(runtimes.map((runtime) => runtime.stopAll()));
+  let stopped = true;
+  for (const [index, result] of results.entries()) {
+    const runtime = runtimes[index]!;
+    testRuntimes.delete(runtime);
+    if (result.status === "rejected" || result.value.unfinished.length > 0) {
+      retainedRuntimes.add(runtime);
+      stopped = false;
+    }
+  }
+  return stopped;
+}
+
+async function removeStoppedTestRoot(root: string): Promise<void> {
+  if (await stopTestRuntimes()) {
+    await rm(root, { recursive: true, force: true });
+  } else {
+    console.warn("Plugin runtime shutdown is incomplete; retained temporary directory: %s", root);
+  }
+}
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
@@ -55,11 +98,11 @@ function makeGenerationBoundRuntime(
   options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">
     & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">>,
 ): PluginRuntime {
-  return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+  return prepareTestRuntime(bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
     childEntryPath: pluginChildEntryPath(),
     ...options,
     createHostApi: createTestHostApiFactory(options.createHostApi),
-  }));
+  })));
 }
 
 /**
@@ -85,6 +128,70 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     artifactSha256: "d".repeat(64),
     installedAt: "2026-09-24T00:00:00.000Z",
   };
+  let requiredPlugin: {
+    runtime: PluginRuntime;
+    guard: PluginDeploymentGuard;
+    registryPath: string;
+    registry: string;
+  };
+  const sharedDisposers: Array<() => Promise<unknown>> = [];
+
+  beforeAll(async () => {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-required-policy-" });
+    sharedDisposers.push(() => rm(fixture.rootDir, { recursive: true, force: true }));
+    const { manifestPath } = await writeTestPlugin(fixture, {
+      id: "p-required",
+      entrySource: makeTestPluginEntrySource({ p_required_hello: JSON.stringify("hi-p-required") }),
+      manifest: {
+        tools: [{
+          name: "p_required_hello",
+          description: "p_required_hello tool",
+          inputSchema: { type: "object", properties: {} },
+          _meta: { ui: { visibility: ["model", "app"] } },
+        }],
+      },
+    });
+    await writeTestPluginRegistry(fixture, [
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
+    ]);
+    const guard = new PluginDeploymentGuard({
+      registryPath: fixture.registryPath,
+      pluginsRoot: fixture.pluginsRoot,
+      requiredInstalls: async () => required,
+    });
+    const runtime = makeTestPluginRuntime(fixture, { deploymentGuard: guard });
+    // These three policy checks neither stop the stateless child nor change
+    // its manifest. Its separate root lives until every consumer has finished.
+    testRuntimes.delete(runtime);
+    sharedDisposers.unshift(async () => {
+      const report = await runtime.stopAll();
+      if (report.unfinished.length > 0) {
+        retainedRuntimes.add(runtime);
+        throw new Error("Required-plugin fixture shutdown is incomplete; its temporary directory was retained");
+      }
+    });
+    required = [REQUIRED];
+    await runtime.startAll();
+    requiredPlugin = {
+      runtime, guard, registryPath: fixture.registryPath,
+      registry: await readFile(fixture.registryPath, "utf8"),
+    };
+  });
+
+  afterAll(async () => {
+    for (const dispose of sharedDisposers) await dispose();
+  });
+
+  async function resetRequiredPlugin() {
+    required = [REQUIRED];
+    vi.restoreAllMocks();
+    // Refused disables and an idempotent enable must leave this baseline
+    // intact. Detect a changed fixture instead of repairing it for the next case.
+    expect(await readFile(requiredPlugin.registryPath, "utf8")).toBe(requiredPlugin.registry);
+    expect(requiredPlugin.runtime.listPluginIds()).toEqual(["p-required"]);
+    expect(requiredPlugin.runtime.listToolNames()).toEqual(["p_required_hello"]);
+    return requiredPlugin;
+  }
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-runtime-"));
@@ -97,7 +204,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -245,13 +352,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("disable rejects a plugin the policy requires and leaves state unchanged", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const runtime = makeRuntime();
-    await runtime.startAll();
+    // The refusal is a nonmutating policy check over the same live child.
+    const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
       /required by policy \(source corp\); it cannot be disabled/,
@@ -323,13 +425,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   }
 
   it("setPluginEnabled(false) rejects a plugin the policy requires and leaves it enabled", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const { runtime } = makeRuntimeWithGuard();
-    await runtime.startAll();
+    // This second refusal observes the same unchanged manifest and policy.
+    const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
       /required by policy/,
@@ -377,13 +474,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("setPluginEnabled does not consult the disable guard on the enable direction", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const { runtime, guard } = makeRuntimeWithGuard();
-    await runtime.startAll();
+    // Enabling an already-enabled child does not replace its live generation.
+    const { runtime, guard } = await resetRequiredPlugin();
     const canDisable = vi.spyOn(guard, "canDisable");
 
     await runtime.setPluginEnabled("p-required", true);
@@ -1587,7 +1679,7 @@ describe("PluginRuntime registry trusted-path", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -1724,7 +1816,7 @@ describe("PluginRuntime addPlugin/removePlugin (US-A3)", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -3681,7 +3773,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -3884,6 +3976,8 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const written = await writeTestPlugin(fixture, { id: ID, entrySource });
     await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
     const runtime = makeTestPluginRuntime(fixture);
+    // This fixture's disposer owns its runtime and root together.
+    testRuntimes.delete(runtime);
     const internals = runtime as unknown as {
       ensureDataDir(...args: unknown[]): string;
       buildHostApiIncarnation(...args: unknown[]): unknown;
@@ -4157,6 +4251,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         return createNoopHostApiForTests(args[0], args[1], args[2]);
       },
     });
+    // Its receipt-backed disposer also joins coordinator retirement before removal.
+    testRuntimes.delete(runtime);
     const internals = runtime as unknown as Internals;
     // The shared fixture substitutes the root materializer; these cases need
     // the real receipt-backed generation root, so the class methods return.
