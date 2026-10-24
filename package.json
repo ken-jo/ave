@@ -114,7 +114,7 @@
     "dist:linux:fast": "node scripts/build-installers.mjs --linux --fast",
     "dist:win:fast": "node scripts/build-installers.mjs --win --fast",
     "release": "node scripts/release.mjs",
-    "build:windows-job": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1"
+    "build:windows-job": "node scripts/build-windows-job.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "~4.0.49",

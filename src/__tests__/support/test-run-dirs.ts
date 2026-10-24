@@ -13,6 +13,7 @@
  * owner cannot be read, parsed or checked is kept.
  */
 import { execFileSync } from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -131,7 +132,7 @@ function processStartIdentity(pid: number): string | undefined {
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToFileTimeUtc()`],
       // A pid with no process is an answer here, not news for the console.
-      { encoding: "utf8", timeout: 15_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", timeout: 15_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"], env: windowsPowerShellEnv() },
     ).trim();
     return `win32:${out}`;
   }

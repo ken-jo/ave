@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { windowsPowerShellEnv } from "../../src/shared/windows-powershell-env.js";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -60,7 +61,7 @@ function runRegistryQueryScript(overrides: Record<string, string>) {
       "-Command",
       REGISTRY_QUERY_SCRIPT,
     ],
-    { encoding: "utf8", env, timeout: 30_000, windowsHide: true },
+    { encoding: "utf8", env: windowsPowerShellEnv(env), timeout: 30_000, windowsHide: true },
   );
 }
 
@@ -94,12 +95,12 @@ function runPowerShellParser(source: string) {
     ],
     {
       encoding: "utf8",
-      env: {
+      env: windowsPowerShellEnv({
         ...process.env,
         AVE_POWERSHELL_SOURCE_BASE64: Buffer.from(source, "utf8").toString(
           "base64",
         ),
-      },
+      }),
       timeout: 30_000,
       windowsHide: true,
     },
@@ -447,7 +448,7 @@ describe("Windows NSIS installer smoke contracts", () => {
             "-Command",
             "[PSCustomObject]@{ path = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs) } | ConvertTo-Json -Compress",
           ],
-          { encoding: "utf8", timeout: 30_000, windowsHide: true },
+          { encoding: "utf8", timeout: 30_000, windowsHide: true, env: windowsPowerShellEnv() },
         );
         expect(programsResult.error).toBeUndefined();
         expect(
@@ -496,13 +497,13 @@ describe("Windows NSIS installer smoke contracts", () => {
           ],
           {
             encoding: "utf8",
-            env: {
+            env: windowsPowerShellEnv({
               ...process.env,
               AVE_FIXTURE_SHORTCUT_PATH: shortcutPath,
               AVE_FIXTURE_EXE: installedExe,
               AVE_FIXTURE_INSTALL_DIR: installDir,
               AVE_FIXTURE_DESCRIPTION: `${shortcutName}-foreign`,
-            },
+            }),
             timeout: 30_000,
             windowsHide: true,
           },
@@ -547,6 +548,7 @@ describe("Windows NSIS installer smoke contracts", () => {
             encoding: "utf8",
             timeout: 60_000,
             windowsHide: true,
+            env: windowsPowerShellEnv(),
           },
         );
         expect(cleanupResult.error).toBeUndefined();
@@ -1437,6 +1439,23 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(cleanupFunction).toContain("IfErrors ave_notification_arch_probe_failed");
     expect(cleanupFunction).toContain('IfFileExists "$R6"');
     expect(cleanupFunction).toContain('StrCmp $R4 "error"');
+    const clearModulePath = cleanupFunction.indexOf('SetEnvironmentVariableW(w "PSModulePath", p 0)');
+    const spawnCleanup = cleanupFunction.indexOf("nsExec::ExecToStack");
+    const restoreModulePath = cleanupFunction.indexOf('SetEnvironmentVariableW(w "PSModulePath", p R7)');
+    expect(cleanupFunction).toContain('GetEnvironmentVariableW(w "PSModulePath", p 0, i 0)');
+    expect(cleanupFunction).toContain('GetEnvironmentVariableW(w "PSModulePath", p R7, i R8)');
+    expect(cleanupFunction).toContain("System::Alloc $R9");
+    expect(cleanupFunction).not.toContain('ReadEnvStr $R7 "PSModulePath"');
+    expect(clearModulePath).toBeGreaterThan(0);
+    expect(spawnCleanup).toBeGreaterThan(clearModulePath);
+    expect(restoreModulePath).toBeGreaterThan(spawnCleanup);
+    expect(cleanupFunction).toContain("IntCmp $R8 0 ave_notification_module_env_failed");
+    expect(cleanupFunction).toContain("IntCmp $R8 0 ave_notification_module_env_restore_failed");
+    for (const label of ["ave_notification_module_env_failed:", "ave_notification_module_env_restore_failed:"]) {
+      const branch = cleanupFunction.slice(cleanupFunction.indexOf(label));
+      expect(branch.slice(0, branch.search(/\n\s*(Return|FunctionEnd)/))).toContain('StrCpy $R4 "1"');
+    }
+    expect(cleanupFunction).toContain("PSModulePath could not be restored after cleanup (cleanup exit $R4)");
     expect(cleanupFunction).toContain(
       "PowerShell executable is missing at $R6",
     );
@@ -2022,7 +2041,7 @@ describe("registry keys marked for deletion", () => {
         ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         {
           encoding: "utf8",
-          env: { ...process.env, AVE_TEST_KEY: keyPath },
+          env: windowsPowerShellEnv({ ...process.env, AVE_TEST_KEY: keyPath }),
           timeout: 30_000,
           windowsHide: true,
         },

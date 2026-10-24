@@ -1,4 +1,5 @@
 import type * as ChildProcessModule from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
@@ -7,7 +8,7 @@ import { tmpdir } from "node:os";
 import { vi } from "vitest";
 import type { CodexExecutableArtifact } from "../../main/codex-executable-artifact.js";
 // Import-free at runtime, so the mocked process module's factory may load it.
-import { WindowsAclHost, WindowsAclHostError, windowsAclTransportSeam, type WindowsAclTransport } from "../../main/windows-acl-host.js";
+import { WindowsAclHost, WindowsAclHostError, _setWindowsAclTransportForTest, type WindowsAclTransport } from "../../main/windows-acl-host.js";
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
@@ -112,7 +113,7 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     ].join("\n");
     execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { windowsHide: true, env: { ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot } });
+      { windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot }) });
     return;
   }
   vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
@@ -143,7 +144,7 @@ export const NATIVE_PROBE_HEAVY_TEST = process.platform === "win32" ? { timeout:
  * seam per request, so tests install it once, from their process-module mock.
  */
 export function installFixtureAclTransport(transport: WindowsAclTransport): void {
-  windowsAclTransportSeam.override = transport;
+  _setWindowsAclTransportForTest(transport);
 }
 
 /** The ACL host behind the installed masking transport; tests read it to tell reuse from a fresh start. */

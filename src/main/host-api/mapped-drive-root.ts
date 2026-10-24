@@ -30,6 +30,7 @@
  * spawn cost may cache for as long as they are prepared to be wrong.
  */
 import { execFile } from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -91,7 +92,7 @@ const defaultDeps: MappedDriveRootDeps = {
       "-NonInteractive",
       "-Command",
       script,
-    ]);
+    ], { env: windowsPowerShellEnv() });
     return stdout;
   },
 };

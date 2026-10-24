@@ -9,6 +9,7 @@
  * owned by another executable. A no-op off Windows.
  */
 import { spawnSync } from "node:child_process";
+import { windowsPowerShellEnv } from "./windows-powershell-env.mjs";
 
 const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -75,10 +76,10 @@ export function cleanupOwnedWindowsProtocolHandler(executable) {
     ],
     {
       encoding: "utf8",
-      env: {
+      env: windowsPowerShellEnv({
         ...process.env,
         AVE_PROTOCOL_OWNER_EXE: executable,
-      },
+      }),
       timeout: 30_000,
       windowsHide: true,
     },

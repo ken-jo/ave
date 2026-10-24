@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { constants, promises as fs, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
@@ -146,6 +147,9 @@ interface WindowsSecurityResult {
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
+  "$WarningPreference = 'SilentlyContinue'",
+  "$VerbosePreference = 'SilentlyContinue'",
+  "$InformationPreference = 'SilentlyContinue'",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "Add-Type -TypeDefinition @'",
   "using System;",
@@ -271,6 +275,7 @@ const WINDOWS_ACL_SCRIPT = [
   "$result = [PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage }",
   // One physical line per reply, written outside the pipeline.
   "[Console]::Out.WriteLine(([PSCustomObject]@{ id = $request.id; result = $result } | ConvertTo-Json -Depth 7 -Compress))",
+  "[Console]::Out.WriteLine(('END ' + [string]$request.id))",
   "[Console]::Out.Flush()",
   "}",
 ].join("\n");
@@ -563,7 +568,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
   const launch: WindowsAclHostLaunch = {
     command,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
-    options: { windowsHide: true, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` } },
+    options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
   };
   // Captured before queueing, so concurrent first lookups each resolve the
   // package and are compared with the cached outcome below.
@@ -573,7 +578,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
     paths: inspected.map((entry) => entry.path),
     capSids: [...capSids],
     skipPackage: skippedPackage !== undefined,
-  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBytes: aclOutputBytes(inspected) });
+  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(inspected) });
   const security = parseWindowsSecurity(result, skippedPackage);
   const desktopPackage = security.desktopPackage;
   if (cachedDesktopPackage && (cachedDesktopPackage.status !== desktopPackage.status
