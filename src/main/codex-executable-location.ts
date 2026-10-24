@@ -5,17 +5,24 @@ import { posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRecord } from "../shared/is-record.js";
 import { createLogger } from "../lib/logger.js";
+import { spawnManaged } from "./managed-child-processes.js";
+import {
+  WindowsAclHost,
+  WindowsAclHostError,
+  windowsAclTransportSeam,
+  type WindowsAclHostLaunch,
+  type WindowsAclLimits,
+  type WindowsAclRequest,
+} from "./windows-acl-host.js";
 
 const log = createLogger("codex-executable-location");
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
-// One probe receives at most this many paths, which keeps the path list well
-// inside a Windows environment variable and the output budget per path stable.
+// One request receives at most this many paths, which keeps each request line
+// bounded and the output budget per path stable.
 const ACL_BATCH_PATHS = 128;
 const ACL_BATCH_CHARS = 24 * 1024;
 const ACL_OUTPUT_PATHS = 16;
-const ACL_PATHS_ENV = "AVE_EXECUTABLE_ACL_PATHS";
-const ACL_CAP_SIDS_ENV = "AVE_ACL_CAP_SIDS";
 const trustedSystemSids = new Set([
   "S-1-5-18",
   "S-1-5-32-544",
@@ -44,6 +51,19 @@ let packageResolutionWarned = false;
 export function _resetDesktopPackageCacheForTest(): void {
   cachedDesktopPackage = undefined;
   packageResolutionWarned = false;
+}
+
+// Spawned through the managed-child tracker, so app quit kills a live host.
+const windowsAclHost = new WindowsAclHost((command, args, options) =>
+  spawnManaged(command, args, options, { label: "windows-acl-host" }));
+let windowsAclQueue: Promise<void> = Promise.resolve();
+let windowsAclRequestId = 0;
+
+/** Kill the ACL host and drop queued work, the way a restart would. */
+export function _resetWindowsAclHostForTest(): void {
+  windowsAclHost.discard();
+  windowsAclTransportSeam.override?.discard();
+  windowsAclQueue = Promise.resolve();
 }
 
 const MAX_CAP_SID_BYTES = 1024 * 1024;
@@ -119,9 +139,13 @@ interface WindowsSecurityResult {
 }
 
 // Open the path object itself so a reparse point's ACL cannot be replaced by
-// its target's ACL. The path list is data supplied through the environment.
+// its target's ACL. The host compiles the native type once, then answers one
+// request line at a time. Each request re-reads every input below; nothing is
+// carried between requests. Paths and SIDs are request data decoded by the
+// JSON parser, never script text. Any error ends the host, which fails closed.
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "Add-Type -TypeDefinition @'",
   "using System;",
@@ -163,9 +187,11 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "}",
   "'@",
+  "while ($null -ne ($line = [Console]::In.ReadLine())) {",
+  "$request = ConvertFrom-Json -InputObject $line",
   // Direct assignment preserves the decoded array without nesting it inside
-  // the single pipeline object returned by the system command's JSON parser.
-  "$targets = ConvertFrom-Json -InputObject $env:AVE_EXECUTABLE_ACL_PATHS",
+  // a single pipeline object.
+  "$targets = $request.paths",
   "$paths = @($targets | ForEach-Object {",
   "  $target = [string]$_",
   "  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new([ExecutablePathSecurity]::Read($target), 0)",
@@ -207,7 +233,7 @@ const WINDOWS_ACL_SCRIPT = [
   "    }",
   "  } catch { $sandboxGroup = $null }",
   "}",
-  "$capCandidates = ConvertFrom-Json -InputObject $env:AVE_ACL_CAP_SIDS",
+  "$capCandidates = $request.capSids",
   "$capSidAccounts = @($capCandidates | ForEach-Object {",
   "  $capSid = [System.Security.Principal.SecurityIdentifier]::new([string]$_)",
   "  $resolvesToAccount = $true",
@@ -216,7 +242,7 @@ const WINDOWS_ACL_SCRIPT = [
   "  [PSCustomObject]@{ sid = $capSid.Value; resolvesToAccount = $resolvesToAccount }",
   "})",
   `$desktopPackageIdentity = @{ familyName = '${CLAUDE_DESKTOP_PACKAGE.familyName}'; publisherId = '${CLAUDE_DESKTOP_PACKAGE.publisherId}' }`,
-  "if ($env:AVE_ACL_DESKTOP_PACKAGE -ceq 'skip') {",
+  "if ($request.skipPackage -is [bool] -and $request.skipPackage) {",
   "  $desktopPackage = @{ status = 'skipped' }",
   "} else {",
   "$desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' }",
@@ -242,8 +268,13 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "} catch { $desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' } }",
   "}",
-  "[PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage } | ConvertTo-Json -Depth 6 -Compress",
+  "$result = [PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage }",
+  // One physical line per reply, written outside the pipeline.
+  "[Console]::Out.WriteLine(([PSCustomObject]@{ id = $request.id; result = $result } | ConvertTo-Json -Depth 7 -Compress))",
+  "[Console]::Out.Flush()",
+  "}",
 ].join("\n");
+const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64");
 
 function assertAbsolutePath(candidate: string): void {
   if (/[\u0000-\u001f\u007f]/.test(candidate)) {
@@ -401,13 +432,89 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
   if (seen.size !== inspected.length) throw new CodexExecutableLocationError("Executable access rules are incomplete");
 }
 
-function parseWindowsSecurity(stdout: string, skippedPackage?: DesktopPackagePrincipals): WindowsSecurityResult {
-  let value: unknown;
+const WINDOWS_ACL_RESULT_KEYS = new Set(["currentSid", "machineDomainSid", "capSidAccounts", "paths", "sandboxGroup", "desktopPackage"]);
+const WINDOWS_ACL_PATH_KEYS = new Set(["path", "owner", "daclPresent", "entries"]);
+const WINDOWS_ACL_GROUP_KEYS = new Set(["name", "description", "sid", "members"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isSandboxGroupShape(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, WINDOWS_ACL_GROUP_KEYS)) return false;
+  const group = value;
+  return ["name", "description", "sid"].every((key) => group[key] === undefined || typeof group[key] === "string")
+    && (group.members === undefined || (Array.isArray(group.members) && group.members.every((member) => typeof member === "string")));
+}
+
+/**
+ * Strict reply framing, checked before parseWindowsSecurity reads the result:
+ * exactly `{ id, result }` carrying the request's id, and a result whose keys
+ * and value types are those the host script writes. Value rules, and members
+ * a reply leaves out, stay with the parser and the trust rules as before.
+ */
+function validateWindowsAclReply(line: string, id: number): unknown {
+  let reply: unknown;
   try {
-    value = JSON.parse(stdout.replace(/^\uFEFF/, ""));
+    reply = JSON.parse(line.replace(/^\uFEFF/, ""));
   } catch {
     throw new CodexExecutableLocationError("Executable access rules could not be read");
   }
+  if (!isRecord(reply) || Object.keys(reply).length !== 2 || reply.id !== id || !isRecord(reply.result)) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  const result = reply.result;
+  if (!hasOnlyKeys(result, WINDOWS_ACL_RESULT_KEYS) || typeof result.currentSid !== "string" || !Array.isArray(result.paths)
+      || !isRecord(result.desktopPackage)
+      || (result.machineDomainSid !== undefined && result.machineDomainSid !== null && typeof result.machineDomainSid !== "string")
+      || (result.capSidAccounts !== undefined && !(Array.isArray(result.capSidAccounts) && result.capSidAccounts.every((account) =>
+        isRecord(account) && Object.keys(account).length === 2
+          && typeof account.sid === "string" && typeof account.resolvesToAccount === "boolean")))
+      || (result.sandboxGroup !== undefined && result.sandboxGroup !== null && !isSandboxGroupShape(result.sandboxGroup))) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  for (const path of result.paths) {
+    if (!isRecord(path) || !hasOnlyKeys(path, WINDOWS_ACL_PATH_KEYS) || typeof path.path !== "string"
+        || typeof path.owner !== "string" || typeof path.daclPresent !== "boolean" || !Array.isArray(path.entries)) {
+      throw new CodexExecutableLocationError("Executable access rules are invalid");
+    }
+    for (const entry of path.entries) {
+      // Entry failures keep the parser's message for the same refusal.
+      if (!isRecord(entry) || Object.keys(entry).length !== 4 || typeof entry.sid !== "string" || typeof entry.mask !== "number"
+          || typeof entry.flags !== "number" || typeof entry.type !== "number") {
+        throw new CodexExecutableLocationError("Executable access rules are unsupported");
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Serialize every request through one queue, so the reply read is always the
+ * one for the request in flight. Any failure discards the host before the
+ * next request runs, and that request starts a fresh one; nothing is retried.
+ * Callers keep today's error paths: a host failure (timeout, oversize, exit,
+ * error output, extra output, failed write) propagates unchanged, as a failed
+ * probe process did; a reply that is not JSON "could not be read"; a wrong id
+ * or shape is "invalid".
+ */
+function exchangeWindowsAcl(request: WindowsAclRequest, launch: WindowsAclHostLaunch, limits: WindowsAclLimits): Promise<unknown> {
+  const exchange = windowsAclQueue.then(async () => {
+    const transport = windowsAclTransportSeam.override ?? windowsAclHost;
+    try {
+      const line = await transport.request(request, launch, limits);
+      if (Buffer.byteLength(line) > limits.maxBytes) throw new WindowsAclHostError("Windows ACL host reply exceeds its limit");
+      return validateWindowsAclReply(line, request.id);
+    } catch (error) {
+      transport.discard();
+      throw error;
+    }
+  });
+  windowsAclQueue = exchange.then(() => undefined, () => undefined);
+  return exchange;
+}
+
+function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePrincipals): WindowsSecurityResult {
   if (!isRecord(value) || typeof value.currentSid !== "string" || !SID_PATTERN.test(value.currentSid)
       || !Array.isArray(value.paths)) {
     throw new CodexExecutableLocationError("Executable access rules are invalid");
@@ -451,24 +558,23 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
   const systemRoot = win32.normalize(root);
   const system32 = win32.join(systemRoot, "System32");
   const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
+  // The host process stays as fixed as the per-probe process was. Inputs that
+  // travelled in its environment travel in each request line instead.
+  const launch: WindowsAclHostLaunch = {
+    command,
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
+    options: { windowsHide: true, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` } },
+  };
+  // Captured before queueing, so concurrent first lookups each resolve the
+  // package and are compared with the cached outcome below.
   const skippedPackage = cachedDesktopPackage;
-  const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(command, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64")], {
-      windowsHide: true,
-      encoding: "utf8",
-      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-      maxBuffer: aclOutputBytes(inspected),
-      env: {
-        SystemRoot: systemRoot,
-        WINDIR: systemRoot,
-        PATH: `${system32};${systemRoot}`,
-        [ACL_CAP_SIDS_ENV]: JSON.stringify(capSids),
-        ...(skippedPackage ? { AVE_ACL_DESKTOP_PACKAGE: "skip" } : {}),
-        [ACL_PATHS_ENV]: JSON.stringify(inspected.map((entry) => entry.path)),
-      },
-    }, (error, output) => error ? reject(error) : resolve(output));
-  });
-  const security = parseWindowsSecurity(stdout, skippedPackage);
+  const result = await exchangeWindowsAcl({
+    id: ++windowsAclRequestId,
+    paths: inspected.map((entry) => entry.path),
+    capSids: [...capSids],
+    skipPackage: skippedPackage !== undefined,
+  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBytes: aclOutputBytes(inspected) });
+  const security = parseWindowsSecurity(result, skippedPackage);
   const desktopPackage = security.desktopPackage;
   if (cachedDesktopPackage && (cachedDesktopPackage.status !== desktopPackage.status
     || (cachedDesktopPackage.status === "resolved" && desktopPackage.status === "resolved"
