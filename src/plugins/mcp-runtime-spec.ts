@@ -123,5 +123,9 @@ function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
   if (typeof raw.clientRegistration === "string" && CLIENT_REGISTRATION_MODES.has(raw.clientRegistration)) {
     out.clientRegistration = raw.clientRegistration as McpOAuthMetadata["clientRegistration"];
   }
+  // Kept verbatim (trimmed): an invalid value must reach the session and fail clearly, not vanish here.
+  if (typeof raw.clientId === "string" && raw.clientId.trim()) {
+    out.clientId = raw.clientId.trim();
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }

@@ -1,0 +1,10 @@
+{
+  "client_id": "https://ave.agent-connector.ai/oauth/mcp-client.json",
+  "client_name": "Ave",
+  "client_uri": "https://ave.agent-connector.ai",
+  "redirect_uris": ["http://127.0.0.1"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "application_type": "native"
+}
