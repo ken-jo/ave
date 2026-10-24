@@ -1,6 +1,7 @@
-const { mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { join, relative, resolve, sep } = require("node:path");
 const { deflateSync } = require("node:zlib");
+const { normalizedImage } = require("./lib/normalized-image.cjs");
 
 const root = resolve(__dirname, "..");
 const buildDir = join(root, "build");
@@ -556,8 +557,20 @@ function encodeIco(sourceRgba, sourceSize, sizes) {
  */
 const emitted = [];
 
+/**
+ * Keep an existing image that already depicts what the generator drew.
+ *
+ * `deflate` output depends on the zlib the runtime links, so a checkout whose
+ * Node differs from the one that produced the committed icons would rewrite
+ * them with new bytes but the same pixels. check-generated-assets accepts that
+ * as encoder freedom, but the rewrite still dirties the tree, and the pre-push
+ * hook refuses a dirty tree after its build. Only a change to what the image
+ * shows is written.
+ */
 function emit(path, contents) {
-  writeFileSync(path, contents);
+  const before = existsSync(path) ? normalizedImage(readFileSync(path)) : null;
+  const after = before === null ? null : normalizedImage(contents);
+  if (before === null || after === null || !before.equals(after)) writeFileSync(path, contents);
   emitted.push(path);
 }
 

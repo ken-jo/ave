@@ -53,7 +53,7 @@
     "dev": "node scripts/run-electron-dev.mjs",
     "plugins:list": "tsx scripts/plugins-cli.ts list",
     "cli": "tsx scripts/ave-cli.ts",
-    "test:prepare": "bun run build:icons",
+    "test:prepare": "bun run build:icons && node scripts/prepare-windows-job.mjs",
     "test:vitest": "node scripts/run-vitest-under-electron.mjs",
     "test": "bun run test:prepare && bun run test:vitest -- run",
     "test:a2a": "bun run check:a2a-p4-5-contract && bun run test:prepare && bun run test:vitest -- run a2a subagent parent-child-directive agent-send",

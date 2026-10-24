@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // Every Playwright Electron launch in the e2e and screenshot suites goes
@@ -43,7 +43,9 @@ describe("e2e Electron launches", () => {
 
   it("all go through the harness launcher", () => {
     const direct = SUITES.flatMap((suite) => sourceFiles(resolve(ROOT, suite)))
-      .map((path) => relative(ROOT, path))
+      // Compared in the posix spelling HARNESS uses, so Windows's `\` paths
+      // still exclude the harness itself.
+      .map((path) => relative(ROOT, path).split(sep).join("/"))
       .filter((path) => path !== HARNESS)
       .filter((path) => DIRECT_LAUNCH.test(readFileSync(path, "utf8")));
     expect(direct).toEqual([]);

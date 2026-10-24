@@ -212,7 +212,9 @@ it.runIf(process.platform !== "win32")("refuses a mount whose alias identity can
   })).toThrow(/identity/);
 });
 
-it("remounts a mask that is the final mount at its target", () => {
+// The hardener runs only on Linux and resolves bwrap targets as host paths;
+// on Win32 a rooted /tmp/example resolves onto a drive, which no bwrap sees.
+it.runIf(process.platform !== "win32")("remounts a mask that is the final mount at its target", () => {
   const command = "bwrap --tmpfs /tmp/example --bind /tmp/example /tmp/example --tmpfs /tmp/example -- /bin/sh -c 'true'";
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} });
   expect(wrapped.argv[2]).toContain("'--remount-ro' '/tmp/example' --");

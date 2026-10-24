@@ -14,7 +14,7 @@ const REPO = resolve(__dirname, "../../../..");
 const MODULES = [
   ...readdirSync(join(REPO, "src/main/browser"))
     .filter((name) => name.endsWith(".ts"))
-    .map((name) => join("src/main/browser", name)),
+    .map((name) => `src/main/browser/${name}`),
   "src/tools/browser-tools.ts",
   "src/tools/browser-tools-execute.ts",
 ];

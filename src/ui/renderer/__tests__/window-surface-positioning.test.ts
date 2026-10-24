@@ -22,7 +22,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RENDERER_DIR = resolve(fileURLToPath(import.meta.url), "../..");
@@ -74,7 +74,7 @@ function offenders(pattern: RegExp[]): string[] {
   for (const file of listSourceFiles(RENDERER_DIR)) {
     const source = readFileSync(file, "utf8");
     for (const line of source.split("\n")) {
-      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file));
+      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file).split(sep).join("/"));
     }
   }
   return [...hits].sort();

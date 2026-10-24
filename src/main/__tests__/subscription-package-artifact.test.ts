@@ -1,16 +1,29 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
+const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal());
+  // Counts the access-rule probes: the Windows ACL query or the macOS metadata listing.
+  const execFile = ((...args: unknown[]) => {
+    const [file, , options] = args as [string, unknown, { env?: NodeJS.ProcessEnv } | undefined];
+    if (typeof options?.env?.AVE_EXECUTABLE_ACL_PATHS === "string" || file === "/bin/ls") accessRuleProbes.count++;
+    return (actual.execFile as (...rest: unknown[]) => unknown)(...args);
+  }) as typeof actual.execFile;
+  return { ...actual, execFile };
+});
+
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function writePackage(root: string, name: string, files: Record<string, string>, metadata: Record<string, unknown> = {}): string {
@@ -201,6 +214,21 @@ describe("sealed subscription package artifacts", () => {
     symlinkSync(outside, join(fixture.packageRoot, "linked.cjs"));
     await expect(copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory))
       .rejects.toThrow("contains a symbolic link");
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("admits each verify through one access-rule probe regardless of file count", async () => {
+    const counts: number[] = [];
+    for (const size of [1, 8]) {
+      const fixture = fixtureForSnapshot();
+      writePackage(fixture.packageRoot, "fixture-entry", Object.fromEntries(Array.from({ length: size }, (_, index) =>
+        [join("lib", `part-${index}`, "index.cjs"), `module.exports = ${index};
+`])));
+      const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+      accessRuleProbes.count = 0;
+      await artifact.verify();
+      counts.push(accessRuleProbes.count);
+    }
+    expect(counts).toEqual([1, 1]);
   });
 });
 

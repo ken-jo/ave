@@ -1,9 +1,11 @@
 name: CI
-# Pull requests (to main and to integration/* category branches) run the
-# affected Vitest tests unless the selection cannot be trusted. A category
-# merge (integration/* into main) and every other event run the full suite
-# with its coverage gate: a push to main after a merge, a release tag, the
-# nightly schedule and a manual dispatch. See
+# Pull requests into integration/* always run the best traced Vitest selection,
+# never a whole-suite fallback. Other pull requests run affected tests unless
+# selection is untrusted. A category merge (integration/* into main) and every
+# non-PR event run the full suite: a
+# push to main after a merge, a release tag, the nightly schedule and a manual
+# dispatch. Coverage is periodic: only the nightly schedule and a manual
+# dispatch instrument it and enforce its thresholds. See
 # scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
 on:
   pull_request:
@@ -148,17 +150,22 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
-      - name: Run the suite and its coverage gate
+      - name: Run the suite (coverage gate on nightly and dispatch)
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # `test:ci` (scripts/run-ci-suite.mjs) runs `check:test-coverage`, the
-        # full suite and every global coverage threshold, on every event but a
-        # pull request, and on a pull request whose selection it cannot trust.
-        # Otherwise it runs the pull request's affected tests plus the
-        # must-run set (config/ci-must-run-tests.json) without coverage; the
-        # step summary names the mode and the reason.
+        # `test:ci` (scripts/run-ci-suite.mjs) runs the full suite on every
+        # non-PR event and category merge (integration/* into main). PRs into
+        # integration/* always keep the best traced selection plus the nonempty
+        # must-run set (config/ci-must-run-tests.json), even when discovery fails
+        # or selection is untrusted; whole-suite checking waits for the category
+        # merge. An unresolved integration-base PR diff fails before selection.
+        # Other PR bases keep the untrusted -> full rule. Local pre-push is
+        # unchanged. Coverage is periodic:
+        # only the nightly schedule and a manual dispatch run
+        # `check:test-coverage` (instrumentation and every global threshold).
+        # The step summary names the mode and the reason.
         #
         # `check:test-coverage`, not `check:test-quality`: that composite runs
         # `check:test-duplicates` first, so a duplicated test helper would end
@@ -402,6 +409,10 @@ jobs:
           src/main/__tests__/windows-job-launcher.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
+          src/lib/__tests__/admin-policy-file.test.ts
+          src/tools/__tests__/file-read-core.test.ts
+          src/tools/__tests__/shell-path-policy.test.ts
+          src/tools/__tests__/prepared-shell-invocation.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts

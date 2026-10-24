@@ -7,13 +7,14 @@
  * branch is unknown.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { checkSharedHistory, parseRemoteDefaultHead } from "../../scripts/hooks/pre-push-shared-history.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const HOOK = resolve("scripts/hooks/run-local-checks.mjs");
 const ZERO = "0".repeat(40);
@@ -40,7 +41,9 @@ function sandbox() {
     return git(dir, ["rev-parse", "HEAD"]);
   };
   const update = (localSha: string, ref = "refs/heads/feat/x") => ({ localRef: ref, localSha, remoteRef: ref, remoteSha: ZERO });
-  return { root, env, git, run, init, commit, update, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  // git writes loose objects read-only, and on Windows the synchronous rmSync
+  // refuses read-only files; the async removal clears the attribute.
+  return { root, env, git, run, init, commit, update, cleanup: () => cleanupTmpDir(root) };
 }
 
 describe("parseRemoteDefaultHead", () => {
@@ -65,7 +68,7 @@ describe("parseRemoteDefaultHead", () => {
 });
 
 describe("checkSharedHistory against real repositories", () => {
-  it("passes a branch cut from the remote's main, fetching a tip the clone does not have yet", () => {
+  it("passes a branch cut from the remote's main, fetching a tip the clone does not have yet", async () => {
     const s = sandbox();
     try {
       const remote = join(s.root, "remote.git");
@@ -93,10 +96,10 @@ describe("checkSharedHistory against real repositories", () => {
         kind: "ok",
         message: `every pushed commit shares history with the remote's refs/heads/main (${moved.slice(0, 12)})`,
       });
-    } finally { s.cleanup(); }
+    } finally { await s.cleanup(); }
   });
 
-  it("refuses a branch from an unrelated history and names it", () => {
+  it("refuses a branch from an unrelated history and names it", async () => {
     const s = sandbox();
     try {
       const remote = join(s.root, "remote.git");
@@ -120,10 +123,10 @@ describe("checkSharedHistory against real repositories", () => {
       );
       expect(verdict.message).toContain(`  refs/heads/feat/x (${local.slice(0, 12)})`);
       expect(verdict.message).toContain("Clone the repository again");
-    } finally { s.cleanup(); }
+    } finally { await s.cleanup(); }
   });
 
-  it("skips a remote that has no default branch yet", () => {
+  it("skips a remote that has no default branch yet", async () => {
     const s = sandbox();
     try {
       const remote = join(s.root, "remote.git");
@@ -136,10 +139,10 @@ describe("checkSharedHistory against real repositories", () => {
         git: s.run(writer), fetchGit: s.run(writer),
       });
       expect(verdict).toEqual({ kind: "skip", message: "the remote has no default branch yet (a fresh repository)" });
-    } finally { s.cleanup(); }
+    } finally { await s.cleanup(); }
   });
 
-  it("falls back to the local tracking ref when the remote cannot be listed", () => {
+  it("falls back to the local tracking ref when the remote cannot be listed", async () => {
     const s = sandbox();
     try {
       const writer = join(s.root, "writer");
@@ -155,7 +158,7 @@ describe("checkSharedHistory against real repositories", () => {
         kind: "ok",
         message: `every pushed commit shares history with refs/remotes/origin/main (${tracked.slice(0, 12)})`,
       });
-    } finally { s.cleanup(); }
+    } finally { await s.cleanup(); }
   });
 });
 
@@ -200,7 +203,7 @@ describe("checkSharedHistory edge cases", () => {
 });
 
 describe("pre-push runner", () => {
-  it("refuses an unrelated-history push before running any check", () => {
+  it("refuses an unrelated-history push before running any check", async () => {
     const s = sandbox();
     try {
       const remote = join(s.root, "remote.git");
@@ -222,6 +225,6 @@ describe("pre-push runner", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("[PRE_PUSH_UNRELATED_HISTORY]");
       expect(result.stdout).not.toContain("[checks] stage=pre-push");
-    } finally { s.cleanup(); }
+    } finally { await s.cleanup(); }
   });
 });
