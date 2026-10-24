@@ -522,28 +522,22 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
 
 /** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
-const bareRepositoryCleanups = new Map<string, { cleanup?: () => void; failure?: string }>();
-const MAX_RETAINED_CLEANUP_FAILURES = 128;
+const bareRepositoryCleanups = new Map<string, { cleanup: () => void; complete: (failure: string | undefined) => void }>();
 
 // A released token's listener refuses every further connection from then on.
 // On macOS the ended port stays bound for a quarantine, longer while the
 // invocation's process group still has a process in it.
 onEgressInvocationReleased((token, { processGroup }) => {
   const pending = bareRepositoryCleanups.get(token);
-  if (pending?.cleanup) {
-    const cleanup = pending.cleanup;
-    // Retain only a bounded diagnostic after release, never a filesystem
-    // snapshot closure for a terminal/worker that has no result annotator.
-    delete pending.cleanup;
+  if (pending) {
+    bareRepositoryCleanups.delete(token);
+    let failure: string | undefined;
     try {
-      cleanup();
-      bareRepositoryCleanups.delete(token);
+      pending.cleanup();
     } catch (error) {
-      pending.failure = `Sandbox bare-repository cleanup failed: ${errorMessage(error)}. Repository entries may remain; inspect them before running independent Git.`;
-      log.error(pending.failure);
-      const failures = [...bareRepositoryCleanups].filter(([, record]) => record.failure !== undefined);
-      for (const [expired] of failures.slice(0, -MAX_RETAINED_CLEANUP_FAILURES)) bareRepositoryCleanups.delete(expired);
-    }
+      failure = `Sandbox bare-repository cleanup failed: ${errorMessage(error)}. Repository entries may remain; inspect them before running independent Git.`;
+      log.error(failure);
+    } finally { pending.complete(failure); }
   }
   loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
 });
@@ -946,6 +940,16 @@ export function buildPerCommandSandboxCustomConfig(
 export interface SandboxWrapResult {
   readonly argv: string[];
   readonly env: NodeJS.ProcessEnv;
+  /** Invocation-owned post-exit cleanup outcome; retained by its result owner. */
+  readonly cleanupCompleted?: Promise<string | undefined>;
+}
+
+function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: (() => void) | undefined): SandboxWrapResult {
+  if (!cleanup) return wrapped;
+  const cleanupCompleted = new Promise<string | undefined>(complete => {
+    bareRepositoryCleanups.set(commandId, { cleanup, complete });
+  });
+  return { ...wrapped, cleanupCompleted };
 }
 
 /** Read re-allows remain plain spellings; write-deny literals retain exact paths. */
@@ -1920,8 +1924,7 @@ export async function wrapToolCommand(
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  if (cleanupBare) bareRepositoryCleanups.set(options.commandId, { cleanup: cleanupBare });
-  return result;
+  return trackBareRepositoryCleanup(result, options.commandId, cleanupBare);
 }
 
 
@@ -2203,8 +2206,7 @@ async function wrapLongLivedCommand(
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  if (cleanupBare) bareRepositoryCleanups.set(options.commandId, { cleanup: cleanupBare });
-  return result;
+  return trackBareRepositoryCleanup(result, options.commandId, cleanupBare);
 }
 
 /**
@@ -2586,16 +2588,9 @@ export async function annotateWithSandboxViolations(
   commandId: string,
   text: string,
   command?: string,
-  onCleanupFailure?: (reason: string) => void,
 ): Promise<string> {
   const SandboxManager = await loadSandboxManager();
-  let annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
-  const cleanupFailure = bareRepositoryCleanups.get(commandId)?.failure;
-  if (cleanupFailure) {
-    annotated += `\n${cleanupFailure}`;
-    onCleanupFailure?.(cleanupFailure);
-    bareRepositoryCleanups.delete(commandId);
-  }
+  const annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
   if (annotated.includes("`.git` metadata is protected; rerun outside the sandbox after approval")) return annotated;
   const deniedMetadata = /\.git(?:[\\/\s:'"`]|$)/iu.test(annotated)
     && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format)/iu.test(annotated);

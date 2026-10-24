@@ -73,16 +73,28 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
     }
 
     it.runIf(route === "sandbox")("reports cleanup failure despite an exit-zero child", async () => {
-      const annotate = vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text, _command, onCleanupFailure) => {
-        onCleanupFailure?.("cleanup refused");
-        return `${text}\ncleanup refused`;
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, cleanupCompleted: Promise.resolve("cleanup refused"),
       });
-      try {
-        const f = await start();
-        close(f.child, 0, null);
-        await vi.advanceTimersByTimeAsync(0);
-        expect(await f.pending).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
-      } finally { annotate.mockRestore(); }
+      const f = await start();
+      close(f.child, 0, null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await f.pending).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
+    });
+
+    it.runIf(route === "sandbox").each(["timeout", "cancel"] as const)("settles %s while post-exit cleanup remains pending", async stop => {
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, cleanupCompleted: new Promise<string | undefined>(() => {}),
+      });
+      const f = await start();
+      Object.assign(f.child, { pid: 999_999, exitCode: null, signalCode: null });
+      if (stop === "cancel") f.controller.abort();
+      else await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await f.pending;
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
+      expect(result.output).toContain("repository cleanup is pending");
+      close(f.child, null, "SIGKILL");
     });
 
     it.each(["close", "error", "timeout", "cancel"] as const)("awaits one artifact publication on %s", async (cause) => {

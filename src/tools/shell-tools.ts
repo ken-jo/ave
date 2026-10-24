@@ -56,6 +56,7 @@ import {
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
+  type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
 import {
   getHostShellExecutionPlan,
@@ -2005,7 +2006,7 @@ export async function spawnWithSandbox(
     { kind: "shell", toolName: "bash", toolUseId: preparedShellToolUseId(prepared), context: ambientShellEgressContext() },
     { abortSignal: wrapAbortSignal },
   );
-  let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
+  let wrapped: SandboxWrapResult;
   try {
     const binShell = shell.cmd;
     wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
@@ -2104,10 +2105,14 @@ export async function spawnWithSandbox(
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
-      let sandboxCleanupFailed = false;
-      const formatted = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+      const cleanupFailure = wrapped.cleanupCompleted && !lifecycleCleaned
+        ? "Sandbox process termination is unconfirmed; repository cleanup is pending."
+        : await wrapped.cleanupCompleted;
+      const sandboxCleanupFailed = cleanupFailure !== undefined;
+      const annotated = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )), command, () => { sandboxCleanupFailed = true; });
+      )), command);
+      const formatted = cleanupFailure ? `${annotated}\n${cleanupFailure}` : annotated;
       if (lifetime.timedOut) {
         resolveResult({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
@@ -3112,7 +3117,7 @@ async function spawnPowerShellWithSandbox(
     { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
     { abortSignal: wrapAbortSignal },
   );
-  let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
+  let wrapped: SandboxWrapResult;
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
       filesystem,
@@ -3208,10 +3213,14 @@ async function spawnPowerShellWithSandbox(
       if (settled) return;
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-      let sandboxCleanupFailed = false;
-      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
+      const cleanupFailure = wrapped.cleanupCompleted && !lifecycleCleaned
+        ? "Sandbox process termination is unconfirmed; repository cleanup is pending."
+        : await wrapped.cleanupCompleted;
+      const sandboxCleanupFailed = cleanupFailure !== undefined;
+      const annotated = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )), command, () => { sandboxCleanupFailed = true; });
+      )), command);
+      const output = cleanupFailure ? `${annotated}\n${cleanupFailure}` : annotated;
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`

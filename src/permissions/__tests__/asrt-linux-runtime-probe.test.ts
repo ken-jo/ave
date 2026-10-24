@@ -27,7 +27,6 @@ const h = vi.hoisted(() => ({
   cleanupAfterCommand: vi.fn(),
   reset: vi.fn(),
   spawn: vi.fn(),
-  annotate: vi.fn((_commandId: string, text: string) => text),
 }));
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
@@ -38,7 +37,6 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
-    annotateStderrWithSandboxFailures: h.annotate,
   },
 }));
 
@@ -47,7 +45,6 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
-  annotateWithSandboxViolations,
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
   getDefaultSensitiveWriteDenyPaths,
@@ -136,11 +133,15 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     });
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" } });
-    await wrapToolCommand("true", { commandId: invocation.token });
+    const wrapped = await wrapToolCommand("true", { commandId: invocation.token });
     invocation.release();
-    const failure = vi.fn();
-    const output = await annotateWithSandboxViolations(invocation.token, "command completed", "true", failure);
-    expect(failure).toHaveBeenCalledOnce();
+    // Later ended terminals cannot evict an unconsumed shell outcome.
+    for (let index = 0; index < 129; index++) {
+      const terminal = openEgressInvocation({ kind: "terminal", tabId: `terminal-${index}` });
+      await wrapWorkerCommand("true", { commandId: terminal.token });
+      terminal.release();
+    }
+    const output = await wrapped.cleanupCompleted;
     expect(output).toContain("cleanup permission refused");
     expect(output).toContain("inspect them before running independent Git");
   });
