@@ -17,6 +17,7 @@
  * assert there.
  */
 import { describe, it, expect } from "vitest";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -68,7 +69,7 @@ async function holdForeignLock(file: string, holdMs: number): Promise<ChildProce
       `$f=[System.IO.File]::Open('${file}','Open','ReadWrite','None');`
         + ` Start-Sleep -Milliseconds ${holdMs}; $f.Close()`,
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", env: windowsPowerShellEnv() },
   );
   const deadline = Date.now() + 10_000;
   for (;;) {

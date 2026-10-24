@@ -10,11 +10,22 @@ import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } fro
 
 const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
-  const actual = (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal());
-  // Counts the access-rule probes: the Windows ACL query or the macOS metadata listing.
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { installFixtureAclTransport, maskFixtureAncestorAclTransport } = await import("../../__tests__/support/native-executable.js");
+  // Counts the access-rule probes: the Windows ACL host request or the macOS metadata listing.
+  if (process.platform === "win32") {
+    const masked = maskFixtureAncestorAclTransport(actual.spawn);
+    installFixtureAclTransport({
+      request: (...args) => {
+        accessRuleProbes.count++;
+        return masked.request(...args);
+      },
+      discard: () => masked.discard(),
+    });
+  }
   const execFile = ((...args: unknown[]) => {
-    const [file, , options] = args as [string, unknown, { env?: NodeJS.ProcessEnv } | undefined];
-    if (typeof options?.env?.AVE_EXECUTABLE_ACL_PATHS === "string" || file === "/bin/ls") accessRuleProbes.count++;
+    const [file] = args as [string];
+    if (file === "/bin/ls") accessRuleProbes.count++;
     return (actual.execFile as (...rest: unknown[]) => unknown)(...args);
   }) as typeof actual.execFile;
   return { ...actual, execFile };
