@@ -146,8 +146,14 @@ describe("env-surface scan", () => {
       const SHELL = 'printf "%s" "$AVE_POSIX_READ"';
       execFileSync("child", [SCRIPT, SHELL], { env: { ...process.env, AVE_ENV_WRITE_ONLY: "1", "AVE_QUOTED_WRITE": "2" } });
     `);
+    // A quoted computed key, in a file with no dynamic or interpolated lookup.
+    write("computed.ts", `
+      spawn("child", [], { env: { ["AVE_COMPUTED_WRITE"]: "1", [ 'AVE_COMPUTED_SPACED' ] : "2" } });
+    `);
 
     expect([...scanEnvReads(dir).keys()].sort()).toEqual([
+      "AVE_COMPUTED_SPACED",
+      "AVE_COMPUTED_WRITE",
       "AVE_DOTNET_READ",
       "AVE_ENV_WRITE_ONLY",
       "AVE_INTERPOLATED_TARGET",

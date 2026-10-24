@@ -160,9 +160,9 @@ describe("buildSafeChildEnv — allowlist forwarding", () => {
 
 describe("buildSafeChildEnv — extra merging", () => {
   it("includes extra keys passed in", () => {
-    const env = buildSafeChildEnv({ AVE_HOOK_EVENT: "pre-turn", AVE_HOOK_SESSION: "sess-1" });
+    const env = buildSafeChildEnv({ AVE_HOOK_EVENT: "pre-turn", AVE_HOOK_SESSION_ID: "sess-1" });
     expect(env.AVE_HOOK_EVENT).toBe("pre-turn");
-    expect(env.AVE_HOOK_SESSION).toBe("sess-1");
+    expect(env.AVE_HOOK_SESSION_ID).toBe("sess-1");
   });
 
   it("extra keys override safe baseline when colliding", () => {

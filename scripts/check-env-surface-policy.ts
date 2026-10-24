@@ -60,13 +60,14 @@ const INTERNAL: readonly string[] = [
   // -Command (ave-home.ts).
   "AVE_DACL_REQUEST",
   // Lifecycle and script hooks: the host describes the event to the hook
-  // process it spawns (script-hook-runner.ts). The hook reads them; the host
-  // writes every one of them per invocation.
+  // process it spawns (buildHookEnv, script-hook-runner.ts). TYPE, EVENT,
+  // SESSION_ID and TRUST_ORIGIN are set on every invocation; MATCHER,
+  // TOOL_NAME, MCP_SERVER_ID and PLUGIN_ID only when the hook has a matcher or
+  // the payload carries that field.
   "AVE_HOOK_EVENT",
   "AVE_HOOK_MATCHER",
   "AVE_HOOK_MCP_SERVER_ID",
   "AVE_HOOK_PLUGIN_ID",
-  "AVE_HOOK_SESSION",
   "AVE_HOOK_SESSION_ID",
   "AVE_HOOK_TOOL_NAME",
   "AVE_HOOK_TRUST_ORIGIN",
@@ -297,8 +298,9 @@ const TEST_FILE_RE = /(?:(?:^|[\\/])__tests__[\\/])|(?:\.test\.[cm]?tsx?$)/;
  *   - `[Environment]::GetEnvironmentVariable('NAME', …)` — the same, via .NET;
  *   - `$NAME` — a POSIX shell child read (`${NAME}` is excluded: in TypeScript
  *     that is a template interpolation of a constant, not a shell read);
- *   - `NAME: value` — an object key, which is how a spawn's `env` is written.
- *     A type annotation (`const NAME: T`) and a ternary branch are excluded.
+ *   - `NAME: value` / `["NAME"]: value` — an object key, plain or a quoted
+ *     computed key, which is how a spawn's `env` is written. A type
+ *     annotation (`const NAME: T`) and a ternary branch are excluded.
  * Tests are excluded for the same reason as {@link TABLE_ENTRY_RE}: a test
  * writes and reads fixtures for children it starts itself.
  */
@@ -307,6 +309,7 @@ const CHILD_PROTOCOL_RES: readonly RegExp[] = [
   /GetEnvironmentVariable\(\s*["'](AVE_[A-Z0-9_]*[A-Z0-9])["']/g,
   /(?<![\w$])\$(AVE_[A-Z0-9_]*[A-Z0-9])\b/g,
   /(?<![\w$.[]|\b(?:const|let|var)\s+|\?\s*)["']?(AVE_[A-Z0-9_]*[A-Z0-9])["']?\s*:(?!:)/g,
+  /\[\s*["'`](AVE_[A-Z0-9_]*[A-Z0-9])["'`]\s*\]\s*:(?!:)/g,
 ];
 
 /**
