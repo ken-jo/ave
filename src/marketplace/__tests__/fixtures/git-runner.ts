@@ -25,16 +25,17 @@ export async function hostGitExecutable(): Promise<GitExecutable> {
 }
 
 export async function createTestGitRunner(
-  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig" | "_scheduleTimeoutForTest">> = {},
+  options: { tokens?: Record<string, string>; runtime?: Pick<TestGitRunner, "git" | "broker"> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig" | "_scheduleTimeoutForTest">> = {},
 ): Promise<TestGitRunner> {
+  if (options.runtime && options.tokens) throw new Error("a shared broker owns its token store");
   const dir = mkdtempSync(join(tmpdir(), "ave-git-runner-"));
   const emptyDir = join(dir, "empty");
   mkdirSync(emptyDir);
   const globalConfigPath = join(dir, "gitconfig");
   writeFileSync(globalConfigPath, "");
-  const git = await hostGitExecutable();
+  const git = options.runtime?.git ?? await hostGitExecutable();
   const tokens = options.tokens ?? {};
-  const broker = await AskpassBroker.start({ getToken: (host) => tokens[host] ?? null });
+  const broker = options.runtime?.broker ?? await AskpassBroker.start({ getToken: (host) => tokens[host] ?? null });
   const runner = new GitRunner({
     git,
     globalConfigPath,
@@ -51,7 +52,7 @@ export async function createTestGitRunner(
     git,
     dir,
     async cleanup() {
-      await broker.close();
+      if (!options.runtime) await broker.close();
       await cleanupTmpDir(dir);
     },
   };
