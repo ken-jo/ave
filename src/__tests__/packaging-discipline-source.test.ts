@@ -1089,6 +1089,29 @@ describe("installer smoke and packaging discipline", () => {
     const verification = jobs.get("build-and-test");
     expect(verification, "ci.yml lost its build-and-test job").toBeDefined();
     const commands = jobRunCommands(verification as string);
+    const build = jobs.get("build");
+    const shards = jobs.get("vitest");
+    expect(build, "ci.yml lost its build job").toBeDefined();
+    expect(shards, "ci.yml lost its vitest shard job").toBeDefined();
+
+    // build-and-test reports the build job and every Vitest shard: it needs
+    // both, still runs when one failed (a skipped job reports success to
+    // branch protection), and its first step fails unless both succeeded.
+    // The hygiene gates follow it, so they run after every verification step
+    // has reported, as the ordering scan above requires within one job.
+    const body = verification as string;
+    expect(body).toMatch(/^ {4}needs: \[build, vitest\]$/mu);
+    expect(body).toMatch(/^ {4}if: \$\{\{ !cancelled\(\) \}\}$/mu);
+    const results = commands[0] as string;
+    expect(results).toContain('if [ "$BUILD_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "success" ]; then');
+    expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
+    expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
+    expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
+    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
+    expect(shards).toMatch(/^ {4}needs: build$/mu);
+    expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
+    expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 
     // `build-and-test` is one of the two required status checks on `main`; the
     // other is `naming-gate`. Read the current list with
@@ -1117,13 +1140,13 @@ describe("installer smoke and packaging discipline", () => {
     // that `test:ci` runs; there is no separate evidence step. `test:ci`
     // (scripts/run-ci-suite.mjs) runs `check:test-coverage`'s gate on every
     // full run and the affected tests on a traceable pull request.
-    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([
+    expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE)).toEqual([
       "bun run build",
-      "bun run test:ci",
       "bun run typecheck",
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
+    expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });

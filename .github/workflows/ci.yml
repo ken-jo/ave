@@ -29,7 +29,8 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: true
 jobs:
-  build-and-test:
+  build:
+    name: Build, typecheck and plan the suite
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
     # else). Hosted runners are ephemeral VMs, so a fork's package.json
@@ -41,8 +42,12 @@ jobs:
     # secret-free and does not clone private sibling repositories;
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
-    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     runs-on: ubuntu-24.04-arm
+    outputs:
+      docs_only: ${{ steps.docs-impact.outputs.docs_only }}
+      # One shard when the plan step did not run (a docs-only change), so the
+      # matrix below always reads a list.
+      shards: ${{ steps.plan.outputs.shards || '[1]' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -118,11 +123,11 @@ jobs:
       # The steps above are preconditions, not gates: without a checkout, an
       # install, the uv toolchain and the smoke's Python there is nothing to
       # verify, so a red job there genuinely means "could not verify". From
-      # here down the job compiles, builds and tests the product — every step
-      # below is one of those, except `Remove root-level Bun binary shims`,
-      # which prepares the runner for the step after it — and the
-      # repository-hygiene gates run after all of it, at the end of this job.
-      # The block above them says why they are there and not above.
+      # here down the job compiles and builds the product, and plans the suite
+      # the Vitest shards run — and the
+      # repository-hygiene gates run after all of it, in build-and-test, which
+      # needs this job and every Vitest shard. The block above them says why
+      # they are there and not above.
       - name: Typecheck
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -142,8 +147,98 @@ jobs:
       - run: bun run build
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-      - name: Remove root-level Bun binary shims before Vitest
+      # Plan once: the shards below run this plan instead of planning again,
+      # so every shard splits the same file list. A full run without
+      # coverage gets FULL_RUN_SHARDS shards; an affected selection and a
+      # coverage run get one (scripts/run-ci-suite.mjs).
+      - name: Plan the suite
+        id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-plan"
+          node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+      - name: Upload the build for the Vitest shards
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-build
+          path: ave/dist
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the suite plan
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan/ci-plan.json
+          if-no-files-found: error
+          retention-days: 1
+
+  vitest:
+    name: Vitest shard ${{ matrix.shard }}
+    needs: build
+    if: needs.build.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 0
+      - uses: ./ave/.github/actions/setup-bun
+        with:
+          bun-version-file: ave/.bun-version
+      # Cache the built node_modules (Electron dist + electron-rebuilt native
+      # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
+      # ABI-correct binaries without re-downloading Electron or recompiling
+      # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
+      # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
+      - run: bun install --frozen-lockfile
+        working-directory: ave
+      # uv is fetched to resources/ (outside node_modules) by the postinstall,
+      # which bun skips when node_modules is already satisfied from cache. Ensure
+      # it explicitly — fetch-uv is idempotent (no-op when already present).
+      - name: Ensure uv toolchain
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: "3.12"
+      # The build job's dist/, so this shard tests the bytes that job built
+      # and typechecked instead of building again.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-build
+          path: ave/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+      - name: Remove root-level Bun binary shims before Vitest
         working-directory: ave
         run: rm -f ajv pino
       # The terminal's real-shell tests (typing, and the differential check of
@@ -151,7 +246,6 @@ jobs:
       # which the Ubuntu image lacks. A runner without passwordless sudo keeps
       # its own shells and those tests skip zsh.
       - name: Install zsh for the real-shell terminal tests
-        if: steps.docs-impact.outputs.docs_only != 'true'
         run: |
           if command -v zsh >/dev/null; then exit 0; fi
           if sudo -n true 2>/dev/null; then
@@ -160,7 +254,6 @@ jobs:
             echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
           fi
       - name: Run the suite (coverage gate on nightly and dispatch)
-        if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
@@ -185,10 +278,94 @@ jobs:
         #
         # Three workers, not the config's four: a standard hosted runner has
         # four vCPUs, and each Vitest worker spawns subprocesses of its own.
+        #
+        # This job is one shard of the plan the build job wrote:
+        # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
+        # the matrix (`vitest --shard`); a one-shard matrix runs it whole.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
+          AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
+          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: bun run test:ci
+        working-directory: ave
+
+  build-and-test:
+    # The required check on main. It reports success only when the build job
+    # and every Vitest shard succeeded (a docs-only change skips the shards
+    # and checks its documents in the build job), then runs the repository
+    # hygiene gates. `!cancelled()` keeps it running when a needed job
+    # failed, so a red shard turns this check red instead of skipping it: a
+    # skipped job reports success to branch protection.
+    needs: [build, vitest]
+    if: ${{ !cancelled() }}
+    # Every job in every workflow runs on a GitHub-hosted runner
+    # (src/__tests__/support/workflow-runner-policy.ts fails on anything
+    # else). Hosted runners are ephemeral VMs, so a fork's package.json
+    # postinstall cannot persist on, or read state from, any machine of the
+    # owner's. The repository must also register no self-hosted runner: a
+    # fork pull request runs its own edited copy of this file and could name
+    # one. ARM64 keeps native-module
+    # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
+    # secret-free and does not clone private sibling repositories;
+    # cross-repository integration belongs to trusted default-branch
+    # repository_dispatch workflows.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Require the build and every Vitest shard
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          VITEST_RESULT: ${{ needs.vitest.result }}
+          DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
+        run: |
+          if [ "$BUILD_RESULT" != "success" ]; then
+            echo "::error::the build job ended $BUILD_RESULT"
+            exit 1
+          fi
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if [ "$VITEST_RESULT" != "skipped" ]; then
+              echo "::error::a docs-only change ran Vitest shards ($VITEST_RESULT)"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "$VITEST_RESULT" != "success" ]; then
+            echo "::error::the Vitest shards ended $VITEST_RESULT"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          path: ave
+          fetch-depth: 0
+      - uses: ./ave/.github/actions/setup-bun
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          bun-version-file: ave/.bun-version
+      # Cache the built node_modules (Electron dist + electron-rebuilt native
+      # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
+      # ABI-correct binaries without re-downloading Electron or recompiling
+      # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
+      # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.build.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
+      - run: bun install --frozen-lockfile
+        if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
       # the gates that read them. Nothing below compiles or runs the product; a
@@ -269,8 +446,12 @@ jobs:
       # CI-only on purpose — the Knip self-test costs more than a pre-push
       # budget allows — and
       # `check:test-coverage` above is CI-only for the same reason.
+      - name: Remove root-level Bun binary shims before the hygiene gates
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        run: rm -f ajv pino
       - name: Core hygiene gates
-        if: steps.docs-impact.outputs.docs_only != 'true'
+        if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
 

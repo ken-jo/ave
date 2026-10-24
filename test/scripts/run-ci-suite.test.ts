@@ -18,8 +18,12 @@ import {
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
+  ciShardCount,
   ciSuiteArguments,
+  FULL_RUN_SHARDS,
+  parseCiShard,
   planCiSuite,
+  readPlanFile,
   runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
@@ -228,6 +232,37 @@ describe("CI test selection fallbacks", () => {
     expect(ciSuiteArguments(fullPlan, true)).toEqual([join("scripts", "run-test-coverage-gate.mjs")]);
     expect(ciSuiteArguments(fullPlan, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true"]);
     expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
+  });
+
+  it("shards only a full run without coverage, and passes the shard to Vitest", () => {
+    const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
+    const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
+    expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
+    expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
+    expect(ciShardCount(fullPlan, true)).toBe(1);
+    expect(ciShardCount(affected, false)).toBe(1);
+    expect(ciSuiteArguments(fullPlan, false, "2/4")).toEqual([
+      join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=2/4",
+    ]);
+    expect(ciSuiteArguments(affected, false, "1/2")).toEqual([
+      join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=1/2", "./src/a.test.ts",
+    ]);
+    expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
+  });
+
+  it("reads a shard and a written plan strictly", () => {
+    expect(parseCiShard(undefined)).toBeNull();
+    expect(parseCiShard("")).toBeNull();
+    expect(parseCiShard("1/1")).toBeNull();
+    expect(parseCiShard("3/4")).toBe("3/4");
+    for (const bad of ["0/4", "5/4", "1/0", "1", "a/b", "1/4 "]) {
+      expect(() => parseCiShard(bad), bad).toThrow("AVE_CI_SHARD must be <index>/<count>");
+    }
+    const plan = { mode: "affected", reason: "traced", tests: ["src/a.test.ts"] };
+    expect(readPlanFile(JSON.stringify({ ...plan, extra: true }))).toEqual(plan);
+    for (const bad of [{ ...plan, mode: "some" }, { ...plan, tests: [1] }, { mode: "full", tests: [] }, null]) {
+      expect(() => readPlanFile(JSON.stringify(bad))).toThrow("the CI plan file is not a { mode, reason, tests } plan");
+    }
   });
 
   it("runs the full suite for a category merge to main, and refuses a pull request without its refs", () => {
