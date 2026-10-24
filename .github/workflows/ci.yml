@@ -689,6 +689,8 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
+          src/permissions/__tests__/linux-sandbox-wrap.test.ts
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
