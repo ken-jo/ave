@@ -1107,6 +1107,18 @@ describe("ChatSidePanel", () => {
     return { listDir, reveal, removeRoot, writeText };
   }
 
+  /**
+   * The tree mounts before its first listing resolves, and the roving row is
+   * chosen in an effect after the rows commit, so wait for both.
+   */
+  async function treeRowsReady(tree: HTMLElement): Promise<HTMLElement[]> {
+    return waitFor(() => {
+      const rows = within(tree).getAllByRole("treeitem");
+      expect(rows.some((row) => row.getAttribute("tabindex") === "0")).toBe(true);
+      return rows;
+    });
+  }
+
   it("renders rows as ARIA treeitems with level/setsize/posinset and a single roving tabindex", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1114,7 +1126,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
-    const items = within(tree).getAllByRole("treeitem");
+    const items = await treeRowsReady(tree);
     expect(items.length).toBe(3);
     expect(items[0].getAttribute("aria-level")).toBe("1");
     expect(items[0].getAttribute("aria-setsize")).toBe("3");
@@ -1131,6 +1143,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     const items = within(tree).getAllByRole("treeitem");
     // Second row (beta) becomes the roving-focus row (tabindex=0). Roving focus
@@ -1160,6 +1173,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
