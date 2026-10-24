@@ -1104,6 +1104,71 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });
 
+  it.each([
+    ["build-and-test", "bubblewrap socat ripgrep zsh", "bwrap socat rg zsh"],
+    ["linux-confinement-tests", "bubblewrap socat ripgrep xvfb bash zsh", "bwrap socat rg xvfb-run bash zsh"],
+  ])("uses cached packages and proves the sandbox in %s", (jobId, packages, commands) => {
+    const source = readRepoFile(".github/workflows/ci.yml");
+    const workflow = parseYaml(source);
+    const steps = workflow.jobs[jobId].steps;
+    const install = steps.find((step: { uses?: string }) => step.uses === "./ave/.github/actions/linux-packages");
+    expect(install).toMatchObject({
+      if: "steps.docs-impact.outputs.docs_only != 'true'",
+      with: { packages, commands },
+    });
+    const runtime = steps.filter((step: { name?: string }) => [
+      "Allow unprivileged user namespaces", "Prove the sandbox backend",
+    ].includes(step.name ?? ""));
+    expect(runtime).toHaveLength(2);
+    for (const step of runtime) {
+      expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+      expect(steps.indexOf(step)).toBeGreaterThan(steps.indexOf(install));
+    }
+    expect(runtime[0].run).toContain("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0");
+    expect(runtime[1].run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
+    const job = workflowJobs(source).get(jobId) as string;
+    expect(jobRunCommands(job).join("\n")).not.toMatch(/apt-get\s+install/u);
+    if (jobId === "build-and-test") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
+  });
+
+  it("caches image-specific package archives and recovers an incomplete cache", () => {
+    const action = parseYaml(readRepoFile(".github/actions/linux-packages/action.yml"));
+    expect(action.runs.using).toBe("composite");
+    const steps = action.runs.steps;
+    const prepare = steps.find((step: { id?: string }) => step.id === "prepare");
+    expect(prepare.run).toContain('sort -u');
+    expect(prepare.run).toContain('sha256sum');
+    expect(prepare.run).toContain('${ImageOS:-');
+    expect(prepare.run).toContain('${ImageVersion:-');
+    expect(prepare.run).toContain('sudo -n true');
+    expect(prepare.run).toContain('command -v');
+    // apt creates partial/ only under Dir::Cache, so a RUNNER_TEMP archive dir needs it made.
+    expect(prepare.run).toContain('mkdir -p "$archives/partial"');
+    expect(prepare.run).toContain('archives="$RUNNER_TEMP/linux-packages-$packages_hash"');
+    expect(prepare.run).not.toContain("mktemp");
+    const cache = steps.find((step: { id?: string }) => step.id === "cache");
+    expect(cache.uses).toBe("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
+    expect(cache.if).toBe("steps.prepare.outputs.install == 'true'");
+    expect(cache.with.path).toBe("${{ steps.prepare.outputs.archives }}/*.deb");
+    for (const field of ["runner.os", "runner.arch", "steps.prepare.outputs.image-os", "steps.prepare.outputs.image-version", "steps.prepare.outputs.packages-hash"]) {
+      expect(cache.with.key).toContain(`\${{ ${field} }}`);
+    }
+    expect(cache.with["restore-keys"]).toBeUndefined();
+    const hit = steps.find((step: { id?: string }) => step.id === "install-cache");
+    expect(hit.if).toContain("steps.cache.outputs.cache-hit == 'true'");
+    expect(hit.run).toContain('sudo dpkg -i');
+    expect(hit.run).not.toContain("apt-get");
+    expect(hit.run).toContain('installed=true');
+    const miss = steps.find((step: { id?: string }) => step.id === "download-install");
+    expect(miss.if).toContain("steps.install-cache.outputs.installed != 'true'");
+    expect(miss.run.match(/apt-get update/gu)).toHaveLength(1);
+    expect(miss.run).toContain("--download-only");
+    expect(miss.run).toContain("--fix-broken");
+    expect(miss.run).toContain('Dir::Cache::archives=');
+    expect(miss.run).toContain('sudo dpkg -i');
+    expect(miss.env.ARCHIVES).toBe("${{ steps.prepare.outputs.archives }}");
+  });
+
   it("requires shared temporary write regressions in the Linux confinement job", () => {
     const job = workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("linux-confinement-tests");
     const step = job?.split(/^ {6}- /mu).find((body) => body.startsWith("name: Run Linux confinement regressions\n"));
