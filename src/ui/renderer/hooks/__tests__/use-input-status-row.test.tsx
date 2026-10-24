@@ -16,9 +16,10 @@ function apiWith(settings: AppSettings) {
 
 describe("useInputStatusRow", () => {
   it("names no model when main reports no connected provider", async () => {
-    // A fresh profile's openai block still carries its default id; the row
-    // must not present that as the model chat is on.
+    // A stored openai id (from an earlier sign-in) must not be presented as
+    // the model chat is on.
     const settings = fakeAppSettings({
+      llm: { vendors: { openai: { model: "gpt-5.4" } } },
       activeChatModel: { kind: "none", reason: "no-connected-provider" },
     });
     expect(settings.llm.vendors.openai?.model).toBeTruthy();
