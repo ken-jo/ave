@@ -79,6 +79,23 @@ async function startEditor(shell: string) {
   return { home, pty, tracker };
 }
 
+function generatedBindingFlag(flag: "ave_edit" | "ave_keymap", binding: string): number {
+  const home = makeHome();
+  installShellIntegration(home, TERMINAL_TEST_MODERN_BASH!, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
+  const checks = readFileSync(join(home, ".bash_profile"), "utf-8").split("\n")
+    .filter((line) => line.includes('"$ave_binding"') && line.trimEnd().endsWith("&& " + flag + "=1"));
+  expect(checks).toHaveLength(1);
+  const result = spawnSync(TERMINAL_TEST_MODERN_BASH!, ["--noprofile", "--norc", "-c", [
+    flag + "=0",
+    "ave_binding=$1",
+    checks[0],
+    'printf "%s" "$' + flag + '"',
+  ].join("\n"), "binding-check", binding], { encoding: "utf-8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toMatch(/^[01]$/u);
+  return Number(result.stdout);
+}
+
 describe("installShellIntegration", () => {
   it("names the shells it integrates by basename, including a login-shell dash", () => {
     expect(detectIntegratedShell("/bin/zsh")).toBe("zsh");
@@ -137,6 +154,29 @@ describe("installShellIntegration", () => {
         expect(script).toContain('"$ave_binding" == "set keymap emacs" || "$ave_binding" == "set keymap emacs-standard"');
       }
     }
+  });
+
+  it.runIf(TERMINAL_TEST_MODERN_BASH !== undefined).each([
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line"', expected: 1 },
+    { binding: '"\\C-x\\C-v" "__ave_report_edit_line"', expected: 1 },
+    { binding: '"\\C-x\\C-u": "__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line_extra"', expected: 0 },
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line; accept-line"', expected: 0 },
+    { binding: 'prefix "\\C-x\\C-v": "__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v":"__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v" "__ave_report_edit_line" ', expected: 0 },
+  ])("attests only complete reserved query readbacks: $binding", ({ binding, expected }) => {
+    expect(generatedBindingFlag("ave_edit", binding)).toBe(expected);
+  });
+
+  it.runIf(TERMINAL_TEST_MODERN_BASH !== undefined).each([
+    { binding: "set keymap emacs", expected: 1 },
+    { binding: "set keymap emacs-standard", expected: 1 },
+    { binding: "set keymap emacs-ctlx", expected: 0 },
+    { binding: "set keymap emacs-meta", expected: 0 },
+    { binding: "set keymap vi-insert", expected: 0 },
+  ])("attests only the complete primary editing keymap: $binding", ({ binding, expected }) => {
+    expect(generatedBindingFlag("ave_keymap", binding)).toBe(expected);
   });
 
   for (const shell of [TERMINAL_TEST_ZSH, TERMINAL_TEST_MODERN_BASH]) {
