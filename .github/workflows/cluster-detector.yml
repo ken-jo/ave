@@ -20,10 +20,14 @@ jobs:
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     runs-on: ubuntu-latest
     steps:
+      # The live pull request, read through the API with the job token. This
+      # step names no head commit from the event payload: under
+      # pull_request_target a step that both runs gh or git and names the head
+      # is refused (workflow-runner-policy.ts), so the staleness check against
+      # the event's head is the next step, which runs neither.
       - name: Capture live pull request snapshot
-        id: pr-snapshot
+        id: pr-live
         env:
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -45,6 +49,29 @@ jobs:
             exit 1
           fi
           if [ "$LIVE_BASE_REF" != "main" ] || [ "$LIVE_BASE_REPO" != "$REPO" ]; then
+            retargeted=true
+          else
+            retargeted=false
+          fi
+
+          {
+            echo "path=${SNAPSHOT}"
+            echo "head_sha=${LIVE_HEAD_SHA}"
+            echo "base_sha=${LIVE_BASE_SHA}"
+            echo "retargeted=${retargeted}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Drop a retargeted or superseded pull request
+        id: pr-snapshot
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LIVE_HEAD_SHA: ${{ steps.pr-live.outputs.head_sha }}
+          LIVE_BASE_SHA: ${{ steps.pr-live.outputs.base_sha }}
+          RETARGETED: ${{ steps.pr-live.outputs.retargeted }}
+          SNAPSHOT: ${{ steps.pr-live.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ "$RETARGETED" = "true" ]; then
             echo "::notice::Cluster advisory no longer applies to this pull request base"
             {
               echo "## Sensitive-area advisory"
