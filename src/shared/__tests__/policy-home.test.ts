@@ -11,8 +11,8 @@ vi.mock("node:os", async (importOriginal) => ({
 }));
 
 describe("policy home resolution", () => {
-  const home = join(tmpdir(), "ave-policy-home-fallback");
-  const windowsHome = "C:\\Users\\policy-home-fallback";
+  const home = join(tmpdir(), "ave-carol");
+  const windowsHome = "C:\\Users\\carol";
 
   beforeEach(() => {
     vi.mocked(homedir).mockReturnValue(home);
@@ -25,7 +25,7 @@ describe("policy home resolution", () => {
   });
 
   it.each(["win32", "linux", "darwin"] as const)("keeps explicit HOME first on %s", (platform) => {
-    const explicitHome = platform === "win32" ? windowsHome : "/tmp/ave-policy-home-fallback";
+    const explicitHome = platform === "win32" ? windowsHome : "/tmp/ave-carol";
     expect(getPolicyHome({ HOME: explicitHome, USERPROFILE: windowsHome + "\\profile" }, platform)).toBe(explicitHome);
     expect(homedir).not.toHaveBeenCalled();
   });
@@ -42,15 +42,15 @@ describe("policy home resolution", () => {
   });
 
   it.each(["win32", "linux", "darwin"] as const)("falls back to the OS on %s", (platform) => {
-    const osHome = platform === "win32" ? windowsHome : "/tmp/ave-policy-home-fallback";
+    const osHome = platform === "win32" ? windowsHome : "/tmp/ave-carol";
     vi.mocked(homedir).mockReturnValue(osHome);
     expect(getPolicyHome({}, platform)).toBe(osHome);
   });
 
   it("ignores profile variables on POSIX", () => {
-    vi.mocked(homedir).mockReturnValue("/tmp/ave-policy-home-fallback");
+    vi.mocked(homedir).mockReturnValue("/tmp/ave-carol");
     expect(getPolicyHome({ USERPROFILE: windowsHome + "\\profile", HOMEDRIVE: windowsHome.slice(0, 2), HOMEPATH: windowsHome.slice(2) }, "linux"))
-      .toBe("/tmp/ave-policy-home-fallback");
+      .toBe("/tmp/ave-carol");
   });
 
   it("refuses unresolved tilde instead of resolving it under cwd", () => {
@@ -72,22 +72,22 @@ describe("policy home resolution", () => {
   });
 
   it("retains the account profile when the profile environment is spoofed", () => {
-    vi.mocked(homedir).mockReturnValue("C:\\Users\\shell-profile");
-    vi.mocked(userInfo).mockReturnValue({ homedir: "C:\\Users\\account-profile", username: "test-account", uid: -1, gid: -1, shell: null });
-    expect(policyHomeAnchors({ USERPROFILE: "C:\\Users\\shell-profile" }, "win32"))
-      .toEqual(["C:\\Users\\shell-profile", "C:\\Users\\account-profile"]);
+    vi.mocked(homedir).mockReturnValue("C:\\Users\\bob");
+    vi.mocked(userInfo).mockReturnValue({ homedir: "C:\\Users\\alice", username: "test-account", uid: -1, gid: -1, shell: null });
+    expect(policyHomeAnchors({ USERPROFILE: "C:\\Users\\bob" }, "win32"))
+      .toEqual(["C:\\Users\\bob", "C:\\Users\\alice"]);
   });
 
-  it.each(["C:\\USERS\\ACCOUNT-PROFILE", "C:/Users/account-profile/."])("deduplicates the account profile %s", (profile) => {
-    vi.mocked(homedir).mockReturnValue("C:\\Users\\account-profile");
+  it.each(["C:\\USERS\\ALICE", "C:/Users/alice/."])("deduplicates the account profile %s", (profile) => {
+    vi.mocked(homedir).mockReturnValue("C:\\Users\\alice");
     vi.mocked(userInfo).mockReturnValue({ homedir: profile, username: "test-account", uid: -1, gid: -1, shell: null });
-    expect(policyHomeAnchors({}, "win32")).toEqual(["C:\\Users\\account-profile"]);
+    expect(policyHomeAnchors({}, "win32")).toEqual(["C:\\Users\\alice"]);
     expect(userInfo).toHaveBeenCalled();
   });
 
   it("keeps valid profile anchors when the account lookup throws", () => {
-    vi.mocked(homedir).mockReturnValue("C:\\Users\\shell-profile");
-    expect(policyHomeAnchors({}, "win32")).toEqual(["C:\\Users\\shell-profile"]);
+    vi.mocked(homedir).mockReturnValue("C:\\Users\\bob");
+    expect(policyHomeAnchors({}, "win32")).toEqual(["C:\\Users\\bob"]);
     expect(userInfo).toHaveBeenCalled();
   });
 });
