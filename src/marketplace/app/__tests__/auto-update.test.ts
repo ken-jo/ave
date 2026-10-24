@@ -11,7 +11,7 @@
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAveAppVersion } from "../../../shared/app-version.js";
 import { nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService, type FolderServiceHarness } from "../../__tests__/fixtures/folder-service.js";
@@ -51,6 +51,7 @@ const index = `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "
 let root: string;
 let folder: string;
 let harness: FolderServiceHarness;
+let ownership: "user" | "required" = "user";
 
 /** A user-added folder source "team" with alpha installed, or the same folder managed by a policy that requires alpha. */
 async function setUp(managed: "user" | "required"): Promise<void> {
@@ -85,7 +86,7 @@ function decideWith(settings: AutoUpdateSettings): ApplyDecision {
 const automatic = decideWith({});
 
 beforeEach(async () => {
-  await setUp("user");
+  await setUp(ownership);
 });
 
 afterEach(() => {
@@ -234,11 +235,12 @@ describe("nothing queued authorizes an update: the policy, the switches and shut
 });
 
 describe("a required update (§18.7.2)", () => {
-  beforeEach(async () => {
-    harness.service.close();
-    rmSync(root, { recursive: true, force: true });
-    rmSync(dirname(folder), { recursive: true, force: true });
-    await setUp("required");
+  // Select the required baseline before the outer fixture installs anything.
+  beforeAll(() => {
+    ownership = "required";
+  });
+  afterAll(() => {
+    ownership = "user";
   });
 
   it("is reviewed by the policy, skips checkpoint two, and leaves a new hook waiting as approval-pending", async () => {

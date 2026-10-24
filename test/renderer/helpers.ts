@@ -12,7 +12,7 @@ import { ApprovalSurfaceClaims, type ApprovalSurfaceContextValue } from "../../s
 import type { DeferredQueueEntry } from "../../src/ui/renderer/types.js";
 import { expect, vi } from "vitest";
 export { relativeLuminance } from "../contrast-helpers.js";
-export { deferred } from "../../src/__tests__/test-helpers.js";
+export { deferred } from "../../src/__tests__/support/deferred.js";
 
 /**
  * An approval surface with nothing pending, for components that draw their

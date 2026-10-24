@@ -2,6 +2,7 @@ import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
 
 export const MUST_RUN_TESTS_PATH: string;
 export const AFFECTED_TEST_LIMIT: number;
+export const COVERAGE_EVENTS: readonly string[];
 
 export interface CiSuitePlan {
   mode: "full" | "affected";
@@ -14,6 +15,7 @@ export declare function namedRepositoryPaths(testPath: string, text: string): st
 export declare function namesChangedPath(named: string, changedPath: string): boolean;
 export declare function expandMustRunTests(document: unknown, trackedTests: readonly string[]): string[];
 export declare function selectCiTests(input: {
+  baseRef?: string;
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
   mustRunTests: readonly string[];
@@ -22,6 +24,8 @@ export declare function selectCiTests(input: {
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
+export declare function runsCoverage(eventName: string | undefined): boolean;
+export declare function ciSuiteArguments(plan: CiSuitePlan, coverage: boolean): string[];
 export declare function isCategoryMergeToMain(headRef: string | undefined, baseRef: string | undefined): boolean;
 export declare function planCiSuite(
   eventName: string | undefined,

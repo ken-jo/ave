@@ -30,7 +30,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   HOST_PROTOCOL_CLIENT_LABEL,
   HOST_PROTOCOL_CLIENT_PROGRAMS,
@@ -46,6 +46,12 @@ const HOST_ERROR_SIDE = "(typeof HOST_API_WIRE_ERROR_CODES)[number]";
  * `process.execPath` prints startup diagnostics a compile's output would carry.
  */
 const NODE = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+let committedStandalone: ReturnType<typeof compileHostProtocolClientProgram>;
+
+beforeAll(() => {
+  // Both control assertions read this unchanged program; compile it once.
+  committedStandalone = compileHostProtocolClientProgram(HOST_PROTOCOL_CLIENT_PROGRAMS.standalone, { alone: true, node: NODE });
+});
 
 const created: string[] = [];
 
@@ -114,7 +120,9 @@ describe("the committed pair", () => {
       [standaloneCopy((client) => client), true],
       [hostEqualityCopy((assertions) => assertions), false],
     ] as const) {
-      const { ok, output } = compileHostProtocolClientProgram(project, { alone, node: NODE });
+      const { ok, output } = project === HOST_PROTOCOL_CLIENT_PROGRAMS.standalone
+        ? committedStandalone
+        : compileHostProtocolClientProgram(project, { alone, node: NODE });
       expect(output, project).toBe("");
       expect(ok, project).toBe(true);
     }
@@ -169,7 +177,7 @@ describe("the host-equality program", () => {
     expect(equality.ok).toBe(false);
     expect(equality.output).toMatch(/assertions\.ts\(\d+,\d+\): error TS2344:/u);
 
-    const standalone = compileHostProtocolClientProgram(HOST_PROTOCOL_CLIENT_PROGRAMS.standalone, { alone: true, node: NODE });
+    const standalone = committedStandalone;
     expect(standalone).toEqual({ ok: true, output: "" });
   }, 120_000);
 });

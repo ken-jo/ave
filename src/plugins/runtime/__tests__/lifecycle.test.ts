@@ -5,7 +5,7 @@
  * and re-instantiates with the latest on-disk state.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +30,8 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -351,10 +353,23 @@ export default async function createPlugin() {
     await runtime.startAll();
     await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
 
+    const stopping = runtime as unknown as {
+      stopPluginInstance(...args: unknown[]): Promise<boolean>;
+    };
+    const stop = stopping.stopPluginInstance.bind(stopping);
+    let entered!: () => void;
+    const inStop = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(stopping, "stopPluginInstance").mockImplementation((...args) => {
+      const result = stop(...args);
+      entered();
+      return result;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await expect(runtime.restartPlugin("lc-stop-timeout")).resolves.toBe("started");
+    await inStop;
     expect(runtime.listPluginIds()).toContain("lc-stop-timeout");
     await expect(runtime.call("lc_stop_timeout_ping")).resolves.toBe("pong");
-    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    await vi.advanceTimersByTimeAsync(2_100);
     await expect(runtime.restartPlugin("lc-stop-timeout")).rejects.toMatchObject({
       code: "plugin-lifecycle-quarantined",
     });

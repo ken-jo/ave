@@ -29,7 +29,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
 }));
 
 function childLoop(catalogModel?: string) {
-  expect(isModelAvailableForVendor("openai", "gpt-5.4-mini")).toBe(true);
+  expect(isModelAvailableForVendor("openai", "gpt-5.4-mini", [])).toBe(true);
   const llm = fakeLlmSettings({ model: "gpt-5.4" });
   if (catalogModel) llm.vendors.openai.catalogModel = catalogModel;
   const loop = new ConversationLoop({

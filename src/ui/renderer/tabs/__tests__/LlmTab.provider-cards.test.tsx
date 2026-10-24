@@ -14,9 +14,16 @@ import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.j
 import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
-import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
+import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SettingsService } from "../../../../data/settings-store.js";
+import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -458,6 +465,149 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("offers the catalog in release order in the fallback chooser without a key", async () => {
+    const api = makeApi();
+    await renderTab(api, { hasKey: false, model: "", fallbackOpen: true, fallbackChain: [{ provider: "claude", model: "" }] });
+    await settleModelListRequests();
+    const fallback = screen.getByTestId("fallback-chain-section");
+    openMenu(within(fallback).getAllByRole("combobox")[1]!);
+    const ids = [...document.querySelectorAll('[role="option"] [data-model-id]')].map((node) => node.getAttribute("data-model-id"));
+    expect(ids).toEqual(catalogChatModelIds("claude"));
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]));
+    expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+    expect(api.listLlmModels).not.toHaveBeenCalled();
+  });
+
+  it("offers only catalog models in release order on a newly connected route", async () => {
+    const original = activeModelCatalog();
+    const models = { ...original.providers.openai!.models };
+    delete models["gpt-5.4-mini"];
+    try {
+      installModelCatalog({ ...original, providers: { ...original.providers, openai: { models } } });
+      const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+      await settleModelListRequests();
+      const ids = await chooserModelIds();
+      expect(ids).toEqual(catalogChatModelIds("openai"));
+      expect(ids).toContain("gpt-6.1-sol");
+      expect(ids).not.toContain("gpt-5.4-mini");
+      expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      installModelCatalog(original);
+    }
+  });
+
+  it("shows the model chooser after clearing a stored built-in default without an error", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-model-"));
+    const options = {
+      userDataPath,
+      encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    };
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini" } } },
+      }));
+      const migrated = new SettingsService(options);
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const { hooks } = await renderTab(makeApi({
+        hasApiKey: storedKeysFor("openai"),
+        getModelCatalog: vi.fn(async () => ({ ok: true, catalog: activeModelCatalog(), refreshPolicy: "auto" })),
+      }), {
+        vendor: llm.provider, model: llm.vendors.openai!.model, retiredLlmProvider: llm.retiredProvider,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent("gpt-5.4-mini");
+      expect(screen.queryAllByRole("alert").map((node) => node.textContent).join("\n")).toBe("");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("shows choose a model after clearing a stored market default", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-market-model-"));
+    const gateway = preset("fixture-market-router", "Fixture Router", "https://fixture.example/v1", "static");
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        marketplace: { installedProviderPresets: [gateway] },
+        llm: { provider: "openai-compatible", marketplaceProviderPresetId: gateway.providerId,
+          vendors: { "openai-compatible": { presetModels: { [gateway.providerId]: gateway.defaultModel } } } },
+      }));
+      const migrated = new SettingsService({ userDataPath, encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      } });
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const api = makeApi({
+        getSettings: vi.fn(async () => migrated.getAll()),
+        hasApiKey: storedKeysFor(`marketplace-provider:${gateway.providerId}`),
+      });
+      const { hooks } = await renderTab(api, {
+        vendor: llm.provider, model: activeLlmRouteModel(llm),
+        marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+        marketplaceProviderPresets: migrated.get("marketplace").installedProviderPresets,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent(gateway.defaultModel);
+      expect(await chooserModelIds()).toContain(gateway.defaultModel);
+      expect(chooserOption(gateway.defaultModel)).not.toHaveAttribute("aria-selected", "true");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("keeps a saved selection outside the catalog without selecting a replacement", async () => {
+    const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "saved-private-model" });
+    expect(await chooserModelIds()).toContain("saved-private-model");
+    expect(chooserOption("saved-private-model")).toHaveAttribute("aria-selected", "true");
+    expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+  });
+
+  it("uses the native listing instead of a catalog seed when a key is stored", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("claude"),
+      listLlmModels: vi.fn().mockResolvedValue({ ok: true, endpoint: "https://api.anthropic.com/v1/models", models: ["live-model"], fetchedAt: new Date().toISOString() }),
+    });
+    await renderTab(api, { vendor: "claude", model: "" });
+    await settleModelListRequests();
+    expect(api.listLlmModels).toHaveBeenCalledWith(expect.objectContaining({ vendor: "claude" }));
+    expect(await chooserModelIds()).toEqual(["live-model"]);
+  });
+
+  it("omits blank ids in every listing and keeps an empty live answer authoritative", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }) => ({
+        ok: true, endpoint: "https://provider.invalid/models", models: vendor === "claude" ? ["", " ", "listed-model"] : [], fetchedAt: new Date().toISOString(),
+      })),
+    });
+    await renderTab(api, { model: "" });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toEqual(["listed-model"]);
+  });
+
+  it("omits blank runtime model ids instead of offering them as models", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [{ id: " ", label: " " }, { id: "gpt-6.1-sol", label: "gpt-6.1-sol" }] },
+    })]);
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+    expect(await chooserModelIds()).toContain("gpt-6.1-sol");
+    // Codex offers no CLI-default row, so a blank id would be the only source of one.
+    expect(screen.queryByTestId("llm-tab:model-pin:codex::")).toBeNull();
+  });
+
   it("accepts an explicit choice of the same model after a provider retirement", async () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
     await chooserModelIds();
@@ -997,6 +1147,26 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
   });
 
+  it("asks for the sign-in method before showing its credential form", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [] },
+    })]);
+    await renderTab(makeApi());
+    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("llm-tab:save-providers")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
+    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-typed" } });
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
+    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
+    fireEvent.click(screen.getByTestId("llm-tab:save-providers-cancel"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+  });
+
   it("asks for no endpoint where the endpoint is fixed", async () => {
     const { unmount } = await renderTab(makeApi());
     fireEvent.click(screen.getByTestId("llm-tab:connection:openai:toggle"));
@@ -1250,7 +1420,7 @@ describe("LlmTab model chooser is the whole switch", () => {
       .toHaveTextContent(/키|key|Schlüssel|clave|clé|キー|密钥/i);
     // The chooser is populated — by the provider that CAN answer, only.
     const offered = await chooserModelIds();
-    expect(offered).toContain("gemini-2.5-flash");
+    expect(offered).toContain("gemini-3.8-flash");
     expect(offered.some((id) => id.startsWith("claude"))).toBe(false);
   });
 
@@ -2595,7 +2765,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     expect(screen.getByTestId("llm-tab:connection-refresh:openai-compatible")).toBeInTheDocument();
     // A curated list has no endpoint to ask, so there is nothing to offer.
     expect(screen.queryByTestId("llm-tab:connection-refresh:azure-foundry")).toBeNull();
-    expect(screen.queryByTestId("llm-tab:connection-refresh:claude")).toBeNull();
+    // The native model-list address is fixed, so a keyed card can sync it.
+    expect(screen.getByTestId("llm-tab:connection-refresh:claude")).toBeInTheDocument();
   });
 
   it("asks a row again once its credential is replaced", async () => {
@@ -3145,5 +3316,31 @@ describe("LlmTab OpenAI model catalogue", () => {
     await waitFor(() => expect(rowOrder()).toEqual(["openrouter"]));
     expect(screen.getByTestId("llm-tab:connection-subline:openrouter"))
       .toHaveAttribute("data-provider-sync-status", "ready");
+  });
+});
+
+describe("subscription models in the unified chooser", () => {
+  it("offers the CLI default beside catalog model choices", async () => {
+    const useForChat = vi.fn();
+    installSubscription(
+      [codexView({
+        descriptor: { id: "claude-code", label: "Claude Code", planName: "Claude", cliName: "Claude Code CLI", executable: "discovered", description: "", loginMethods: ["browser"], supportsLogout: true },
+        status: {
+          runtime: "ready",
+          connection: "connected",
+          models: [{ id: "claude-sonnet-5-5", label: "claude-sonnet-5-5" }],
+        },
+      })],
+      { useForChat, useApiForChat: vi.fn() },
+    );
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", model: "" });
+
+    const cliDefault = t("llmTab.cliDefaultModel");
+    expect(await chooserModelIds()).toEqual(expect.arrayContaining([cliDefault, "claude-sonnet-5-5"]));
+    expect(chooserGroupText(cliDefault)).toMatch(/Claude/);
+
+    pickChooserOption(cliDefault);
+    // No model is sent: the CLI runs its own default.
+    await waitFor(() => expect(useForChat).toHaveBeenCalledWith("claude-code", null));
   });
 });

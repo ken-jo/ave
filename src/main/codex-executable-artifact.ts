@@ -78,6 +78,14 @@ export async function copyExecutableFile(
   executable: string,
 ): Promise<ExecutableArtifactFile> {
   await assertCodexExecutableLocation(source);
+  return copyAdmittedExecutableFile(source, executable);
+}
+
+/** Copy a source whose location the caller already admitted, for example in one batch. */
+export async function copyAdmittedExecutableFile(
+  source: string,
+  executable: string,
+): Promise<ExecutableArtifactFile> {
   const input = await openExecutableFile(source);
   try {
     const before = await input.stat({ bigint: true });
