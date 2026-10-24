@@ -1,6 +1,7 @@
-import { lstatSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync, rmdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../lib/logger.js";
+import { replaceStagedFile } from "../lib/atomic-file.js";
 import { findNonRepositoryWriteRoots, SANDBOX_BARE_REPOSITORY_ENTRIES } from "./sandbox-write-policy.js";
 
 const log = createLogger("sandbox-bare-repository-cleanup");
@@ -53,7 +54,7 @@ export function prepareSandboxBareRepositoryCleanup(writeRoots: readonly string[
         const quarantine = mkdtempSync(join(root, ".ave-bare-cleanup-"));
         const retired = join(quarantine, name);
         try {
-          renameSync(path, retired);
+          replaceStagedFile(path, retired);
           const moved = entryAt(retired);
           if (!sameRoot() || moved?.dev !== created.dev || moved.ino !== created.ino) {
             throw new Error("Sandbox bare-repository cleanup identity changed");
