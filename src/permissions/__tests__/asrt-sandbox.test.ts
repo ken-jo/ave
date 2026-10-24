@@ -1227,19 +1227,19 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   // Native Windows spelling needs the host's canonical path resolver.
   it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each([
-    ["equal paths", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work\\", "C:\\Users\\sandbox-test\\work", true],
-    ["ancestor denies", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\.config\\project", "C:\\Users\\sandbox-test\\.config", true],
-    ["extended-length grants", "C:\\Users\\sandbox-test", "\\\\?\\C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\locked", true],
-    ["extended-length denies", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "\\\\?\\C:\\Users\\sandbox-test\\work\\locked", true],
-    ["case folding", "C:\\Users\\sandbox-test", "c:\\users\\SANDBOX-TEST\\WORK", "C:\\Users\\sandbox-test\\work\\locked", true],
-    ["mixed separators", "C:\\Users\\sandbox-test", "C:/Users/sandbox-test/work/", "C:\\Users\\sandbox-test\\work\\locked", true],
-    ["normalized descendants", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\nested\\..\\locked", true],
-    ["normalized escapes", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\..\\locked", false],
-    ["sibling boundaries", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work-neighbor\\locked", false],
-    ["drive roots", "C:\\Users\\sandbox-test", "C:\\", "C:\\Users\\sandbox-test\\locked", true],
-    ["profile roots", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\", "C:\\Users\\sandbox-test\\locked", true],
-    ["network paths", "\\\\server\\profiles\\sandbox-test", "//SERVER/profiles/sandbox-test/work/", "\\\\server\\profiles\\sandbox-test\\work\\locked", true],
-    ["network share boundaries", "\\\\server\\profiles\\sandbox-test", "\\\\server\\profiles\\sandbox-test\\work", "\\\\server\\profiles\\sandbox-test\\work-neighbor\\locked", false],
+    ["equal paths", "C:\\Users\\tester", "C:\\Users\\tester\\work\\", "C:\\Users\\tester\\work", true],
+    ["ancestor denies", "C:\\Users\\tester", "C:\\Users\\tester\\.config\\project", "C:\\Users\\tester\\.config", true],
+    ["extended-length grants", "C:\\Users\\tester", "\\\\?\\C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\locked", true],
+    ["extended-length denies", "C:\\Users\\tester", "C:\\Users\\tester\\work", "\\\\?\\C:\\Users\\tester\\work\\locked", true],
+    ["case folding", "C:\\Users\\tester", "c:\\users\\TESTER\\WORK", "C:\\Users\\tester\\work\\locked", true],
+    ["mixed separators", "C:\\Users\\tester", "C:/Users/tester/work/", "C:\\Users\\tester\\work\\locked", true],
+    ["normalized descendants", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\nested\\..\\locked", true],
+    ["normalized escapes", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\..\\locked", false],
+    ["sibling boundaries", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work-neighbor\\locked", false],
+    ["drive roots", "C:\\Users\\tester", "C:\\", "C:\\Users\\tester\\locked", true],
+    ["profile roots", "C:\\Users\\tester", "C:\\Users\\tester\\", "C:\\Users\\tester\\locked", true],
+    ["network paths", "\\\\server\\profiles\\tester", "//SERVER/profiles/tester/work/", "\\\\server\\profiles\\tester\\work\\locked", true],
+    ["network share boundaries", "\\\\server\\profiles\\tester", "\\\\server\\profiles\\tester\\work", "\\\\server\\profiles\\tester\\work-neighbor\\locked", false],
   ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, kept) => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     process.env.AVE_ASRT_TEST_HOME = profile;
