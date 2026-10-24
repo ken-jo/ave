@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,10 +37,17 @@ function filesystemCache(config: Configuration) {
   return config.cache;
 }
 const roots: string[] = [];
+const junctions: Array<{ path: string; target: string; targetFile: string }> = [];
 const CACHE_FIXTURE_TIME = 1_577_836_800;
 
 afterEach(() => {
+  const linked = junctions.splice(0);
+  for (const { path } of linked) unlinkSync(path);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const { target, targetFile } of linked) {
+    expect(statSync(target).isDirectory()).toBe(true);
+    expect(statSync(targetFile).isFile()).toBe(true);
+  }
 });
 
 function fixture(valueName = "value.js") {
@@ -130,8 +137,12 @@ describe("build cache", () => {
     for (const path of ["webpack.config.cjs", "bun.lock", "src/shared/preload-bundles.json"]) {
       cpSync(resolve(path), join(files.root, path));
     }
-    symlinkSync(resolve("node_modules"), join(files.root, "node_modules"), "junction");
-    symlinkSync(resolve("scripts"), join(files.root, "scripts"), "junction");
+    for (const [name, file] of [["node_modules", "esbuild-loader/package.json"], ["scripts", "lib/build-assets.mjs"]] as const) {
+      const path = join(files.root, name);
+      const target = resolve(name);
+      symlinkSync(target, path, "junction");
+      junctions.push({ path, target, targetFile: join(target, file) });
+    }
     const input = join(files.root, "tsconfig.json");
     const options = JSON.parse(readFileSync(resolve("tsconfig.json"), "utf8")) as { compilerOptions: Record<string, unknown> };
     options.compilerOptions.useDefineForClassFields = false;

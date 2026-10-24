@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { runGateScript } from "./gate-script-runner.js";
 const SCRIPT = resolve(process.cwd(), "scripts/check-sandboxed-preloads.mjs");
 const TABLE = "src/shared/preload-bundles.json";
 const roots: string[] = [];
+const junctions: Array<{ path: string; target: string }> = [];
 
 type Row = { entry: string; file: string; build: "webpack" | "copy"; sandbox: boolean; runsIn: string };
 const realTable = (): Record<string, Row> => JSON.parse(readFileSync(resolve(process.cwd(), TABLE), "utf-8"));
@@ -20,7 +21,10 @@ const realTable = (): Record<string, Row> => JSON.parse(readFileSync(resolve(pro
 function createRoot(options: { dist?: Record<string, string | null>; table?: (table: Record<string, Row>) => void; webpackTail?: string } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-sandboxed-preloads-"));
   roots.push(root);
-  symlinkSync(resolve(process.cwd(), "node_modules"), join(root, "node_modules"), "junction");
+  const target = resolve(process.cwd(), "node_modules");
+  const path = join(root, "node_modules");
+  symlinkSync(target, path, "junction");
+  junctions.push({ path, target });
   const table = realTable();
   options.table?.(table);
   for (const [path, content] of [[TABLE, `${JSON.stringify(table, null, 2)}\n`], ["package.json", "{}\n"]] as const) {
@@ -42,7 +46,13 @@ function createRoot(options: { dist?: Record<string, string | null>; table?: (ta
 }
 
 afterEach(() => {
+  const linked = junctions.splice(0);
+  for (const { path } of linked) unlinkSync(path);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const { target } of linked) {
+    expect(statSync(target).isDirectory()).toBe(true);
+    expect(statSync(join(target, "esbuild-loader/package.json")).isFile()).toBe(true);
+  }
 });
 
 describe("check-sandboxed-preloads", () => {
