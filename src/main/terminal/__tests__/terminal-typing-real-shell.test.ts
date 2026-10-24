@@ -13,9 +13,9 @@
  * ran (its C marker).
  */
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
@@ -23,7 +23,7 @@ import { installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker, USER_INPUT_QUIET_MS } from "../terminal-blocks.js";
 import { foregroundVerdict, typeLineAtPrompt, type TypeTerminalCommandResult } from "../pty-manager.js";
 import { readTerminalForeground } from "../shell-process.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "fedcba9876543210fedcba9876543210";
 
@@ -45,19 +45,37 @@ afterEach(async () => {
   for (const { pty, home, exited } of opened.splice(0)) {
     try { pty.kill("SIGKILL"); } catch { /* gone */ }
     // Reap the isolated shell before removing its HOME.
-    await Promise.race([exited, sleep(3_000)]);
+    await exited;
     rmSync(home, { recursive: true, force: true, maxRetries: 5 });
   }
 });
 
-const until = waitForTerminal;
+const shellEvents = new EventEmitter();
+
+function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
+  const timeout = new Error("timed out");
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      shellEvents.off("output", check);
+      if (error) reject(error);
+      else resolve();
+    };
+    const check = () => {
+      try { if (condition()) finish(); } catch (error) { finish(error as Error); }
+    };
+    const timer = setTimeout(() => finish(timeout), timeoutMs);
+    shellEvents.on("output", check);
+    check();
+  });
+}
 
 /**
  * Start `shellPath` on a pty with the shell integration. `notFoundProgram`
  * puts an Ubuntu-like command-not-found handler that calls it ahead of the
  * integration, where the system startup file would have defined it.
  */
-async function startShell(shellPath: string, options: { notFoundProgram?: string } = {}): Promise<LiveShell> {
+async function startShell(shellPath: string, options: { notFoundProgram?: string; startup?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
   // The host distro's command-not-found handler is removed (Ubuntu's
@@ -69,7 +87,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
     : "unset -f command_not_found_handle\n";
   writeFileSync(rc, (options.notFoundProgram === undefined
     ? removeDistroHandler
-    : ubuntuLikeNotFoundHandler(basename(shellPath), options.notFoundProgram)) + readFileSync(rc, "utf-8"));
+    : ubuntuLikeNotFoundHandler(basename(shellPath), options.notFoundProgram)) + readFileSync(rc, "utf-8") + `\n${options.startup ?? ""}\n`);
   const pty = nodePty.spawn(shellPath, ["-l", "-i"], {
     cwd: home,
     cols: 120,
@@ -79,7 +97,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   let clockOffset = 0;
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => Date.now() + clockOffset });
   let output = "";
-  pty.onData((data) => { output += data; tracker.recordOutput(data); });
+  pty.onData((data) => { output += data; tracker.recordOutput(data); shellEvents.emit("output"); });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
   opened.push({ pty, home, exited });
   await until(() => tracker.promptEndCount() > 0);
@@ -109,8 +127,24 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
 /** The command text the shell recorded for the block typing produced. */
 async function ranCommand(shell: LiveShell, result: TypeTerminalCommandResult): Promise<string> {
   if (!result.ok) throw new Error(`not typed: ${result.message}`);
-  await until(() => shell.tracker.get(result.firstBlockId)?.status === "done");
+  await until(() => shell.tracker.get(result.firstBlockId)?.status === "done"
+    && ["ready", "pending-input", "no-bracketed-paste", "vi-editing-mode", "not-found-handler"].includes(shell.tracker.promptState()));
   return shell.tracker.get(result.firstBlockId)!.command;
+}
+
+/** Hold a native command until the test has observed the event it needs. */
+function createGate(home: string, name: string) {
+  const path = join(home, name);
+  expect(spawnSync("mkfifo", [path]).status).toBe(0);
+  const readFd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  let writeFd: number;
+  try { writeFd = openSync(path, constants.O_WRONLY | constants.O_NONBLOCK); }
+  catch (error) { closeSync(readFd); throw error; }
+  return {
+    path,
+    release: () => { writeSync(writeFd, "\n"); },
+    close: () => { closeSync(writeFd); closeSync(readFd); },
+  };
 }
 
 const BASH = TERMINAL_TEST_MODERN_BASH;
@@ -157,26 +191,26 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       { label: "an ESC", prefix: "\u001b", state: "consumed" },
       { label: "a Ctrl-X", prefix: "\u0018", state: "consumed" },
     ])("clears $label prefix typed ahead during the last command ($state), so the line still runs as approved", async ({ prefix, state }) => {
-      const shell = await startShell(path!);
       const zsh = basename(path!) === "zsh";
       const key = prefix === "\u001b" ? "^[" : "^X";
       const readlineKey = prefix === "\u001b" ? "\\e" : "\\C-x";
+      const longerKey = prefix === "\u001b" ? "^[[200~" : "^X^X";
+      // The completion bell wakes the output wait after the native binding
+      // has written its evidence. Neither the bell nor the probe edits text.
+      const observe = ': > "$HOME/prefix-consumed"; printf "\\a"';
+      // The shorter binding keeps longer sequences, including bracketed
+      // paste. Its evidence, rather than a delay, proves it was consumed.
+      const setup = state === "consumed"
+        ? zsh
+          ? `observe_prefix() { ${observe}; }; zle -N observe-prefix observe_prefix; bindkey '${key}' observe-prefix`
+          : `bind -x '"${readlineKey}": ${observe}'`
+        : `{ ${zsh ? `bindkey '${key}'; bindkey '${longerKey}'` : "bind -p; bind -s; bind -X"}; } > "$HOME/prefix-bindings"`;
+      const shell = await startShell(path!, { startup: setup });
       const consumed = join(shell.home, "prefix-consumed");
-      if (state === "consumed") {
-        // Give the shorter binding an observable completion while retaining
-        // longer sequences, including bracketed paste. Wait for that binding,
-        // rather than guessing when the line editor's key timeout has elapsed.
-        const setup = zsh
-          ? `observe_prefix() { : > "$HOME/prefix-consumed"; }; zle -N observe-prefix observe_prefix; bindkey '${key}' observe-prefix`
-          : `bind -x '"${readlineKey}": : > "$HOME/prefix-consumed"'`;
-        await ranCommand(shell, await shell.type(setup));
-      } else {
+      if (state === "pending") {
         // An unbound shorter key has no ambiguous-binding timeout. Verify the
         // native keymap so this case keeps the prefix pending until the reset.
-        const longerKey = prefix === "\u001b" ? "^[[200~" : "^X^X";
-        const bindings = await shell.type(zsh ? `bindkey '${key}'; bindkey '${longerKey}'` : "bind -p; bind -s; bind -X");
-        await ranCommand(shell, bindings);
-        const output = shell.tracker.get((bindings as { firstBlockId: number }).firstBlockId)!.output;
+        const output = readFileSync(join(shell.home, "prefix-bindings"), "utf8");
         if (zsh) {
           const action = prefix === "\u001b" ? "bracketed-paste" : "exchange-point-and-mark";
           expect(output).toBe(`"${key}" undefined-key\n"${longerKey}" ${action}\n`);
@@ -186,17 +220,24 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
         }
       }
       await until(() => shell.tracker.promptState() === "ready");
-      const running = await shell.type("sleep 1");
-      await until(() => shell.tracker.promptState() === "command-running");
-      // A key pressed while the command runs reaches the line editor at the next prompt.
-      shell.press(prefix);
-      await ranCommand(shell, running);
-      if (state === "consumed") await until(() => existsSync(consumed));
-      shell.elapse(USER_INPUT_QUIET_MS + 200);
-      await until(() => shell.tracker.promptState() === "ready");
-      const result = await shell.type("echo SAFE-RUN");
-      expect(await ranCommand(shell, result)).toBe("echo SAFE-RUN");
-      expect(shell.tracker.get((result as { firstBlockId: number }).firstBlockId)!.output).toBe("SAFE-RUN\n");
+      const gate = createGate(shell.home, "release-typeahead");
+      try {
+        const running = await shell.type(`printf '\\nTYPEAHEAD_WAITING\\n'; read -r < '${gate.path}'`);
+        await until(() => shell.tracker.promptState() === "command-running" && /\r?\nTYPEAHEAD_WAITING\r?\n/u.test(shell.output()));
+        const beforeInput = shell.output().length;
+        shell.press(prefix);
+        // The tty's echo proves the kernel received typeahead while the
+        // command was held, before the line editor can consume it.
+        await until(() => shell.output().slice(beforeInput).includes(prefix === "\u001b" ? "^[" : "^X"));
+        gate.release();
+        await ranCommand(shell, running);
+        if (state === "consumed") await until(() => existsSync(consumed));
+        shell.elapse(USER_INPUT_QUIET_MS + 200);
+        await until(() => shell.tracker.promptState() === "ready");
+        const result = await shell.type("echo SAFE-RUN");
+        expect(await ranCommand(shell, result)).toBe("echo SAFE-RUN");
+        expect(shell.tracker.get((result as { firstBlockId: number }).firstBlockId)!.output).toBe("SAFE-RUN\n");
+      } finally { gate.close(); }
     }, 30_000);
 
     it("does not take a B marker a command prints by expanding the prompt, now or from the background later", async () => {
@@ -251,7 +292,6 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
     it("refuses a line editor that would rewrite pasted text or not take it as a paste", async () => {
       const shell = await startShell(path!);
       await ranCommand(shell, await shell.type(rewritePaste));
-      await sleep(100);
       await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
     }, 30_000);
 
@@ -267,14 +307,12 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
         await until(() => shell.tracker.promptEndCount() > before);
         expect(existsSync(ran)).toBe(true);
         rmSync(ran);
-        await sleep(200);
         await expect(shell.type("'x'=1")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
         // The user removes it for this terminal; then terminal_run types, and
         // the same word runs nothing the rules did not see.
         const removed = shell.tracker.promptEndCount();
         shell.pty.write(`${removeNotFoundHandler}\r`);
         await until(() => shell.tracker.promptEndCount() > removed);
-        await sleep(200);
         expect(await ranCommand(shell, await shell.type("'x'=1"))).toBe("'x'=1");
         expect(existsSync(ran)).toBe(false);
       } finally {
@@ -287,7 +325,6 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       const shell = await startShell(path!);
       const enable = await shell.type(enableVi);
       await ranCommand(shell, enable);
-      await sleep(100);
       await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
     }, 30_000);
 
@@ -303,11 +340,16 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       const shell = await startShell(path!);
       const reading = await readTerminalForeground(shell.pty.pid);
       expect(reading).toMatchObject({ ok: true, foreground: { command: basename(path!), cwd: shell.home } });
-      expect(await shell.type("sleep 3")).toMatchObject({ ok: true });
-      await until(() => shell.tracker.promptState() === "command-running");
-      await sleep(300);
-      const during = await readTerminalForeground(shell.pty.pid);
-      expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+      const gate = createGate(shell.home, "release-foreground");
+      try {
+        const running = await shell.type(`sh -c "printf '\\nFOREGROUND_READY\\n'; read -r < '${gate.path}'"`);
+        expect(running).toMatchObject({ ok: true });
+        await until(() => shell.tracker.promptState() === "command-running" && /\r?\nFOREGROUND_READY\r?\n/u.test(shell.output()));
+        const during = await readTerminalForeground(shell.pty.pid);
+        expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+        gate.release();
+        await ranCommand(shell, running);
+      } finally { gate.close(); }
     }, 30_000);
   });
 }
