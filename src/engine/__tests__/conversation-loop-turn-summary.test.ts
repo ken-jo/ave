@@ -16,6 +16,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
+import * as deadlines from "../../shared/abortable-deadline.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { contextBudgetForCurrentRuntime } from "../turn/compaction.js";
@@ -800,9 +801,6 @@ describe("ConversationLoop onTurnSummary", () => {
   });
 
   async function sameIdentityFallbackRecords(resumePrimary = false) {
-    vi.useFakeTimers();
-    let signalPrimaryStarted!: () => void;
-    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -810,7 +808,6 @@ describe("ConversationLoop onTurnSummary", () => {
     const provider = new FallbackProvider({
       vendor: "openai",
       async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
-        signalPrimaryStarted();
         primarySent.push(params);
         params.onRequestControls?.({ outputTokenLimit: params.outputTokenLimit! });
         if (primarySent.length <= 5) {
@@ -854,10 +851,11 @@ describe("ConversationLoop onTurnSummary", () => {
       auditLogger: auditLogger as never,
     });
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
-    const pending = loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
-    await Promise.race([primaryStarted, pending]);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await pending;
+    // Real filesystem I/O can schedule a lock retry after fake time ran out.
+    const retrySleep = vi.spyOn(deadlines, "sleep").mockResolvedValue(undefined);
+    try {
+      await loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+    } finally { retrySleep.mockRestore(); }
     expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
     expect(primarySent[0]?.model).toBe(model);
     expect(primarySent[0]?.outputTokenLimit).toBe(4_096);

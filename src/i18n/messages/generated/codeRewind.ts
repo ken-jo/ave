@@ -7,7 +7,7 @@ export const en = {
   "codeRewind.both": "Restore conversation and code",
   "codeRewind.cancel": "Cancel",
   "codeRewind.conflict": "Code restore refused because these files changed outside the tracked edits: {files}",
-  "codeRewind.unavailable": "Code restore is unavailable for this turn. Its checkpoint is missing, pruned, or includes unsupported edits.",
+  "codeRewind.unavailable": "Code restore is unavailable: missing checkpoints, subagents, linked or large files, or unsupported edits.",
   "codeRewind.failed": "Code restore failed. The conversation was kept. Check files before retrying; an I/O failure may have restored only some files.",
   "codeRewind.invalidMode": "Choose a valid rewind action.",
 } as const;
@@ -21,7 +21,7 @@ export const ko: Record<keyof typeof en, string> = {
   "codeRewind.both": "대화와 코드 복원",
   "codeRewind.cancel": "취소",
   "codeRewind.conflict": "추적한 편집 외의 변경이 있어 코드 복원을 거부했습니다: {files}",
-  "codeRewind.unavailable": "이 턴의 코드 복원을 사용할 수 없습니다. 체크포인트가 없거나 삭제되었거나, 지원하지 않는 편집이 포함되어 있습니다.",
+  "codeRewind.unavailable": "체크포인트 누락, 하위 에이전트, 링크된 파일, 큰 파일 또는 지원하지 않는 편집으로 코드 복원을 사용할 수 없습니다.",
   "codeRewind.failed": "코드 복원에 실패해 대화를 유지했습니다. 다시 시도하기 전에 파일을 확인하세요. 입출력 오류로 일부 파일만 복원되었을 수 있습니다.",
   "codeRewind.invalidMode": "올바른 복원 작업을 선택하세요.",
 };

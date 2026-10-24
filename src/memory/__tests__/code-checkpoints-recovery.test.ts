@@ -7,7 +7,7 @@ import { AsyncResource } from "node:async_hooks";
 import { checkpointFileMutation, markCodeCheckpointUnavailable, restoreCodeCheckpoint as restoreWithPolicy, withCodeCheckpoint } from "../code-checkpoints.js";
 import { MemoryManager } from "../memory-manager.js";
 import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
-import { createCodeCheckpointTurn } from "../../__tests__/support/code-checkpoint-turn.js";
+import { createCodeCheckpointEdit, createCodeCheckpointTurn } from "../../__tests__/support/code-checkpoint-turn.js";
 
 let root: string;
 let file: string;
@@ -23,7 +23,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 const turn = createCodeCheckpointTurn(() => sessionId);
-const edit = (content = "agent") => checkpointFileMutation([{ path: file, content }], () => writeFile(file, content));
+const edit = createCodeCheckpointEdit(() => file);
 const restoreCodeCheckpoint = (session: string, message: string, context = { cwd: root, extraAllowedDirectories: [] }) => restoreWithPolicy(session, message, context);
 const unavailable = { ok: false, error: "code-checkpoint-unavailable" };
 
@@ -37,16 +37,20 @@ describe("checkpoint recovery and retention", () => {
   });
 
   it.each(["symlink", "hardlink", "oversized"] as const)("continues an authorized edit with an uncapturable %s original", async (kind) => {
-    if (kind === "symlink") {
-      const target = join(root, "target.txt");
-      await writeFile(target, "original");
-      await rm(file);
-      await symlink(target, file);
-    } else if (kind === "hardlink") await link(file, join(root, "alias.txt"));
-    else await writeFile(file, Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1));
-    await turn("uncapturable", () => edit());
-    expect(await readFile(file, "utf8")).toBe("agent");
-    expect(await restoreCodeCheckpoint(sessionId, "uncapturable")).toEqual(unavailable);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      if (kind === "symlink") {
+        const target = join(root, "target.txt");
+        await writeFile(target, "original");
+        await rm(file);
+        await symlink(target, file);
+      } else if (kind === "hardlink") await link(file, join(root, "alias.txt"));
+      else await writeFile(file, Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1));
+      await turn("uncapturable", () => edit());
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(await restoreCodeCheckpoint(sessionId, "uncapturable")).toEqual(unavailable);
+      expect(warn.mock.calls.flat().join(" ")).toContain("uncapturable original");
+    } finally { warn.mockRestore(); }
   });
 
   it.each(["syntax", "schema"])("quarantines a %s damaged ledger and admits the next turn", async (kind) => {
@@ -94,6 +98,44 @@ describe("checkpoint recovery and retention", () => {
     expect(await readFile(file, "utf8")).toBe("agent");
     expect(await restoreCodeCheckpoint(sessionId, "lost")).toEqual(unavailable);
     expect(await restoreCodeCheckpoint(sessionId, "earlier")).toEqual(unavailable);
+  });
+
+  it("invalidates surviving session history when only the in-flight record disappears", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await turn("earlier", () => edit("first"));
+      const other = randomUUID();
+      await withCodeCheckpoint({ sessionId: other, messageId: "unrelated" }, async () => {});
+      await turn("lost", async () => {
+        const ledger = JSON.parse(await readFile(join(storage, "turns.json"), "utf8"));
+        ledger.turns = ledger.turns.filter((item: { messageId: string }) => item.messageId !== "lost");
+        await writeFile(join(storage, "turns.json"), JSON.stringify(ledger));
+        await edit("second");
+      });
+      const ledger = JSON.parse(await readFile(join(storage, "turns.json"), "utf8"));
+      expect(ledger.turns.find((item: { messageId: string }) => item.messageId === "earlier").unavailable).toBe(true);
+      expect(await restoreCodeCheckpoint(sessionId, "earlier")).toEqual(unavailable);
+      expect(await restoreCodeCheckpoint(other, "unrelated")).toEqual({ ok: true });
+      expect(warn.mock.calls.flat().join(" ")).toContain("pruned record");
+    } finally { warn.mockRestore(); }
+  });
+
+  it("retains quarantined index images until the backup is deleted", async () => {
+    await turn("old", () => edit());
+    const ledger = JSON.parse(await readFile(join(storage, "turns.json"), "utf8"));
+    const image = ledger.turns[0].changes[0].before;
+    ledger.version = 3;
+    await writeFile(join(storage, "turns.json"), JSON.stringify(ledger));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await turn("new", async () => {});
+      expect(JSON.parse(await readFile(join(storage, image), "utf8"))).toBe(Buffer.from("original").toString("base64"));
+      expect(warn.mock.calls.flat().join(" ")).toContain("quarantine");
+      const backup = (await readdir(storage)).find((name) => name.endsWith(".bak"))!;
+      await rm(join(storage, backup));
+      await turn("sweep", async () => {});
+      expect(await readdir(storage)).not.toContain(image);
+    } finally { warn.mockRestore(); }
   });
 
   it("protects an in-flight restore range from global byte pressure", async () => {

@@ -19,7 +19,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, existsSync, readdirSync } from "node:fs";
+import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { AsyncResource } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -75,6 +77,7 @@ import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js"
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
+import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { LoadedSkill } from "../../main/skill-store.js";
 
 // ─── Test scaffolding ─────────────────────────────────
@@ -177,6 +180,96 @@ function buildLoopDeps(toolRegistry: ToolRegistry) {
     },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
 }
+
+describe("SubAgentRunner checkpoint child lifetime", () => {
+  it.each([
+    ["spawn", "finished"], ["spawn", "failed"], ["spawn", "cancelled"],
+    ["resume", "finished"], ["resume", "failed"], ["resume", "cancelled"],
+  ] as const)("keeps later parent turns unavailable during %s until the child is %s", async (entry, outcome) => {
+    const root = await realpath(mkdtempSync(join(tmpdir(), "ave-runner-checkpoint-")));
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const sessionId = "a1bdc27a-c758-4a74-8955-5e9188412366";
+    const file = join(root, "t2.txt");
+    const childFile = join(root, "child.txt");
+    await writeFile(file, "original");
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_item", description: "Read an item", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, execute: async () => ({ output: "value", isError: false }),
+    }));
+    const memory = new MemoryManager({ aveDir: join(root, "subagent") });
+    const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
+    const hasProvider = vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    const loadSession = vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let editChild!: () => void;
+    const editAllowed = new Promise<void>((resolve) => { editChild = resolve; });
+    let edited!: () => void;
+    const childEdited = new Promise<void>((resolve) => { edited = resolve; });
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => { finish = resolve; });
+    let running: Promise<SubAgentSpawnResult> | undefined;
+    const detached = new AsyncResource("checkpoint-child-dispatch");
+    try {
+      const input = { toolScope: PARENT_ALL_TOOL_SCOPE, title: "checkpoint child", instructions: "edit", originSessionId: sessionId, background: true };
+      let resumeId: string | undefined;
+      if (entry === "resume") {
+        runTurn.mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" });
+        resumeId = (await runner.spawn(input)).childSessionId;
+      }
+      runTurn.mockImplementation(async () => {
+        start();
+        await editAllowed;
+        await checkpointFileMutation([{ path: childFile, content: "child edit" }], () => writeFile(childFile, "child edit"));
+        edited();
+        await finishing;
+        if (outcome === "failed") throw new Error("child failed");
+        return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+      });
+      await withCodeCheckpoint({ sessionId, messageId: "T1" }, async () => {
+        const dispatch = () => entry === "spawn" ? runner.spawn(input) : runner.resume(resumeId!, "continue", input.title, undefined, sessionId, undefined, true);
+        running = outcome === "finished" ? dispatch() : detached.runInAsyncScope(dispatch);
+        await Promise.race([started, running.then(() => { throw new Error("Child ended before it started"); })]);
+      });
+      await withCodeCheckpoint({ sessionId, messageId: "T2" }, async () => {
+        await checkpointFileMutation([{ path: file, content: "parent edit" }], () => writeFile(file, "parent edit"));
+        editChild();
+        await childEdited;
+      });
+      if (outcome === "cancelled") {
+        const status = runner.listRunStatuses(sessionId).find((item) => item.status === "running")!;
+        expect(runner.interruptRun(status.spawnId ?? status.childSessionId, sessionId)).toMatchObject({ ok: true });
+      }
+      expect(await restoreCodeCheckpoint(sessionId, "T2", { cwd: root, extraAllowedDirectories: [] }))
+        .toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+      expect(await readFile(file, "utf8")).toBe("parent edit");
+      expect(await readFile(childFile, "utf8")).toBe("child edit");
+      finish();
+      await running;
+      const ledger = JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8"));
+      expect(ledger.turns.find((item: { messageId: string }) => item.messageId === "T1").unavailable).toBe(true);
+      expect(ledger.turns.find((item: { messageId: string }) => item.messageId === "T2").unavailable).toBe(true);
+      await withCodeCheckpoint({ sessionId, messageId: "after" }, () =>
+        checkpointFileMutation([{ path: file, content: "later" }], () => writeFile(file, "later")));
+      expect(await restoreCodeCheckpoint(sessionId, "after", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("parent edit");
+    } finally {
+      editChild();
+      finish();
+      await running;
+      runTurn.mockRestore();
+      loadSession.mockRestore();
+      refresh.mockRestore();
+      hasProvider.mockRestore();
+      detached.emitDestroy();
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("SubAgentRunner — authorization terminal propagation", () => {
   it("lifts a live child authorization terminal into the spawn result", async () => {

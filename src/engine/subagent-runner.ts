@@ -35,7 +35,7 @@ import {
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
 import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
-import { markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
+import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
@@ -2985,6 +2985,21 @@ export class SubAgentRunner {
     executionPolicy?: SubAgentExecutionPolicy,
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
   ): Promise<SubAgentSpawnResult> {
+    const checkpointChild: { release?: () => void } = {};
+    try {
+      return await this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier);
+    } finally {
+      checkpointChild.release?.();
+    }
+  }
+
+  private async runSpawnChild(
+    checkpointChild: { release?: () => void },
+    input: SubAgentSpawnInput,
+    callbacks?: SubAgentSpawnCallbacks,
+    executionPolicy?: SubAgentExecutionPolicy,
+    durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+  ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
     if (executionPolicy && typeof durableLinkBarrier !== "function") {
       return this.failA2AWireRun(
@@ -3165,7 +3180,7 @@ export class SubAgentRunner {
         spawnMetadata,
       );
       initialMetadataPersisted = true;
-      await markCodeCheckpointUnavailable(input.originSessionId);
+      checkpointChild.release = await trackCodeCheckpointChild(input.originSessionId);
       if (
         executionPolicy
         && !this.hasAuthoritativeA2AWireProjectBinding(
@@ -3954,7 +3969,7 @@ export class SubAgentRunner {
       return result;
     }
 
-    const attempt: InFlightResumeAttempt = {};
+    const attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void } = {};
     const runPromise = this.runResume(
       resumeId,
       continuationInstructions,
@@ -3971,6 +3986,7 @@ export class SubAgentRunner {
     try {
       return await runPromise;
     } finally {
+      attempt.releaseCheckpointChild?.();
       this.inFlight.delete(resumeId);
     }
   }
@@ -3985,7 +4001,7 @@ export class SubAgentRunner {
     spawnId: string | undefined,
     background: boolean,
     executionPolicy: SubAgentExecutionPolicy | undefined,
-    attempt: InFlightResumeAttempt,
+    attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void },
   ): Promise<SubAgentSpawnResult> {
     const cancellation = new AbortController();
     let child: ConversationLoop | null = null;
@@ -4281,7 +4297,7 @@ export class SubAgentRunner {
         'sub-agent resume: failed to load session history for "' + resumeId + '"',
       );
     }
-    await markCodeCheckpointUnavailable(originSessionId ?? meta.originSessionId);
+    attempt.releaseCheckpointChild = await trackCodeCheckpointChild(originSessionId ?? meta.originSessionId);
     if (
       executionPolicy
       && !projectRootEquals(child.getSessionProjectRoot(), meta.projectRoot)
