@@ -606,7 +606,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
       action: "degrade",
       reason: "degrade-default-cannot-activate",
       onSignal: "default-settings",
-      dependencyErrors: ["socat not executable at /home/someone/bin/socat"],
+      dependencyErrors: ["socat not executable at /home/example/bin/socat"],
       causes: ["missing-socat"],
     });
     await setup({ osToolSandbox: true });
@@ -617,7 +617,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
       onSignal: "default-settings",
       causes: ["missing-socat"],
     });
-    expect(JSON.stringify(result)).not.toContain("/home/someone");
+    expect(JSON.stringify(result)).not.toContain("/home/example");
   });
 
   it("reports a boot/plan contradiction as an error on the shell row, logged and audited, not a failed snapshot", async () => {
