@@ -2876,7 +2876,7 @@ interface ShortRootedPlugin {
 }
 
 function makeShortRootedPlugin(): ShortRootedPlugin {
-  const base = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+  const base = process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp";
   const root = mkdtempSync(join(base, "lv-uds-"));
   const pluginRoot = join(root, "p");
   const pluginDataDir = join(pluginRoot, "data");

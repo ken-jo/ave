@@ -1,7 +1,7 @@
 /**
  * The per-run directories `vitest.globalSetup.ts` makes under
- * `~/.ave/test-tmp`: the run's Ave homes (`h-*`) and its sandbox base
- * (`sbx-*`).
+ * `~/.ave/test-tmp`: the run's Ave homes (`h-*`), its sandbox base
+ * (`sbx-*`) and its temp directory (`t-*`).
  *
  * A run removes its own at teardown, and on a failed setup before returning.
  * One that was killed cannot, so each run also removes what a run left behind
@@ -19,7 +19,7 @@ import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 /** Run directory names: `mkdtemp` adds six characters after the prefix. */
-const RUN_DIR_RE = /^(?:h|sbx)-[A-Za-z0-9]{6}$/;
+const RUN_DIR_RE = /^(?:h|sbx|t)-[A-Za-z0-9]{6}$/;
 
 /** A run directory a sweep renamed aside to remove (`.del-<uuid>`). */
 const ASIDE_DIR_RE = /^\.del-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

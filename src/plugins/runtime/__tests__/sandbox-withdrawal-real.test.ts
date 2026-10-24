@@ -68,7 +68,7 @@ describe("real sandbox ceiling withdrawal", () => {
           if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT sandbox cannot initialize");
           return;
         }
-        root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "ave-sr-"));
+        root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "ave-sr-"));
         previousHome = process.env.AVE_HOME;
         const home = join(root, "home");
         process.env.AVE_HOME = home;

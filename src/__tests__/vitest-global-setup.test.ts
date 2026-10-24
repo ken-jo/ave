@@ -9,9 +9,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import type { TestProject } from "vitest/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -39,11 +39,13 @@ import {
   type ProcessProbe,
   type RunOwner,
 } from "./support/test-run-dirs.js";
+import { removeLinksUnder } from "./support/tmp-dir-teardown.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setup } from "../../config/vitest.globalSetup.js";
 
 const RUN_ENV = [
   "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
+  "TMPDIR", "TEMP", "TMP",
 ] as const;
 const savedEnv = Object.fromEntries(RUN_ENV.map((name) => [name, process.env[name]]));
 const scratch = useTempDirs("vitest-setup-");
@@ -79,7 +81,7 @@ function project(isolate = true, pool = "forks", provided: Provided = new Map())
 }
 
 function runDirs(testTmp: string): string[] {
-  return existsSync(testTmp) ? readdirSync(testTmp).filter((name) => /^(?:h|sbx)-/.test(name)) : [];
+  return existsSync(testTmp) ? readdirSync(testTmp).filter((name) => /^(?:h|sbx|t)-/.test(name)) : [];
 }
 
 const DAY_AGO = () => new Date(Date.now() - STALE_RUN_DIR_AGE_MS - 60_000);
@@ -132,7 +134,7 @@ describe("vitest global setup", () => {
     const jsdomProvided: Provided = new Map();
     const teardownNode = await setup(project(true, "forks", nodeProvided));
     const teardownJsdom = await setup(project(true, "forks", jsdomProvided));
-    expect(runDirs(testTmp)).toHaveLength(2);
+    expect(runDirs(testTmp)).toHaveLength(3);
     // Both projects run the one plugin child bundle this run built.
     const childEntry = nodeProvided.get("pluginChildEntryPath");
     expect(typeof childEntry).toBe("string");
@@ -146,11 +148,77 @@ describe("vitest global setup", () => {
     }
 
     await teardownNode();
-    expect(runDirs(testTmp)).toHaveLength(2);
+    expect(runDirs(testTmp)).toHaveLength(3);
     expect(existsSync(childEntry as string)).toBe(true);
     await teardownJsdom();
     expect(runDirs(testTmp)).toEqual([]);
     expect(existsSync(childEntry as string)).toBe(false);
+  });
+
+  it("gives the run its own temp directory, and at teardown names what the tests left in it and removes it", async () => {
+    const testTmp = scratchTestTmp();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const teardown = await setup(project());
+      const runTmp = tmpdir();
+      expect(dirname(runTmp)).toBe(testTmp);
+      expect(basename(runTmp)).toMatch(/^t-/);
+      mkdtempSync(join(tmpdir(), "leaky-"));
+      mkdtempSync(join(tmpdir(), "leaky-"));
+      writeFileSync(join(tmpdir(), "notes.txt"), "");
+      await teardown();
+      expect(existsSync(runTmp)).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("left these in the temp directory"));
+      expect(warn.mock.calls.flat().join("\n")).toContain(": leaky-* x2, notes.txt");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("removes a link the tests left in the temp directory, never what it points to", async () => {
+    scratchTestTmp();
+    const target = scratch();
+    writeFileSync(join(target, "keep.txt"), "kept");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const teardown = await setup(project());
+      const runTmp = tmpdir();
+      const nested = mkdtempSync(join(runTmp, "linked-"));
+      symlinkSync(target, join(runTmp, "top-link"), "junction");
+      symlinkSync(target, join(nested, "deep-link"), "junction");
+      await teardown();
+      expect(existsSync(runTmp)).toBe(false);
+      expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("kept");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("takes out every link under a run directory before the tree, at any depth, and only the links", () => {
+    const target = scratch();
+    writeFileSync(join(target, "keep.txt"), "kept");
+    const runTmp = scratch();
+    mkdirSync(join(runTmp, "real", "deeper"), { recursive: true });
+    symlinkSync(target, join(runTmp, "top-link"), "junction");
+    symlinkSync(target, join(runTmp, "real", "deeper", "deep-link"), "junction");
+    removeLinksUnder(runTmp);
+    expect(readdirSync(runTmp)).toEqual(["real"]);
+    expect(readdirSync(join(runTmp, "real", "deeper"))).toEqual([]);
+    expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("kept");
+  });
+
+  it("says nothing about the temp directory when the tests left it empty", async () => {
+    scratchTestTmp();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const teardown = await setup(project());
+      const runTmp = tmpdir();
+      await teardown();
+      expect(existsSync(runTmp)).toBe(false);
+      expect(warn.mock.calls.flat().join("\n")).not.toContain("temp directory");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("removes what a killed run left long ago before making its own, and keeps a live run's", async () => {

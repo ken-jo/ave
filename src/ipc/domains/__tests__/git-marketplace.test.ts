@@ -154,6 +154,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
   const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
   const onBuilt = vi.fn(async () => {});
   const home = mkdtempSync(join(tmpdir(), "ave-git-marketplace-ipc-"));
+  setupHomes.push(home);
   const marketplace: Record<string, unknown> = { updateCheckIntervalMs: 0 };
   const settings = {
     get: () => marketplace,
@@ -176,9 +177,16 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
   return { service, create, onBuilt, registration, home, marketplace, lifetime, settings, activity };
 }
 
+/** Every setup() home, removed after its test: they used to pile up in the temp directory. */
+const setupHomes: string[] = [];
+
 beforeEach(() => {
   handlers.clear();
   resumeListeners.clear();
+});
+
+afterEach(() => {
+  for (const home of setupHomes.splice(0)) rmSync(home, { recursive: true, force: true, maxRetries: 3 });
 });
 
 describe("git marketplace IPC boundary", () => {

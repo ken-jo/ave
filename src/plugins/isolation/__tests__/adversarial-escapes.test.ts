@@ -176,10 +176,11 @@ const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | un
 };
 
 beforeAll(async () => {
-  // Short on macOS, whose temp directory is deep: escape 1a's worker binds its
+  // Short on POSIX, where the temp directory is deep (macOS's own, and the
+  // test run's under ~/.ave/test-tmp on Linux): escape 1a's worker binds its
   // control socket under `<AVE_HOME>/plugins/<id>/run/<worker>/`, and a path
   // past `sun_path` is refused before any worker starts.
-  const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "adv-"));
+  const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "adv-"));
   const aveHome = join(root, ".ave");
   const secretsDir = join(aveHome, "secrets");
   const neighbourDataDir = join(aveHome, "plugins", NEIGHBOUR_ID, "data");

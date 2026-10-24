@@ -40,14 +40,16 @@ interface LiveShell {
   type(line: string): Promise<TypeTerminalCommandResult>;
 }
 
-const opened: Array<{ pty: nodePty.IPty; home: string; exited: Promise<void> }> = [];
+const opened: Array<{ pty: nodePty.IPty; exited: Promise<void> }> = [];
+/** Every shell HOME, tracked from creation: a start that throws before the spawn still owns one. */
+const homes: string[] = [];
 afterEach(async () => {
-  for (const { pty, home, exited } of opened.splice(0)) {
+  for (const { pty, exited } of opened.splice(0)) {
     try { pty.kill("SIGKILL"); } catch { /* gone */ }
     // Reap the isolated shell before removing its HOME.
     await exited;
-    rmSync(home, { recursive: true, force: true, maxRetries: 5 });
   }
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true, maxRetries: 5 });
 });
 
 const shellEvents = new EventEmitter();
@@ -77,6 +79,7 @@ function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
  */
 async function startShell(shellPath: string, options: { notFoundProgram?: string; startup?: string; profile?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
+  homes.push(home);
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
   if (options.profile !== undefined) writeFileSync(join(home, ".zprofile"), options.profile);
   // The host distro's command-not-found handler is removed (Ubuntu's
@@ -100,7 +103,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   let output = "";
   pty.onData((data) => { output += data; tracker.recordOutput(data); shellEvents.emit("output"); });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
-  opened.push({ pty, home, exited });
+  opened.push({ pty, exited });
   try { await until(() => tracker.promptEndCount() > 0); }
   catch (cause) { throw new Error(`${basename(shellPath)} did not start: ${JSON.stringify(output.slice(-4096))}`, { cause }); }
   // No user input has been recorded yet: the authenticated prompt is the

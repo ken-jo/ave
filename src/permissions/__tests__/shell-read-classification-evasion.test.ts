@@ -14,13 +14,14 @@
  *      the command and sees the real target — the control that used to be
  *      skipped is now reachable and correct for the same payload.
  */
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { inspectHostRisk, isReadOnlyCommand } from "../reviewer/host-risk-inspector.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
+import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 
 /**
  * The shipped `permissions.blockReadsOutsideWorkingDirectories` — off, so reads
@@ -46,9 +47,13 @@ function classify(finalInput: Record<string, unknown>) {
   return inspectHostRisk({ source: "plugin", finalInput });
 }
 
+const tmpDirs = createTmpDirTracker();
+
+afterEach(() => tmpDirs.cleanup());
+
 /** A throwaway sandbox root; the policy resolves relative operands against it. */
 function sandboxRoot(): string {
-  return mkdtempSync(join(tmpdir(), "ave-evasion-"));
+  return tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-evasion-")));
 }
 
 describe("evasion: a second command-bearing field carries the payload", () => {
