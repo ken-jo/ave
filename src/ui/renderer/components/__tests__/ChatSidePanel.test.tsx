@@ -1107,13 +1107,23 @@ describe("ChatSidePanel", () => {
     return { listDir, reveal, removeRoot, writeText };
   }
 
+  async function findReadyWorkspaceTree(): Promise<HTMLElement> {
+    const tree = await screen.findByRole("tree");
+    // The tree shell mounts before its asynchronous listing and focus effect.
+    // Wait for the initial tab stop before sending keys or inspecting rows.
+    await waitFor(() => {
+      expect(within(tree).getByRole("treeitem", { name: "alpha" })).toHaveAttribute("tabindex", "0");
+    });
+    return tree;
+  }
+
   it("renders rows as ARIA treeitems with level/setsize/posinset and a single roving tabindex", async () => {
     stubRichWorkspace();
     renderPanel(
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await screen.findByRole("tree");
+    const tree = await findReadyWorkspaceTree();
     const items = within(tree).getAllByRole("treeitem");
     expect(items.length).toBe(3);
     expect(items[0].getAttribute("aria-level")).toBe("1");
@@ -1130,7 +1140,7 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await screen.findByRole("tree");
+    const tree = await findReadyWorkspaceTree();
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     const items = within(tree).getAllByRole("treeitem");
     // Second row (beta) becomes the roving-focus row (tabindex=0). Roving focus
@@ -1138,6 +1148,7 @@ describe("ChatSidePanel", () => {
     // aria-selected — that tracks the opened file only (APG tree pattern).
     expect(items[1].getAttribute("tabindex")).toBe("0");
     expect(items[1].getAttribute("aria-selected")).toBeNull();
+    expect(items[1]).toHaveFocus();
   });
 
   it("Enter on a folder expands it (lazy-loads children into a role=group)", async () => {
@@ -1146,7 +1157,7 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await screen.findByRole("tree");
+    const tree = await findReadyWorkspaceTree();
     // First row is "alpha" (a directory) and is the active item.
     fireEvent.keyDown(tree, { key: "Enter" });
     await screen.findByText("a1.md");
@@ -1159,10 +1170,12 @@ describe("ChatSidePanel", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const tree = await screen.findByRole("tree");
+    const tree = await findReadyWorkspaceTree();
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
+    expect(items[2].getAttribute("aria-selected")).toBeNull();
+    expect(items[2]).toHaveFocus();
   });
 
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
