@@ -1161,6 +1161,7 @@ describe("ChatSidePanel", () => {
     // aria-selected — that tracks the opened file only (APG tree pattern).
     expect(items[1].getAttribute("tabindex")).toBe("0");
     expect(items[1].getAttribute("aria-selected")).toBeNull();
+    expect(items[1]).toHaveFocus();
   });
 
   it("Enter on a folder expands it (lazy-loads children into a role=group)", async () => {
@@ -1188,6 +1189,8 @@ describe("ChatSidePanel", () => {
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
+    expect(items[2].getAttribute("aria-selected")).toBeNull();
+    expect(items[2]).toHaveFocus();
   });
 
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
