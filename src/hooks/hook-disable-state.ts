@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 
 export type HookDisableCause = "system-quarantine" | "user";
 
@@ -16,8 +16,15 @@ export function readHookDisableCause(path: string): HookDisableCause | "legacy" 
   return "legacy";
 }
 
+/** Replaces any old record; exclusive create never writes through a link at the sidecar path. */
 export function writeHookDisableCause(path: string, cause: HookDisableCause): void {
-  writeFileSync(hookDisableCausePath(path), `${cause}\n`, { mode: 0o600 });
+  clearHookDisableCause(path);
+  const fd = openSync(hookDisableCausePath(path), "wx", 0o600);
+  try {
+    writeSync(fd, `${cause}\n`);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function clearHookDisableCause(path: string): void {

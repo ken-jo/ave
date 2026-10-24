@@ -40,7 +40,7 @@ import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
 import type { ScriptHookType } from "./script-hook-types.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { disabledHookOriginalName, writeHookDisableCause, type HookDisableCause } from "./hook-disable-state.js";
+import { clearHookDisableCause, disabledHookOriginalName, writeHookDisableCause, type HookDisableCause } from "./hook-disable-state.js";
 
 const log = createLogger("hook-discovery");
 
@@ -425,8 +425,14 @@ export function disableHook(
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     dest = join(disabledDir, `${hook.fileName}.${ts}`);
   }
+  // A stale record left by a manual move must not outlive a failed write below.
+  clearHookDisableCause(dest);
   renameSync(hook.path, dest);
-  writeHookDisableCause(dest, cause);
+  try {
+    writeHookDisableCause(dest, cause);
+  } catch (err) {
+    log.warn("hook-discovery: disable cause not recorded for %s (%s); treated as system-quarantined", dest, (err as Error).message);
+  }
   return dest;
 }
 
