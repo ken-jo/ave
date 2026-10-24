@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
@@ -63,6 +63,16 @@ describe("disable cause records", () => {
     expect(readFileSync(outside, "utf8")).toBe("user\n");
     expect(lstatSync(hookDisableCausePath(stored)).isSymbolicLink()).toBe(false);
     expect(readHookDisableCause(stored)).toBe("system-quarantine");
+  });
+
+  it("writes a private record and leaves no staging file behind", () => {
+    const stored = join(disabledDir, "pre-guard.sh");
+    writeFileSync(stored, "#!/bin/sh\nexit 0\n");
+    writeHookDisableCause(stored, "user");
+    writeHookDisableCause(stored, "system-quarantine");
+    expect(readHookDisableCause(stored)).toBe("system-quarantine");
+    if (process.platform !== "win32") expect(lstatSync(hookDisableCausePath(stored)).mode & 0o777).toBe(0o600);
+    expect(readdirSync(disabledDir).sort()).toEqual(["pre-guard.sh", "pre-guard.sh.disable-cause"]);
   });
 
   it("does not follow a link when reading a record", (ctx) => {

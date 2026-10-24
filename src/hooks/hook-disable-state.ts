@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rmSync } from "node:fs";
+import { PRIVATE_FILE_MODE, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 
 export type HookDisableCause = "system-quarantine" | "user";
 
@@ -32,25 +32,12 @@ export function readHookDisableCause(path: string): HookDisableCause | "legacy" 
 }
 
 /**
- * Writes a private temp file and renames it over the sidecar. The rename
- * replaces whatever sits at the sidecar path, a planted link included,
+ * Stages a private (wx, 0600) temp file and renames it over the sidecar. The
+ * rename replaces whatever sits at the sidecar path, a planted link included,
  * without following it.
  */
 export function writeHookDisableCause(path: string, cause: HookDisableCause): void {
-  const sidecar = hookDisableCausePath(path);
-  const tmp = `${sidecar}.${randomBytes(6).toString("hex")}.tmp`;
-  try {
-    const fd = openSync(tmp, "wx", 0o600);
-    try {
-      writeSync(fd, `${cause}\n`);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmp, sidecar);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
+  writeUtf8FileAtomicSync(hookDisableCausePath(path), `${cause}\n`, PRIVATE_FILE_MODE);
 }
 
 export function clearHookDisableCause(path: string): void {
