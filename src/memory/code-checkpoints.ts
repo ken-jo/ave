@@ -51,7 +51,6 @@ interface DeferredSession {
   dir: string;
   sessionId: string;
   turns: Map<string, boolean>;
-  overflowed: boolean;
 }
 const turnContext = new AsyncLocalStorage<ActiveTurn>();
 const inFlight = new Set<ActiveTurn>();
@@ -78,14 +77,13 @@ function deferUnavailable(active: ActiveTurn, error: unknown): void {
   const key = childKey(active.sessionId, active.dir);
   let pending = pendingUnavailable.get(key);
   if (!pending) {
-    pending = { dir: active.dir, sessionId: active.sessionId, turns: new Map(), overflowed: false };
+    pending = { dir: active.dir, sessionId: active.sessionId, turns: new Map() };
     pendingUnavailable.set(key, pending);
   }
   pending.turns.set(active.messageId, active.admitted || pending.turns.get(active.messageId) === true);
-  if (pending.turns.size > CODE_CHECKPOINT_POLICY.maxSessionTurns) {
-    pending.turns.delete(pending.turns.keys().next().value!);
-    pending.overflowed = true;
-  }
+  // Dropping the oldest ID is safe: the newer placeholders sit in every
+  // restore range that reaches it, so that range is refused anyway.
+  if (pending.turns.size > CODE_CHECKPOINT_POLICY.maxSessionTurns) pending.turns.delete(pending.turns.keys().next().value!);
 }
 
 function exclusive<T>(run: () => Promise<T>): Promise<T> {
@@ -217,12 +215,6 @@ async function load(): Promise<Turn[]> {
   const turns = await loadLedger();
   for (const pending of pendingUnavailable.values()) {
     if (pending.dir !== namespace.dir) continue;
-    if (pending.overflowed) {
-      for (const turn of turns.filter((turn) => turn.sessionId === pending.sessionId)) {
-        downgrade(turn, "unavailable history gap");
-        turn.changes = [];
-      }
-    }
     for (const [messageId, admitted] of pending.turns) {
       const existing = turns.find((turn) => turn.sessionId === pending.sessionId && turn.messageId === messageId);
       if (!existing) {

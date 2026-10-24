@@ -86,7 +86,8 @@ describe("checkpoint quarantine storage", () => {
     const image = (await readdir(storage)).find((name) => name.startsWith("image-"))!;
     await writeFile(join(storage, "turns.json"), "{");
     await turn("quarantine", async () => {});
-    const manifest = join(storage, `${await backupName()}.images.json`);
+    const backup = await backupName();
+    const manifest = join(storage, `${backup}.images.json`);
     const target = join(root, "example.json");
     await writeFile(target, JSON.stringify([image]));
     if (["missing", "symlink", "hardlink"].includes(kind)) await rm(manifest, { force: true });
@@ -96,7 +97,9 @@ describe("checkpoint quarantine storage", () => {
     if (kind === "hardlink") await link(target, manifest);
     if (kind === "mode") await chmod(manifest, 0o644);
     await turn("sweep", () => edit("next"));
-    expect(await readdir(storage)).not.toContain(image);
+    const after = await readdir(storage);
+    expect(after).not.toContain(image);
+    expect(after).not.toContain(backup);
     expect(await namespaceBytes()).toBeLessThanOrEqual(CODE_CHECKPOINT_POLICY.maxStorageBytes * 2);
     expect(await readFile(target, "utf8")).toBe(JSON.stringify([image]));
     expect(await restoreCodeCheckpoint(sessionId, "sweep", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
