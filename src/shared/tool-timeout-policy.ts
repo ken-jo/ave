@@ -108,6 +108,10 @@ export const TOOL_TIMEOUT_POLICY = {
   // margin so the executor policy remains route-independent.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
+  // Native location fixtures allow 15 s per check: cold host startup takes
+  // over 1 s. Bound each serial ACL request to that budget so a stalled host
+  // releases queued admissions well before the global ceiling.
+  windowsAclRequestMs: 15_000,
   // Pre-effect exact workload/Docker identity proof. This is also the
   // protocol handshake timeout; keep it here so the protocol and executor do
   // not maintain independent copies of the same phase budget.
