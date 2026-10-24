@@ -52,7 +52,7 @@ import {
 } from "./pre-push-source-policy.mjs";
 import { namedRepositoryPaths, namesChangedPath } from "../run-ci-suite.mjs";
 
-export const FAST_TIER = "fast";
+const FAST_TIER = "fast";
 export const GLOBAL_INPUT_TIER = "global-input";
 export const FULL_SUITE_DEFERRED = "full suite deferred to CI";
 
