@@ -15,6 +15,7 @@ import {
 import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { GLOBAL_INPUT_TIER, selectScopedTier } from "../../scripts/hooks/pre-push-tier.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 // Git writes loose objects read-only, and Electron's synchronous recursive removal
 // refuses read-only files on Windows; the async removal clears the attribute.
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
@@ -25,15 +26,18 @@ const end = source.indexOf("// Staged safety scan", start);
 const baseSha = "a".repeat(40);
 const localSha = "b".repeat(40);
 const update = { localRef: "refs/heads/topic", remoteRef: "refs/heads/topic", localSha, remoteSha: baseSha };
-const modified = (path: string) => ({ path, status: "M", oldMode: "100644", newMode: "100644" });
 interface ClassificationOptions {
   update?: Partial<typeof update>;
+  updates?: typeof update[];
   fastForward?: boolean;
   replacedRemoteAvailable?: boolean;
   commentOnly?: boolean;
   historyReason?: string;
   // The merge-base findNewBranchBase returns for a new or rewritten branch.
   newBranchBase?: string;
+  baseFailure?: string;
+  diffFailure?: boolean;
+  log?: (line: string) => void;
   // Entries per diff base, when they differ from `entries`.
   changedEntries?: (base: string) => ReturnType<typeof modified>[];
   messageCatalog?: { reason?: string; namespaces?: string[]; testFiles?: string[]; consumerModules?: string[] };
@@ -46,12 +50,12 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
   const classifyChanges = runInNewContext(`${source.slice(start, end)}; classifyPrePushChanges`, {
     isNullObjectId: (sha: string) => /^0+$/.test(sha),
     getProtectedBranchNames: () => new Set(["main", "master"]),
-    findNewBranchBase: () => ({ sha: options.newBranchBase ?? baseSha }),
+    findNewBranchBase: () => options.baseFailure ? { reason: options.baseFailure } : { sha: options.newBranchBase ?? baseSha },
     isIntegrationBranchRef,
     selectTriggeredLockSuites,
     ensureReplacedRemoteCommit: () => options.replacedRemoteAvailable !== false,
     isFastForwardUpdate: () => options.fastForward !== false,
-    getChangedEntries: (_root: string, base: string) => options.changedEntries?.(base) ?? entries,
+    getChangedEntries: (_root: string, base: string) => options.diffFailure ? null : options.changedEntries?.(base) ?? entries,
     getPushedHistoryFullReason: () => options.historyReason ?? null,
     isCanonicalGitPath,
     classifyDocumentationChanges,
@@ -63,13 +67,38 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
       options.messageCatalog ?? { reason: `unexpected catalog selection for ${entries.map(({ path }) => path).join(", ")}` },
     selectScopedTier,
     GLOBAL_INPUT_TIER,
+    console: { log: options.log ?? (() => {}) },
     getUnattributedCatalogSelection: () =>
       options.unattributedCatalog ?? { namespaces: [], unattributedFiles: [], testFiles: [], consumerModules: [], skippedConsumers: [] },
   });
-  return classifyChanges("/fixture", { complete: true, updates: [{ ...update, ...options.update }] }, "origin", "/remote");
+  return classifyChanges("/fixture", { complete: true, updates: options.updates ?? [{ ...update, ...options.update }] }, "origin", "/remote");
 }
 
 describe("pre-push classification precedence", () => {
+  it.each([
+    ["an orphan branch", { baseFailure: "no common base with a remote default or integration branch" }],
+    ["a failed remote lookup", { baseFailure: "git ls-remote failed" }],
+    ["a failed diff", { diffFailure: true }],
+  ] as const)("reports missing changed-file selection per update for %s", (_kind, failure) => {
+    const lines: string[] = [];
+    const updates = ["topic", "another-topic"].map((name) => ({
+      ...update, localRef: `refs/heads/${name}`, remoteRef: `refs/heads/${name}`, remoteSha: "0".repeat(40),
+    }));
+    const result = classify([], { ...failure, updates, log: (line) => lines.push(line) });
+    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, testFiles: [], relatedFiles: [] });
+    expect(lines).toEqual(updates.map(({ localRef }) => {
+      const reason = "baseFailure" in failure ? failure.baseFailure : `git diff failed for ${localRef}`;
+      return `[checks] ${localRef}: ${reason}; no changed-file tests could be selected for this update; CI runs the full suite`;
+    }));
+  });
+
+  it("preserves dropped related modules from scoped selection in the classification", () => {
+    const path = `scripts/${"long/".repeat(3_300)}module.mjs`;
+    expect(classify([modified(path)])).toMatchObject({
+      tier: GLOBAL_INPUT_TIER, relatedFiles: [], droppedRelatedFiles: [path], namedPaths: [path],
+    });
+  });
+
   it.each([
     { update: { remoteRef: "refs/tags/example" } },
   ])("keeps full checks ahead of unconsumed documentation for %j", (options) => {

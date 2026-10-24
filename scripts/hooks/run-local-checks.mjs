@@ -801,6 +801,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
       : { sha: update.remoteSha };
     if (!base.sha) {
       unresolvedReasons.push(base.reason);
+      console.log(`[checks] ${update.localRef}: ${base.reason}; no changed-file tests could be selected for this update; CI runs the full suite`);
       continue;
     }
     const baseSha = base.sha;
@@ -813,7 +814,9 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
 
     const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
     if (entries === null) {
-      unresolvedReasons.push(`git diff failed for ${update.localRef}`);
+      const reason = `git diff failed for ${update.localRef}`;
+      unresolvedReasons.push(reason);
+      console.log(`[checks] ${update.localRef}: ${reason}; no changed-file tests could be selected for this update; CI runs the full suite`);
       continue;
     }
     const diffs = [{ entries, baseSha }];
@@ -913,6 +916,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     lockSuites: selectTriggeredLockSuites([...changedFiles]),
     testFiles: [...new Set([...scoped.testFiles, ...(messageCatalog?.testFiles ?? [])])].sort(),
     relatedFiles: scoped.relatedFiles,
+    droppedRelatedFiles: scoped.droppedRelatedFiles,
     namedPaths: scoped.namedPaths,
     messageCatalog: messageCatalog && {
       files: scoped.messageCatalogEntries.map(({ path }) => path),
@@ -1385,6 +1389,12 @@ if (stage === "pre-commit") {
         `and Vitest related to ${relatedSelection.sources.length} module(s)`,
       reason: classification.reason,
     }));
+    if (classification.droppedRelatedFiles.length > 0) {
+      console.log(
+        `[checks] dropped ${classification.droppedRelatedFiles.length} related module(s) from local discovery ` +
+          `because changed file arguments exceed the safe command limit; CI covers them; path-naming tests still run`
+      );
+    }
     if (messageCatalog) {
       console.log(
         `[checks] message catalog: ${messageCatalog.files.length} file(s) change namespace(s) ` +

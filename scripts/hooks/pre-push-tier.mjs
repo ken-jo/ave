@@ -80,7 +80,7 @@ function isRegularFileChange(entry) {
  * `entries` are the raw diff entries ({ status, oldMode, newMode, path, ... }).
  * `unresolvedReasons` name what the hook could not resolve (a failed diff, a
  * full-tier input in pushed history); any one keeps the global-input tier.
- * Returns { tier, reason, reasons, testFiles, relatedFiles,
+ * Returns { tier, reason, reasons, testFiles, relatedFiles, droppedRelatedFiles,
  * messageCatalogEntries, documentationEntries, namedPaths }: namedPaths are
  * the changed paths whose literal readers run (selectNamedPathTests).
  */
@@ -100,6 +100,12 @@ export function selectScopedTier(entries, unresolvedReasons = []) {
       continue;
     }
     const scriptLike = path.startsWith("scripts/") || path.startsWith(".github/");
+    if (scriptLike && (!/^[AM]$/.test(entry.status) || !/^100(?:644|755)$/.test(entry.newMode) ||
+        (entry.status === "M" && entry.oldMode !== entry.newMode))) {
+      reasons.push(`${path} change status or mode requires global-input checks`);
+      namedPaths.add(path);
+      continue;
+    }
     if (scriptLike) {
       if (path.startsWith(".github/")) githubPaths += 1;
       else scriptPaths += 1;
@@ -153,9 +159,12 @@ export function selectScopedTier(entries, unresolvedReasons = []) {
   const testFiles = fast?.testFiles ?? [];
   for (const path of fast?.relatedFiles ?? []) relatedFiles.add(path);
   const sortedRelated = [...relatedFiles].sort();
+  const droppedRelatedFiles = [];
   const argumentChars = [...testFiles, ...sortedRelated].reduce((total, file) => total + file.length + 3, 0);
   if (argumentChars > MAX_SCOPED_ARGUMENT_CHARS) {
     reasons.push("changed file arguments exceed the safe command limit");
+    droppedRelatedFiles.push(...sortedRelated);
+    for (const path of droppedRelatedFiles) namedPaths.add(path);
     sortedRelated.length = 0;
   }
   const tier = reasons.length > 0 ? GLOBAL_INPUT_TIER : FAST_TIER;
@@ -172,6 +181,7 @@ export function selectScopedTier(entries, unresolvedReasons = []) {
     reasons: [...new Set(reasons)],
     testFiles,
     relatedFiles: sortedRelated,
+    droppedRelatedFiles,
     messageCatalogEntries: fast?.messageCatalogEntries ?? [],
     documentationEntries,
     namedPaths: [...namedPaths].sort(),

@@ -144,6 +144,48 @@ describe("pre-push scoped tier selection", () => {
     expect(selectNamedPathTests(scoped.namedPaths, trackedTests, readTracked)).toContain("test/scripts/run-ci-suite.test.ts");
   });
 
+  it.each(["scripts", ".github"].flatMap((directory) => [
+    { ...modified(`${directory}/lib/tls-bypass-patterns.mjs`), status: "D", newMode: "000000" },
+    { ...modified(`${directory}/hooks/pre-push`), oldMode: "100755" },
+    { ...modified(`${directory}/lib/evil.mjs`), status: "A", oldMode: "000000", newMode: "120000" },
+    { ...modified(`${directory}/lib/submodule`), status: "A", oldMode: "000000", newMode: "160000" },
+  ]))("keeps untraceable $path ($newMode) on the global-input tier", (entry) => {
+    const scoped = selectScopedTier([entry]);
+    expect(scoped.tier, entry.path).toBe(GLOBAL_INPUT_TIER);
+    expect(scoped.reason).toContain(entry.path);
+    expect(scoped.namedPaths).toEqual([entry.path]);
+    expect(scoped.relatedFiles).toEqual([]);
+  });
+
+  it("returns the related modules dropped at the command limit and keeps their named paths", () => {
+    const paths = Array.from({ length: 100 }, (_, index) => `scripts/lib/${index}-${"a".repeat(180)}.mjs`).sort();
+    const scoped = selectScopedTier(paths.map(modified));
+    expect(scoped).toMatchObject({
+      tier: GLOBAL_INPUT_TIER,
+      relatedFiles: [],
+      droppedRelatedFiles: paths,
+      namedPaths: paths,
+    });
+    expect(scoped.reason).toContain("changed file arguments exceed the safe command limit");
+  });
+
+  it("logs dropped related modules while still running the tests that name them", () => {
+    const droppedRelatedFiles = ["scripts/run-ci-suite.mjs"];
+    const result = resolveScoped({ droppedRelatedFiles, namedPaths: droppedRelatedFiles }, noRelated);
+    expect(result.namedTests).toContain("test/scripts/run-ci-suite.test.ts");
+    expect(result.testFiles).toEqual(expect.arrayContaining(result.namedTests));
+    const lines: string[] = [];
+    const start = hook.indexOf("const { tier, lockSuites, relatedSelection, messageCatalog, untestedModules }");
+    const end = hook.indexOf("if (classification.documentationEntries.length > 0)", start);
+    runInNewContext(hook.slice(start, end), {
+      classification: result, GLOBAL_INPUT_TIER, describeScopedTier,
+      console: { log: (line: string) => lines.push(line) },
+    });
+    expect(lines.filter((line) => line.includes("dropped"))).toEqual([
+      "[checks] dropped 1 related module(s) from local discovery because changed file arguments exceed the safe command limit; CI covers them; path-naming tests still run",
+    ]);
+  });
+
   it.each(["package.json", "bun.lock", "bunfig.toml", "tsconfig.tests.json", "config/knip.jsonc", "src/__tests__/vitest-ave-home.ts"])(
     "takes the global-input tier for %s", (path) => {
       expect(selectScopedTier([modified(path)])).toMatchObject({
