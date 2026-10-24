@@ -84,3 +84,16 @@ export const RESERVED_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
+
+/** Maximum length of a pre-registered OAuth client ID. */
+export const MAX_OAUTH_CLIENT_ID_LEN = 256;
+
+/**
+ * A pre-registered OAuth client ID as Ave accepts it: 1–256 visible ASCII
+ * characters (RFC 6749 §2.2 leaves the format to the server; Appendix A.1
+ * limits it to printable characters). Shared by the settings form, the
+ * plugin runtime parser and the authorization session so they cannot disagree.
+ */
+export function isValidOAuthClientId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_OAUTH_CLIENT_ID_LEN && /^[\x21-\x7E]+$/u.test(value);
+}

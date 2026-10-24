@@ -5,7 +5,9 @@
  *
  * argv: <aveDir> <sessionId> <toolRounds> <mode>
  *   mode "stream":    after the tool rounds, stream text forever, one chunk
- *                     every 25 ms, printing `STREAMED <n>` after each chunk.
+ *                     every 25 ms, printing `STREAMED <n>` after each chunk
+ *                     and `CHUNK_SNAPSHOT_SAVED` each time a snapshot of
+ *                     that text has reached the disk.
  *   mode "tool-hang": the last tool round's tool never returns; prints
  *                     `TOOL_RUNNING` once it has started.
  * Prints `ROUND <i>` as each provider round starts.
@@ -77,13 +79,23 @@ toolRegistry.register(createDynamicTool({
   },
 }));
 
+const memoryManager = new MemoryManager({ aveDir });
+// Announce each snapshot of the chunk stream only after it is on disk, so the
+// parent can kill at a point where recovery is guaranteed to find one instead
+// of guessing a delay. The tool rounds' own text snapshots are not announced.
+const writeTurnPartial = memoryManager.writeTurnPartial.bind(memoryManager);
+memoryManager.writeTurnPartial = async (...args) => {
+  await writeTurnPartial(...args);
+  if (args[2]?.content.startsWith("chunk-")) process.stdout.write("CHUNK_SNAPSHOT_SAVED\n");
+};
+
 const loop = new ConversationLoop({
   settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
   systemPromptBuilder: { build: () => "system" },
   inputClassifier: new InputClassifier(),
   routeEngine: new RouteEngine(),
   toolRegistry,
-  memoryManager: new MemoryManager({ aveDir }),
+  memoryManager,
 } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 (loop as unknown as { provider: LLMProvider | null }).provider = new KillTestProvider();
 (loop as unknown as { sessionId: string }).sessionId = sessionId;
