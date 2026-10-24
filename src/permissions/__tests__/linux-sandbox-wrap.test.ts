@@ -10,6 +10,7 @@ import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.j
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
+import { asrtCanInitialize } from "./test-helpers.js";
 
 const priorAveHome = process.env.AVE_HOME;
 
@@ -500,7 +501,11 @@ it("knows every option the installed Linux wrapper can emit", () => {
   }
 });
 
-it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async () => {
+it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async (context) => {
+  if (!(await asrtCanInitialize())) {
+    if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+    return context.skip();
+  }
   const root = mkdtempSync(join(tmpdir(), "ave-shared-temp-"));
   temporaryRoots.push(root);
   const target = join(tmpdir(), `${root.split("/").at(-1)}-new`);

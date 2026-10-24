@@ -1600,8 +1600,11 @@ describe("runtime write defaults", () => {
 });
 
 describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
-  it("shares explicitly granted temp writes with the host and later commands", async () => {
-    expect(await asrtCanInitialize()).toBe(true);
+  it("shares explicitly granted temp writes with the host and later commands", async (context) => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return context.skip();
+    }
     const root = mkdtempSync("/tmp/ave-ordinary-temp-");
     try {
       await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });

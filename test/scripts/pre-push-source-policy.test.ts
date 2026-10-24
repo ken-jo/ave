@@ -201,12 +201,14 @@ describe("pre-push fast source tier", () => {
   it("wires the fast tier, its opt-out and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
-    expect(hook).toContain("[checks] tier=fast pre-push");
+    // The fast and global-input tiers share one log line (pre-push-tier.mjs).
+    expect(hook).toContain("console.log(describeScopedTier({");
+    expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");
     expect(hook).not.toContain('"--passWithNoTests"');
     expect(hook).toContain('"--reporter=json"');
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
-    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("[checks] tier=fast pre-push"));
+    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
     expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
