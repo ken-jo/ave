@@ -1358,10 +1358,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}assertNoWindowsProtocolClaim\(executable\);\n {2}\}/u);
 
     const cleanup = readRepoFile("scripts/lib/windows-protocol-cleanup.mjs");
-    expect(cleanup).toContain('if (process.platform !== "win32") return;');
+    expect(cleanup).toContain("{ platform = process.platform, run = spawnSync } = {},");
+    expect(cleanup).toContain('if (platform !== "win32") return;');
     const cleanupScript = cleanup.slice(
       cleanup.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
-      cleanup.indexOf("export function assertNoWindowsProtocolClaim"),
+      cleanup.indexOf('].join("\\n");') + '].join("\\n");'.length,
     );
     expect(cleanupScript.length).toBeGreaterThan(0);
     expect(cleanupScript).toContain("$expectedCommand");

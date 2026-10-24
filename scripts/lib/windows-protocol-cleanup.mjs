@@ -56,14 +56,21 @@ const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "  'Software\\Classes\\ave\\shell',",
   "  'Software\\Classes\\ave\\DefaultIcon',",
   "  $rootPath",
-  )) { Remove-EmptyRegistryKey $path }",
+  ")) { Remove-EmptyRegistryKey $path }",
   "Write-Output 'removed'",
 ].join("\n");
 
-export function assertNoWindowsProtocolClaim(executable) {
-  if (process.platform !== "win32") return;
+/**
+ * `platform` and `run` exist so the outcome mapping is unit-tested without
+ * PowerShell or the registry; callers pass only `executable`.
+ */
+export function assertNoWindowsProtocolClaim(
+  executable,
+  { platform = process.platform, run = spawnSync } = {},
+) {
+  if (platform !== "win32") return;
 
-  const result = spawnSync(
+  const result = run(
     "powershell.exe",
     [
       "-NoLogo",

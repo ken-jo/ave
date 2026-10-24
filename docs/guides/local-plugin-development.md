@@ -134,6 +134,8 @@ AVE_DEV_RELOAD=1 bun run dev
 | `AVE_DEV_RELOAD=1` | Unlocks development mode in the main process and starts the reload watcher. It does not show the Developer tools panel on its own. |
 | `AVE_DEV_CONSOLE=0` | Do not open developer tools automatically. `bun run start` defaults to `0`. |
 
+Source runs never register `ave://`. A macOS dev clone installed before this change still has `ave` injected into its vendored `node_modules/electron/dist/Electron.app` Info.plist, so LaunchServices may still send `ave://` links there: launch the packaged Ave once, or run `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u <clone>/node_modules/electron/dist/Electron.app`.
+
 In a packaged build every development-only variable is scrubbed, and the
 names that were set are logged as an error at boot (`shouldWarnPackagedFlagsIgnored`,
 `src/boot/dev-flags.ts`; inventory in `src/shared/development-env-policy.ts`).
