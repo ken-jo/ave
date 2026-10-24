@@ -7,6 +7,7 @@ import { getLlmVendorSettings, type LLMVendor } from "../../shared/llm-vendor-de
 import { buildProvider, generateText } from "../../engine/turn/provider.js";
 import type { ConversationLoopDeps } from "../../engine/turn/types.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
 
 const { createProvider, streamTurn } = vi.hoisted(() => ({
   createProvider: vi.fn(),
@@ -86,6 +87,117 @@ describe("stored built-in default model migration", () => {
     if (contents) writeFileSync(path, JSON.stringify(contents));
     return new SettingsService({ encryption, userDataPath });
   }
+
+  const marketPreset: MarketplaceInstalledProviderPreset = {
+    providerId: "fixture-market-router",
+    label: "Fixture Market Router",
+    baseUrl: "https://fixture.example/v1",
+    defaultModel: "market-default",
+    modelOptions: ["market-default"],
+    requiresApiKey: true,
+  };
+  const marketMarker = (id: string) => `marketplace-default-model-cleared:${id}`;
+  function marketProfile(
+    presets: MarketplaceInstalledProviderPreset[] = [marketPreset],
+    model = marketPreset.defaultModel,
+  ): Record<string, unknown> {
+    return {
+      appliedMigrations: [MIGRATION],
+      marketplace: { installedProviderPresets: presets },
+      llm: {
+        provider: "openai-compatible",
+        marketplaceProviderPresetId: marketPreset.providerId,
+        vendors: { "openai-compatible": {
+          model: "generic-choice",
+          presetModels: { [marketPreset.providerId]: model },
+        } },
+      },
+    };
+  }
+  function marketModel(service: SettingsService): string | undefined {
+    return service.get("llm").vendors["openai-compatible"]?.presetModels?.[marketPreset.providerId];
+  }
+
+  it("clears an exact known market default and writes its per-preset marker", async () => {
+    const service = load(marketProfile());
+    expect(marketModel(service)).toBe("");
+    expect(service.get("llm").vendors["openai-compatible"]?.model).toBe("generic-choice");
+    await vi.waitFor(() => {
+      expect(JSON.parse(readFileSync(path, "utf8")).appliedMigrations).toContain(marketMarker(marketPreset.providerId));
+    });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    expect(saved.llm.vendors["openai-compatible"].presetModels[marketPreset.providerId]).toBe("");
+    expect(saved.appliedMigrations).toContain(marketMarker(marketPreset.providerId));
+  });
+
+  it.each(["user-choice", " market-default "])("keeps a different stored market value %s and marks the preset", async (model) => {
+    const service = load(marketProfile([marketPreset], model));
+    // Existing model-slot normalization trims stored ids; comparison must precede it.
+    expect(marketModel(service)).toBe(model.trim());
+    await service.patch({});
+    expect(JSON.parse(readFileSync(path, "utf8")).appliedMigrations).toContain(marketMarker(marketPreset.providerId));
+    expect(marketModel(load())).toBe(model.trim());
+  });
+
+  it("leaves unknown market defaults pending independently of known presets", async () => {
+    const service = load(marketProfile([]));
+    const before = marketModel(service);
+    await service.patch({});
+    expect(marketModel(service)).toBe(before);
+    expect(service.get("appliedMigrations")).not.toContain(marketMarker(marketPreset.providerId));
+    // Resolving another id must not finish the still-unknown one.
+    await service.installMarketplaceProviderPreset({ ...marketPreset, providerId: "other-market-router" });
+    expect(marketModel(load())).toBe(before);
+    const markers = JSON.parse(readFileSync(path, "utf8")).appliedMigrations;
+    expect(markers).not.toContain(marketMarker(marketPreset.providerId));
+    expect(markers).toContain(marketMarker("other-market-router"));
+  });
+
+  it("clears a pending market default once registration makes it known", async () => {
+    const service = load(marketProfile([]));
+    expect(marketModel(service)).toBe(marketPreset.defaultModel);
+    await service.installMarketplaceProviderPreset(marketPreset);
+    expect(marketModel(service)).toBe("");
+    await service.installMarketplaceProviderPreset(marketPreset);
+    const reloaded = load();
+    await reloaded.installMarketplaceProviderPreset(marketPreset);
+    expect(marketModel(reloaded) ?? "").toBe("");
+    expect(reloaded.get("appliedMigrations")?.filter((id) => id === marketMarker(marketPreset.providerId))).toHaveLength(1);
+  });
+
+  it("keeps a market default re-picked after processing across reload and repeated registration", async () => {
+    const service = load(marketProfile());
+    expect(marketModel(service)).toBe("");
+    await service.patch({ llm: { vendors: { "openai-compatible": {
+      presetModels: { [marketPreset.providerId]: marketPreset.defaultModel },
+    } } } });
+    const reloaded = load();
+    await reloaded.installMarketplaceProviderPreset(marketPreset);
+    await reloaded.installMarketplaceProviderPreset({ ...marketPreset, defaultModel: "new-default" });
+    await reloaded.installMarketplaceProviderPreset(marketPreset);
+    expect(marketModel(load())).toBe(marketPreset.defaultModel);
+  });
+
+  it("clears a market default moved from the legacy shared model slot", async () => {
+    const profile = marketProfile();
+    profile.llm = { provider: "openai-compatible", marketplaceProviderPresetId: marketPreset.providerId,
+      vendors: { "openai-compatible": { model: marketPreset.defaultModel } } };
+    const service = load(profile);
+    expect(marketModel(service)).toBe("");
+    await service.patch({});
+    expect(service.get("appliedMigrations")).toContain(marketMarker(marketPreset.providerId));
+  });
+
+  it("makes a cleared market route unconfigured without dispatching an empty model", async () => {
+    const service = load(marketProfile());
+    const deps = { settingsService: { get: service.get.bind(service), getSecret: () => "test-key" } } as unknown as ConversationLoopDeps;
+    const provider = buildProvider(deps);
+    expect(provider).toBeNull();
+    await expect(generateText(provider, service, "hello")).rejects.toThrow("not configured");
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(streamTurn).not.toHaveBeenCalled();
+    await service.patch({});
+  });
 
   it.each(REMOVED_DEFAULTS)("clears only %s's removed default %s and persists the marker", async (vendor, model) => {
     const service = load({ llm: { provider: vendor, vendors: { [vendor]: { model } } } });

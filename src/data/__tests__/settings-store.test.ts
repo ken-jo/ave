@@ -1178,6 +1178,7 @@ describe("SettingsService marketplace defaults", () => {
     // One `model` served the generic custom-provider row and every preset
     // reached through the same vendor, so the row picked last overwrote the
     // rest. The stored value belongs to the row this install is actually on.
+    // Use an explicit alternative so default cleanup does not clear this slot.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1185,7 +1186,7 @@ describe("SettingsService marketplace defaults", () => {
           provider: "openai-compatible",
           marketplaceProviderPresetId: "future-router",
           vendors: {
-            "openai-compatible": { model: "future/free", baseUrl: "http://localhost:8001/v1" },
+            "openai-compatible": { model: "future/chosen", baseUrl: "http://localhost:8001/v1" },
           },
         },
         marketplace: {
@@ -1205,7 +1206,7 @@ describe("SettingsService marketplace defaults", () => {
     const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
     const block = getLlmVendorSettings(llm.vendors, "openai-compatible");
 
-    expect(block.presetModels).toEqual({ "future-router": "future/free" });
+    expect(block.presetModels).toEqual({ "future-router": "future/chosen" });
     // The generic row starts empty, so its chooser shows what its OWN endpoint
     // answers rather than a model borrowed from a gateway.
     expect(block.model).toBe("");

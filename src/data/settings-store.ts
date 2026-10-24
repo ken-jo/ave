@@ -150,6 +150,7 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
 const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
+const MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX = "marketplace-default-model-cleared:";
 /**
  * Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose
  * CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776 removed.
@@ -253,11 +254,12 @@ function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
 }
 
 /**
- * Every one-time migration this build knows. Fresh-install and
+ * Every global one-time migration this build knows. Fresh-install and
  * corrupt-recovery settings start with ALL of them marked applied: a state
  * built from current defaults is by definition post-migration, and seeding
  * the markers closes the window where a user's first-session opt-out would
  * be silently reverted by a migration re-run on the next boot.
+ * Market model migrations instead acquire a marker per id once it resolves.
  */
 const KNOWN_MIGRATIONS: readonly string[] = [
   SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION,
@@ -285,6 +287,41 @@ function withoutBuiltInDefaultModels(llm: LLMSettings): LLMSettings {
       : entry;
   });
   return { ...llm, vendors, fallbackChain };
+}
+
+/**
+ * A market default used to be saved on preset selection. Resolve each preset
+ * independently: an unavailable entry must remain pending until registration.
+ * Mark even a different or absent model, so a later explicit pick survives.
+ * On load, compare the original slot before model-id normalization trims it.
+ */
+function withoutMarketplaceDefaultModels(
+  llm: LLMSettings,
+  presets: readonly MarketplaceInstalledProviderPreset[],
+  appliedMigrations: string[],
+  modelsBeforeNormalization: unknown = llm.vendors["openai-compatible"]?.presetModels,
+): LLMSettings {
+  const storedModels = modelsBeforeNormalization !== null
+    && typeof modelsBeforeNormalization === "object" && !Array.isArray(modelsBeforeNormalization)
+    ? modelsBeforeNormalization as Record<string, unknown>
+    : undefined;
+  let next = llm;
+  for (const preset of presets) {
+    if (typeof preset.defaultModel !== "string" || !preset.defaultModel.trim()) continue;
+    const marker = `${MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX}${preset.providerId}`;
+    if (appliedMigrations.includes(marker)) continue;
+    const block = next.vendors["openai-compatible"];
+    const model = storedModels && Object.hasOwn(storedModels, preset.providerId)
+      ? storedModels[preset.providerId]
+      : block?.presetModels?.[preset.providerId];
+    if (block && model === preset.defaultModel) {
+      next = { ...next, vendors: { ...next.vendors, "openai-compatible": {
+        ...block, presetModels: { ...block.presetModels, [preset.providerId]: "" },
+      } } };
+    }
+    appliedMigrations.push(marker);
+  }
+  return next;
 }
 
 /** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
@@ -740,7 +777,7 @@ export interface AppSettings {
   features?: FeatureFlags;
   /**
    * Host-owned ids of one-time settings migrations already applied to this
-   * file. Never patched from the renderer; only `loadSettings` appends.
+   * file. Never patched from the renderer; load and market registration append.
    */
   appliedMigrations?: string[];
 }
@@ -1514,6 +1551,11 @@ export class SettingsService {
         { inferInstalledFromCustom: false },
       );
       this.settings.llm = prunedLlm.llm;
+      this.settings.llm = withoutMarketplaceDefaultModels(
+        this.settings.llm,
+        nextMarketplace.installedProviderPresets,
+        this.settings.appliedMigrations ??= [],
+      );
       this.providerConfigChanged();
     }
     if (partial.routine) {
@@ -1862,6 +1904,11 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
+    this.settings.llm = withoutMarketplaceDefaultModels(
+      this.settings.llm,
+      nextMarketplace.installedProviderPresets,
+      this.settings.appliedMigrations ??= [],
+    );
     this.providerConfigChanged();
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
@@ -2317,6 +2364,15 @@ export class SettingsService {
         appliedMigrations.push(PROVIDER_PRESET_MODEL_SLOT_MIGRATION);
         migrationWriteBack = true;
       }
+
+      const migrationsBeforeMarketDefaults = appliedMigrations.length;
+      llm = withoutMarketplaceDefaultModels(
+        llm,
+        marketplace.installedProviderPresets,
+        appliedMigrations,
+        rawLlm?.vendors?.["openai-compatible"]?.presetModels,
+      );
+      if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
       const result: AppSettings = {
         llm,

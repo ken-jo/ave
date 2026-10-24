@@ -14,7 +14,7 @@ import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.j
 import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
-import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
 import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
@@ -525,6 +525,43 @@ describe("LlmTab provider cards", () => {
       expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
       expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent("gpt-5.4-mini");
       expect(screen.queryAllByRole("alert").map((node) => node.textContent).join("\n")).toBe("");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("shows choose a model after clearing a stored market default", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-market-model-"));
+    const gateway = preset("fixture-market-router", "Fixture Router", "https://fixture.example/v1", "static");
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        marketplace: { installedProviderPresets: [gateway] },
+        llm: { provider: "openai-compatible", marketplaceProviderPresetId: gateway.providerId,
+          vendors: { "openai-compatible": { presetModels: { [gateway.providerId]: gateway.defaultModel } } } },
+      }));
+      const migrated = new SettingsService({ userDataPath, encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      } });
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const api = makeApi({
+        getSettings: vi.fn(async () => migrated.getAll()),
+        hasApiKey: storedKeysFor(`marketplace-provider:${gateway.providerId}`),
+      });
+      const { hooks } = await renderTab(api, {
+        vendor: llm.provider, model: activeLlmRouteModel(llm),
+        marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+        marketplaceProviderPresets: migrated.get("marketplace").installedProviderPresets,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent(gateway.defaultModel);
+      expect(await chooserModelIds()).toContain(gateway.defaultModel);
+      expect(chooserOption(gateway.defaultModel)).not.toHaveAttribute("aria-selected", "true");
       expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
     } finally {
       await cleanupTmpDir(userDataPath);
