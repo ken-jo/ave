@@ -22,12 +22,12 @@
  *   - `modify` is **NOT** supported in v1.
  */
 import { type DiscoveredHook } from "./hook-discovery.js";
+import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
   buildHookRegistry,
   filterRegistryByEventAndSubject,
   filterRegistryByEventAndTool,
   type HookRegistryEntry,
-  type ConfigHookRegistryEntry,
 } from "./hook-registry.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import {
@@ -163,14 +163,13 @@ export class ScriptHookManager {
     const replacements = new Map<string, readonly HookRegistryEntry[]>();
     for (const projection of projections) {
       if (!trust.isApproved(projection)) continue;
-      const entries: ConfigHookRegistryEntry[] = projection.entries.map((entry) => ({
-        id: `plugin:${projection.owner.pluginId}:${projection.owner.localId}:${entry.id}`,
+      const entries = buildHookRegistry([], projection.entries).map((entry) => ({
+        ...entry,
+        id: `plugin:${projection.owner.pluginId}:${projection.owner.localId}:${entry.id.slice("config:".length)}`,
         event: entry.event,
         ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
         command: [...entry.command],
         ...(entry.env ? { env: { ...entry.env } } : {}),
-        source: "config",
-        timeoutMs: entry.timeoutMs,
         owner: projection.owner,
         confinement: projection.confinement,
       }));
@@ -276,8 +275,8 @@ export class ScriptHookManager {
    * milestone-2, design §5). OBSERVE-ONLY: the returned decision is recorded for
    * audit but MUST NEVER affect control flow — a lifecycle hook's `deny` mirrors
    * `PostToolUse` (informational), and a hook erroring / timing out must not
-   * break the turn. The matcher subject for lifecycle events is `sessionId`
-   * (or `'*'` = all), matched via the same glob as `.sh` / tool-use matchers.
+   * break the turn. The matcher subject comes from `lifecycleMatcherSubject`
+   * and uses the same compiled matcher as `.sh` / tool-use hooks.
    *
    * Fail-soft: this method NEVER throws. A dispatch error collapses to an empty
    * observe result so the caller can ignore it and continue.
@@ -306,10 +305,14 @@ export class ScriptHookManager {
       };
     }
     try {
-      // Subject for lifecycle matchers is the sessionId (design §6). Reuse the
-      // same glob filter so a `'*'` / sessionId matcher behaves identically to
-      // tool-use matchers. (`'*'` / absent matcher ⇒ match every session.)
-      const entries = filterRegistryByEventAndSubject(this.snapshotRegistry(), event, sessionId);
+      // Subject for lifecycle matchers follows the hooks reference where Ave has
+      // the value (tool name, compaction trigger, agent type, end reason), else
+      // the sessionId. (`'*'` / absent matcher ⇒ match every occurrence.)
+      const entries = filterRegistryByEventAndSubject(
+        this.snapshotRegistry(),
+        event,
+        lifecycleMatcherSubject(event, sessionId, payload),
+      );
       if (entries.length === 0) {
         return { decision: "allow", reason: "no matching lifecycle hooks", results: [] };
       }
@@ -392,7 +395,7 @@ export class ScriptHookManager {
    *
    * BACK-COMPAT: when NO trusted hook matches, returns `allow` with an empty
    * `results` so the caller proceeds byte-identically to today. The matcher
-   * subject is the prompt text (or `'*'`), matched via the same glob as `.sh` /
+   * subject is the prompt text (or `'*'`), matched via the same matcher as `.sh` /
    * tool-use matchers.
    *
    * DLP: `inputText` is DLP-redacted here (§6.6, via {@link redactForLLM}) before
@@ -407,7 +410,7 @@ export class ScriptHookManager {
   ): Promise<HookDispatchResult> {
     if (!areExternalTurnHooksAllowed()) return externalHooksSuppressed();
     try {
-      // Matcher subject = the prompt text (design §5). Reuse the same glob as
+      // Matcher subject = the prompt text (design §5). Reuse the same matcher as
       // tool-use / lifecycle matchers (`'*'` / absent matcher ⇒ match every prompt).
       const entries = filterRegistryByEventAndSubject(
         this.snapshotRegistry(),
@@ -456,7 +459,7 @@ export class ScriptHookManager {
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
   ): Promise<HookDispatchResult> {
-    // #811 — filter by event + matcher (the same glob as `.sh` frontmatter).
+    // #811 — filter by event + matcher (the same matcher as `.sh` frontmatter).
     // A config/`.sh` entry with no matcher runs for every tool.
     const entries = filterRegistryByEventAndTool(this.snapshotRegistry(), type, payload.toolName);
     if (entries.length === 0) {

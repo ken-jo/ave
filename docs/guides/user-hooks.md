@@ -32,7 +32,11 @@ Launch assumes host-side hook files remain stable during admission and sandbox p
 
 When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. Only the hook's cwd is added as a write scope. An exact canonical script beneath the protected hook configuration directory can be re-allowed for reading; anchors in other protected locations, including links escaping the hook directory, do not receive a read exception. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the existing host shell execution plan: an unavailable requested sandbox or a partially confined Windows backend requires an exact, gate-authenticated allow-once receipt for host execution. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
 
-Matchers use anchored, case-sensitive globs: `*` matches any sequence, `?` one character. Omit the matcher, or use `""` or `"*"`, to match all. Tool events match the tool name; `UserPromptSubmit` matches the prompt; other lifecycle events match the session ID.
+Matchers follow the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks#matcher-patterns) (accessed 2026-10-25). Omit the matcher, or use `""` or `"*"`, to match all. A pattern containing only letters, digits, `_`, `-`, spaces, `,` and `|` is a case-sensitive exact name or list of exact names: `Edit|Write` and `Edit, Write` match either name exactly. Any other pattern is a case-sensitive, unanchored JavaScript regular expression: `Edit.*` also matches `NotebookEdit`; `^Edit$` matches only `Edit`. Script `# ave-hook-matcher:` headers use the same syntax, including lists with spaces. Regexes run as written, without a complexity bound, and are compiled once per registry build.
+
+Existing glob patterns need review: `*danger*` is invalid regex and its hook is refused; use `.*danger.*` for containment. `mcp_hr_*` is valid regex but also matches `prefix_mcp_hr_query` and even `mcp_hr`; use `^mcp_hr_.*$` to retain the old prefix behavior. Invalid matchers reject their config block or script hook at load time. `/permission hooks list` shows the refusal and regex reason for both active and quarantined files; trust enrollment does not make an invalid matcher executable.
+
+Tool events, including `PostToolUseFailure` and `PermissionDenied`, match the tool name. `PreCompact` and `PostCompact` match `manual` or `auto`; subagent events match `agent_type`; `SessionEnd` matches its reason. `SessionStart`, `Notification` and `Stop` retain session-ID matching, and `UserPromptSubmit` matches the DLP-redacted prompt text. Missing optional event subjects use the empty string, never the session ID.
 
 ## Events
 
@@ -52,8 +56,8 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `SessionEnd` | Optional `reason: string`, `session_meta: object`, `stop_reason: string` | Observe only; session switch or reset, not a crash/shutdown guarantee |
 | `Notification` | Optional `message: string` | Observe only; turn-end notification |
 | `Stop` | Optional `stop_reason: string`, `tool_count: number`, `duration_ms: number`, `stop_hook_active: boolean` | A block at a clean end continues the turn; see below |
-| `PreCompact` | Optional `reason: string`, `token_estimate: number` | Observe only |
-| `PostCompact` | Optional `messages_before: number`, `messages_after: number`, `tokens_before: number`, `tokens_after: number` | Observe only |
+| `PreCompact` | Optional `reason: string`, `trigger: "manual" \| "auto"`, `token_estimate: number` | Observe only |
+| `PostCompact` | Optional `trigger: "manual" \| "auto"`, `messages_before: number`, `messages_after: number`, `tokens_before: number`, `tokens_after: number` | Observe only |
 | `SubagentStart` | Optional `agent_id: string`, `agent_type: string` | Observe only |
 | `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string`, `stop_hook_active: boolean` | A block at a clean end continues the sub-agent run; see below |
 
@@ -127,7 +131,7 @@ HTTP, model, input-mutation, and background hooks are outside the supported cont
 
 ## Differences from Claude Code hooks
 
-Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks), accessed 2026-10-22. **Intended** marks a deliberate security or design choice; **gap** marks a difference that could be closed; **owner decision** marks a behavior change still awaiting the owner.
+Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks), accessed 2026-10-25. **Intended** marks a deliberate security or design choice; **gap** marks a difference that could be closed; **owner decision** marks a behavior change still awaiting the owner.
 
 | Area | Claude Code | Ave | Status |
 | --- | --- | --- | --- |
@@ -135,11 +139,11 @@ Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/
 | Common input | `transcript_path`, `permission_mode`, `prompt_id`, `scratchpad_dir`, `effort`, and `agent_id`/`agent_type` in agent contexts | `schema_version`, `hook_event_name`, `session_id`, `cwd` only | Gap |
 | `SessionStart` | `source`: `startup`, `resume`, `clear`, `compact`, `fork` | `session_meta`; no `source` | Gap |
 | `SessionEnd` | `reason`: `clear`, `resume`, `logout`, `prompt_input_exit`, `other` | `reason`: `new-conversation`, `load-session` | Gap (value set) |
-| `PreCompact` / `PostCompact` | `trigger` (`manual`/`auto`), `custom_instructions`; `compact_summary` after | `reason` (`manual`/`auto-compact`), token and message counts | Gap (naming) |
+| `PreCompact` / `PostCompact` | `trigger` (`manual`/`auto`), `custom_instructions`; `compact_summary` after | Same `trigger`; legacy `reason` on PreCompact and token/message counts; no instructions or summary | Implemented trigger; remaining fields are gaps |
 | `Notification` | Fires per notification with `message`, `title`, `notification_type` | Fires once at turn end with the assistant text as `message` | Gap (semantics) |
 | `Stop` / `SubagentStop` | `stop_hook_active`, `last_assistant_message`; `decision: "block"` or exit 2 continues the turn, capped at 8 | Same continuation and cap with `stop_hook_active`; no `last_assistant_message` | Implemented; `last_assistant_message` is a gap |
-| Matchers | `\|`/`,` lists of exact names, otherwise an unanchored JavaScript regex; `if` with permission-rule syntax on tool events | Anchored, case-sensitive globs, so `Edit\|Write` matches nothing | Gap |
-| Lifecycle matcher subject | Source, trigger, notification type, agent type, or error type; ignored on `UserPromptSubmit` and `Stop` | Session ID; prompt text for `UserPromptSubmit` | Gap |
+| Matchers | `\|`/`,` lists of exact names, otherwise an unanchored JavaScript regex; `if` with permission-rule syntax on tool events | Same name-list and regex syntax for supported events; invalid regexes refuse loading; no `if` | Implemented syntax; `if` is a gap |
+| Lifecycle matcher subject | Source, trigger, notification type, agent type, or error type; ignored on `UserPromptSubmit` and `Stop` | Tool name for tool events; trigger for compaction; agent type for subagent events; Ave reason for SessionEnd; session ID for SessionStart/Notification/Stop; prompt text for UserPromptSubmit | Implemented where the payload exists; remaining subjects differ |
 | Other nonzero exit | Non-blocking error unless `onFailure: "block"` | Fails closed on blocking events | Intended |
 | Exit 2 on non-blocking events | Ignored on `PostToolUse` and `Notification` | Denial result; observe-only events log it | Intended |
 | Plain stdout on exit 0 | Added as context on `UserPromptSubmit` and `SessionStart` | Non-JSON output is an explicit failure | Intended |

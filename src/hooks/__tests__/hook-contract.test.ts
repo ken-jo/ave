@@ -45,6 +45,19 @@ async function dispatch(entry: typeof EVENT_CASES[number], mode: string, denied 
 }
 
 describe("user hook event contract", () => {
+  it.each([
+    { event: "PreCompact", reason: "manual", trigger: "manual" },
+    { event: "PreCompact", reason: "auto-compact", trigger: "auto" },
+    { event: "PostCompact", reason: "manual", trigger: "manual" },
+    { event: "PostCompact", reason: "auto-compact", trigger: "auto" },
+  ] as const)("serializes $event reason $reason as trigger $trigger", async ({ event, reason, trigger }) => {
+    const result = await dispatch({ name: event, event, payload: { reason }, expected: {} }, "echo");
+    expect(result.results).toHaveLength(1);
+    expect(JSON.parse(result.results[0].rawStdout).received).toMatchObject({
+      hook_event_name: event, trigger,
+    });
+  });
+
   it.each(EVENT_CASES)("serializes $name through the registry and real command runner", async (entry) => {
     const result = await dispatch(entry, "echo");
     expect(result.decision, result.reason).toBe("allow");

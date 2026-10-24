@@ -334,7 +334,7 @@ describe("Studio drafts and package projections", () => {
       mcpServers: { local: { type: "stdio", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server.js"], oauth: "discard" },
         remote: { url: "https://example.invalid" }, unsupported: { type: "ws", url: "wss://example.invalid" },
         ambiguous: { command: "node", url: "https://example.invalid" } },
-      hooks: { PreToolUse: [{ matcher: "write_*", hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hook.js"] },
+      hooks: { PreToolUse: [{ matcher: "^write_.*$", hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hook.js"] },
         { type: "command", command: "echo hi" }] }], UnknownEvent: [{ hooks: [{ type: "command", command: "node", args: [] }] }] } }));
     await put(source, ".mcp.json", JSON.stringify({ mcpServers: { local: { command: "old" }, first: { command: "node" } } }));
     await put(source, "hooks/hooks.json", JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node", args: ["./start.js"] }] }] } }));
@@ -342,7 +342,7 @@ describe("Studio drafts and package projections", () => {
     const mcp = JSON.parse(result.files.find((file) => file.path === "mcp.json")!.data.toString("utf8")) as { mcpServers: Record<string, { type: string }> };
     expect(Object.keys(mcp.mcpServers).sort()).toEqual(["first", "local", "remote"]);
     expect(mcp.mcpServers.remote.type).toBe("streamable-http");
-    expect(result.pendingHooks).toMatchObject([{ event: "SessionStart", needsAdaptation: true }, { event: "pre", matcher: "write_*", needsAdaptation: true }]);
+    expect(result.pendingHooks).toMatchObject([{ event: "SessionStart", needsAdaptation: true }, { event: "pre", matcher: "^write_.*$", needsAdaptation: true }]);
     expect(result.diagnostics.map((item) => item.path)).toEqual(expect.arrayContaining(["mcpServers.local", "mcpServers.local.oauth", "mcpServers.unsupported", "mcpServers.ambiguous", "hooks.UnknownEvent"]));
     expect(result.diagnostics.filter((item) => item.group === "needs-input")).toHaveLength(2);
   });

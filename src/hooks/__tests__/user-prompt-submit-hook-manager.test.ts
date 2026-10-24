@@ -117,9 +117,9 @@ describe("#811 m2 — UserPromptSubmit (BLOCKING) dispatch", () => {
 
   it.skipIf(!HAS_NODE)("matcher subject is the PROMPT TEXT — a non-matching prompt is skipped (proceeds)", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedRegistry([], [upsEntry(["node", DENY], { matcher: "*danger*" })]);
+    m.setTrustedRegistry([], [upsEntry(["node", DENY], { matcher: ".*danger.*" })]);
 
-    // Matches the matcher glob → the deny hook runs → refused.
+    // Matches the matcher regex → the deny hook runs → refused.
     const matched = await m.runUserPromptSubmit("s1", "user-keyboard", {
       inputText: "this is danger zone",
     });

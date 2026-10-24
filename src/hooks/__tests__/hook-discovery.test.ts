@@ -14,12 +14,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { buildHookRegistry, filterRegistryByEventAndTool } from "../hook-registry.js";
 import {
   buildAcceptedAtMap,
   diffAgainstLockfile,
   disableHook,
   discoverHooks,
   ensureHooksDirectory,
+  hookMatcherError,
   hookMatchesTool,
   persistLockfile,
   readLockfile,
@@ -249,16 +251,16 @@ describe("Permission policy P4 hook-discovery", () => {
   });
 });
 
-describe("#811 hook matcher (mcp__.* / glob)", () => {
+describe("#811 hook matcher (exact names / regex)", () => {
   it("parses the `# ave-hook-matcher:` frontmatter directive", () => {
     writeHook(
       tmpDir,
       "pre-mcp.sh",
-      "#!/bin/sh\n# ave-hook-matcher: mcp_*\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
+      "#!/bin/sh\n# ave-hook-matcher: ^mcp_.*$\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
     );
     const hooks = discoverHooks(tmpDir);
     expect(hooks).toHaveLength(1);
-    expect(hooks[0].matcher).toBe("mcp_*");
+    expect(hooks[0].matcher).toBe("^mcp_.*$");
   });
 
   it("leaves matcher undefined when no directive is present", () => {
@@ -266,13 +268,53 @@ describe("#811 hook matcher (mcp__.* / glob)", () => {
     expect(discoverHooks(tmpDir)[0].matcher).toBeUndefined();
   });
 
-  it("hookMatchesTool: no matcher matches everything; glob anchors", () => {
+  it("hookMatchesTool: no matcher, '' or '*' matches everything", () => {
     expect(hookMatchesTool(undefined, "fs_write")).toBe(true);
-    expect(hookMatchesTool("mcp_*", "mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("mcp_*", "fs_write")).toBe(false);
-    expect(hookMatchesTool("mcp_hr_*", "mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("mcp_hr_*", "mcp_payroll_query")).toBe(false);
-    // anchored: a partial match does not pass
+    expect(hookMatchesTool("", "fs_write")).toBe(true);
+    expect(hookMatchesTool("*", "fs_write")).toBe(true);
+  });
+
+  it("hookMatchesTool: plain names are exact, split on | or ,", () => {
+    expect(hookMatchesTool("Edit|Write", "Write")).toBe(true);
+    expect(hookMatchesTool("Edit, Write", "Edit")).toBe(true);
+    expect(hookMatchesTool("Edit|Write", "NotebookEdit")).toBe(false);
+    expect(hookMatchesTool("code-reviewer", "code-reviewer")).toBe(true);
+    // exact: a partial name does not pass
     expect(hookMatchesTool("query", "mcp_hr_query")).toBe(false);
+  });
+
+  it("hookMatchesTool: other matchers are unanchored regular expressions", () => {
+    expect(hookMatchesTool("mcp__.*", "mcp__hr__query")).toBe(true);
+    expect(hookMatchesTool("mcp__.*", "fs_write")).toBe(false);
+    expect(hookMatchesTool("^mcp_hr_", "mcp_hr_query")).toBe(true);
+    expect(hookMatchesTool("^mcp_hr_", "mcp_payroll_query")).toBe(false);
+    expect(hookMatchesTool("Edit.*", "NotebookEdit")).toBe(true);
+    expect(hookMatchesTool("^Edit$", "NotebookEdit")).toBe(false);
+    expect(hookMatchesTool("mcp_hr_*", "prefix_mcp_hr_query")).toBe(true);
+    expect(hookMatchesTool("^mcp_hr_.*$", "prefix_mcp_hr_query")).toBe(false);
+  });
+
+  it("parses an exact name list with spaces from script frontmatter", () => {
+    writeHook(tmpDir, "pre-edit.sh", "#!/bin/sh\n# ave-hook-matcher: Edit, Write\nexit 0\n");
+    const hooks = discoverHooks(tmpDir);
+    expect(hooks[0].matcher).toBe("Edit, Write");
+    const registry = buildHookRegistry(hooks, []);
+    expect(filterRegistryByEventAndTool(registry, "pre", "Write")).toHaveLength(1);
+    expect(filterRegistryByEventAndTool(registry, "pre", "NotebookWrite")).toEqual([]);
+  });
+
+  it("an invalid regex matcher is reported and never loads", () => {
+    expect(hookMatcherError("*danger*")).toMatch(/.+/);
+    expect(hookMatcherError("mcp__.*")).toBeUndefined();
+    expect(hookMatcherError("Edit|Write")).toBeUndefined();
+    writeHook(
+      tmpDir,
+      "pre-bad.sh",
+      "#!/bin/sh\n# ave-hook-matcher: (unclosed\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
+    );
+    const hooks = discoverHooks(tmpDir);
+    // Still discovered so trust review sees it, but the registry leaves it out.
+    expect(hooks).toHaveLength(1);
+    expect(buildHookRegistry(hooks, [])).toEqual([]);
   });
 });

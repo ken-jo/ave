@@ -7,13 +7,14 @@
  * NO I/O (no fs, no spawn). The trust workflow loads its entries before the
  * manager installs them in the unified registry.
  *
- * What it implements (the decisions already made for #811 m1, do not re-litigate):
+ * Configuration decisions:
  *
- *   (a) MATCHER ENGINE = GLOB. We deliberately diverge from the regex sketch in
- *       design §4.2 and reuse the existing `hookMatchesTool(matcher, toolName)`
- *       glob from `hook-discovery.ts` for consistency with `.sh`
- *       `# ave-hook-matcher:` frontmatter and for ReDoS safety. We only validate
- *       that `matcher` is a string here; the registry does the matching.
+ *   (a) MATCHER ENGINE = an exact name list, or else an unanchored JavaScript
+ *       regular expression, replacing anchored globs for Claude Code reference
+ *       compatibility. `compileHookMatcher` in `hook-discovery.ts` compiles
+ *       `hooks.json` and `.sh` frontmatter alike. A matcher that is not a valid
+ *       regular expression rejects its block here, so it never silently matches
+ *       nothing.
  *
  *   (b) EVENT KEYS = CLOSED SET. `PreToolUse → "pre"`, `PostToolUse → "post"`,
  *       `PermissionRequest → "perm"`. An unknown event key is IGNORED with a
@@ -41,6 +42,7 @@ import {
 } from "./script-hook-types.js";
 import { isRecord } from "../shared/is-record.js";
 import { HOOK_EVENT_TYPES } from "./hook-contract.js";
+import { hookMatcherError } from "./hook-discovery.js";
 
 /**
  * A normalized declarative hook entry parsed from `hooks.json`. This is the
@@ -58,8 +60,8 @@ export interface HookConfigEntry {
    */
   event: HookEvent;
   /**
-   * Optional glob matcher over the tool name (decision (a)). Absent ⇒ matches
-   * every tool. Matched later via `hookMatchesTool` in the registry.
+   * Optional matcher over the tool name or lifecycle subject (decision (a)).
+   * Absent ⇒ matches everything. Matched later via `hookMatchesTool`.
    */
   matcher?: string;
   /** argv form of the command (always ≥1 element; argv[0] is the program). */
@@ -210,8 +212,8 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
         return;
       }
 
-      // matcher is optional; when present it must be a string (decision (a) —
-      // validated as a glob string, matched later via hookMatchesTool).
+      // matcher is optional; when present it must be a string and, when it is
+      // not an exact name list, a valid regular expression (decision (a)).
       let matcher: string | undefined;
       if (matcherBlock.matcher !== undefined) {
         if (typeof matcherBlock.matcher !== "string") {
@@ -223,6 +225,13 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           // "*" and "" both mean "match all" → leave matcher undefined so the
           // registry's hookMatchesTool short-circuits to true.
           matcher = trimmed === "" || trimmed === "*" ? undefined : trimmed;
+          const invalid = hookMatcherError(matcher);
+          if (invalid !== undefined) {
+            errors.push(
+              `hooks.json: ${eventKey}[${blockIdx}].matcher ${JSON.stringify(trimmed)} is not a valid regular expression (${invalid}) — rejected`,
+            );
+            return;
+          }
         }
       }
 

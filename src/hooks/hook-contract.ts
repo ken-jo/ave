@@ -1,4 +1,10 @@
-import type { HookEvent, ScriptHookInvocationResult, ScriptHookStdin } from "./script-hook-types.js";
+import type {
+  HookEvent,
+  LifecycleEventPayload,
+  LifecycleHookEvent,
+  ScriptHookInvocationResult,
+  ScriptHookStdin,
+} from "./script-hook-types.js";
 
 /**
  * The feedback a Stop/SubagentStop chain asks the run to continue with, or
@@ -11,6 +17,40 @@ export function stopHookBlockFeedback(result: {
 }): string | undefined {
   if (result.decision !== "deny") return undefined;
   return result.results.at(-1)?.blockFeedback;
+}
+
+/** Ave's compaction reason as the reference's `trigger` value. */
+function compactTrigger(reason: string | undefined): "manual" | "auto" | undefined {
+  if (reason === undefined) return undefined;
+  return reason === "manual" ? "manual" : "auto";
+}
+
+/**
+ * The value a lifecycle hook's matcher is tested against. It follows the Claude
+ * Code hooks reference where Ave has the value: the tool name, the compaction
+ * trigger, the agent type, or Ave's SessionEnd reason. Events without such a
+ * value in Ave (SessionStart, Notification, Stop) keep matching the session ID.
+ */
+export function lifecycleMatcherSubject(
+  event: LifecycleHookEvent,
+  sessionId: string,
+  payload: LifecycleEventPayload,
+): string {
+  switch (event) {
+    case "PostToolUseFailure":
+    case "PermissionDenied":
+      return payload.toolName ?? "";
+    case "PreCompact":
+    case "PostCompact":
+      return compactTrigger(payload.reason) ?? "";
+    case "SubagentStart":
+    case "SubagentStop":
+      return payload.agentType ?? "";
+    case "SessionEnd":
+      return payload.reason ?? "";
+    default:
+      return sessionId;
+  }
 }
 
 /** Public configuration keys; internal tool aliases remain stable for audit readers. */
@@ -59,8 +99,8 @@ interface HookJsonFields {
   SessionEnd: { reason?: string; session_meta?: Record<string, unknown>; stop_reason?: string };
   Notification: { message?: string };
   Stop: { stop_reason?: string; tool_count?: number; duration_ms?: number; stop_hook_active?: boolean };
-  PreCompact: { reason?: string; token_estimate?: number };
-  PostCompact: { messages_before?: number; messages_after?: number; tokens_before?: number; tokens_after?: number };
+  PreCompact: { reason?: string; trigger?: "manual" | "auto"; token_estimate?: number };
+  PostCompact: { trigger?: "manual" | "auto"; messages_before?: number; messages_after?: number; tokens_before?: number; tokens_after?: number };
   SubagentStart: { agent_id?: string; agent_type?: string };
   SubagentStop: { agent_id?: string; agent_type?: string; stop_reason?: string; stop_hook_active?: boolean };
 }
@@ -111,9 +151,11 @@ export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonIn
       return { ...common, hook_event_name: payload.hookType, stop_reason: payload.stopReason,
         tool_count: payload.toolCount, duration_ms: payload.durationMs, stop_hook_active: payload.stopHookActive };
     case "PreCompact":
-      return { ...common, hook_event_name: payload.hookType, reason: payload.reason, token_estimate: payload.tokenEstimate };
+      return { ...common, hook_event_name: payload.hookType, reason: payload.reason,
+        trigger: compactTrigger(payload.reason), token_estimate: payload.tokenEstimate };
     case "PostCompact":
-      return { ...common, hook_event_name: payload.hookType, messages_before: payload.messagesBefore,
+      return { ...common, hook_event_name: payload.hookType, trigger: compactTrigger(payload.reason),
+        messages_before: payload.messagesBefore,
         messages_after: payload.messagesAfter, tokens_before: payload.tokensBefore, tokens_after: payload.tokensAfter };
     case "SubagentStart":
       return { ...common, hook_event_name: "SubagentStart", agent_id: payload.agentId, agent_type: payload.agentType };

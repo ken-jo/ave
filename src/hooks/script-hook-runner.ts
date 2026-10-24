@@ -88,7 +88,7 @@ export interface RunnableHook {
    */
   command: string[];
   env?: Record<string, string>;
-  /** Optional glob matcher — surfaced to the hook via `AVE_HOOK_MATCHER`. */
+  /** Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`. */
   matcher?: string;
   /** Path for audit/forensics — `.sh` abs path, or the resolved script arg. */
   hookPath: string;
@@ -161,7 +161,7 @@ function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Re
     AVE_HOOK_TYPE: payload.hookType,
     // #811 — `AVE_HOOK_EVENT` is the closed-set event (alias of TYPE for the
     // generic-command surface; the lifecycle event for lifecycle dispatches);
-    // `AVE_HOOK_MATCHER` exposes the configured glob.
+    // `AVE_HOOK_MATCHER` exposes the configured matcher.
     AVE_HOOK_EVENT: event,
     ...(matcher !== undefined ? { AVE_HOOK_MATCHER: matcher } : {}),
     // `toolName` is present on tool-use + PostToolUseFailure/PermissionDenied

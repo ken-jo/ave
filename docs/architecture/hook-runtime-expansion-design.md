@@ -2,7 +2,7 @@
 
 > Status: **milestone-1 + milestone-2 IMPLEMENTED on `dev`** (2026-06-06) · Issue: #811 (previous tracker)
 > DONE + cluster-reviewed: command hooks (declarative `hooks.json` via TOFU trust),
-> the `mcp_*` tool matcher, per-request MCP identity in hook stdin, and ALL §5
+> the `^mcp_.*$` tool matcher, per-request MCP identity in hook stdin, and ALL §5
 > lifecycle events — 6 non-blocking observe-only (PostToolUseFailure, PermissionDenied,
 > SessionStart, Stop, PreCompact, PostCompact) + 1 blocking fail-closed
 > (UserPromptSubmit). GATED milestones remain design-only, tracked as issues:
@@ -112,7 +112,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp_*",                     // anchored glob over toolName; "*" = all
+        "matcher": "^mcp_.*$",                  // regex over toolName; "*" = all
         "hooks": [
           {
             "type": "command",
@@ -127,7 +127,7 @@ Normalization means every downstream consumer (trust diff, runner, audit, trust-
 ```
 
 - `event` keys are the closed set in §5. Unknown events → entry ignored + warn-audited (fail-closed, never silently active).
-- `matcher` is an anchored glob, sharing the legacy script matcher. It matches `toolName` for tool events, input text for `UserPromptSubmit`, and `sessionId` for other lifecycle events; empty/`*` matches all.
+- `matcher` shares the legacy script matcher: exact names separated by `|` or `,` when the pattern contains only letters, digits, `_`, `-`, spaces and those separators; otherwise an unanchored JavaScript regular expression. Empty/`*` matches all. Regexes compile once per registry build and run as written without a complexity bound. Invalid regexes refuse loading and appear with their reason in `/permission hooks list`. Tool events match `toolName`, compaction events match `trigger` (`manual`/`auto`), subagent events match agent type, SessionEnd matches its reason, and UserPromptSubmit matches input text. SessionStart, Notification and Stop retain session-ID matching. See the [public contract](../guides/user-hooks.md) for migration examples and compatibility differences.
 - Each `handler` declares `type` (initially only `"command"`), `command` (argv string), and optional `timeoutMs`.
 - **Trust identity** of a `command` handler = the sha256 of the resolved local script/executable when the command resolves to a local file (see §6.1); plus the verbatim `command` string. Both are shown in the trust-review UI and recorded in the lockfile.
 
@@ -152,8 +152,8 @@ Each proposed event below has a **verified existing fire point**. `Blocking` sta
 | `UserPromptSubmit` | `src/engine/turn/run-turn.ts:183` (after classify/route, before `queryLoop`) | input text | **yes** (deny → turn refused) | `inputText`*, `inputOrigin`, `route`, `classification` |
 | `SessionStart` | `src/engine/turn/run-turn.ts:169` (`runTurn` entry) | sessionId | no | `sessionMeta` (routine scope / persona) |
 | `Stop` | `src/engine/turn/run-turn.ts:430` (`runTurn` finally, before post-turn chain) | sessionId | no | `stopReason`, `toolCount`, `durationMs` |
-| `PreCompact` | `src/engine/turn/compaction.ts:81/442` (manual/automatic paths) | sessionId | no | `reason` (threshold/manual), `tokenEstimate` |
-| `PostCompact` | `src/engine/turn/compaction.ts:118/488` (manual/automatic paths) | sessionId | no | `messagesBefore/After`, `tokensBefore/After` |
+| `PreCompact` | `src/engine/turn/compaction.ts:81/442` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `reason` (`auto-compact`/`manual`), `trigger`, `tokenEstimate` |
+| `PostCompact` | `src/engine/turn/compaction.ts:118/488` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `trigger`, `messagesBefore/After`, `tokensBefore/After` |
 
 \* `UserPromptSubmit` `inputText` and any tool `input` are **DLP-redacted** before dispatch (§6.6). `UserPromptSubmit` is the only **new** blocking event; it must inherit the same fail-closed semantics as `PreToolUse`.
 
@@ -234,7 +234,7 @@ behavior-based, not sequence numbers.
 - *Unit tests: discovery, trust diff, command execution, timeout, invalid output, deny precedence, `.sh` back-compat* → test plan §9.
 
 ## 9. Test plan (command-hooks milestone)
-- **Discovery/normalization**: `.sh` + `hooks.json` merge into one registry; unknown event ignored+warned; matcher regex compiled safely (reject catastrophic patterns).
+- **Discovery/normalization**: `.sh` + `hooks.json` merge into one registry; unknown event ignored+warned; invalid matcher regexes reject loading. Compile once per registry build; the user-authored regex runs as written, without a complexity bound.
 - **Trust diff**: new/changed `command` script quarantined; `/permission hooks accept` restores; binary-only command rejected up front.
 - **Execution**: command runs Python/Node/shell; stdin payload shape; stdout `allow`/`deny`; non-zero exit / timeout / malformed → deny; env allowlist enforced (secret vars absent).
 - **Composition**: deny precedence across legacy + declarative; cannot upgrade deny→allow.

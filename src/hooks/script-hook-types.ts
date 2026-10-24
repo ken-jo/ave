@@ -185,7 +185,8 @@ export interface LifecycleEventPayload {
   stopReason?: string;
   /** Stop — number of tool calls in the turn. */
   toolCount?: number;
-  /** PreCompact — `"auto-compact"` (threshold) | `"manual"`. */
+  /** PreCompact / PostCompact — `"auto-compact"` (threshold) | `"manual"`;
+   * SessionEnd — why the session ended. */
   reason?: string;
   /** PreCompact — pre-compaction token estimate. */
   tokenEstimate?: number;

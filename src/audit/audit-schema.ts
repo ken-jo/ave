@@ -64,7 +64,7 @@ export interface HookResult {
    * the full event surface (Stop / UserPromptSubmit / …) in later milestones.
    */
   event?: ScriptHookType;
-  /** The configured glob matcher that selected this hook (absent ⇒ match-all). */
+  /** The configured matcher that selected this hook (absent ⇒ match-all). */
   matcher?: string;
   /** Handler type — `"command"` today; http/mcp/prompt/agent in later phases. */
   handlerType?: "command";

@@ -56,9 +56,9 @@ export interface DiscoveredHook {
   size: number;
   /**
    * Optional tool-name matcher (#811 hooks-on-mcp-calls). Parsed from a
-   * `# ave-hook-matcher: <glob>` frontmatter line; when present the hook runs
-   * ONLY for tool calls whose name matches the glob (e.g. `mcp_*` for every MCP
-   * tool, `mcp_hr_*` for one server). Absent ⇒ runs for every tool (unchanged).
+   * `# ave-hook-matcher: <matcher>` frontmatter line; when present the hook runs
+   * ONLY for tool calls whose name matches it (e.g. `mcp_.*` for every MCP
+   * tool, `^mcp_hr_` for one server). Absent ⇒ runs for every tool (unchanged).
    */
   matcher?: string;
 }
@@ -128,12 +128,12 @@ function hookTypeFromName(fileName: string): ScriptHookType | null {
   return null;
 }
 
-/** Parse the optional `# ave-hook-matcher: <glob>` frontmatter directive. */
+/** Parse the optional `# ave-hook-matcher: <matcher>` frontmatter directive. */
 function parseMatcher(buf: Buffer): string | undefined {
   // Only scan the first 1KB (the directive must be in the header comment block).
   const head = buf.subarray(0, 1024).toString("utf-8");
-  const m = head.match(/^#\s*ave-hook-matcher:\s*(\S+)\s*$/m);
-  return m ? m[1] : undefined;
+  const m = head.match(/^#[\t ]*ave-hook-matcher:[\t ]*([^\r\n]*)/m);
+  return m ? m[1].trim() : undefined;
 }
 
 function sha256OfFile(path: string): { sha256: string; size: number; matcher?: string } {
@@ -145,22 +145,50 @@ function sha256OfFile(path: string): { sha256: string; size: number; matcher?: s
   };
 }
 
+/** Matchers made only of these characters are exact names, split on `|` or `,`. */
+const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]+$/u;
+
 /**
- * Does a hook apply to a tool call? A hook with no matcher applies to every tool
- * (unchanged behavior); a hook with a matcher applies only when the glob matches
- * the tool name. Glob: `*` → any run of chars, `?` → one char; anchored.
+ * Why a matcher cannot load, or undefined when it is usable. Matchers follow the
+ * Claude Code hooks reference (https://code.claude.com/docs/en/hooks): an exact
+ * name list, or else a JavaScript regular expression. An invalid regular
+ * expression must refuse the hook rather than silently match nothing.
  */
+export function hookMatcherError(matcher: string | undefined): string | undefined {
+  try {
+    compileHookMatcher(matcher);
+    return undefined;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+/**
+ * Does a hook apply to a subject (a tool name, or a lifecycle event's value)?
+ * No matcher, `""` or `*` matches everything. A matcher of only letters, digits,
+ * `_`, `-`, spaces, `,` and `|` is a list of exact names (`Edit|Write`,
+ * `Edit, Write`). Anything else is an unanchored regular expression
+ * (`mcp__.*`, `^Notebook`). Loading rejects invalid regular expressions through
+ * {@link hookMatcherError}. The user-authored regex runs as written, without
+ * a complexity bound. Registries compile it once when built, outside dispatch.
+ */
+export function compileHookMatcher(matcher: string | undefined): (subject: string) => boolean {
+  if (!matcher || matcher === "*") return () => true;
+  if (EXACT_MATCHER.test(matcher)) {
+    const names = new Set(matcher.split(/[|,]/u).map((name) => name.trim()));
+    return (subject) => names.has(subject);
+  }
+  const regex = new RegExp(matcher);
+  return (subject) => regex.test(subject);
+}
+
+/** Direct matching for callers without a registry; invalid regexes never match. */
 export function hookMatchesTool(matcher: string | undefined, toolName: string): boolean {
-  if (!matcher) return true;
-  const regex = new RegExp(
-    "^" +
-      matcher
-        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*/g, ".*")
-        .replace(/\?/g, ".") +
-      "$",
-  );
-  return regex.test(toolName);
+  try {
+    return compileHookMatcher(matcher)(toolName);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -198,6 +226,11 @@ export function discoverHooks(dir: string = defaultHooksDir()): DiscoveredHook[]
     } catch (err) {
       log.warn("hook-discovery: hash failed for %s: %s", path, (err as Error).message);
       continue;
+    }
+    const matcherError = hookMatcherError(h.matcher);
+    if (matcherError !== undefined) {
+      // Kept for trust review, but the registry will not load it.
+      log.warn("hook-discovery: %s matcher is not a valid regular expression (%s) — hook not loaded", path, matcherError);
     }
     out.push({ path, fileName, hookType, sha256: h.sha256, size: h.size, matcher: h.matcher });
   }

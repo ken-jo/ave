@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clearedImportedHooks, exportLegacyHooks, importLegacyHooks } from "../hook-import-export.js";
 import type { HookEvent } from "../script-hook-types.js";
 
-const block = (handler: unknown) => [{ matcher: "read_*", hooks: [handler] }];
+const block = (handler: unknown) => [{ matcher: "^read_.*$", hooks: [handler] }];
 const sourcePath = "hooks/hooks.json";
 
 describe("hook import and export review", () => {
@@ -15,7 +15,7 @@ describe("hook import and export review", () => {
       env: { STATE: "${CLAUDE_PLUGIN_DATA}/state.json" }, timeoutMs: 1200 })])) };
     const result = importLegacyHooks(source, sourcePath);
     expect(result.entries).toHaveLength(names.length);
-    expect(result.entries[0]).toMatchObject({ sourcePath, event: "pre", matcher: "read_*", timeoutMs: 1200,
+    expect(result.entries[0]).toMatchObject({ sourcePath, event: "pre", matcher: "^read_.*$", timeoutMs: 1200,
       needsAdaptation: true,
       command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json"],
       env: { STATE: "${PLUGIN_DATA}/state.json" } });
@@ -65,12 +65,12 @@ describe("hook import and export review", () => {
 
   it("locates each rejected and review-required handler in its source file", () => {
     const path = "declared/hooks/extra.json";
-    const result = importLegacyHooks({ hooks: { PreToolUse: [{ matcher: "read_*", hooks: [
+    const result = importLegacyHooks({ hooks: { PreToolUse: [{ matcher: "^read_.*$", hooks: [
       { type: "prompt", prompt: "inspect" },
       { type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1500 },
     ] }] } }, path);
     expect(result.entries).toEqual([expect.objectContaining({ sourcePath: path, event: "pre",
-      matcher: "read_*", command: ["node", "${PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1500,
+      matcher: "^read_.*$", command: ["node", "${PLUGIN_ROOT}/server/hook.js"], timeoutMs: 1500,
       needsAdaptation: true })]);
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ group: "lost", sourcePath: path, entry: "PreToolUse[0].hooks[0]" }),

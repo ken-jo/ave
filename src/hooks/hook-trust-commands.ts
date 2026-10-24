@@ -9,6 +9,7 @@ import {
   disableHook,
   discoverHooks,
   ensureHooksDirectory,
+  hookMatcherError,
   persistLockfile,
   readLockfile,
   type DiscoveredHook,
@@ -48,6 +49,8 @@ export interface HookTrustRow {
   entryCount?: number;
   /** Per-entry summaries (config row only): event + matcher + command. */
   entries?: Array<{ event: HookConfigEntry["event"]; matcher?: string; command: string }>;
+  /** Load rejections shown by the existing hook list, including matcher reasons. */
+  errors?: string[];
 }
 
 export type HookTrustCommandResult =
@@ -103,29 +106,31 @@ function validateHookName(fileName: string): string | null {
 
 function rowFromDiff(diff: HookDiff): HookTrustRow {
   return {
-    fileName: diff.hook.fileName,
-    hookType: diff.hook.hookType,
-    sha256: diff.hook.sha256,
-    state: diff.state,
+    ...rowFromHook(diff.hook, diff.state),
     ...(diff.previousSha256 ? { previousSha256: diff.previousSha256 } : {}),
   };
 }
 
 function rowFromHook(hook: DiscoveredHook, state: HookTrustRow["state"]): HookTrustRow {
+  const invalid = hookMatcherError(hook.matcher);
   return {
     fileName: hook.fileName,
     hookType: hook.hookType,
     sha256: hook.sha256,
     state,
+    ...(invalid === undefined ? {} : {
+      errors: [`Matcher ${JSON.stringify(hook.matcher)} is not a valid regular expression (${invalid}) — hook not loaded`],
+    }),
   };
 }
 
 /** Summarize parsed config entries onto a trust row (STEP 6 additive fields). */
-function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[]): HookTrustRow {
+function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[], errors: string[]): HookTrustRow {
   return {
     ...row,
     source: "config",
     entryCount: entries.length,
+    ...(errors.length ? { errors } : {}),
     entries: entries.map((e) => ({
       event: e.event,
       ...(e.matcher !== undefined ? { matcher: e.matcher } : {}),
@@ -155,6 +160,7 @@ function snapshot(opts: HookTrustCommandOptions): {
   lockfile: ReturnType<typeof readLockfile>;
   diff: HookDiff[];
   configEntries: HookConfigEntry[];
+  configErrors: string[];
 } {
   ensureHooksDirectory(hooksDir(opts));
   const active = discoverHooks(hooksDir(opts));
@@ -163,12 +169,14 @@ function snapshot(opts: HookTrustCommandOptions): {
 
   // Fold the `hooks.json` trust unit in (active copy wins; else disabled copy).
   let configEntries: HookConfigEntry[] = [];
+  let configErrors: string[] = [];
   const activeConfig = loadHookConfig(configPath(opts));
   if (activeConfig.exists) {
     const synthetic = syntheticConfigHook(activeConfig);
     if (synthetic) {
       active.push(synthetic);
       configEntries = activeConfig.entries;
+      configErrors = activeConfig.errors;
     }
   } else {
     const disabledConfig = loadHookConfig(disabledConfigPath(opts));
@@ -177,12 +185,13 @@ function snapshot(opts: HookTrustCommandOptions): {
       if (synthetic) {
         disabled.push(synthetic);
         configEntries = disabledConfig.entries;
+        configErrors = disabledConfig.errors;
       }
     }
   }
 
   const diff = diffAgainstLockfile(active, lockfile);
-  return { active, disabled, lockfile, diff, configEntries };
+  return { active, disabled, lockfile, diff, configEntries, configErrors };
 }
 
 async function persistTrustedHooks(
@@ -218,18 +227,18 @@ function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustComman
 export function listHookTrustState(
   opts: HookTrustCommandOptions = {},
 ): Extract<HookTrustCommandResult, { verb: "list" }> {
-  const { disabled, diff, configEntries } = snapshot(opts);
+  const { disabled, diff, configEntries, configErrors } = snapshot(opts);
   return {
     ok: true,
     verb: "list",
     active: diff.map((d) =>
       d.hook.fileName === HOOKS_CONFIG_FILENAME
-        ? withConfigSummary(rowFromDiff(d), configEntries)
+        ? withConfigSummary(rowFromDiff(d), configEntries, configErrors)
         : rowFromDiff(d),
     ),
     disabled: disabled.map((hook) =>
       hook.fileName === HOOKS_CONFIG_FILENAME
-        ? withConfigSummary(rowFromHook(hook, "disabled"), configEntries)
+        ? withConfigSummary(rowFromHook(hook, "disabled"), configEntries, configErrors)
         : rowFromHook(hook, "disabled"),
     ),
   };

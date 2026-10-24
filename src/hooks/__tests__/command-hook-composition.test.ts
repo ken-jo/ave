@@ -83,7 +83,7 @@ describe("#811 manager — unified registry dispatch", () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry(
       [],
-      [configEntry({ id: "PreToolUse#0.0", matcher: "mcp__*", command: ["./never-runs.sh"] })],
+      [configEntry({ id: "PreToolUse#0.0", matcher: "^mcp__.*$", command: ["./never-runs.sh"] })],
     );
     // fs_write does not match mcp__* → no matching hooks, allow with no results.
     const out = await m.runPreToolUse(payload);
