@@ -68,6 +68,13 @@ jobs:
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
         run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
+      # Install and save package archives before dependency scripts can run.
+      - name: Install Linux sandbox and real-shell tools
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap socat ripgrep zsh
+          commands: bwrap socat rg zsh
       # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
       # the owner's own bun home on a self-hosted runner; on Windows it is a
       # checksum-verified release download (see the action).
@@ -146,13 +153,6 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
-      # Install the backend and real-shell tools from cached package archives.
-      - name: Install Linux sandbox and real-shell tools
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        uses: ./ave/.github/actions/linux-packages
-        with:
-          packages: bubblewrap socat ripgrep zsh
-          commands: bwrap socat rg zsh
       - name: Allow unprivileged user namespaces
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: |
