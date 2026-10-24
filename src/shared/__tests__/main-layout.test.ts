@@ -15,6 +15,7 @@ function layout(): MainLayoutSnapshot {
     focusedId: "group-3",
     surfaces: { "group-3": { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 2, cwd: "/work/repo", url: null } },
     panelOpenIds: ["main"],
+    thumbnailOpenIds: ["group-3"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-5", ordinal: 1, cwd: null, url: "https://example.com/a" }] },
   };
 }
@@ -28,8 +29,28 @@ function refused(mutate: (raw: Record<string, any>) => void): string {
 }
 
 describe("parseMainLayout", () => {
+  it("round-trips creator and pane-chat facts without storing live control", () => {
+    const saved = layout();
+    saved.sideTabs.main![0]!.binding = { owner: { sessionId: "creator", directParentSessionId: "parent" }, paneSessionId: "pane-chat" };
+    saved.surfaces["group-3"]!.binding = { paneSessionId: "terminal-chat" };
+    expect(parseMainLayout(saved)).toEqual({ ok: true, layout: saved });
+    expect(refused((raw) => { raw.sideTabs.main[0].binding = { owner: { sessionId: "x", directParentSessionId: "x" } }; })).toMatch(/binding.owner is invalid/);
+    expect(refused((raw) => { raw.sideTabs.main[0].binding = { lease: {} }; })).toMatch(/binding is invalid/);
+    expect(refused((raw) => { raw.surfaces["group-3"].binding = { owner: { sessionId: "x" } }; })).toMatch(/binding.owner is invalid/);
+  });
   it("accepts a well-formed layout as it is", () => {
     expect(parseMainLayout(layout())).toEqual({ ok: true, layout: layout() });
+  });
+
+  it("restores layouts saved before session thumbnails with the column closed", () => {
+    const raw = structuredClone(layout()) as unknown as Record<string, unknown>;
+    delete raw.thumbnailOpenIds;
+    expect(parseMainLayout(raw)).toEqual({ ok: true, layout: { ...layout(), thumbnailOpenIds: [] } });
+  });
+
+  it("deduplicates the panes with open session thumbnails", () => {
+    expect(parseMainLayout({ ...layout(), thumbnailOpenIds: ["group-3", "group-3"] }))
+      .toEqual({ ok: true, layout: layout() });
   });
 
   it("refuses a layout whole, naming the rule it broke", () => {
@@ -47,6 +68,9 @@ describe("parseMainLayout", () => {
     expect(refused((raw) => { raw.sideTabs.main[0].url = "file:///etc/passwd"; })).toMatch(/url must be http or https/);
     expect(refused((raw) => { raw.sideTabs.main[0].tabId = "terminal:0000000a-4"; raw.sideTabs.main[0].kind = "terminal"; raw.sideTabs.main[0].url = null; })).toMatch(/terminal:0000000a-4 is used twice/);
     expect(refused((raw) => { raw.panelOpenIds = ["group-7"]; })).toMatch(/panelOpenIds names pane "group-7"/);
+    expect(refused((raw) => { raw.thumbnailOpenIds = ["group-7"]; })).toMatch(/thumbnailOpenIds names pane "group-7"/);
+    expect(refused((raw) => { raw.thumbnailOpenIds = null; })).toBe("thumbnailOpenIds is not a list of pane ids");
+    expect(refused((raw) => { raw.thumbnailOpenIds = [7]; })).toBe("thumbnailOpenIds is not a list of pane ids");
     expect(refused((raw) => { raw.surfaces = { "group-8": raw.surfaces["group-3"] }; })).toMatch(/surfaces names pane "group-8"/);
   });
 

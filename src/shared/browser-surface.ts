@@ -12,6 +12,8 @@
  *   stop         invoke  renderer→main  {@link BrowserTabStopRequest} (stop or user navigation)
  *   tabOp        event   main→renderer  {@link BrowserTabOpRequest}
  *   control      event   main→renderer  {@link BrowserTabControlState}
+ *   getSessionBindings invoke renderer→main → {@link SessionTabBindingsState}
+ *   sessionBindingsChanged event main→renderer {@link SessionTabBindingsState}
  *   setActive    invoke  renderer→main  {@link ActiveWorkspaceSurface} | null
  */
 
@@ -113,6 +115,42 @@ export interface BrowserSessionActor {
   readonly directParentSessionId?: string;
 }
 
+/** Durable tab facts. Creator identity and a pane's own chat are distinct roles. */
+export interface SessionTabBindingMetadata {
+  readonly owner?: BrowserSessionActor;
+  readonly paneSessionId?: string;
+}
+
+interface SessionTabBinding {
+  readonly sessionId: string;
+  /** Renderer slot ids. A direct child's tab also appears under its existing parent identity. */
+  readonly browserTabIds: readonly string[];
+  readonly terminalTabIds: readonly string[];
+}
+
+/** Window-scoped full snapshot; subscribe before querying and compare revisions. */
+export interface SessionTabBindingsState {
+  readonly revision: number;
+  readonly bindings: readonly SessionTabBinding[];
+}
+
+export function parseSessionTabBindingsState(value: unknown): SessionTabBindingsState | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["revision", "bindings"])
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !Array.isArray(value.bindings)) return null;
+  const sessions = new Set<string>();
+  const bindings: SessionTabBinding[] = [];
+  for (const item of value.bindings) {
+    if (!isRecord(item) || !hasOnlyKeys(item, ["sessionId", "browserTabIds", "terminalTabIds"])
+      || typeof item.sessionId !== "string" || item.sessionId.length === 0 || sessions.has(item.sessionId)) return null;
+    const ids = (value: unknown): value is string[] => Array.isArray(value)
+      && value.every((id) => typeof id === "string" && id.length > 0) && new Set(value).size === value.length;
+    if (!ids(item.browserTabIds) || !ids(item.terminalTabIds)) return null;
+    sessions.add(item.sessionId);
+    bindings.push({ sessionId: item.sessionId, browserTabIds: [...item.browserTabIds], terminalTabIds: [...item.terminalTabIds] });
+  }
+  return { revision: value.revision as number, bindings };
+}
+
 export interface BrowserControlLease {
   readonly id: string;
   readonly actor: BrowserSessionActor;
@@ -151,6 +189,9 @@ export interface BrowserTabControlState {
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
   getState(): Promise<BrowserTabControlState>;
+  /** Embedded workspace slots grouped by creator, direct parent, and pane chat. */
+  getSessionBindings(): Promise<SessionTabBindingsState>;
+  onSessionBindingsChanged(handler: (state: SessionTabBindingsState) => void): () => void;
   /** Embedded chrome operations take renderer slot ids, never tool handles. Stop also clears origin provenance. */
   stop(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   pause(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
@@ -172,7 +213,7 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return Object.keys(value).every((key) => keys.includes(key));
 }
 
-function parseActor(value: unknown): BrowserSessionActor | null {
+export function parseBrowserSessionActor(value: unknown): BrowserSessionActor | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ["sessionId", "directParentSessionId"])) return null;
   if (typeof value.sessionId !== "string" || value.sessionId.length === 0) return null;
   if (value.directParentSessionId !== undefined
@@ -201,14 +242,14 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
         || item.openerTabId !== null) return null;
       rendererIds.add(item.rendererTabId);
     } else if (item.rendererTabId !== null || item.openerTabId === null || item.openerTabId === item.tabId) return null;
-    const owner = item.owner === null ? null : parseActor(item.owner);
+    const owner = item.owner === null ? null : parseBrowserSessionActor(item.owner);
     if (item.owner !== null && owner === null) return null;
     let lease: BrowserControlLease | null = null;
     if (item.lease !== null) {
       if (!isRecord(item.lease) || !hasOnlyKeys(item.lease, ["id", "actor", "lifetime"])
         || typeof item.lease.id !== "string" || item.lease.id.length === 0
         || (item.lease.lifetime !== "owned" && item.lease.lifetime !== "borrowed")) return null;
-      const actor = parseActor(item.lease.actor);
+      const actor = parseBrowserSessionActor(item.lease.actor);
       if (actor === null || (item.lease.lifetime === "owned") !== (owner !== null)
         || item.mode === "human"
         || (owner !== null && owner.sessionId !== actor.sessionId

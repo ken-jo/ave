@@ -15,6 +15,9 @@ on:
       - 'web/**'
       - '.github/workflows/web-ci.yml'
 
+permissions:
+  contents: read
+
 concurrency:
   group: web-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -26,19 +29,18 @@ defaults:
 jobs:
   build:
     name: Build (static export)
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    # The same pinned ARM64 image web-deploy.yml builds and deploys on, so
+    # this gate builds the export the way the deploy does.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./.github/actions/setup-bun
         with:
           bun-version-file: .bun-version

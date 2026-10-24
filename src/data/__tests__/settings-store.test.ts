@@ -1209,6 +1209,7 @@ describe("SettingsService marketplace defaults", () => {
     // One `model` served the generic custom-provider row and every preset
     // reached through the same vendor, so the row picked last overwrote the
     // rest. The stored value belongs to the row this install is actually on.
+    // Use an explicit alternative so default cleanup does not clear this slot.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1216,7 +1217,7 @@ describe("SettingsService marketplace defaults", () => {
           provider: "openai-compatible",
           marketplaceProviderPresetId: "future-router",
           vendors: {
-            "openai-compatible": { model: "future/free", baseUrl: "http://localhost:8001/v1" },
+            "openai-compatible": { model: "future/chosen", baseUrl: "http://localhost:8001/v1" },
           },
         },
         marketplace: {
@@ -1236,7 +1237,7 @@ describe("SettingsService marketplace defaults", () => {
     const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
     const block = getLlmVendorSettings(llm.vendors, "openai-compatible");
 
-    expect(block.presetModels).toEqual({ "future-router": "future/free" });
+    expect(block.presetModels).toEqual({ "future-router": "future/chosen" });
     // The generic row starts empty, so its chooser shows what its OWN endpoint
     // answers rather than a model borrowed from a gateway.
     expect(block.model).toBe("");
@@ -1257,18 +1258,21 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("retains an inactive optional provider customized only by image input across pruning and reload", async () => {
-    const model = getLlmVendorSettings(undefined, "groq").model;
+    const model = "llama-3.3-70b-versatile";
     const key = llmImageInputKey(model);
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
       llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("llm").vendors.groq?.model).toBe("");
     expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").provider).toBe("openai");
+    expect(reloaded.get("marketplace").installedProviderIds).toContain("groq");
+    expect(reloaded.get("llm").vendors.groq?.model).toBe("");
     expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
   });
 
@@ -1795,9 +1799,7 @@ describe("SettingsService LLM per-vendor patching", () => {
       "openrouter",
     ]);
     expect(llm.vendors["azure-foundry"]).toBeUndefined();
-    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe(
-      "gpt-5.4-mini",
-    );
+    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe("");
   });
 
   it("migrates legacy API provider/model settings to the API chat runtime", () => {
@@ -3775,7 +3777,7 @@ function writePlainSecrets(secretsPath: string, entries: Record<string, string>)
 
 describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   const MARKER = "llm-vendor-id-package-names";
-  const MODEL = "DeepHermes-3-Llama-3-3-70B-Preview";
+  const MODEL = "selected-model";
   const BASE_URL = "https://inference-api.nousresearch.com/v1";
   let userDataPath: string;
   let settingsPath: string;
@@ -3843,10 +3845,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     writeFileSync(settingsPath, JSON.stringify({
       llm: {
         provider: "v0",
-        vendors: { v0: { model: "v0-1.5-md" } },
+        vendors: { v0: { model: "selected-model" } },
         fallbackChain: [
           { provider: "nousResearch", model: MODEL },
-          { provider: "v0", model: "v0-1.5-md" },
+          { provider: "v0", model: "selected-model" },
         ],
       },
       marketplace: { installedProviderIds: ["v0", "nousResearch"] },
@@ -3855,10 +3857,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const llm = service.get("llm");
     expect(llm.provider).toBe("vercel-v0");
-    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("v0-1.5-md");
+    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("selected-model");
     expect(llm.fallbackChain).toEqual([
       { provider: "nous-research", model: MODEL },
-      { provider: "vercel-v0", model: "v0-1.5-md" },
+      { provider: "vercel-v0", model: "selected-model" },
     ]);
     expect(service.get("marketplace").installedProviderIds).toEqual(["vercel-v0", "nous-research"]);
   });
@@ -4005,10 +4007,10 @@ describe("retired vendor profile migration", () => {
         provider: "copilot",
         vendors: {
           copilot: { model: "gpt-5.4-mini" },
-          claude: { model: "claude-sonnet-4-6" },
+          claude: { model: "selected-model" },
           openai: { model: "gpt-5.4" },
         },
-        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "claude-sonnet-4-6" }],
+        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "selected-model" }],
       },
     }), "utf-8");
   }
@@ -4033,9 +4035,9 @@ describe("retired vendor profile migration", () => {
     expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
     expect(llm.retiredProvider).toBe("copilot");
     expect(Object.keys(llm.vendors)).not.toContain("copilot");
-    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("claude-sonnet-4-6");
+    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("selected-model");
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5.4");
-    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "claude-sonnet-4-6" }]);
+    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "selected-model" }]);
 
     // Written back: the file no longer selects copilot, and the marker survives
     // a restart until the user picks a provider.
@@ -4349,6 +4351,7 @@ describe("SettingsService system — main window layout", () => {
     focusedId: "group-2",
     surfaces: { "group-2": { kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null } },
     panelOpenIds: ["main"],
+    thumbnailOpenIds: ["group-2"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-4", ordinal: 1, cwd: null, url: "https://example.com/" }] },
   } as const;
 
