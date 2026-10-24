@@ -3,12 +3,12 @@
  * broker, an empty generated global config and Ave-owned empty directories.
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AskpassBroker } from "../../git/askpass.js";
 import { detectGitRuntime, type GitExecutable, nodeGitDetectionDeps } from "../../git/detect.js";
 import { GitRunner, type GitRunnerOptions } from "../../git/run-git.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 export interface TestGitRunner {
   runner: GitRunner;
@@ -25,7 +25,7 @@ export async function hostGitExecutable(): Promise<GitExecutable> {
 }
 
 export async function createTestGitRunner(
-  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig">> = {},
+  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig" | "_scheduleTimeoutForTest">> = {},
 ): Promise<TestGitRunner> {
   const dir = mkdtempSync(join(tmpdir(), "ave-git-runner-"));
   const emptyDir = join(dir, "empty");
@@ -43,6 +43,7 @@ export async function createTestGitRunner(
     ...(options.resolveProxy ? { resolveProxy: options.resolveProxy } : {}),
     ...(options.lookup ? { lookup: options.lookup } : {}),
     ...(options.readSshConfig ? { readSshConfig: options.readSshConfig } : {}),
+    ...(options._scheduleTimeoutForTest ? { _scheduleTimeoutForTest: options._scheduleTimeoutForTest } : {}),
   });
   return {
     runner,
@@ -51,7 +52,7 @@ export async function createTestGitRunner(
     dir,
     async cleanup() {
       await broker.close();
-      await rm(dir, { recursive: true, force: true });
+      await cleanupTmpDir(dir);
     },
   };
 }

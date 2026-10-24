@@ -112,6 +112,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     preferredFlow: "in-app",
   },
   system: {
+    turnCompletionSoundEnabled: true,
     closeBehavior: "hide-to-tray",
     appMode: DEFAULT_APP_MODE,
     // Opt-in loopback API server — OFF by default (also enabled by env

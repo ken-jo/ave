@@ -94,8 +94,8 @@ describe("packaged Windows ave protocol marker", () => {
 });
 
 describe("decideAveProtocolClientRegistration", () => {
-  const POSIX_HOME = "/Users/someone/.ave";
-  const WINDOWS_HOME = "C:\\Users\\someone\\.ave";
+  const POSIX_HOME = "/Users/example/.ave";
+  const WINDOWS_HOME = "C:\\Users\\example\\.ave";
 
   function input(
     overrides: Partial<AveProtocolClientRegistrationInput> = {},
@@ -142,7 +142,7 @@ describe("decideAveProtocolClientRegistration", () => {
     ).toEqual({ register: true });
     expect(
       decideAveProtocolClientRegistration(
-        windowsInput("absent", { env: { AVE_HOME: "c:\\users\\SOMEONE\\.ave" } }),
+        windowsInput("absent", { env: { AVE_HOME: "c:\\users\\EXAMPLE\\.ave" } }),
       ),
     ).toEqual({ register: true });
   });

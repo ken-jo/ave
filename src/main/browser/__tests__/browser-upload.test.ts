@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { BrowserActionError } from "../browser-action-guard.js";
 import { BROWSER_UPLOAD_LIMITS, stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadSelection } from "../browser-upload.js";
 
@@ -50,6 +50,38 @@ describe("native upload selection staging", () => {
     expect(JSON.stringify(selection.result)).not.toContain(dir);
     await selection.release();
     expect(await fs.readFile(path, "utf8")).toBe("changed after choice");
+  });
+
+  it("delivers each file under its source basename, even when two sources share one", async () => {
+    await fs.mkdir(join(dir, "a"));
+    await fs.mkdir(join(dir, "b"));
+    const first = await file(join("a", "notes.txt"), "first bytes");
+    const second = await file(join("b", "notes.txt"), "second bytes");
+    const destination = request();
+    const selection = await stageBrowserUpload(destination, async () => [first, second], () => {});
+    expect(selection).not.toBeNull();
+    let delivered: readonly string[] = [];
+    await selection!.dispatch(destination, async (paths) => {
+      delivered = paths;
+      expect(paths.map((path) => basename(path))).toEqual(["notes.txt", "notes.txt"]);
+      expect(new Set(paths.map((path) => dirname(path))).size).toBe(2);
+      expect(await fs.readFile(paths[0]!, "utf8")).toBe("first bytes");
+      expect(await fs.readFile(paths[1]!, "utf8")).toBe("second bytes");
+    });
+    expect(selection!.result.files).toEqual([{ name: "notes.txt", bytes: 11 }, { name: "notes.txt", bytes: 12 }]);
+    await selection!.release();
+    for (const path of delivered) await expect(fs.stat(dirname(path))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readdir(join(dir, "home", "browser-uploads"))).toEqual([]);
+  });
+
+  it("removes the slot directories of a selection released before dispatch", async () => {
+    const selection = await staged(await file());
+    const root = join(dir, "home", "browser-uploads");
+    const [selectionDir] = await fs.readdir(root);
+    expect(await fs.readdir(join(root, selectionDir!))).toEqual(["0"]);
+    expect(await fs.readdir(join(root, selectionDir!, "0"))).toEqual(["notes.txt"]);
+    await selection.release();
+    expect(await fs.readdir(root)).toEqual([]);
   });
 
   it("binds a one-shot selection to every destination identity field", async () => {

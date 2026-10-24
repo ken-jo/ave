@@ -132,6 +132,8 @@ export interface GitResult {
 }
 
 export interface GitRunnerOptions {
+  /** Substitute the command deadline's scheduler; cancellation still waits for child close. */
+  _scheduleTimeoutForTest?: (expire: () => void, delayMs: number) => () => void;
   git: GitExecutable;
   /** Generated file for `GIT_CONFIG_GLOBAL` (see global-config.ts). */
   globalConfigPath: string;
@@ -480,7 +482,11 @@ export class GitRunner {
           if (!settled) signalGroup("SIGKILL");
         }, FORCE_KILL_AFTER_MS).unref();
       };
-      const timer = setTimeout(() => {
+      const scheduleTimeout = this.options._scheduleTimeoutForTest ?? ((expire: () => void, delayMs: number) => {
+        const timer = setTimeout(expire, delayMs);
+        return () => clearTimeout(timer);
+      });
+      const cancelTimeout = scheduleTimeout(() => {
         stop(
           options.remote
             ? new MarketplaceError("SOURCE_UNREACHABLE", `git ${command} timed out after ${options.timeoutMs} ms`, {
@@ -516,7 +522,7 @@ export class GitRunner {
       const finish = (outcome: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cancelTimeout();
         options.signal?.removeEventListener("abort", onAbort);
         if (termination) void termination.then(outcome);
         else outcome();
