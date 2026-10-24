@@ -965,6 +965,16 @@ or another tab; agent output does not take Manual's focus. A wait timeout means
 the command can still be running, and cancellation of a waiter does not prove
 process cleanup.
 
+On Linux, an Agent terminal keeps its initial mount namespace until it exits.
+Before typing an agent command, the host re-scans against that initial policy
+and refuses newly required denies, withdrawn grants or scan failures until the
+terminal is reopened. Metadata appearing after that check can still be used
+until shell exit, with no time limit. Startup/replay output and terminal tool
+results disclose this limitation. Foreground and background work can use new
+metadata before the next check; raw input does not run the check. A project
+outside the original grant stays unwritable. The [sandbox policy](permission-policy-design.md#preparation-and-native-validation)
+explains why prompt markers cannot provide a reliable post-block boundary.
+
 An unavailable confined backend leaves Manual usable and Agent explicitly
 unavailable. The current Windows interactive Agent backend cannot attest this
 contract and is unavailable; it never falls back to a host PTY. General sandbox
@@ -1536,13 +1546,18 @@ repository discovery cannot complete. Independently scanned narrower roots,
 including the working directory and private temporary directory, keep their
 own grants; removing an ambient temporary-root grant does not deny those
 children. The linked policy owns discovery and serialized-policy limits.
+The existing tool result and terminal output report why access was narrowed,
+which roots lost their grants and which roots remain writable.
 
 Existing repository metadata permits index/ref updates, commits, branches and
 stashes; new `.git` entries remain blocked and require the existing approved
-host route. Linux re-scans nested controls before each command and cleans newly
-created bare layouts in non-repository roots after exit. Every Ave-owned Git
-process carries one shared hardening policy. Independent user and editor Git
-processes and Linux cleanup timing remain residual risks defined by the
+host route. Linux re-scans nested controls before each command and atomically
+quarantines newly appeared bare-layout entries in non-repository roots after
+exit. The entries remain recoverable, and existing result and terminal output
+show their original paths and restore locations. Rename failures report an
+error without deleting entries. Every Ave-owned Git process carries one shared
+hardening policy. Independent user and editor Git processes and the interval
+before Linux quarantine remain residual risks defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
 Isolation between plugins is a macOS and Linux property. There every wrap of

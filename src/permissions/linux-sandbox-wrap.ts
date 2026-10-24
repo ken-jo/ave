@@ -22,6 +22,9 @@ const BWRAP_OPTION_ARITY = {
   "--proc": 1,
 } as const;
 
+/** Root-process exit is a cleanup boundary only while its descendants stay isolated. */
+const BWRAP_LIFETIME_OPTIONS = ["--new-session", "--die-with-parent", "--unshare-pid"] as const;
+
 /** Resolve symlinked prefixes, including when the mount target does not exist yet. */
 function mountIdentity(target: string): string {
   const path = resolve(target);
@@ -188,6 +191,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   }
   const maskedDirectories = new Map<string, string>();
   const finalMounts = new Map<string, "mask" | "write" | "read" | "special">();
+  const emittedOptions = new Set<string>();
   const capabilities: BwrapCapabilityState = { unsharedUserNamespace: false, allCapabilitiesDropped: false };
   let index = 1;
   while (index < words.length && words[index]?.value !== "--") {
@@ -201,6 +205,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     }
     const operands = words.slice(index + 1, index + arity + 1).map((word) => word.value);
     assertBwrapCapabilityOption(option, operands, capabilities);
+    emittedOptions.add(option);
     if (["--tmpfs", "--bind", "--ro-bind", "--dev", "--proc"].includes(option)) {
       const target = words[index + arity]!.value;
       if (!isAbsolute(target)) throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);
@@ -220,6 +225,11 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   const separator = index;
   if (words[separator]?.value !== "--" || separator + 4 !== words.length || words[separator + 2]?.value !== "-c") {
     throw new Error("Linux sandbox wrapper has no command separator");
+  }
+  for (const option of BWRAP_LIFETIME_OPTIONS) {
+    if (!emittedOptions.has(option)) {
+      throw new Error(`Linux sandbox wrapper is missing required process isolation: ${option}`);
+    }
   }
   const remountTargets = [...maskedDirectories].filter(([identity]) => {
     const final = finalMounts.get(identity);

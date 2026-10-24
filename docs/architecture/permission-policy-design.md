@@ -430,7 +430,7 @@ The policy intentionally differs across the referenced implementations:
 | Whole-directory protection | Existing `.git` directories remain writable. | The [permission builder at `970111f`](https://github.com/openai/codex/blob/970111f/codex-rs/protocol/src/permissions.rs#L2360-L2380) protects an existing top-level `.git` and resolved pointer target; its [Seatbelt matcher](https://github.com/openai/codex/blob/970111f/codex-rs/sandboxing/src/seatbelt.rs#L591-L603) covers protected names and descendants. |
 | Nested controls | Case-insensitive macOS patterns at any depth; bounded Linux scan before every command. | The [Linux builder at `c66fb77`](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L537-L566) scans per command and uses `.git/HEAD` to identify nested repositories. |
 | Missing `.git` | Creation denied. | The pinned [Linux marker handling](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L408-L427) leaves an absent marker unmounted; Ave deliberately retains creation protection. |
-| Bare layout in a non-repository root | macOS prevention; Linux post-command cleanup plus host Git hardening. | The [protected-path documentation](https://code.claude.com/docs/en/sandboxing#protected-paths) describes top-level bare-layout protection and Linux cleanup. |
+| Bare layout in a non-repository root | macOS prevention; recoverable Linux post-command quarantine plus host Git hardening. | The [protected-path documentation](https://code.claude.com/docs/en/sandboxing#protected-paths) describes top-level bare-layout protection and Linux cleanup. Ave preserves moved entries for recovery. |
 
 #### Bare layouts and host Git
 
@@ -438,20 +438,30 @@ For each write root outside a repository, macOS denies top-level `HEAD`,
 `objects`, `refs` and `config`; it also denies `hooks` when `HEAD` already
 exists. Linux does not bind-mount missing bare-layout entries, because doing
 so would create host files. Before each invocation it classifies the roots and
-snapshots which of these entries are absent. After exit it removes newly
-appeared `HEAD`, `objects`, `refs` and `config`, including nonempty command-produced
-contents; it also removes a newly appeared `hooks` when `HEAD` is present at
-cleanup. Each removal is logged. Pre-command entries are preserved, and a changed root
-identity prevents cleanup from deleting through a substituted root. This
-post-command sweep is cleanup, not a write denial while the process runs.
-Absence at preparation does not prove which process created an entry. A
-concurrent editor or user terminal can create a reserved name that this sweep
-then removes. Writers must coordinate these reserved names during a sandboxed
-invocation; the filesystem snapshot does not establish causal ownership.
-Cleanup failures are logged and make an otherwise successful shell result an
-error with `sandboxCleanupFailed` metadata. A post-spawn process error can return
-before child termination; its later cleanup failure is logged after exit rather
-than changing that already returned error result.
+snapshots which of these entries are absent. After exit it quarantines newly
+appeared `HEAD`, `objects`, `refs` and `config`, including nonempty contents;
+it also quarantines a newly appeared `hooks` when `HEAD` is present at cleanup.
+Pre-command entries are preserved, and a changed root identity prevents moving
+through a substituted root. Absence at preparation does not prove which
+process created an entry: a concurrent editor or user terminal can create a
+reserved name that this sweep then moves. Quarantine preserves that entry
+instead of deleting potentially unrelated work. It is a post-command response,
+not a write denial while the process runs.
+
+The shared quarantine helper uses Ave's private `sandbox-quarantine` feature
+namespace and a unique timestamped slot for each invocation. Each entry moves
+by atomic rename on the same filesystem, using the shared atomic staging
+helper. A symbolic link moves as a link; its target is never followed.
+Cross-device or other rename failures are logged and fail clearly without a
+copy or delete fallback. Earlier successful moves remain recoverable if a
+later move fails. The existing result annotator and terminal output carry a
+notice listing each original path and its quarantine destination, with an
+instruction to inspect the entry and move it back to its original path when
+restoring it. The tool result includes the notice. Quarantine failures make an
+otherwise successful shell result an error with `sandboxCleanupFailed`
+metadata. A post-spawn process error can return before child termination; its
+later quarantine outcome is logged after exit rather than changing that
+already returned error result.
 
 Every Ave-owned Git subprocess uses the shared argument builder in
 [host-git.ts](../../src/shared/host-git.ts), including marketplace operations,
@@ -472,7 +482,7 @@ documents per-command hook neutralization.
 
 IDE integrations and user terminals run their own Git processes and do not
 inherit Ave's host helper. A Linux command can expose a planted layout before
-cleanup, and forced host termination can prevent cleanup altogether. Recommend
+quarantine, and forced host termination can prevent the sweep altogether. Recommend
 `git config --global safe.bareRepository explicit` for those independent
 clients, as recommended by the safe configuration documentation. The setting
 does not disable an already configured filter, credential helper or other
@@ -516,6 +526,10 @@ child; independently scanned narrower roots keep their grants when a broader
 root is removed. Required metadata denies remain explicit outside the roots
 and above retained child grants. If the final serialized write-deny
 policy cannot fit within 32 KiB, preparation fails clearly.
+When discovery narrows write access, the existing tool result and terminal
+output identify the scan limit or failure, the removed roots and the actual
+retained write roots. A project too large to scan therefore produces an
+explicit reason for narrowed access before a later filesystem permission error.
 On macOS, case-insensitive backend patterns additionally protect nested Git
 controls at any depth, including future entries. Typed exact-entry Seatbelt
 rules protect marker creation and regular pointer-file writes without denying
@@ -528,8 +542,31 @@ remain explicit in validation.
 Here a command means a new sandboxed process invocation through the wrapper.
 A persistent workspace PTY receives its OS profile when it starts; later blocks
 typed into that same process do not re-enter wrapper preparation or replace its
-existing Linux mounts. The per-invocation rescan therefore does not claim a new
-scan for each block inside an already running terminal or background child.
+existing Linux mounts. The unprivileged sandbox has dropped the capabilities
+needed to remount them, and the host wrapper has no live mount-update API.
+Shell-owned prompt or OSC markers cannot establish a reliable enforcement
+boundary: foreground code can emit them, background jobs can keep running, and
+raw terminal input does not pass through `terminal_run`. A post-block check
+cannot establish that a control file was not used before that check.
+
+Before each agent-typed command on Linux, the host re-scans and compares the
+policy with the retained roots and denies captured for that terminal's initial
+profile. An additional required deny, a removed initial grant or a scan failure
+refuses typing through the existing unverified-directory error path and asks
+the caller to close and reopen the Agent terminal. The baseline never advances
+without creating a fresh sandbox profile. Adding an authorized project outside
+the original write grant does not make it writable in the old shell.
+
+Repository metadata appearing after the last check inside an existing Agent
+write grant still has an exposure window from its appearance until that Agent
+shell exits. There is no time limit while the shell remains alive: foreground
+commands and background descendants can use it before the next check, and raw
+terminal input does not run that check. Reopening the Agent terminal creates a
+fresh profile and scans the metadata then present. Startup and terminal replay
+output, and every terminal tool result, carry an explicit notice describing the
+window and the need to reopen after metadata changes. This is a visible
+limitation, not a claim of per-block prevention or post-block quarantine. Fresh
+shell invocations retain the per-command rescan described above.
 
 A very large ambient root, such as the shared temporary directory, may
 therefore lose its broad write grant. An explicitly admitted working directory

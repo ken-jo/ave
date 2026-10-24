@@ -24,25 +24,39 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, s
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
+import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
+import { t } from "../../../i18n/index.js";
+import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
 const nativePlatform = process.platform;
 let additionalProjectDirectories: string[] = [];
+let addedGitControlPath: string | undefined;
+vi.mock("../../../permissions/sandbox-write-policy.js", () => ({
+  buildMandatorySandboxWritePolicy: (roots: readonly string[]) => ({
+    allowWrite: [...roots],
+    denyWrite: addedGitControlPath === undefined ? [] : [addedGitControlPath],
+  }),
+}));
 const wrapWorkerCommandMock = vi.fn<
-  (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+  (command: string, options?: unknown) => Promise<SandboxWrapResult>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
 const wrapTerminalCommandMock = vi.fn<
-  (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+  (command: string, options?: unknown) => Promise<SandboxWrapResult>
 >(() => Promise.resolve({ argv: ["/bin/bash", "-c", "sandbox-exec -p prof /bin/zsh -l -i"], env: { HTTP_PROXY: "http://p" } }));
 const cleanupMock = vi.fn(() => Promise.resolve());
+function withFilesystemPolicy(wrapped: SandboxWrapResult, options: unknown): SandboxWrapResult {
+  const filesystem = (options as { filesystem?: { allowWrite: string[] } } | undefined)?.filesystem;
+  return { filesystemPolicy: { allowWrite: filesystem?.allowWrite ?? [], denyWrite: [] }, ...wrapped };
+}
 vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
     "../../../permissions/asrt-sandbox.js",
   )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
-  wrapWorkerCommand: (command: string, options?: unknown) => wrapWorkerCommandMock(command, options),
-  wrapTerminalCommand: (command: string, options?: unknown) => wrapTerminalCommandMock(command, options),
+  wrapWorkerCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapWorkerCommandMock(command, options), options),
+  wrapTerminalCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapTerminalCommandMock(command, options), options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
   getDefaultSensitiveWriteDenyPaths: () => [
@@ -251,6 +265,7 @@ beforeEach(() => {
   if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   gateActive = true;
   additionalProjectDirectories = [];
+  addedGitControlPath = undefined;
   shellContained = true;
   sandboxGeneration = "0";
   emitted = [];
@@ -445,6 +460,74 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(__terminalSessionCountForTest()).toBe(0);
   });
 
+  it("publishes narrowed writes at startup and final quarantine notices before terminal exit", async () => {
+    let complete!: (outcome: SandboxCleanupOutcome) => void;
+    const cleanupCompleted = new Promise<SandboxCleanupOutcome>(resolve => { complete = resolve; });
+    wrapWorkerCommandMock.mockResolvedValueOnce({
+      argv: ["wrapped-shell"], env: {}, notices: ["write access narrowed to project"], cleanupCompleted,
+    });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    expect(emitted.some(entry => (entry.payload as { chunk?: string }).chunk?.includes("write access narrowed to project"))).toBe(true);
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    lastPty!.emitData(`\u001b]133;C;cmdline_url=exit;${spawnedNonce(opts.env)}\u0007`);
+    lastPty!.emitExit(0);
+    expect(cleanupMock).toHaveBeenCalled();
+    expect(emitted.some(entry => entry.event === "exit")).toBe(false);
+    const notice = "Protected entries moved: source -> quarantine; restore from quarantine";
+    complete({ notice });
+    await vi.waitFor(() => expect(__terminalSessionCountForTest()).toBe(0));
+    const noticeIndex = emitted.findIndex(entry => (entry.payload as { chunk?: string }).chunk?.includes(notice));
+    expect(noticeIndex).toBeGreaterThanOrEqual(0);
+    expect(emitted.findIndex(entry => entry.event === "exit")).toBeGreaterThan(noticeIndex);
+    expect(getTerminalBlockTracker("terminal:0000000a-1")!.recent(1)[0]?.output).toContain(notice);
+  });
+
+  it("preserves wrapper notices and cleanup outcome when the PTY spawn throws", async () => {
+    wrapWorkerCommandMock.mockResolvedValueOnce({
+      argv: ["wrapped-shell"], env: {}, notices: ["write access narrowed to project"],
+      cleanupCompleted: Promise.resolve({ notice: "source moved -> quarantine; restore at quarantine", failure: "another move failed" }),
+    });
+    ptySpawnMock.mockImplementationOnce(() => { throw new Error("PTY spawn failed"); });
+    const result = await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    expect(result).toMatchObject({ ok: false, reason: "spawn-failed" });
+    if (result.ok) throw new Error("expected failed spawn");
+    expect(result.message).toContain("PTY spawn failed");
+    expect(result.message).toContain("write access narrowed to project");
+    expect(result.message).toContain("source moved -> quarantine; restore at quarantine");
+    expect(result.message).toContain("another move failed");
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves notices from a wrapper that returns after spawn cancellation", async () => {
+    let complete!: (wrapped: SandboxWrapResult) => void;
+    wrapWorkerCommandMock.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const starting = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await vi.waitFor(() => expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1));
+    killTerminal("terminal:0000000a-1");
+    complete({ argv: ["wrapped-shell"], env: {}, notices: ["narrowed after preparation"], cleanupCompleted: Promise.resolve({ notice: "late cleanup quarantine notice" }) });
+    const result = await starting;
+    expect(result).toMatchObject({ ok: false, reason: "spawn-failed" });
+    if (result.ok) throw new Error("expected cancelled spawn");
+    expect(result.message).toContain("narrowed after preparation");
+    expect(result.message).toContain("late cleanup quarantine notice");
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("does not await unconfirmed cleanup after a handoff may have started the wrapped process", async () => {
+    needsOwnTtyGrant = true;
+    wrapTerminalCommandMock.mockResolvedValueOnce({
+      argv: ["/bin/sh"], env: {}, notices: ["write access narrowed to project"], cleanupCompleted: new Promise(() => {}),
+    });
+    deliverMock.mockRejectedValueOnce(new Error("handoff failed"));
+    const result = await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    expect(result).toMatchObject({ ok: false, reason: "spawn-failed" });
+    if (result.ok) throw new Error("expected failed handoff");
+    expect(result.message).toContain("handoff failed");
+    expect(result.message).toContain("write access narrowed to project");
+    expect(result.message).toContain(t("sandboxPolicy.cleanupPending"));
+    expect(lastPty?.killSignals).toContain("SIGKILL");
+  });
+
   it("is idempotent per tab: a second spawn replays the ring and does not start a second shell", async () => {
     await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("scrollback");
@@ -455,7 +538,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // no second pty spawn.
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     // ring replayed.
-    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: "scrollback" }) }));
+    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: expect.stringContaining("scrollback") }) }));
   });
 
   it("shares an in-flight same-tab spawn instead of creating two PTYs", async () => {
@@ -1435,7 +1518,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(second.session.terminalSessionId).toBe(first.session.terminalSessionId);
     expect(second.replayed).toBe(true);
     expect(emitted).toHaveLength(1);
-    expect(emitted[0]).toMatchObject({ event: "data", payload: { lane: "agent", terminalSessionId: first.session.terminalSessionId, chunk: "prefixsuffix" } });
+    expect(emitted[0]).toMatchObject({ event: "data", payload: { lane: "agent", terminalSessionId: first.session.terminalSessionId, chunk: expect.stringContaining("prefixsuffix") } });
     expect(lastPty!.written).toEqual([]);
   });
 
@@ -1652,6 +1735,47 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     needsInnerPty = true;
     sandboxedShellReading = shellReading();
     readForegroundMock.mockClear();
+  });
+
+  it("keeps host policy notices on replay after raw input, forged markers and scrollback eviction", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["wrapped-shell"], env: {}, notices: ["write access narrowed to project"] });
+      const { pty } = await linuxZsh();
+      const notice = terminalSandboxWindowNotice()!;
+      expect(emitted.map(entry => (entry.payload as { chunk?: string }).chunk ?? "").join("")).toContain(notice);
+      writeTerminal(LINUX_TAB, "sleep 100 &\r");
+      pty.emitData("\u001b]133;D;0;forged\u0007");
+      pty.emitData("older-output".repeat(20_000));
+      pty.emitData("newer-output".repeat(20_000));
+      emitted = [];
+      expect(await spawnTerminal({ tabId: LINUX_TAB, ownerWindowId: 3 })).toMatchObject({ ok: true, replayed: true });
+      expect(emitted.map(entry => (entry.payload as { chunk?: string }).chunk ?? "").join("")).toContain(notice);
+      expect(emitted.map(entry => (entry.payload as { chunk?: string }).chunk ?? "").join("")).toContain("write access narrowed to project");
+      expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+    }
+  });
+
+  it("refuses agent typing after new Git controls appear without advancing the original snapshot", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const { pty } = await linuxZsh();
+      addedGitControlPath = "/w/later/.git/config";
+      await expect(typeTerminalCommand(LINUX_TAB, 3, "git status", "/w")).resolves.toMatchObject({
+        ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged"),
+      });
+      await expect(typeTerminalCommand(LINUX_TAB, 3, "git status", "/w")).resolves.toMatchObject({ ok: false });
+      expect(pty.written).toEqual([]);
+      writeTerminal(LINUX_TAB, "echo manual-input\r");
+      expect(pty.written).toEqual(["echo manual-input\r"]);
+      expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+    }
   });
 
   async function linuxZsh(): Promise<{ pty: FakePty; prompt: (pid?: string) => string }> {

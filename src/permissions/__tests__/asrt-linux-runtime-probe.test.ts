@@ -18,6 +18,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import * as sandboxWritePolicy from "../sandbox-write-policy.js";
 import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
 import { openEgressInvocation } from "../egress-invocations.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("node:child_process", () => ({
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
+  buildPerCommandSandboxCustomConfig,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
@@ -58,9 +60,10 @@ import {
 } from "../asrt-sandbox.js";
 
 const ORIGINAL_PLATFORM = process.platform;
+const originalLocale = getLocale();
 const temporaryRoots: string[] = [];
 const CONFIGURED_LINUX_BWRAP_COMMAND =
-  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 
 interface ProbeChild extends EventEmitter {
   kill: ReturnType<typeof vi.fn>;
@@ -100,6 +103,7 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 beforeEach(() => {
+  setLocale("en");
   setProcessPlatform("linux");
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
@@ -115,6 +119,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setLocale(originalLocale);
   vi.useRealTimers();
   if (isAsrtSandboxActive()) {
     await resetAsrtSandbox();
@@ -126,9 +131,30 @@ afterEach(async () => {
 });
 
 describe("Linux wrap filesystem discovery snapshot", () => {
+  it.each(["tool", "worker"] as const)("settles cleanup when a %s wrap completes after invocation release", async kind => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    const cleanup = vi.fn(() => "quarantine restore location");
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(cleanup);
+    let finishWrap!: (wrapped: { argv: string[]; env: NodeJS.ProcessEnv }) => void;
+    let enteredWrap!: () => void;
+    const entered = new Promise<void>(resolve => { enteredWrap = resolve; });
+    h.wrapWithSandboxArgv.mockImplementationOnce(() => new Promise(resolve => { finishWrap = resolve; enteredWrap(); }));
+    const invocation = openEgressInvocation({ kind: "terminal", tabId: "cancelled-terminal" });
+    const pending = (kind === "tool" ? wrapToolCommand : wrapWorkerCommand)("true", { commandId: invocation.token });
+    await entered;
+    expect(finishWrap).toBeTypeOf("function");
+    invocation.release();
+    finishWrap({ argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND], env: {} });
+    const wrapped = await pending;
+    await expect(wrapped.cleanupCompleted).resolves.toEqual({ notice: "quarantine restore location" });
+    expect(cleanup).toHaveBeenCalledOnce();
+    invocation.release();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it("reports cleanup failures to the command result owner after release", async () => {
     await initializeAsrtSandbox({ allowedDomains: [] });
-    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockReturnValue(() => {
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(() => {
       throw new Error("cleanup permission refused");
     });
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
@@ -142,19 +168,33 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       terminal.release();
     }
     const output = await wrapped.cleanupCompleted;
-    expect(output).toContain("cleanup permission refused");
-    expect(output).toContain("inspect them before running independent Git");
+    expect(output?.failure).toContain("cleanup permission refused");
+    expect(output?.failure).toContain("inspect them before running independent Git");
   });
 
-  it("defers bare-layout removal to the owning invocation release", async () => {
+  it("exposes a scan budget reason and the actual retained write roots", () => {
+    vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy").mockReturnValue({
+      allowWrite: ["/project/child"], denyWrite: [],
+      narrowedWriteRoots: [{ root: "/project", reason: "entry-budget" }],
+    });
+    const notices: string[] = [];
+    const config = buildPerCommandSandboxCustomConfig({ allowWrite: ["/project", "/project/child"] }, notice => notices.push(notice));
+    expect(config?.filesystem?.allowWrite).toEqual(["/project/child"]);
+    expect(notices).toEqual([expect.stringContaining('Project too large to scan for nested repositories within the directory-entry budget; write access narrowed to "/project/child"')]);
+    expect(notices[0]).toContain('withheld roots: "/project"');
+  });
+
+  it("defers bare-layout quarantine to the owning invocation release", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-bare-release-")));
     temporaryRoots.push(root);
     await initializeAsrtSandbox({ allowedDomains: [] });
+    const cleanup = vi.fn(() => "quarantine restore location");
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(cleanup);
     h.wrapWithSandboxArgv.mockClear();
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
     try {
-      await wrapToolCommand("true", { commandId: invocation.token, filesystem: { allowWrite: [root], denyWrite: [] } });
+      const wrapped = await wrapToolCommand("true", { commandId: invocation.token, filesystem: { allowWrite: [root], denyWrite: [] } });
       const applied = h.wrapWithSandboxArgv.mock.calls[0]![2].filesystem;
       for (const name of sandboxWritePolicy.SANDBOX_BARE_REPOSITORY_ENTRIES) {
         expect(applied.denyWrite).not.toContain(join(root, name));
@@ -165,8 +205,11 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       mkdirSync(join(root, "objects"));
       mkdirSync(join(root, "refs"));
       expect(existsSync(join(root, "HEAD"))).toBe(true);
+      expect(cleanup).not.toHaveBeenCalled();
+      invocation.release();
+      await expect(wrapped.cleanupCompleted).resolves.toEqual({ notice: "quarantine restore location" });
     } finally { invocation.release(); }
-    for (const name of sandboxWritePolicy.SANDBOX_BARE_REPOSITORY_ENTRIES) expect(existsSync(join(root, name))).toBe(false);
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it("rescans shared write roots for each tool command without an override", async () => {
@@ -219,7 +262,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       filesystem.denyWrite.push(ordinary);
       return {
         argv: ["/bin/bash", "-c", [
-          "/configured/asrt/bwrap --new-session --die-with-parent --ro-bind / /",
+          "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / /",
           `--tmpfs ${quote(root)}`,
           mount("--bind", denied), mount("--bind", ordinary),
           mount("--ro-bind", denied), mount("--ro-bind", root),

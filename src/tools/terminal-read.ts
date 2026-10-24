@@ -33,6 +33,7 @@ import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
 import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
+import { terminalSandboxWindowNotice } from "../main/terminal/terminal-sandbox-policy.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -65,8 +66,9 @@ export function resolveTerminalWindowId(
   return resolveSessionWindowId(sessionId, deps);
 }
 
-export function terminalToolFailure(error: string) {
-  return { output: JSON.stringify({ error }), isError: true };
+export function terminalToolFailure(error: string, lane?: TerminalSessionRef["lane"]) {
+  const notice = lane === "agent" ? terminalSandboxWindowNotice() : undefined;
+  return { output: JSON.stringify({ error, ...(notice === undefined ? {} : { sandboxNotice: notice }) }), isError: true };
 }
 
 /** The open tag of the fence every successful result is framed in. */
@@ -80,11 +82,16 @@ const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-d
  * invalid JSON escape such as `\ `).
  */
 export function fenceTerminalData(payload: unknown) {
+  const notice = terminalSandboxWindowNotice();
+  const record = payload !== null && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
+  const agentSession = record?.lane === "agent" || (Array.isArray(record?.terminals)
+    && record.terminals.some(session => session !== null && typeof session === "object" && session.lane === "agent"));
+  const annotated = notice !== undefined && agentSession ? { ...record, sandboxNotice: notice } : payload;
   return {
     output: [
       TERMINAL_OUTPUT_FENCE_OPEN,
       t("be_terminalRead.untrusted"),
-      JSON.stringify(neutralizeStrings(payload)),
+      JSON.stringify(neutralizeStrings(annotated)),
       "</terminal-output>",
     ].join("\n"),
     isError: false,
@@ -192,11 +199,11 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       const tracker = getWindowTerminalBlockTracker(ref, windowId);
       const session = getWindowTerminalBlockSession(ref, windowId);
       if (!tracker || !session) {
-        return terminalToolFailure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
+        return terminalToolFailure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`, ref.lane);
       }
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
-        if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`);
+        if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`, ref.lane);
         return fenceTerminalData({ ...session, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;

@@ -11,6 +11,18 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
+  "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
+  "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",
+  "sandboxPolicy.scanEntryBudget": "Project too large to scan for nested repositories within the directory-entry budget",
+  "sandboxPolicy.scanPathBudget": "Project has too many repository control paths to scan within the policy budget",
+  "sandboxPolicy.scanInaccessible": "Nested repository discovery could not safely read or resolve the project",
+  "sandboxPolicy.scanRouting": "A writable routing link could replace protected repository paths",
+  "sandboxPolicy.noWriteRoots": "no writable project roots",
+  "sandboxPolicy.cleanupPending": "Sandbox process termination is unconfirmed; repository quarantine is pending.",
+  "sandboxPolicy.cleanupFailed": "Sandbox repository quarantine failed: {reason}. Repository entries may remain; inspect them before running independent Git.",
+  "sandboxPolicy.terminalWindow": "Linux Agent terminals keep the Git protection scan from shell startup. Repositories or Git control paths created later inside its existing writable roots can remain writable until that shell exits, with no time limit; foreground commands, background jobs and raw terminal input share this window. Close and reopen the Agent shell before using those repositories. Projects outside its initial writable roots remain read-only.",
+  "sandboxPolicy.terminalChanged": "Repository protection changed since this Agent shell started. Close and reopen the Agent shell to refresh its sandbox before running this command.",
   "sandboxStatus.retry": "Retry status query",
   "sandboxStatus.queryFailed": "Sandbox status unknown · could not query the host",
   "sandboxStatus.off": "Sandbox off · {reason}",

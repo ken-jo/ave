@@ -332,38 +332,39 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
   };
 
   const execute = async (raw: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> => {
+    const fail = (message: string): ToolExecutionResult => terminalToolFailure(message, "agent");
     let input: TerminalRunInput;
     try {
       input = parseInput(raw);
     } catch (error) {
-      return terminalToolFailure((error as Error).message);
+      return fail((error as Error).message);
     }
     const scope = authorizedApprovalMemoryScope(ctx);
     if (scope?.kind !== "terminal-command" || scope.lane !== "agent" || scope.commandSha256 !== sha256Hex(input.command)
       || (input.tabId !== undefined && input.tabId !== scope.tabId)) {
-      return terminalToolFailure("this command was not authorized for a terminal; nothing was typed. Call terminal_run again.");
+      return fail("this command was not authorized for a terminal; nothing was typed. Call terminal_run again.");
     }
     const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
     const windowId = resolveSessionWindowId(sessionId, deps);
     const tracker = windowId === null ? undefined : getWindowTerminalBlockTracker(scope, windowId);
     if (windowId === null || !tracker) {
-      return terminalToolFailure(`terminal ${scope.tabId} is no longer open; nothing was typed`);
+      return fail(`terminal ${scope.tabId} is no longer open; nothing was typed`);
     }
     let live: TerminalSessionInfo;
     try { live = await deps.ensureAgentTerminal(scope.tabId, windowId, ctx.abortSignal); }
-    catch (error) { return terminalToolFailure(error instanceof Error ? error.message : "agent terminal unavailable"); }
+    catch (error) { return fail(error instanceof Error ? error.message : "agent terminal unavailable"); }
     if (live.lane !== "agent" || live.terminalSessionId !== scope.terminalSessionId || live.sandboxGeneration !== scope.sandboxGeneration) {
-      return terminalToolFailure("the approved agent terminal changed; nothing was typed. Call terminal_run again.");
+      return fail("the approved agent terminal changed; nothing was typed. Call terminal_run again.");
     }
     if (tracker.currentCwd() !== scope.cwd) {
-      return terminalToolFailure(
+      return fail(
         `terminal ${scope.tabId} moved from ${scope.cwd} to ${tracker.currentCwd() ?? "an unreported directory"} after approval; nothing was typed. Call terminal_run again.`,
       );
     }
     ctx.abortSignal?.throwIfAborted();
     const typed = await deps.typeCommand(scope, windowId, input.command, scope.cwd, ctx.abortSignal);
     if (!typed.ok) {
-      return terminalToolFailure(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
+      return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
     // Whatever the wait, give the shell time to report starting the command
     // (its C marker, which records the line it ran), so the line can be checked.

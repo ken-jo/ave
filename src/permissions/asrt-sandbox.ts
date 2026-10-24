@@ -21,11 +21,12 @@ import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
+import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { buildMandatorySandboxWritePolicy, isGrantPathWithin } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
-import { onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
+import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 
 import type {
@@ -522,7 +523,18 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
 
 /** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
-const bareRepositoryCleanups = new Map<string, { cleanup: () => void; complete: (failure: string | undefined) => void }>();
+const bareRepositoryCleanups = new Map<string, { cleanup: () => string | undefined; complete: (outcome: SandboxCleanupOutcome) => void }>();
+
+function completeBareRepositoryCleanup(pending: { cleanup: () => string | undefined; complete: (outcome: SandboxCleanupOutcome) => void }): void {
+  let failure: string | undefined;
+  let notice: string | undefined;
+  try {
+    notice = pending.cleanup();
+  } catch (error) {
+    failure = t("sandboxPolicy.cleanupFailed", { reason: errorMessage(error) });
+    log.error(failure);
+  } finally { pending.complete({ ...(notice ? { notice } : {}), ...(failure ? { failure } : {}) }); }
+}
 
 // A released token's listener refuses every further connection from then on.
 // On macOS the ended port stays bound for a quarantine, longer while the
@@ -531,13 +543,7 @@ onEgressInvocationReleased((token, { processGroup }) => {
   const pending = bareRepositoryCleanups.get(token);
   if (pending) {
     bareRepositoryCleanups.delete(token);
-    let failure: string | undefined;
-    try {
-      pending.cleanup();
-    } catch (error) {
-      failure = `Sandbox bare-repository cleanup failed: ${errorMessage(error)}. Repository entries may remain; inspect them before running independent Git.`;
-      log.error(failure);
-    } finally { pending.complete(failure); }
+    completeBareRepositoryCleanup(pending);
   }
   loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
 });
@@ -851,6 +857,7 @@ export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly
 
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
+  onNotice?: (notice: string) => void,
 ): Partial<SandboxRuntimeConfig> | undefined {
   // Windows keeps its separate per-exec filesystem admission contract.
   if (filesystem === undefined && process.platform === "win32") return undefined;
@@ -902,6 +909,21 @@ export function buildPerCommandSandboxCustomConfig(
     sensitiveDenyWrite,
   );
   fs.allowWrite = writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
+  const reasonKeys = {
+    "entry-budget": "sandboxPolicy.scanEntryBudget",
+    "path-budget": "sandboxPolicy.scanPathBudget",
+    "filesystem-access": "sandboxPolicy.scanInaccessible",
+    "routing-link": "sandboxPolicy.scanRouting",
+  } as const;
+  for (const reason of new Set(mandatory.narrowedWriteRoots.map(entry => entry.reason))) {
+    const notice = t("sandboxPolicy.scanNarrowed", {
+      reason: t(reasonKeys[reason]),
+      roots: fs.allowWrite.length ? fs.allowWrite.map(root => JSON.stringify(root)).join(", ") : t("sandboxPolicy.noWriteRoots"),
+      removed: mandatory.narrowedWriteRoots.filter(entry => entry.reason === reason).map(entry => JSON.stringify(entry.root)).join(", "),
+    });
+    onNotice?.(notice);
+    log.warn(notice);
+  }
   {
     fs.denyWrite = [...new Set([
       ...sensitiveDenyWrite,
@@ -937,17 +959,27 @@ export function buildPerCommandSandboxCustomConfig(
 }
 
 /** The host spawns this; ASRT never spawns the workload itself. */
+export interface SandboxCleanupOutcome {
+  readonly notice?: string;
+  readonly failure?: string;
+}
+
 export interface SandboxWrapResult {
   readonly argv: string[];
   readonly env: NodeJS.ProcessEnv;
   /** Invocation-owned post-exit cleanup outcome; retained by its result owner. */
-  readonly cleanupCompleted?: Promise<string | undefined>;
+  readonly cleanupCompleted?: Promise<SandboxCleanupOutcome>;
+  readonly notices?: readonly string[];
+  /** The immutable discovery snapshot supplied to this invocation's runtime. */
+  readonly filesystemPolicy?: Readonly<Pick<FilesystemConfig, "allowWrite" | "denyWrite">>;
 }
 
-function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: (() => void) | undefined): SandboxWrapResult {
+function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: (() => string | undefined) | undefined, released: () => boolean): SandboxWrapResult {
   if (!cleanup) return wrapped;
-  const cleanupCompleted = new Promise<string | undefined>(complete => {
-    bareRepositoryCleanups.set(commandId, { cleanup, complete });
+  const cleanupCompleted = new Promise<SandboxCleanupOutcome>(complete => {
+    const pending = { cleanup, complete };
+    if (released()) completeBareRepositoryCleanup(pending);
+    else bareRepositoryCleanups.set(commandId, pending);
   });
   return { ...wrapped, cleanupCompleted };
 }
@@ -1896,6 +1928,7 @@ export async function wrapToolCommand(
   command: string,
   options: AttributedWrapOptions,
 ): Promise<SandboxWrapResult> {
+  const invocation = egressInvocationOwner(options.commandId);
   // Self-enforcing gate. Do not depend on the caller to check
   // isAsrtSandboxActive() first — a wrap with no initialized SandboxManager is
   // a bug, so throw rather than silently wrapping against an uninitialized
@@ -1912,9 +1945,10 @@ export async function wrapToolCommand(
   const SandboxManager = await loadSandboxManager();
   assertCommandId("wrapToolCommand", options.commandId);
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
+  const notices: string[] = [];
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice));
   const cleanupBare = process.platform === "linux"
-    ? prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite")) : undefined;
+    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId) : undefined;
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1924,7 +1958,8 @@ export async function wrapToolCommand(
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  return trackBareRepositoryCleanup(result, options.commandId, cleanupBare);
+  return trackBareRepositoryCleanup({ ...result, ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+    () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
 
 
@@ -2181,6 +2216,7 @@ async function wrapLongLivedCommand(
   options: AttributedWrapOptions,
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
+  const invocation = egressInvocationOwner(options.commandId);
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
@@ -2193,9 +2229,10 @@ async function wrapLongLivedCommand(
   const SandboxManager = await loadSandboxManager();
   assertCommandId(caller, options.commandId);
   await openEgressListener(SandboxManager, caller, options.commandId);
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
+  const notices: string[] = [];
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice));
   const cleanupBare = process.platform === "linux"
-    ? prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite")) : undefined;
+    ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
@@ -2206,7 +2243,8 @@ async function wrapLongLivedCommand(
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
-  return trackBareRepositoryCleanup(result, options.commandId, cleanupBare);
+  return trackBareRepositoryCleanup({ ...result, ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+    () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
 
 /**
@@ -2588,9 +2626,10 @@ export async function annotateWithSandboxViolations(
   commandId: string,
   text: string,
   command?: string,
+  notices: readonly string[] = [],
 ): Promise<string> {
   const SandboxManager = await loadSandboxManager();
-  const annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
+  const annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, [text, ...new Set(notices)].filter(Boolean).join("\n"));
   if (annotated.includes("`.git` metadata is protected; rerun outside the sandbox after approval")) return annotated;
   const deniedMetadata = /\.git(?:[\\/\s:'"`]|$)/iu.test(annotated)
     && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format)/iu.test(annotated);

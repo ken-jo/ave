@@ -452,6 +452,7 @@ describe("mandatory sandbox control-file writes", () => {
     const denies = policy.denyWrite;
     expect(reads).toBeLessThanOrEqual(16_385);
     expect(policy.allowWrite).toEqual([second]);
+    expect(policy.narrowedWriteRoots).toEqual([{ root, reason: "entry-budget" }]);
     expect(denies).not.toContain(root);
     expect(denies).not.toContain(queued);
     expect(denies).not.toContain(second);

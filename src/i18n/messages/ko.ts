@@ -6,6 +6,18 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sandboxPolicy.quarantined": "샌드박스가 보호하는 Git 항목을 삭제하지 않고 격리 위치로 옮겼습니다:\n{moves}\n내용을 확인한 뒤 표시된 격리 경로에서 원래 경로로 각 항목을 복원하세요.",
+  "sandboxPolicy.quarantineFailed": "{path} 항목 격리 실패: {reason}. 삭제를 시도하지 않았습니다. 이미 옮긴 항목은 다음 위치에 보존됩니다:\n{moves}",
+  "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",
+  "sandboxPolicy.scanEntryBudget": "프로젝트가 너무 커서 디렉터리 항목 예산 내에 중첩 저장소를 스캔할 수 없습니다",
+  "sandboxPolicy.scanPathBudget": "저장소 제어 경로가 너무 많아 정책 예산 내에 스캔할 수 없습니다",
+  "sandboxPolicy.scanInaccessible": "프로젝트를 안전하게 읽거나 경로를 확인할 수 없어 중첩 저장소 검색을 완료하지 못했습니다",
+  "sandboxPolicy.scanRouting": "쓰기 가능한 경로 링크가 보호된 저장소 경로를 교체할 수 있습니다",
+  "sandboxPolicy.noWriteRoots": "쓰기 가능한 프로젝트 루트 없음",
+  "sandboxPolicy.cleanupPending": "샌드박스 프로세스 종료를 확인하지 못해 저장소 항목 격리가 대기 중입니다.",
+  "sandboxPolicy.cleanupFailed": "샌드박스 저장소 항목 격리 실패: {reason}. 저장소 항목이 남아 있을 수 있으므로 외부 Git을 실행하기 전에 확인하세요.",
+  "sandboxPolicy.terminalWindow": "Linux 에이전트 터미널은 셸 시작 시 수행한 Git 보호 스캔을 유지합니다. 기존 쓰기 허용 루트 안에 나중에 생긴 저장소나 Git 제어 경로는 셸이 종료될 때까지 쓰기 가능할 수 있으며 시간 상한이 없습니다. 포그라운드 명령, 백그라운드 작업, 직접 터미널 입력에 같은 제한이 적용됩니다. 해당 저장소를 사용하기 전에 에이전트 셸을 닫았다가 다시 여세요. 초기 쓰기 허용 루트 밖의 프로젝트는 계속 읽기 전용입니다.",
+  "sandboxPolicy.terminalChanged": "이 에이전트 셸이 시작된 뒤 저장소 보호 경로가 변경됐습니다. 명령을 실행하기 전에 에이전트 셸을 닫았다가 다시 열어 샌드박스를 갱신하세요.",
   "sandboxStatus.retry": "상태 다시 확인",
   "sandboxStatus.queryFailed": "샌드박스 상태 확인 불가 · 호스트 조회 실패",
   "sandboxStatus.off": "샌드박스 꺼짐 · {reason}",

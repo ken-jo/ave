@@ -7,6 +7,13 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 import { annotateWithSandboxViolations } from "../asrt-sandbox.js";
 
 describe("protected Git metadata diagnostics", () => {
+  it("preserves quarantine and narrowed-grant notices through the existing annotator", async () => {
+    const notices = ['Project too large to scan; write access narrowed to "/project/child"',
+      'Moved "/project/config" -> "/quarantine/slot/config". Restore it after inspecting it.'];
+    const output = await annotateWithSandboxViolations("command", "completed", "true", notices);
+    expect(output).toBe(["completed", ...notices].join("\n"));
+  });
+
   it.each([
     "/project/.git: Operation not permitted",
     "fatal: cannot create /project/.git/config: Read-only file system",

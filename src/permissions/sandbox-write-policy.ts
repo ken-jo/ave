@@ -11,6 +11,7 @@ import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 
 /** Control files remain unwritable even when their containing directory is granted. */
 const PROTECTED_ROOT_ENTRIES = [
@@ -365,7 +366,10 @@ export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly string[],
   userDataDir?: string,
   protectedRoutingPaths: readonly string[] = [],
-): Pick<FilesystemConfig, "denyWrite"> & { allowWrite: string[] } {
+): Pick<FilesystemConfig, "denyWrite"> & {
+  allowWrite: string[];
+  narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
+} {
   const rootSnapshots = writeRoots.map(original => ({
     original,
     physical: resolvePolicyPath(original, process.cwd()),
@@ -379,6 +383,7 @@ export function buildMandatorySandboxWritePolicy(
     userPolicyPath(),
     getAdminPolicyPath(),
     permissionsFilePath(),
+    sandboxQuarantineRoot(),
     dirname(projectRulesDirectory(aveHome())),
     ...(userDataDir === undefined ? [] : [settingsFilePath(userDataDir)]),
   ]);
@@ -397,9 +402,13 @@ export function buildMandatorySandboxWritePolicy(
     }
   }
   const revoked = new Set<string>();
-  const revoke = (root: string): void => {
+  const narrowed = new Map<string, "entry-budget" | "path-budget" | "filesystem-access" | "routing-link">();
+  const revoke = (root: string, reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link"): void => {
     // A surviving ancestor would re-open an incompletely discovered child.
-    for (const candidate of roots) if (isPhysicalPathWithin(candidate, root)) revoked.add(candidate);
+    for (const candidate of roots) if (isPhysicalPathWithin(candidate, root)) {
+      revoked.add(candidate);
+      narrowed.set(candidate, reason);
+    }
   };
   const discovered = new Set<string>();
   const discoveredRoutingPins = new Set<string>();
@@ -411,7 +420,10 @@ export function buildMandatorySandboxWritePolicy(
     const local = new Set<string>();
     const localRoutingPins = new Set<string>();
     if (!addGitControlPaths(join(root, ".git"), local, localRoutingPins, budget)
-      || !addNestedGitControlPaths(root, local, localRoutingPins, budget)) revoke(root);
+      || !addNestedGitControlPaths(root, local, localRoutingPins, budget)) {
+      const pathBytes = [...local, ...localRoutingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0);
+      revoke(root, budget.entries <= 0 ? "entry-budget" : pathBytes > MAX_GIT_ROOT_POLICY_BYTES ? "path-budget" : "filesystem-access");
+    }
     for (const path of local) discovered.add(path);
     for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
@@ -426,7 +438,7 @@ export function buildMandatorySandboxWritePolicy(
     for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
       const routingParent = dirname(routingPath);
       for (const root of roots) {
-        if (isPhysicalPathWithin(root, routingParent)) revoked.add(root);
+        if (isPhysicalPathWithin(root, routingParent)) revoke(root, "routing-link");
       }
     }
   }
@@ -458,5 +470,8 @@ export function buildMandatorySandboxWritePolicy(
   // object, ref, index and HEAD updates in existing metadata directories.
   if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
   if (Buffer.byteLength(JSON.stringify(entries)) > MAX_GIT_POLICY_BYTES) throw new Error("Sandbox Git write policy exceeds its size limit");
-  return { allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries };
+  return {
+    allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries,
+    narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
+  };
 }
