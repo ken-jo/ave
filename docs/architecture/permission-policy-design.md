@@ -567,7 +567,9 @@ inert or prevent its use during execution.
 
 On Linux, a missing Git control is omitted from deny mounts so preparation
 does not manufacture an empty marker, configuration file or routing record on
-the host. The sensitive-write and application-store protection owners remain
+the host. The carried Linux runtime patch applies this rule to its cwd and
+nested mandatory Git candidates as well. The sensitive-write and application-store
+protection owners remain
 unchanged. Their absent-path protection can still require temporary mount
 points. Normal mount-point cleanup is limited to ownership-checked empty
 entries; abrupt host termination, including SIGKILL or OOM termination, can

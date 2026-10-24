@@ -1,6 +1,7 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
@@ -16,10 +17,105 @@ const priorAveHome = process.env.AVE_HOME;
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   if (priorAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = priorAveHome;
   for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
 });
+
+it.skipIf(process.platform === "win32").each(["ELOOP", "ENAMETOOLONG"])(
+  "rejects a Git mandatory-control lookup failure with %s",
+  async (code) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    mkdirSync(join(root, ".git"));
+    const hooks = join(root, ".git", "hooks");
+    const failure = Object.assign(new Error(`Git control lookup failed: ${code}`), { code });
+    const originalLstat = fs.lstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+      if (args[0] === hooks) throw failure;
+      return originalLstat(...args);
+    }) as typeof fs.lstatSync);
+    syncBuiltinESMExports();
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      await expect(wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [] },
+        allowAllUnixSockets: true,
+      })).rejects.toBe(failure);
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["absent", "cwd", "nested"])(
+  "keeps absent Git mandatory controls absent while generating a %s wrapper",
+  async (location) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    const gitDirectory = join(root, ...(location === "nested" ? ["project"] : []), ".git");
+    if (location !== "absent") {
+      mkdirSync(gitDirectory, { recursive: true });
+      writeFileSync(join(gitDirectory, "HEAD"), "ref: refs/heads/main\n");
+    }
+    const controls = [join(gitDirectory, "hooks"), join(gitDirectory, "config")];
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    for (const control of controls) expect(lstatSync(control, { throwIfNoEntry: false })).toBeUndefined();
+    try {
+      const generated = await wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [join(root, "settings.json")] },
+        allowAllUnixSockets: true,
+      });
+      const words = execFileSync("/bin/bash", ["-c", `set -- ${generated}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+      for (const control of controls) {
+        expect(lstatSync(control, { throwIfNoEntry: false }), control).toBeUndefined();
+        expect(finalMountCovering(words, control)).toEqual(["--bind", root, root]);
+      }
+      expect(words).toContain(join(root, ".bashrc"));
+      expect(words).toContain(join(root, "settings.json"));
+      if (location === "absent") expect(lstatSync(gitDirectory, { throwIfNoEntry: false })).toBeUndefined();
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+    for (const control of controls) expect(lstatSync(control, { throwIfNoEntry: false })).toBeUndefined();
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["cwd", "nested"])(
+  "keeps existing Git mandatory controls read-only in a %s wrapper",
+  async (location) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    const gitDirectory = join(root, ...(location === "nested" ? ["project"] : []), ".git");
+    const hooks = join(gitDirectory, "hooks");
+    const config = join(gitDirectory, "config");
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(gitDirectory, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(config, "[core]\nrepositoryformatversion = 0\n");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      const generated = await wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [] },
+        allowAllUnixSockets: true,
+      });
+      const words = execFileSync("/bin/bash", ["-c", `set -- ${generated}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+      for (const control of [hooks, config]) expect(finalMountCovering(words, control)).toEqual(["--ro-bind", control, control]);
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  },
+);
 
 it.runIf(process.platform !== "win32")("makes the generated Linux secrets mask read-only while preserving a nested write mount", async () => {
   const root = mkdtempSync(join(tmpdir(), "ave-floor-"));

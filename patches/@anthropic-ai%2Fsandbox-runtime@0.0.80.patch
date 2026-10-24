@@ -1,4 +1,4 @@
-Two backports and seven host additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and eight host additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -175,6 +175,10 @@ the installed package.
 9. Non-device write roots come only from host policy; device-only runtime defaults remain.
 
 8. Per-invocation Unix socket denial overrides worker socket grants for shell commands.
+
+10. Linux mandatory Git controls are mounted read-only only when they exist.
+    Missing controls stay absent during preparation; the host quarantines newly
+    created metadata after execution. Other mandatory missing-path denies remain.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e..8a03e5670 100644
@@ -485,7 +489,7 @@ index 53c4a2643..3a43a5fd7 100644
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671..c406e2291 100644
+index b3acba671..37148f953 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -502,7 +506,60 @@ index b3acba671..c406e2291 100644
                  return MountPointKind.Directory;
              }
          }
-@@ -502,28 +502,217 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+@@ -306,6 +306,17 @@ function dotGitKindAt(dotGitPath) {
+         return DotGitKind.Absent;
+     }
+ }
++function gitControlExists(controlPath) {
++    try {
++        fs.lstatSync(controlPath);
++        return true;
++    }
++    catch (error) {
++        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')
++            return false;
++        throw error;
++    }
++}
+ /**
+  * The part of the mandatory deny set that follows from the cwd alone: the
+  * dangerous files and directories resolved against it, plus `.git/hooks` and
+@@ -334,10 +345,14 @@ export function linuxGetCwdMandatoryDenyPaths(allowGitConfig = false) {
+     }
+     if (dotGit === DotGitKind.Directory) {
+         // Git hooks always blocked for security
+-        denyPaths.push(path.resolve(cwd, '.git/hooks'));
++        const hooksPath = path.resolve(cwd, '.git/hooks');
++        if (gitControlExists(hooksPath))
++            denyPaths.push(hooksPath);
+         // Git config conditionally blocked based on allowGitConfig setting
+         if (!allowGitConfig) {
+-            denyPaths.push(path.resolve(cwd, '.git/config'));
++            const configPath = path.resolve(cwd, '.git/config');
++            if (gitControlExists(configPath))
++                denyPaths.push(configPath);
+         }
+     }
+     return denyPaths;
+@@ -413,8 +428,8 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+     for (const dirName of dangerousDirectories) {
+         iglobArgs.push('--iglob', `**/${dirName}/**`);
+     }
+-    // Git hooks always blocked in nested repos. A repository is known by its
+-    // HEAD, so that its hooks are denied before there are any.
++    // A HEAD match discovers existing hooks even when the directory is empty.
++    // Absent controls are handled after execution without creating mount points.
+     iglobArgs.push('--iglob', '**/.git/hooks/**', '--iglob', '**/.git/HEAD');
+     // Git config conditionally blocked in nested repos
+     if (!allowGitConfig) {
+@@ -498,32 +513,223 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+         const found = segments.slice(0, at + length);
+         if (lower[at] === '.git' && lower[at + 1] === 'head')
+             found[at + 1] = 'hooks';
+-        denyPaths.push(path.join(cwd, ...found));
++        const denyPath = path.join(cwd, ...found);
++        if (lower[at] !== '.git' || gitControlExists(denyPath))
++            denyPaths.push(denyPath);
      }
      return [...new Set(denyPaths)];
  }
@@ -729,7 +786,7 @@ index b3acba671..c406e2291 100644
                  fs.readdirSync(emptyMountSourceDir).length === 0) {
                  return emptyMountSourceDir;
              }
-@@ -532,12 +721,17 @@ function ensureEmptyMountSourceDir() {
+@@ -532,12 +738,17 @@ function ensureEmptyMountSourceDir() {
              // Gone, or no longer inspectable: make a new one below.
          }
          logForDebugging(`[Sandbox Linux] Not reusing the empty-directory mount source, it is gone or no longer our own empty directory: ${emptyMountSourceDir}`);
@@ -749,7 +806,7 @@ index b3acba671..c406e2291 100644
      return emptyMountSourceDir;
  }
  export const CAP_SETFCAP = 31;
-@@ -894,11 +1088,14 @@ function registerExitCleanupHandler() {
+@@ -894,11 +1105,14 @@ function registerExitCleanupHandler() {
      exitHandlerRegistered = true;
  }
  /**
@@ -768,7 +825,7 @@ index b3acba671..c406e2291 100644
   *
   * This should be called after each sandboxed command completes to prevent
   * ghost dotfiles (e.g. .bashrc, .gitconfig) from appearing in the working
-@@ -911,8 +1108,8 @@ function registerExitCleanupHandler() {
+@@ -911,8 +1125,8 @@ function registerExitCleanupHandler() {
   * is unhashed, so path lookup no longer finds the mount) and the deny rule
   * stops applying inside that sandbox.
   *
@@ -779,7 +836,7 @@ index b3acba671..c406e2291 100644
   *
   * Also closes the `--args` profiles the wraps of this batch opened.
   */
-@@ -930,58 +1127,67 @@ export function cleanupBwrapMountPoints(opts) {
+@@ -930,58 +1144,67 @@ export function cleanupBwrapMountPoints(opts) {
          activeSandboxCount = 0;
          forcedCleanups++;
      }
@@ -891,7 +948,7 @@ index b3acba671..c406e2291 100644
      }
  }
  function isExecutable(p) {
-@@ -2322,12 +2528,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2322,12 +2545,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
                  unmakeableDenyDests.add(dest);
              }
              else {
@@ -915,7 +972,7 @@ index b3acba671..c406e2291 100644
              }
              return { dest, kind };
          };
-@@ -2851,7 +3062,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2851,7 +3079,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
   * inheritable sets.
   */
  export async function wrapCommandWithSandboxLinux(params) {
@@ -924,7 +981,7 @@ index b3acba671..c406e2291 100644
      // bubblewrap takes no patterns, so every path here is a name. The literal
      // lists are folded into the lists they belong to, once, so that nothing
      // below can read a list and miss them; a pattern in `allowOnly` that is no
-@@ -3029,6 +3240,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+@@ -3029,6 +3257,18 @@ export async function wrapCommandWithSandboxLinux(params) {
          };
          // Always bind /dev
          bwrapArgs.push('--dev', '/dev');
@@ -943,6 +1000,13 @@ index b3acba671..c406e2291 100644
          // ========== PID NAMESPACE ISOLATION ==========
          // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
          // By default, always unshare PID namespace and mount fresh /proc.
+@@ -3144,4 +3384,4 @@ export async function wrapCommandWithSandboxLinux(params) {
+         throw error;
+     }
+ }
+-//# sourceMappingURL=linux-sandbox-utils.js.map
+\ No newline at end of file
++//# sourceMappingURL=linux-sandbox-utils.js.map
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
 index 8af5e0304..cb475685d 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts

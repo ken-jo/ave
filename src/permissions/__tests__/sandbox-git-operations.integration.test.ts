@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -163,6 +163,28 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository metadata oper
     expect(isHostGitWorkspaceAvailable(root)).toBe(true);
     expect(hostGit(root, "log", "-1", "--format=%s")).toBe("missing-control");
     expect(hostGit(root, "branch", "--list", "missing-control-branch")).toContain("missing-control-branch");
+  });
+
+  it.runIf(process.platform === "linux")("keeps missing cwd hooks absent at wrap time while existing config stays denied", async () => {
+    repository(root);
+    const hooks = join(root, ".git", "hooks");
+    const config = join(root, ".git", "config");
+    const original = readFileSync(config);
+    rmSync(hooks, { recursive: true });
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      const result = await execute("mkdir -p .git/hooks && printf new-hook > .git/hooks/pre-commit && git status --porcelain", root, [root], () => {
+        expect(existsSync(hooks)).toBe(false);
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain(JSON.stringify(hooks));
+      expect(result.output).toContain("Restore each entry");
+      expect(existsSync(hooks)).toBe(false);
+      const denied = await execute("printf changed > .git/config");
+      expect(denied.status, denied.output).not.toBe(0);
+      expect(readFileSync(config)).toEqual(original);
+      expect(existsSync(hooks)).toBe(false);
+    } finally { cwd.mockRestore(); }
   });
 
   it.runIf(process.platform === "linux").each(["commondir", "gitdir", "config.worktree", "hooks/pre-commit", "info/attributes"])("quarantines new %s after command exit with restore notice", async entry => {
