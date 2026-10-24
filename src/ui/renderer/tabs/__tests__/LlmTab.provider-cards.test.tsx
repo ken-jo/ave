@@ -1,6 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
@@ -286,6 +287,7 @@ function keyDraft(rowId: string, vendorId: string, keyInput: string): ProviderCr
 }
 
 interface TabHooks {
+  setModel: Mock<(modelId: string) => void>;
   setThinkingBudget: Mock<(budget: number) => void>;
   selectApiVendorModel: Mock<(vendorId: string, modelId: string) => void>;
   onSelectMarketplaceProviderPreset: Mock<(preset: MarketplaceInstalledProviderPreset) => void>;
@@ -296,6 +298,7 @@ interface TabHooks {
 
 function makeHooks(): TabHooks {
   return {
+    setModel: vi.fn(),
     setThinkingBudget: vi.fn(),
     selectApiVendorModel: vi.fn(),
     onSelectMarketplaceProviderPreset: vi.fn(),
@@ -340,7 +343,7 @@ function TabHarness({
         onSelectMarketplaceProviderPreset={hooks.onSelectMarketplaceProviderPreset}
         onClearMarketplaceProviderPreset={hooks.onClearMarketplaceProviderPreset}
         model={props.model ?? "gpt-5.4"}
-        setModel={vi.fn()}
+        setModel={hooks.setModel}
         selectApiVendorModel={hooks.selectApiVendorModel}
         enableThinking={props.enableThinking ?? false}
         setEnableThinking={vi.fn()}
@@ -574,7 +577,7 @@ describe("LlmTab provider cards", () => {
   it("keeps a saved selection outside the catalog without selecting a replacement", async () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "saved-private-model" });
     expect(await chooserModelIds()).toContain("saved-private-model");
-    expect(chooserOption("saved-private-model")).toHaveAttribute("aria-selected", "true");
+    expect(chooserOption("saved-private-model")).toHaveAttribute("data-state", "checked");
     expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
   });
 
@@ -1423,7 +1426,11 @@ describe("LlmTab grouped model search", () => {
     { id: "acme/custom-fixture" },
   ];
 
-  async function openSearchCatalogue(crossVendor = false, pinnedModels: string[] = []) {
+  async function openSearchCatalogue(
+    crossVendor = false,
+    pinnedModels: string[] = [],
+    user?: ReturnType<typeof userEvent.setup>,
+  ) {
     const { api } = profileApi({
       installedProviderIds: crossVendor ? ["openrouter", "requesty"] : ["openrouter"],
       pinnedModels,
@@ -1444,10 +1451,18 @@ describe("LlmTab grouped model search", () => {
       }),
     });
     const result = await renderTab(api, {
-      vendor: "openrouter", model: "openai/gpt-paid",
+      vendor: "openrouter", model: user ? "plain-model" : "openai/gpt-paid",
       baseUrl: getVendorOption("openrouter").baseUrlPlaceholder!,
     });
     await settleModelListRequests();
+    if (user) {
+      const trigger = screen.getByTestId(TEST_IDS.llmModelSelect);
+      for (let step = 0; step < 100 && document.activeElement !== trigger; step++) {
+        await user.tab();
+      }
+      expect(trigger).toHaveFocus();
+      await user.keyboard("[ArrowDown]");
+    }
     expect(await chooserModelIds()).toContain("plain-model");
     const input = screen.getByRole("textbox", { name: t("llmTab.modelSearchAriaLabel") });
     const list = screen.getByRole("listbox");
@@ -1476,9 +1491,41 @@ describe("LlmTab grouped model search", () => {
     expect(within(group).getAllByRole("option").map((option) =>
       option.querySelector("[data-model-id]")?.getAttribute("data-model-id")))
       .toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
-    expect(within(provider).getByRole("group", { name: "acme" })).toBeInTheDocument();
+    expect(within(provider).getByRole("group", { name: "Acme" })).toBeInTheDocument();
     expect(chooserOption("plain-model").closest("[data-model-provider]")).toBe(provider);
     expect(chooserOption("openrouter/free").closest("[data-model-provider]")).toBe(provider);
+  });
+
+  it.each([
+    ["fireworks", ["accounts/fireworks/models/first", "accounts/fireworks/models/second"]],
+    ["together", ["Qwen/model-one", "meta-llama/model-two"]],
+  ] as const)("keeps namespace paths flat for %s", async (vendor, models) => {
+    const { api } = profileApi({ installedProviderIds: [vendor] }, {
+      hasApiKey: storedKeysFor(vendor),
+      listLlmModels: vi.fn(async (): Promise<LlmModelListResult> => ({
+        ok: true, vendor, endpoint: "https://catalogue.invalid/models",
+        models: [...models], fetchedAt: "2026-01-01T00:00:00.000Z",
+      })),
+    });
+    await renderTab(api, { vendor, model: models[0], baseUrl: getVendorOption(vendor).baseUrlPlaceholder! });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toEqual([...models]);
+    const provider = screen.getByRole("group", { name: getVendorOption(vendor).label });
+    expect(within(provider).queryAllByRole("group")).toHaveLength(0);
+    expect(within(provider).getAllByRole("option")).toHaveLength(2);
+  });
+
+  it("announces the match count and no results politely during search", async () => {
+    const { search } = await openSearchCatalogue();
+    const status = screen.getByTestId("llm-tab:model-search-status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toBeEmptyDOMElement();
+    search("gpt");
+    expect(status).toHaveTextContent(t("llmTab.modelMatchCount", { count: 3 }));
+    search("no-such-model");
+    expect(status).toHaveTextContent(t("llmTab.modelNoResults"));
+    search("");
+    expect(status).toBeEmptyDOMElement();
   });
 
   it.each(["free", "무료"])("filters the free keyword %s by metadata and route identity", async (query) => {
@@ -1521,7 +1568,7 @@ describe("LlmTab grouped model search", () => {
     expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
     search("");
     expect(ids()).toEqual(allIds);
-    expect(chooserOption("openai/gpt-paid")).toHaveAttribute("aria-selected", "true");
+    expect(chooserOption("openai/gpt-paid")).toHaveAttribute("data-state", "checked");
   });
 
   it("matches display names, upstream labels, unknown prefixes, and gateway labels", async () => {
@@ -1536,21 +1583,48 @@ describe("LlmTab grouped model search", () => {
     expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
   });
 
-  it("keeps typing focus in the search input and resets search when closed", async () => {
-    const { input, search, ids } = await openSearchCatalogue();
-    input.focus();
-    for (const key of ["g", "p", "t", " "]) {
-      fireEvent.keyDown(input, { key });
-      expect(input).toHaveFocus();
-    }
-    search("gpt");
-    expect(input).toHaveFocus();
-    fireEvent.keyDown(input, { key: "a" });
-    expect(input).toHaveFocus();
-    pickChooserOption("openai/gpt-tagged");
-    await chooserModelIds();
+  it("opens search by keyboard, filters, navigates items, and selects the first match", async () => {
+    const user = userEvent.setup();
+    const { input, ids, hooks } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.keyboard("gpt");
+    expect(input).toHaveValue("gpt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(chooserOption("openai/gpt-paid")).toHaveFocus());
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(chooserOption("openai/gpt-tagged")).toHaveFocus());
+    await user.keyboard("[ArrowUp]");
+    await waitFor(() => expect(chooserOption("openai/gpt-paid")).toHaveFocus());
+    await user.keyboard("[Enter]");
+    await waitFor(() => expect(hooks.setModel).toHaveBeenCalledWith("openai/gpt-paid"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(screen.getByTestId("llm-tab:model-search")).toHaveFocus());
     expect(screen.getByTestId("llm-tab:model-search")).toHaveValue("");
     expect(ids()).toContain("plain-model");
+  });
+
+  it("keeps hovered items from taking search typing and closes on Escape", async () => {
+    const user = userEvent.setup();
+    const { input, ids } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.hover(chooserOption("openai/gpt-paid"));
+    expect(input).toHaveFocus();
+    await user.keyboard("g");
+    expect(input).toHaveValue("g");
+    expect(input).toHaveFocus();
+    await user.keyboard("pt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    await user.keyboard("-missing[ArrowDown]");
+    expect(ids()).toEqual([]);
+    expect(input).toHaveFocus();
+    await user.keyboard("{Control>}a{/Control}{Backspace}gpt");
+    expect(input).toHaveValue("gpt");
+    expect(input).toHaveFocus();
+    await user.keyboard("[Escape]");
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveFocus();
   });
 
   it("keeps matching pins first without duplicating them in provider groups", async () => {

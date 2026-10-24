@@ -1121,13 +1121,25 @@ function parseUnifiedValue(value: string): { providerId: string; modelId: string
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
 }
 
-function upstreamModelProvider(modelId: string, providerLabel: string): { id: string; label: string } {
+// These routes use an upstream provider prefix, rather than a repository path
+// or a deployment alias. Other routes keep their catalogue in one flat group.
+const UPSTREAM_GROUPED_PROVIDER_IDS: readonly string[] = [
+  "api:openrouter", "api:requesty", "api:vercel-ai-gateway", "api:kilo",
+];
+
+function upstreamModelProvider(
+  modelId: string,
+  providerId: string,
+  providerLabel: string,
+): { id: string; label: string } {
+  if (!UPSTREAM_GROUPED_PROVIDER_IDS.includes(providerId)) return { id: "", label: providerLabel };
   const slash = modelId.indexOf("/");
   const id = slash > 0 ? modelId.slice(0, slash) : "";
   const vendorId = id === "anthropic" ? "claude" : id === "google" ? "gemini" : id;
+  const readableId = id.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   return {
     id,
-    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : id || providerLabel,
+    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : readableId || providerLabel,
   };
 }
 
@@ -1167,10 +1179,12 @@ function UnifiedModelSelect({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusPreferredRef = useRef(true);
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   const indexedOptions = useMemo(() => options.map((option) => {
     const modelId = parseUnifiedValue(option.value)?.modelId ?? option.modelId;
-    const upstream = upstreamModelProvider(modelId, option.providerLabel);
+    const upstream = upstreamModelProvider(modelId, option.providerId, option.providerLabel);
     return {
       option,
       upstream,
@@ -1257,6 +1271,9 @@ function UnifiedModelSelect({
       <SelectItem
         key={option.value}
         value={option.value}
+        onPointerMove={(event) => {
+          if (document.activeElement === searchInputRef.current) event.preventDefault();
+        }}
         leading={
           /* Outside ItemText so the pin stays in the row and never mirrors
              into the collapsed trigger. Radix commits a row on POINTERUP, so
@@ -1296,7 +1313,10 @@ function UnifiedModelSelect({
         onValueChange(nextValue);
         setQuery("");
       }}
-      onOpenChange={(open) => { if (!open) setQuery(""); }}
+      onOpenChange={(open) => {
+        searchFocusPreferredRef.current = true;
+        if (!open) setQuery("");
+      }}
       disabled={disabled}
     >
       <SelectTrigger id="model-select" className="w-full" data-testid={TEST_IDS.llmModelSelect}>
@@ -1304,12 +1324,41 @@ function UnifiedModelSelect({
           {selectedOption ? content(selectedOption) : undefined}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent className={popupClassName}>
+      <SelectContent
+        className={popupClassName}
+        onFocusCapture={(event) => {
+          // Placement and changes to the selected row can request item focus.
+          // Keep search active until the user navigates or presses an item.
+          if (searchFocusPreferredRef.current && event.target !== searchInputRef.current) {
+            event.stopPropagation();
+            searchInputRef.current?.focus();
+          }
+        }}
+        onPointerDownCapture={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest('[role="option"]') && !target.closest('[role="button"]')) {
+            searchFocusPreferredRef.current = false;
+          }
+        }}
+      >
         <div className="sticky top-0 z-10 border-b border-border/(--opacity-medium) bg-popover p-2">
           <Input
+            ref={searchInputRef}
             value={query}
+            onFocus={() => { searchFocusPreferredRef.current = true; }}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                const firstItem = event.currentTarget.closest('[role="listbox"]')
+                  ?.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])');
+                if (firstItem) {
+                  searchFocusPreferredRef.current = false;
+                  firstItem.focus();
+                }
+                event.preventDefault();
+              }
+              if (event.key !== "Escape") event.stopPropagation();
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
             placeholder={t("llmTab.modelSearchPlaceholder")}
@@ -1348,11 +1397,16 @@ function UnifiedModelSelect({
             {t("llmTab.modelNoConnectedProvider")}
           </div>
         )}
-        {options.length > 0 && matches.size === 0 && (
-          <div className="px-2 py-3 text-center text-xs text-muted-foreground" data-testid="llm-tab:model-no-results">
-            {t("llmTab.modelNoResults")}
-          </div>
-        )}
+        <div
+          aria-live="polite"
+          role="status"
+          className={normalizedQuery ? "px-2 py-2 text-center text-xs text-muted-foreground" : "sr-only"}
+          data-testid="llm-tab:model-search-status"
+        >
+          {normalizedQuery && (matches.size === 0 ? (
+            <span data-testid="llm-tab:model-no-results">{t("llmTab.modelNoResults")}</span>
+          ) : t("llmTab.modelMatchCount", { count: matches.size }))}
+        </div>
       </SelectContent>
     </Select>
   );
