@@ -164,6 +164,18 @@ async function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[
   return events;
 }
 
+/**
+ * The turn's rejection reason, observed from the moment the turn starts. A
+ * test that fails while it drives the fake CLI then reports that failure
+ * alone, not also an unawaited assertion or an unhandled turn rejection.
+ */
+function rejection(turn: Promise<unknown>): Promise<unknown> {
+  return turn.then(
+    (value) => { throw new Error(`Expected the turn to reject, but it resolved with ${JSON.stringify(value)}`); },
+    (error: unknown) => error,
+  );
+}
+
 describe("CLI conversation boundary", () => {
   it("retains native ancestor rules and reports a location rejection before spawning", async () => {
     const directories = paths();
@@ -225,29 +237,28 @@ describe("CLI conversation boundary", () => {
     ["plugin", [{ ...init(), plugins: [{ name: "unexpected" }] }]],
     ["extra result", [init(), result(), result()]],
   ])("rejects %s instead of synthesizing success", async (name, records) => {
-    const h = conversation(); const done = collect(h.runtime.streamTurn("hello"));
-    const expected = expect(done).rejects.toMatchObject({ code: ["native catalog", "plugin"].includes(name)
-      ? "claude-code-runtime-incompatible" : "claude-code-operation-failed" });
+    const h = conversation(); const failure = rejection(collect(h.runtime.streamTurn("hello")));
     const child = await h.started; for (const record of records) child.send(record); child.close();
-    await expected; expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+    expect(await failure).toMatchObject({ code: ["native catalog", "plugin"].includes(name)
+      ? "claude-code-runtime-incompatible" : "claude-code-operation-failed" });
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it.each(["not json\n", "{\"type\":", "garbage"]) ("rejects malformed tail %s after a valid result", async (tail) => {
-    const h = conversation(); const done = collect(h.runtime.streamTurn("hello"));
-    const expected = expect(done).rejects.toMatchObject({ code: "claude-code-operation-failed" });
+    const h = conversation(); const failure = rejection(collect(h.runtime.streamTurn("hello")));
     const child = await h.started; child.send(init()); child.send(result()); child.stdout.write(tail); child.close();
-    await expected;
+    expect(await failure).toMatchObject({ code: "claude-code-operation-failed" });
   });
 
   it("preserves split Unicode and refuses a truncated UTF-8 character", async () => {
     for (const invalid of [false, true]) {
       const h = conversation(); const done = collect(h.runtime.streamTurn("hello"));
-      const expected = invalid ? expect(done).rejects.toMatchObject({ code: "claude-code-operation-failed" }) : null;
+      const failure = invalid ? rejection(done) : null;
       const child = await h.started; child.send(init());
       const message = Buffer.from(`${JSON.stringify(assistant([{ type: "text", text: "한글" }]))}\n`);
       for (const byte of message) child.stdout.write(Buffer.from([byte]));
       child.send(result()); if (invalid) child.stdout.write(Buffer.from([0xed])); child.close();
-      if (expected) await expected;
+      if (failure) expect(await failure).toMatchObject({ code: "claude-code-operation-failed" });
       else expect((await done)[0]).toEqual({ type: "text_delta", text: "한글" });
     }
   });
@@ -271,10 +282,10 @@ describe("CLI conversation boundary", () => {
   });
 
   it("does not treat an announced but uncalled MCP tool as completion", async () => {
-    const h = conversation([TOOL]); const done = collect(h.runtime.streamTurn("read file"));
-    const expected = expect(done).rejects.toThrow(); const child = await h.started;
+    const h = conversation([TOOL]); const failure = rejection(collect(h.runtime.streamTurn("read file")));
+    const child = await h.started;
     child.send(init([HOST_TOOL])); child.send(assistant([{ type: "tool_use", id: "call", name: HOST_TOOL, input: {} }]));
-    child.send(result()); child.close(); await expected;
+    child.send(result()); child.close(); expect(await failure).toBeInstanceOf(Error);
   });
 
   it("allows the CLI termination control without turning it into a host call", async () => {
@@ -286,10 +297,10 @@ describe("CLI conversation boundary", () => {
 
   it("rejects a second stream, cancels the first, and drops late output", async () => {
     const h = conversation(); const controller = new AbortController();
-    const done = collect(h.runtime.streamTurn("hello", controller.signal)); const expected = expect(done).rejects.toMatchObject({ name: "AbortError" });
+    const failure = rejection(collect(h.runtime.streamTurn("hello", controller.signal)));
     const child = await h.started;
     await expect(collect(h.runtime.streamTurn("concurrent"))).rejects.toThrow();
-    controller.abort(); child.send(init()); child.send(result()); await expected;
+    controller.abort(); child.send(init()); child.send(result()); expect(await failure).toMatchObject({ name: "AbortError" });
     expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
@@ -297,26 +308,26 @@ describe("CLI conversation boundary", () => {
     let release!: (path: string) => void;
     const ready = new Promise<string>((resolve) => { release = resolve; });
     const h = conversation([], () => ready); const controller = new AbortController();
-    const done = collect(h.runtime.streamTurn("hello", controller.signal)); const expected = expect(done).rejects.toMatchObject({ name: "AbortError" });
-    controller.abort(); release("/approved/claude"); await expected;
+    const failure = rejection(collect(h.runtime.streamTurn("hello", controller.signal)));
+    controller.abort(); release("/approved/claude"); expect(await failure).toMatchObject({ name: "AbortError" });
     expect(h.spawn).not.toHaveBeenCalled(); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it.each(["stdin", "stdout", "stderr", "process"])("owns %s errors and cleanup", async (surface) => {
-    const h = conversation(); const done = collect(h.runtime.streamTurn("hello")); const expected = expect(done).rejects.toThrow();
+    const h = conversation(); const failure = rejection(collect(h.runtime.streamTurn("hello")));
     const child = await h.started;
     const target: EventEmitter = surface === "process" ? child : child[surface as "stdin" | "stdout" | "stderr"];
     target.emit("error", new Error("private failure"));
-    await expected; expect(child.kill).toHaveBeenCalledTimes(1); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+    expect(await failure).toBeInstanceOf(Error); expect(child.kill).toHaveBeenCalledTimes(1); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it("bounds actual combined output bytes and queued events", async () => {
     for (const flood of ["bytes", "events"]) {
-      const h = conversation(); const done = collect(h.runtime.streamTurn("hello")); const expected = expect(done).rejects.toThrow();
+      const h = conversation(); const failure = rejection(collect(h.runtime.streamTurn("hello")));
       const child = await h.started; child.send(init());
       if (flood === "bytes") child.stderr.write(Buffer.alloc(CLAUDE_CODE_MAX_OUTPUT_BYTES + 1));
       else for (let index = 0; index < 300; index++) child.send(assistant());
-      await expected; expect(child.kill).toHaveBeenCalledTimes(1);
+      expect(await failure).toBeInstanceOf(Error); expect(child.kill).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -328,9 +339,9 @@ describe("CLI conversation boundary", () => {
 
   it("cancels timed-out children through the owned process boundary", async () => {
     vi.useFakeTimers();
-    const h = conversation(); const done = collect(h.runtime.streamTurn("hello")); const expected = expect(done).rejects.toThrow();
+    const h = conversation(); const failure = rejection(collect(h.runtime.streamTurn("hello")));
     const child = await h.started; vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs);
-    await expected; expect(child.kill).toHaveBeenCalledTimes(1); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+    expect(await failure).toBeInstanceOf(Error); expect(child.kill).toHaveBeenCalledTimes(1); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it("does not replay a native session when supplied the next full history envelope", async () => {
@@ -858,14 +869,13 @@ describe("Claude service integration", () => {
     owners.push(service);
     await service.verify("claude-code");
     const session = await service.openTextSession({ kind: "subscription", provider: "claude-code" });
-    const pending = collect(session.streamTurn("hello"));
-    const expected = expect(pending).rejects.toMatchObject({ code });
+    const failed = rejection(collect(session.streamTurn("hello")));
     const child = await h.started;
     if (failure === "unsupported startup") { child.stderr.write("error: unknown option '--strict-mcp-config'\n"); child.close(1); }
     else if (failure === "provider startup") { child.stderr.write("Error: service unavailable\n"); child.close(1); }
     else if (failure === "unsupported catalog") child.send(init(["Bash"]));
     else { child.send(init()); child.send(result({ is_error: true })); child.close(); }
-    await expected;
+    expect(await failed).toMatchObject({ code });
     expect(audit).toHaveBeenCalledExactlyOnceWith({ provider: "claude-code", outcome: "session-failed" });
     expect((await service.getStatus("claude-code")).capabilities.chat).toBe(false);
     await service.openTextSession({ kind: "subscription", provider: "claude-code" });
