@@ -18,7 +18,8 @@
  * listeners at module load and cannot be imported in a unit test context.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 describe("main.ts — single-instance gate on app.whenReady", () => {
   const source = readFileSync("src/main.ts", "utf-8").replace(/\r\n/g, "\n");
@@ -63,6 +64,25 @@ describe("main.ts — single-instance gate on app.whenReady", () => {
     expect(negBranchCode).toMatch(/app\.quit\s*\(\s*\)/);
     expect(negBranchCode, "second-instance must not bootstrap").not.toMatch(/\bmain\s*\(\s*\)/);
     expect(negBranchCode, "second-instance must not call whenReady").not.toMatch(/whenReady/);
+  });
+
+  it("calls the OS protocol setter only at the guarded src/main.ts site, and nowhere in tests", () => {
+    // Every launch path (dev, E2E, CDP, packaged) reaches the setter only
+    // through decideAveProtocolClientRegistration; no launcher or spec may
+    // carry its own copy or monkeypatch of it.
+    const roots = ["src", "test", "scripts"];
+    const files = roots.flatMap(function walk(dir: string): string[] {
+      return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) return entry.name === "node_modules" ? [] : walk(path);
+        return /\.(ts|tsx|mts|mjs|cjs|js)$/.test(entry.name) ? [path] : [];
+      });
+    });
+    const callers = files
+      .filter((path) => !/__tests__|main-single-instance-gate/.test(path))
+      .filter((path) => /\b(set|remove)AsDefaultProtocolClient\s*[(=]/.test(readFileSync(path, "utf-8")))
+      .map((path) => path.split("\\").join("/"));
+    expect(callers).toEqual(["src/main.ts"]);
   });
 
   it("decides ave:// self-registration synchronously before the lock, with one setter", () => {
