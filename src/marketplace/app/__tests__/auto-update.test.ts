@@ -11,9 +11,9 @@
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getAveAppVersion } from "../../../shared/app-version.js";
-import { nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
+import { FakeVolume, nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService, type FolderServiceHarness } from "../../__tests__/fixtures/folder-service.js";
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
@@ -52,18 +52,31 @@ let root: string;
 let folder: string;
 let harness: FolderServiceHarness;
 let ownership: "user" | "required" = "user";
+let sourceStorage: "disk" | "volume" = "volume";
+let sourceFolders: ReturnType<typeof nodeFolders>;
+let sourceVolume: FakeVolume | null;
+
+function writeSourceFiles(files: Record<string, string>): void {
+  if (!sourceVolume) {
+    writeFolderFiles(folder, files);
+    return;
+  }
+  for (const [path, contents] of Object.entries(files)) sourceVolume.file(join(folder, path), contents);
+}
 
 /** A user-added folder source "team" with alpha installed, or the same folder managed by a policy that requires alpha. */
 async function setUp(managed: "user" | "required"): Promise<void> {
   root = mkdtempSync(join(tmpdir(), "ave-auto-update-"));
   folder = join(mkdtempSync(join(tmpdir(), "ave-auto-update-src-")), "market");
-  writeFolderFiles(folder, { "marketplace.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
+  sourceVolume = sourceStorage === "volume" ? new FakeVolume(process.platform, { drives: { [tmpdir().slice(0, 2).toUpperCase()]: "\\Device\\HarddiskVolume1" } }) : null;
+  sourceFolders = sourceVolume ? { ...nodeFolders(), fs: sourceVolume } : nodeFolders();
+  writeSourceFiles({ "marketplace.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
   if (managed === "required") {
-    folder = realpathSync(folder);
-    harness = await folderService({ root, folders: nodeFolders(), policy: policySource(requiredPolicy(true)) });
+    if (!sourceVolume) folder = realpathSync(folder);
+    harness = await folderService({ root, folders: sourceFolders, policy: policySource(requiredPolicy(true)) });
     await harness.service.refresh("team");
   } else {
-    harness = await folderService({ root, folders: nodeFolders() });
+    harness = await folderService({ root, folders: sourceFolders });
     const preview = await harness.service.previewSource({ input: folder, auth: "none" });
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
     await harness.service.addSource({ previewId: preview.previewId, id: "team" });
@@ -96,13 +109,16 @@ afterEach(() => {
 });
 
 async function edit(files: Record<string, string>): Promise<void> {
-  writeFolderFiles(folder, files);
+  writeSourceFiles(files);
   await harness.service.refresh("team");
 }
 
 const target = { key: KEY, from: "1.0.0", to: "1.0.0", switchSource: false };
 
 describe("a folder's refresh (§18.7.6)", () => {
+  // Keep the complete folder-read, staged-byte and install path on disk here.
+  beforeAll(() => { sourceStorage = "disk"; });
+  afterAll(() => { sourceStorage = "volume"; });
   it("is offered when the tree changes at the same version, applies by itself, and is gone once applied", async () => {
     expect(await harness.service.updates()).toEqual([]);
     await edit({ "plugins/alpha/dist/index.js": "export default { version: 2 };\n" });
@@ -195,8 +211,14 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
 
   it("reports package transactions idle only once the last package lock is released", async () => {
     const idle: boolean[] = [];
-    const observed = await folderService({ root: mkdtempSync(join(tmpdir(), "ave-auto-update-idle-")), folders: nodeFolders(),
+    // The same source storage the outer fixture wrote the folder into (a volume unless a suite selects disk).
+    const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
+    const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
+    onTestFinished(() => {
+      observed.service.close();
+      rmSync(observedRoot, { recursive: true, force: true });
+    });
     const preview = await observed.service.previewSource({ input: folder, auth: "none" });
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
     await observed.service.addSource({ previewId: preview.previewId, id: "team" });
@@ -264,18 +286,23 @@ describe("a required update (§18.7.2)", () => {
     ownership = "user";
   });
 
-  it("is reviewed by the policy, skips checkpoint two, and leaves a new hook waiting as approval-pending", async () => {
-    await edit({ ...pluginFiles({ hook: true }) });
-    harness.onInstalled.current = (name) => {
-      harness.approvals.set(name, [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: false, recordDigest: null }]);
-    };
-    // Even with every switch off: the policy stands for the consent.
-    await expect(harness.service.applyUpdate(target, decideWith({ autoUpdate: false }))).resolves.toEqual({ state: "approval-pending" });
-    expect(harness.installed.get("alpha")).toMatchObject({ reviewedAppVersion: getAveAppVersion() });
-    await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "approval-pending", pendingApproval: null });
-    // Approved: the state clears.
-    harness.approvals.set("alpha", [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: true, recordDigest: "a".repeat(64) }]);
-    await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "applied" });
+  describe("a required folder read and update on disk", () => {
+    // Exercise managed-source canonicalization and the policy-authorized update on disk.
+    beforeAll(() => { sourceStorage = "disk"; });
+    afterAll(() => { sourceStorage = "volume"; });
+    it("is reviewed by the policy, skips checkpoint two, and leaves a new hook waiting as approval-pending", async () => {
+      await edit({ ...pluginFiles({ hook: true }) });
+      harness.onInstalled.current = (name) => {
+        harness.approvals.set(name, [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: false, recordDigest: null }]);
+      };
+      // Even with every switch off: the policy stands for the consent.
+      await expect(harness.service.applyUpdate(target, decideWith({ autoUpdate: false }))).resolves.toEqual({ state: "approval-pending" });
+      expect(harness.installed.get("alpha")).toMatchObject({ reviewedAppVersion: getAveAppVersion() });
+      await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "approval-pending", pendingApproval: null });
+      // Approved: the state clears.
+      harness.approvals.set("alpha", [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: true, recordDigest: "a".repeat(64) }]);
+      await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "applied" });
+    });
   });
 
   it("once the policy no longer requires it, a queued update that asks for more is held for review, not applied", async () => {
@@ -354,7 +381,7 @@ describe("a quarantined source (§18.8)", () => {
       const snapshot = join(data, "snapshots", file);
       writeFileSync(snapshot, readFileSync(snapshot, "utf8").replace('"sourceId":"team"', `"sourceId":${JSON.stringify(quarantinedId)}`));
     }
-    harness = await folderService({ root, folders: nodeFolders() });
+    harness = await folderService({ root, folders: sourceFolders });
     harness.installed.set("alpha", { ...item, sourceId: quarantinedId });
 
     const context = await harness.service.autoUpdateContext();
@@ -374,7 +401,7 @@ describe("a quarantined source (§18.8)", () => {
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
     renameSync(join(root, "marketplaces", "team"), join(root, "marketplaces", quarantinedId));
-    harness = await folderService({ root, folders: nodeFolders(), policy: policySource({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }) });
+    harness = await folderService({ root, folders: sourceFolders, policy: policySource({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }) });
     harness.installed.set("alpha", { ...item, sourceId: quarantinedId });
     return quarantinedId;
   }
