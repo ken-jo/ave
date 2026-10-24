@@ -18,7 +18,7 @@ import { getManagedChildProcessCount } from "../managed-child-processes.js";
 import {
   WINDOWS_ACL_HOST_IDLE_MS,
   WindowsAclHostError,
-  windowsAclTransportSeam,
+  _setWindowsAclTransportForTest,
   type WindowsAclHostLaunch,
   type WindowsAclLimits,
   type WindowsAclRequest,
@@ -41,12 +41,12 @@ const aclDiscard = vi.fn();
 beforeEach(() => {
   _resetDesktopPackageCacheForTest();
   _resetWindowsAclHostForTest();
-  windowsAclTransportSeam.override = undefined;
+  _setWindowsAclTransportForTest(undefined);
 });
 
 afterEach(() => {
   _resetWindowsAclHostForTest();
-  windowsAclTransportSeam.override = undefined;
+  _setWindowsAclTransportForTest(undefined);
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -418,7 +418,7 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
 } {
   vi.stubGlobal("process", Object.create(process, {
     platform: { value: "win32" },
-    env: { value: { SystemRoot: String.raw`C:\Windows` } },
+    env: { value: { NODE_ENV: "test", TEMP: process.env.TEMP, TMP: process.env.TMP, SystemRoot: String.raw`C:\Windows` } },
   }));
   const links = new Map<string, string>();
   vi.spyOn(fs, "lstat").mockImplementation(async (path) => pathStats(links.has(String(path))
@@ -442,7 +442,7 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
       capSidAccounts, paths, sandboxGroup, ...probe } });
   };
   aclRequest.mockImplementation(async (request) => reply(request));
-  windowsAclTransportSeam.override = { request: aclRequest, discard: aclDiscard };
+  _setWindowsAclTransportForTest({ request: aclRequest, discard: aclDiscard });
   return { candidate, modify: (callback) => { modify = callback; }, links, sandboxGroup, probe, reply };
 }
 
@@ -912,7 +912,7 @@ describe("native access-rule admission", () => {
     expect(script).not.toMatch(/Set-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
     expect(script).not.toContain(fixture.candidate);
     // The bounds that were execFile options now bound each host request.
-    expect(limits).toEqual({ timeoutMs: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBytes: 256 * 1024 });
+    expect(limits).toEqual({ timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 });
     expect(options).toEqual({
       windowsHide: true,
       env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
@@ -1206,7 +1206,7 @@ interface FakeAclHost {
 // Host children that read request lines and answer through `answer`. Only the
 // product's own ACL host talks to them; the transport seam stays empty.
 function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFirst?: (host: FakeAclHost) => void): FakeAclHost[] {
-  windowsAclTransportSeam.override = undefined;
+  _setWindowsAclTransportForTest(undefined);
   const hosts: FakeAclHost[] = [];
   vi.mocked(spawn).mockImplementation((() => {
     const stdin = new PassThrough();
@@ -1223,7 +1223,7 @@ function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFir
       }
       return true;
     });
-    const host: FakeAclHost = { child, lines: [], requests: [], answer: (request) => { stdout.write(`${fixture.reply(request)}\n`); } };
+    const host: FakeAclHost = { child, lines: [], requests: [], answer: (request) => { stdout.write(`${fixture.reply(request)}\nEND ${request.id}\n`); } };
     let buffered = "";
     stdin.setEncoding("utf8");
     stdin.on("data", (chunk: string) => {
@@ -1248,7 +1248,7 @@ function corruptReply(fixture: ReturnType<typeof windowsFixture>, request: Windo
   change: (reply: { id?: number; result: Record<string, unknown> }) => void): string {
   const reply = JSON.parse(fixture.reply(request)) as { id?: number; result: Record<string, unknown> };
   change(reply);
-  return `${JSON.stringify(reply)}\n`;
+  return `${JSON.stringify(reply)}\nEND ${request.id}\n`;
 }
 
 describe("Windows ACL host", () => {
@@ -1268,6 +1268,9 @@ describe("Windows ACL host", () => {
     });
     const script = Buffer.from((args as string[])[4]!, "base64").toString("utf16le");
     expect(script).toContain("[Console]::In.ReadLine()");
+    for (const stream of ["Progress", "Warning", "Verbose", "Information"]) {
+      expect(script).toContain(`$${stream}Preference = 'SilentlyContinue'`);
+    }
     expect(script).not.toContain(fixture.candidate);
     // Path data travels only in the request line, ASCII-escaped against the host's input code page.
     const [line] = hosts[0]!.lines;
@@ -1280,7 +1283,7 @@ describe("Windows ACL host", () => {
 
   it.each<[string, string | RegExp, (host: FakeAclHost, fixture: ReturnType<typeof windowsFixture>) => void]>([
     ["host exit", "Windows ACL host exited (1)", (host) => { host.answer = () => { host.child.exitCode = 1; host.child.emit("exit", 1, null); }; }],
-    ["garbage reply", "access rules could not be read", (host) => { host.answer = () => { host.child.stdout.write("not json\n"); }; }],
+    ["garbage reply", "access rules could not be read", (host) => { host.answer = (request) => { host.child.stdout.write(`not json\nEND ${request.id}\n`); }; }],
     ["id mismatch", "access rules are invalid", (host, fixture) => {
       host.answer = (request) => { host.child.stdout.write(corruptReply(fixture, request, (reply) => { reply.id = request.id + 1; })); };
     }],
@@ -1322,15 +1325,19 @@ describe("Windows ACL host", () => {
     const hosts = aclHostFixture(fixture, (host) => { host.answer = () => {}; });
     const admission = assertCodexExecutableLocation(fixture.candidate);
     const settled = expect(admission).rejects.toThrow("Windows ACL host timed out");
+    void settled.catch(() => {});
+    const queued = assertCodexExecutableLocation(fixture.candidate);
+    void queued.catch(() => {});
     // vi.waitFor would advance the fake clock; real turns let the request arrive first.
     while (hosts[0]?.requests.length !== 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
-    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs - 1);
+    expect(TOOL_TIMEOUT_POLICY.windowsAclRequestMs).toBeLessThan(TOOL_TIMEOUT_POLICY.globalCeilingMs);
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsAclRequestMs - 1);
     expect(hosts[0]!.child.kill).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
+    expect(hosts[0]!.child.kill).toHaveBeenCalled();
     await settled;
     await expect(admission).rejects.toBeInstanceOf(WindowsAclHostError);
-    expect(hosts[0]!.child.kill).toHaveBeenCalled();
-    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    await expect(queued).resolves.toBeUndefined();
     expect(spawn).toHaveBeenCalledTimes(2);
   });
 
@@ -1345,7 +1352,7 @@ describe("Windows ACL host", () => {
       host.answer = (request) => {
         most = Math.max(most, ++inFlight);
         // Mocked admissions run in microtasks, so all three are queued before any reply.
-        setImmediate(() => { inFlight -= 1; host.child.stdout.write(`${fixture.reply(request)}\n`); });
+        setImmediate(() => { inFlight -= 1; host.child.stdout.write(`${fixture.reply(request)}\nEND ${request.id}\n`); });
       };
     });
     const results = await Promise.allSettled(["a", "b", "c"].map((name) => assertCodexLocations([

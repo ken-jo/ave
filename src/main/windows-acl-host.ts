@@ -27,8 +27,8 @@ export interface WindowsAclLimits {
 }
 
 /**
- * Writes one request line and resolves with the next reply line, unparsed.
- * The caller validates the reply and calls `discard` when it is refused.
+ * Writes one request line and resolves with its reply after the matching end
+ * marker, unparsed. The caller validates the reply and discards refusals.
  */
 export interface WindowsAclTransport {
   request(request: WindowsAclRequest, launch: WindowsAclHostLaunch, limits: WindowsAclLimits): Promise<string>;
@@ -39,10 +39,18 @@ export interface WindowsAclTransport {
 export type WindowsAclHostSpawn = (command: string, args: readonly string[], options: WindowsAclHostLaunch["options"]) => ChildProcess;
 
 /**
- * The seam both the product and the test fixtures use. Fixtures install a
- * request-level transport here; the product uses its own host otherwise.
+ * Fixtures install a request-level transport through the guarded setter.
+ * Product callers can only read the seam.
  */
-export const windowsAclTransportSeam: { override?: WindowsAclTransport } = {};
+let transportOverride: WindowsAclTransport | undefined;
+export const windowsAclTransportSeam = Object.freeze({
+  get override(): WindowsAclTransport | undefined { return transportOverride; },
+});
+
+export function _setWindowsAclTransportForTest(transport: WindowsAclTransport | undefined): void {
+  if (process.env.NODE_ENV !== "test") throw new Error("Windows ACL transport override is test-only");
+  transportOverride = transport;
+}
 
 /**
  * A host process failure: timeout, oversized reply, exit, error output,
@@ -62,6 +70,8 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout;
   readonly maxBytes: number;
   readonly chunks: Buffer[];
+  readonly endMarker: string;
+  reply?: string;
   bytes: number;
 }
 
@@ -121,6 +131,7 @@ export class WindowsAclHost implements WindowsAclTransport {
         reject,
         maxBytes: limits.maxBytes,
         chunks: [],
+        endMarker: `END ${request.id}`,
         bytes: 0,
         timer: setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host timed out")), limits.timeoutMs),
       };
@@ -164,25 +175,49 @@ export class WindowsAclHost implements WindowsAclTransport {
       this.fail(child, new WindowsAclHostError("Windows ACL host wrote outside a request"));
       return;
     }
-    const newline = chunk.indexOf(0x0a);
-    const head = newline === -1 ? chunk : chunk.subarray(0, newline);
-    pending.bytes += head.length;
-    if (pending.bytes > pending.maxBytes) {
+    pending.bytes += chunk.length;
+    // Count framing separately from the caller's reply budget.
+    const framingBytes = Buffer.byteLength(pending.endMarker) + 4;
+    if (pending.bytes > pending.maxBytes + framingBytes) {
       this.fail(child, new WindowsAclHostError("Windows ACL host reply exceeds its limit"));
       return;
     }
-    pending.chunks.push(head);
-    if (newline === -1) return;
-    // Exactly one line answers one request; anything after it is not trusted.
-    if (newline + 1 < chunk.length) {
-      this.fail(child, new WindowsAclHostError("Windows ACL host wrote more than one reply"));
+    pending.chunks.push(chunk);
+    let buffered = Buffer.concat(pending.chunks);
+    pending.chunks.length = 0;
+    for (let newline = buffered.indexOf(0x0a); newline !== -1; newline = buffered.indexOf(0x0a)) {
+      const line = buffered.subarray(0, newline).toString("utf8").replace(/\r$/, "");
+      buffered = buffered.subarray(newline + 1);
+      if (pending.reply === undefined) {
+        if (Buffer.byteLength(line) > pending.maxBytes) {
+          this.fail(child, new WindowsAclHostError("Windows ACL host reply exceeds its limit"));
+          return;
+        }
+        pending.reply = line;
+      } else {
+        // Do not settle on the reply newline: the end marker bounds the
+        // response even when an extra line arrives in a later pipe chunk.
+        if (line !== pending.endMarker || buffered.length !== 0) {
+          this.fail(child, new WindowsAclHostError("Windows ACL host wrote more than one reply"));
+          return;
+        }
+        this.complete(pending);
+        return;
+      }
+    }
+    if (pending.reply === undefined && buffered.length - Number(buffered.at(-1) === 0x0d) > pending.maxBytes) {
+      this.fail(child, new WindowsAclHostError("Windows ACL host reply exceeds its limit"));
       return;
     }
+    pending.chunks.push(buffered);
+  }
+
+  private complete(pending: PendingRequest): void {
     this.pending = undefined;
     clearTimeout(pending.timer);
     this.idleTimer = setTimeout(() => this.discard(), this.idleMs);
     this.idleTimer.unref?.();
-    pending.resolve(Buffer.concat(pending.chunks).toString("utf8").replace(/\r$/, ""));
+    pending.resolve(pending.reply!);
   }
 
   private fail(child: ChildProcess, error: unknown): void {

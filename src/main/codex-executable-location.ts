@@ -146,6 +146,9 @@ interface WindowsSecurityResult {
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
+  "$WarningPreference = 'SilentlyContinue'",
+  "$VerbosePreference = 'SilentlyContinue'",
+  "$InformationPreference = 'SilentlyContinue'",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "Add-Type -TypeDefinition @'",
   "using System;",
@@ -271,6 +274,7 @@ const WINDOWS_ACL_SCRIPT = [
   "$result = [PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage }",
   // One physical line per reply, written outside the pipeline.
   "[Console]::Out.WriteLine(([PSCustomObject]@{ id = $request.id; result = $result } | ConvertTo-Json -Depth 7 -Compress))",
+  "[Console]::Out.WriteLine(('END ' + [string]$request.id))",
   "[Console]::Out.Flush()",
   "}",
 ].join("\n");
@@ -573,7 +577,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
     paths: inspected.map((entry) => entry.path),
     capSids: [...capSids],
     skipPackage: skippedPackage !== undefined,
-  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBytes: aclOutputBytes(inspected) });
+  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(inspected) });
   const security = parseWindowsSecurity(result, skippedPackage);
   const desktopPackage = security.desktopPackage;
   if (cachedDesktopPackage && (cachedDesktopPackage.status !== desktopPackage.status

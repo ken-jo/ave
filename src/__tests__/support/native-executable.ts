@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { vi } from "vitest";
 import type { CodexExecutableArtifact } from "../../main/codex-executable-artifact.js";
 // Import-free at runtime, so the mocked process module's factory may load it.
-import { WindowsAclHost, WindowsAclHostError, windowsAclTransportSeam, type WindowsAclTransport } from "../../main/windows-acl-host.js";
+import { WindowsAclHost, WindowsAclHostError, _setWindowsAclTransportForTest, type WindowsAclTransport } from "../../main/windows-acl-host.js";
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
@@ -143,7 +143,7 @@ export const NATIVE_PROBE_HEAVY_TEST = process.platform === "win32" ? { timeout:
  * seam per request, so tests install it once, from their process-module mock.
  */
 export function installFixtureAclTransport(transport: WindowsAclTransport): void {
-  windowsAclTransportSeam.override = transport;
+  _setWindowsAclTransportForTest(transport);
 }
 
 /** The ACL host behind the installed masking transport; tests read it to tell reuse from a fresh start. */
