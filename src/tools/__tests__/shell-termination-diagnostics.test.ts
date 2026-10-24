@@ -19,6 +19,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 }));
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool } from "../shell-tools.js";
@@ -70,6 +71,19 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
       expect(child.listenerCount("close")).toBeGreaterThan(0);
       return { child, controller, pending };
     }
+
+    it.runIf(route === "sandbox")("reports cleanup failure despite an exit-zero child", async () => {
+      const annotate = vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text, _command, onCleanupFailure) => {
+        onCleanupFailure?.("cleanup refused");
+        return `${text}\ncleanup refused`;
+      });
+      try {
+        const f = await start();
+        close(f.child, 0, null);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await f.pending).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
+      } finally { annotate.mockRestore(); }
+    });
 
     it.each(["close", "error", "timeout", "cancel"] as const)("awaits one artifact publication on %s", async (cause) => {
       const chunks: Buffer[] = [];

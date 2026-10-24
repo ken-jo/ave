@@ -1524,7 +1524,7 @@ reviewer, audit and cache consumers use that plan.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
-write denies including repository pointers and metadata, bounded nested
+write denies for repository configuration, hooks and pointers, bounded nested
 repository discovery, broad reads subject to existing protections, domain approval
 through the local egress proxy, and denied Unix sockets. Inactive shell
 confinement remains visible in the chat header and Settings through a
@@ -1537,10 +1537,12 @@ including the working directory and private temporary directory, keep their
 own grants; removing an ambient temporary-root grant does not deny those
 children. The linked policy owns discovery and serialized-policy limits.
 
-Protecting repository metadata also makes index/ref updates and commits
-unavailable inside that confinement; they require the existing approved host
-route. Linux absent-path protection can create host-visible mount-point
-placeholders, with normal cleanup and crash-recovery limits defined by the
+Existing repository metadata permits index/ref updates, commits, branches and
+stashes; new `.git` entries remain blocked and require the existing approved
+host route. Linux re-scans nested controls before each command and cleans newly
+created bare layouts in non-repository roots after exit. Every Ave-owned Git
+process carries one shared hardening policy. Independent user and editor Git
+processes and Linux cleanup timing remain residual risks defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
 Isolation between plugins is a macOS and Linux property. There every wrap of

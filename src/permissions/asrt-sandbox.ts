@@ -17,6 +17,8 @@ import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
+import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
@@ -520,11 +522,29 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
 
 /** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
+const bareRepositoryCleanups = new Map<string, { cleanup?: () => void; failure?: string }>();
+const MAX_RETAINED_CLEANUP_FAILURES = 128;
 
 // A released token's listener refuses every further connection from then on.
 // On macOS the ended port stays bound for a quarantine, longer while the
 // invocation's process group still has a process in it.
 onEgressInvocationReleased((token, { processGroup }) => {
+  const pending = bareRepositoryCleanups.get(token);
+  if (pending?.cleanup) {
+    const cleanup = pending.cleanup;
+    // Retain only a bounded diagnostic after release, never a filesystem
+    // snapshot closure for a terminal/worker that has no result annotator.
+    delete pending.cleanup;
+    try {
+      cleanup();
+      bareRepositoryCleanups.delete(token);
+    } catch (error) {
+      pending.failure = `Sandbox bare-repository cleanup failed: ${errorMessage(error)}. Repository entries may remain; inspect them before running independent Git.`;
+      log.error(pending.failure);
+      const failures = [...bareRepositoryCleanups].filter(([, record]) => record.failure !== undefined);
+      for (const [expired] of failures.slice(0, -MAX_RETAINED_CLEANUP_FAILURES)) bareRepositoryCleanups.delete(expired);
+    }
+  }
   loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
 });
 
@@ -838,7 +858,11 @@ export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
 ): Partial<SandboxRuntimeConfig> | undefined {
-  if (filesystem === undefined) return undefined;
+  // Windows keeps its separate per-exec filesystem admission contract.
+  if (filesystem === undefined && process.platform === "win32") return undefined;
+  // Shared initialization is not a command snapshot: newly appeared Git
+  // metadata must be discovered again even without an explicit override.
+  filesystem ??= {};
   if (filesystem.pinWriteRoots === true && filesystem.denyWrite === undefined) {
     throw new Error(
       "buildPerCommandSandboxCustomConfig: pinWriteRoots needs denyWrite restated; a per-command denyWrite "
@@ -930,7 +954,7 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
     if (typeof entry !== "string") {
       if (field === "denyWrite" && entry.literal === true) return entry.path;
       throw new Error(
-        `applyLinuxReadMaskWriteFloor: per-command ${field} holds a marked literal entry; `
+        `applySandboxFilesystemPolicy: per-command ${field} holds a marked literal entry; `
           + "the Linux wrapper replays plain spellings only",
       );
     }
@@ -938,13 +962,14 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
   });
 }
 
-function applyLinuxReadMaskWriteFloor(
+function applySandboxFilesystemPolicy(
   wrapped: SandboxWrapResult,
   applied: Partial<FilesystemConfig> | undefined,
   cleanupAfterCommand: () => void,
 ): SandboxWrapResult {
-  if (process.platform !== "linux") return wrapped;
   try {
+    if (process.platform === "darwin") return hardenMacSandboxGitMetadata(wrapped);
+    if (process.platform !== "linux") return wrapped;
     // The same slice the wrap was built from — the re-allows and write denies
     // ASRT was given, after the floor withheld what it withholds.
     return hardenLinuxSandboxWrap(wrapped, {
@@ -1884,6 +1909,8 @@ export async function wrapToolCommand(
   assertCommandId("wrapToolCommand", options.commandId);
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
+  const cleanupBare = process.platform === "linux"
+    ? prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite")) : undefined;
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1892,7 +1919,9 @@ export async function wrapToolCommand(
     undefined,
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  if (cleanupBare) bareRepositoryCleanups.set(options.commandId, { cleanup: cleanupBare });
+  return result;
 }
 
 
@@ -2162,6 +2191,8 @@ async function wrapLongLivedCommand(
   assertCommandId(caller, options.commandId);
   await openEgressListener(SandboxManager, caller, options.commandId);
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
+  const cleanupBare = process.platform === "linux"
+    ? prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite")) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
@@ -2171,7 +2202,9 @@ async function wrapLongLivedCommand(
     undefined,
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  if (cleanupBare) bareRepositoryCleanups.set(options.commandId, { cleanup: cleanupBare });
+  return result;
 }
 
 /**
@@ -2519,6 +2552,8 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 export async function resetAsrtSandbox(): Promise<void> {
   const SandboxManager = await loadSandboxManager();
   await SandboxManager.reset();
+  // The host owns the processes. Their invocation release, after termination,
+  // still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
   // worker-confinement PR D-1: drop the remembered base settings + live worker
@@ -2547,9 +2582,33 @@ export async function isAsrtSandboxSupported(): Promise<boolean> {
 }
 
 
-export async function annotateWithSandboxViolations(commandId: string, text: string): Promise<string> {
+export async function annotateWithSandboxViolations(
+  commandId: string,
+  text: string,
+  command?: string,
+  onCleanupFailure?: (reason: string) => void,
+): Promise<string> {
   const SandboxManager = await loadSandboxManager();
-  return SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
+  let annotated = SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
+  const cleanupFailure = bareRepositoryCleanups.get(commandId)?.failure;
+  if (cleanupFailure) {
+    annotated += `\n${cleanupFailure}`;
+    onCleanupFailure?.(cleanupFailure);
+    bareRepositoryCleanups.delete(commandId);
+  }
+  if (annotated.includes("`.git` metadata is protected; rerun outside the sandbox after approval")) return annotated;
+  const deniedMetadata = /\.git(?:[\\/\s:'"`]|$)/iu.test(annotated)
+    && /(?:permission denied|operation not permitted|read.only file system|sandbox.*deny|sandbox.*violation|invalid gitfile format)/iu.test(annotated);
+  // A missing-marker bind on Linux is a read-only empty file. Repository
+  // creation can therefore report an invalid marker or a nonempty destination
+  // before it reaches the attempted write. This is a diagnostic, never a retry.
+  const blockedCloneDestination = command !== undefined && /\bgit\b[^\n]*\bclone\b/u.test(command)
+    && /destination path .*already exists and is not an empty directory/iu.test(annotated);
+  if (deniedMetadata || blockedCloneDestination) {
+    return `${annotated}\n\`.git\` metadata is protected; rerun outside the sandbox after approval\n`
+      + 'Use the existing shell request with executionMode: "host" and a justification; host approval is required.';
+  }
+  return annotated;
 }
 
 /** One violation as ASRT's store reports it. */

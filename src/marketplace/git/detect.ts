@@ -18,6 +18,7 @@ import { access } from "node:fs/promises";
 import { posix } from "node:path";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 
 
@@ -164,7 +165,7 @@ export function nodeGitDetectionDeps(findManagedGit: () => Promise<ManagedGitIns
       }
     },
     async readVersion(path) {
-      const result = await execFileText(path, ["--version"]);
+      const result = await execFileText(path, buildHostGitArgs(["--version"]));
       return result.ok ? result.stdout : null;
     },
     async commandLineToolsInstalled() {

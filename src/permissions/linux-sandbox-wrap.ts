@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { MAX_WALK_UP } from "./sensitive-paths.js";
+import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 
 /** Only the option forms emitted by the pinned Linux wrapper are understood. */
 const BWRAP_OPTION_ARITY = {
@@ -20,48 +21,6 @@ const BWRAP_OPTION_ARITY = {
   "--dev": 1,
   "--proc": 1,
 } as const;
-
-interface ShellWord {
-  readonly value: string;
-  readonly start: number;
-}
-
-/** Read the single-quoted argument format emitted by the sandbox runtime. */
-function parseWrappedWords(command: string): ShellWord[] {
-  const words: ShellWord[] = [];
-  let index = 0;
-  while (index < command.length) {
-    if (command[index] === " ") {
-      index++;
-      continue;
-    }
-    const start = index;
-    let value = "";
-    while (index < command.length && command[index] !== " ") {
-      const character = command[index];
-      if (character === "'") {
-        const end = command.indexOf("'", index + 1);
-        if (end < 0) throw new Error("Linux sandbox wrapper has an unterminated argument");
-        value += command.slice(index + 1, end);
-        index = end + 1;
-      } else if (command.startsWith('"\'"', index)) {
-        value += "'";
-        index += 3;
-      } else {
-        const match = /^[A-Za-z0-9_./:=@+,-]+/.exec(command.slice(index));
-        if (!match) throw new Error("Linux sandbox wrapper has an unsupported argument encoding");
-        value += match[0];
-        index += match[0].length;
-      }
-    }
-    words.push({ value, start });
-  }
-  return words;
-}
-
-function quoteShellWord(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
 
 /** Resolve symlinked prefixes, including when the mount target does not exist yet. */
 function mountIdentity(target: string): string {
@@ -171,7 +130,7 @@ function replayShadowedMounts(options: readonly WrapperOption[], filesystem: Lin
 /** {@link replayShadowedMounts} over the wrapper's command line; the line itself when nothing was shadowed. */
 function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): string {
   if ((filesystem.allowRead ?? []).length === 0) return command;
-  const words = parseWrappedWords(command);
+  const words = parseSandboxWrappedWords(command, "Linux sandbox wrapper");
   if (basename(words[0]?.value ?? "") !== "bwrap") {
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
   }
@@ -200,7 +159,7 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
   if (words[index]?.value !== "--") throw new Error("Linux sandbox wrapper has no command separator");
   const replayed = replayShadowedMounts(options, filesystem);
   if (replayed.length === options.length) return command;
-  const optionText = replayed.flatMap((entry) => [entry.option, ...entry.operands]).map(quoteShellWord).join(" ");
+  const optionText = replayed.flatMap((entry) => [entry.option, ...entry.operands]).map(quoteSandboxWrappedWord).join(" ");
   return `${command.slice(0, words[1]!.start)}${optionText} ${command.slice(words[index]!.start)}`;
 }
 
@@ -223,7 +182,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     throw new Error("Linux sandbox wrapper has an unexpected command shape");
   }
   const command = replayShadowedWrap(wrapped.argv[2], filesystem);
-  const words = parseWrappedWords(command);
+  const words = parseSandboxWrappedWords(command, "Linux sandbox wrapper");
   if (basename(words[0]?.value ?? "") !== "bwrap") {
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
   }
@@ -273,7 +232,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
 
   const remounts = remountTargets
     .flatMap((path) => ["--remount-ro", path])
-    .map(quoteShellWord)
+    .map(quoteSandboxWrappedWord)
     .join(" ");
   const insertion = words[separator].start;
   const hardened = `${command.slice(0, insertion)}${remounts} ${command.slice(insertion)}`;

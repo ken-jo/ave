@@ -48,6 +48,7 @@ import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { buildHostGitArgs } from "../shared/host-git.js";
 
 interface ProjectAgentsMdLayer {
   /** Path of the instruction file relative to the repository root. */
@@ -313,7 +314,7 @@ function askGitIgnores(repoRoot: string, path: string): boolean {
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   try {
-    execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
+    execFileSync("git", buildHostGitArgs(["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)]), {
       stdio: "ignore",
       timeout: 2_000,
       env,

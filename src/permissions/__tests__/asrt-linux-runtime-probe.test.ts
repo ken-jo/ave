@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -16,6 +16,8 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sandboxWritePolicy from "../sandbox-write-policy.js";
+import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
+import { openEgressInvocation } from "../egress-invocations.js";
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -25,6 +27,7 @@ const h = vi.hoisted(() => ({
   cleanupAfterCommand: vi.fn(),
   reset: vi.fn(),
   spawn: vi.fn(),
+  annotate: vi.fn((_commandId: string, text: string) => text),
 }));
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
@@ -35,6 +38,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
+    annotateStderrWithSandboxFailures: h.annotate,
   },
 }));
 
@@ -43,6 +47,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  annotateWithSandboxViolations,
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
   getDefaultSensitiveWriteDenyPaths,
@@ -124,6 +129,62 @@ afterEach(async () => {
 });
 
 describe("Linux wrap filesystem discovery snapshot", () => {
+  it("reports cleanup failures to the command result owner after release", async () => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockReturnValue(() => {
+      throw new Error("cleanup permission refused");
+    });
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" } });
+    await wrapToolCommand("true", { commandId: invocation.token });
+    invocation.release();
+    const failure = vi.fn();
+    const output = await annotateWithSandboxViolations(invocation.token, "command completed", "true", failure);
+    expect(failure).toHaveBeenCalledOnce();
+    expect(output).toContain("cleanup permission refused");
+    expect(output).toContain("inspect them before running independent Git");
+  });
+
+  it("defers bare-layout removal to the owning invocation release", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-bare-release-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    h.wrapWithSandboxArgv.mockClear();
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
+    try {
+      await wrapToolCommand("true", { commandId: invocation.token, filesystem: { allowWrite: [root], denyWrite: [] } });
+      const applied = h.wrapWithSandboxArgv.mock.calls[0]![2].filesystem;
+      for (const name of sandboxWritePolicy.SANDBOX_BARE_REPOSITORY_ENTRIES) {
+        expect(applied.denyWrite).not.toContain(join(root, name));
+        expect(existsSync(join(root, name))).toBe(false);
+      }
+      writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(root, "config"), "planted");
+      mkdirSync(join(root, "objects"));
+      mkdirSync(join(root, "refs"));
+      expect(existsSync(join(root, "HEAD"))).toBe(true);
+    } finally { invocation.release(); }
+    for (const name of sandboxWritePolicy.SANDBOX_BARE_REPOSITORY_ENTRIES) expect(existsSync(join(root, name))).toBe(false);
+  });
+
+  it("rescans shared write roots for each tool command without an override", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-rescan-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [], allowWrite: [root] });
+    h.wrapWithSandboxArgv.mockClear();
+    await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
+    const before = h.wrapWithSandboxArgv.mock.calls[0]![2].filesystem;
+    expect(before.denyWrite).toContain(join(root, ".git"));
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
+    const after = h.wrapWithSandboxArgv.mock.calls[1]![2].filesystem;
+    expect(after.denyWrite).not.toContain(join(root, ".git"));
+    expect(after.denyWrite).toContain(join(root, ".git", "config"));
+    expect(after.allowWrite).toEqual([root]);
+  });
+
   it.each([
     ["tool", wrapToolCommand], ["worker", wrapWorkerCommand],
   ] as const)("uses one immutable scan for the %s runtime and literal-deny replay", async (_kind, wrap) => {
@@ -132,7 +193,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "asrt-snapshot-")));
     temporaryRoots.push(fixture);
     const root = join(fixture, "workspace[held]");
-    const denied = join(root, ".git");
+    const denied = join(root, ".gitconfig");
     const ordinary = join(root, "ordinary");
     mkdirSync(denied, { recursive: true });
     mkdirSync(ordinary);

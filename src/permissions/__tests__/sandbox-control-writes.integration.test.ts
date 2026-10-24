@@ -7,7 +7,7 @@ import { settingsFilePath } from "../../data/settings-store.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import {
-  buildPerCommandSandboxCustomConfig, cleanupAsrtSandboxAfterCommand,
+  cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -74,12 +74,6 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     const project = join(root, `project-${entry.replaceAll("/", "-")}`);
     mkdirSync(project);
     const target = join(project, entry);
-    const config = buildPerCommandSandboxCustomConfig({ allowWrite: [project], denyWrite: [] });
-    // The configured deny exists even before its protected entry is created.
-    const protectedRoot = entry.startsWith(".git/hooks/") ? join(project, ".git/hooks")
-      : entry.startsWith(".git/modules/") ? join(project, ".git/modules")
-      : entry.startsWith(".vscode/") ? join(project, ".vscode") : target;
-    expect(config?.filesystem?.denyWrite).toContain(protectedRoot);
     // Grant this project itself so each reserved name is relative to a write root.
     const originalRoot = root;
     root = project;
@@ -88,6 +82,8 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
       expect(existsSync(target)).toBe(false);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, "original");
+      if (entry.startsWith(".git/")) writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
+      if (entry.startsWith(".git/modules/")) writeFileSync(join(project, ".git", "modules", entry.split("/")[2]!, "HEAD"), "ref: refs/heads/main\n");
       expect(await attempt(target)).not.toBe(0);
       expect(readFileSync(target, "utf8")).toBe("original");
       const ordinary = join(project, "result.txt");

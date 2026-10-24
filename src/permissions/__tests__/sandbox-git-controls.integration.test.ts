@@ -99,6 +99,9 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
     const config = join(project, ".git", "modules", "child", "config");
     const attack = proveConfigAttack(join(project, "child"), config);
     await blockedWrite(config, attack, [project]);
+    // Newly discovered module directories receive controls on the next wrap.
+    mkdirSync(join(project, ".git", "modules", "future"));
+    writeFileSync(join(project, ".git", "modules", "future", "HEAD"), "ref: refs/heads/main\n");
     await blockedWrite(join(project, ".git", "modules", "future", "config"), attack, [project]);
     await blockedWrite(join(project, ".git", "modules", "future", "hooks", "pre-commit"), "payload", [project]);
     git(join(project, "child"), "status", "--porcelain");
@@ -161,6 +164,8 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native repository control write
     const attack = proveConfigAttack(checkout, config);
     await blockedWrite(config, attack, [checkout, common, gitDir]);
     await blockedWrite(commonPointer, `${source}\n`, [checkout, common, gitDir]);
+    mkdirSync(join(common, "modules", "future"), { recursive: true });
+    writeFileSync(join(common, "modules", "future", "HEAD"), "ref: refs/heads/main\n");
     await blockedWrite(join(common, "modules", "future", "config"), attack, [checkout, common, gitDir]);
     git(checkout, "status", "--porcelain");
     expect(existsSync(trace)).toBe(false);

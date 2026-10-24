@@ -2104,20 +2104,23 @@ export async function spawnWithSandbox(
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
+      let sandboxCleanupFailed = false;
       const formatted = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )));
+      )), command, () => { sandboxCleanupFailed = true; });
       if (lifetime.timedOut) {
         resolveResult({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
           isError: true,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true },
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: true, sandboxed: true,
+            ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         });
       } else {
         resolveResult({
           output: formatted,
-          isError: lifetime.aborted || code !== 0,
-          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true },
+          isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
+          metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
+            ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         });
       }
@@ -3205,15 +3208,17 @@ async function spawnPowerShellWithSandbox(
       if (settled) return;
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
+      let sandboxCleanupFailed = false;
       const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )));
+      )), command, () => { sandboxCleanupFailed = true; });
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
           : output,
-        isError: lifetime.aborted || lifetime.timedOut || code !== 0,
-        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true },
+        isError: lifetime.aborted || lifetime.timedOut || code !== 0 || sandboxCleanupFailed,
+        metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
+          ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       });
     };
 
