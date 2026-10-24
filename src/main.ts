@@ -13,9 +13,11 @@ import { isLinkOwned } from "./main/link-window-registry.js";
 import { shouldBlockGlobalWebviewNavigation } from "./main/webview-navigation-policy.js";
 import { installSideBrowserPartitionPolicy } from "./main/side-browser-webview.js";
 import { findAveProtocolUri } from "./main/ave-protocol.js";
-import { buildDevProtocolArgs } from "./main/electron-protocol-args.js";
-import { getPackagedWindowsProtocolMarkerState } from "./main/ave-protocol-registration.js";
-import { devNoSandboxAllowed, setIsPackaged } from "./boot/dev-flags.js";
+import {
+  decideAveProtocolClientRegistration,
+  getPackagedWindowsProtocolMarkerState,
+} from "./main/ave-protocol-registration.js";
+import { setIsPackaged } from "./boot/dev-flags.js";
 import { WindowManager } from "./main/window-manager.js";
 import { createLogger } from "./lib/logger.js";
 import {
@@ -25,10 +27,7 @@ import {
 } from "./main/app-update-install-intent.js";
 import { distRoot, projectRoot } from "./main/main-paths.js";
 import { applyRuntimeAppIcon, runEarlyBootEnv } from "./main/early-boot-env.js";
-import {
-  readPersistedHardwareAccelerationSync,
-  resolveHardwareAcceleration,
-} from "./main/persisted-hardware-acceleration.js";
+import { defaultAveHome } from "./shared/ave-home.js";
 import { ensureCorporateCaInjected } from "./main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "./main/persisted-corp-ca.js";
 import { loadMainStartupDependencies } from "./main/startup-dependencies.js";
@@ -559,67 +558,38 @@ async function main() {
 }
 
 // ave:// custom URI scheme.
-// The per-machine Windows installer owns the packaged association in HKLM.
-// Its adjacent regular-file marker prevents Electron's Windows setter from
-// shadowing HKLM with HKCU. ZIP/win-unpacked builds have no marker and keep
-// self-registering; macOS/Linux and every unpackaged build retain the existing
-// synchronous registration behavior.
-//
-// In dev mode (unpackaged) on Windows, Electron requires explicit execPath + args
-// so the OS can locate the app correctly when launching from a protocol URI.
-// We must also propagate the running process's --user-data-dir so the OS-spawned
-// instance lands on the same userData and the single-instance lock actually
-// gates it. Without this, dev (Electron-Ave-Dev) and the protocol-launched
-// process land on different userData dirs and both apps coexist.
-//
-// Argument-builder lives in `src/main/electron-protocol-args.ts` (pure helper)
-// so the platform / argv / env policy can be unit-tested without Electron.
-//
-// `AVE_WIN_NO_SANDBOX` is read through `dev-flags.ts` SoT instead of by the
-// helper itself: the helper takes a resolved `disableSandbox: boolean` so the
-// `!app.isPackaged` policy gate cannot be bypassed by a packaged binary that
-// inherits the env var. Boot also calls `setIsPackaged` later for any other
-// dev-flag callers; this top-level call early-seeds the cache.
+// `app.setAsDefaultProtocolClient` rewrites a user-wide OS default (HKCU on
+// Windows, the LaunchServices default on macOS, the xdg default on Linux), so
+// only a packaged production app on its real profile claims it. Unpackaged,
+// E2E, relocated-AVE_HOME and explicit --user-data-dir launches skip, so a dev,
+// test or CDP run cannot take the installed app's deep links. The per-machine
+// Windows installer owns the packaged association in HKLM; its adjacent marker
+// keeps Electron's setter from shadowing it with HKCU. The decision is the pure
+// `decideAveProtocolClientRegistration`; it must stay synchronous and before
+// the single-instance lock.
 setIsPackaged(app.isPackaged);
-const packagedWindowsProtocolMarkerState =
-  app.isPackaged && process.platform === "win32"
-    ? getPackagedWindowsProtocolMarkerState(process.execPath)
-    : null;
-if (packagedWindowsProtocolMarkerState === "unknown") {
-  log.warn(
-    "Unable to verify the packaged Windows protocol marker; skipped self-registration",
-  );
-}
-if (
-  packagedWindowsProtocolMarkerState !== "present" &&
-  packagedWindowsProtocolMarkerState !== "unknown"
-) {
-  const protocolRegistered = app.isPackaged
-    ? app.setAsDefaultProtocolClient("ave")
-    : app.setAsDefaultProtocolClient(
-        "ave",
-        process.execPath,
-        buildDevProtocolArgs({
-          argv1: process.argv[1],
-          userDataDir: app.getPath("userData") || undefined,
-          platform: process.platform,
-          // The same decision the app itself makes at boot, not a second
-          // reading of the environment: a developer who turned the GPU back
-          // on in Settings would otherwise get a registered launcher that
-          // disagrees with the app it launches.
-          disableGpu: !resolveHardwareAcceleration({
-            setting: readPersistedHardwareAccelerationSync(app.getPath("userData")),
-            env: process.env,
-            platform: process.platform,
-          }),
-          disableSandbox: devNoSandboxAllowed(),
-        }),
-      );
-  if (!protocolRegistered) {
+const aveProtocolClientRegistration = decideAveProtocolClientRegistration({
+  isPackaged: app.isPackaged,
+  platform: process.platform,
+  env: process.env,
+  defaultAveHome: defaultAveHome(),
+  hasUserDataDirSwitch: app.commandLine.hasSwitch("user-data-dir"),
+  probeWindowsMarker: () => getPackagedWindowsProtocolMarkerState(process.execPath),
+});
+if (aveProtocolClientRegistration.register) {
+  if (!app.setAsDefaultProtocolClient("ave")) {
     log.warn(
       "setAsDefaultProtocolClient('ave') failed — deep links may not work in this environment",
     );
   }
+} else if (aveProtocolClientRegistration.reason === "nsis-marker-unknown") {
+  log.warn(
+    "Unable to verify the packaged Windows protocol marker; skipped self-registration",
+  );
+} else {
+  log.info(
+    `Skipped ave:// protocol client self-registration (${aveProtocolClientRegistration.reason})`,
+  );
 }
 
 // macOS: URI delivered via open-url event (register before whenReady to avoid missing cold-start)

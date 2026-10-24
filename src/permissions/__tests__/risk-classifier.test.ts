@@ -33,6 +33,14 @@ vi.mock("../../shared/ave-scratch.js", () => ({
 }));
 
 
+describe("unconfigured reviewer model", () => {
+  it.each([undefined, "", "   "])("requires a selected model before constructing the classifier: %j", (model) => {
+    const provider = { complete: vi.fn() };
+    expect(() => createRiskClassifier({ mode: "llm", provider, model })).toThrow(/model.*not configured/i);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+});
+
 describe("DisabledRiskClassifier", () => {
   // Issue #664: post-fix `disabled` is pass-through-LOW (not defer-all-HIGH).
   // The fail-closed semantic moved to {@link StrictRiskClassifier}.
@@ -1310,11 +1318,11 @@ describe("createRiskClassifier — atomic cutover", () => {
     );
   });
 
-  it("mode='llm' with provider returns LlmRiskClassifier with default model", () => {
+  it("mode='llm' with a selected model returns LlmRiskClassifier", () => {
     const provider: LlmReviewerProvider = {
       complete: vi.fn(async () => ({ text: "{}", tokensIn: 0, tokensOut: 0, costUsd: 0 })),
     };
-    const c = createRiskClassifier({ mode: "llm", provider });
+    const c = createRiskClassifier({ mode: "llm", provider, model: "selected-model" });
     expect(c).toBeInstanceOf(LlmRiskClassifier);
   });
 
@@ -1326,6 +1334,7 @@ describe("createRiskClassifier — atomic cutover", () => {
       createRiskClassifier({
         mode: "llm",
         provider,
+        model: "selected-model",
         // @ts-expect-error — intentionally bad
         fallbackOnError: "allow-and-audit",
       }),

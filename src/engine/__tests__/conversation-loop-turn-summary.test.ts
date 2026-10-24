@@ -93,7 +93,7 @@ function createLoopWithRegistry(
   const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
@@ -1266,7 +1266,7 @@ describe("ConversationLoop onTurnSummary", () => {
       saveSessionMetadata: vi.fn(async () => {}),
     };
     const settingsService = {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
@@ -1314,7 +1314,7 @@ describe("ConversationLoop onTurnSummary", () => {
       listSessions: () => [],
     };
     const settingsService = {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {

@@ -73,7 +73,7 @@ export interface ShHookRegistryEntry extends BaseHookRegistryEntry {
 }
 
 /** A registry entry carried over from a declarative `hooks.json` config entry. */
-export interface ConfigHookRegistryEntry extends BaseHookRegistryEntry {
+interface ConfigHookRegistryEntry extends BaseHookRegistryEntry {
   source: "config";
   /** Per-entry timeout (already clamped in `parseHookConfig`). */
   timeoutMs: number;

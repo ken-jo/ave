@@ -102,6 +102,25 @@ describe("composer drop token", () => {
     expect(await call(CHANNELS.attach.readImage, 7, imagePath)).toMatchObject({ ok: true });
   });
 
+  it("reads the extension from the file name, never from a dotted directory", async () => {
+    const dotted = join(root, "a", ".config", "notes");
+    const dottedDir = join(root, "b.c", "file");
+    mkdirSync(join(root, "a", ".config"), { recursive: true });
+    mkdirSync(join(root, "b.c"), { recursive: true });
+    writeFileSync(dotted, "hello");
+    writeFileSync(dottedDir, "hello");
+    const reg = await register(8, [dotted, dottedDir]);
+    expect(reg).toMatchObject({ ok: true, rejected: [] });
+    const redeemed = await call(CHANNELS.attach.redeemDrop, 8, reg.token) as {
+      ok: boolean;
+      files: Array<{ path: string; ext: string }>;
+    };
+    expect(redeemed.files.map((f) => [f.path, f.ext])).toEqual([
+      [dotted, ""],
+      [dottedDir, ""],
+    ]);
+  });
+
   it("refuses a reused token", async () => {
     const reg = await register(7, [notesPath]);
     expect(await call(CHANNELS.attach.redeemDrop, 7, reg.token)).toMatchObject({ ok: true });

@@ -149,8 +149,8 @@ function sha256OfFile(path: string): { sha256: string; size: number; matcher?: s
 /** Matchers made only of these characters are exact names, split on `|` or `,`. */
 const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]+$/u;
 
-export const HOOK_MATCHER_PATTERN_MAX = 256;
-export const HOOK_MATCHER_SUBJECT_MAX = 256;
+const HOOK_MATCHER_PATTERN_MAX = 256;
+const HOOK_MATCHER_SUBJECT_MAX = 256;
 
 export class HookMatcherError extends Error {
   constructor(message: string) {

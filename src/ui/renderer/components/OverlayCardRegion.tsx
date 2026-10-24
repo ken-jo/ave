@@ -27,7 +27,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
-import { useOverlayContext } from "../context/OverlayContext.js";
+import { routineThumbnailOwner, useOverlayContext } from "../context/OverlayContext.js";
 import { OverlayCard } from "./OverlayCard.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "./FloatingRightLane.js";
@@ -82,15 +82,16 @@ export function OverlayCardRegion({
   onProposalAnswer,
 }: OverlayCardRegionProps) {
   const { t } = useTranslation();
-  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded } =
+  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded, thumbnailSessions } =
     useOverlayContext();
 
   // This surface's slice of the window queue. Every tile mounts a region and
   // each keeps only the cards attributed to it, so a card is shown — and so
   // dismissed or confirmed — exactly once however many tiles are open.
   const mine = useMemo(
-    () => queue.filter((item) => overlayCardTile(item).chatGroupId === chatGroupId),
-    [queue, overlayCardTile, chatGroupId],
+    () => queue.filter((item) => overlayCardTile(item).chatGroupId === chatGroupId
+      && routineThumbnailOwner(item, thumbnailSessions) === null),
+    [queue, overlayCardTile, chatGroupId, thumbnailSessions],
   );
 
   // The region hangs in the tile's floating lane at the lane's own width.

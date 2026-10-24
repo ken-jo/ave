@@ -7,7 +7,7 @@ loads the following third-party work.
 
 | Package | Version | Licence | Used for |
 | --- | --- | --- | --- |
-| next | 15.5.24 | MIT | Framework and static export |
+| next | 15.5.28 | MIT | Framework and static export |
 | react, react-dom | 18.3.1 | MIT | Rendering |
 | tailwindcss, @tailwindcss/postcss | 4.3.3 | MIT | Utility CSS and theme tokens (build time) |
 | motion | 13.4.6 | MIT | Beam pulses and the scroll-linked model orbit |

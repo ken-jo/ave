@@ -251,6 +251,28 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     }
   });
 
+  it("waits for pending tab binding writes before disposing services", async () => {
+    const services = makeServices();
+    getServices.mockReturnValue(services);
+    vi.resetModules();
+    const { runAppShutdownCleanup } = await configuredShutdown();
+    const { browserTabRegistry } = await import("../browser/browser-tab-registry.js");
+    let finishWrite!: () => void;
+    browserTabRegistry.trackBindingWrite(new Promise<void>((resolve) => { finishWrite = resolve; }));
+    const flush = vi.spyOn(browserTabRegistry, "flushBindingWrites");
+    const cleanup = runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    try {
+      await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+      expect(services.shutdown).not.toHaveBeenCalled();
+      expect(stopLocalApiServer).not.toHaveBeenCalled();
+    } finally {
+      finishWrite();
+      await cleanup;
+      flush.mockRestore();
+    }
+    expect(services.shutdown).toHaveBeenCalledOnce();
+  });
+
   // PR #1503 cross-PR check: the log-sink close (added on main after this file
   // was authored) must remain the LAST step on the happy path, coexisting with
   // unregisterAllGlobalShortcuts staying FIRST — the two orderings are

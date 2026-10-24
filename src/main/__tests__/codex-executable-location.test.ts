@@ -1,8 +1,11 @@
-import { execFile, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
+import { EventEmitter } from "node:events";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, promises as fs, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PassThrough } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   assertCodexExecutableLocation,
@@ -10,19 +13,42 @@ import {
   assertCodexPrivateRuntimeDirectory,
   CodexExecutableLocationError,
   _resetDesktopPackageCacheForTest,
+  _resetWindowsAclHostForTest,
 } from "../codex-executable-location.js";
+import { getManagedChildProcessCount } from "../managed-child-processes.js";
+import {
+  WINDOWS_ACL_HOST_IDLE_MS,
+  WindowsAclHostError,
+  _setWindowsAclTransportForTest,
+  type WindowsAclHostLaunch,
+  type WindowsAclLimits,
+  type WindowsAclRequest,
+} from "../windows-acl-host.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execFile: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 const HOST = process.platform;
 const roots: string[] = [];
+// Windows fixtures answer each ACL host request here, at the request level.
+const aclRequest = vi.fn(async (_request: WindowsAclRequest, _launch: WindowsAclHostLaunch, _limits: WindowsAclLimits): Promise<string> => {
+  throw new Error("No access-rule fixture");
+});
+const aclDiscard = vi.fn();
 
-beforeEach(() => { _resetDesktopPackageCacheForTest(); });
+beforeEach(() => {
+  _resetDesktopPackageCacheForTest();
+  _resetWindowsAclHostForTest();
+  _setWindowsAclTransportForTest(undefined);
+});
 
 afterEach(() => {
+  _resetWindowsAclHostForTest();
+  _setWindowsAclTransportForTest(undefined);
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -389,10 +415,11 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
   links: Map<string, string>;
   sandboxGroup: Record<string, unknown>;
   probe: Record<string, unknown>;
+  reply: (request: WindowsAclRequest) => string;
 } {
   vi.stubGlobal("process", Object.create(process, {
     platform: { value: "win32" },
-    env: { value: { SystemRoot: String.raw`C:\Windows` } },
+    env: { value: { NODE_ENV: "test", TEMP: process.env.TEMP, TMP: process.env.TMP, SystemRoot: String.raw`C:\Windows` } },
   }));
   const links = new Map<string, string>();
   vi.spyOn(fs, "lstat").mockImplementation(async (path) => pathStats(links.has(String(path))
@@ -403,24 +430,21 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
   let modify = (_paths: PathSecurity[]): void => {};
   const sandboxGroup: Record<string, unknown> = {};
   const probe: Record<string, unknown> = { desktopPackage: { status: "unavailable", reason: "mapping-not-found" } };
-  vi.mocked(execFile).mockImplementation((...args) => {
-    const options = args[2] as { env: NodeJS.ProcessEnv };
-    const callback = args[3] as (error: Error | null, stdout: string, stderr: string) => void;
-    const targets = JSON.parse(options.env.AVE_EXECUTABLE_ACL_PATHS!) as string[];
-    const paths = targets.map((path): PathSecurity => ({
+  const reply = (request: WindowsAclRequest): string => {
+    const paths = request.paths.map((path): PathSecurity => ({
       path,
       owner: path === "C:\\" ? "S-1-5-18" : CURRENT_SID,
       daclPresent: true,
       entries: [{ sid: CURRENT_SID, mask: 0x1f01ff, flags: 0, type: 0 }],
     }));
     modify(paths);
-    const capSidAccounts = (JSON.parse(options.env.AVE_ACL_CAP_SIDS ?? "[]") as string[])
-      .map((sid) => ({ sid, resolvesToAccount: false }));
-    callback(null, JSON.stringify({ currentSid: CURRENT_SID, machineDomainSid: MACHINE_DOMAIN_SID,
-      capSidAccounts, paths, sandboxGroup, ...probe }), "");
-    return {} as ChildProcess;
-  });
-  return { candidate, modify: (callback) => { modify = callback; }, links, sandboxGroup, probe };
+    const capSidAccounts = request.capSids.map((sid) => ({ sid, resolvesToAccount: false }));
+    return JSON.stringify({ id: request.id, result: { currentSid: CURRENT_SID, machineDomainSid: MACHINE_DOMAIN_SID,
+      capSidAccounts, paths, sandboxGroup, ...probe } });
+  };
+  aclRequest.mockImplementation(async (request) => reply(request));
+  _setWindowsAclTransportForTest({ request: aclRequest, discard: aclDiscard });
+  return { candidate, modify: (callback) => { modify = callback; }, links, sandboxGroup, probe, reply };
 }
 
 function desktopPackageFixture(directory = false) {
@@ -442,7 +466,7 @@ describe("native access-rule admission", () => {
     const fixture = desktopPackageFixture();
     fixture.modify((paths) => { for (const path of paths) path.entries.push({ sid, mask: 0x1f01ff, flags: 0, type: 0 }); });
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
-    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(aclRequest).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -516,9 +540,8 @@ describe("native access-rule admission", () => {
       path: String.raw`C:\Tools\file-${index}.exe`, kind: "executable" as const,
     })))).resolves.toBeUndefined();
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
-    const flags = vi.mocked(execFile).mock.calls.map((call) =>
-      (call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE);
-    expect(flags).toEqual([undefined, "skip", "skip"]);
+    const flags = aclRequest.mock.calls.map(([request]) => request.skipPackage);
+    expect(flags).toEqual([false, true, true]);
     if (status === "unavailable") {
       fixture.modify((paths) => { paths[1]!.entries.push({ sid: PACKAGE_SID, mask: 2, flags: 0, type: 0 }); });
       await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("writable by another account");
@@ -538,13 +561,11 @@ describe("native access-rule admission", () => {
       if (outcome.endsWith("unavailable") || outcome === "different reason") {
         fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
       }
-      const respond = vi.mocked(execFile).getMockImplementation()!;
       const pending: (() => void)[] = [];
-      vi.mocked(execFile).mockImplementation((...args) => {
-        const callback = args[3] as (error: Error | null, stdout: string, stderr: string) => void;
-        return respond(args[0], args[1], args[2], (error, stdout, stderr) => {
-          pending.push(() => callback(error, String(stdout), String(stderr)));
-        });
+      aclRequest.mockImplementation((request) => {
+        // The reply is read when the request reaches the host; it completes when the test says so.
+        const line = fixture.reply(request);
+        return new Promise<string>((resolve) => { pending.push(() => resolve(line)); });
       });
       const first = assertCodexExecutableLocation(fixture.candidate);
       await vi.waitFor(() => { expect(pending).toHaveLength(1); });
@@ -553,12 +574,17 @@ describe("native access-rule admission", () => {
       };
       if (outcome === "different status") fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
       if (outcome === "different reason") fixture.probe.desktopPackage = { status: "unavailable", reason: "package-not-installed" };
+      // Both lookups start before either completes. Requests are serialized, so
+      // the second reaches the host only after the first reply is read.
       const second = assertCodexExecutableLocation(fixture.candidate);
       const results = Promise.allSettled([first, second]);
+      // The second admission inspects mocked paths in microtasks only, so it
+      // has built and queued its request before this macrotask turn.
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      pending[0]!();
       await vi.waitFor(() => { expect(pending).toHaveLength(2); });
-      expect(vi.mocked(execFile).mock.calls.map((call) =>
-        (call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE)).toEqual([undefined, undefined]);
-      for (const complete of pending) complete();
+      expect(aclRequest.mock.calls.map(([request]) => request.skipPackage)).toEqual([false, false]);
+      pending[1]!();
       const [firstResult, secondResult] = await results;
       expect(firstResult.status).toBe("fulfilled");
       if (outcome.startsWith("same")) expect(secondResult.status).toBe("fulfilled");
@@ -575,8 +601,8 @@ describe("native access-rule admission", () => {
     await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow("access rules are invalid");
     fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
-    for (const call of vi.mocked(execFile).mock.calls) {
-      expect((call[2] as { env: NodeJS.ProcessEnv }).env.AVE_ACL_DESKTOP_PACKAGE).toBeUndefined();
+    for (const [request] of aclRequest.mock.calls) {
+      expect(request.skipPackage).toBe(false);
     }
   });
 
@@ -611,9 +637,9 @@ describe("native access-rule admission", () => {
   ])("resolves package principals read-only using command mocks: $label", async (testCase) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [command, args] = vi.mocked(execFile).mock.calls[0]!;
-    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
-    const resolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("[PSCustomObject]@{ currentSid ="));
+    const [, { command, args }] = aclRequest.mock.calls[0]!;
+    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const resolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
     const mapping = { PSPath: "fixture-mapping", PSChildName: testCase.sid ?? PACKAGE_SID,
       Moniker: testCase.moniker ?? "cLaUdE_pzs8sxrjxfjjc" };
     const input = {
@@ -628,6 +654,8 @@ describe("native access-rule admission", () => {
     const mockedScript = [
       "$ErrorActionPreference = 'Stop'",
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
+      // The decoded request line, as the host reads it.
+      "$request = ConvertFrom-Json -InputObject $env:AVE_ACL_REQUEST_FIXTURE",
       `Add-Type 'public static class ExecutablePathSecurity { public static string DerivePackageSid(string name) { return "${PACKAGE_SID}"; } }'`,
       "function Get-ChildItem { param($LiteralPath, $ErrorAction); if ($fixture.failMapping) { throw 'Fixture failure' }; $fixture.mappings }",
       "function Get-ItemProperty { param($LiteralPath, $Name, $ErrorAction); if ($fixture.failMoniker) { throw 'Fixture failure' }; $fixture.mappings | Where-Object { $_.PSPath -eq $LiteralPath } | Select-Object -First 1 }",
@@ -639,12 +667,13 @@ describe("native access-rule admission", () => {
     const stdout = await new Promise<string>((resolve, reject) => {
       childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(mockedScript, "utf16le").toString("base64")], {
         windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-        env: { ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
-          AVE_ACL_DESKTOP_PACKAGE: testCase.skip ? "skip" : undefined },
+        env: windowsPowerShellEnv({ ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
+          AVE_ACL_REQUEST_FIXTURE: JSON.stringify({ skipPackage: testCase.skip === true }) }),
       }, (error, output) => error ? reject(error) : resolve(output));
     });
     fixture.probe.desktopPackage = JSON.parse(stdout);
     _resetDesktopPackageCacheForTest();
+    _resetWindowsAclHostForTest();
     if (testCase.skip) {
       expect(fixture.probe.desktopPackage).toEqual({ status: "skipped" });
       return;
@@ -663,7 +692,7 @@ describe("native access-rule admission", () => {
     const read = vi.fn(async () => JSON.stringify({ workspace: FOREIGN_SID }));
     const requests = Array.from({ length: 126 }, (_, index) => ({ path: String.raw`C:\Tools\file-${index}.exe`, kind: "executable" as const, routeKind: "native" as const }));
     await expect(assertCodexLocations(requests, { capSidPath: fixture.capPath, readCapSidFile: read })).resolves.toBeUndefined();
-    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(aclRequest).toHaveBeenCalledTimes(1);
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -748,9 +777,9 @@ describe("native access-rule admission", () => {
     const fixture = windowsFixture();
     process.env.COMPUTERNAME = "untrusted-host";
     await assertCodexExecutableLocation(fixture.candidate);
-    const [, args, options] = vi.mocked(execFile).mock.calls[0]!;
-    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
-    expect(options!.env).not.toHaveProperty("COMPUTERNAME");
+    const [, launch] = aclRequest.mock.calls[0]!;
+    const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+    expect(launch.options.env).not.toHaveProperty("COMPUTERNAME");
     expect(script).not.toContain("$env:COMPUTERNAME");
     expect(script).toContain("WinNT://./CodexSandboxUsers,group");
     expect(script).toContain("AccountDomainSid");
@@ -768,21 +797,22 @@ describe("native access-rule admission", () => {
   it.runIf(HOST === "win32").each(["empty", "single", "multiple"])("probes account translation for %s cap candidates", async (kind) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [command, args] = vi.mocked(execFile).mock.calls[0]!;
-    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    const [, { command, args }] = aclRequest.mock.calls[0]!;
+    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
     const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
     const query = [
       "$ErrorActionPreference = 'Stop'",
       "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
       `$candidates = @(${kind === "empty" ? "" : kind === "single" ? `'${CAP_SID}'` : `$currentSid, '${CAP_SID}'`})`,
-      "$env:AVE_ACL_CAP_SIDS = ConvertTo-Json -InputObject $candidates -Compress",
+      // The request line, decoded as the host decodes it.
+      "$request = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject @{ capSids = $candidates } -Compress)",
       resolver,
       "ConvertTo-Json -InputObject @{ currentSid = $currentSid; accounts = @($capSidAccounts) } -Depth 4 -Compress",
     ].join("\n");
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const stdout = await new Promise<string>((resolve, reject) => {
       childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(query, "utf16le").toString("base64")], {
-        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
+        windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, env: windowsPowerShellEnv(),
       }, (error, output) => error ? reject(error) : resolve(output));
     });
     const result = JSON.parse(stdout) as { currentSid: string; accounts: { sid: string; resolvesToAccount: boolean }[] };
@@ -812,8 +842,8 @@ describe("native access-rule admission", () => {
     const contents = JSON.stringify({ [key]: key.endsWith("_cwd") || key.endsWith("_path") ? { "C:\\workspace": CAP_SID } : CAP_SID });
     await expect(assertCodexExecutableLocation(fixture.candidate, "native", { capSidPath: fixture.capPath,
       readCapSidFile: async () => contents })).resolves.toBeUndefined();
-    expect(execFile).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(execFile).mock.calls[0]![2]!.env!.AVE_ACL_CAP_SIDS).toBe(JSON.stringify([CAP_SID]));
+    expect(aclRequest).toHaveBeenCalledTimes(1);
+    expect(aclRequest.mock.calls[0]![0].capSids).toEqual([CAP_SID]);
   });
 
   it.each(["bad JSON", "wrong SID", "oversized", "unreadable"])("ignores a cap file with %s", async (failure) => {
@@ -851,8 +881,9 @@ describe("native access-rule admission", () => {
   it("passes decoded paths separately to the access-query command", async () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; \uD55C\uAE00 $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
-    const args = vi.mocked(execFile).mock.calls[0]![1]!;
+    const [request, { args }] = aclRequest.mock.calls[0]!;
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    expect(request.paths).toContain(fixture.candidate);
     expect(script).toContain("ConvertFrom-Json");
     expect(script).toContain("[ExecutablePathSecurity]::Read($target)");
     expect(script).not.toContain(fixture.candidate);
@@ -869,26 +900,25 @@ describe("native access-rule admission", () => {
   it("uses one absolute system command with bounded execution and path data outside its code", async () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
-    expect(execFile).toHaveBeenCalledTimes(1);
-    const [command, args, options] = vi.mocked(execFile).mock.calls[0]!;
+    expect(aclRequest).toHaveBeenCalledTimes(1);
+    const [request, { command, args, options }, limits] = aclRequest.mock.calls[0]!;
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
-    expect(args!.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
-    const script = Buffer.from(args![4]!, "base64").toString("utf16le");
+    expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    expect(args).toHaveLength(5);
+    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
     expect(script).toContain("CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000");
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
     expect(script).toContain("Get-AppxPackage -Name 'Claude' -ErrorAction Stop");
     expect(script).not.toMatch(/Set-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
     expect(script).not.toContain(fixture.candidate);
-    expect(options).toMatchObject({
-      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-      maxBuffer: 256 * 1024,
+    // The bounds that were execFile options now bound each host request.
+    expect(limits).toEqual({ timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 });
+    expect(options).toEqual({
       windowsHide: true,
-      env: { SystemRoot: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
+      env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
     });
-    expect(JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_EXECUTABLE_ACL_PATHS!)).toEqual([
-      "C:\\", String.raw`C:\Tools`, fixture.candidate,
-    ]);
+    expect(request.paths).toEqual(["C:\\", String.raw`C:\Tools`, fixture.candidate]);
   });
 
   it("rejects an untrusted owner even with a restrictive access list", async () => {
@@ -1084,12 +1114,9 @@ describe("native access-rule admission", () => {
   it("propagates access-query process failures", async () => {
     const fixture = windowsFixture();
     const error = Object.assign(new Error("Access query failed"), { code: "EACCES" });
-    vi.mocked(execFile).mockImplementation((...args) => {
-      const callback = args[3] as (error: Error, stdout: string, stderr: string) => void;
-      callback(error, "", "");
-      return {} as ChildProcess;
-    });
+    aclRequest.mockImplementation(async () => { throw error; });
     await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toBe(error);
+    expect(aclDiscard).toHaveBeenCalled();
   });
 
   it("admits a current-account runtime leaf with a private inheritable access list", async () => {
@@ -1112,6 +1139,7 @@ describe("native access-rule admission", () => {
   it.each([String.raw`\Tools\runtime.exe`, String.raw`C:Tools\runtime.exe`, String.raw`\\?\C:\Tools\runtime.exe`, "relative"])("refuses an unqualified or device path %s", async (candidate) => {
     windowsFixture(candidate);
     await expect(assertCodexExecutableLocation(candidate)).rejects.toBeInstanceOf(CodexExecutableLocationError);
+    expect(aclRequest).not.toHaveBeenCalled();
     expect(execFile).not.toHaveBeenCalled();
   });
 
@@ -1122,9 +1150,8 @@ describe("native access-rule admission", () => {
       { path: String.raw`C:\Tools\nested\two.exe`, kind: "executable" },
       { path: String.raw`C:\Tools\nested`, kind: "directory" },
     ]);
-    expect(execFile).toHaveBeenCalledTimes(1);
-    const options = vi.mocked(execFile).mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
-    expect(JSON.parse(options.env.AVE_EXECUTABLE_ACL_PATHS!)).toEqual([
+    expect(aclRequest).toHaveBeenCalledTimes(1);
+    expect(aclRequest.mock.calls[0]![0].paths).toEqual([
       "C:\\", String.raw`C:\Tools`, String.raw`C:\Tools\one.exe`, String.raw`C:\Tools\nested`, String.raw`C:\Tools\nested\two.exe`,
     ]);
   });
@@ -1145,7 +1172,7 @@ describe("native access-rule admission", () => {
     const queried: string[] = [];
     fixture.modify((paths) => { queried.push(...paths.map((entry) => entry.path)); });
     await assertCodexLocations(candidates.map((path) => ({ path, kind: "executable" as const })));
-    expect(vi.mocked(execFile).mock.calls.length).toBe(3);
+    expect(aclRequest.mock.calls.length).toBe(3);
     expect(queried).toEqual(["C:\\", String.raw`C:\Tools`, ...candidates]);
   });
 
@@ -1158,5 +1185,218 @@ describe("native access-rule admission", () => {
     await expect(assertCodexLocations([executable])).resolves.toBeUndefined();
     await expect(assertCodexLocations([executable, { path: String.raw`C:\Tools\runtime`, kind: "private-directory" }]))
       .rejects.toThrow("accessible by another account");
+  });
+});
+
+interface FakeAclHost {
+  readonly child: EventEmitter & {
+    readonly pid: number;
+    readonly stdin: PassThrough;
+    readonly stdout: PassThrough;
+    readonly stderr: PassThrough;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    readonly unref: Mock;
+    readonly kill: Mock<() => boolean>;
+  };
+  readonly lines: string[];
+  readonly requests: WindowsAclRequest[];
+  answer: (request: WindowsAclRequest) => void;
+}
+
+// Host children that read request lines and answer through `answer`. Only the
+// product's own ACL host talks to them; the transport seam stays empty.
+function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFirst?: (host: FakeAclHost) => void): FakeAclHost[] {
+  _setWindowsAclTransportForTest(undefined);
+  const hosts: FakeAclHost[] = [];
+  vi.mocked(spawn).mockImplementation((() => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4100 + hosts.length, stdin, stdout, stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      unref: vi.fn(), kill: vi.fn<() => boolean>(),
+    });
+    child.kill.mockImplementation(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.signalCode = "SIGTERM";
+        queueMicrotask(() => { child.emit("exit", null, "SIGTERM"); child.emit("close", null, "SIGTERM"); });
+      }
+      return true;
+    });
+    const host: FakeAclHost = { child, lines: [], requests: [], answer: (request) => { stdout.write(`${fixture.reply(request)}\nEND ${request.id}\n`); } };
+    let buffered = "";
+    stdin.setEncoding("utf8");
+    stdin.on("data", (chunk: string) => {
+      buffered += chunk;
+      for (let newline = buffered.indexOf("\n"); newline !== -1; newline = buffered.indexOf("\n")) {
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(newline + 1);
+        const request = JSON.parse(line) as WindowsAclRequest;
+        host.lines.push(line);
+        host.requests.push(request);
+        host.answer(request);
+      }
+    });
+    if (hosts.length === 0) configureFirst?.(host);
+    hosts.push(host);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawn);
+  return hosts;
+}
+
+function corruptReply(fixture: ReturnType<typeof windowsFixture>, request: WindowsAclRequest,
+  change: (reply: { id?: number; result: Record<string, unknown> }) => void): string {
+  const reply = JSON.parse(fixture.reply(request)) as { id?: number; result: Record<string, unknown> };
+  change(reply);
+  return `${JSON.stringify(reply)}\nEND ${request.id}\n`;
+}
+
+describe("Windows ACL host", () => {
+  it("launches the host with the per-probe binary, argument shape and environment", async () => {
+    vi.stubEnv("PSModulePath", String.raw`C:\module-fixture`);
+    vi.stubEnv("PSMODULEPATH", String.raw`C:\other-module-fixture`);
+    const fixture = windowsFixture(String.raw`C:\Tools\한글 $(Write-Output injected).exe`);
+    const hosts = aclHostFixture(fixture);
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [command, args, options] = vi.mocked(spawn).mock.calls[0]!;
+    // These equal the old per-probe execFile launch; its timeout and output
+    // bound now apply to each request instead of the process.
+    expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+    expect(args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", expect.any(String)]);
+    expect(options).toEqual({
+      windowsHide: true,
+      env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
+    });
+    expect(Object.keys(options!.env!)).not.toContain("PSModulePath");
+    const script = Buffer.from((args as string[])[4]!, "base64").toString("utf16le");
+    expect(script).toContain("[Console]::In.ReadLine()");
+    for (const stream of ["Progress", "Warning", "Verbose", "Information"]) {
+      expect(script).toContain(`$${stream}Preference = 'SilentlyContinue'`);
+    }
+    expect(script).not.toContain(fixture.candidate);
+    // Path data travels only in the request line, ASCII-escaped against the host's input code page.
+    const [line] = hosts[0]!.lines;
+    expect(line).not.toMatch(/[^\x00-\x7e]/);
+    expect(Object.keys(JSON.parse(line!))).toEqual(["id", "paths", "capSids", "skipPackage"]);
+    expect(hosts[0]!.requests[0]!.paths).toEqual(["C:\\", String.raw`C:\Tools`, fixture.candidate]);
+    expect(hosts[0]!.child.unref).toHaveBeenCalled();
+    expect(hosts[0]!.child.kill).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, string | RegExp, (host: FakeAclHost, fixture: ReturnType<typeof windowsFixture>) => void]>([
+    ["host exit", "Windows ACL host exited (1)", (host) => { host.answer = () => { host.child.exitCode = 1; host.child.emit("exit", 1, null); }; }],
+    ["garbage reply", "access rules could not be read", (host) => { host.answer = (request) => { host.child.stdout.write(`not json\nEND ${request.id}\n`); }; }],
+    ["id mismatch", "access rules are invalid", (host, fixture) => {
+      host.answer = (request) => { host.child.stdout.write(corruptReply(fixture, request, (reply) => { reply.id = request.id + 1; })); };
+    }],
+    ["missing id", "access rules are invalid", (host, fixture) => {
+      host.answer = (request) => { host.child.stdout.write(corruptReply(fixture, request, (reply) => { delete reply.id; })); };
+    }],
+    ["oversize reply", "Windows ACL host reply exceeds its limit", (host) => {
+      host.answer = () => { host.child.stdout.write("x".repeat(256 * 1024 + 1)); };
+    }],
+    ["unknown result key", "access rules are invalid", (host, fixture) => {
+      host.answer = (request) => { host.child.stdout.write(corruptReply(fixture, request, (reply) => { reply.result.extra = true; })); };
+    }],
+    ["wrong value type", "access rules are invalid", (host, fixture) => {
+      host.answer = (request) => { host.child.stdout.write(corruptReply(fixture, request, (reply) => {
+        (reply.result.paths as Record<string, unknown>[])[0]!.daclPresent = "yes";
+      })); };
+    }],
+    ["extra reply line", "Windows ACL host wrote more than one reply", (host, fixture) => {
+      host.answer = (request) => { host.child.stdout.write(`${fixture.reply(request)}\n${fixture.reply(request)}\n`); };
+    }],
+    ["error output", "Windows ACL host failed: failure", (host) => { host.answer = () => { host.child.stderr.write("failure"); }; }],
+    ["stdin write failure", /destroyed/, (host) => { host.child.stdin.destroy(); }],
+  ])("fails closed on %s, then answers the next request from a fresh host", async (_case, message, configure) => {
+    const fixture = windowsFixture();
+    const hosts = aclHostFixture(fixture, (host) => configure(host, fixture));
+    await expect(assertCodexExecutableLocation(fixture.candidate)).rejects.toThrow(message);
+    expect(hosts[0]!.child.kill).toHaveBeenCalled();
+    // No retry inside the failed request.
+    expect(spawn).toHaveBeenCalledTimes(1);
+    await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(hosts[1]!.requests).toHaveLength(1);
+    expect(hosts[1]!.child.kill).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a request timeout, then answers the next request from a fresh host", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = windowsFixture();
+    const hosts = aclHostFixture(fixture, (host) => { host.answer = () => {}; });
+    const admission = assertCodexExecutableLocation(fixture.candidate);
+    const settled = expect(admission).rejects.toThrow("Windows ACL host timed out");
+    void settled.catch(() => {});
+    const queued = assertCodexExecutableLocation(fixture.candidate);
+    void queued.catch(() => {});
+    // vi.waitFor would advance the fake clock; real turns let the request arrive first.
+    while (hosts[0]?.requests.length !== 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(TOOL_TIMEOUT_POLICY.windowsAclRequestMs).toBeLessThan(TOOL_TIMEOUT_POLICY.globalCeilingMs);
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsAclRequestMs - 1);
+    expect(hosts[0]!.child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hosts[0]!.child.kill).toHaveBeenCalled();
+    await settled;
+    await expect(admission).rejects.toBeInstanceOf(WindowsAclHostError);
+    await expect(queued).resolves.toBeUndefined();
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes concurrent admissions so each reads its own reply", async () => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => {
+      paths.find((path) => path.path === String.raw`C:\Tools\b.exe`)?.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 });
+    });
+    let inFlight = 0;
+    let most = 0;
+    const hosts = aclHostFixture(fixture, (host) => {
+      host.answer = (request) => {
+        most = Math.max(most, ++inFlight);
+        // Mocked admissions run in microtasks, so all three are queued before any reply.
+        setImmediate(() => { inFlight -= 1; host.child.stdout.write(`${fixture.reply(request)}\nEND ${request.id}\n`); });
+      };
+    });
+    const results = await Promise.allSettled(["a", "b", "c"].map((name) => assertCodexLocations([
+      { path: `C:\\Tools\\${name}.exe`, kind: "executable" },
+    ])));
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
+    if (results[1]!.status === "rejected") expect(results[1]!.reason.message).toContain("writable by another account");
+    expect(most).toBe(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const requests = hosts[0]!.requests;
+    expect(requests.map((request) => request.paths.at(-1))).toEqual(["a", "b", "c"].map((name) => `C:\\Tools\\${name}.exe`));
+    expect(new Set(requests.map((request) => request.id)).size).toBe(3);
+  });
+
+  it("stops the host after the idle period and starts a new one for the next request", async () => {
+    expect(WINDOWS_ACL_HOST_IDLE_MS).toBe(30_000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fixture = windowsFixture();
+    const hosts = aclHostFixture(fixture);
+    await assertCodexExecutableLocation(fixture.candidate);
+    await assertCodexExecutableLocation(fixture.candidate);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(hosts[0]!.requests).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(WINDOWS_ACL_HOST_IDLE_MS - 1);
+    expect(hosts[0]!.child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hosts[0]!.child.kill).toHaveBeenCalled();
+    await assertCodexExecutableLocation(fixture.candidate);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(hosts[1]!.requests).toHaveLength(1);
+  });
+
+  it("registers the host with the managed-child tracker that app quit force-kills, and stops it on reset", async () => {
+    const fixture = windowsFixture();
+    const hosts = aclHostFixture(fixture);
+    const tracked = getManagedChildProcessCount();
+    await assertCodexExecutableLocation(fixture.candidate);
+    expect(getManagedChildProcessCount()).toBe(tracked + 1);
+    _resetWindowsAclHostForTest();
+    expect(hosts[0]!.child.kill).toHaveBeenCalled();
+    await vi.waitFor(() => { expect(getManagedChildProcessCount()).toBe(tracked); });
   });
 });

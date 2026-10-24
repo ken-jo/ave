@@ -57,6 +57,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 // ─── Test scaffolding ─────────────────────────────────
 let loopAuditLoggers: AuditLogger[] = [];
@@ -2600,12 +2601,15 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentSuspensionReason: "budget",
     });
 
-    // A resume provider that yields control (await microtask) mid-turn so the
-    // two resume() calls genuinely overlap before either resolves.
+    // Start both resumes together, then hold provider work until their
+    // in-flight ownership attempts have overlapped.
+    const providerStarted = deferred<void>();
+    const releaseProvider = deferred<void>();
     const slowProvider: LLMProvider = {
       vendor: "openai",
       async *streamTurn() {
-        await new Promise((r) => setTimeout(r, 20));
+        providerStarted.resolve();
+        await releaseProvider.promise;
         yield { type: "text_delta", text: "resumed" } as StreamEvent;
         yield {
           type: "message_complete",
@@ -2617,10 +2621,13 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     // Count how many times metadata is saved during the overlapping window.
     const saveSpy = vi.spyOn(subStore, "saveSessionMetadata");
     try {
-      const [a, b] = await Promise.all([
+      const attempts = [
         runner.resume(resumeId, "continue A", "concurrent"),
         runner.resume(resumeId, "continue B", "concurrent"),
-      ]);
+      ];
+      await providerStarted.promise;
+      releaseProvider.resolve();
+      const [a, b] = await Promise.all(attempts);
       const oks = [a, b].filter((r) => r.ok);
       const rejected = [a, b].filter((r) => !r.ok);
       expect(oks).toHaveLength(1);
@@ -2637,6 +2644,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         subAgentSuspensionReason: undefined,
       });
     } finally {
+      releaseProvider.resolve();
       saveSpy.mockRestore();
       restore();
     }
