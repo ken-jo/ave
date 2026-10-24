@@ -1956,6 +1956,31 @@ review is advisory, never a merge gate. Documentation-only mirrors under `docs/k
 are excluded from naming-process gates because they preserve historical source
 text; production paths remain covered.
 
+### Windows object ownership
+
+An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
+as its default owner, so a file or directory the app creates is owned by that
+group rather than by the user. Ownership on Windows follows two rules:
+
+1. **Objects the app creates are owned by the current user SID, set when they
+   are created.** The private copy of the Windows sandbox helper is made by
+   `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`: one
+   PowerShell step protects the directory, creates the empty image and the
+   owner marker inside it, sets the token user as the owner of all three and
+   reads each owner back. The image's bytes are written only after that step.
+   If it fails, creation is refused and the directory is removed.
+2. **Roots the app did not create, such as `AVE_HOME`, may be owned by
+   `S-1-5-32-544` only when the current token's default owner is
+   `S-1-5-32-544` and every access entry belongs to the owner or to a trusted
+   system principal.** The app protects such a root, but it does not take
+   ownership of it. `isOwnerOnlyDacl` in `src/shared/ave-home.ts` applies this
+   rule. It takes an elevated Administrators token as its sign that the
+   default owner is `S-1-5-32-544`, and it accepts only the user's own
+   full-control entry.
+
+Any other owner is refused. A change to either rule changes the security
+contract for both.
+
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,

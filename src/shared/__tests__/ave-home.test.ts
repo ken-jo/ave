@@ -138,6 +138,15 @@ describe("ensureAveHomePrivate", () => {
     // The system root reaches the child only inside the request, never as a second variable.
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
+  it("lets Windows PowerShell rebuild its own module path", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    // A module path inherited from PowerShell 7 names that edition's modules, not 5.1's.
+    vi.stubEnv("PSModulePath", "C:\\Program Files\\PowerShell\\7\\Modules");
+    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
+    readWindowsDirectoryDacls(["C:\\home"]);
+    const env = (vi.mocked(execFileSync).mock.calls.at(-1)![2] as { env: NodeJS.ProcessEnv }).env;
+    expect(Object.keys(env).filter((name) => name.toLowerCase() === "psmodulepath")).toEqual([]);
+  });
   it("retains a per-path read error in one process", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     const dir = home();
@@ -165,7 +174,8 @@ describe("ensureAveHomePrivate", () => {
   });
   it.runIf(process.platform === "win32").each(["home", "secrets", "file", "directory"])("reports retained explicit extra entries on the real %s DACL", (target) => {
     const dir = home();
-    expect(ensureAveHomePrivate(dir).enforcement).toBe("win32-dacl");
+    // The whole result is compared so a refusal shows its category and reason.
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
     const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
     if (target === "file") writeFileSync(path, "private");
     if (target === "directory") mkdirSync(path);
@@ -180,7 +190,7 @@ describe("ensureAveHomePrivate", () => {
     const dir = join(home(), name);
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
-    expect(result.enforcement).toBe("win32-dacl");
+    expect(result).toMatchObject({ enforcement: "win32-dacl" });
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
     const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets")]);
     console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);

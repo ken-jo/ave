@@ -234,8 +234,8 @@ describe("Windows helper integrity", () => {
       "$rx=[System.Security.AccessControl.FileSystemRights]::ReadAndExecute",
       "$full=[System.Security.AccessControl.FileSystemRights]::FullControl",
       "$modify=[System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'",
-      "foreach ($target in @($env:AVE_SRT_PRIVATE_DIRECTORY, (Join-Path $env:AVE_SRT_PRIVATE_DIRECTORY 'srt-win.exe'))) {",
-      "$acl=Get-Acl -LiteralPath $target",
+      "$image=[System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, 'srt-win.exe')",
+      "foreach ($acl in @([System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY), [System.IO.File]::GetAccessControl($image))) {",
       "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Wrong owner' }",
       "if (@($acl.Access).Count -ne 4) { throw 'Unexpected grants' }",
       "foreach ($entry in $acl.Access) {",
@@ -258,6 +258,47 @@ describe("Windows helper integrity", () => {
       windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs, stdio: "pipe",
     });
     expect(output.trim()).toBe("private-image-protected");
+  });
+
+  it("names every module its PowerShell steps use", async () => {
+    const scripts: string[] = [];
+    vi.resetModules();
+    vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), type: () => "Windows_NT" }));
+    vi.doMock("node:child_process", async (importOriginal) => ({
+      ...await importOriginal<typeof import("node:child_process")>(),
+      execFileSync: (_command: string, args: readonly string[], options: { env: Record<string, string> }) => {
+        scripts.push(Buffer.from(args.at(-1)!, "base64").toString("utf16le"));
+        // Stand in for the private-directory step, which creates the empty image.
+        const directory = options.env.AVE_SRT_PRIVATE_DIRECTORY;
+        if (directory) writeFileSync(join(directory, "srt-win.exe"), "");
+        return Buffer.alloc(0);
+      },
+    }));
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      directories.push(dirname(integrity.prepareSrtWinExecutable(fixture().source)));
+    } finally {
+      vi.doUnmock("node:os");
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
+    // The stale-copy sweep, then the private-directory step.
+    expect(scripts).toHaveLength(2);
+    const modules: Record<string, string> = {
+      "Import-Module": "Core", "Where-Object": "Core",
+      "New-Object": "Utility", "ConvertTo-Json": "Utility", "ConvertFrom-Json": "Utility",
+    };
+    for (const script of scripts) {
+      expect(script.split("; ").slice(0, 3)).toEqual([
+        "$ErrorActionPreference = 'Stop'",
+        "$PSModuleAutoLoadingPreference = 'None'",
+        String.raw`Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')`,
+      ]);
+      const cmdlets = [...new Set(script.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g))];
+      expect(cmdlets.length).toBeGreaterThan(1);
+      for (const cmdlet of cmdlets) expect(modules, cmdlet).toHaveProperty([cmdlet]);
+    }
   });
 
   it("revalidates a cached image and the source instead of trusting a previous check", () => {

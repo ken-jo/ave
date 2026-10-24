@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
+import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
 /**
  * Single source of truth for the Ave user-data root.
@@ -182,8 +183,8 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
       } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
     }
     ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
-  ], { encoding: "utf-8", windowsHide: true, env: { ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) } });
+  ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
+    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) }) });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length < paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");
@@ -192,7 +193,10 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
 }
 
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
-  // An elevated token may create an Administrators-owned object. The grant
+  // AVE_HOME is usually a root that already exists, chosen by the user or left
+  // by an earlier run, so it follows rule 2 of "Windows object ownership" in
+  // docs/architecture/architecture.md: an elevated token may create an
+  // Administrators-owned object. The grant
   // still belongs only to the token user; group Allow entries are never accepted.
   const ownerValid = descriptor.ownerSid === sid ||
     (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
