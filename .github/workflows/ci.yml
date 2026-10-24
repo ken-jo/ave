@@ -100,6 +100,16 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Restore webpack cache
+        id: webpack-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          path: ave/.cache/webpack
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-${{ hashFiles('ave/webpack.config.cjs', 'ave/tsconfig*.json') }}-${{ hashFiles('ave/src/**', 'ave/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-${{ hashFiles('ave/webpack.config.cjs', 'ave/tsconfig*.json') }}-
+            ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
@@ -142,6 +152,8 @@ jobs:
       - run: bun run build
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_BUILD_MINIFIER: esbuild
       - name: Remove root-level Bun binary shims before Vitest
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

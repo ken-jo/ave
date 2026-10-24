@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,6 +20,7 @@ const realTable = (): Record<string, Row> => JSON.parse(readFileSync(resolve(pro
 function createRoot(options: { dist?: Record<string, string | null>; table?: (table: Record<string, Row>) => void; webpackTail?: string } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-sandboxed-preloads-"));
   roots.push(root);
+  symlinkSync(resolve(process.cwd(), "node_modules"), join(root, "node_modules"), "junction");
   const table = realTable();
   options.table?.(table);
   for (const [path, content] of [[TABLE, `${JSON.stringify(table, null, 2)}\n`], ["package.json", "{}\n"]] as const) {
