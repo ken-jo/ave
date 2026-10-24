@@ -56,6 +56,35 @@ describe("shell-path-policy", () => {
     return fn(root);
   }
 
+  describe.skipIf(process.platform !== "win32")("ambiguous junction parents", () => {
+    it.each([
+      ["cat operand", () => "cat 'link/../../ordinary.txt'"],
+      ["plain file URL", (link: string) => `curl '${pathToFileURL(link).href}/../../ordinary.txt'`],
+      ["encoded file URL", (link: string) => `curl '${pathToFileURL(link).href}/%2e%2e/%2e%2e/ordinary.txt'`],
+      ["physical cd", () => "cd -P link/../..; cat ordinary.txt"],
+      ["wrapper cwd", () => "env -C link/../.. cat ordinary.txt"],
+      ["projected wrapper cwd", () => "uv run env -C link/../.. cat ordinary.txt"],
+      ["nested projected wrapper cwd", () => "uv run uv run env -C link/../.. cat ordinary.txt"],
+    ] as const)("refuses %s with ambiguous junction parents", (_label, command) => {
+      withRoot(root => {
+        const target = join(root, "a", "b");
+        mkdirSync(target, { recursive: true });
+        const link = join(root, "link");
+        symlinkSync(target, link, "junction");
+        expect(validateShellCommandPathPolicy(command(link), root, root, [], true)).not.toBeNull();
+      });
+    });
+
+    it("allows an inside junction operand without parent components", () => {
+      withRoot(root => {
+        const target = join(root, "a", "b");
+        mkdirSync(target, { recursive: true });
+        symlinkSync(target, join(root, "link"), "junction");
+        expect(validateShellCommandPathPolicy("cat 'link/ordinary.txt'", root, root, [], true)).toBeNull();
+      });
+    });
+  });
+
   describe("transfer option file references", () => {
     it.each(["-w", "--write-out"])("checks every output directive in %s", option => {
       withRoot(root => {
@@ -126,67 +155,47 @@ describe("shell-path-policy", () => {
       });
     });
 
-    it("resolves URL parent components after following directory links", ({ skip }) => {
+    it("resolves URL parent components after following directory links", () => {
       withRoot(root => withRoot(outside => {
         const link = join(root, "link");
-        try {
-          symlinkSync(outside, link, "dir");
-        } catch (error) {
-          // Directory symlinks require a capability this host may not grant.
-          if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
-          throw error;
-        }
+        symlinkSync(outside, link, "junction");
         const url = `${pathToFileURL(link).href}/%2e%2e/ordinary.txt`;
-        expect(validateShellCommandPathPolicy(`curl '${url}'`, root, root, [], true)).toContain("Sandbox:");
+        expect(validateShellCommandPathPolicy(`curl '${url}'`, root, root, [], true))
+          .toContain(process.platform === "win32" ? "cannot resolve command operand" : "Sandbox:");
       }));
     });
 
     for (const variant of ["uppercase drive", "lowercase drive", "localhost"] as const) {
-      it.skipIf(process.platform !== "win32")(`resolves ${variant} URL parent components after following directory links`, ({ skip }) => {
+      it.skipIf(process.platform !== "win32")(`resolves ${variant} URL parent components after following directory links`, () => {
         withRoot(root => withRoot(outside => {
           const link = join(root, "link");
-          try {
-            symlinkSync(outside, link, "dir");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
-            throw error;
-          }
+          symlinkSync(outside, link, "junction");
           const urlPath = pathToFileURL(link).href.slice("file:///".length);
           const drive = variant === "lowercase drive" ? urlPath[0]!.toLowerCase() : urlPath[0]!.toUpperCase();
           const authority = variant === "localhost" ? "localhost" : "";
           const url = `file://${authority}/${drive}${urlPath.slice(1)}/%2e%2e/ordinary.txt`;
           for (const prefix of ["", "--url "]) {
-            expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true)).toContain("Sandbox:");
+            expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true)).toContain("cannot resolve command operand");
           }
         }));
       });
     }
 
     for (const variant of ["relative", "absolute"] as const) {
-      it.skipIf(process.platform !== "win32")(`resolves ${variant} plain path parent components after following directory links`, ({ skip }) => {
+      it.skipIf(process.platform !== "win32")(`resolves ${variant} plain path parent components after following directory links`, () => {
         withRoot(root => withRoot(outside => {
           const link = join(root, "link");
-          try {
-            symlinkSync(outside, link, "dir");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
-            throw error;
-          }
+          symlinkSync(outside, link, "junction");
           const path = `${variant === "relative" ? "link" : link}/../ordinary.txt`;
-          expect(validateShellCommandPathPolicy(`cat '${path}'`, root, root, [], true)).toContain("Sandbox:");
+          expect(validateShellCommandPathPolicy(`cat '${path}'`, root, root, [], true)).toContain("cannot resolve command operand");
         }));
       });
     }
 
-    it.skipIf(process.platform !== "win32")("refuses unresolved URL parent components after following directory links", ({ skip }) => {
+    it.skipIf(process.platform !== "win32")("refuses unresolved URL parent components after following directory links", () => {
       withRoot(root => {
         const link = join(root, "link");
-        try {
-          symlinkSync(join(root, "missing-target"), link, "dir");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
-          throw error;
-        }
+        symlinkSync(join(root, "missing-target"), link, "junction");
         const url = `${pathToFileURL(link).href}/%2e%2e/ordinary.txt`;
         for (const prefix of ["", "--url "]) {
           expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true))

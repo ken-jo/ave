@@ -305,7 +305,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
         checkPath(target, transition.path.source.raw, commandState, "write");
-        commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!);
+        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve wrapper working directory", transition.path);
+        }
         commandState.variables.set("PWD", commandState.cwd);
       }
     }
@@ -488,7 +492,14 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
       const label = targetWord?.source.raw ?? head;
       const next = pathResolve(state.cwd!, target);
-      const destination = physical ? resolveShellFilesystemPath(target, state.cwd!) : next;
+      let destination = next;
+      if (physical) {
+        try { destination = resolveShellFilesystemPath(target, state.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve working-directory destination", targetWord);
+        }
+      }
       // cd -L collapses logical .. before chdir; -P follows actual links.
       checkPath(destination, label, state, "write");
       let observedDirectory = false;

@@ -1231,7 +1231,12 @@ function projectCommandPolicyView(
           break;
         }
         wrapperCwds.push({ value, word: transition.path, cwd });
-        cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd);
+        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          unsupported = { reason: "cannot resolve projected wrapper working directory", word: transition.path };
+          break;
+        }
       }
     }
     if (unsupported) break;
