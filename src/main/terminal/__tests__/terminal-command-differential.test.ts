@@ -659,10 +659,8 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
         verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
         missing: "no terminal",
       }, line);
-      if (!result.ok) {
-        assertUnsubmitted();
-        if (result.reason === "no-fresh-prompt") await capturePreparationState("before-recovery", result.reason, false);
-      } else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
+      if (!result.ok) assertUnsubmitted();
+      else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
       return result;
     };
     // A preparation refusal is a failure of its own: it must have run
