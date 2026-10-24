@@ -17,7 +17,7 @@
  *   - Turn end while Ave is foreground → suppressed; the user already sees it.
  *   - Other focused, non-minimized notifications → in-app toast via
  *     `ave:notification:toast` IPC (renderer status bar slot).
- *   - Otherwise → OS Notification (silent: !urgent).
+ *   - Otherwise → OS notification; turn-end sound follows its setting, other kinds follow urgency.
  *
  * Audit (only title — body may contain PII):
  *   { event: "notification.fired", kind, gate: "os" | "in-app", title, timestamp }
@@ -73,8 +73,8 @@ export interface FireOptions {
   urgent?: boolean;
   /**
    * Opt out of the focus-suppression gate. When true, the OS notification
-   * fires regardless of focus state. Independent of `urgent`, so a cue can
-   * bypass focus without requesting sound (silent: !urgent still applies).
+   * fires regardless of focus state. Other kinds follow `urgent` for sound;
+   * turn-end always follows the completion sound preference.
    */
   bypassFocusGate?: boolean;
   /**
@@ -167,6 +167,10 @@ export type NotificationActivationRegistration = (
 ) => void;
 
 export interface NotificationServiceOptions {
+  /** Read the OS notification master at delivery time for turn-end cues. */
+  isOsNotificationsEnabled?: () => boolean;
+  /** Read at delivery time so changing the setting applies to the next completion. */
+  isTurnCompletionSoundEnabled?: () => boolean;
   /** Live BrowserWindow getter. Service tolerates null (e.g. window closed). */
   getMainWindow: () => BrowserWindow | null;
   auditLogger?: AuditLogger;
@@ -241,6 +245,8 @@ export class NotificationService {
   private readonly getMainWindow: () => BrowserWindow | null;
   private readonly auditLogger?: AuditLogger;
   private readonly notificationFactory: NonNullable<NotificationServiceOptions["notificationFactory"]>;
+  private readonly isTurnCompletionSoundEnabled: () => boolean;
+  private readonly isOsNotificationsEnabled: () => boolean;
   private readonly isReady: () => boolean;
   private readonly isTestEnv: () => boolean;
   private readonly isAnyWindowFocused: () => boolean;
@@ -257,6 +263,8 @@ export class NotificationService {
     this.getMainWindow = opts.getMainWindow;
     this.auditLogger = opts.auditLogger;
     this.notificationFactory = opts.notificationFactory ?? unavailableNotificationFactory;
+    this.isTurnCompletionSoundEnabled = opts.isTurnCompletionSoundEnabled ?? (() => true);
+    this.isOsNotificationsEnabled = opts.isOsNotificationsEnabled ?? (() => true);
     this.isReady = opts.isReady ?? (() => false);
     this.isTestEnv = opts.isTestEnv ?? defaultIsTestEnv;
     this.isAnyWindowFocused = opts.isAnyWindowFocused ?? (() => false);
@@ -305,6 +313,11 @@ export class NotificationService {
     // Test-mode + pre-ready hard guard — never pop a notification before the
     // app is ready or inside a vitest run.
     if (this.isTestEnv() || !this.isReady()) return;
+
+    if (opts.kind === "turn-end" && !this.isOsNotificationsEnabled()) {
+      this.auditSuppressed(opts.kind, 0, "os-notifications-disabled");
+      return;
+    }
 
     // #1482 — turn-end is a background-only cue. When the user is already in
     // Ave, the conversation itself is the completion signal; do not surface a
@@ -436,9 +449,8 @@ export class NotificationService {
       const n = this.notificationFactory({
         title,
         body,
-        silent: !urgent,
-        // urgency is Linux-only per Electron docs; on Windows/macOS, the
-        // silent flag drives sound. Kept set for cross-platform parity.
+        silent: opts.kind === "turn-end" ? !this.isTurnCompletionSoundEnabled() : !urgent,
+        // Enabling completion sound does not raise the notification's priority.
         urgency: urgent ? "critical" : "normal",
       });
       n.on("click", () => {
@@ -516,13 +528,13 @@ export class NotificationService {
   }
 
   /**
-   * Audit a cooldown-suppressed fire. Must NEVER silently drop — a missing
+   * Audit a suppressed fire. Must NEVER silently drop — a missing
    * audit trail hides runaway-loop bugs.
    */
   private auditSuppressed(
     kind: NotificationKind,
     elapsedMs: number,
-    reason: "cooldown" | "foreground" = "cooldown",
+    reason: "cooldown" | "foreground" | "os-notifications-disabled" = "cooldown",
   ): void {
     if (!this.auditLogger) return;
     try {

@@ -794,6 +794,8 @@ export type SystemCloseBehavior = "hide-to-tray" | "quit";
 export type SystemAppMode = InitialAppMode;
 
 export interface SystemSettings {
+  /** Use the default OS sound for background turn-completion notifications. Default true. */
+  turnCompletionSoundEnabled?: boolean;
   closeBehavior: SystemCloseBehavior;
   /** Persisted workspace mode (chat vs work). Default "work". */
   appMode: SystemAppMode;
@@ -1641,6 +1643,7 @@ export class SettingsService {
           log.warn("system.corpCaCommonName patch ignored (not a usable certificate name)");
         }
       }
+      acceptField(next, "turnCompletionSoundEnabled", partial.system.turnCompletionSoundEnabled, isBooleanValue, "system", PATCHED_FIELD);
       // Launch-at-startup + launch-minimized booleans (same validate-at-
       // boundary pattern as localApiServer: invalid → keep prior value).
       const rawLaunchAtStartup = partial.system.launchAtStartup;
