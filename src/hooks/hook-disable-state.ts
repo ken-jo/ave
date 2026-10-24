@@ -1,4 +1,5 @@
-import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 
 export type HookDisableCause = "system-quarantine" | "user";
 
@@ -7,23 +8,48 @@ export function hookDisableCausePath(path: string): string {
   return `${path}.disable-cause`;
 }
 
-/** Missing or unreadable records fail closed, including older disabled files. */
+/**
+ * Missing, unreadable or non-regular records fail closed, including older
+ * disabled files. A link is never followed: the opened file must be the one
+ * lstat saw.
+ */
 export function readHookDisableCause(path: string): HookDisableCause | "legacy" {
+  const sidecar = hookDisableCausePath(path);
   try {
-    const cause = readFileSync(hookDisableCausePath(path), "utf8").trim();
-    if (cause === "system-quarantine" || cause === "user") return cause;
+    const seen = lstatSync(sidecar);
+    if (!seen.isFile()) return "legacy";
+    const fd = openSync(sidecar, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.ino !== seen.ino || opened.dev !== seen.dev) return "legacy";
+      const cause = readFileSync(fd, "utf8").trim();
+      if (cause === "system-quarantine" || cause === "user") return cause;
+    } finally {
+      closeSync(fd);
+    }
   } catch { /* An unproven user disable must retain its guard. */ }
   return "legacy";
 }
 
-/** Replaces any old record; exclusive create never writes through a link at the sidecar path. */
+/**
+ * Writes a private temp file and renames it over the sidecar. The rename
+ * replaces whatever sits at the sidecar path, a planted link included,
+ * without following it.
+ */
 export function writeHookDisableCause(path: string, cause: HookDisableCause): void {
-  clearHookDisableCause(path);
-  const fd = openSync(hookDisableCausePath(path), "wx", 0o600);
+  const sidecar = hookDisableCausePath(path);
+  const tmp = `${sidecar}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    writeSync(fd, `${cause}\n`);
-  } finally {
-    closeSync(fd);
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, `${cause}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, sidecar);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
   }
 }
 
@@ -33,7 +59,7 @@ export function clearHookDisableCause(path: string): void {
 
 /** Review stored copies by their original name, regardless of the rename suffix. */
 export function disabledHookOriginalName(fileName: string): string | undefined {
-  if (fileName.endsWith(".disable-cause") || /[/\\]/u.test(fileName)) return undefined;
+  if (fileName.includes(".disable-cause") || /[/\\]/u.test(fileName)) return undefined;
   return /^((?:pre|post|perm)-[A-Za-z0-9._-]+\.sh|hooks\.json)(?:\..+)?$/u.exec(fileName)?.[1];
 }
 
