@@ -421,10 +421,11 @@ describe("GitRunner authentication through the askpass broker", () => {
 
   it("answers with the stored token for the ticket's host", async () => {
     // Releasing a borrowed runner must leave its suite-owned broker available.
-    const released = await createRunner();
+    const released = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     await released.cleanup();
     const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     try {
+      expect(t.broker).toBe(released.broker);
       const result = await t.runner.run(["ls-remote", server.url("private-tools")], {
         remote: remote(server.url("private-tools")),
         timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
