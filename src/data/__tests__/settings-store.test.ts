@@ -1226,18 +1226,21 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("retains an inactive optional provider customized only by image input across pruning and reload", async () => {
-    const model = getLlmVendorSettings(undefined, "groq").model;
+    const model = "llama-3.3-70b-versatile";
     const key = llmImageInputKey(model);
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
       llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("llm").vendors.groq?.model).toBe("");
     expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").provider).toBe("openai");
+    expect(reloaded.get("marketplace").installedProviderIds).toContain("groq");
+    expect(reloaded.get("llm").vendors.groq?.model).toBe("");
     expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
   });
 
@@ -1764,9 +1767,7 @@ describe("SettingsService LLM per-vendor patching", () => {
       "openrouter",
     ]);
     expect(llm.vendors["azure-foundry"]).toBeUndefined();
-    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe(
-      "gpt-5.4-mini",
-    );
+    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe("");
   });
 
   it("migrates legacy API provider/model settings to the API chat runtime", () => {
