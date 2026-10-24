@@ -4,7 +4,7 @@ import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { selectSessionBrowserTabs } from "../preview/session-browser-tabs.js";
 import type { WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import type { AveApi } from "../types.js";
-import { useOverlayContext } from "../context/OverlayContext.js";
+import { routineThumbnailOwner, useOverlayContext, useRoutineThumbnailOwner } from "../context/OverlayContext.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { BrowserWorkspaceCard } from "./BrowserWorkspaceCard.js";
 import { OverlayCard } from "./OverlayCard.js";
@@ -39,10 +39,10 @@ function SessionBrowserCards({ browserWorkspace, browserTabs, sessionId, workspa
 export function ChatThumbnailColumn(props: ChatThumbnailColumnProps) {
   const { api, sessionId, visible } = props;
   const { t } = useTranslation();
-  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded } = useOverlayContext();
+  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded, thumbnailSessions } = useOverlayContext();
+  const owner = useRoutineThumbnailOwner(sessionId, visible);
   if (!visible) return null;
-  const routines = sessionId ? queue.filter((item) => item.source.kind === "routine"
-    && (item.originSessionId === sessionId || item.routineSessionId === sessionId)) : [];
+  const routines = queue.filter((item) => routineThumbnailOwner(item, thumbnailSessions) === owner);
   return <section aria-label={t("chatThumbnails.title")} data-testid="chat-thumbnail-content" className="h-full w-full min-h-0 overflow-y-auto p-2 text-xs">
     <div className="space-y-2">
       {routines.map((item) => {

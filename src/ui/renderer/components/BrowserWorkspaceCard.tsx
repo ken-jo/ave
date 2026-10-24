@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Globe, X } from "lucide-react";
+import { X } from "lucide-react";
+import { BrowserFavicon } from "./BrowserFavicon.js";
 import type { BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceTab } from "../../../shared/browser-workspace.js";
 import { browserPreviewScheduler } from "../hooks/browser-preview-scheduler.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -40,7 +41,7 @@ export function BrowserWorkspaceCard({ api, tab, visible, mode, active = false, 
   const title = tab.title || tab.url;
   const content = <>
     <span className={`mb-1 flex min-w-0 items-center gap-1.5 ${onClose ? "pr-6" : ""}`}>
-      {favicon ? <img src={favicon} alt="" width={16} height={16} className="size-4 shrink-0" /> : <Globe aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />}
+      <BrowserFavicon source={favicon} />
       <span className="min-w-0 flex-1 truncate font-medium" title={tab.url}>{title}</span>
     </span>
     {preview && <img src={preview.dataUrl} width={preview.width} height={preview.height} alt="" className="mb-1 max-w-full rounded" />}

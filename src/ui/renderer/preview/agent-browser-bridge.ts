@@ -34,7 +34,7 @@ const hosts: BrowserTabHost[] = [];
 /** Close from trusted window chrome through the same host that handles tab operations. */
 export function closeBrowserTab(tabId: string): void {
   const host = hosts.find((candidate) => candidate.hasTab(tabId));
-  if (!host) throw new Error("Browser tab host is unavailable");
+  if (!host) return;
   host.closeTab(tabId);
 }
 let unsubscribe: (() => void) | null = null;

@@ -3,6 +3,11 @@ import { MIN_DOCKED_TRANSCRIPT_WIDTH, sidePanelLayout } from "../hooks/use-conta
 
 export const CHAT_THUMBNAIL_WIDTH = 280;
 
+export interface ChatColumnsVisibility {
+  thumbnailHiddenForWidth: boolean;
+  panelHiddenForWidth: boolean;
+}
+
 /** Preserve preferences while yielding columns, thumbnails first, to the transcript floor. */
 export function chatColumnsLayout(width: number, thumbnailsOpen: boolean, panelOpen: boolean, panelWidth: number) {
   const panelVisible = panelOpen && width >= MIN_DOCKED_TRANSCRIPT_WIDTH + SIDE_PANEL_MIN_RESERVE;
@@ -12,6 +17,8 @@ export function chatColumnsLayout(width: number, thumbnailsOpen: boolean, panelO
   return {
     thumbnailVisible,
     panelVisible,
+    thumbnailHiddenForWidth: thumbnailsOpen && !thumbnailVisible,
+    panelHiddenForWidth: panelOpen && !panelVisible,
     panelLayout,
     panelWidth: Math.min(panelLayout.max, Math.max(panelLayout.min, panelWidth)),
   };

@@ -12,6 +12,7 @@ import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { noteWebSurfaceFavicon } from "../../preview/web-surfaces.js";
 import { triggerIntersection } from "../../../../../test/renderer/setup.js";
 import { ChatThumbnailColumn } from "../chat-thumbnail-column.js";
+import { OverlayCardRegion } from "../OverlayCardRegion.js";
 
 vi.mock("../../../../i18n/react.js", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
@@ -29,11 +30,13 @@ function setup() {
   const onCloseTab = vi.fn();
   const onOpenSession = vi.fn(async () => true);
   const addFireRef = createRef<OverlayContextValue["addFire"]>();
-  function Harness({ visible = true, sessionId = "session" }: { visible?: boolean; sessionId?: string }) {
+  function Harness({ visible = true, sessionId = "session", lane = false, resultColumn = false }: { visible?: boolean; sessionId?: string; lane?: boolean; resultColumn?: boolean }) {
     const tabs = useWorkspaceTabs();
     useEffect(() => { tabs.adoptTab({ id: TAB.tabId, kind: "browser", ordinal: 0 }, TAB.url); }, [tabs.adoptTab]);
     return <TooltipProvider><OverlayContextProvider onOpenSession={onOpenSession} addFireRef={addFireRef}>
       <ChatThumbnailColumn api={api} sessionId={sessionId} workspaceTabs={tabs} visible={visible} onOpenTab={onOpenTab} onCloseTab={onCloseTab} />
+      {resultColumn && <ChatThumbnailColumn api={api} sessionId="routine-result" workspaceTabs={tabs} visible={visible} onOpenTab={onOpenTab} onCloseTab={onCloseTab} />}
+      {lane && <OverlayCardRegion chatGroupId="main" actionChatGroupId="main" overlayCardTile={() => ({ chatGroupId: "main", orphaned: false })} onPluginPrimaryAction={() => {}} />}
     </OverlayContextProvider></TooltipProvider>;
   }
   return { Harness, api, browserWorkspace, onOpenTab, onCloseTab, onOpenSession, addFireRef };
@@ -74,16 +77,44 @@ describe("chat thumbnail column", () => {
     expect(browserWorkspace.preview).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("chat-thumbnail-content")).toBeNull();
   });
-  it("keeps the guest favicon through column hide and reopen", async () => {
+  it.each(["http:", "https:"])("uses the Globe for a remote %s favicon, including after reopening", async (scheme) => {
     const { Harness } = setup();
     const { rerender } = render(<Harness />);
     await act(async () => { await Promise.resolve(); });
-    act(() => noteWebSurfaceFavicon(TAB.tabId, "https://site.example/icon.png"));
-    expect(document.querySelector('img[src="https://site.example/icon.png"]')).toBeTruthy();
+    act(() => noteWebSurfaceFavicon(TAB.tabId, `${scheme}//site.example/icon.png`));
+    expect(document.querySelector('img')).toBeNull();
+    expect(document.querySelector('.lucide-globe')).toBeTruthy();
     rerender(<Harness visible={false} />);
     rerender(<Harness />);
     await act(async () => { await Promise.resolve(); });
-    expect(document.querySelector('img[src="https://site.example/icon.png"]')).toBeTruthy();
+    expect(document.querySelector('img')).toBeNull();
+    expect(document.querySelector('.lucide-globe')).toBeTruthy();
+  });
+  it("renders a data favicon and swaps a failed image to the Globe", async () => {
+    const { Harness } = setup();
+    render(<Harness />);
+    await act(async () => { await Promise.resolve(); });
+    act(() => noteWebSurfaceFavicon(TAB.tabId, "data:image/png;base64,YQ=="));
+    const image = document.querySelector('img')!;
+    expect(image.getAttribute("src")).toBe("data:image/png;base64,YQ==");
+    fireEvent.error(image);
+    expect(document.querySelector('img')).toBeNull();
+    expect(document.querySelector('.lucide-globe')).toBeTruthy();
+    act(() => noteWebSurfaceFavicon(TAB.tabId, "data:image/png;base64,Yg=="));
+    expect(document.querySelector('img')?.getAttribute("src")).toBe("data:image/png;base64,Yg==");
+  });
+  it("draws a routine once across the origin column, result column and floating lane, returning it to the lane when hidden", () => {
+    const { Harness, addFireRef } = setup();
+    const { rerender } = render(<Harness lane resultColumn />);
+    act(() => { addFireRef.current!(routine("one routine", "session", "routine-result")); });
+    expect(screen.getAllByTestId("routine-card")).toHaveLength(1);
+    expect(screen.getByTestId("routine-card").closest('[data-testid="chat-thumbnail-content"]')).toBeTruthy();
+    rerender(<Harness lane resultColumn visible={false} />);
+    expect(screen.getAllByTestId("routine-card")).toHaveLength(1);
+    expect(screen.getByTestId("routine-card").closest('[data-testid="overlay-card-region"]')).toBeTruthy();
+    rerender(<Harness lane resultColumn />);
+    expect(screen.getAllByTestId("routine-card")).toHaveLength(1);
+    expect(screen.getByTestId("routine-card").closest('[data-testid="chat-thumbnail-content"]')).toBeTruthy();
   });
   it("renders only this session's routine cards and preserves existing result and dismiss actions", async () => {
     const { Harness, api, addFireRef, onOpenSession } = setup();

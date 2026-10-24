@@ -302,11 +302,12 @@ export function ChatGroupSession({
   // it. `shown` is combined here with what only the tile knows — whether its
   // panel is open and its conversation drawn — before the window reads it.
   const [sideChatSurface, setSideChatSurface] = useState<SideChatSurface | null>(null);
+  const [columnsVisibility, setColumnsVisibility] = useState({ thumbnailHiddenForWidth: false, panelHiddenForWidth: false });
   const sideChat = useMemo<SideChatSurface | null>(
     () => (sideChatSurface === null
       ? null
-      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !hidden }),
-    [sideChatSurface, panelOpen, hidden],
+      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !columnsVisibility.panelHiddenForWidth && !hidden }),
+    [sideChatSurface, panelOpen, columnsVisibility.panelHiddenForWidth, hidden],
   );
   const ownedChildSessionIds = useMemo(
     () => new Set(
@@ -897,20 +898,24 @@ export function ChatGroupSession({
   );
 
   // Each column belongs to this conversation and opens from its own frame.
-  const panelLabel = panelOpen ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
+  const panelVisible = panelOpen && !columnsVisibility.panelHiddenForWidth;
+  const panelLabel = columnsVisibility.panelHiddenForWidth ? t("chatPreviewRail.hiddenForWidth")
+    : panelVisible ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
   // The side chat holds a card the user cannot see from here — the panel is
   // closed, or another tab is up. The window decided that; the toggle only
   // carries the dot, because opening the panel is how the user reaches it.
   const sideChatPendingAnswer =
     sideChat !== null && env.pendingAnswers.sideChatSessionIds.has(sideChat.sessionId);
-  const thumbnailLabel = t(thumbnailOpen ? "chatThumbnails.close" : "chatThumbnails.open");
+  const thumbnailVisible = thumbnailOpen && !columnsVisibility.thumbnailHiddenForWidth;
+  const thumbnailLabel = t(columnsVisibility.thumbnailHiddenForWidth ? "chatThumbnails.hiddenForWidth"
+    : thumbnailVisible ? "chatThumbnails.close" : "chatThumbnails.open");
   const trailing = (
     <>
     <Tooltip>
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" className={HEADER_BUTTON_CLASS}
           onClick={() => onThumbnailOpenChange(!thumbnailOpen)} title={thumbnailLabel}
-          aria-label={thumbnailLabel} aria-pressed={thumbnailOpen} data-testid={TEST_IDS.paneThumbnailToggle}>
+          aria-label={thumbnailLabel} aria-pressed={thumbnailVisible} data-testid={TEST_IDS.paneThumbnailToggle}>
           <GalleryVerticalEnd className="h-4 w-4" />
         </Button>
       </TooltipTrigger>
@@ -925,10 +930,10 @@ export function ChatGroupSession({
           onClick={() => onSidePanelOpenChange(!panelOpen)}
           title={panelLabel}
           aria-label={panelLabel}
-          aria-pressed={panelOpen}
+          aria-pressed={panelVisible}
           data-testid={TEST_IDS.panePanelToggle}
         >
-          {panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          {panelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
           {sideChatPendingAnswer ? <PendingAnswerDot testId="pane-panel-toggle-pending-answer" /> : null}
         </Button>
       </TooltipTrigger>
@@ -1011,6 +1016,7 @@ export function ChatGroupSession({
         statusBar={tileStatusBar}
         onAttachmentWarning={handleAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
+        onColumnsVisibilityChange={setColumnsVisibility}
         sidePanelOpen={panelOpen}
         onSidePanelOpenChange={onSidePanelOpenChange}
         sideChatOpenRequest={env.sideChatOpenRequest?.chatGroupId === chatGroupId

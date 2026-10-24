@@ -11,6 +11,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "chatThumbnails.open": "세션 미리보기 열기",
   "chatThumbnails.close": "세션 미리보기 닫기",
   "chatThumbnails.title": "세션 미리보기",
+  "chatThumbnails.hiddenForWidth": "타일이 너무 좁아 세션 미리보기가 숨겨져 있습니다",
+  "chatPreviewRail.hiddenForWidth": "타일이 너무 좁아 작업 패널과 사이드 채팅이 숨겨져 있습니다",
   "be_terminalRun.notFoundHandler": "셸에 command-not-found handler가 정의되어 있습니다. 사용자에게 이 터미널에서 `unset -f command_not_found_handle` (bash) 또는 `unfunction command_not_found_handler` (zsh)를 실행한 뒤 다시 시도하도록 안내하세요. 해당 터미널에서만 handler가 제거되며, Ave는 사용자가 제거하기 전까지 이를 보존합니다.",
   "overlayCardRegion.continueInNewConversation": "새 대화에서 이어가기",
   "suggestionsSession.title": "제안",

@@ -118,9 +118,13 @@ describe("chat columns", () => {
         }
       });
       resize(950);
+      expect(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))?.getAttribute("aria-pressed")).toBe("false");
+      expect(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))?.getAttribute("aria-label")).toBe(t("chatThumbnails.hiddenForWidth"));
       expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).toBeNull();
       await waitFor(() => expect(view.container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden")).toBe("false"));
       resize(700);
+      expect(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-pressed")).toBe("false");
+      expect(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-label")).toBe(t("chatPreviewRail.hiddenForWidth"));
       await waitFor(() => expect(view.container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden") ?? "true").toBe("true"));
       resize(1600);
       await waitFor(() => expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).not.toBeNull());

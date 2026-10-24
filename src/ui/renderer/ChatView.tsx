@@ -49,7 +49,7 @@ import { InterruptedTurnBanner } from "./components/InterruptedTurnBanner.js";
 import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
 import type { SuggestedTask } from "./suggested-tasks/provider.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
-import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout } from "./preview/chat-columns-layout.js";
+import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
 import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { useChatScroll } from "./hooks/use-chat-scroll.js";
@@ -144,9 +144,11 @@ export interface ChatViewProps {
   statusBar?: StatusBarProps;
   /** App-owned toast producer for attachment capability warnings. */
   onAttachmentWarning?: (message: string) => void;
-  /** Controlled right-side work panel state, toggled from the title bar. */
+  /** Requested session-preview column state, preserved when the tile is narrow. */
   thumbnailOpen?: boolean;
+  /** Controlled right-side work panel state, toggled from the title bar. */
   sidePanelOpen?: boolean;
+  onColumnsVisibilityChange?: (visibility: ChatColumnsVisibility) => void;
   onSidePanelOpenChange: (open: boolean) => void;
   /**
    * The tile this view belongs to. Its side panel's tabs are what the main
@@ -182,7 +184,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -340,6 +342,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const tileRef = useMemo(() => ({ current: tileElement }), [tileElement]);
   const { width: containerWidth } = useContainerNarrow(inFrame ? tileRef : chatViewRootRef);
   const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth);
+  useEffect(() => {
+    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth });
+  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth]);
   const { panelLayout, panelWidth: dockedPanelWidth } = columns;
   const dockedPanelShouldOpen = columns.panelVisible;
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
@@ -1056,7 +1061,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
                 workspaceTabs.setActiveTabId(tabId);
                 onSidePanelOpenChange(true);
               } else {
-                if (!surfaceMoves || chatGroupId === undefined) throw new Error("Browser tab workspace is unavailable");
+                if (!surfaceMoves || chatGroupId === undefined) return;
                 surfaceMoves.tabToSide(tabId, chatGroupId);
               }
             }}

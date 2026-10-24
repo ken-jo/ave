@@ -4,6 +4,18 @@ import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../hooks/use-container-narrow.js
 import { SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
 
 describe("chat column geometry", () => {
+  it("reports requested columns hidden at 700 pixels and restores the work panel at its 784 pixel floor", () => {
+    expect(chatColumnsLayout(700, true, true, 500)).toMatchObject({
+      panelVisible: false, thumbnailVisible: false, panelHiddenForWidth: true, thumbnailHiddenForWidth: true,
+    });
+    for (const width of [784, 900]) expect(chatColumnsLayout(width, true, true, 500)).toMatchObject({
+      panelVisible: true, thumbnailVisible: false, panelHiddenForWidth: false, thumbnailHiddenForWidth: true,
+    });
+    expect(chatColumnsLayout(1064, true, true, 500)).toMatchObject({
+      panelVisible: true, thumbnailVisible: true, panelHiddenForWidth: false, thumbnailHiddenForWidth: false,
+    });
+    expect(chatColumnsLayout(700, false, false, 500)).toMatchObject({ panelHiddenForWidth: false, thumbnailHiddenForWidth: false });
+  });
   it("reserves independent columns and clamps a saved work width to leave the transcript floor", () => {
     for (const thumbnailsOpen of [false, true]) for (const panelOpen of [false, true]) {
       const layout = chatColumnsLayout(1400, thumbnailsOpen, panelOpen, 2000);

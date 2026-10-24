@@ -540,13 +540,13 @@ export function App() {
           const source = sinkOf(group.id);
           if (!source.snapshot().some((tab) => tab.tabId === tabId)) continue;
           const tab = source.release(tabId);
-          if (!tab) throw new Error("Surface is no longer available");
+          if (!tab) return;
           sink.adopt(tab, tab.kind === "browser" ? guestUrl(tabId) : null);
           adopted = true;
           break;
         }
       }
-      if (!adopted) throw new Error("Surface is no longer available");
+      if (!adopted) return;
       sink.open();
       chatGroups.focus(toGroupId);
     };
