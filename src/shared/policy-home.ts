@@ -3,7 +3,7 @@ import path, { posix, win32 } from "node:path";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 
 /** An absolute, non-root home. Host paths also count, since tests simulate other platforms. */
-function isHomeAnchor(home: string | undefined, platform: NodeJS.Platform): home is string {
+export function isHomeAnchor(home: string | undefined, platform: NodeJS.Platform): home is string {
   if (!home) return false;
   return [platform === "win32" ? win32 : posix, path].some((paths) => {
     const root = paths.parse(home).root;
