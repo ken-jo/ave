@@ -18,6 +18,8 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSyn
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { POSIX_SHARED_TMP } from "../../permissions/base-allowed-directories.js";
+
 /** Run directory names: `mkdtemp` adds six characters after the prefix. */
 const RUN_DIR_RE = /^(?:h|sbx|t)-[A-Za-z0-9]{6}$/;
 
@@ -175,7 +177,9 @@ export function assertTestTmpRoot(testTmp: string): void {
  */
 export function runTmpRoot(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
   if (platform === "win32") return join(home, ".ave-test-tmp");
-  return `${platform === "darwin" ? "/private/tmp" : "/tmp"}/ave-test-${process.getuid!()}`;
+  // macOS's `/tmp` is a link to `/private/tmp`; the root is named canonically.
+  const sharedTmp = platform === "darwin" ? join("/private", POSIX_SHARED_TMP) : POSIX_SHARED_TMP;
+  return join(sharedTmp, `ave-test-${process.getuid!()}`);
 }
 
 /**
