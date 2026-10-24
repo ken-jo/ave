@@ -1,7 +1,9 @@
 import { parse as parseYaml } from "yaml";
 
-/** Tokenize expression bodies without treating quoted text as context access. */
-function* workflowExpressions(value: string, implicit: boolean): Generator<string[]> {
+/** Tokenize expression bodies without treating quoted text as context access.
+ *  `implicit` reads the whole string as one expression, as Actions reads an
+ *  `if:`; otherwise only `${{ ... }}` bodies are read. */
+export function* workflowExpressions(value: string, implicit: boolean): Generator<string[]> {
   let start = implicit ? 0 : value.indexOf("${{");
   while (start >= 0) {
     // Keep quoted strings whole, including doubled single quotes. Accept both

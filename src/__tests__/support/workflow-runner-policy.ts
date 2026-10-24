@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
-import { readsAnySecret } from "./workflow-secret-policy.js";
+import { readsAnySecret, workflowExpressions } from "./workflow-secret-policy.js";
 
 /**
  * The fork-safety rule for `.github/workflows/`, shared by the suites that pin
@@ -71,14 +72,15 @@ type Job = {
   steps?: Step[];
 };
 
-/** Text that names the pull request's own code: the head commit, branch or
- *  repository from the event payload (`github.event.pull_request.head.*`, or
- *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`, or `.head.sha` /
- *  `.head.ref` read from a pull request the API returned), the head branch
+/** Text that names the pull request's own code: anything under the head of
+ *  the event payload (`github.event.pull_request.head.*`, or
+ *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`), a `.head` field or
+ *  pipe read from a pull request the API returned (`.head.sha`,
+ *  `.head.repo.clone_url`, jq `'.head | .sha'`), the head branch
  *  (`github.head_ref`, `$GITHUB_HEAD_REF`), a `refs/pull/...` ref or a
  *  `pull/<n>/head|merge` refspec. */
 const PULL_REQUEST_CODE_REFERENCE =
-  /pull_request\.head\b|(?:^|[\s'"(|])\.head\.(?:sha|ref)\b|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
+  /pull_request\.head\b|(?:^|[\s'"(|])\.head\s*(?:\||\.[A-Za-z_])|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
 
 /** A git or gh invocation anywhere in a script. */
 const GIT_OR_GH = /\b(?:git|gh)\b/u;
@@ -87,16 +89,46 @@ const GIT_OR_GH = /\b(?:git|gh)\b/u;
  *  environment or its PATH. */
 const RUNNER_FILE_WRITE = /\bGITHUB_(OUTPUT|ENV|PATH)\b/gu;
 
-/** The pull_request_target violations of one job's steps.
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
+
+/** True when an expression in `value` (or any string nested in it) reads the
+ *  `steps` context in a way that can carry a tainted step's value: exactly
+ *  `steps.<id>.outputs.<name>` of a tainted id, or, while any step is
+ *  tainted, any other shape (`toJSON(steps)`, `steps.a.outputs['x']`,
+ *  `steps['a']`, `steps.*.outputs.x`, `steps.a.outcome`). Context and
+ *  property names are case-insensitive, as in Actions. */
+function readsTaintedSteps(value: unknown, tainted: ReadonlySet<string>): boolean {
+  if (tainted.size === 0) return false;
+  if (typeof value === "string") {
+    for (const tokens of workflowExpressions(value, false)) {
+      for (let index = 0; index < tokens.length; index += 1) {
+        if (tokens[index]?.toLowerCase() !== "steps" || tokens[index - 1] === ".") continue;
+        const [dot1, id, dot2, outputs, dot3, output] = tokens.slice(index + 1, index + 7);
+        const exact = dot1 === "." && dot2 === "." && dot3 === "."
+          && IDENTIFIER.test(id ?? "") && outputs?.toLowerCase() === "outputs" && IDENTIFIER.test(output ?? "");
+        if (!exact || tainted.has((id as string).toLowerCase())) return true;
+      }
+    }
+    return false;
+  }
+  if (value === null || typeof value !== "object") return false;
+  return Object.values(value).some((child) => readsTaintedSteps(child, tainted));
+}
+
+/** The pull_request_target violations of one job's steps. A lint, not the
+ *  boundary: {@link pullRequestTargetAllowListViolations} is.
  *
  *  A step "names pull request code" when its script, its own env, the env it
  *  inherits from the job and the workflow, or (for an action) its `with:`
- *  names {@link PULL_REQUEST_CODE_REFERENCE}, or reads `steps.<id>.outputs`
- *  of a tainted step. The whole step is one unit, so a variable set on one
- *  line, or in `env:`, and used on another counts.
+ *  names {@link PULL_REQUEST_CODE_REFERENCE}, or reads a tainted step's
+ *  outputs ({@link readsTaintedSteps}). The whole step is one unit, so a
+ *  variable set on one line, or in `env:`, and used on another counts.
  *
  *  - A run step that names pull request code and invokes git or gh anywhere,
  *    or that runs `gh pr checkout`, is refused.
+ *  - An action other than actions/checkout (which has its own rule) whose
+ *    `with:` or env names pull request code is refused: actions/github-script
+ *    given `head.sha` can fetch and run it.
  *  - A step that names pull request code and writes `$GITHUB_ENV` or
  *    `$GITHUB_PATH` is refused outright: every later step inherits those.
  *  - One that writes `$GITHUB_OUTPUT` taints its outputs; a later run step
@@ -105,22 +137,33 @@ const RUNNER_FILE_WRITE = /\bGITHUB_(OUTPUT|ENV|PATH)\b/gu;
  *    taints its own in turn. A job output that maps a tainted step output is
  *    refused, since this check does not follow `needs.<job>.outputs`.
  *
- *  Reading a tainted output in an `if:` is allowed: a condition only gates. */
+ *  Reading a tainted output in an `if:` is allowed: a condition only gates.
+ *
+ *  What this cannot see: a value passed through any other channel, such as a
+ *  file one step writes (`$RUNNER_TEMP/sha`, the workspace, a cache or an
+ *  artifact) and a later step reads with `cat`; a command that fetches code
+ *  without git or gh (curl of a tarball, a package manager); a reference
+ *  built from pieces at run time. The allow-list of pull_request_target
+ *  workflows, pinned by content hash, is what covers those: no such workflow
+ *  changes without a reviewed update to the list. */
 function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[]): string[] {
   const reasons: string[] = [];
   const tainted = new Set<string>();
-  const readsTainted = (text: string): boolean =>
-    [...tainted].some((id) => text.includes(`steps.${id}.outputs.`));
   for (const step of job.steps ?? []) {
     const run = typeof step.run === "string" ? step.run : "";
-    const actionInputs = typeof step.uses === "string" ? JSON.stringify(step.with ?? null) : "";
+    const isAction = typeof step.uses === "string";
+    const actionInputs = isAction ? JSON.stringify(step.with ?? null) : "";
     const scope = [run, JSON.stringify([step.env ?? null, ...inheritedEnv]), actionInputs].join("\n");
-    const namesCode = PULL_REQUEST_CODE_REFERENCE.test(scope) || readsTainted(scope);
+    const readsTainted = readsTaintedSteps([run, step.env ?? null, step.with ?? null], tainted);
+    const namesCode = PULL_REQUEST_CODE_REFERENCE.test(scope) || readsTainted;
     if (run !== "" && GIT_OR_GH.test(run) && (/\bgh\s+pr\s+checkout\b/u.test(run) || namesCode)) {
       reasons.push("fetches pull request code in a run step under pull_request_target");
     }
-    if (typeof step.uses === "string" && readsTainted(actionInputs + JSON.stringify(step.env ?? null))) {
+    if (isAction && readsTainted) {
       reasons.push("passes a pull request reference from an earlier step to an action under pull_request_target");
+    } else if (isAction && !(step.uses as string).startsWith("actions/checkout@")
+      && PULL_REQUEST_CODE_REFERENCE.test([actionInputs, JSON.stringify(step.env ?? null)].join("\n"))) {
+      reasons.push("passes pull request code to an action under pull_request_target");
     }
     if (!namesCode) continue;
     const writes = new Set([...run.matchAll(RUNNER_FILE_WRITE)].map((match) => match[1]));
@@ -128,13 +171,44 @@ function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[
       reasons.push("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH under pull_request_target");
     }
     if (writes.has("OUTPUT") && typeof step.id === "string") {
-      tainted.add(step.id);
+      tainted.add(step.id.toLowerCase());
     }
   }
-  if (job.outputs !== undefined && readsTainted(JSON.stringify(job.outputs))) {
+  if (job.outputs !== undefined && readsTaintedSteps(job.outputs, tainted)) {
     reasons.push("maps a pull request reference to a job output under pull_request_target");
   }
   return reasons;
+}
+
+/** Every workflow allowed to run on `pull_request_target`, with the sha256 of
+ *  its content (LF line endings). Such a workflow runs with the base
+ *  repository's token and permissions while the pull request is a fork's, and
+ *  the step lint above cannot see every channel a head reference can travel
+ *  through. So a new or edited one fails until this list is updated, and the
+ *  update is in the diff for a reviewer to see. */
+export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, string>> = {
+  "cluster-detector.yml": "7cf172ed8cf163f70285c44dec8d86b75e5cec61083fabdb8141f1fb588dad34",
+};
+
+/** The sha256 {@link PULL_REQUEST_TARGET_WORKFLOWS} pins for `source`. */
+export function workflowContentHash(source: string): string {
+  return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
+}
+
+/** The allow-list violation of one workflow, if it runs on
+ *  pull_request_target and is unlisted or edited since it was listed. */
+export function pullRequestTargetAllowListViolations(source: string, name: string): string[] {
+  const workflow = parseYaml(source, { merge: true }) as { on?: unknown };
+  if (!workflowEvents(workflow.on).includes("pull_request_target")) return [];
+  const why = "pull_request_target runs with base-repo permissions; update the allow-list "
+    + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
+  const pinned = PULL_REQUEST_TARGET_WORKFLOWS[name];
+  if (pinned === undefined) return [`${name} is not on the pull_request_target allow-list: ${why}`];
+  const actual = workflowContentHash(source);
+  if (actual !== pinned) {
+    return [`${name} changed since its pull_request_target review (sha256 ${actual}, allow-list ${pinned}): ${why}`];
+  }
+  return [];
 }
 
 /** True when the workflow reads the `secrets` context anywhere, in any form. */

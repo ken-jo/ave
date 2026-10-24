@@ -8,8 +8,10 @@ import { readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
   TRUSTED_RUNNER_GUARD,
+  PULL_REQUEST_TARGET_WORKFLOWS,
   forkRunnerViolations,
   forkSafeRunsOn,
+  pullRequestTargetAllowListViolations,
   workflowEvents,
 } from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
@@ -426,6 +428,38 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("pins every pull_request_target workflow to a reviewed allow-list entry", () => {
+    const names = workflowFileNames();
+    const violations = names.flatMap((name) =>
+      pullRequestTargetAllowListViolations(readRepoFile(`.github/workflows/${name}`), name));
+    expect(violations).toEqual([]);
+    // The list is exact: every entry is a workflow that exists and runs on
+    // pull_request_target, so a removed or retriggered one leaves no stale pin.
+    const targets = names.filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).includes("pull_request_target");
+    });
+    expect(Object.keys(PULL_REQUEST_TARGET_WORKFLOWS).sort()).toEqual(targets);
+    expect(targets).toEqual(["cluster-detector.yml"]);
+  });
+
+  it("refuses an edited or unlisted pull_request_target workflow until the allow-list is updated", () => {
+    const why = "pull_request_target runs with base-repo permissions; update the allow-list "
+      + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const edited = cluster.replace("CLUSTER_THRESHOLD=3", "CLUSTER_THRESHOLD=4");
+    expect(edited).not.toBe(cluster);
+    const [changed] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml");
+    expect(changed).toMatch(/^cluster-detector\.yml changed since its pull_request_target review \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
+    expect(changed?.endsWith(why)).toBe(true);
+    // Line endings alone are not an edit: a Windows checkout reads CRLF.
+    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml")).toEqual([]);
+    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml"))
+      .toEqual([`copy.yml is not on the pull_request_target allow-list: ${why}`]);
+    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml"))
+      .toEqual([]);
+  });
+
   describe("fork runner policy mutations", () => {
     const guarded = forkSafeRunsOn("AVE_LINUX_RUNNER", "ubuntu-latest");
     const base = (job: Record<string, unknown>, on: unknown = { pull_request: null, push: null }) =>
@@ -577,6 +611,45 @@ describe("installer smoke and packaging discipline", () => {
         }], reason("passes a pull request reference from an earlier step to an action")],
       ])("refuses a pull request reference handed on through %s", (_label, list, expected) => {
         expect(steps(...list)).toEqual(expected);
+      });
+
+      it.each<[string, string]>([
+        ["the whole context serialized", "git fetch origin \"$(echo '${{ toJSON(steps) }}' | jq -r .a.outputs.sha)\""],
+        ["a bracketed output name", "git fetch origin ${{ steps.a.outputs['sha'] }}"],
+        ["a bracketed step id", "git fetch origin ${{ steps['a'].outputs.sha }}"],
+        ["a wildcard step", "git fetch origin ${{ join(steps.*.outputs.sha, ' ') }}"],
+        ["upper-case context and property names", "git fetch origin ${{ STEPS.A.OUTPUTS.sha }}"],
+      ])("refuses a tainted step output read through %s", (_label, run) => {
+        expect(steps(writeHead, { run })).toEqual(fetches);
+      });
+
+      it("lets an exact read of an untainted step through while another step is tainted", () => {
+        expect(steps(
+          { id: "clean", run: "echo \"base=abc\" >> \"$GITHUB_OUTPUT\"" },
+          writeHead,
+          { run: "git -C policy cat-file -e ${{ steps.clean.outputs.base }}" },
+        )).toEqual([]);
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        ["a github-script input", {
+          uses: "actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          with: { script: "await exec.exec('git', ['fetch', 'origin', context.payload.pull_request.head.sha])" },
+        }],
+        ["an action's env", {
+          uses: "some/action@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          env: { REF: "${{ github.event.pull_request.head.ref }}" },
+        }],
+      ])("refuses pull request code handed straight to an action through %s", (_label, step) => {
+        expect(steps(step)).toEqual(reason("passes pull request code to an action"));
+      });
+
+      it.each([
+        ["the head repository's clone URL", "url=$(gh api repos/o/r/pulls/7 --jq .head.repo.clone_url)\ngit clone \"$url\" pr"],
+        ["the head repository's name", "gh repo clone \"$(gh api repos/o/r/pulls/7 --jq '.head.repo.full_name')\""],
+        ["a jq pipe from .head", "sha=$(gh api repos/o/r/pulls/7 | jq -r '.head | .sha')\ngit fetch origin \"$sha\""],
+      ])("refuses a run step that reaches %s", (_label, run) => {
+        expect(steps({ run })).toEqual(fetches);
       });
 
       it("refuses a job output that maps a tainted step output", () => {
