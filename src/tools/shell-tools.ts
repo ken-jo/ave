@@ -36,6 +36,7 @@ import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } fro
 import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { getPolicyHome } from "../shared/policy-home.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
 import { clearShellSessionCwd, recordShellSessionCwd } from "./shell-session-cwd.js";
@@ -3099,7 +3100,7 @@ async function spawnPowerShellWithSandbox(
   // `/bin/bash -c` wrapping unchanged.
   const binShell = isWindows ? binShellForExecutable(executable) : undefined;
 
-  const home = process.env["HOME"];
+  const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
   const filesystem = {
