@@ -192,6 +192,8 @@ jobs:
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token.
+          persist-credentials: false
       - uses: ./ave/.github/actions/setup-bun
         with:
           bun-version-file: ave/.bun-version
@@ -297,11 +299,14 @@ jobs:
     # The required check on main. It reports success only when the build job
     # and every Vitest shard succeeded (a docs-only change skips the shards
     # and checks its documents in the build job), then runs the repository
-    # hygiene gates. `!cancelled()` keeps it running when a needed job
-    # failed, so a red shard turns this check red instead of skipping it: a
-    # skipped job reports success to branch protection.
+    # hygiene gates. `always()` keeps it running when a needed job failed
+    # and when the run was cancelled, so a red or cancelled shard turns this
+    # check red instead of skipping it: a skipped job reports success to
+    # branch protection. Its first step is `always()` too, so a cancelled run
+    # cannot skip it either, and it fails on any upstream result other than
+    # success (cancelled and skipped included).
     needs: [build, vitest]
-    if: ${{ !cancelled() }}
+    if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
     # else). Hosted runners are ephemeral VMs, so a fork's package.json
@@ -316,6 +321,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Require the build and every Vitest shard
+        if: always()
         env:
           BUILD_RESULT: ${{ needs.build.result }}
           VITEST_RESULT: ${{ needs.vitest.result }}
@@ -341,6 +347,8 @@ jobs:
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token.
+          persist-credentials: false
       - uses: ./ave/.github/actions/setup-bun
         if: needs.build.outputs.docs_only != 'true'
         with:

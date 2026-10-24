@@ -1103,13 +1103,16 @@ describe("installer smoke and packaging discipline", () => {
     expect(shards, "ci.yml lost its vitest shard job").toBeDefined();
 
     // build-and-test reports the build job and every Vitest shard: it needs
-    // both, still runs when one failed (a skipped job reports success to
-    // branch protection), and its first step fails unless both succeeded.
+    // both, still runs when one failed or the run was cancelled (a skipped
+    // job reports success to branch protection), and its first step, which
+    // a cancellation cannot skip either, fails unless both succeeded.
     // The hygiene gates follow it, so they run after every verification step
     // has reported, as the ordering scan above requires within one job.
     const body = verification as string;
     expect(body).toMatch(/^ {4}needs: \[build, vitest\]$/mu);
-    expect(body).toMatch(/^ {4}if: \$\{\{ !cancelled\(\) \}\}$/mu);
+    expect(body).toMatch(/^ {4}if: always\(\)$/mu);
+    expect(body).not.toContain("cancelled()");
+    expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
     const results = commands[0] as string;
     expect(results).toContain('if [ "$BUILD_RESULT" != "success" ]; then');
     expect(results).toContain('if [ "$VITEST_RESULT" != "success" ]; then');
