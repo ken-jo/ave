@@ -80,6 +80,7 @@ export async function folderService(options: {
    * service reads this array, and an uninstall removes its entry.
    */
   installed?: InstalledRecord[];
+  onPackageTransactionsIdle?: () => void;
 }): Promise<FolderServiceHarness> {
   const policy = options.policy ?? policySource();
   const gitCalls: string[] = [];
@@ -205,6 +206,7 @@ export async function folderService(options: {
     now,
     revocations: { apply: async () => {} },
     log: { warn: () => {} },
+    ...(options.onPackageTransactionsIdle ? { onPackageTransactionsIdle: options.onPackageTransactionsIdle } : {}),
     legacyMigration: {
       markerPath: join(options.root, "legacy-migration.json"),
       plugins: async () => {

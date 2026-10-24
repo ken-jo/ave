@@ -300,21 +300,24 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   deps.skillStore?.setInstalledAgentPlugins(agentPlugins);
   deps.agentProfileStore?.setInstalledAgentPlugins(agentPlugins);
   deps.personaPromptStore?.setInstalledAgentPlugins(agentPlugins);
-  if (service.installedAgentPluginRuntime().some((item) => Object.keys(item.content.components.mcpServers).length > 0)) {
-    deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
-      list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
-        packageName: item.name, serverName, transport: server.transport,
-        ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
-          apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
-        ...(server.auth ? { auth: server.auth } : {}),
-      }))),
-      reconnect: async (packageName, serverName) => {
-        const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
-        if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
-        await mcpRuntime.reconnect(item);
-      },
-    });
-  }
+  // Registered even with no MCP-bearing plugin installed: the installed set is what lets the
+  // manager retire stored sign-ins of servers whose plugin was uninstalled. A package that
+  // failed to load is installed but unlisted, so then the set cannot be vouched for.
+  deps.mcpManager.registerBundledCredentialSource("agent-plugin", {
+    installedPackages: async () => (view.broken.length === 0
+      ? new Set(service.installedAgentPluginRuntime().map((item) => item.name)) : undefined),
+    list: () => service.installedAgentPluginRuntime().flatMap((item) => Object.entries(item.content.components.mcpServers).map(([serverName, server]) => ({
+      packageName: item.name, serverName, transport: server.transport,
+      ...(server.transport === "stdio" ? { command: server.command, args: server.args, env: server.env,
+        apiKeyEnv: server.apiKeyEnv } : { url: server.url, apiKeyHeader: server.apiKeyHeader }),
+      ...(server.auth ? { auth: server.auth } : {}),
+    }))),
+    reconnect: async (packageName, serverName) => {
+      const item = service.installedAgentPluginRuntime().find((installed) => installed.name === packageName);
+      if (!item || !Object.hasOwn(item.content.components.mcpServers, serverName)) throw new Error("bundled MCP component is no longer installed");
+      await mcpRuntime.reconnect(item);
+    },
+  });
   await mcpRuntime.sync(service.installedAgentPluginRuntime());
   if (service.installedAgentPluginRuntime().some((item) => item.content.components.hooks.length > 0) && !hookRuntime) {
     throw new Error("installed agent plugin hooks require the hook runner");
