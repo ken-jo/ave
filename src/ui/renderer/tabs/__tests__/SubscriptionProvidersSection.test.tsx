@@ -502,3 +502,18 @@ describe("SignInMethodChoice", () => {
     expect(screen.getByRole("radio", { name: "Claude subscription" })).toHaveAttribute("aria-checked", "true");
   });
 });
+
+describe("subscription account and credential disclosure", () => {
+  it("discloses the account and the installed CLI credential boundary", () => {
+    const claude: SubscriptionProviderView = {
+      descriptor: { id: "claude-code", label: "Claude Code", planName: "Claude", cliName: "Claude Code CLI", executable: "discovered", description: "", loginMethods: ["browser"], supportsLogout: true },
+      status: { runtime: "ready", connection: "connected", models: [], capabilities: runtimeCapabilities() },
+    };
+    render(<SubscriptionProvidersSection providers={[claude, connectedCodex()]} actions={{}} />);
+    expect(screen.getByTestId("subscription-provider:claude-code:billing-disclosure")).toHaveTextContent(
+      "Uses your own Claude subscription through the sign-in tool on this computer; Ave never sees or stores your Claude credentials.",
+    );
+    // Only the runtime reached through the user's own CLI carries it.
+    expect(screen.queryByTestId("subscription-provider:codex:billing-disclosure")).toBeNull();
+  });
+});

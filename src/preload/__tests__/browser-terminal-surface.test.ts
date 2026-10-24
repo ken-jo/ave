@@ -16,6 +16,23 @@ vi.mock("electron", () => ({ ipcRenderer: {
 beforeEach(() => { invoke.mockReset(); listeners.clear(); });
 
 describe("private browser and terminal preload boundaries", () => {
+  it("queries and subscribes to the same validated session binding shape", async () => {
+    const api = buildBrowserTabsApiSurface();
+    const state = { revision: 3, bindings: [{ sessionId: "main-session", browserTabIds: ["browser:one"], terminalTabIds: [] }] };
+    invoke.mockResolvedValueOnce(state).mockResolvedValueOnce({ ...state, revision: -1 });
+    await expect(api.getSessionBindings()).resolves.toEqual(state);
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.browser.getSessionBindings);
+    await expect(api.getSessionBindings()).rejects.toThrow("invalid-session-tab-bindings");
+    const receive = vi.fn();
+    const off = api.onSessionBindingsChanged(receive);
+    const listener = listeners.get(CHANNELS.browser.sessionBindingsChanged)!;
+    listener({ sender: "private" }, state);
+    expect(receive).toHaveBeenCalledExactlyOnceWith(state);
+    expect(() => listener(undefined, { ...state, bindings: [{ sessionId: "x", browserTabIds: ["a", "a"], terminalTabIds: [] }] })).toThrow();
+    expect(() => listener(undefined, { ...state, bindings: [{ ...state.bindings[0], owner: {} }] })).toThrow();
+    off();
+    expect(listeners.has(CHANNELS.browser.sessionBindingsChanged)).toBe(false);
+  });
   it("accepts revisioned browser state and rejects old mixed-version authority", async () => {
     const api = buildBrowserTabsApiSurface();
     const state = browserControlFixture(["browser:1"], "human-paused", 7);

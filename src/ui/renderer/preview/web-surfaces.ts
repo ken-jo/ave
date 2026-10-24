@@ -88,7 +88,20 @@ export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: str
 // Where each guest's page actually is — a link, redirect or in-page route
 // moves it without the host setting a url. What a saved layout records.
 const locations = new Map<string, string>();
+const favicons = new Map<string, string>();
 const locationListeners = new Set<() => void>();
+
+/** The guest's latest site icon, retained while its tab is alive. */
+export function webSurfaceFavicon(tabId: string): string | null {
+  return favicons.get(tabId) ?? null;
+}
+
+export function noteWebSurfaceFavicon(tabId: string, favicon: string | null): void {
+  if ((favicons.get(tabId) ?? null) === favicon) return;
+  if (favicon === null) favicons.delete(tabId);
+  else favicons.set(tabId, favicon);
+  emit();
+}
 
 /** The layer saw the tab's main frame navigate to `url`. */
 export function noteWebSurfaceLocation(tabId: string, url: string): void {
@@ -102,6 +115,7 @@ export function noteWebSurfaceLocation(tabId: string, url: string): void {
  * not this page's address any more.
  */
 export function forgetWebSurfaceLocation(tabId: string): void {
+  noteWebSurfaceFavicon(tabId, null);
   if (!locations.delete(tabId)) return;
   for (const listener of [...locationListeners]) listener();
 }
@@ -187,7 +201,10 @@ function scheduleReconcile(): void {
     for (const ids of liveSources.values()) for (const id of ids) live.add(id);
     const next = surfaces.filter((surface) => live.has(surface.tabId));
     if (next.length === surfaces.length) return;
-    for (const surface of surfaces) if (!live.has(surface.tabId)) locations.delete(surface.tabId);
+    for (const surface of surfaces) if (!live.has(surface.tabId)) {
+      locations.delete(surface.tabId);
+      favicons.delete(surface.tabId);
+    }
     surfaces = next;
     emit();
   });

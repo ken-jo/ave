@@ -60,7 +60,7 @@ describe("trusted cluster policy workflow", () => {
     expect(workflow).toContain('if [ "$LIVE_HEAD_SHA" != "$EVENT_HEAD_SHA" ]');
     expect(workflow).toContain('echo "superseded=true" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain(
-      "if: steps.pr-snapshot.outputs.superseded != 'true'",
+      "if: steps.pr-current.outputs.superseded != 'true'",
     );
     // The workflow owns the reviewed pin; guard its shape, not a copy of it.
     expect(workflow).toMatch(
