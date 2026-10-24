@@ -77,7 +77,8 @@ import {
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import { resolveProcessLaunch } from "../../process-entry.js";
-import { buildChildEntry, childBundleDir } from "./child-entry-bundle.js";
+// Global setup owns the immutable shipped entry until all children finish.
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { installPythonSmoke } from "./python-smoke-harness.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "./sandbox-cases.js";
 
@@ -104,7 +105,6 @@ const OWN_SECRET = "the adversarial plugin's own stored secret";
 const NEIGHBOUR_SECRET = "the neighbour's stored secret";
 const DENIED_URL = "https://not-allowed.invalid/escape";
 const GENERATION_ID = "adversarial-generation";
-const CHILD_BUNDLE_CACHE = "plugin-child-adversarial";
 /** Escapes 1, 2 and 4 are measured where a wrap substrate exists (§9.8 A2 Gates). */
 const WRAP_PLATFORM = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 
@@ -233,7 +233,6 @@ afterAll(async () => {
   else process.env.AVE_HOME = previousAveHome;
   vi.unstubAllEnvs();
   rmSync(staged.root, { recursive: true, force: true });
-  rmSync(childBundleDir(CHILD_BUNDLE_CACHE), { recursive: true, force: true });
 });
 
 afterEach(async () => {
@@ -372,7 +371,7 @@ async function spawnInstalled(
   const factory = createOutOfProcessPluginFactory({
     manifest: installed.manifest,
     launch: installed.launch,
-    ...(installed.launch.kind === "entry" ? { childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE) } : {}),
+    ...(installed.launch.kind === "entry" ? { childEntryPath: pluginChildEntryPath() } : {}),
     observeChild: (child) => {
       observed = child;
       child.onStdout((chunk) => {
@@ -718,37 +717,6 @@ describe("the controls, which must hold before any escape is asserted", () => {
     90_000,
   );
 
-  it.runIf(ELECTRON_CONTROL_RUNS)(
-    process.platform === "win32"
-      ? "the Electron control ends after reporting (helper survival not observable: Windows has no process group)"
-      : "the Electron control ends after reporting, and none of its helpers outlives it",
-    async () => {
-      expect(controlExit, "the Electron control did not start").toBeDefined();
-      const exit = await controlExit!;
-      if (exit.reaped) {
-        // Not a failure of what the control proves: its report already held.
-        // The stack says where Chromium's shutdown was waiting, for the log.
-        // Written to stderr, as the python smoke reports, so it reaches the run log.
-        process.stderr.write(
-          `[adversarial-escapes] the Electron control was reaped ${CONTROL_EXIT_GRACE_MS} ms after reporting:\n${exit.diagnostics}\n`,
-        );
-      }
-      // A reaped control is killed, unless it exited by itself while sampled.
-      const ended = [{ code: 0, signal: null }, ...(exit.reaped ? [{ code: null, signal: "SIGKILL" }] : [])];
-      expect(ended, `the Electron control ended badly:\n${exit.diagnostics}`).toContainEqual({
-        code: exit.code,
-        signal: exit.signal,
-      });
-      // On Windows nothing below is measured (see the title); `survivor` and
-      // `escaped` stay at their unmeasured defaults there, so they are not asserted.
-      if (process.platform !== "win32") {
-        expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
-        expect(exit.escaped, `a helper had left the control's process group, out of the group kill's reach:\n${exit.diagnostics}`).toEqual([]);
-      }
-    },
-    CONTROL_EXIT_GRACE_MS + 60_000,
-  );
-
   it("replaces globalThis.fetch where patch() runs", async () => {
     const { patch } = (await import(pathToFileURL(join(FIXTURE_SOURCE, "entry.mjs")).href)) as {
       patch: () => () => void;
@@ -919,7 +887,7 @@ describe("the four escapes, against the production factory under the real wrap",
       const factory = createOutOfProcessPluginFactory({
         manifest: staged.fixture.manifest,
         launch: staged.fixture.launch,
-        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+        childEntryPath: pluginChildEntryPath(),
         observeChild: () => {
           observed = true;
         },
@@ -1126,5 +1094,40 @@ describe("the four escapes, against the production factory under the real wrap",
       }
     },
     600_000,
+  );
+});
+
+// The positive detector report holds before the escape cases. Its independent
+// shutdown can overlap their child work; every exit and survival assertion still runs.
+describe("the controls, which must hold before any escape is asserted", () => {
+  it.runIf(ELECTRON_CONTROL_RUNS)(
+    process.platform === "win32"
+      ? "the Electron control ends after reporting (helper survival not observable: Windows has no process group)"
+      : "the Electron control ends after reporting, and none of its helpers outlives it",
+    async () => {
+      expect(controlExit, "the Electron control did not start").toBeDefined();
+      const exit = await controlExit!;
+      if (exit.reaped) {
+        // Not a failure of what the control proves: its report already held.
+        // The stack says where shutdown was waiting, for the log.
+        // Written to stderr, as the python smoke reports, so it reaches the run log.
+        process.stderr.write(
+          `[adversarial-escapes] the Electron control was reaped ${CONTROL_EXIT_GRACE_MS} ms after reporting:\n${exit.diagnostics}\n`,
+        );
+      }
+      // A reaped control is killed, unless it exited by itself while sampled.
+      const ended = [{ code: 0, signal: null }, ...(exit.reaped ? [{ code: null, signal: "SIGKILL" }] : [])];
+      expect(ended, `the Electron control ended badly:\n${exit.diagnostics}`).toContainEqual({
+        code: exit.code,
+        signal: exit.signal,
+      });
+      // On Windows nothing below is measured (see the title); `survivor` and
+      // `escaped` stay at their unmeasured defaults there, so they are not asserted.
+      if (process.platform !== "win32") {
+        expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
+        expect(exit.escaped, `a helper had left the control's process group, out of the group kill's reach:\n${exit.diagnostics}`).toEqual([]);
+      }
+    },
+    CONTROL_EXIT_GRACE_MS + 60_000,
   );
 });
