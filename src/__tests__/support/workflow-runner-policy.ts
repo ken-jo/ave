@@ -191,7 +191,7 @@ export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, string>> = {
 };
 
 /** The sha256 {@link PULL_REQUEST_TARGET_WORKFLOWS} pins for `source`. */
-export function workflowContentHash(source: string): string {
+function workflowContentHash(source: string): string {
   return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
 }
 
