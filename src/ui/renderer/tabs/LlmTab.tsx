@@ -45,6 +45,7 @@ import {
   llmRouteImageInput,
   type LLMVendorSettings,
   LLM_VENDOR_DEFAULTS,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   cachedModelListEntry,
@@ -1121,6 +1122,27 @@ function parseUnifiedValue(value: string): { providerId: string; modelId: string
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
 }
 
+function upstreamModelProvider(
+  modelId: string,
+  providerId: string,
+  providerLabel: string,
+): { id: string; label: string } {
+  const presetId = providerId.startsWith(API_PROVIDER_PREFIX)
+    ? providerId.slice(API_PROVIDER_PREFIX.length) : "";
+  if (!isOpenAICompatiblePresetVendor(presetId)
+    || !OPENAI_COMPATIBLE_VENDOR_PRESETS[presetId].upstreamPrefixedModelIds) {
+    return { id: "", label: providerLabel };
+  }
+  const slash = modelId.indexOf("/");
+  const id = slash > 0 ? modelId.slice(0, slash) : "";
+  const vendorId = id === "anthropic" ? "claude" : id === "google" ? "gemini" : id;
+  const readableId = id.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return {
+    id,
+    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : readableId || providerLabel,
+  };
+}
+
 /**
  * The model chooser.
  *
@@ -1156,15 +1178,92 @@ function UnifiedModelSelect({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
-  const pinnedSet = new Set(pinned);
-  const pinnedOptions = options.filter((option) => pinnedSet.has(option.modelId));
-  const restByProvider: Array<{ label: string; items: UnifiedModelOption[] }> = [];
-  for (const option of options) {
-    if (pinnedSet.has(option.modelId)) continue;
-    const last = restByProvider[restByProvider.length - 1];
-    if (last && last.label === option.providerLabel) last.items.push(option);
-    else restByProvider.push({ label: option.providerLabel, items: [option] });
-  }
+  const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusPreferredRef = useRef(true);
+  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
+  const indexedOptions = useMemo(() => options.map((option) => {
+    const modelId = parseUnifiedValue(option.value)?.modelId ?? option.modelId;
+    const upstream = upstreamModelProvider(modelId, option.providerId, option.providerLabel);
+    return {
+      option,
+      upstream,
+      free: option.entry?.tags?.free === true || isOpenRouterFreeModel(modelId),
+      searchText: normalizeProviderSearch([
+        modelId, option.modelId, option.entry?.name, upstream.id, upstream.label,
+        option.providerLabel, option.vendorLabel,
+      ].join(" ")),
+    };
+  }), [options]);
+  const groupedOptions = useMemo(() => {
+    const providers = new Map<string, {
+      label: string;
+      upstreams: Map<string, { label: string; items: UnifiedModelOption[] }>;
+    }>();
+    const pins: UnifiedModelOption[] = [];
+    for (const { option, upstream } of indexedOptions) {
+      if (pinnedSet.has(option.modelId)) {
+        pins.push(option);
+        continue;
+      }
+      let provider = providers.get(option.providerId);
+      if (!provider) {
+        provider = { label: option.providerLabel, upstreams: new Map() };
+        providers.set(option.providerId, provider);
+      }
+      let group = provider.upstreams.get(upstream.id);
+      if (!group) {
+        group = { label: upstream.label, items: [] };
+        provider.upstreams.set(upstream.id, group);
+      }
+      group.items.push(option);
+    }
+    return {
+      pins,
+      providers: [...providers].map(([id, provider]) => ({
+        id,
+        label: provider.label,
+        groups: [...provider.upstreams].map(([upstreamId, group]) => ({ id: upstreamId, ...group }))
+          .sort((a, b) => a.label.localeCompare(b.label)),
+      })),
+    };
+  }, [indexedOptions, pinnedSet]);
+  const normalizedQuery = normalizeProviderSearch(query);
+  const matches = useMemo(() => {
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+    return new Set(indexedOptions.filter(({ free, searchText }) => terms.every((term) =>
+      term === "free" || term === "무료" ? free : searchText.includes(term),
+    )).map(({ option }) => option.value));
+  }, [indexedOptions, normalizedQuery]);
+  const visibleGroups = useMemo(() => ({
+    pins: groupedOptions.pins.filter((option) => matches.has(option.value)),
+    providers: groupedOptions.providers.map((provider) => ({
+      ...provider,
+      groups: provider.groups.map((group) => ({
+        ...group,
+        items: group.items.filter((option) => matches.has(option.value)),
+      })).filter((group) => group.items.length > 0),
+    })).filter((provider) => provider.groups.length > 0),
+  }), [groupedOptions, matches]);
+
+  const content = (option: UnifiedModelOption) => (
+    <ModelSelectItemContent
+      option={option.modelId}
+      {...(option.entry ? { entry: option.entry } : {})}
+      /* Kept on grouped rows too, where it repeats the group header: the
+         collapsed trigger renders this same content and has no label of its
+         own, so dropping it would leave the closed control showing a bare
+         model id. */
+      provider={option.vendorLabel}
+      {...(option.vision === true ? { vision: true } : {})}
+      {...(option.toolCall ? { toolCall: option.toolCall } : {})}
+      {...(option.reasoning ? { reasoning: option.reasoning } : {})}
+      {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
+      {...(option.facts ? { factsOverride: option.facts } : {})}
+      {...(option.unlisted ? { tone: "destructive" as const } : {})}
+    />
+  );
+  const selectedOption = options.find((option) => option.value === value);
 
   const row = (option: UnifiedModelOption) => {
     const isPinned = pinnedSet.has(option.modelId);
@@ -1172,6 +1271,10 @@ function UnifiedModelSelect({
       <SelectItem
         key={option.value}
         value={option.value}
+        className="hover:bg-accent hover:text-accent-foreground"
+        onPointerMove={(event) => {
+          if (document.activeElement === searchInputRef.current) event.preventDefault();
+        }}
         leading={
           /* Outside ItemText so the pin stays in the row and never mirrors
              into the collapsed trigger. Radix commits a row on POINTERUP, so
@@ -1199,45 +1302,95 @@ function UnifiedModelSelect({
           </span>
         }
       >
-        <ModelSelectItemContent
-          option={option.modelId}
-          {...(option.entry ? { entry: option.entry } : {})}
-          /* Kept on grouped rows too, where it repeats the group header. Radix
-             mirrors the chosen row's ItemText into the collapsed trigger, and
-             the trigger has no label of its own, so dropping it here would
-             leave the closed control showing a bare model id. */
-          provider={option.vendorLabel}
-          {...(option.vision === true ? { vision: true } : {})}
-          {...(option.toolCall ? { toolCall: option.toolCall } : {})}
-          {...(option.reasoning ? { reasoning: option.reasoning } : {})}
-          {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
-          {...(option.facts ? { factsOverride: option.facts } : {})}
-          {...(option.unlisted ? { tone: "destructive" as const } : {})}
-        />
+        {content(option)}
       </SelectItem>
     );
   };
 
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <Select
+      value={value}
+      onValueChange={(nextValue) => {
+        onValueChange(nextValue);
+        setQuery("");
+      }}
+      onOpenChange={(open) => {
+        searchFocusPreferredRef.current = true;
+        if (!open) setQuery("");
+      }}
+      disabled={disabled}
+    >
       <SelectTrigger id="model-select" className="w-full" data-testid={TEST_IDS.llmModelSelect}>
-        <SelectValue placeholder={placeholder} />
+        <SelectValue placeholder={placeholder}>
+          {selectedOption ? content(selectedOption) : undefined}
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent className={popupClassName}>
-        {pinnedOptions.length > 0 && (
+      <SelectContent
+        className={popupClassName}
+        onFocusCapture={(event) => {
+          // Placement and changes to the selected row can request item focus.
+          // Keep search active until the user navigates or presses an item.
+          if (searchFocusPreferredRef.current && event.target !== searchInputRef.current) {
+            event.stopPropagation();
+            searchInputRef.current?.focus();
+          }
+        }}
+        onPointerDownCapture={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest('[role="option"]') && !target.closest('[role="button"]')) {
+            searchFocusPreferredRef.current = false;
+          }
+        }}
+      >
+        <div className="sticky top-0 z-10 border-b border-border/(--opacity-medium) bg-popover p-2">
+          <Input
+            ref={searchInputRef}
+            value={query}
+            onFocus={() => { searchFocusPreferredRef.current = true; }}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                const firstItem = event.currentTarget.closest('[role="listbox"]')
+                  ?.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])');
+                if (firstItem) {
+                  searchFocusPreferredRef.current = false;
+                  firstItem.focus();
+                }
+                event.preventDefault();
+              }
+              if (event.key !== "Escape") event.stopPropagation();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            placeholder={t("llmTab.modelSearchPlaceholder")}
+            aria-label={t("llmTab.modelSearchAriaLabel")}
+            data-testid="llm-tab:model-search"
+            className="h-8 text-xs"
+          />
+        </div>
+        {visibleGroups.pins.length > 0 && (
           <SelectGroup>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
               {t("llmTab.modelPinnedGroup")}
             </SelectLabel>
-            {pinnedOptions.map(row)}
+            {visibleGroups.pins.map(row)}
           </SelectGroup>
         )}
-        {restByProvider.map((group) => (
-          <SelectGroup key={group.label}>
+        {visibleGroups.providers.map((provider) => (
+          <SelectGroup key={provider.id} data-model-provider={provider.id}>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
-              {group.label}
+              {provider.label}
             </SelectLabel>
-            {group.items.map(row)}
+            {provider.groups.map((group) => group.label === provider.label ? (
+              group.items.map(row)
+            ) : (
+              <SelectGroup key={group.id}>
+                <SelectLabel className="text-[10px] text-muted-foreground">
+                  {group.label}
+                </SelectLabel>
+                {group.items.map(row)}
+              </SelectGroup>
+            ))}
           </SelectGroup>
         ))}
         {options.length === 0 && (
@@ -1245,6 +1398,16 @@ function UnifiedModelSelect({
             {t("llmTab.modelNoConnectedProvider")}
           </div>
         )}
+        <div
+          aria-live="polite"
+          role="status"
+          className={normalizedQuery ? "px-2 py-2 text-center text-xs text-muted-foreground" : "sr-only"}
+          data-testid="llm-tab:model-search-status"
+        >
+          {normalizedQuery && (matches.size === 0 ? (
+            <span data-testid="llm-tab:model-no-results">{t("llmTab.modelNoResults")}</span>
+          ) : t("llmTab.modelMatchCount", { count: matches.size }))}
+        </div>
       </SelectContent>
     </Select>
   );
