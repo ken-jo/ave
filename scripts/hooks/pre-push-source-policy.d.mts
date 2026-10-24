@@ -11,6 +11,8 @@ export const FULL_CHECK_GLOBAL_INPUT_FILES: readonly string[];
 export const RELATED_TEST_BOUND: number;
 export function isFullCheckGlobalInput(relativePath: string): boolean;
 export function isCollectedVitestFile(relativePath: string): boolean;
+export function isTestSupportFile(relativePath: string): boolean;
+export function isTestOnlyDiff(changes: readonly PrePushChange[]): boolean;
 export function selectTriggeredLockSuites(changedPaths: readonly string[]): { suite: string; path: string }[];
 export const MESSAGE_CATALOG_CHECK_SCRIPTS: readonly string[];
 export function isMessageCatalogPath(relativePath: string): boolean;

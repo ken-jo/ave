@@ -45,7 +45,8 @@
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
-// CI runs the full suite and build. A sub-branch push therefore runs only the
+// CI runs the full suite for non-test-only changes, and builds every source
+// change. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
 // (findNewBranchBase), not only the default branch. A direct push TO an
@@ -1189,7 +1190,7 @@ if (stage === "pre-commit") {
         (messageCatalog ? "the message catalog checks, " : "") +
         `${lockSuites.length} triggered lock suite(s), ${classification.testFiles.length} changed, ` +
         `document-reader or message-consumer test file(s), and Vitest related to ${relatedSelection.sources.length} module(s); ` +
-        `skipping full test/build, which the category PR's CI runs on the merged tree ` +
+        `skipping full test/build; merged-tree CI scope follows scripts/run-ci-suite.mjs ` +
         `(${classification.reason}; AVE_PREPUSH_FULL=1 runs the full checks)`
     );
     if (messageCatalog) {

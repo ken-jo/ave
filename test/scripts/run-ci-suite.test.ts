@@ -35,6 +35,21 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const root = resolve(import.meta.dirname, "../..");
+const spawnSyncImplementation = vi.mocked(spawnSync).getMockImplementation()!;
+
+function withGitOutputs(outputs: string[], check: () => void) {
+  const gitRun = vi.mocked(spawnSync);
+  gitRun.mockClear();
+  for (const stdout of outputs) {
+    gitRun.mockReturnValueOnce({ pid: 1, output: [], stdout, stderr: "", status: 0, signal: null });
+  }
+  try {
+    check();
+    expect(gitRun).toHaveBeenCalledTimes(outputs.length);
+  } finally {
+    gitRun.mockReset().mockImplementation(spawnSyncImplementation);
+  }
+}
 
 const trackedTests = spawnSync("git", ["ls-files", "-z", "--", "src", "test"], { cwd: root, encoding: "utf8" })
   .stdout.split("\0")
@@ -62,6 +77,7 @@ const GRAPH_SOURCES = [
   "src/shared/escape-html.ts",
   "src/plugins/runtime/index.ts",
   "src/core/model-catalog/refresh.ts",
+  "src/__tests__/support/git-diff-entry.ts",
 ];
 let graphCoverage = new Map<string, string[]>();
 
@@ -145,6 +161,22 @@ describe("CI test selection over the real import graph", () => {
     expect(plan.tests).toContain(spawner);
   });
 
+  it("selects real helper importers on a test-only diff", () => {
+    const plan = select([modified("src/__tests__/support/git-diff-entry.ts")]);
+    expect(plan.mode).toBe("affected");
+    expect(plan.reason).toContain("test-only diff");
+    expect(plan.tests).toContain("test/scripts/pre-push-source-policy.test.ts");
+    expect(plan.tests).toEqual(expect.arrayContaining(mustRunTests));
+  });
+
+  it("selects a real fixture reader that joins its directory and relative fixture path", () => {
+    const plan = select([modified("test/scripts/fixtures/linux-appimage-payload.squashfs")], () => {
+      throw new Error("a fixture asset has no module import discovery");
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toContain("test/scripts/linux-package-arch.test.ts");
+  });
+
   it.each([
     "vitest.config.ts",
     "config/vitest.analysis.config.ts",
@@ -209,9 +241,9 @@ describe("CI test selection fallbacks", () => {
     ]));
   });
 
-  it("runs the full suite on every event but a pull request, and refuses a missing event", () => {
-    for (const event of ["push", "schedule", "workflow_dispatch"]) {
-      expect(planCiSuite(event)).toEqual({ mode: "full", reason: `${event} runs the full suite`, tests: [] });
+  it("runs full for tags, schedule and dispatch, and refuses a missing event", () => {
+    for (const [event, ref] of [["push", "refs/tags/v1.0.0"], ["schedule", "refs/heads/main"], ["workflow_dispatch", "refs/heads/main"]]) {
+      expect(planCiSuite(event, { ref })).toEqual({ mode: "full", reason: `${event} runs the full suite`, tests: [] });
     }
     expect(() => planCiSuite(undefined)).toThrow("GITHUB_EVENT_NAME is unset");
   });
@@ -230,17 +262,133 @@ describe("CI test selection fallbacks", () => {
     expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
   });
 
-  it("runs the full suite for a category merge to main, and refuses a pull request without its refs", () => {
-    expect(planCiSuite("pull_request", { headRef: "integration/permissions", baseRef: "main" })).toEqual({
-      mode: "full",
-      reason: "integration/permissions -> main is a category merge to main, which runs the full suite",
-      tests: [],
+  it.each(["src/core/route-engine.ts", "src/__tests__/vitest-ave-home.ts"])("runs full for a non-test-only category merge: %s", (path) => {
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${path}\0`], () => {
+      expect(planCiSuite("pull_request", { headRef: "integration/permissions", baseRef: "main" })).toEqual({
+        mode: "full",
+        reason: "integration/permissions -> main is a non-test-only category merge to main, which runs the full suite",
+        tests: [],
+      });
     });
+  });
+
+  it("recognizes category refs and refuses a pull request without them", () => {
     expect(isCategoryMergeToMain("integration/permissions", "main")).toBe(true);
     // A sub-branch into its category, and an ordinary branch into main, are selected.
     expect(isCategoryMergeToMain("fix/one-thing", "integration/permissions")).toBe(false);
     expect(isCategoryMergeToMain("fix/one-thing", "main")).toBe(false);
     expect(() => planCiSuite("pull_request", {})).toThrow("GITHUB_HEAD_REF and GITHUB_BASE_REF must be set");
+  });
+});
+
+describe("event rules over the first-parent diff", () => {
+  const changedTest = "src/core/__tests__/route-engine.test.ts";
+
+  it.each([
+    { event: "pull_request", refs: { headRef: "integration/test-speed", baseRef: "main" }, parents: "head first second", rule: "test-only category merge" },
+    { event: "push", refs: { ref: "refs/heads/main" }, parents: "head first second", rule: "main push: trusted first-parent selection" },
+    { event: "push", refs: { ref: "refs/heads/main" }, parents: "head first", rule: "main push: trusted first-parent selection" },
+  ])("selects a test-only $event with $parents", ({ event, refs, parents, rule }) => {
+    withGitOutputs([`${parents}\n`, `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+      const plan = planCiSuite(event, refs);
+      expect(plan.mode).toBe("affected");
+      expect(plan.reason).toContain(rule);
+      expect(plan.reason).toContain("test-only diff");
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+      expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
+    });
+  });
+
+  it("uses trusted selection for a code push to main", () => {
+    const source = "src/core/route-engine.ts";
+    const coverage = [{ source, tests: [changedTest] }];
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
+      const plan = planCiSuite("push", { ref: "refs/heads/main" });
+      expect(plan.mode).toBe("affected");
+      expect(plan.reason).toContain("main push: trusted first-parent selection");
+      expect(plan.reason).not.toContain("test-only diff");
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+    });
+  });
+
+  it("falls back to full for an untrusted main push", () => {
+    withGitOutputs(["head first\n", ":100644 100644 aaaa bbbb M\0vitest.config.ts\0", trackedTests.join("\0")], () => {
+      expect(planCiSuite("push", { ref: "refs/heads/main" })).toMatchObject({
+        mode: "full", reason: expect.stringContaining("vitest.config.ts is a global test or build input"),
+      });
+    });
+  });
+
+  it("falls back to full when a main push has no first parent", () => {
+    withGitOutputs(["head\n"], () => {
+      expect(planCiSuite("push", { ref: "refs/heads/main" })).toMatchObject({ mode: "full", reason: expect.stringContaining("no first parent") });
+    });
+  });
+});
+
+describe("test-only support tracing", () => {
+  const test = "src/a/__tests__/consumer.test.ts";
+  const helper = "src/a/__tests__/support/helper.ts";
+  const fixture = "test/fixtures/case/data.json";
+  const mustRun = "test/must-run.test.ts";
+  const files: Record<string, string> = {
+    [test]: 'import "./support/helper.js";',
+    [helper]: 'import "./deep.js";',
+    "src/a/__tests__/support/deep.ts": `readFileSync("${fixture}");`,
+    [mustRun]: "export {};",
+  };
+  function supportPlan(changes: ReturnType<typeof modified>[], current = files) {
+    return selectCiTests({
+      changes, trackedTests: [test, mustRun], mustRunTests: [mustRun],
+      readText: (path) => current[path] ?? null,
+      discoverRelated: (paths) => paths.map((source) => ({ source, tests: [] })),
+    });
+  }
+
+  it("follows fixture readers transitively through helpers even without module imports", () => {
+    expect(supportPlan([modified(fixture)]).tests).toEqual([test, mustRun].sort());
+  });
+
+  it("retains transitive helper readers that join fixture directory segments", () => {
+    const current = { ...files, "src/a/__tests__/support/deep.ts":
+      'const root = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures"); readFileSync(join(root, name));' };
+    expect(supportPlan([modified("src/a/__tests__/fixtures/data.json")], current).tests)
+      .toEqual([test, mustRun].sort());
+  });
+
+  it("retains importers of a renamed helper through surviving helper chains", () => {
+    const renamed = "src/a/__tests__/support/renamed.ts";
+    const oldPath = "src/a/__tests__/support/deep.ts";
+    const { [oldPath]: oldHelper, ...current } = files;
+    const changes = [
+      { ...modified(oldPath), status: "D", newMode: "000000" },
+      { ...modified(renamed), status: "A", oldMode: "000000" },
+    ];
+    expect(supportPlan(changes, { ...current, [renamed]: oldHelper }).tests)
+      .toEqual([test, mustRun].sort());
+  });
+
+  it("fails closed on test-only discovery failure instead of omitting importers or running full", () => {
+    expect(() => selectCiTests({
+      changes: [modified(helper)], trackedTests: [test, mustRun], mustRunTests: [mustRun],
+      readText: (path) => files[path] ?? null, discoverRelated: () => null,
+    })).toThrow("test-only selection cannot resolve importers: related test discovery failed");
+  });
+
+  it("drops deleted tests while retaining the must-run set", () => {
+    const plan = supportPlan([{ ...modified("test/gone.test.ts"), status: "D", newMode: "000000" }]);
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual([mustRun]);
+  });
+
+  it("does not promote a wide test-only diff to full", () => {
+    const wide = Array.from({ length: AFFECTED_TEST_LIMIT + 1 }, (_, index) => `test/changed-${index}.test.ts`);
+    const plan = selectCiTests({
+      changes: wide.map(modified), trackedTests: [...wide, mustRun], mustRunTests: [mustRun],
+      readText: () => "export {};", discoverRelated: () => null,
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual([...wide, mustRun].sort());
   });
 });
 
@@ -370,20 +518,6 @@ describe("unresolved pull request diffs", () => {
       reason: "the merge commit's diff could not be parsed",
     },
   ];
-
-  function withGitOutputs(outputs: string[], check: () => void) {
-    const gitRun = vi.mocked(spawnSync);
-    gitRun.mockClear();
-    for (const stdout of outputs) {
-      gitRun.mockReturnValueOnce({ pid: 1, output: [], stdout, stderr: "", status: 0, signal: null });
-    }
-    try {
-      check();
-      expect(gitRun).toHaveBeenCalledTimes(outputs.length);
-    } finally {
-      gitRun.mockReset();
-    }
-  }
 
   it.each(cases)("fails clearly for $name on an integration base before selecting tests", ({ outputs, reason }) => {
     withGitOutputs(outputs, () => {

@@ -18,6 +18,8 @@ import {
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
   isMessageCatalogPath,
+  isTestOnlyDiff,
+  isTestSupportFile,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
   RELATED_TEST_BOUND,
@@ -36,6 +38,41 @@ function added(path: string) {
 function deleted(path: string) {
   return { status: "D", oldMode: "100644", newMode: "000000", path };
 }
+
+describe("test-only diff policy", () => {
+  it.each([
+    "src/core/__tests__/route-engine.test.ts", "test/scripts/run-ci-suite.test.ts",
+    "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
+    "test/fixtures/example/data.json", "src/core/__tests__/fixtures/data.json",
+  ])("accepts local test code and fixtures: %s", (path) => {
+    expect(isTestOnlyDiff([modified(path)])).toBe(true);
+    expect(isTestOnlyDiff([added(path)])).toBe(true);
+    expect(isTestOnlyDiff([deleted(path)])).toBe(true);
+  });
+
+  it.each([
+    ...FULL_CHECK_GLOBAL_INPUT_FILES, "config/ci-must-run-tests.json", "config/vitest.globalSetup.ts",
+    "scripts/run-ci-suite.mjs", ".github/workflows/ci.yml", "src/core/route-engine.ts",
+    "test/e2e/example.test.ts", "test/screenshots/example.test.ts", "test/ordinary-helper.ts",
+  ])("refuses global or non-test inputs: %s", (path) => {
+    expect(isTestOnlyDiff([modified(path)])).toBe(false);
+  });
+
+  it("refuses mixed diffs, unsafe paths, mode changes and unresolved changes", () => {
+    expect(isTestOnlyDiff([modified("test/example.test.ts"), modified("src/core/route-engine.ts")])).toBe(false);
+    expect(isTestOnlyDiff([{ ...modified("test/example.test.ts"), newMode: "100755" }])).toBe(false);
+    expect(isTestOnlyDiff([modified("src/../test/example.test.ts")])).toBe(false);
+    expect(isTestOnlyDiff([])).toBe(false);
+    expect(isTestSupportFile("src/__tests__/support/ave-home-isolation-guard.ts")).toBe(false);
+  });
+
+  it("accepts executable fixtures while refusing symlinks and permission changes", () => {
+    const fixture = { ...modified("test/fixtures/runner.sh"), oldMode: "100755", newMode: "100755" };
+    expect(isTestOnlyDiff([fixture])).toBe(true);
+    expect(isTestOnlyDiff([{ ...fixture, newMode: "100644" }])).toBe(false);
+    expect(isTestOnlyDiff([{ ...fixture, oldMode: "120000", newMode: "120000" }])).toBe(false);
+  });
+});
 
 describe("pre-push fast source tier", () => {
   it("takes a source-only change on the fast tier with its related tests", () => {

@@ -1,12 +1,10 @@
 name: CI
-# Pull requests into integration/* always run the best traced Vitest selection,
-# never a whole-suite fallback. Other pull requests run affected tests unless
-# selection is untrusted. A category merge (integration/* into main) and every
-# non-PR event run the full suite: a
-# push to main after a merge, a release tag, the nightly schedule and a manual
-# dispatch. Coverage is periodic: only the nightly schedule and a manual
-# dispatch instrument it and enforce its thresholds. See
-# scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
+# Test-only diffs run affected tests on every PR base and main push.
+# Main pushes use trusted first-parent selection, like non-integration PRs;
+# uncertainty falls back to full. Integration-base PRs keep traced selection.
+# Non-test-only category PRs, release tags, nightly schedules and manual
+# dispatches run the full suite. Coverage runs only on schedule and dispatch.
+# scripts/run-ci-suite.mjs owns the rule and records it in the job summary.
 on:
   pull_request:
     branches: [main, "integration/**"]
@@ -19,9 +17,9 @@ on:
   workflow_dispatch:
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
-  # and is never cancelled by, the full run of a push to main. A push groups
+  # and is never cancelled by, the run of a push to main. A push groups
   # by ref and commit, so a second merge never cancels the first merge's
-  # full run, and tagging a merge commit (a push of the same sha to a tag
+  # run, and tagging a merge commit (a push of the same sha to a tag
   # ref) never cancels that commit's main run. A pull
   # request still cancels its own superseded run.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
@@ -164,17 +162,14 @@ jobs:
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # `test:ci` (scripts/run-ci-suite.mjs) runs the full suite on every
-        # non-PR event and category merge (integration/* into main). PRs into
-        # integration/* always keep the best traced selection plus the nonempty
-        # must-run set (config/ci-must-run-tests.json), even when discovery fails
-        # or selection is untrusted; whole-suite checking waits for the category
-        # merge. An unresolved integration-base PR diff fails before selection.
-        # Other PR bases keep the untrusted -> full rule. Local pre-push is
-        # unchanged. Coverage is periodic:
-        # only the nightly schedule and a manual dispatch run
-        # `check:test-coverage` (instrumentation and every global threshold).
-        # The step summary names the mode and the reason.
+        # Test-only diffs always keep changed tests, helper importers, triggered
+        # locks and the must-run set. Other main pushes use trusted selection
+        # from HEAD's first-parent diff, with uncertainty falling back to full.
+        # Non-test-only category merges, tags, schedule and dispatch run full.
+        # Integration-base PRs retain best traced selection on uncertainty and
+        # fail on an unresolved diff. Local pre-push is unchanged.
+        # Only schedule and dispatch instrument coverage and enforce thresholds.
+        # The step summary names the mode and the rule that chose it.
         #
         # `check:test-coverage`, not `check:test-quality`: that composite runs
         # `check:test-duplicates` first, so a duplicated test helper would end
@@ -280,7 +275,8 @@ jobs:
     name: Windows permission path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
     # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
@@ -450,7 +446,8 @@ jobs:
     name: macOS permission path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
     # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
@@ -576,7 +573,8 @@ jobs:
     name: Linux confinement path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
