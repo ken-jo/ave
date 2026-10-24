@@ -15,6 +15,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import type { PluginAuthority } from "../../catalog/types.js";
@@ -63,11 +64,18 @@ function pluginJson(name: string, version: string, auth: PluginAuthority = autho
   return `${JSON.stringify({ name, version, description: name, extensions: { "ai.agent-connector.ave": { displayName: name, entry: "dist/index.js", ...auth } } }, null, 2)}\n`;
 }
 
+const pluginZips = new Map<string, Buffer>();
+
 function pluginZip(name: string, version: string, auth: PluginAuthority = authority()): Buffer {
+  const key = JSON.stringify([name, version, auth]);
+  const prepared = pluginZips.get(key);
+  if (prepared) return Buffer.from(prepared);
   const zip = new AdmZip();
   zip.addFile("plugin.json", Buffer.from(pluginJson(name, version, auth)));
   zip.addFile("dist/index.js", Buffer.from(ENTRY_JS));
-  return zip.toBuffer();
+  const bytes = zip.toBuffer();
+  pluginZips.set(key, bytes);
+  return Buffer.from(bytes);
 }
 
 function descriptor(name: string, version: string, artifact: Record<string, unknown>, auth: PluginAuthority = authority()): string {
@@ -88,6 +96,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let fixtureGit: ReturnType<typeof cachedFixtureGit>;
   let emptyRepo: FixtureRepo;
   let root: string;
   let workRoot: string;
@@ -104,6 +113,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
+    fixtureGit = cachedFixtureGit(git.runner, serverRoot, server.origin, join(serverRoot, "command-cache"));
   });
 
   afterAll(async () => {
@@ -128,12 +138,12 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function fixture(name?: string): { repo: FixtureRepo; name: string } {
     counter += 1;
     const repoName = name ?? `ladder-${counter}`;
-    const repo = copyFixtureRepo(serverRoot, repoName, emptyRepo);
+    const repo = copyFixtureRepo(serverRoot, repoName, emptyRepo, { publishByCopy: true });
     repos.push(repo);
     return { repo, name: repoName };
   }
 
-  async function open(name: string, origin: "custom" | "direct" = "custom") {
+  async function open(name: string, origin: "custom" | "direct" = "custom", runner = fixtureGit) {
     const policy = policySource({});
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: loopbackTransport });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
@@ -143,7 +153,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
       folders: nodeFolders(),
       registry,
       gate,
-      runner: git.runner,
+      runner,
       root: marketplaces,
       now: () => new Date(AT),
       retainedCommits: async () => new Set(),
@@ -204,7 +214,8 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const zip = pluginZip("alpha", "1.0.0");
     server.file(releasePath, zip);
     const commit = market(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } });
-    const { gate, syncer } = await open(name);
+    // Keep catalog transport and the release download together in one real case.
+    const { gate, syncer } = await open(name, "custom", git.runner);
     const plan = planPluginInstall(await row(syncer));
     expect(plan).toMatchObject({ snapshotCommit: commit, versionCommit: commit, packagePath: "plugins/alpha", version: "1.0.0" });
 
@@ -238,6 +249,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     expect(again.artifactSha256).toBe(sha(zip));
     // Kept bytes carry the declared transport: this release comes from the http source's own origin.
     expect(again.unencrypted).toBe(true);
+    expect(server.seen.some((request) => request.path.startsWith(`/${name}/`))).toBe(false);
   });
 
   it("keeps nothing from the tree rung", async () => {
