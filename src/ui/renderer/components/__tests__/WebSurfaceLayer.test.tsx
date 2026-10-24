@@ -96,8 +96,8 @@ describe("WebSurfaceLayer", () => {
     ["padded URL", " https://site.example/icon.png", null],
     ["malformed URL", "https://", null],
     ["non-string", null, null],
-    ["http", "http://site.example/icon.png", "http://site.example/icon.png"],
-    ["https", "https://site.example/icon.png", "https://site.example/icon.png"],
+    ["http", "http://site.example/icon.png", null],
+    ["https", "https://site.example/icon.png", null],
     ["image data", "data:image/png;base64,YQ==", "data:image/png;base64,YQ=="],
     ["vector image data", "data:image/svg+xml,%3Csvg/%3E", "data:image/svg+xml,%3Csvg/%3E"],
   ])("filters a guest's %s favicon at the event boundary", (_label, candidate, expected) => {
@@ -109,13 +109,13 @@ describe("WebSurfaceLayer", () => {
     expect(webSurfaceFavicon("browser:icon")).toBe(expected);
   });
 
-  it("skips rejected guest favicon candidates before choosing an external image", () => {
+  it("skips rejected guest favicon candidates before choosing image data", () => {
     publishLiveWebTabs(source, new Set(["browser:icon"]));
     render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
     act(() => { guests()[0]!.dispatchEvent(Object.assign(new Event("page-favicon-updated"), {
-      favicons: ["ave-content://installed/icon.png", "./icon.png", "https://site.example/icon.png"],
+      favicons: ["https://site.example/icon.png", "ave-content://installed/icon.png", "./icon.png", "data:image/png;base64,YQ=="],
     })); });
-    expect(webSurfaceFavicon("browser:icon")).toBe("https://site.example/icon.png");
+    expect(webSurfaceFavicon("browser:icon")).toBe("data:image/png;base64,YQ==");
   });
   it("binds a guest that cannot name itself at attach on its first dom-ready, and only then", async () => {
     bindTab.mockClear();
@@ -161,8 +161,8 @@ describe("WebSurfaceLayer", () => {
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/" })); });
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })); });
     expect(committedWebSurfaceLocation("browser:9")).toBe("https://a.example/");
-    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://a.example/icon.png"] })); });
-    expect(webSurfaceFavicon("browser:9")).toBe("https://a.example/icon.png");
+    act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["data:image/png;base64,YQ=="] })); });
+    expect(webSurfaceFavicon("browser:9")).toBe("data:image/png;base64,YQ==");
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["file:///private/icon.png", "https://user:password@a.example/icon.png", "https://a.example/" + "a".repeat(8192)] })); });
     expect(webSurfaceFavicon("browser:9")).toBeNull();
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [null, "data:image/png;base64,YQ=="] })); });
