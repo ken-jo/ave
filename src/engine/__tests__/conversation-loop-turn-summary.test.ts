@@ -10,6 +10,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import * as codeCheckpoints from "../../memory/code-checkpoints.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
@@ -493,6 +494,7 @@ describe("ConversationLoop onTurnSummary", () => {
       { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } },
     ]]));
     const loop = createLoopWithRegistry(fallback, new ToolRegistry(), {
+      disableSessionPersistence: true,
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
@@ -717,9 +719,12 @@ describe("ConversationLoop onTurnSummary", () => {
   it("attributes fallback-served turns to the provider/model that actually streamed", async () => {
     vi.useFakeTimers();
     const toolRegistry = new ToolRegistry();
+    let signalPrimaryStarted!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const primary: LLMProvider = {
       vendor: "claude",
       streamTurn: async function* () {
+        signalPrimaryStarted();
         yield { type: "error", error: "500 internal server error", classification: "network",
         };
       },
@@ -744,6 +749,7 @@ describe("ConversationLoop onTurnSummary", () => {
       isPermissionAuditChainReady: () => false,
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
+      disableSessionPersistence: false,
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: () => "test-key",
@@ -760,6 +766,8 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { inputOrigin: "user-keyboard" },
     );
+    // Checkpoint I/O must finish before advancing the provider's retry clock.
+    await primaryStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
     vi.useRealTimers();
@@ -816,6 +824,7 @@ describe("ConversationLoop onTurnSummary", () => {
       execute: async () => ({ output: "value", isError: false }),
     }));
     const loop = createLoopWithRegistry(provider, registry, {
+      disableSessionPersistence: true,
       settingsService: {
         get: () => ({ ...llm, modelListCache: {
           [llmModelListCacheKey("openai", llm.vendors.openai.baseUrl)]: {
@@ -847,6 +856,19 @@ describe("ConversationLoop onTurnSummary", () => {
     const record = (await sameIdentityFallbackRecords())[surface];
     expect(record).toBeDefined();
     expect(record.modelSettings).toBeUndefined();
+  });
+
+  it("keeps summary-only fallback turns independent of checkpoint storage", async () => {
+    const checkpoint = vi.spyOn(codeCheckpoints, "withCodeCheckpoint")
+      .mockRejectedValue(new Error("Checkpoint storage is unavailable"));
+    try {
+      const { summary, audit } = await sameIdentityFallbackRecords();
+      expect(summary).toBeDefined();
+      expect(audit).toBeDefined();
+      expect(checkpoint).not.toHaveBeenCalled();
+    } finally {
+      checkpoint.mockRestore();
+    }
   });
 
   it("records a later primary request after a fallback tool round", async () => {
