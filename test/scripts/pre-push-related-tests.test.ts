@@ -85,7 +85,7 @@ describe("pre-push related test coverage", () => {
     expect(lockOptions).toEqual([{ name: "fast", label: "fast-tier", directory: "/fixture-locks", timeoutMs: 1000, slots: 3 }]);
   });
 
-  it("leaves out a message consumer no test reaches, but never a changed module", () => {
+  it("leaves out a message consumer no test reaches, and reports a changed module no test reaches", () => {
     const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
     const start = source.indexOf("// Per-module related-test discovery");
     const end = source.indexOf("function runAppCommentOnlyChecks", start);
@@ -104,9 +104,17 @@ describe("pre-push related test coverage", () => {
       narrowed: [],
       sources: [changed.source, tested.source],
       untestedConsumers: [untested.source],
+      untestedModules: [],
     });
-    // A changed module with no related test still keeps the full checks.
+    // A changed module with no related test is reported, not escalated: the
+    // scoped tier runs its path-naming, must-run and lock-suite tests instead.
     expect(select([{ source: "src/lib/changed.ts", tests: [] }, tested])("/fixture", ["src/lib/changed.ts"], [tested.source]))
-      .toEqual({ reason: "src/lib/changed.ts has no related test files" });
+      .toEqual({
+        tests: ["src/ui/__tests__/panel.test.tsx"],
+        narrowed: [],
+        sources: [tested.source],
+        untestedConsumers: [],
+        untestedModules: ["src/lib/changed.ts"],
+      });
   });
 });
