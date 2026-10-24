@@ -24,8 +24,9 @@ jobs:
     # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
     # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Unset
     # falls back to any self-hosted runner only so the check below can fail
-    # naming the variable, never to a billing-blocked hosted label. Before
-    # the repo goes public, set AVE_LINUX_RUNNER to its hosted label.
+    # naming the variable, never to a billing-blocked hosted label. Only a
+    # dispatch from main reaches this job; no fork event does
+    # (workflow-runner-policy.ts).
     runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     timeout-minutes: 10
     steps:

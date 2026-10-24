@@ -5,6 +5,13 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
+import {
+  TRUSTED_EVENTS,
+  TRUSTED_RUNNER_GUARD,
+  forkRunnerViolations,
+  forkSafeRunsOn,
+  workflowEvents,
+} from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
@@ -398,6 +405,82 @@ describe("installer smoke and packaging discipline", () => {
     for (const name of workflowFileNames()) {
       assertReleaseSecretEnvironments(readRepoFile(`.github/workflows/${name}`), name);
     }
+  });
+
+  it("keeps every job a fork can trigger off self-hosted runners and away from write tokens", () => {
+    const violations = workflowFileNames()
+      .flatMap((name) => forkRunnerViolations(readRepoFile(`.github/workflows/${name}`), name));
+    expect(violations).toEqual([]);
+    // The rule is read, not vacuous: these workflows are fork-reachable and
+    // their jobs are the ones checked above.
+    const reachable = workflowFileNames().filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
+    });
+    expect(reachable).toEqual(["ci.yml", "cluster-detector.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
+    // Every runner variable a fork-reachable job reads goes through the guard.
+    for (const name of reachable) {
+      const source = readRepoFile(`.github/workflows/${name}`);
+      expect(source.match(/fromJSON\(vars\./gu)?.length ?? 0, name)
+        .toBe(source.split(TRUSTED_RUNNER_GUARD).length - 1);
+    }
+  });
+
+  describe("fork runner policy mutations", () => {
+    const guarded = forkSafeRunsOn("AVE_LINUX_RUNNER", "ubuntu-latest");
+    const base = (job: Record<string, unknown>, on: unknown = { pull_request: null, push: null }) =>
+      stringifyYaml({ on, permissions: { contents: "read" }, jobs: { check: { steps: [{ run: "true" }], ...job } } });
+
+    it("accepts a hosted label and the shared guarded form", () => {
+      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest" }), "ok.yml")).toEqual([]);
+      expect(forkRunnerViolations(base({ "runs-on": guarded }), "ok.yml")).toEqual([]);
+      // A trusted-only workflow keeps its self-hosted release runner.
+      expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { workflow_dispatch: null }), "ok.yml"))
+        .toEqual([]);
+    });
+
+    it.each([
+      ["a self-hosted literal", "self-hosted"],
+      ["a label array", ["self-hosted", "Linux"]],
+      ["an unguarded variable", "${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
+      ["the fork-only guard that lets Dependabot through", "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
+      ["the guard with a self-hosted fallback", forkSafeRunsOn("AVE_LINUX_RUNNER", "self-hosted")],
+      ["a matrix runner", "${{ matrix.os }}"],
+    ])("rejects %s on a fork-reachable job", (_label, runsOn) => {
+      expect(forkRunnerViolations(base({ "runs-on": runsOn }), "bad.yml")).toHaveLength(1);
+    });
+
+    it.each(["issue_comment", "pull_request_review", "workflow_run", "discussion_comment", "a_future_event"])(
+      "treats %s as fork-reachable",
+      (event) => {
+        expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { [event]: null }), "bad.yml")).toHaveLength(1);
+      },
+    );
+
+    it("requires a permissions block and refuses write-all", () => {
+      const noPermissions = stringifyYaml({ on: "pull_request", jobs: { check: { "runs-on": "ubuntu-latest" } } });
+      expect(forkRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
+      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest", permissions: "write-all" }), "bad.yml"))
+        .toEqual(["bad.yml:check grants write-all"]);
+    });
+
+    it("refuses pull request code, write tokens and secrets under pull_request_target", () => {
+      const target = (step: Record<string, unknown>, job: Record<string, unknown> = {}) =>
+        forkRunnerViolations(
+          base({ "runs-on": "ubuntu-latest", steps: [step], ...job }, { pull_request_target: null }),
+          "t.yml",
+        );
+      const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+      const trusted = { ref: "${{ steps.pr-snapshot.outputs.base_sha }}", "persist-credentials": false };
+      expect(target({ uses: checkout, with: trusted })).toEqual([]);
+      expect(target({ uses: checkout, with: { ...trusted, ref: "${{ github.event.pull_request.head.sha }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ...trusted, repository: "${{ github.event.pull_request.head.repo.full_name }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ref: trusted.ref } })).toHaveLength(1);
+      expect(target({ run: "true", env: { TOKEN: "${{ secrets.NPM_TOKEN }}" } })).toHaveLength(1);
+      expect(target({ run: "true" }, { permissions: { "pull-requests": "write" } })).toHaveLength(1);
+    });
   });
 
   it.each([

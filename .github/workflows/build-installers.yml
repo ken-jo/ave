@@ -46,8 +46,9 @@ jobs:
     # other job needs this one, so the check below fails the run naming any
     # unset variable instead of falling back to a billing-blocked hosted label.
     # Only this job falls back when AVE_LINUX_RUNNER is unset, and to any
-    # self-hosted runner, so the check can still run and say so. Before the
-    # repo goes public, set every AVE_*_RUNNER to its hosted label.
+    # self-hosted runner, so the check can still run and say so. Only a tag
+    # push or a dispatch by a user with write access starts this workflow;
+    # no fork event reaches it (workflow-runner-policy.ts).
     runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     permissions:
       contents: read

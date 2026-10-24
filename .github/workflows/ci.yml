@@ -17,6 +17,8 @@ on:
     # 18:00 UTC is 03:00 KST, outside the owner's working hours.
     - cron: "0 18 * * *"
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
   # and is never cancelled by, the full run of a push to main. A push groups
@@ -28,21 +30,27 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-and-test:
-    # By default runs use ephemeral GitHub-hosted ARM64 runners (the
-    # AVE_LINUX_RUNNER note below is the opt-in self-hosted path). Ephemeral VMs
-    # cannot persist state or exfiltrate secrets across runs, which closes
-    # the "pwn-request" supply-chain RCE vector that made the prior
-    # self-hosted Oracle runner risky for fork PRs (a fork controls
-    # package.json + postinstall scripts, and `bun install` would execute
-    # attacker code). ARM64 keeps native-module (better-sqlite3 etc.) parity
-    # with the dev fleet. Core CI is deliberately secret-free and does not
-    # clone private sibling repositories; cross-repository integration belongs
-    # to trusted default-branch repository_dispatch workflows.
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
-    # fork pull request always gets the hosted label. Private repo only: unset
-    # AVE_LINUX_RUNNER before the repo goes public.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # Runner rule for every job a fork can trigger, in every workflow (the
+    # same runs-on expression, checked by
+    # src/__tests__/support/workflow-runner-policy.ts): only a trusted event
+    # may take the self-hosted runner a repo variable such as AVE_LINUX_RUNNER
+    # names. Trusted means push, schedule or workflow_dispatch, or a pull
+    # request whose head branch lives in this repository and that Dependabot
+    # did not open (GitHub treats Dependabot runs as fork runs). Every other
+    # event, including any event added later, gets the GitHub-hosted label,
+    # which is also the fallback when the variable is unset. Hosted runners
+    # are ephemeral VMs, so a fork's package.json postinstall cannot persist
+    # on, or read state from, the owner's machines.
+    # The guard lives in workflow files, which a fork pull request can edit;
+    # the boundary against a hostile workflow edit is the repository setting
+    # that holds fork pull request workflows for approval, plus reviewing
+    # .github/ changes before approving. ARM64 keeps native-module
+    # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
+    # secret-free and does not clone private sibling repositories;
+    # cross-repository integration belongs to trusted default-branch
+    # repository_dispatch workflows.
+    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -282,21 +290,10 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
-    # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
-    # runner explicitly), the variable build-installers.yml reads. Unset falls
-    # back to any self-hosted runner only so the check below can fail naming
-    # the variable, never to a billing-blocked hosted label. A pull request
-    # from a fork always gets the hosted label: a fork run may not see repo
-    # variables at all, and the self-hosted fallback would then hand it the
-    # owner's machine. That guard lives in this file, which a fork PR can
-    # edit, so the repo setting that holds fork workflows for approval stays
-    # the real boundary; keep it on, and before going public also set the
-    # variable to its hosted label.
+    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'windows-latest' || vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'self-hosted' }}
+    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}
     env:
       # A self-hosted runner's home is the owner's own: keep bun's package
       # cache and Electron's download cache in the workspace.
@@ -310,17 +307,11 @@ jobs:
           persist-credentials: false
       # Self-hosted machines have no preinstalled toolcache; install Node into
       # the runner's own tool cache instead of relying on a system Node. The
-      # runner check and the docs classifier below both run on it.
+      # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Require the runner variable
-        shell: bash
-        working-directory: ave
-        env:
-          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_WINDOWS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         shell: bash
@@ -452,17 +443,10 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
-    # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
-    # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
-    # explicitly), the variable build-installers.yml reads. Unset falls back
-    # to any self-hosted runner only so the check below can fail naming the
-    # variable, never to a billing-blocked hosted label. Fork pull requests
-    # always get the hosted label; see the Windows job for why that guard is
-    # not the boundary on its own.
+    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'self-hosted' }}
+    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}
     env:
       # A self-hosted runner's home is the owner's own: keep bun's package
       # cache and Electron's download cache in the workspace.
@@ -476,17 +460,11 @@ jobs:
           persist-credentials: false
       # Self-hosted machines have no preinstalled toolcache; install Node into
       # the runner's own tool cache instead of relying on a system Node. The
-      # runner check and the docs classifier below both run on it.
+      # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Require the runner variable
-        shell: bash
-        working-directory: ave
-        env:
-          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_MACOS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -580,11 +558,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
-    # fork pull request always gets the hosted label. Private repo only: unset
-    # AVE_LINUX_RUNNER before the repo goes public.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
