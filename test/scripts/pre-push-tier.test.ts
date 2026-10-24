@@ -26,10 +26,10 @@ import {
   selectUntestedModuleTests,
 } from "../../scripts/hooks/pre-push-tier.mjs";
 import { MUST_RUN_TESTS_PATH } from "../../scripts/run-ci-suite.mjs";
+import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 const root = resolve(".");
 const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
-const modified = (path: string) => ({ path, status: "M", oldMode: "100644", newMode: "100644" });
 const trackedTests = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "src", "test"], { encoding: "utf8" })
   .split("\0").filter((path) => path && isCollectedVitestFile(path)).sort();
 const readTracked = (path: string) => {
