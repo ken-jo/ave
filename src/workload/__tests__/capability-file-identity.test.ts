@@ -53,7 +53,10 @@ describe("workload capability exact file identity", () => {
       ino: inode + (observations++ === changedObservation ? 1n : 0n),
     });
     expect(Number(inode)).toBe(Number(inode + 1n));
+    // Windows lacks geteuid and O_NOFOLLOW, so the loader refuses before any stat or read.
+    const expected = process.platform === "win32" ? "protected-file-unavailable" : code;
     expect(() => loadWorkloadBrokerCapabilityFile(path, join(root, "broker.sock")))
-      .toThrow(`workload-broker:${code}`);
+      .toThrow(`workload-broker:${expected}`);
+    if (process.platform === "win32") expect(observations).toBe(0);
   });
 });
