@@ -21,7 +21,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
   reset: async () => { manager.config = undefined; },
   wrapWithSandboxArgv: async () => ({
-    argv: ["/bin/bash", "-c", "/configured/bwrap --ro-bind / / -- /bin/bash -c true"],
+    argv: ["/bin/bash", "-c", "/configured/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / / -- /bin/bash -c true"],
     env: process.env,
   }),
   cleanupAfterCommand: () => undefined,

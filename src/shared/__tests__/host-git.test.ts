@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { buildHostGitArgs } from "../host-git.js";
 
@@ -61,8 +62,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("h
     requireGit(planted, ["add", "tracked.txt"]);
     const monitor = join(root, "monitor");
     const marker = join(root, "monitor-ran");
-    env.AVE_FIXTURE_MONITOR_MARKER = marker;
-    program(monitor, 'printf executed > "$AVE_FIXTURE_MONITOR_MARKER"; printf "token\\0"');
+    program(monitor, `printf executed > ${shellQuote(marker)}; printf "token\\0"`);
     requireGit(planted, ["config", "core.fsmonitor", monitor]);
 
     const before = git(planted, ["status", "--porcelain"]);
@@ -84,8 +84,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("h
   it("neutralizes a repository hook while preserving normal host commits", () => {
     requireGit(root, ["init", "--quiet"]);
     const marker = join(root, "hook-ran");
-    env.AVE_FIXTURE_HOOK_MARKER = marker;
-    program(join(root, ".git", "hooks", "pre-commit"), 'printf executed > "$AVE_FIXTURE_HOOK_MARKER"; exit 1');
+    program(join(root, ".git", "hooks", "pre-commit"), `printf executed > ${shellQuote(marker)}; exit 1`);
     const before = git(root, ["commit", "--quiet", "--allow-empty", "-m", "fixture"]);
     expect(before.status).not.toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("executed");

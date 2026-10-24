@@ -110,6 +110,8 @@ describe("model-facing catalog keys", () => {
   it("keeps interface keys outside the set", () => {
     expect(isModelFacingKey("be_conversationLoop.generateTextSystemPrompt")).toBe(true);
     expect(isModelFacingKey("shellExecution.pipelineStatus")).toBe(true);
+    expect(isModelFacingKey("sandboxPolicy.quarantined")).toBe(true);
+    expect(isModelFacingKey("sandboxPolicy.scanNarrowed")).toBe(true);
     expect(isModelFacingKey("appearanceTab.pageTitle")).toBe(false);
     expect(isModelFacingKey("routinePanel.errorNaturalParseFailed")).toBe(false);
   });

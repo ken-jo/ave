@@ -2044,7 +2044,7 @@ export async function spawnWithSandbox(
     void cleanupAsrtSandboxAfterCommand();
     egress.release();
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
-    return { output: annotated.output, isError: true, metadata: { aborted: true, sandboxed: false, sandboxCleanupFailed: annotated.sandboxCleanupFailed } };
+    return { output: annotated.output, isError: true, metadata: { aborted: true, sandboxed: false, ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
@@ -2053,7 +2053,7 @@ export async function spawnWithSandbox(
     return {
       output: annotated.output,
       isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
     };
   }
 
@@ -2085,7 +2085,7 @@ export async function spawnWithSandbox(
       void annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true).then(annotated => resolveResult({
         output: annotated.output,
         isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }));
       return;
     }
@@ -2156,7 +2156,7 @@ export async function spawnWithSandbox(
         resolveResult({
           output: annotated.output,
           isError: true,
-          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         });
       })();
     });
@@ -3155,7 +3155,7 @@ async function spawnPowerShellWithSandbox(
     egress.release();
     sandboxHome.cleanup();
     const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
-    return { output: annotated.output, isError: true, metadata: { aborted: true, sandboxed: false, sandboxCleanupFailed: annotated.sandboxCleanupFailed } };
+    return { output: annotated.output, isError: true, metadata: { aborted: true, sandboxed: false, ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
@@ -3165,7 +3165,7 @@ async function spawnPowerShellWithSandbox(
     return {
       output: annotated.output,
       isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
     };
   }
 
@@ -3198,7 +3198,7 @@ async function spawnPowerShellWithSandbox(
       void annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true).then(annotated => resolveResult({
         output: annotated.output,
         isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
       }));
       return;
     }
@@ -3258,7 +3258,7 @@ async function spawnPowerShellWithSandbox(
         resolveResult({
           output: annotated.output,
           isError: true,
-          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable", sandboxCleanupFailed: annotated.sandboxCleanupFailed },
+          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable", ...(annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         });
       })();
     });
