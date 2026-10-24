@@ -1,10 +1,20 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
+import {
+  TRUSTED_EVENTS,
+  TRUSTED_RUNNER_GUARD,
+  PULL_REQUEST_TARGET_WORKFLOWS,
+  forkRunnerViolations,
+  forkSafeRunsOn,
+  pullRequestTargetAllowListViolations,
+  pullRequestTargetExecutedFiles,
+  workflowEvents,
+} from "./support/workflow-runner-policy.js";
 import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
@@ -398,6 +408,484 @@ describe("installer smoke and packaging discipline", () => {
     for (const name of workflowFileNames()) {
       assertReleaseSecretEnvironments(readRepoFile(`.github/workflows/${name}`), name);
     }
+  });
+
+  it("keeps every job a fork can trigger off self-hosted runners and away from write tokens", () => {
+    const violations = workflowFileNames()
+      .flatMap((name) => forkRunnerViolations(readRepoFile(`.github/workflows/${name}`), name));
+    expect(violations).toEqual([]);
+    // The rule is read, not vacuous: these workflows are fork-reachable and
+    // their jobs are the ones checked above.
+    const reachable = workflowFileNames().filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
+    });
+    expect(reachable).toEqual(["ci.yml", "cluster-detector.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
+    // Every runner variable a fork-reachable job reads goes through the guard.
+    for (const name of reachable) {
+      const source = readRepoFile(`.github/workflows/${name}`);
+      expect(source.match(/fromJSON\(vars\./gu)?.length ?? 0, name)
+        .toBe(source.split(TRUSTED_RUNNER_GUARD).length - 1);
+    }
+  });
+
+  /** A repository file's content, or undefined when the path is no file. */
+  const repoFile = (path: string): string | undefined => {
+    const absolute = resolve(root, path);
+    return existsSync(absolute) && statSync(absolute).isFile() ? readRepoFile(path) : undefined;
+  };
+  const allowListWhy = "pull_request_target runs with base-repo permissions; update the allow-list "
+    + "(PULL_REQUEST_TARGET_WORKFLOWS in workflow-runner-policy.ts) only after a security review";
+
+  it("pins every pull_request_target workflow, and every file it executes, to a reviewed allow-list entry", () => {
+    const names = workflowFileNames();
+    const violations = names.flatMap((name) =>
+      pullRequestTargetAllowListViolations(readRepoFile(`.github/workflows/${name}`), name, repoFile));
+    expect(violations).toEqual([]);
+    // The list is exact: every entry is a workflow that exists and runs on
+    // pull_request_target, so a removed or retriggered one leaves no stale pin.
+    const targets = names.filter((name) => {
+      const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
+      return workflowEvents(on).includes("pull_request_target");
+    });
+    expect(Object.keys(PULL_REQUEST_TARGET_WORKFLOWS).sort()).toEqual(targets);
+    expect(targets).toEqual(["cluster-detector.yml"]);
+    // The derivation is read, not vacuous: the scope script the workflow runs
+    // from its .cluster-policy checkout, and the module that script imports.
+    expect(pullRequestTargetExecutedFiles(
+      "cluster-detector.yml",
+      readRepoFile(".github/workflows/cluster-detector.yml"),
+      repoFile,
+    ).files).toEqual([
+      ".github/workflows/cluster-detector.yml",
+      "scripts/check-cluster-scope.mjs",
+      "scripts/check-cluster-sensitive-paths.mjs",
+    ]);
+  });
+
+  it("refuses an edited or unlisted pull_request_target workflow until the allow-list is updated", () => {
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const edited = cluster.replace("CLUSTER_THRESHOLD=3", "CLUSTER_THRESHOLD=4");
+    expect(edited).not.toBe(cluster);
+    const [changed, ...rest] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml", repoFile);
+    expect(rest).toEqual([]);
+    expect(changed).toMatch(/^\.github\/workflows\/cluster-detector\.yml changed since its pull_request_target review of cluster-detector\.yml \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
+    expect(changed?.endsWith(allowListWhy)).toBe(true);
+    // Line endings alone are not an edit: a Windows checkout reads CRLF.
+    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml", repoFile))
+      .toEqual([]);
+    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml", repoFile))
+      .toEqual([`copy.yml is not on the pull_request_target allow-list: ${allowListWhy}`]);
+    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml", repoFile))
+      .toEqual([]);
+  });
+
+  describe("files a pull_request_target workflow executes", () => {
+    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const withFile = (path: string, content: string) => (candidate: string): string | undefined =>
+      (candidate === path ? content : repoFile(candidate));
+
+    it.each([
+      ["the scope script it runs", "scripts/check-cluster-scope.mjs"],
+      ["the module that script imports", "scripts/check-cluster-sensitive-paths.mjs"],
+    ])("refuses an edit to %s without a re-pin", (_label, path) => {
+      const edited = `${repoFile(path) as string}\n// edited\n`;
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", withFile(path, edited));
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(new RegExp(`^${path.replace(/\./gu, "\\.")} changed since its pull_request_target review of cluster-detector\\.yml `, "u"));
+      expect(violations[0]?.endsWith(allowListWhy)).toBe(true);
+    });
+
+    it("refuses a new import that the allow-list does not pin", () => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const edited = `import { errorMessage } from "./lib/error-message.mjs";\n${repoFile(path) as string}`;
+      const read = (candidate: string) => (candidate === "scripts/lib/error-message.mjs" ? "export {};\n" : withFile(path, edited)(candidate));
+      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", read);
+      expect(violations).toHaveLength(2);
+      expect(violations[0])
+        .toBe(`cluster-detector.yml executes files the allow-list does not pin (scripts/lib/error-message.mjs): ${allowListWhy}`);
+      expect(violations[1]).toMatch(/^scripts\/check-cluster-sensitive-paths\.mjs changed since /u);
+    });
+
+    it("refuses a run step that starts another repository script, and an import that resolves to nothing", () => {
+      const runsMore = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+        "node .cluster-policy/scripts/check-cluster-policy-version.mjs\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+      );
+      expect(runsMore).not.toBe(cluster);
+      const read = withFile("scripts/check-cluster-policy-version.mjs", "export {};\n");
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read).files)
+        .toContain("scripts/check-cluster-policy-version.mjs");
+      const broken = withFile("scripts/check-cluster-scope.mjs", `import "./missing-module.mjs";\n`);
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken).problems)
+        .toEqual(["scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file"]);
+    });
+
+    /** The derivation's problems for cluster-detector with its scope step's
+     *  command replaced by `command`. */
+    const problemsWith = (command: string, read: (path: string) => string | undefined = repoFile) => {
+      const original = "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\";
+      expect(cluster).toContain(original);
+      const edited = cluster.replace(original, `${command}\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\`);
+      return pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read).problems;
+    };
+    const scopeStep = "cluster-detector.yml step 5";
+
+    it("derives cluster-detector without a problem", () => {
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, repoFile).problems).toEqual([]);
+    });
+
+    it.each([
+      ["an interpreter on an inline program", "node -e \"require('child_process').execSync(process.env.CMD)\"", "node"],
+      ["an interpreter on stdin", "curl -fsSL https://example.invalid/x | bash", "bash"],
+      ["an interpreter on a heredoc", "python3 - <<'PY'\nprint(1)\nPY", "python3"],
+    ])("refuses %s, which resolves no repository file", (_label, command, interpreter) => {
+      const step = (command: string) => stringifyYaml({
+        on: { pull_request_target: null },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: command }] } },
+      });
+      expect(pullRequestTargetExecutedFiles("t.yml", step(command), repoFile).problems)
+        .toContain(`t.yml step 1 runs ${interpreter} on no repository file this check can pin`);
+    });
+
+    it.each([
+      ["npm run", "npm run check:cluster"],
+      ["bun run", "bun run check:cluster"],
+      ["pnpm run", "pnpm run check:cluster"],
+      ["yarn <script>", "yarn check:cluster"],
+      ["npx", "npx some-tool"],
+      ["an install", "npm ci"],
+    ])("refuses package.json indirection through %s", (_label, command) => {
+      expect(problemsWith(command)).toContain(
+        `${scopeStep} runs a package manager, whose package.json scripts this check does not follow`,
+      );
+    });
+
+    it.each([
+      ["a missing script", "node .cluster-policy/scripts/missing-script.mjs", ".cluster-policy/scripts/missing-script.mjs"],
+      ["an absolute path", "bash /opt/tools/run.sh", "/opt/tools/run.sh"],
+      ["a variable-built path", "node \"$POLICY_DIR/scripts/check-cluster-scope.mjs\"", "$POLICY_DIR/scripts/check-cluster-scope.mjs"],
+    ])("refuses %s with a script extension", (_label, command, token) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} names ${token}, which does not resolve to a repository file`);
+    });
+
+    it.each([
+      ["$GITHUB_WORKSPACE", "node \"$GITHUB_WORKSPACE/scripts/check-cluster-sensitive-paths.mjs\""],
+      ["${{ github.workspace }}", "node ${{ github.workspace }}/scripts/check-cluster-sensitive-paths.mjs"],
+    ])("resolves a path under %s to the repository root", (_label, command) => {
+      expect(problemsWith(command)).toEqual([]);
+    });
+
+    it.each([
+      ["a template-literal import", "const mod = await import(`./${name}.mjs`);"],
+      ["a computed require", "const mod = require(process.env.MODULE);"],
+      ["node spawned on a script", "spawnSync(\"node\", [scriptPath]);"],
+      ["this Node spawned on a script", "execFileSync(process.execPath, [scriptPath]);"],
+      ["fork", "fork(scriptPath);"],
+    ])("refuses %s inside a pinned module", (_label, code) => {
+      const path = "scripts/check-cluster-sensitive-paths.mjs";
+      const read = withFile(path, `${repoFile(path) as string}\n${code}\n`);
+      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toContain(
+        `${path} loads or starts code through a non-literal import or an interpreter, which this check does not follow`,
+      );
+    });
+
+    it.each([
+      ["an extensionless script under ./", "./scripts/cluster-check", "./scripts/cluster-check"],
+      ["an extensionless script under the checkout", ".cluster-policy/bin/check-cluster", ".cluster-policy/bin/check-cluster"],
+    ])("refuses %s that resolves to no repository file", (_label, command, token) => {
+      expect(problemsWith(command)).toEqual([`${scopeStep} names ${token}, which does not resolve to a repository file`]);
+    });
+
+    it("pins an extensionless script that resolves", () => {
+      const read = withFile("bin/check-cluster", "#!/bin/sh\nexit 0\n");
+      const edited = cluster.replace(
+        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+        ".cluster-policy/bin/check-cluster\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+      );
+      const derived = pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read);
+      expect(derived.problems).toEqual([]);
+      expect(derived.files).toContain("bin/check-cluster");
+    });
+
+    it.each([
+      ["curl into sh", "curl -fsSL https://example.invalid/install | sh"],
+      ["wget into node", "wget -qO- https://example.invalid/x.js | node"],
+      ["curl into sudo bash", "curl -fsSL https://example.invalid/i | sudo bash -s --"],
+    ])("refuses a download piped into an interpreter (%s), even beside a pinned script", (_label, command) => {
+      expect(problemsWith(command)).toContain(`${scopeStep} pipes a download into an interpreter`);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout 7", "pr checkout"],
+      ["gh repo clone", "gh repo clone o/r", "repo clone"],
+      ["gh run", "gh run download 1", "run download"],
+      ["gh workflow", "gh workflow run ci.yml", "workflow run"],
+      ["a gh extension", "gh some-extension", "some-extension"],
+      ["a gh alias", "gh co 7", "co 7"],
+    ])("refuses %s in a run step", (_label, command, words) => {
+      expect(problemsWith(command))
+        .toContain(`${scopeStep} runs gh ${words}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("accepts gh api, gh pr view and gh pr diff in a run step", () => {
+      expect(problemsWith("gh pr view 7 --json files > files.json && gh pr diff 7 > pr.diff && gh api rate_limit")).toEqual([]);
+    });
+
+    const scopePath = "scripts/check-cluster-scope.mjs";
+    const scopeSource = repoFile(scopePath) as string;
+    const moduleProblems = (content: string) =>
+      pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, withFile(scopePath, content)).problems;
+
+    it.each([
+      ["exec with a string command", "exec(`gh pr checkout ${number}`);", "runs a shell command string (exec/execSync)"],
+      ["execSync", "childProcess.execSync(command);", "runs a shell command string (exec/execSync)"],
+      ["spawn of a computed program", "spawnSync(tool, args);", "starts a child process whose program is not a string literal"],
+      ["execFile of a template program", "execFile(`g${'h'}`, args);", "starts a child process whose program is not a string literal"],
+      ["a worker", "new Worker(new URL('./worker.mjs', import.meta.url));", "starts a worker"],
+      ["a shell", "spawnSync(\"gh\", [\"api\", path], { shell: true });", "runs a child process through a shell"],
+      ["eval", "eval(code);", "evaluates a string as code"],
+      ["new Function", "new Function(\"return 1\")();", "builds a function from a string"],
+    ])("refuses %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`)).toContain(`${scopePath} ${what}, which this check does not follow`);
+    });
+
+    it.each([
+      ["pr checkout", "spawnSync(\"gh\", [\"pr\", \"checkout\", number]);", "runs gh pr checkout"],
+      ["repo clone", "spawnSync(\"gh\", [\"repo\", \"clone\", repo]);", "runs gh repo clone"],
+      ["an extension", "spawnSync(\"gh\", [\"some-extension\"]);", "runs gh some-extension"],
+      ["args from a parameter", "function run(args) {\n  return spawnSync(\"gh\", args);\n}", "runs gh with args"],
+    ])("refuses gh %s inside a pinned module", (_label, code, what) => {
+      expect(moduleProblems(`${scopeSource}\n${code}\n`))
+        .toContain(`${scopePath} ${what}, which is not gh api, gh pr view or gh pr diff`);
+    });
+
+    it("reads createGhApiRequester's args literal, so changing its subcommand is refused", () => {
+      expect(moduleProblems(scopeSource)).toEqual([]);
+      const original = 'const args = ["api", "--method", "GET", endpoint];';
+      expect(scopeSource).toContain(original);
+      expect(moduleProblems(scopeSource.replace(original, 'const args = ["run", "--method", "GET", endpoint];')))
+        .toEqual([`${scopePath} runs gh run --method, which is not gh api, gh pr view or gh pr diff`]);
+      expect(moduleProblems(`${scopeSource}\nspawnSync("gh", ["pr", "view", "7"]);\nspawnSync("gh", ["pr", "diff", "7"]);\n`)).toEqual([]);
+    });
+
+    it("refuses a source include inside a pinned shell script", () => {
+      const read = withFile("scripts/cluster-policy.sh", "set -e\nsource \"$HELPERS\"\n");
+      expect(problemsWith("bash .cluster-policy/scripts/cluster-policy.sh", read))
+        .toEqual(["scripts/cluster-policy.sh sources another file, which this check does not follow"]);
+    });
+  });
+
+  describe("fork runner policy mutations", () => {
+    const guarded = forkSafeRunsOn("AVE_LINUX_RUNNER", "ubuntu-latest");
+    const base = (job: Record<string, unknown>, on: unknown = { pull_request: null, push: null }) =>
+      stringifyYaml({ on, permissions: { contents: "read" }, jobs: { check: { steps: [{ run: "true" }], ...job } } });
+
+    it("accepts a hosted label and the shared guarded form", () => {
+      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest" }), "ok.yml")).toEqual([]);
+      expect(forkRunnerViolations(base({ "runs-on": guarded }), "ok.yml")).toEqual([]);
+      // A trusted-only workflow keeps its self-hosted release runner.
+      expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { workflow_dispatch: null }), "ok.yml"))
+        .toEqual([]);
+    });
+
+    it.each([
+      ["a self-hosted literal", "self-hosted"],
+      ["a label array", ["self-hosted", "Linux"]],
+      ["an unguarded variable", "${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
+      ["the fork-only guard that lets Dependabot through", "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}"],
+      ["the guard with a self-hosted fallback", forkSafeRunsOn("AVE_LINUX_RUNNER", "self-hosted")],
+      ["a matrix runner", "${{ matrix.os }}"],
+    ])("rejects %s on a fork-reachable job", (_label, runsOn) => {
+      expect(forkRunnerViolations(base({ "runs-on": runsOn }), "bad.yml")).toHaveLength(1);
+    });
+
+    it.each(["issue_comment", "pull_request_review", "workflow_run", "discussion_comment", "a_future_event"])(
+      "treats %s as fork-reachable",
+      (event) => {
+        expect(forkRunnerViolations(base({ "runs-on": "self-hosted" }, { [event]: null }), "bad.yml")).toHaveLength(1);
+      },
+    );
+
+    it("requires a permissions block and refuses write-all", () => {
+      const noPermissions = stringifyYaml({ on: "pull_request", jobs: { check: { "runs-on": "ubuntu-latest" } } });
+      expect(forkRunnerViolations(noPermissions, "bad.yml")).toEqual(["bad.yml:check has no permissions block"]);
+      expect(forkRunnerViolations(base({ "runs-on": "ubuntu-latest", permissions: "write-all" }), "bad.yml"))
+        .toEqual(["bad.yml:check grants write-all"]);
+    });
+
+    it("refuses pull request code, write tokens and secrets under pull_request_target", () => {
+      const target = (step: Record<string, unknown>, job: Record<string, unknown> = {}) =>
+        forkRunnerViolations(
+          base({ "runs-on": "ubuntu-latest", steps: [step], ...job }, { pull_request_target: null }),
+          "t.yml",
+        );
+      const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+      const trusted = { ref: "${{ steps.pr-snapshot.outputs.base_sha }}", "persist-credentials": false };
+      expect(target({ uses: checkout, with: trusted })).toEqual([]);
+      expect(target({ uses: checkout, with: { ...trusted, ref: "${{ github.event.pull_request.head.sha }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ...trusted, repository: "${{ github.event.pull_request.head.repo.full_name }}" } }))
+        .toHaveLength(1);
+      expect(target({ uses: checkout, with: { ref: trusted.ref } })).toHaveLength(1);
+      expect(target({ run: "true", env: { TOKEN: "${{ secrets.NPM_TOKEN }}" } })).toHaveLength(1);
+      expect(target({ run: "true" }, { permissions: { "pull-requests": "write" } })).toHaveLength(1);
+    });
+
+    const underTarget = (step: Record<string, unknown>) => forkRunnerViolations(
+      base({ "runs-on": "ubuntu-latest", steps: [step] }, { pull_request_target: null }),
+      "t.yml",
+    );
+
+    it.each([
+      ["the whole context serialized", { run: "echo \"${{ toJSON(secrets) }}\"" }],
+      ["the bare context", { run: "true", env: { ALL: "${{ secrets }}" } }],
+      ["the context passed to a function", { run: "true", env: { ALL: "${{ format('{0}', secrets) }}" } }],
+      ["a computed key", { run: "true", env: { ONE: "${{ secrets[inputs.name] }}" } }],
+      ["a step condition", { run: "true", if: "secrets.NPM_TOKEN != ''" }],
+    ])("refuses a secret read under pull_request_target through %s", (_label, step) => {
+      expect(underTarget(step)).toEqual(["t.yml reads a secret under pull_request_target"]);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout ${{ github.event.pull_request.number }}"],
+      ["a pull/<n>/head refspec", "git fetch origin pull/${{ github.event.pull_request.number }}/head:pr && git switch pr"],
+      ["a pull/<n>/merge refspec", "git fetch origin +pull/7/merge"],
+      ["a refs/pull/ ref", "git fetch origin refs/pull/7/head"],
+      ["the head sha from the payload", "git fetch origin && git checkout ${{ github.event.pull_request.head.sha }}"],
+      ["the head branch", "git checkout \"${{ github.head_ref }}\""],
+    ])("refuses a run step that fetches pull request code under pull_request_target through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(["t.yml:check fetches pull request code in a run step under pull_request_target"]);
+    });
+
+    const fetchesPullRequestCode = ["t.yml:check fetches pull request code in a run step under pull_request_target"];
+
+    it.each([
+      ["a head sha set on one line and checked out on a later one",
+        "SHA='${{ github.event.pull_request.head.sha }}'\necho \"checking $SHA\"\ngit checkout \"$SHA\""],
+      ["the head branch from the runner's environment", "git fetch origin \"$GITHUB_HEAD_REF\""],
+      ["the head sha read from the event file",
+        "H=$(jq -r .pull_request.head.sha \"$GITHUB_EVENT_PATH\")\ngit fetch origin \"$H\""],
+    ])("refuses a multi-line run step that fetches pull request code through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(fetchesPullRequestCode);
+    });
+
+    it("refuses a run step that reaches the head commit through step or job env", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      expect(underTarget({ env: { H: head }, run: "git fetch origin \"$H\"" })).toEqual(fetchesPullRequestCode);
+      expect(forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", env: { H: head }, steps: [{ run: "set -e\ngit fetch origin $H" }] },
+          { pull_request_target: null }),
+        "t.yml",
+      )).toEqual(fetchesPullRequestCode);
+      const workflowEnv = stringifyYaml({
+        on: { pull_request_target: null },
+        permissions: { contents: "read" },
+        env: { REF: "${{ github.head_ref }}" },
+        jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: "gh repo clone o/r -- --branch \"$REF\"" }] } },
+      });
+      expect(forkRunnerViolations(workflowEnv, "t.yml")).toEqual(fetchesPullRequestCode);
+      // The same reference with no git or gh in the step is not a checkout.
+      expect(underTarget({ env: { H: head }, run: "echo \"$H\"" })).toEqual([]);
+    });
+
+    describe("pull request references passed between steps", () => {
+      const head = "${{ github.event.pull_request.head.sha }}";
+      const writeHead = { id: "a", run: `echo "sha=${head}" >> "$GITHUB_OUTPUT"` };
+      const steps = (...list: Record<string, unknown>[]) => forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const job = (extra: Record<string, unknown>, ...list: Record<string, unknown>[]) => forkRunnerViolations(
+        base({ "runs-on": "ubuntu-latest", steps: list, ...extra }, { pull_request_target: null }),
+        "t.yml",
+      );
+      const reason = (text: string) => [`t.yml:check ${text} under pull_request_target`];
+      const fetches = reason("fetches pull request code in a run step");
+
+      it.each<[string, Record<string, unknown>[], string[]]>([
+        ["an output read in a later script", [writeHead, { run: "git fetch origin ${{ steps.a.outputs.sha }}" }], fetches],
+        ["an output read through a later step's env", [
+          { id: "a", env: { H: head }, run: "echo \"sha=$H\" >> $GITHUB_OUTPUT" },
+          { env: { S: "${{ steps.a.outputs.sha }}" }, run: "set -e\ngit checkout \"$S\"" },
+        ], fetches],
+        ["an output relayed through a step that runs no git", [
+          writeHead,
+          { id: "b", run: "echo \"relay=${{ steps.a.outputs.sha }}\" >> \"$GITHUB_OUTPUT\"" },
+          { run: "gh pr diff ${{ steps.b.outputs.relay }}" },
+        ], fetches],
+        ["the head the API returned, written by the step that fetched it", [
+          { id: "a", run: "gh api repos/o/r/pulls/7 --jq .head.sha >> \"$GITHUB_OUTPUT\"" },
+        ], fetches],
+        ["$GITHUB_ENV", [{ run: `echo "PR_SHA=${head}" >> "$GITHUB_ENV"` }, { run: "git fetch origin \"$PR_SHA\"" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["$GITHUB_PATH", [{ env: { REF: "${{ github.head_ref }}" }, run: "echo \"$RUNNER_TEMP/$REF\" >> $GITHUB_PATH" }],
+          reason("exports a pull request reference through $GITHUB_ENV or $GITHUB_PATH")],
+        ["an action input", [writeHead, {
+          uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          with: { ref: "${{ steps.a.outputs.sha }}", "persist-credentials": false },
+        }], reason("passes a pull request reference from an earlier step to an action")],
+      ])("refuses a pull request reference handed on through %s", (_label, list, expected) => {
+        expect(steps(...list)).toEqual(expected);
+      });
+
+      it.each<[string, string]>([
+        ["the whole context serialized", "git fetch origin \"$(echo '${{ toJSON(steps) }}' | jq -r .a.outputs.sha)\""],
+        ["a bracketed output name", "git fetch origin ${{ steps.a.outputs['sha'] }}"],
+        ["a bracketed step id", "git fetch origin ${{ steps['a'].outputs.sha }}"],
+        ["a wildcard step", "git fetch origin ${{ join(steps.*.outputs.sha, ' ') }}"],
+        ["upper-case context and property names", "git fetch origin ${{ STEPS.A.OUTPUTS.sha }}"],
+      ])("refuses a tainted step output read through %s", (_label, run) => {
+        expect(steps(writeHead, { run })).toEqual(fetches);
+      });
+
+      it("lets an exact read of an untainted step through while another step is tainted", () => {
+        expect(steps(
+          { id: "clean", run: "echo \"base=abc\" >> \"$GITHUB_OUTPUT\"" },
+          writeHead,
+          { run: "git -C policy cat-file -e ${{ steps.clean.outputs.base }}" },
+        )).toEqual([]);
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        ["a github-script input", {
+          uses: "actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          with: { script: "await exec.exec('git', ['fetch', 'origin', context.payload.pull_request.head.sha])" },
+        }],
+        ["an action's env", {
+          uses: "some/action@60a0d83039c74a4aee543508d2ffcb1c3799cdea",
+          env: { REF: "${{ github.event.pull_request.head.ref }}" },
+        }],
+      ])("refuses pull request code handed straight to an action through %s", (_label, step) => {
+        expect(steps(step)).toEqual(reason("passes pull request code to an action"));
+      });
+
+      it.each([
+        ["the head repository's clone URL", "url=$(gh api repos/o/r/pulls/7 --jq .head.repo.clone_url)\ngit clone \"$url\" pr"],
+        ["the head repository's name", "gh repo clone \"$(gh api repos/o/r/pulls/7 --jq '.head.repo.full_name')\""],
+        ["a jq pipe from .head", "sha=$(gh api repos/o/r/pulls/7 | jq -r '.head | .sha')\ngit fetch origin \"$sha\""],
+      ])("refuses a run step that reaches %s", (_label, run) => {
+        expect(steps({ run })).toEqual(fetches);
+      });
+
+      it("refuses a job output that maps a tainted step output", () => {
+        expect(job({ outputs: { sha: "${{ steps.a.outputs.sha }}" } }, writeHead))
+          .toEqual(reason("maps a pull request reference to a job output"));
+      });
+
+      it("lets a tainted output gate a later git step, and an untainted one feed it", () => {
+        expect(steps(
+          { id: "snapshot", run: "gh api repos/o/r/pulls/7 --jq .base.sha | sed 's/^/base_sha=/' >> \"$GITHUB_OUTPUT\"" },
+          { id: "current", env: { H: head }, run: "echo \"superseded=$([ \"$H\" = x ] && echo true || echo false)\" >> \"$GITHUB_OUTPUT\"" },
+          { if: "steps.current.outputs.superseded != 'true'", env: { B: "${{ steps.snapshot.outputs.base_sha }}" },
+            run: "git -C policy rev-parse HEAD | grep -qx \"$B\"" },
+        )).toEqual([]);
+      });
+    });
+
+    it("reads secrets as an expression context, not as a word in a script", () => {
+      expect(underTarget({ run: "cat secrets.txt && git log --oneline -1" })).toEqual([]);
+    });
   });
 
   it.each([

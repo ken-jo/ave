@@ -29,11 +29,8 @@ jobs:
     name: Analyze (${{ matrix.language }})
     # Default setup ran on ubuntu-latest; keep parity so any tooling
     # assumptions about the runner image stay valid.
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
