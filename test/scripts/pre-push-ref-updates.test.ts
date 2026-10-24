@@ -208,6 +208,8 @@ describe("new-branch base", () => {
         ref: "refs/heads/main", count: 1,
       });
     } finally {
+      // git writes loose objects read-only, and on Windows the synchronous
+      // rmSync refuses read-only files; the async removal clears the attribute.
       await cleanupTmpDir(root);
     }
   });

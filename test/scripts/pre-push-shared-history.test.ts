@@ -41,6 +41,8 @@ function sandbox() {
     return git(dir, ["rev-parse", "HEAD"]);
   };
   const update = (localSha: string, ref = "refs/heads/feat/x") => ({ localRef: ref, localSha, remoteRef: ref, remoteSha: ZERO });
+  // git writes loose objects read-only, and on Windows the synchronous rmSync
+  // refuses read-only files; the async removal clears the attribute.
   return { root, env, git, run, init, commit, update, cleanup: () => cleanupTmpDir(root) };
 }
 

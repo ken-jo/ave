@@ -11,6 +11,8 @@ import {
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
 import { packagedDocumentInputs } from "../../scripts/lib/document-consumer-guard.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+// Git writes loose objects read-only, and Electron's synchronous recursive removal
+// refuses read-only files on Windows; the async removal clears the attribute.
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const root = resolve(import.meta.dirname, "../..");

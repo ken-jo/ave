@@ -1,7 +1,7 @@
-const { mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { join, relative, resolve, sep } = require("node:path");
 const { deflateSync } = require("node:zlib");
-const { sameDecodedImage } = require("./lib/decoded-image.cjs");
+const { normalizedImage } = require("./lib/normalized-image.cjs");
 
 const root = resolve(__dirname, "..");
 const buildDir = join(root, "build");
@@ -558,21 +558,19 @@ function encodeIco(sourceRgba, sourceSize, sizes) {
 const emitted = [];
 
 /**
- * An existing file that depicts the same image is left as it is. `deflate`
- * output depends on the zlib the runtime links, so rewriting it would change
- * the bytes of the tracked installer icons on every build and test run (as
- * Windows Node does against the committed blobs) and dirty the worktree for no
- * visible difference — which the pre-push hook then refuses as a dirty tree.
+ * Keep an existing image that already depicts what the generator drew.
+ *
+ * `deflate` output depends on the zlib the runtime links, so a checkout whose
+ * Node differs from the one that produced the committed icons would rewrite
+ * them with new bytes but the same pixels. check-generated-assets accepts that
+ * as encoder freedom, but the rewrite still dirties the tree, and the pre-push
+ * hook refuses a dirty tree after its build. Only a change to what the image
+ * shows is written.
  */
-function emit(path, data) {
-  const contents = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
-  let existing = null;
-  try {
-    existing = readFileSync(path);
-  } catch {}
-  if (existing === null || !(existing.equals(contents) || sameDecodedImage(existing, contents))) {
-    writeFileSync(path, contents);
-  }
+function emit(path, contents) {
+  const before = existsSync(path) ? normalizedImage(readFileSync(path)) : null;
+  const after = before === null ? null : normalizedImage(contents);
+  if (before === null || after === null || !before.equals(after)) writeFileSync(path, contents);
   emitted.push(path);
 }
 

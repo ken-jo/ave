@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -161,7 +161,7 @@ describe("settings persistence", () => {
         .toThrowError(expect.objectContaining({ code: "lease-audience-denied" }));
     }
   });
-  // Replacing an open destination requires filesystem semantics unavailable here.
+
   it.skipIf(process.platform === "win32")("lets an existing reader finish the previous complete settings while publishing the next version", async () => {
     const path = settingsFilePath(root);
     const before = readFileSync(path, "utf8");
@@ -176,6 +176,26 @@ describe("settings persistence", () => {
     } finally {
       closeSync(fd);
     }
+  });
+
+  // Windows cannot rename over a file another handle holds open, so the bounded
+  // lock retry gives up and the publish fails instead of racing the reader. The
+  // reader and the file must both keep the previous complete settings.
+  it.runIf(process.platform === "win32")("keeps the previous complete settings for an open reader when Windows refuses the publish", async () => {
+    const path = settingsFilePath(root);
+    const before = readFileSync(path, "utf8");
+    const fd = openSync(path, "r");
+    try {
+      await expect(service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } }))
+        .rejects.toMatchObject({ code: "EPERM" });
+      expect(readFileSync(fd, "utf8")).toBe(before);
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      closeSync(fd);
+    }
+    await service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    expect(JSON.parse(readFileSync(path, "utf8")).system.hardwareAcceleration).toBe(true);
   });
 
   it.skipIf(process.platform === "win32")("replaces a settings symlink without overwriting its target", async () => {

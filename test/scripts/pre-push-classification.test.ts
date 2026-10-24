@@ -14,6 +14,8 @@ import {
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+// Git writes loose objects read-only, and Electron's synchronous recursive removal
+// refuses read-only files on Windows; the async removal clears the attribute.
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");

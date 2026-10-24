@@ -230,7 +230,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           : { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
-      // Unix uses a shell wrapper; the native runtime uses its dispatch flag.
+      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "--srt-win",
+      // "exec", ...], the dispatch argument ASRT prepends to every srt-win spawn.
       expect(argv.length).toBeGreaterThanOrEqual(3);
       if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
       else expect(argv[1]).toBe("-c");

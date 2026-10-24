@@ -192,9 +192,13 @@ describe("terminal_run permission", () => {
     expect(isSessionOnlyApprovalMemoryScope(memory.scope)).toBe(true);
     // Each terminal's shell has its own sandbox jail, fixed when it spawned,
     // so a decision for one terminal is not one for another.
-    expect(memory.key).toContain(terminalCwd);
-    expect(memory.key).toContain(TAB);
+    // The key is the tool name and a JSON identity: compare the parsed scope,
+    // since JSON escapes the backslashes of a Windows directory.
+    expect(memory.key.startsWith("terminal_run:")).toBe(true);
+    const { scope } = JSON.parse(memory.key.slice("terminal_run:".length)) as { scope: Record<string, unknown> };
+    expect(scope).toMatchObject({ cwd: terminalCwd, tabId: TAB });
     // The directory the card compares is derived, not part of the decision.
+    expect(scope).not.toHaveProperty("cwdForMatch");
     expect(memory.key).not.toContain("cwdForMatch");
   });
 });

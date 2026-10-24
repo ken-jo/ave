@@ -20,12 +20,8 @@ import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 import * as executableLocation from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  if (process.platform !== "win32") return original;
-  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
-  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
-});
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
@@ -194,7 +190,8 @@ describe("native executable resolution", () => {
     await expect(resolveCodexNativeExecutable("/tmp/co\u0000dex")).rejects.toBeInstanceOf(CodexUserRuntimeError);
   });
 
-  it("routes a 64-bit universal executable to full copy validation", async () => {
+  // The darwin route takes a POSIX absolute path, which a Windows temp root is not.
+  it.runIf(HOST !== "win32")("routes a 64-bit universal executable to full copy validation", async () => {
     const root = tempRoot();
     const bytes = Buffer.alloc(8192);
     bytes.writeUInt32BE(0xcafebabf, 0); bytes.writeUInt32BE(1, 4);
@@ -666,9 +663,14 @@ describe("CodexUserRuntimeLocator", () => {
   it("finds a CLI installed after it reported none, without being pointed at it", async () => {
     // "Check again" on the settings card is just another resolve: the user
     // installs the CLI and Ave finds it where the installer put it.
-    const { root, locator } = locatorHarness();
+    // Each platform's installer writes to its own official location.
+    const { root, locator } = locatorHarness({
+      env: (base) => ({ PATH: join(base, "path-bin"), LOCALAPPDATA: join(base, "local-app-data") }),
+    });
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
-    writeNative(join(root, "user-home", ".local", "bin", NATIVE_NAME));
+    writeNative(HOST === "win32"
+      ? join(root, "local-app-data", "Programs", "OpenAI", "Codex", "bin", NATIVE_NAME)
+      : join(root, "user-home", ".local", "bin", NATIVE_NAME));
     await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
   });
 
@@ -688,12 +690,14 @@ describe("CodexUserRuntimeLocator", () => {
   });
 
   it("runs real probes without a shell and reads their output", async () => {
-    // A standalone executable reports no CLI version, so a completed real probe
-    // yields an invalid-executable verdict rather than a start failure.
+    // A system utility reports no CLI version, so a completed real probe
+    // yields an invalid-executable verdict rather than a start failure. On
+    // Windows the copy must start without sibling DLLs, which rules out the
+    // Electron test host and leaves the standalone Node it was launched from.
     const { root, locator } = locatorHarness({ realProbes: true });
     const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
-    const utility = HOST === "win32" ? process.env.AVE_TEST_NODE_EXEC_PATH! : "/usr/bin/true";
-    copyFileSync(utility, native); chmodSync(native, 0o700);
+    const standalone = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    copyFileSync(HOST === "win32" ? standalone : "/usr/bin/true", native); chmodSync(native, 0o700);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
   });
 

@@ -209,7 +209,8 @@ an unconfined host. Normal tool authorization and structural command checks
 still apply; a missing or changed capability never degrades to host execution.
 
 `--exec-workload-broker` and `--exec-workload-capability` select the separate
-host-native workload-broker route. Both values must be absolute and both flags
+host-native workload-broker route. They are Linux-only; native Windows refuses
+them at parse time. Both values must be absolute and both flags
 must appear together with `--exec`. They cannot be combined with `--set-secret`
 or `--exec-operator-attestation`. The example paths illustrate the required
 shape; the launcher must pass the exact socket and capability paths it created.

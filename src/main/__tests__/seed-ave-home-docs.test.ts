@@ -431,9 +431,18 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     expect(r.upgraded).toContain("AGENTS.md");
     // v3 shipped, so that marker holds no user work — the same evidence under
     // which the in-place path would have overwritten the user's own copy.
+    // Without O_NOFOLLOW (Windows) the marker cannot be hashed without
+    // following a link, so the prune fails closed and keeps it.
     const dated = datedMarkers();
-    expect(dated).toHaveLength(1);
-    expect(readFileSync(join(home, dated[0]), "utf8")).toBe("AGENTS v4\n");
+    if (typeof fsConstants.O_NOFOLLOW === "number") {
+      expect(dated).toHaveLength(1);
+      expect(readFileSync(join(home, dated[0]), "utf8")).toBe("AGENTS v4\n");
+    } else {
+      expect(dated.map((f) => readFileSync(join(home, f), "utf8")).sort()).toEqual([
+        "AGENTS v3\n",
+        "AGENTS v4\n",
+      ]);
+    }
     // The undated marker is the path a pending upgrade is surfaced under and
     // is left alone even when its bytes are allowlisted.
     expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");

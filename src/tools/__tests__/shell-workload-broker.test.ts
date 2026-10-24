@@ -192,6 +192,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// A brokered shell sends its cwd to a Linux guest, but the tool binds and
+// consumes the grant on the host-resolved cwd, which equals the POSIX guest
+// path only on a POSIX host. Native Windows refuses the broker flags at parse
+// time, so cases that dispatch a guest cwd to the broker are Linux-only.
+const itPosixGuest = it.skipIf(process.platform === "win32");
+// Broker grants bind the guest path independently of the host's filesystem.
+const guestResolvedCwd = (guestPath: string) => posix.resolve(guestPath);
+
 describe("brokered workload shell execution", () => {
   it.each([undefined, "subdir"])("resolves cwd %s inside the guest workload, independent of the host cwd", async (cwd) => {
     const command = "pwd";
@@ -210,7 +218,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("uses the exact grant capability and accepts a clean non-default guest cwd", async () => {
+  itPosixGuest("uses the exact grant capability and accepts a clean non-default guest cwd", async () => {
     const command = "pwd";
     const cwd = "/tmp";
     const binding = issueBrokerShellGrant({ command, cwd });
@@ -244,7 +252,7 @@ describe("brokered workload shell execution", () => {
 
   it("accepts the broker protocol maximum timeout", async () => {
     const command = "long-build";
-    const cwd = "/app";
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, timeoutSeconds: 3_600 });
     broker.execute.mockResolvedValueOnce(successfulRun("done"));
 
@@ -265,7 +273,7 @@ describe("brokered workload shell execution", () => {
 
   it("returns an actionable broker timeout-limit error above 3600 seconds without sending a request", async () => {
     const command = "too-long-build";
-    const cwd = "/app";
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, timeoutSeconds: 3_601 });
 
     const result = await new BashTool().execute(
@@ -279,7 +287,7 @@ describe("brokered workload shell execution", () => {
     expect(broker.execute).not.toHaveBeenCalled();
   });
 
-  it.each([
+  itPosixGuest.each([
     ["timed-out", /timed out/i],
     ["cancelled", /cancelled/i],
     ["oom-killed", /OOM-killed/i],
@@ -302,7 +310,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("preserves a large foreground result as an output artifact", async () => {
+  itPosixGuest("preserves a large foreground result as an output artifact", async () => {
     const command = "emit-large-output";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd });
@@ -344,7 +352,7 @@ describe("brokered workload shell execution", () => {
 
   it("fails closed for missing, forged, replayed, and changed broker grants", async () => {
     const command = "printf should-not-run";
-    const cwd = "/workspace";
+    const cwd = guestResolvedCwd("/workspace");
     broker.execute.mockResolvedValue(successfulRun());
 
     const missing = await new BashTool().execute(
@@ -443,7 +451,7 @@ describe("brokered workload shell execution", () => {
 
   it("returns broker transport failures without trying a host process", async () => {
     const command = "make all";
-    const cwd = "/app";
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd });
     const failure: ToolExecutionResult = {
       output: "Workload broker refused execution (handshake-binding-mismatch).",
@@ -468,7 +476,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("routes background start, read, and kill through the same broker capability", async () => {
+  itPosixGuest("routes background start, read, and kill through the same broker capability", async () => {
     const command = "serve";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
@@ -573,7 +581,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("advances background cursors in UTF-8 bytes and de-duplicates full kill output", async () => {
+  itPosixGuest("advances background cursors in UTF-8 bytes and de-duplicates full kill output", async () => {
     const command = "unicode-stream";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
@@ -640,7 +648,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects a broker read whose cursor advances by characters instead of UTF-8 bytes", async () => {
+  itPosixGuest("rejects a broker read whose cursor advances by characters instead of UTF-8 bytes", async () => {
     const command = "bad-unicode-cursor";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
@@ -677,7 +685,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("tracks broker session disposal until terminal cleanup is proven", async () => {
+  itPosixGuest("tracks broker session disposal until terminal cleanup is proven", async () => {
     const command = "serve-until-dispose";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
@@ -749,7 +757,7 @@ describe("brokered workload shell execution", () => {
     expect(spawnSpy).not.toHaveBeenCalled();
   });
 
-  it("preserves capability-expired disposal as cleanup-unproven for external release", async () => {
+  itPosixGuest("preserves capability-expired disposal as cleanup-unproven for external release", async () => {
     const command = "serve-across-expiry";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
@@ -885,7 +893,7 @@ describe("brokered workload shell execution", () => {
 
   it("does not start a background job that would outlive its broker capability", async () => {
     const command = "too-late";
-    const cwd = "/app";
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     const expiresAt = Date.parse(broker.capability.expiresAt);
     vi.spyOn(Date, "now").mockReturnValue(expiresAt - 25_000);

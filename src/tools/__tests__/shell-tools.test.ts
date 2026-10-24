@@ -11,15 +11,18 @@
 
 import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-ast.js";
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { powerShellLiteral as psLiteral } from "../../__tests__/support/powershell-ast.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolExecutionContext } from "../base.js";
@@ -319,8 +322,9 @@ describe("bash tool", () => {
       mkdirSync(join(root, ".ssh"), { recursive: true });
       writeFileSync(target, "secret", "utf8");
       try {
+        // Quoted so bash keeps a Windows path's backslashes and names the file.
         const result = await new BashTool().execute(
-          { command: `cat '${target.replaceAll("\\", "/")}'`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          { command: `cat ${shellQuote(target)}`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
         expect(result.isError).toBe(true);
@@ -604,26 +608,65 @@ describe("powershell tool", () => {
       expect(completed.output).toBe("complete");
     }, 20_000);
 
-    it("cancels a running command and its native child", async () => {
+    it("cancels a running command and its native child", async ({ onTestFinished }) => {
       const dir = mkdtempSync(join(tmpdir(), "ave-native-cancel-"));
       const controller = new AbortController();
-      const pidFile = join(dir, "child.pid");
+      let reportChildPid!: (pid: number) => void;
+      const childPid = new Promise<number>((resolve) => { reportChildPid = resolve; });
+      let progress = "";
       const pending = _spawnPowerShellForTest(
-        "$child = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep 30' -PassThru; $child.Id | Set-Content child.pid; $child.WaitForExit()",
-        dir, 60, controller.signal,
+        "$child = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep 30' -PassThru; [Console]::Out.WriteLine('child-pid:' + $child.Id); $child.WaitForExit()",
+        dir, 60, controller.signal, undefined, {
+          write(text) {
+            progress += text;
+            const match = /^child-pid:([1-9][0-9]*)\r?$/m.exec(progress);
+            if (match) reportChildPid(Number(match[1]));
+          },
+          end() {},
+        },
       );
+      const cleanup = async () => {
+        controller.abort();
+        try { await pending; } finally { await cleanupTmpDir(dir); }
+      };
+      onTestFinished(cleanup);
       try {
-        await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 10_000 });
-        const pid = Number(readFileSync(pidFile, "utf8").replace(/^\uFEFF/, "").trim());
-        controller.abort();
-        const result = await pending;
-        expect(result.metadata?.aborted).toBe(true);
-        expect(result.isError).toBe(true);
-        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+        const pid = await Promise.race([childPid, pending.then(() => { throw new Error("Command ended before reporting its child"); })]);
+        // Keep this observer outside the command's process tree. Acquire the
+        // native handle before cancellation and retain it through the final
+        // probe, so exit notification and PID reuse cannot race the assertion.
+        const observer = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", [
+          "$ErrorActionPreference = 'Stop'",
+          `$target = [Diagnostics.Process]::GetProcessById(${pid})`,
+          "$null = $target.Handle",
+          "if ($target.HasExited) { throw 'Child exited before cancellation' }",
+          "[Console]::Out.WriteLine('observing')",
+          "$target.WaitForExit()",
+          "[Console]::Out.WriteLine('exited')",
+          "$null = [Console]::In.ReadLine()",
+          "$target.Dispose()",
+        ].join("; ")], { windowsHide: true });
+        let diagnostics = "";
+        observer.once("error", (error) => { diagnostics += error.message; });
+        const closed = new Promise<void>((resolve) => { observer.once("close", () => resolve()); });
+        let lines: ReturnType<typeof createInterface> | undefined;
+        const closeObserver = async () => { lines?.close(); observer.kill(); await closed; };
+        onTestFinished(closeObserver);
+        observer.stderr.on("data", (chunk: Buffer) => { diagnostics += chunk.toString(); });
+        lines = createInterface({ input: observer.stdout });
+        const output = lines[Symbol.asyncIterator]();
+        try {
+          expect((await output.next()).value, diagnostics).toBe("observing");
+          expect(process.kill(pid, 0)).toBe(true);
+          controller.abort();
+          const result = await pending;
+          expect(result.metadata?.aborted).toBe(true);
+          expect(result.isError).toBe(true);
+          expect((await output.next()).value, diagnostics).toBe("exited");
+          expect(() => process.kill(pid, 0)).toThrow();
+        } finally { await closeObserver(); }
       } finally {
-        controller.abort();
-        await pending;
-        cleanupTmpDir(dir);
+        await cleanup();
       }
     }, 20_000);
   });

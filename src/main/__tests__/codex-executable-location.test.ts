@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   assertCodexExecutableLocation,
+  assertCodexLocations,
   assertCodexPrivateRuntimeDirectory,
   CodexExecutableLocationError,
 } from "../codex-executable-location.js";
@@ -579,5 +580,50 @@ describe("native access-rule admission", () => {
     windowsFixture(candidate);
     await expect(assertCodexExecutableLocation(candidate)).rejects.toBeInstanceOf(CodexExecutableLocationError);
     expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("reads a batch's deduplicated routes through one access query", async () => {
+    windowsFixture();
+    await assertCodexLocations([
+      { path: String.raw`C:\Tools\one.exe`, kind: "executable" },
+      { path: String.raw`C:\Tools\nested\two.exe`, kind: "executable" },
+      { path: String.raw`C:\Tools\nested`, kind: "directory" },
+    ]);
+    expect(execFile).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(execFile).mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(JSON.parse(options.env.AVE_EXECUTABLE_ACL_PATHS!)).toEqual([
+      "C:\\", String.raw`C:\Tools`, String.raw`C:\Tools\one.exe`, String.raw`C:\Tools\nested`, String.raw`C:\Tools\nested\two.exe`,
+    ]);
+  });
+
+  it("refuses a batch when any one of its paths is writable by another account", async () => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => {
+      paths.find((entry) => entry.path === String.raw`C:\Tools\three.exe`)!.entries.push({ sid: FOREIGN_SID, mask: 2, flags: 0, type: 0 });
+    });
+    await expect(assertCodexLocations(["one", "two", "three", "four"].map((name) => ({
+      path: `C:\\Tools\\${name}.exe`, kind: "executable" as const,
+    })))).rejects.toThrow("writable by another account");
+  });
+
+  it("splits a large batch into bounded queries that each cover their own paths", async () => {
+    const fixture = windowsFixture();
+    const candidates = Array.from({ length: 300 }, (_, index) => String.raw`C:\Tools\file-${index}.exe`);
+    const queried: string[] = [];
+    fixture.modify((paths) => { queried.push(...paths.map((entry) => entry.path)); });
+    await assertCodexLocations(candidates.map((path) => ({ path, kind: "executable" as const })));
+    expect(vi.mocked(execFile).mock.calls.length).toBe(3);
+    expect(queried).toEqual(["C:\\", String.raw`C:\Tools`, ...candidates]);
+  });
+
+  it("applies the private rule to a runtime leaf that is also another path's ancestor", async () => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => {
+      paths.find((entry) => entry.path === String.raw`C:\Tools\runtime`)!.entries.push({ sid: FOREIGN_SID, mask: 1, flags: 8, type: 0 });
+    });
+    const executable = { path: String.raw`C:\Tools\runtime\codex.exe`, kind: "executable" as const };
+    await expect(assertCodexLocations([executable])).resolves.toBeUndefined();
+    await expect(assertCodexLocations([executable, { path: String.raw`C:\Tools\runtime`, kind: "private-directory" }]))
+      .rejects.toThrow("accessible by another account");
   });
 });

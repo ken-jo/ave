@@ -26,6 +26,9 @@ function transfer(produce: (session: TransferSession) => Promise<void>, override
   return runOwnedTransfer({ sourcePath: source, destinationPath: destination, destinationKind: kind }, context, produce, limits(overrides));
 }
 async function absent(path: string): Promise<void> { await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" }); }
+// win32 has no POSIX permission bits: Node reports a fixed 0o666 and chmod
+// only toggles read-only, so the owner-only modes are checked on POSIX hosts.
+const posixModes = process.platform !== "win32";
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "owned-file-transfer-")));
@@ -47,7 +50,7 @@ describe("complete binary copy", () => {
     expect(after.bytes).toEqual(bytes);
     expect([after.stat.mtimeMs, after.stat.ctimeMs, after.stat.mode, after.stat.ino])
       .toEqual([before.stat.mtimeMs, before.stat.ctimeMs, before.stat.mode, before.stat.ino]);
-    if (process.platform !== "win32") expect((await lstat(destination)).mode & 0o7777).toBe(0o700);
+    if (posixModes) expect((await lstat(destination)).mode & 0o7777).toBe(0o700);
   });
 
   it("includes empty, nested, hidden and ordinarily skipped directories", async () => {
@@ -63,8 +66,10 @@ describe("complete binary copy", () => {
     expect(result).toMatchObject({ ok: true, summary: { files: 5, directories: 7, bytesWritten: bytes.length * 4 } });
     expect(await readdir(join(destination, "empty"))).toEqual([]);
     for (const directory of [".hidden", "node_modules", "dist", ".git"]) expect(await readFile(join(destination, directory, "data.bin"))).toEqual(bytes);
-    if (process.platform !== "win32") expect((await lstat(destination)).mode & 0o777).toBe(0o700);
-    if (process.platform !== "win32") expect((await lstat(join(destination, "empty.bin"))).mode & 0o777).toBe(0o600);
+    if (posixModes) {
+      expect((await lstat(destination)).mode & 0o777).toBe(0o700);
+      expect((await lstat(join(destination, "empty.bin"))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it.skipIf(!canCreateSymlinks())("admits ancestor aliases while rejecting a source leaf link", async () => {

@@ -170,6 +170,10 @@ describe("setupAlerts", () => {
     writeFileSync(ctx.pluginPaths.registryPath, JSON.stringify({ version: 1, plugins: [] }));
     await ctx.alertsService.reconcileMigration();
     expect(records).toEqual({});
+    // Clearing the records queues one more reconciliation that reads the
+    // registry; let it close the file before teardown removes the home
+    // (Windows cannot remove a directory holding an open file).
+    await ctx.alertsService.flush();
   });
 
   it("rechecks generation ownership after config lock admission", async () => {

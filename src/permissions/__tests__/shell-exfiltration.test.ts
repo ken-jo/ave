@@ -430,6 +430,8 @@ describe("security review: the floor does not depend on which command reads", ()
   });
 
   it("a glob reaches a sensitive name only when it exists there, a brace always", () => {
+    // Forward slashes: the globs must stay unquoted, and an unquoted Win32
+    // backslash is a bash escape that would name a different path.
     const home = mkdtempSync(join(tmpdir(), "ave-glob-")).replaceAll("\\", "/");
     try {
       mkdirSync(join(home, ".ssh"));

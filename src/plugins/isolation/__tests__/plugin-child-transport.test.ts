@@ -420,7 +420,8 @@ async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: strin
       ...(token === undefined ? {} : { _meta: { [INVOCATION_META]: token } }),
     },
   });
-  await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+  await settle();
+  expect(rig.sent.some((frame) => frame.id === id)).toBe(true);
   return rig.sent.find((frame) => frame.id === id)!;
 }
 

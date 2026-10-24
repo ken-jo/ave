@@ -4,20 +4,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:child_process")>();
-  if (process.platform !== "win32") return original;
-  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
-  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
-});
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  // A test may leave its sealed read-only copy behind; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 

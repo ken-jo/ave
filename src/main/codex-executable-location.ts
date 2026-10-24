@@ -6,6 +6,11 @@ import { isRecord } from "../shared/is-record.js";
 
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
+// One probe receives at most this many paths, which keeps the path list well
+// inside a Windows environment variable and the output budget per path stable.
+const ACL_BATCH_PATHS = 128;
+const ACL_BATCH_CHARS = 24 * 1024;
+const ACL_OUTPUT_PATHS = 16;
 const ACL_PATHS_ENV = "AVE_EXECUTABLE_ACL_PATHS";
 const trustedSystemSids = new Set([
   "S-1-5-18",
@@ -36,6 +41,12 @@ export class CodexExecutableLocationError extends Error {
 interface InspectedPath {
   path: string;
   stat: Stats;
+}
+
+/** A location admitted with the rule its single-path function applies. */
+export interface CodexLocationRequest {
+  readonly path: string;
+  readonly kind: "executable" | "directory" | "private-directory";
 }
 
 interface WindowsAccessEntry {
@@ -184,12 +195,34 @@ async function inspectPathRoute(
   return entry;
 }
 
-async function assertExtendedAccessRules(inspected: readonly InspectedPath[], privateDirectory?: string): Promise<void> {
+function aclOutputBytes(inspected: readonly InspectedPath[]): number {
+  return MAX_ACL_OUTPUT_BYTES * Math.max(1, Math.ceil(inspected.length / ACL_OUTPUT_PATHS));
+}
+
+function aclBatches(inspected: readonly InspectedPath[]): InspectedPath[][] {
+  const batches: InspectedPath[][] = [];
+  let batch: InspectedPath[] = [];
+  let chars = 0;
+  for (const entry of inspected) {
+    const size = JSON.stringify(entry.path).length + 1;
+    if (batch.length > 0 && (batch.length >= ACL_BATCH_PATHS || chars + size > ACL_BATCH_CHARS)) {
+      batches.push(batch);
+      batch = [];
+      chars = 0;
+    }
+    batch.push(entry);
+    chars += size;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+async function assertExtendedAccessRules(inspected: readonly InspectedPath[], privateDirectories: ReadonlySet<string>): Promise<void> {
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile("/bin/ls", ["-ldne", "-D", "%s", "--", ...inspected.map((entry) => entry.path)], {
       encoding: "utf8",
       timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-      maxBuffer: MAX_ACL_OUTPUT_BYTES,
+      maxBuffer: aclOutputBytes(inspected),
       env: { LC_ALL: "C", LANG: "C", PATH: "/usr/bin:/bin" },
     }, (error, output, stderr) => {
       if (error) reject(error);
@@ -228,7 +261,7 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
     }
     const owner = /^user:(\d+)$/.exec(rule[1]!);
     if (owner && (Number(owner[1]) === 0 || Number(owner[1]) === process.getuid?.())) continue;
-    const privateLeaf = current.path === privateDirectory;
+    const privateLeaf = privateDirectories.has(current.path);
     if (!privateLeaf && permissions.includes("only_inherit")) continue;
     if (permissions.some((permission) => aclMutationPermissions.has(permission)
         || (privateLeaf && aclReadPermissions.has(permission)))) {
@@ -282,7 +315,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise
       windowsHide: true,
       encoding: "utf8",
       timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-      maxBuffer: MAX_ACL_OUTPUT_BYTES,
+      maxBuffer: aclOutputBytes(inspected),
       env: {
         SystemRoot: systemRoot,
         WINDIR: systemRoot,
@@ -294,7 +327,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise
   return parseWindowsSecurity(stdout);
 }
 
-async function assertWindowsSecurity(inspected: readonly InspectedPath[], privateDirectory?: string): Promise<void> {
+async function assertWindowsSecurity(inspected: readonly InspectedPath[], privateDirectories: ReadonlySet<string>): Promise<void> {
   const security = await readWindowsSecurity(inspected);
   const expected = new Set(inspected.map((entry) => win32.normalize(entry.path)));
   const seen = new Set<string>();
@@ -305,7 +338,7 @@ async function assertWindowsSecurity(inspected: readonly InspectedPath[], privat
     const trusted = (sid: string): boolean => sid === security.currentSid || trustedSystemSids.has(sid);
     if (!trusted(path.owner)) throw new CodexExecutableLocationError("Executable path has an untrusted owner");
     if (!path.daclPresent) throw new CodexExecutableLocationError("Executable path has unrestricted access");
-    const privateLeaf = privateDirectory !== undefined && key === win32.normalize(privateDirectory);
+    const privateLeaf = privateDirectories.has(key);
     if (privateLeaf && path.owner !== security.currentSid) {
       throw new CodexExecutableLocationError("Runtime directory is not owned by the current account");
     }
@@ -323,43 +356,58 @@ async function assertWindowsSecurity(inspected: readonly InspectedPath[], privat
   if (seen.size !== expected.size) throw new CodexExecutableLocationError("Executable access rules are incomplete");
 }
 
-async function inspectLocation(candidate: string, privateDirectory = false): Promise<{ leaf: InspectedPath; inspected: InspectedPath[] }> {
+async function inspectLocation(
+  candidate: string,
+  inspected: Map<string, InspectedPath>,
+  privateDirectory = false,
+): Promise<InspectedPath> {
   assertAbsolutePath(candidate);
-  const inspected = new Map<string, InspectedPath>();
   await inspectPathRoute(candidate, inspected, privateDirectory);
-  const leaf = await inspectPathRoute(await fs.realpath(candidate), inspected);
-  return { leaf, inspected: [...inspected.values()] };
+  return inspectPathRoute(await fs.realpath(candidate), inspected);
+}
+
+/**
+ * Admit every location with its single-path rule, then read the access rules
+ * of all their deduplicated routes through as few probes as the batch allows.
+ * A private leaf keeps the private rule even where it is also another
+ * location's ancestor, since that rule is stricter than the ancestor rule.
+ */
+export async function assertCodexLocations(requests: readonly CodexLocationRequest[]): Promise<void> {
+  const inspected = new Map<string, InspectedPath>();
+  const privateDirectories = new Set<string>();
+  for (const { path: candidate, kind } of requests) {
+    if (kind === "private-directory") {
+      assertAbsolutePath(candidate);
+      if ((await fs.lstat(candidate)).isSymbolicLink()) {
+        throw new CodexExecutableLocationError("Runtime directory must not be a symbolic link");
+      }
+    }
+    const leaf = await inspectLocation(candidate, inspected, kind === "private-directory");
+    if (kind === "executable") {
+      if (!leaf.stat.isFile()) throw new CodexExecutableLocationError("Executable path is not a regular file");
+    } else if (kind === "directory") {
+      if (!leaf.stat.isDirectory()) throw new CodexExecutableLocationError("Executable package path is not a directory");
+    } else {
+      if (!leaf.stat.isDirectory()) throw new CodexExecutableLocationError("Runtime path is not a directory");
+      if (process.platform !== "win32" && (leaf.stat.uid !== process.getuid?.() || (leaf.stat.mode & 0o7777) !== 0o700)) {
+        throw new CodexExecutableLocationError("Runtime directory must be private to the current account");
+      }
+      privateDirectories.add(process.platform === "win32" ? win32.normalize(leaf.path) : leaf.path);
+    }
+  }
+  if (process.platform !== "win32" && process.platform !== "darwin") return;
+  for (const batch of aclBatches([...inspected.values()])) {
+    if (process.platform === "win32") await assertWindowsSecurity(batch, privateDirectories);
+    else await assertExtendedAccessRules(batch, privateDirectories);
+  }
 }
 
 /** Admit the file's location; callers execute a separately pinned artifact. */
 export async function assertCodexExecutableLocation(candidate: string): Promise<void> {
-  const { leaf, inspected } = await inspectLocation(candidate);
-  if (!leaf.stat.isFile()) throw new CodexExecutableLocationError("Executable path is not a regular file");
-  if (process.platform === "win32") await assertWindowsSecurity(inspected);
-  else if (process.platform === "darwin") await assertExtendedAccessRules(inspected);
+  await assertCodexLocations([{ path: candidate, kind: "executable" }]);
 }
 
 /** Require a current-account private leaf and trusted, non-mutable ancestors. */
 export async function assertCodexPrivateRuntimeDirectory(candidate: string): Promise<void> {
-  assertAbsolutePath(candidate);
-  if ((await fs.lstat(candidate)).isSymbolicLink()) {
-    throw new CodexExecutableLocationError("Runtime directory must not be a symbolic link");
-  }
-  const { leaf, inspected } = await inspectLocation(candidate, true);
-  if (!leaf.stat.isDirectory()) throw new CodexExecutableLocationError("Runtime path is not a directory");
-  if (process.platform === "win32") {
-    await assertWindowsSecurity(inspected, leaf.path);
-  } else if (leaf.stat.uid !== process.getuid?.() || (leaf.stat.mode & 0o7777) !== 0o700) {
-    throw new CodexExecutableLocationError("Runtime directory must be private to the current account");
-  } else if (process.platform === "darwin") {
-    await assertExtendedAccessRules(inspected, leaf.path);
-  }
-}
-
-/** Check a package directory and every route component with the shared trust policy. */
-export async function assertExecutableDirectory(candidate: string): Promise<void> {
-  const { leaf, inspected } = await inspectLocation(candidate);
-  if (!leaf.stat.isDirectory()) throw new CodexExecutableLocationError("Executable package path is not a directory");
-  if (process.platform === "win32") await assertWindowsSecurity(inspected);
-  else if (process.platform === "darwin") await assertExtendedAccessRules(inspected);
+  await assertCodexLocations([{ path: candidate, kind: "private-directory" }]);
 }

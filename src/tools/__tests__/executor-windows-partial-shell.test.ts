@@ -1,4 +1,17 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+
+// The executor prepares the bash invocation before routing, which probes a
+// Bash for the simulated platform. A darwin or linux probe cannot find
+// /bin/bash on a Windows host, and the resolver caches that failure for every
+// later case, so answer both probes here: these cases test routing and
+// approval, not host shell discovery. No shell child is started.
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  execFileSync: childProcessMock.execFileSync,
+}));
+
 import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool } from "../shell-tools.js";
 import { ToolExecutor, type ToolCallMeta } from "../executor.js";
@@ -22,6 +35,7 @@ import {
   setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import {
   partialWindowsAsrt,
   requestedSandboxUnavailable,
@@ -33,17 +47,6 @@ import { userPermissionContext as permissionContext } from "./tool-context-fixtu
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
 const ORIGINAL_PLATFORM = process.platform;
-
-vi.mock("../../lib/shell-resolver.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/shell-resolver.js")>();
-  const shell = actual.resolveShell("bash");
-  // Platform policy cases do not probe interpreters for the simulated host.
-  return {
-    ...actual,
-    resolveShell: () => shell,
-    getBashCapabilities: () => ({ unicodeEscapes: true, prefixAssignmentRhs: "incoming" as const }),
-  };
-});
 
 function shellProbe(execute: (ctx: import("../types.js").ToolExecutionContext) => void): Tool {
   const tool = new BashTool();
@@ -133,9 +136,17 @@ function recordingAuditLogger(): {
 }
 
 describe("ToolExecutor — Windows partial shell Plan B", () => {
+  beforeEach(() => {
+    __resetShellResolverCache();
+    childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
+      args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
+  });
+
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
+    __resetShellResolverCache();
+    childProcessMock.execFileSync.mockReset();
     setProcessPlatform(ORIGINAL_PLATFORM);
   });
 
@@ -424,7 +435,6 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(approvalAuditText).not.toContain("requestedCwd");
     expect(JSON.stringify(auditPlan)).not.toContain("reason");
   });
-
 
   it("preserves the Plan-B projection across ask, deny terminal audit, and telemetry", async () => {
     partialWindowsAsrt();

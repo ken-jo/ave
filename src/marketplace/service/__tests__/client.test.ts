@@ -114,6 +114,7 @@ describe("readPolicyServiceBase", () => {
   it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
+    // The read error is the OS's: Windows reports a path through a file as ENOENT.
     await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
   });
 

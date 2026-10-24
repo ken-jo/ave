@@ -34,7 +34,18 @@ const ALL_DECISION_CASES = RUNNER_DECISIONS.flatMap((row) => {
 const DECISION_CASES = [...new Map(ALL_DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row] as const)).values()];
 let directory: string;
 let managerSequence = 0;
-beforeAll(() => { directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-")); });
+const floorManagers = new Map<ShellDialect, PermissionManager>();
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-"));
+  // These checks only read policy. Persist each dialect's grant once; the
+  // saved-grant cases below still exercise mutation and reload independently.
+  for (const dialect of DIALECTS) {
+    const manager = runnerManager();
+    await manager.addAlwaysAllowedPersist(dialect);
+    manager.setRules([{ pattern: dialect, action: "allow" }]);
+    floorManagers.set(dialect, manager);
+  }
+});
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
 
 function runnerManager(permissionsPath = join(directory, `${managerSequence++}.json`)): PermissionManager {
@@ -197,11 +208,8 @@ describe("shared runner decisions", () => {
   it.each([
     ...DECISION_CASES.filter((row) => row.bucket === "floor"),
     ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
-  ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
-    const manager = runnerManager();
-    await manager.addAlwaysAllowedPersist(dialect);
-    manager.setRules([{ pattern: dialect, action: "allow" }]);
-    expectBucket(checkCommand(manager, dialect, command), "floor");
+  ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
+    expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {

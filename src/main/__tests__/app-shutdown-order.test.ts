@@ -17,7 +17,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -534,7 +534,7 @@ describe("before-quit listener inventory", () => {
       /\bapp\s*\.\s*(?:on|once|addListener|prependListener|prependOnceListener)\s*\(\s*"before-quit"/u;
     const found = collectSourceFiles(srcRoot, [])
       .filter((file) => registration.test(readFileSync(file, "utf-8")))
-      .map((file) => relative(process.cwd(), file).replaceAll("\\", "/"))
+      .map((file) => relative(process.cwd(), file).split(sep).join("/"))
       .sort();
 
     const allowed = [...ALLOWED_LISTENER_FILES.keys()].sort();
