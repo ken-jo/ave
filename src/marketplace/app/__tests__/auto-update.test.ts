@@ -209,6 +209,27 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     expect(harness.plugins.length).toBe(installs);
   });
 
+  it("reports package transactions idle only once the last package lock is released", async () => {
+    const idle: boolean[] = [];
+    const observed = await folderService({ root: mkdtempSync(join(tmpdir(), "ave-auto-update-idle-")), folders: nodeFolders(),
+      onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
+    const preview = await observed.service.previewSource({ input: folder, auth: "none" });
+    if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
+    await observed.service.addSource({ previewId: preview.previewId, id: "team" });
+    await observed.service.executeInstall((await observed.service.planInstall(KEY)).planId, [], true);
+    idle.length = 0;
+    let resume!: () => void;
+    observed.onUninstall.current = () => new Promise<void>((resolve) => { resume = resolve; });
+    const uninstall = observed.service.uninstall({ sourceId: "team", kind: "plugin", name: "alpha" });
+    await vi.waitFor(() => expect(resume).toBeTypeOf("function"));
+    // Held: the uninstall's own lock is not idle, and nobody is told it is.
+    expect(observed.service.packageTransactionsIdle).toBe(false);
+    expect(idle).toEqual([]);
+    resume();
+    await uninstall;
+    expect(idle).toEqual([true]);
+  });
+
   it("refuses to approve components through another package's key", async () => {
     await expect(harness.service.approveComponents(KEY, "11111111-2222-4333-8444-555555555555", [])).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
   });
