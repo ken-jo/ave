@@ -52,7 +52,7 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
       const temporary = join(home.path, "tmp");
       // On Windows the profile's TEMP/TMP is this same directory and already
       // exists; the HOME itself was just created fresh, so nothing else can.
-      mkdirSync(temporary, { recursive: true, mode: 0o700 });
+      mkdirSync(temporary, { recursive: process.platform === "win32", mode: 0o700 });
       Object.assign(safe, home.env, { TMPDIR: temporary, TMP: temporary, TEMP: temporary });
     }
     // Bash initializes PWD from its actual cwd. Pin the same initial value for

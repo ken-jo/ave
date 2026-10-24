@@ -101,6 +101,178 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it("preserves the exact no-op builtin when normalizing command names", () => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(": ../outside.txt", root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "sort -o_/../../outside.txt f",
+    "sort -o1/../../outside.txt f",
+    "sort -oX:../../../outside.txt f",
+  ])("checks the whole attached output path: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).not.toBeNull();
+    });
+  });
+
+  it.runIf(process.platform === "win32")("checks an attached drive-relative output path", () => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(String.raw`sort '-oC:..\..\x' f`, root, root, [])).not.toBeNull();
+    });
+  });
+
+  it.each([
+    ["ssh-keygen", "-f", "", "k"],
+    ["patch", "-o", "f", "o"],
+    ["gzip", "-S", "f", "x"],
+  ])("checks equals signs throughout attached short-option paths: %s %s", (verb, flag, tail, leaf) => {
+    withRoot((root) => {
+      for (const path of [`_/../../${leaf}=1`, `_/..=/../${leaf}`, `=_/../../${leaf}`, `_/../../${leaf}=a=b`]) {
+        expect(validateShellCommandPathPolicy(`${verb} ${flag}${path} ${tail}`, root, root, [], true), path)
+          .not.toBeNull();
+      }
+      expect(validateShellCommandPathPolicy(`${verb} ${flag}keys/k=1 ${tail}`, root, root, [], true)).toBeNull();
+    });
+  });
+
+  it.each([
+    "unknown -x_/../../k=1",
+    "unknown -ab/../k=1",
+    "sed -f_/../../k=1 f",
+    "awk -o_/../../k=1 '{print}' f",
+    "stat -x_/../../k=1 f",
+  ])("keeps generic and clustered short-option paths alongside equals values: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy("env A=B cmd", root, root, [], true))
+        .toContain("nested shell dialect is not supported");
+      expect(validateShellCommandPathPolicy(command, root, root, [], true)).not.toBeNull();
+      for (const allowed of [
+        "sort -t, -k2 -S10M f", "sort -o inside.txt f", "sort -oinside.txt f",
+        "head -n5 f", "ls -la", "git commit -m 'a=b'", "awk -v x=1 '{print}' f", "env A=B fixture-command",
+      ]) expect(validateShellCommandPathPolicy(allowed, root, root, [], true), allowed).toBeNull();
+      for (const denied of ["sed -e 'w_/../../k=1' f", "sed -ne'w_/../../k=1' f"]) {
+        expect(validateShellCommandPathPolicy(denied, root, root, [], true), denied).not.toBeNull();
+      }
+    });
+  });
+
+  it.each(["awk", "gawk", "mawk", "nawk"].flatMap((verb) =>
+    ["-vf=../outside", "--assign=f=../outside"].map((option) => [verb, option])))(
+    "checks assignment values carried by path options: %s %s",
+    (verb, option) => {
+      withRoot((root) => {
+        expect(validateShellCommandPathPolicy(`${verb} ${option} '{print}' f`, root, root, [], true)).not.toBeNull();
+        expect(validateShellCommandPathPolicy(`${verb} -vf=keys/k=1 '{print}' f`, root, root, [], true)).toBeNull();
+      });
+    },
+  );
+
+  it.each(["sort -o inside.txt f", "sort -oinside.txt f", "sort -r f"])("allows contained output and valueless flags: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "-T ../..", "-T_/../..", "-T../..",
+    "--temporary-directory ../..", "--temporary-directory=../..",
+  ])("confines sort temporary writes with widened reads: %s", (option) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(`sort ${option} f`, root, root, [])).not.toBeNull();
+      for (const command of [
+        "sort -T inside f", "sort -Tinside f", "sort --temporary-directory=inside f",
+        "sort -t, -k2 -S10M f", "sort -n f", "sort -o inside.txt f", "sort -oinside.txt f",
+        "head -n5 f", "tail -c100 f", "grep -E 'a/b' f", "ls -la",
+      ]) expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    ["curl", "-o", "--output", "https://example.invalid/data"],
+    ["wget", "-O", "--output-document", "https://example.invalid/data"],
+    ["wget", "-P", "--directory-prefix", "https://example.invalid/data"],
+    ["shuf", "-o", "--output", "f"],
+    ["cp", "-t", "--target-directory", "f"],
+    ["install", "-t", "--target-directory", "f"],
+    ["make", "-C", "--directory", ""],
+    ["make", "-f", "--file", ""],
+  ].flatMap(([verb, short, long, tail]) => ["_", "1", "-", "@"].map((prefix) => ({ verb, short, long, tail, prefix }))))(
+    "confines attached and separate write paths: $verb $short $prefix",
+    ({ verb, short, long, tail, prefix }) => {
+      withRoot((root) => {
+        mkdirSync(join(root, prefix!));
+        for (const option of [
+          `${short}${prefix}/../../outside`, `${short} ${prefix}/../../outside`,
+          `${long}=${prefix}/../../outside`, `${long} ${prefix}/../../outside`,
+        ]) expect(validateShellCommandPathPolicy(`${verb} ${option} ${tail}`, root, root, []), option).not.toBeNull();
+        for (const option of [
+          `${short}${prefix}/inside`, `${short} ${prefix}/inside`,
+          `${long}=${prefix}/inside`, `${long} ${prefix}/inside`,
+        ]) expect(validateShellCommandPathPolicy(`${verb} ${option} ${tail}`, root, root, [])).toBeNull();
+        if (verb === "curl") {
+          // Remote-name mode takes no path value; its directory option does.
+          expect(validateShellCommandPathPolicy(`curl -O --output-dir=${prefix}/../../outside ${tail}`, root, root, [])).not.toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -O --output-dir=${prefix}/inside ${tail}`, root, root, [])).toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -O ${tail}`, root, root, [])).toBeNull();
+          expect(validateShellCommandPathPolicy(`curl -dword/data ${tail}`, root, root, [])).toBeNull();
+        }
+      });
+    },
+  );
+
+  it.each(["_", "1", "-", "@"])("confines unknown attached short-option values: %s", (prefix) => {
+    withRoot((root) => {
+      mkdirSync(join(root, prefix));
+      expect(validateShellCommandPathPolicy(`transform -x${prefix}/../../outside f`, root, root, [])).not.toBeNull();
+      expect(validateShellCommandPathPolicy(`transform -x${prefix}/inside f`, root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "", "-f 1", "-s 1", "-w 1", "-f1", "-s1", "-w1",
+    "--skip-fields 1", "--skip-chars=1", "--check-chars 1", "-cf 1", "--",
+  ])("confines uniq output after value-taking options: %s", (options) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(`uniq ${options} f ../../victim`, root, root, [])).not.toBeNull();
+      expect(validateShellCommandPathPolicy(`uniq ${options} f inside.out`, root, root, [])).toBeNull();
+      expect(validateShellCommandPathPolicy(`uniq ${options} ../input`, root, root, [])).toBeNull();
+      expect(validateShellCommandPathPolicy("uniq f", root, root, [])).toBeNull();
+    });
+  });
+
+  it.each([
+    "pwsh -c 'Set-Content ../outside.txt hi'",
+    "pwsh -Command 'Set-Content ../outside.txt hi'",
+    "pwsh -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==",
+    "pwsh -File inside.ps1",
+    "powershell -c 'Set-Content ../outside.txt hi'",
+    "powershell -Command 'Set-Content ../outside.txt hi'",
+    "powershell -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==",
+    "powershell -File inside.ps1",
+    "cmd /c 'echo hi > ../outside.txt'",
+    "cmd /k 'echo hi > ../outside.txt'",
+  ])("declines an unsupported command language: %s", (command) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toContain("nested shell dialect is not supported");
+    });
+  });
+
+  it.runIf(process.platform === "win32").each([
+    ["cmd //c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["bash.exe. -c 'echo hi > ../outside.txt'", "Sandbox:"],
+    ["'bash.exe::$DATA' -c 'echo hi > ../outside.txt'", "Sandbox:"],
+    ["cmd.com /c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["cmd.bat /c 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["cmd.cmd /k 'echo hi > ../outside.txt'", "nested shell dialect is not supported"],
+    ["POWERSH~1.EXE -EncodedCommand UwBlAHQA", "unresolved short command name"],
+  ])("refuses execution through an alternate command spelling: %s", (command, reason) => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy(command, root, root, [])).toContain(reason);
+    });
+  });
+
   it.each([
     "cc -Iinclude/sub -c source.c",
     "gcc -Lbuild/lib source.c -ooutput/tool",
