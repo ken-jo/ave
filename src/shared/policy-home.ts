@@ -18,11 +18,11 @@ function osHome(): string | undefined {
   try { return homedir(); } catch { return undefined; }
 }
 
-function passwdHome(): string | undefined {
+function accountHome(): string | undefined {
   try { return userInfo().homedir; } catch { return undefined; }
 }
 
-/** All independent home anchors used by deny floors and shell checks. */
+/** All independent home anchors used by deny floors and shell checks; an unresolved home refuses policy construction. */
 export function policyHomeAnchors(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -32,9 +32,9 @@ export function policyHomeAnchors(
   const profile = platform !== "win32" || isHomeAnchor(os, platform) ? undefined
     : isHomeAnchor(environment.USERPROFILE, platform) ? environment.USERPROFILE
       : (environment.HOMEDRIVE ?? "") + (environment.HOMEPATH ?? "");
-  const candidates = [os, environment.HOME, platform === "win32" ? profile : passwdHome()];
+  const candidates = [os, environment.HOME, profile, accountHome()];
   const seen = new Set<string>();
-  return candidates.filter((home): home is string => {
+  const homes = candidates.filter((home): home is string => {
     if (!isHomeAnchor(home, platform)) return false;
     const canonical = canonicalizePathForMatch(home);
     const key = platform === "win32" ? canonical.toLowerCase() : canonical;
@@ -42,6 +42,8 @@ export function policyHomeAnchors(
     seen.add(key);
     return true;
   });
+  if (homes.length === 0) throw new Error("Cannot resolve home for path policy");
+  return homes;
 }
 
 /** Resolve policy roots without changing the environment passed to children. */
@@ -56,7 +58,7 @@ export function getPolicyHome(
     if (isHomeAnchor(profile, platform)) return profile;
   }
   let home = osHome() ?? "";
-  if (!isHomeAnchor(home, platform) && platform !== "win32") home = passwdHome() ?? "";
+  if (!isHomeAnchor(home, platform) && platform !== "win32") home = accountHome() ?? "";
   if (!isHomeAnchor(home, platform)) throw new Error("Cannot resolve home for path policy");
   return home;
 }

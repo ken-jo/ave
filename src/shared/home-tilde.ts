@@ -54,5 +54,5 @@ export function expandLeadingTilde(path: string): string {
 export function expandShellTildePaths(path: string): string[] {
   if (path !== "~" && !path.startsWith("~/") && !(process.platform === "win32" && path.startsWith("~\\"))) return [path];
   const homes = policyHomeAnchors();
-  return homes.length ? homes.map((home) => path === "~" ? home : pathResolve(home, path.slice(2))) : [path];
+  return homes.map((home) => path === "~" ? home : pathResolve(home, path.slice(2)));
 }

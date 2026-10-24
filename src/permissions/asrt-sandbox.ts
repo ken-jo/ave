@@ -1178,7 +1178,9 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
   // desktop runtime import — safe for any non-renderer context.
   // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
   // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData = userDataDir !== undefined ? [userDataDir] : homes.map((home) =>
+  const electronUserData = userDataDir !== undefined
+    ? [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir]
+    : homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"

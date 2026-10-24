@@ -70,9 +70,13 @@ export class BashAstValidator {
               });
               const recursive = flags.some((flag) => flag === "--recursive" || /^-[A-Za-z]*[rR]/.test(flag));
               const force = flags.some((flag) => flag === "--force" || /^-[A-Za-z]*f/.test(flag));
-              const homes = recursive && force ? policyHomeAnchors(environment) : [];
+              const homes: string[] = [];
               if (recursive && force) {
-                try { homes.push(getPolicyHome(environment)); } catch { /* Unresolved home-shaped operands still refuse below. */ }
+                try {
+                  homes.push(...policyHomeAnchors(environment), getPolicyHome(environment));
+                } catch {
+                  refuse("rm-rf-root", "Cannot resolve home for path policy", first);
+                }
               }
               const dangerous = recursive && force ? targets.find((index) => {
                 const target = argv[index];

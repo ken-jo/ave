@@ -43,6 +43,11 @@ vi.mock("node:os", async (importOriginal) => {
       const isolated = process.env.AVE_ASRT_TEST_HOME;
       return process.platform === "win32" && isolated ? isolated : original.homedir();
     },
+    userInfo: () => {
+      const info = original.userInfo();
+      const isolated = process.env.AVE_ASRT_TEST_HOME;
+      return process.platform === "win32" && isolated ? { ...info, homedir: isolated } : info;
+    },
   };
 });
 
@@ -97,7 +102,7 @@ beforeAll(() => {
   originalHome = process.env.HOME;
   isolatedWindowsHome = mkdtempSync(join(tmpdir(), "ave-asrt-test-home-"));
   process.env.AVE_ASRT_TEST_HOME = isolatedWindowsHome;
-  process.env.AVE_HOME = join(isolatedWindowsHome, ".ave");
+  process.env.AVE_HOME = join(isolatedWindowsHome, "app");
   process.env.HOME = isolatedWindowsHome;
 });
 
@@ -1075,16 +1080,17 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("FIX 2 — userDataDir param: exact path is denied when provided (handles --user-data-dir)", () => {
     const customUserData = join(tmpdir(), "custom-electron-userData-for-test");
+    const expected = customUserData + (process.platform === "win32" ? sep : "");
     const paths = getDefaultSensitiveReadDenyPaths(customUserData);
     // The exact provided path must be denied.
-    expect(paths).toContain(customUserData);
+    expect(paths).toContain(expected);
     // No duplicates.
     expect(new Set(paths).size).toBe(paths.length);
     // Over-deny safety: the derived fallback is NOT additionally added when
     // the exact path is provided (the dedup set handles this if they collide,
     // but the function uses the provided value exclusively for the userData slot).
     // Verify the provided path is present exactly once.
-    expect(paths.filter((p) => p === customUserData).length).toBe(1);
+    expect(paths.filter((p) => p === expected).length).toBe(1);
   });
 
   it("FIX 2 — userDataDir absent: falls back to per-platform derived path (no electron import)", () => {
@@ -1106,7 +1112,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       allowedDomains: [],
       userDataDir: customUserData,
     });
-    expect(config.filesystem.denyRead).toContain(customUserData);
+    expect(config.filesystem.denyRead).toContain(customUserData + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {

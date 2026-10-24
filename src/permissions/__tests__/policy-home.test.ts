@@ -3,12 +3,12 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
-import { expandLeadingTilde } from "../../shared/home-tilde.js";
+import { expandLeadingTilde, expandShellTildePaths } from "../../shared/home-tilde.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { getPolicyHome, policyHomeAnchors } from "../../shared/policy-home.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
-import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
+import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, protectedReadDenyCovering } from "../asrt-sandbox.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { sensitivePathInArgumentText, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 
@@ -222,13 +222,13 @@ describe("independent home anchors", () => {
     expect(getPolicyHome()).toBe(passwd);
   });
 
-  it("retains trusted app-data denies when no home resolves", () => {
+  it("refuses deny projections when no home resolves", () => {
     vi.stubEnv("HOME", "");
     vi.mocked(homedir).mockReturnValue("");
     vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
     const userData = join(scratch, "app-data");
-    expect(getDefaultSensitiveReadDenyPaths(userData)).toContain(userData);
-    expect(getDefaultSensitiveWriteDenyPaths(userData)).toContain(userData);
+    expect(() => getDefaultSensitiveReadDenyPaths(userData)).toThrow("Cannot resolve home for path policy");
+    expect(() => getDefaultSensitiveWriteDenyPaths(userData)).toThrow("Cannot resolve home for path policy");
   });
 
   it("allows ordinary removal and refuses home-shaped forced removal without an account", () => {
@@ -250,7 +250,7 @@ describe("independent home anchors", () => {
     vi.mocked(homedir).mockReturnValue("");
     expect(shellSensitivePathSignal("echo $HOME", scratch)).toBeNull();
     vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
-    expect(shellSensitivePathSignal("echo $HOME", scratch)).toBeNull();
+    expect(() => shellSensitivePathSignal("echo $HOME", scratch)).toThrow("Cannot resolve home for path policy");
   });
 
   it("refuses recursive removal of the passwd home when HOME differs", () => {
@@ -271,6 +271,59 @@ describe("independent home anchors", () => {
   });
 });
 
+describe("unresolved home policy", () => {
+  beforeEach(() => {
+    for (const key of ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]) vi.stubEnv(key, undefined);
+    vi.stubEnv("AVE_HOME", join(tmpdir(), "ave-unresolved-policy"));
+    vi.mocked(homedir).mockReturnValue("/");
+    vi.mocked(userInfo).mockImplementation(() => { throw Object.assign(new Error("No account entry"), { code: "ENOENT" }); });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(homedir).mockReset().mockImplementation(() => process.platform === "win32" ? process.env.USERPROFILE! : process.env.HOME!);
+    vi.mocked(userInfo).mockReset();
+  });
+
+  it.each(["", "/"])("refuses both sandbox deny floors without a home anchor for HOME=%s", (HOME) => {
+    vi.stubEnv("HOME", HOME);
+    const userData = join(tmpdir(), "ave-unresolved-user-data");
+    expect(() => getDefaultSensitiveReadDenyPaths(userData)).toThrow("Cannot resolve home for path policy");
+    expect(() => getDefaultSensitiveWriteDenyPaths(userData)).toThrow("Cannot resolve home for path policy");
+  });
+
+  it.each(["", "/"])("refuses forced recursive removal without a home anchor for HOME=%s", (HOME) => {
+    vi.stubEnv("HOME", HOME);
+    for (const command of ["rm -rf ~/.ssh", "rm -rf '$HOME/.ssh'", "rm -rf ./build"]) {
+      expect(new BashAstValidator().validate("bash", { command }, {
+        cwd: process.cwd(), facts: { dialect: "bash", environment: { HOME } },
+      }).decision).toBe("deny");
+    }
+  });
+
+  it.each(["", "/"])("refuses shell tilde expansion without a home anchor for HOME=%s", (HOME) => {
+    vi.stubEnv("HOME", HOME);
+    for (const path of ["~", "~/.ssh"]) {
+      expect(() => expandShellTildePaths(path)).toThrow("Cannot resolve home for path policy");
+    }
+  });
+
+  it("does not resolve home for ordinary commands and words", () => {
+    vi.mocked(homedir).mockClear();
+    vi.mocked(userInfo).mockClear();
+    for (const command of ["echo hello", "rm foo"]) {
+      expect(new BashAstValidator().validate("bash", { command }, {
+        cwd: process.cwd(), facts: { dialect: "bash", environment: {} },
+      }).decision).toBe("allow");
+    }
+    expect(expandShellTildePaths("./ordinary")).toEqual(["./ordinary"]);
+    expect(homedir).not.toHaveBeenCalled();
+    expect(userInfo).not.toHaveBeenCalled();
+    for (const command of ["echo hello", "rm foo"]) expect(shellSensitivePathSignal(command, process.cwd())).toBeNull();
+    expect(sensitivePathInArgumentText("./ordinary", process.cwd())).toBeNull();
+  });
+});
+
 describe.skipIf(process.platform !== "win32")("independent profile anchors", () => {
   let home: string;
   let profile: string;
@@ -278,6 +331,7 @@ describe.skipIf(process.platform !== "win32")("independent profile anchors", () 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ave-profile-anchors-"));
     profile = join(home, "profile");
+    vi.mocked(userInfo).mockReturnValue({ homedir: profile, username: "test-account", uid: 1000, gid: 1000, shell: "/bin/sh" });
     // As on a real host, os.homedir() is USERPROFILE.
     vi.mocked(homedir).mockReturnValue(profile);
     vi.stubEnv("HOME", join(home, "shell"));
@@ -300,6 +354,16 @@ describe.skipIf(process.platform !== "win32")("independent profile anchors", () 
         expect(denied).toContain(path + sep);
         expect(denied).not.toContain(path);
       }
+    }
+  });
+
+  it.each(["", "\\", "/"])("keeps trusted app-data a directory with suffix %s", (suffix) => {
+    const userData = join(home, "app-data");
+    for (const denied of [getDefaultSensitiveReadDenyPaths(userData + suffix), getDefaultSensitiveWriteDenyPaths(userData + suffix)]) {
+      expect(denied).toContain(userData + sep);
+      expect(denied).not.toContain(userData);
+      expect(protectedReadDenyCovering(join(userData, "Partitions", "cookie"), denied)).toBe(userData + sep);
+      expect(protectedReadDenyCovering(userData + "-sibling", denied)).toBeUndefined();
     }
   });
 
