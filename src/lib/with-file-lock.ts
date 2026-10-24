@@ -115,8 +115,9 @@ export class FileLockReleaseError<T> extends Error {
 
 /**
  * Acquire a cross-process file lock on `targetPath`, execute `fn`, then
- * release the lock.  The target file is created as an empty file if it
- * does not yet exist so that proper-lockfile can stat() it.
+ * release the lock. Touch the target inside the lock so callbacks are
+ * guaranteed that it exists. The touch must not precede acquisition: on
+ * Windows, a waiting caller's open can block the holder's rename onto the target.
  */
 export async function withFileLock<T>(
   targetPath: string,
