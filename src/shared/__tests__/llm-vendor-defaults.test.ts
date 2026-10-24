@@ -36,6 +36,15 @@ import {
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
 
+describe("upstream-prefixed model ids", () => {
+  it("declares exactly the presets whose model ids identify an upstream provider", () => {
+    expect(Object.entries(OPENAI_COMPATIBLE_VENDOR_PRESETS)
+      .filter(([, preset]) => preset.upstreamPrefixedModelIds === true)
+      .map(([id]) => id).sort())
+      .toEqual(["kilo", "openrouter", "requesty", "vercel-ai-gateway"]);
+  });
+});
+
 describe("isLLMVendor", () => {
   it("accepts every member of LLM_VENDORS", () => {
     for (const v of LLM_VENDORS) {

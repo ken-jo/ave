@@ -16,7 +16,7 @@ import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-r
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
 import { getVendorOption } from "../../constants.js";
-import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
 import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
@@ -1515,6 +1515,40 @@ describe("LlmTab grouped model search", () => {
     expect(within(provider).getAllByRole("option")).toHaveLength(2);
   });
 
+  it("derives upstream grouping from preset metadata and leaves other presets flat", async () => {
+    const preset = OPENAI_COMPATIBLE_VENDOR_PRESETS.together;
+    const original = Object.getOwnPropertyDescriptor(preset, "upstreamPrefixedModelIds");
+    Object.defineProperty(preset, "upstreamPrefixedModelIds", { configurable: true, value: true });
+    try {
+      const models = ["acme/model-one", "zenith/model-two"];
+      const { api } = profileApi({ installedProviderIds: ["together", "fireworks"] }, {
+        hasApiKey: storedKeysFor("together", "fireworks"),
+        listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => ({
+          ok: true, vendor, endpoint: "https://catalogue.invalid/models",
+          models, fetchedAt: "2026-01-01T00:00:00.000Z",
+        })),
+      });
+      await renderTab(api, {
+        vendor: "together", model: models[0]!, baseUrl: getVendorOption("together").baseUrlPlaceholder!,
+      });
+      await settleModelListRequests();
+      await chooserModelIds();
+      const flat = screen.getByRole("group", { name: getVendorOption("fireworks").label });
+      expect(within(flat).queryAllByRole("group")).toHaveLength(0);
+      expect(within(flat).getAllByRole("option")).toHaveLength(2);
+      const grouped = screen.getByRole("group", { name: getVendorOption("together").label });
+      for (const [label, model] of [["Acme", models[0]], ["Zenith", models[1]]] as const) {
+        const group = within(grouped).getByRole("group", { name: label });
+        expect(within(group).getAllByRole("option")).toHaveLength(1);
+        expect(within(group).getByRole("option").querySelector("[data-model-id]"))
+          .toHaveAttribute("data-model-id", model);
+      }
+    } finally {
+      if (original) Object.defineProperty(preset, "upstreamPrefixedModelIds", original);
+      else Reflect.deleteProperty(preset, "upstreamPrefixedModelIds");
+    }
+  });
+
   it("announces the match count and no results politely during search", async () => {
     const { search } = await openSearchCatalogue();
     const status = screen.getByTestId("llm-tab:model-search-status");
@@ -1603,6 +1637,19 @@ describe("LlmTab grouped model search", () => {
     await waitFor(() => expect(screen.getByTestId("llm-tab:model-search")).toHaveFocus());
     expect(screen.getByTestId("llm-tab:model-search")).toHaveValue("");
     expect(ids()).toContain("plain-model");
+  });
+
+  it("highlights hovered model items while keeping search focused", async () => {
+    const user = userEvent.setup();
+    const { input } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    const option = chooserOption("openai/gpt-paid");
+    await user.hover(option);
+    expect(input).toHaveFocus();
+    expect(option).toHaveClass("hover:bg-accent", "hover:text-accent-foreground");
+    await user.keyboard("gpt");
+    expect(input).toHaveValue("gpt");
+    expect(input).toHaveFocus();
   });
 
   it("keeps hovered items from taking search typing and closes on Escape", async () => {

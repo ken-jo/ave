@@ -72,6 +72,8 @@ export interface OpenAICompatibleVendorPreset {
    * `model-capability-catalog.md` §6.1).
    */
   gateway?: true;
+  /** Model ids are `<upstream>/<model>`. */
+  upstreamPrefixedModelIds?: true;
 }
 
 export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
@@ -83,6 +85,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://openrouter.ai/api/v1",
     defaultModel: "anthropic/claude-sonnet-4.6",
     gateway: true,
+    upstreamPrefixedModelIds: true,
   },
   deepseek: {
     label: "DeepSeek",
@@ -151,6 +154,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://router.requesty.ai/v1",
     defaultModel: "openai/gpt-6-luna",
     gateway: true,
+    upstreamPrefixedModelIds: true,
   },
   litellm: {
     label: "LiteLLM",
@@ -173,6 +177,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://ai-gateway.vercel.sh/v1",
     defaultModel: "alibaba/qwen3.6-plus",
     gateway: true,
+    upstreamPrefixedModelIds: true,
   },
   "vercel-v0": {
     label: "Vercel V0",
@@ -227,6 +232,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://api.kilo.ai/api/gateway",
     defaultModel: "openai/gpt-5.4",
     gateway: true,
+    upstreamPrefixedModelIds: true,
   },
   zai: {
     label: "Z.AI",

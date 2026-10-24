@@ -45,6 +45,7 @@ import {
   llmRouteImageInput,
   type LLMVendorSettings,
   LLM_VENDOR_DEFAULTS,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   cachedModelListEntry,
@@ -1121,18 +1122,17 @@ function parseUnifiedValue(value: string): { providerId: string; modelId: string
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
 }
 
-// These routes use an upstream provider prefix, rather than a repository path
-// or a deployment alias. Other routes keep their catalogue in one flat group.
-const UPSTREAM_GROUPED_PROVIDER_IDS: readonly string[] = [
-  "api:openrouter", "api:requesty", "api:vercel-ai-gateway", "api:kilo",
-];
-
 function upstreamModelProvider(
   modelId: string,
   providerId: string,
   providerLabel: string,
 ): { id: string; label: string } {
-  if (!UPSTREAM_GROUPED_PROVIDER_IDS.includes(providerId)) return { id: "", label: providerLabel };
+  const presetId = providerId.startsWith(API_PROVIDER_PREFIX)
+    ? providerId.slice(API_PROVIDER_PREFIX.length) : "";
+  if (!isOpenAICompatiblePresetVendor(presetId)
+    || !OPENAI_COMPATIBLE_VENDOR_PRESETS[presetId].upstreamPrefixedModelIds) {
+    return { id: "", label: providerLabel };
+  }
   const slash = modelId.indexOf("/");
   const id = slash > 0 ? modelId.slice(0, slash) : "";
   const vendorId = id === "anthropic" ? "claude" : id === "google" ? "gemini" : id;
@@ -1271,6 +1271,7 @@ function UnifiedModelSelect({
       <SelectItem
         key={option.value}
         value={option.value}
+        className="hover:bg-accent hover:text-accent-foreground"
         onPointerMove={(event) => {
           if (document.activeElement === searchInputRef.current) event.preventDefault();
         }}
