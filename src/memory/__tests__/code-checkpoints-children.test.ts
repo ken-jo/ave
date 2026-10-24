@@ -22,6 +22,21 @@ const restore = (messageId: string) => restoreCodeCheckpoint(sessionId, messageI
 const unavailable = { ok: false, error: "code-checkpoint-unavailable" };
 
 describe("checkpoint origin child count", () => {
+  it("does not release another live child when a release is repeated", async () => {
+    await edit("before", "agent");
+    const releaseFirst = await trackCodeCheckpointChild(sessionId);
+    const releaseSecond = await trackCodeCheckpointChild(sessionId);
+    try {
+      releaseFirst();
+      releaseFirst();
+      expect(await restore("before")).toEqual(unavailable);
+      await edit("overlap", "overlap");
+      expect(await restore("overlap")).toEqual(unavailable);
+    } finally { releaseSecond(); }
+    await edit("after", "after");
+    expect(await restore("after")).toEqual({ ok: true });
+  });
+
   it("blocks existing restore points without an in-flight parent and restores after the child ends", async () => {
     await edit("before", "agent");
     const release = await trackCodeCheckpointChild(sessionId);

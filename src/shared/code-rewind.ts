@@ -11,6 +11,7 @@ export type RewindResult =
 /** Serialized snapshot budget, shared by all conversations in this profile. */
 export const CODE_CHECKPOINT_POLICY = Object.freeze({
   maxStorageBytes: 64 * 1024 * 1024,
+  maxQuarantineBytes: 64 * 1024 * 1024,
   maxFileBytes: 8 * 1024 * 1024,
   maxSessionTurns: 100,
   maxTurns: 500,

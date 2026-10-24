@@ -49,7 +49,8 @@ vi.mock("node:fs", async (importOriginal) => ({
   promises: await import("node:fs/promises"),
 }));
 
-import { restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
+import { _pendingUnavailableCountForTest, deleteCodeCheckpoints, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
+import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
 import { createCodeCheckpointEdit } from "../../__tests__/support/code-checkpoint-turn.js";
 
 let root: string;
@@ -81,6 +82,53 @@ const edit = createCodeCheckpointEdit(() => file);
 const restore = (message: string) => restoreCodeCheckpoint(sessionId, message, { cwd: root, extraAllowedDirectories: [] });
 
 describe("checkpoint storage recovery", () => {
+  it("bounds deferred turns during persistent read errors and persists unavailable ranges on recovery", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = randomUUID();
+    await withCodeCheckpoint({ sessionId: other, messageId: "other" }, async () => {});
+    await turn("old", () => edit("agent"));
+    faults.readCode = "EACCES";
+    const count = CODE_CHECKPOINT_POLICY.maxSessionTurns * 3;
+    for (let i = 0; i < count; i++) await turn(`failed-${i}`, () => edit(`edit-${i}`));
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(CODE_CHECKPOINT_POLICY.maxSessionTurns);
+    faults.readCode = "";
+    await turn("recovered");
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(0);
+    const history = JSON.parse(await readFile(ledger, "utf8"));
+    const recovered = history.turns.filter((item: { sessionId: string }) => item.sessionId === sessionId);
+    expect(recovered).toHaveLength(CODE_CHECKPOINT_POLICY.maxSessionTurns);
+    const failed = recovered.filter((item: { messageId: string }) => item.messageId.startsWith("failed-"));
+    expect(failed.map((item: { messageId: string }) => item.messageId)).toEqual(
+      Array.from({ length: CODE_CHECKPOINT_POLICY.maxSessionTurns - 1 }, (_, i) => `failed-${count - CODE_CHECKPOINT_POLICY.maxSessionTurns + 1 + i}`),
+    );
+    expect(failed.every((item: { unavailable: boolean; changes: unknown[] }) => item.unavailable && item.changes.length === 0)).toBe(true);
+    for (const message of ["old", "failed-0", `failed-${count - 1}`]) {
+      expect(await restore(message)).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+    }
+    expect(await restore("recovered")).toEqual({ ok: true });
+    expect(await restoreCodeCheckpoint(other, "other", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe(`edit-${count - 1}`);
+    warn.mockRestore();
+  });
+
+  it("keeps deferred failures isolated by namespace and session and clears a deleted session", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = randomUUID();
+    await withCodeCheckpoint({ sessionId: other, messageId: "other" }, async () => {});
+    faults.readCode = "EACCES";
+    await turn("failed");
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(1);
+    vi.stubEnv("AVE_HOME", join(root, "alice"));
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(0);
+    faults.readCode = "";
+    await turn("separate");
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(1);
+    await deleteCodeCheckpoints(sessionId);
+    expect(_pendingUnavailableCountForTest(sessionId)).toBe(0);
+    expect(await restoreCodeCheckpoint(other, "other", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
+  });
+
   it.skipIf(process.platform !== "win32")("can wait on a lock retry scheduled after an exhausted fake clock", async () => {
     await turn("seed");
     let release!: () => void;
