@@ -30,27 +30,19 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-and-test:
-    # Runner rule for every job a fork can trigger, in every workflow (the
-    # same runs-on expression, checked by
-    # src/__tests__/support/workflow-runner-policy.ts): only a trusted event
-    # may take the self-hosted runner a repo variable such as AVE_LINUX_RUNNER
-    # names. Trusted means push, schedule or workflow_dispatch, or a pull
-    # request whose head branch lives in this repository and that Dependabot
-    # did not open (GitHub treats Dependabot runs as fork runs). Every other
-    # event, including any event added later, gets the GitHub-hosted label,
-    # which is also the fallback when the variable is unset. Hosted runners
-    # are ephemeral VMs, so a fork's package.json postinstall cannot persist
-    # on, or read state from, the owner's machines.
-    # The guard lives in workflow files, which a fork pull request can edit;
-    # the boundary against a hostile workflow edit is the repository setting
-    # that holds fork pull request workflows for approval, plus reviewing
-    # .github/ changes before approving. ARM64 keeps native-module
+    # Every job in every workflow runs on a GitHub-hosted runner
+    # (src/__tests__/support/workflow-runner-policy.ts fails on anything
+    # else). Hosted runners are ephemeral VMs, so a fork's package.json
+    # postinstall cannot persist on, or read state from, any machine of the
+    # owner's. The repository must also register no self-hosted runner: a
+    # fork pull request runs its own edited copy of this file and could name
+    # one. ARM64 keeps native-module
     # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
     # secret-free and does not clone private sibling repositories;
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,9 +78,9 @@ jobs:
         with:
           packages: bubblewrap socat ripgrep zsh
           commands: bwrap socat rg zsh
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -200,10 +192,8 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Three workers, not the config's four: the self-hosted runners share
-        # one cgroup slice capped at three CPUs (CPUQuota=300%), where 80% of
-        # scheduling periods were throttled with four workers plus their
-        # subprocesses.
+        # Three workers, not the config's four: a standard hosted runner has
+        # four vCPUs, and each Vitest worker spawns subprocesses of its own.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
@@ -299,13 +289,15 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
-    # scripts/build-windows-job.ps1 finds through vswhere.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}
+    # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
+    # windows-2025, the image the release matrix builds the installer on, so
+    # a windows-latest rollover cannot test one image and ship another.
+    runs-on: windows-2025
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -314,8 +306,7 @@ jobs:
           path: ave
           fetch-depth: 0
           persist-credentials: false
-      # Self-hosted machines have no preinstalled toolcache; install Node into
-      # the runner's own tool cache instead of relying on a system Node. The
+      # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -332,9 +323,9 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -342,7 +333,7 @@ jobs:
       # Every later step (install scripts, the Windows helper checks, the
       # tests and the post-job cache saves) sees a home and a temp directory
       # under RUNNER_TEMP, which the runner empties around every job, instead
-      # of the owner's profile and %LOCALAPPDATA%\Temp.
+      # of the runner user's profile and %LOCALAPPDATA%\Temp.
       - name: Isolate home and temp directories in the runner temp
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
@@ -367,8 +358,8 @@ jobs:
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; a self-hosted
-        # runner's default shell depends on whether PowerShell 7 is present.
+        # Windows PowerShell ships with every Windows install; the default
+        # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -381,8 +372,8 @@ jobs:
       - name: Verify Windows folder classification
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; a self-hosted
-        # runner's default shell depends on whether PowerShell 7 is present.
+        # Windows PowerShell ships with every Windows install; the default
+        # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
@@ -452,13 +443,13 @@ jobs:
     # build-and-test; this job runs for pull requests into main and every
     # full-run event (push, tag, schedule, dispatch).
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}
+    runs-on: macos-15
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -467,8 +458,7 @@ jobs:
           path: ave
           fetch-depth: 0
           persist-credentials: false
-      # Self-hosted machines have no preinstalled toolcache; install Node into
-      # the runner's own tool cache instead of relying on a system Node. The
+      # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -484,16 +474,16 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
       # Every later step (install scripts, the tests and the post-job cache
       # saves) sees a home and a temp directory under RUNNER_TEMP, which the
-      # runner empties around every job, instead of the owner's home, its
+      # runner empties around every job, instead of the runner user's home, its
       # ~/.ave and ~/Library, and the per-user /var/folders temp directory.
       - name: Isolate home and temp directories in the runner temp
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -524,7 +514,7 @@ jobs:
         run: node scripts/fetch-uv.mjs
       # The Python smoke's interpreter (§9.7 P5) here is not actions/setup-python:
       # on macOS that action runs `sudo installer -pkg … -target /` into
-      # /Library/Frameworks, outside the workspace of the owner's machine. With
+      # /Library/Frameworks, outside the job's workspace. With
       # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
       # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
       # `--managed-python`, so no step relies on the machine's own python3.
@@ -564,8 +554,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -602,8 +592,7 @@ jobs:
       # initialise and a `process` entry is refused `process-entry-unconfined`.
       - name: Allow unprivileged user namespaces
         if: steps.docs-impact.outputs.docs_only != 'true'
-        # Only when the knob exists and is not already 0 (a self-hosted runner
-        # has it set at provisioning and has no sudo). The next step proves
+        # Only when the knob exists and is not already 0. The next step proves
         # the namespace either way.
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
@@ -617,9 +606,9 @@ jobs:
       - name: Prove the sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:

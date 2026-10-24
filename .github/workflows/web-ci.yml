@@ -29,16 +29,18 @@ defaults:
 jobs:
   build:
     name: Build (static export)
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    # The same pinned ARM64 image web-deploy.yml builds and deploys on, so
+    # this gate builds the export the way the deploy does.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./.github/actions/setup-bun
         with:
           bun-version-file: .bun-version

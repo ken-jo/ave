@@ -41,8 +41,8 @@ permissions:
 
 jobs:
   naming-gate:
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,8 +57,8 @@ jobs:
           .github/scripts/naming-gate.sh "$base_sha" HEAD
 
   home-path-gate:
-    # Runner: the shared fork-safe form; see workflow-runner-policy.ts.
-    runs-on: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) || contains(fromJSON('["pull_request","pull_request_target"]'), github.event_name) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') && vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
