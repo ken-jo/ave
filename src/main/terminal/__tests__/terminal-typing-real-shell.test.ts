@@ -313,6 +313,23 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       expect(await ranCommand(shell, result)).toBe(line);
     }, 30_000);
 
+    it("runs a line that ends exactly at the right margin (the line editor echoes a wrap placeholder, \" \" CR)", async () => {
+      const shell = await startShell(path!);
+      // The prompt as drawn on its row: between its A and B markers, after any CR.
+      const prompt = (shell.output().split("\u0007").at(-2) ?? "").replace(/\u001b\]133;B;[0-9a-f]+$/u, "").replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, "").split("\r").at(-1)!;
+      // One column per character, so its length is its width.
+      expect(prompt).toMatch(/^[ -~]+$/u);
+      const line = "echo margin-reached";
+      // Prompt and line fill the row: bash readline and zsh ZLE then write a
+      // blank on the next row and return to its start (" " CR).
+      shell.pty.resize(prompt.length + line.length, 30);
+      // Let the shell take the resize (and redraw) before typing.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const result = await shell.type(line);
+      expect(result, JSON.stringify({ result, prompt, shown: shell.output().slice(-400) })).toMatchObject({ ok: true });
+      expect(await ranCommand(shell, result)).toBe(line);
+    }, 30_000);
+
     it("refuses a line editor that would rewrite pasted text or not take it as a paste", async () => {
       const shell = await startShell(path!);
       const prompt = shell.tracker.promptEndCount();

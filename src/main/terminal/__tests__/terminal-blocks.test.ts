@@ -192,6 +192,28 @@ describe("TerminalBlockTracker — OSC 133", () => {
     expect(tracker.promptState()).toBe("pending-input");
   });
 
+  it("reads bash readline's wrap placeholder (\" \" CR at the right margin) as no part of the edit line", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    // The bytes the ubuntu-24.04 runner's bash 5.2 echoed for a paste that
+    // ended at column 100: an 85-column prompt, the pasted line in standout,
+    // then a blank on the next row and a return to its start.
+    const prompt = "runner@runnervm4yw5a:/tmp/ave-test-1001/t-HDkvJN/pty-linux-sandbox-pHo2zN/workspace$ ";
+    expect(prompt.length + "echo still-here".length).toBe(100);
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}\u001b[?2004h${prompt}${mark("B")}`);
+    tracker.recordOutput("\u001b[7mecho still-here\u001b[27m \r");
+    expect(tracker.editLineText()).toBe("echo still-here");
+    expect(tracker.promptEndCount()).toBe(1);
+  });
+
+  it("keeps the line's own trailing space: only the placeholder's one space before a pending CR goes", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}$ ${mark("B")}`);
+    tracker.recordOutput("\u001b[7mecho still-here \u001b[27m");
+    expect(tracker.editLineText()).toBe("echo still-here ");
+    tracker.recordOutput(" \r");
+    expect(tracker.editLineText()).toBe("echo still-here ");
+  });
+
   it("closes a block whose D never came when the next prompt starts, without an exit code", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     tracker.recordOutput(`${mark("C;cmdline_url=sleep%2010")}^C\r\n${mark("A")}`);
