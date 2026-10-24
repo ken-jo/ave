@@ -238,7 +238,7 @@ const BASH_PROFILE = (noncePath: string): string => [
   // private key anew before reading back the installed callback.
   '  if [[ "$ave_keys" == emacs && "$ave_keymap" == 1 && "$__ave_paste" == 1 && "$(declare -f __ave_report_edit_line)" == "$__ave_edit_handler" ]] && ! alias __ave_report_edit_line >/dev/null 2>&1 && builtin bind -m emacs-standard -x \'"\\C-x\\C-v":__ave_report_edit_line\' 2>/dev/null; then',
   '    while IFS= read -r ave_binding; do',
-  '      [[ "$ave_binding" == \'"\\C-x\\C-v" "__ave_report_edit_line"\' ]] && ave_edit=1',
+  '      [[ "$ave_binding" == \'"\\C-x\\C-v": "__ave_report_edit_line"\' || "$ave_binding" == \'"\\C-x\\C-v" "__ave_report_edit_line"\' ]] && ave_edit=1',
   '    done < <(builtin bind -m emacs-standard -X 2>/dev/null)',
   "  fi",
   // A fresh token for this prompt's B, which the prompt string prints.
