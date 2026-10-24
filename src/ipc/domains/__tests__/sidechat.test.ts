@@ -909,6 +909,14 @@ describe("pane chats are their own conversations", () => {
     expect(paneLoop.sessionOfTurn).toEqual([paneSession]);
   });
 
+  it("refuses a delayed send to a closed pane and releases its unused loop", async () => {
+    const { pane } = setup();
+    await sendFrom({ input: "page", surface: PANE_A });
+    await endPane(PANE_A, "closed");
+    await expect(sendFrom({ input: "late", surface: PANE_A })).resolves.toEqual({ ok: false, error: "pane-chat-ended" });
+    expect(pane(PANE_A)).toBeUndefined();
+  });
+
   it("runs a rail turn in the session its view shows, not the one the rail loop last held", async () => {
     const { rail } = setup({ [RAIL_SESSION]: [], [OTHER_RAIL_SESSION]: [] });
     await sendFrom({ input: "this view", sessionId: OTHER_RAIL_SESSION });
@@ -933,6 +941,16 @@ describe("pane chats are their own conversations", () => {
     expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
       .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: [{ role: "user", content: "what is on this page?" }] });
     await sendFrom({ input: "and now?", surface: PANE_A });
+    expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
+  });
+
+  it("reopens from the unified binding when the session row has no pane hint", async () => {
+    const stored = [{ role: "user", content: "continue this pane" }];
+    const { pane } = setup({ [STORED_PANE_SESSION]: stored });
+    browserTabRegistry.bindConversationSurface(STORED_PANE_SESSION, { windowId: 7, surface: PANE_A });
+    expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
+      .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: stored });
+    await sendFrom({ input: "continue", surface: PANE_A });
     expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
   });
 
