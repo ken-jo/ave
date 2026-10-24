@@ -11,6 +11,7 @@ import { CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID } from "../shared/claude-code-subs
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   ClaudeCodeSubscriptionError,
+  claudeCodeLocationError,
   sanitizedClaudeCodeEnvironment,
   validateClaudeCodeRuntimeDirectories,
 } from "./claude-code-subscription-client.js";
@@ -24,6 +25,7 @@ import {
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
 import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { SubscriptionAttachmentTransportError } from "./subscription-attachment-input.js";
+import { CodexExecutableLocationError } from "./codex-executable-location.js";
 import type { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 
 import type { ClaudeCodeExecutable } from "./claude-code-executable.js";
@@ -58,6 +60,7 @@ export class ClaudeCodeConversationRuntime {
   private activeCancel: (() => void) | null = null;
   private running = false;
   private stopped = false;
+  private termination: void | Promise<void> = undefined;
 
   constructor(private readonly options: ClaudeCodeConversationRuntimeOptions) {
     this.spawn = options.spawn ?? ((command, args, spawnOptions) =>
@@ -73,18 +76,24 @@ export class ClaudeCodeConversationRuntime {
     const { bridge, runtimeHome, workspaceDir, runtimeTempDir } = this.options;
     let configPath: string | null = null;
     let child: ChildProcess | null = null;
+    let termination: void | Promise<void>;
     let timer: NodeJS.Timeout | undefined;
     let boundaryTask: NodeJS.Immediate | undefined;
     let ended = false;
     let toolBoundary = false;
     let failure: Error | null = null;
+    let routeKind: ClaudeCodeExecutable["routeKind"];
     let wake: (() => void) | null = null;
     const queue: StreamEvent[] = [];
     const notify = () => { const next = wake; wake = null; next?.(); };
     const kill = () => {
       const active = child;
       child = null;
-      if (active) forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+      if (active) {
+        termination = forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+        this.termination = termination;
+      }
+      return termination;
     };
     const fail = (error: Error) => {
       if (failure || ended) return;
@@ -114,8 +123,9 @@ export class ClaudeCodeConversationRuntime {
     };
 
     try {
-      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
       const runtime = await this.options.resolveRuntime();
+      routeKind = runtime.routeKind;
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
       assertActive();
       const mcpServers = bridge.tools.length ? {
         [CLAUDE_CODE_MCP_SERVER_NAME]: await bridge.startMcpServer().then((mcp) => ({
@@ -143,7 +153,7 @@ export class ClaudeCodeConversationRuntime {
         });
         return HOST_TOOL_ACCEPTED;
       });
-      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
       await runtime.verify();
       assertActive();
       const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames)], {
@@ -239,6 +249,7 @@ export class ClaudeCodeConversationRuntime {
         await new Promise<void>((resolveNext) => { wake = resolveNext; });
       }
     } catch (error) {
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, routeKind);
       if (error instanceof ClaudeCodeSubscriptionError || (error instanceof Error && error.name === "AbortError")) throw error;
       throw operationFailed();
     } finally {
@@ -248,18 +259,22 @@ export class ClaudeCodeConversationRuntime {
       signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);
       if (boundaryTask) clearImmediate(boundaryTask);
-      try { kill(); } finally {
+      try { await kill(); } finally {
         try { if (configPath) await fs.rm(configPath, { force: true }); }
         finally { this.running = false; }
       }
     }
   }
 
-  async cancelActiveTurn(): Promise<void> { this.activeCancel?.(); }
+  async cancelActiveTurn(): Promise<void> {
+    this.activeCancel?.();
+    await this.termination;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.activeCancel?.();
+    await this.termination;
     await this.options.bridge.stop();
   }
 }

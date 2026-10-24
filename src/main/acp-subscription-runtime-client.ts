@@ -447,9 +447,9 @@ class AcpAuthProbe {
     }
   }
 
-  dispose(): void {
+  dispose(): void | Promise<void> {
     this.close(new AcpSubscriptionRuntimeError("acp-operation-failed"));
-    forceKillManagedChildProcess(this.child, "acp subscription authentication probe");
+    return forceKillManagedChildProcess(this.child, "acp subscription authentication probe");
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -593,7 +593,7 @@ export class AcpSubscriptionRuntimeClient {
   async setExecutable(candidate: string): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const executable = await this.resolveExecutable(candidate);
-      this.stopUnsafe();
+      await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = executable;
       this.verifiedExecutable = null;
@@ -604,7 +604,7 @@ export class AcpSubscriptionRuntimeClient {
 
   async clearExecutable(): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
-      this.stopUnsafe();
+      await this.stopUnsafe();
       this.completedLoginError = null;
       this.executablePath = null;
       this.verifiedExecutable = null;
@@ -661,7 +661,7 @@ export class AcpSubscriptionRuntimeClient {
       const executable = await this.requireExecutable();
       const child = this.launch(executable, this.manifest.loginArgs);
       if (!child.stdout || !child.stderr) {
-        forceKillManagedChildProcess(child, "acp subscription login missing output streams");
+        await forceKillManagedChildProcess(child, "acp subscription login missing output streams");
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
       const pending = {
@@ -722,7 +722,7 @@ export class AcpSubscriptionRuntimeClient {
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
       if (!pending) return this.getStatusUnsafe();
-      this.finishPendingLogin(pending, "cancelled");
+      await this.finishPendingLogin(pending, "cancelled");
       return this.currentStatus();
     });
   }
@@ -748,7 +748,7 @@ export class AcpSubscriptionRuntimeClient {
 
   async stop(): Promise<void> {
     await this.withOperationLock(async () => {
-      this.stopUnsafe();
+      await this.stopUnsafe();
     });
   }
 
@@ -808,21 +808,26 @@ export class AcpSubscriptionRuntimeClient {
     const stdoutStream = child.stdout;
     const stderrStream = child.stderr;
     if (!stdoutStream || !stderrStream) {
-      forceKillManagedChildProcess(child, "acp subscription command missing output streams");
+      await forceKillManagedChildProcess(child, "acp subscription command missing output streams");
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     }
     return new Promise<string>((resolveCommand, rejectCommand) => {
       let settled = false;
       let stdout = "";
+      let termination: void | Promise<void>;
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (error) rejectCommand(error);
-        else resolveCommand(stdout);
+        const settle = (): void => {
+          if (error) rejectCommand(error);
+          else resolveCommand(stdout);
+        };
+        if (termination) void termination.then(settle);
+        else settle();
       };
       const timer = setTimeout(() => {
-        forceKillManagedChildProcess(child, "acp subscription command timeout");
+        termination = forceKillManagedChildProcess(child, "acp subscription command timeout");
         finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
       }, PROBE_TIMEOUT_MS);
       timer.unref?.();
@@ -830,13 +835,13 @@ export class AcpSubscriptionRuntimeClient {
         if (!captureStdout || settled) return;
         stdout += String(chunk);
         if (Buffer.byteLength(stdout, "utf8") > MAX_VERSION_LENGTH * 4) {
-          forceKillManagedChildProcess(child, "acp subscription command output limit");
+          termination = forceKillManagedChildProcess(child, "acp subscription command output limit");
           finish(new AcpSubscriptionRuntimeError("acp-operation-failed"));
         }
       });
       stderrStream.on("data", () => {});
       child.once("error", () => {
-        forceKillManagedChildProcess(child, "acp subscription command error");
+        termination = forceKillManagedChildProcess(child, "acp subscription command error");
         finish(new AcpSubscriptionRuntimeError("acp-runtime-unavailable"));
       });
       child.once("close", (code: number | null) => {
@@ -857,9 +862,9 @@ export class AcpSubscriptionRuntimeClient {
       throw new AcpSubscriptionRuntimeError("acp-operation-failed");
     } finally {
       if (probe) {
-        probe.dispose();
+        await probe.dispose();
       } else {
-        forceKillManagedChildProcess(child, "acp subscription invalid authentication probe");
+        await forceKillManagedChildProcess(child, "acp subscription invalid authentication probe");
       }
     }
   }
@@ -980,14 +985,14 @@ export class AcpSubscriptionRuntimeClient {
     outcome: "succeeded" | "failed" | "cancelled",
   ): void {
     void this.withOperationLock(async () => {
-      this.finishPendingLogin(pending, outcome);
+      await this.finishPendingLogin(pending, outcome);
     }).catch(() => undefined);
   }
 
-  private finishPendingLogin(
+  private async finishPendingLogin(
     pending: PendingLogin,
     outcome: "succeeded" | "failed" | "cancelled",
-  ): void {
+  ): Promise<void> {
     if (this.pendingLogin !== pending) return;
     this.pendingLogin = null;
     clearTimeout(pending.timer);
@@ -995,7 +1000,7 @@ export class AcpSubscriptionRuntimeClient {
     pending.stderrBuffer = "";
     pending.verificationUrl = null;
     pending.deviceCode = null;
-    forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
+    await forceKillManagedChildProcess(pending.child, `acp subscription login ${outcome}`);
     this.verifiedExecutable = null;
     this.status = acpSubscriptionStatus(
       this.options.provider,
@@ -1005,8 +1010,8 @@ export class AcpSubscriptionRuntimeClient {
     if (outcome === "failed") this.completedLoginError = "acp-login-failed";
   }
 
-  private stopUnsafe(): void {
-    if (this.pendingLogin) this.finishPendingLogin(this.pendingLogin, "cancelled");
+  private async stopUnsafe(): Promise<void> {
+    if (this.pendingLogin) await this.finishPendingLogin(this.pendingLogin, "cancelled");
   }
 
   private currentStatus(): AcpSubscriptionStatus {

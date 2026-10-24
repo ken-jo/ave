@@ -23,6 +23,9 @@ import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import type { ProviderRpcOperation } from "../engine/llm/provider-error-diagnostics.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("codex-conversation-runtime");
 
 export const CODEX_RPC_REQUEST_TIMEOUT_MS = 15_000;
 export const CODEX_MAX_RPC_LINE_BYTES = 1_000_000;
@@ -106,6 +109,10 @@ export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze([
   'cli_auth_credentials_store="file"',
   "-c",
   'web_search="disabled"',
+  // Unelevated mode needs no UAC or sandbox accounts. Ave never requests
+  // elevated mode or windowsSandbox/setupStart; turns run read-only with
+  // no native environments.
+  ...(process.platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
   "--strict-config",
   ...CODEX_DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
   "--listen",
@@ -183,6 +190,8 @@ export class CodexConversationRuntimeError extends Error {
   constructor(
     readonly code: CodexConversationRuntimeErrorCode,
     readonly providerError?: SubscriptionTransportDiagnosticError["providerError"],
+    /** Main-process startup detail; never included in renderer error payloads. */
+    readonly detail?: string,
   ) {
     super(code);
     this.name = "CodexConversationRuntimeError";
@@ -746,6 +755,7 @@ export class CodexConversationRuntime {
   private threadDynamicTools: NormalizedDynamicTools | null = null;
   private pendingThreadDynamicTools: NormalizedDynamicTools | null = null;
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private threadStartPromise: Promise<string> | null = null;
   private threadId: string | null = null;
@@ -867,12 +877,12 @@ export class CodexConversationRuntime {
   }
 
   /** Safely closes the isolated transport and force-kills its managed child if needed. */
-  stop(): void {
-    this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
+  stop(): void | Promise<void> {
+    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
   }
 
   async shutdown(): Promise<void> {
-    this.stop();
+    await this.stop();
   }
 
   private createActiveTurn(threadId: string, callbacks: CodexConversationCallbacks): ActiveTurn {
@@ -1071,7 +1081,7 @@ export class CodexConversationRuntime {
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
-      forceKillManagedChildProcess(child, "codex conversation missing transport streams");
+      await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }
 
@@ -1099,13 +1109,19 @@ export class CodexConversationRuntime {
       await initialized;
       if (process.platform === "win32") {
         const readiness = await this.request("windowsSandbox/readiness");
-        if (!isCodexJsonRecord(readiness) || readiness.status !== "ready") {
-          throw new CodexConversationRuntimeError("codex-runtime-start-failed");
+        const status = isCodexJsonRecord(readiness) ? readiness.status : undefined;
+        const boundedStatus = status === "notConfigured" || status === "updateRequired" || status === "ready"
+          ? status : "unknown";
+        if (boundedStatus !== "ready") {
+          log.warn({ readiness: boundedStatus }, "Windows sandbox readiness failed");
+          throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+            `Windows sandbox readiness: ${boundedStatus}`);
         }
       }
     } catch (cause) {
       const error = new CodexConversationRuntimeError("codex-runtime-start-failed",
-        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined);
+        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined,
+        cause instanceof CodexConversationRuntimeError ? cause.detail : undefined);
       this.abortTransport(error, child);
       throw error;
     }
@@ -1686,11 +1702,12 @@ export class CodexConversationRuntime {
     }
   }
 
-  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void {
+  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.closeTransport(error, child);
-    if (child) forceKillManagedChildProcess(child, "codex conversation transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "codex conversation transport closed");
+    return this.termination;
   }
 
   private closeTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess | null): void {

@@ -115,8 +115,9 @@ export class FileLockReleaseError<T> extends Error {
 
 /**
  * Acquire a cross-process file lock on `targetPath`, execute `fn`, then
- * release the lock.  The target file is created as an empty file if it
- * does not yet exist so that proper-lockfile can stat() it.
+ * release the lock. Touch the target inside the lock so callbacks are
+ * guaranteed that it exists. The touch must not precede acquisition: on
+ * Windows, a waiting caller's open can block the holder's rename onto the target.
  */
 export async function withFileLock<T>(
   targetPath: string,
@@ -125,12 +126,8 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const { stale = 10_000, retries = 5 } = opts;
 
-  // Ensure parent directory and a placeholder file exist so lockfile can stat it.
+  // The lock directory is created beside the target.
   await mkdir(dirname(targetPath), { recursive: true });
-  // Touch the file without overwriting existing content. `open(..., "a")`
-  // atomically creates it if absent, avoiding check-then-create races.
-  const handle = await open(targetPath, "a", 0o600);
-  await handle.close();
 
   // proper-lockfile's default `onCompromised` THROWS from inside an fs
   // callback — an uncaught exception that takes down the process. Its
@@ -164,6 +161,13 @@ export async function withFileLock<T>(
 
   let result: T;
   try {
+    // Touch the target only while holding the lock (realpath: false never
+    // stats it). On Windows an open handle makes a holder's rename onto the
+    // target fail with EPERM, so an unlocked touch from a waiting caller
+    // could break the holder's atomic replace. `open(..., "a")` creates it
+    // if absent without overwriting existing content.
+    const handle = await open(targetPath, "a", 0o600);
+    await handle.close();
     result = await fn();
   } catch (callbackError) {
     try {

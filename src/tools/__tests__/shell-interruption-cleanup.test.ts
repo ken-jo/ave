@@ -81,4 +81,37 @@ describe("shell interruption resource ownership", () => {
     expect(forceKillManagedChildProcess).toHaveBeenCalledOnce();
     removeAbort.mockRestore();
   });
+
+  it("waits for tree termination before settling cancellation or releasing the sandbox home", async () => {
+    const child = Object.assign(new ChildProcess(), {
+      pid: 12345, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+      stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    let completeKill: () => void = () => {};
+    vi.mocked(forceKillManagedChildProcess).mockReturnValueOnce(new Promise<void>((resolve) => { completeKill = resolve; }));
+    vi.mocked(spawn).mockReturnValueOnce(child);
+    const cleanupHome = vi.fn();
+    const home = mkdtempSync(join(tmpdir(), "shell-interruption-")); roots.push(home);
+    vi.mocked(createSandboxProcessHome).mockReturnValueOnce({ path: home, env: { HOME: home }, cleanup: cleanupHome });
+    const controller = new AbortController();
+    let settled = false;
+    const pending = spawnWithSandbox("echo ready", process.cwd(), [process.cwd()], 1,
+      prepareSandboxFixture("echo ready", process.cwd()), controller.signal).then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    child.signalCode = "SIGKILL";
+    child.emit("exit", null, "SIGKILL");
+    child.emit("close", null, "SIGKILL");
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(settled).toBe(false);
+    expect(cleanupHome).not.toHaveBeenCalled();
+    expect(cleanupAsrtSandboxAfterCommand).not.toHaveBeenCalled();
+    completeKill();
+    expect((await pending).metadata?.aborted).toBe(true);
+    expect(cleanupHome).toHaveBeenCalledOnce();
+    expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+  });
 });

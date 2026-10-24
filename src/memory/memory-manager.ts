@@ -1464,8 +1464,8 @@ export class MemoryManager implements PromptMemorySource {
   /**
    * Stable coordination target for metadata save/detach/delete.
    *
-   * Locking the metadata file itself is unsafe because withFileLock must touch
-   * a missing target before acquisition. A delete between detach's directory
+   * Locking the metadata file itself is unsafe because withFileLock touches
+   * a missing target inside the lock. A delete between detach's directory
    * snapshot and lock acquisition could therefore recreate the deleted path.
    * This sidecar survives session deletion and gives all three operations one
    * inode-independent serialization point.
