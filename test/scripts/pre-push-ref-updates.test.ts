@@ -244,7 +244,7 @@ describe("new-branch base", () => {
       console: { log: (line: string) => logs.push(line) },
     });
     const result = findNewBranchBase("/fixture", { localRef: "refs/heads/feat/x", localSha: C }, "https://example.invalid/ave");
-    expect(result).toEqual({ sha: A });
+    expect(result).toEqual({ sha: A, tips: [A] });
     expect(logs).toContain(
       `[checks] skipping base candidate refs/heads/integration/permissions (${B.slice(0, 12)}): git fetch exited 128: fatal: could not read from remote`,
     );
