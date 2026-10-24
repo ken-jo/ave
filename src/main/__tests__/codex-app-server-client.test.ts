@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -12,6 +12,7 @@ import {
 import { CODEX_APP_SERVER_ARGV } from "../codex-conversation-runtime.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { createPrivateDirectory } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -110,14 +111,14 @@ interface Harness {
 const harnesses: Harness[] = [];
 const TEST_RUNTIME_PARENT = tmpdir();
 
-function createHarness(
+async function createHarness(
   handler: RequestHandler,
   options: {
     deferInitializeUntilInitialized?: boolean;
     resolveRuntime?: (artifact: CodexResolvedRuntime) => Promise<CodexResolvedRuntime>;
     lastKnownVersion?: () => string | null;
   } = {},
-): Harness {
+): Promise<Harness> {
   const server = new FakeAppServer(handler, options.deferInitializeUntilInitialized);
   const openExternal = vi.fn(async (_url: string) => undefined);
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-app-server-client-"));
@@ -126,11 +127,11 @@ function createHarness(
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
   const runtimeTempDir = join(runtimeRoot, "temporary");
-  mkdirSync(runtimeHome);
-  mkdirSync(sqliteHome);
-  mkdirSync(workspaceDir);
-  mkdirSync(runtimeTempDir);
-  const artifact = { ...codexExecutableArtifactFixture(runtimeHome), version: "0.153.4" };
+  await createPrivateDirectory(runtimeHome);
+  await createPrivateDirectory(sqliteHome);
+  await createPrivateDirectory(workspaceDir);
+  await createPrivateDirectory(runtimeTempDir);
+  const artifact = { ...await codexExecutableArtifactFixture(runtimeHome), version: "0.153.4" };
   const spawnCalls: Harness["spawnCalls"] = [];
   const spawn: Spawn = (command, args, options) => {
     spawnCalls.push({ command, args, options });
@@ -180,7 +181,7 @@ afterEach(async () => {
 
 describe("CodexAppServerClient", () => {
   it("reports a missing user CLI as not configured without starting anything", async () => {
-    const harness = createHarness(standardInitialize, {
+    const harness = await createHarness(standardInitialize, {
       resolveRuntime: async () => { throw new CodexUserRuntimeError("codex-runtime-not-installed"); },
     });
     await expect(harness.client.getStatus()).resolves.toMatchObject({
@@ -199,7 +200,7 @@ describe("CodexAppServerClient", () => {
     ["codex-runtime-unsafe-location", null],
     ["codex-runtime-start-failed", null],
   ] as const)("fails clearly with %s and keeps the runtime unavailable", async (code, version) => {
-    const harness = createHarness(standardInitialize, {
+    const harness = await createHarness(standardInitialize, {
       resolveRuntime: async () => { throw new CodexUserRuntimeError(code, version); },
       lastKnownVersion: () => version,
     });
@@ -209,7 +210,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("starts the resolved user CLI and reports its version", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "account/read") return { account: null, requiresOpenaiAuth: true };
       return standardInitialize(request);
     }, {
@@ -221,7 +222,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("rechecks the qualified copy immediately before spawn and refuses a replacement", async () => {
-    const harness = createHarness(standardInitialize, {
+    const harness = await createHarness(standardInitialize, {
       resolveRuntime: async (artifact) => {
         chmodSync(artifact.executable, 0o700);
         writeFileSync(artifact.executable, "#!/bin/sh\necho substituted\n");
@@ -236,7 +237,7 @@ describe("CodexAppServerClient", () => {
 
   it("rejects a non-string method envelope before it can consume a pending response", async () => {
     let harness: Harness;
-    harness = createHarness((request) => {
+    harness = await createHarness((request) => {
       if (request.method === "initialize") {
         harness.server.stdout.write(`${JSON.stringify({
           id: request.id,
@@ -269,7 +270,7 @@ describe("CodexAppServerClient", () => {
     vi.stubEnv("LOCALAPPDATA", "C:\\host-local-appdata");
     vi.stubEnv("TEMP", "C:\\host-temp");
 
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/read") {
         return {
@@ -343,7 +344,7 @@ describe("CodexAppServerClient", () => {
     }
   });
   it("sends initialized before awaiting the initialize result", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/read") return { account: null };
       throw new Error(`Unexpected JSON-RPC request: ${String(request.method)}`);
@@ -371,7 +372,7 @@ describe("CodexAppServerClient", () => {
 
   it("opens only a trusted browser login URL and returns a URL-free pending status", async () => {
     const authUrl = "https://auth.openai.com/authorize?state=browser-only-state";
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
         return { type: "chatgpt", loginId: "browser-login", authUrl };
@@ -404,7 +405,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("rejects an untrusted login URL without opening it", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
         return {
@@ -425,7 +426,7 @@ describe("CodexAppServerClient", () => {
 
   it("keeps the device verification URL in main while returning only the one-time code", async () => {
     const verificationUrl = "https://chatgpt.com/device?ticket=main-process-only";
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
         return {
@@ -461,7 +462,7 @@ describe("CodexAppServerClient", () => {
     expect(projected).not.toContain("chatgpt.com/device");
   });
   it("clears the volatile device code when sign-in is cancelled", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
         return {
@@ -495,7 +496,7 @@ describe("CodexAppServerClient", () => {
 
 
   it("reports an asynchronous login failure without leaking App Server detail", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/login/start") {
         return {
@@ -536,7 +537,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("uses headerless App Server JSONL and omits logout params", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/logout") return {};
       throw new Error(`Unexpected App Server request: ${String(request.method)}`);
@@ -564,7 +565,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("returns a non-sensitive status and filters malformed or duplicate models", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/read") {
         return {
@@ -632,7 +633,7 @@ describe("CodexAppServerClient", () => {
   });
 
   it("declines a reverse request with a clean id but never echoes one carrying a control character", async () => {
-    const harness = createHarness((request) => {
+    const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
       if (request.method === "account/logout") return {};
       throw new Error(`Unexpected App Server request: ${String(request.method)}`);

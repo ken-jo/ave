@@ -1600,6 +1600,33 @@ review is advisory, never a merge gate. Documentation-only mirrors under `docs/k
 are excluded from naming-process gates because they preserve historical source
 text; production paths remain covered.
 
+### Windows object ownership
+
+An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
+as its default owner, so a file or directory the app creates is owned by that
+group rather than by the user. Ownership on Windows follows two rules:
+
+1. **Objects the app creates are owned by the current user SID, set when they
+   are created.** Private runtime directories, the files copied into them, and
+   the app's private temporary directories are made through
+   `createPrivateDirectory`, `createPrivateTempDirectory` and
+   `claimPrivateOwnership` in `src/main/codex-executable-location.ts`. Those
+   functions ask the resident ACL host to set the owner from the host's own
+   token user and read it back. If that fails, creation is refused and a
+   directory created by the call is removed. Persistent runtime directories are
+   claimed again whenever the app prepares them, so one left behind by an
+   earlier elevated run is owned by the user again rather than refused.
+   Admission keeps the strict check that every component under a private root
+   is owned by the current user.
+2. **Roots the app did not create, such as `AVE_HOME`, may be owned by
+   `S-1-5-32-544` only when the current token's default owner is
+   `S-1-5-32-544` and every access entry belongs to the owner or to a trusted
+   system principal.** The app protects such a root, but it does not take
+   ownership of it.
+
+Any other owner is refused. A change to either rule changes the security
+contract for both.
+
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,

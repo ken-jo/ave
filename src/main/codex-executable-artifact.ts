@@ -6,6 +6,8 @@ import {
   assertCodexExecutableLocation,
   assertCodexLocations,
   assertCodexPrivateRuntimeDirectory,
+  claimPrivateOwnership,
+  createPrivateTempDirectory,
   type CodexLocationRequest,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
@@ -171,7 +173,7 @@ export async function copyCodexExecutableArtifact(
     { path: source, kind: "executable", routeKind: "native" },
     { path: runtimeDirectory, kind: "private-directory", routeKind: "native" },
   ]);
-  const directory = await fs.mkdtemp(join(runtimeDirectory, "artifact-"));
+  const directory = await createPrivateTempDirectory(join(runtimeDirectory, "artifact-"));
   try {
     await assertCodexPrivateRuntimeDirectory(directory, "native");
     const primary = await copyNativeExecutableFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
@@ -185,6 +187,7 @@ export async function copyCodexExecutableArtifact(
         arch,
       ),
     });
+    await claimPrivateOwnership([artifact.executable, ...(artifact.companion ? [artifact.companion.executable] : [])]);
     await verifyCodexExecutableArtifact(artifact);
     return artifact;
   } catch (error) {

@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "../shared/is-record.js";
 import { copyAdmittedExecutableFile, hashExecutableFile, openExecutableFile } from "./codex-executable-artifact.js";
-import { assertCodexLocations, type CodexLocationRequest } from "./codex-executable-location.js";
+import { assertCodexLocations, claimPrivateOwnership, type CodexLocationRequest } from "./codex-executable-location.js";
 
 const MAX_PACKAGE_ENTRIES = 20_000;
 const MAX_PACKAGES = 512;
@@ -303,6 +303,8 @@ export async function copySubscriptionPackageArtifact(root: string, script: stri
     await verifySealedFile(guard, guardHash);
     await verifySealedFile(commonJsGuard, commonJsHash);
   };
+  // Everything copied above is the product's own: claim it before admission.
+  await claimPrivateOwnership([...(await packageFiles(snapshot)).map(({ path }) => path), guard, commonJsGuard]);
   // Source changes during copying are rejected before the first CLI probe.
   await verify();
   return Object.freeze({ args: Object.freeze(["--no-global-search-paths", "--import", pathToFileURL(guard).href,

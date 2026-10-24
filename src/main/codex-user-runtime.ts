@@ -39,7 +39,10 @@ import {
   verifyCodexExecutableArtifact,
   type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
-import { assertCodexExecutableLocation, assertCodexLocations, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError } from "./codex-executable-location.js";
+import {
+  assertCodexExecutableLocation, assertCodexLocations, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError,
+  createPrivateDirectory, createPrivateTempDirectory,
+} from "./codex-executable-location.js";
 import {
   CODEX_SCHEMA_FILES,
   missingCodexProtocolRequirements,
@@ -558,7 +561,7 @@ export class CodexUserRuntimeLocator {
     let probeRoot: string;
     try {
       await assertCodexPrivateRuntimeDirectory(runtimeTempDir, "native");
-      probeRoot = await fs.mkdtemp(join(runtimeTempDir, "probe-"));
+      probeRoot = await createPrivateTempDirectory(join(runtimeTempDir, "probe-"));
     } catch {
       throw startFailed();
     }
@@ -568,9 +571,7 @@ export class CodexUserRuntimeLocator {
       const sqliteHome = join(probeRoot, "sqlite");
       const probeTempDir = join(probeRoot, "temp");
       const schemaDir = join(probeRoot, "schema");
-      for (const directory of [runtimeHome, sqliteHome, probeTempDir, schemaDir]) {
-        await fs.mkdir(directory, { mode: 0o700 });
-      }
+      for (const directory of [runtimeHome, sqliteHome, probeTempDir, schemaDir]) await createPrivateDirectory(directory);
       await assertCodexLocations([runtimeHome, sqliteHome, probeTempDir, schemaDir].map((path) => ({
         path, kind: "private-directory", routeKind: "native",
       })));

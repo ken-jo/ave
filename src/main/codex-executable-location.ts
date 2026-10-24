@@ -175,6 +175,8 @@ const WINDOWS_ACL_SCRIPT = [
   "  private static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);",
   "  [DllImport(\"advapi32.dll\")]",
   "  private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);",
+  "  [DllImport(\"advapi32.dll\", SetLastError = true)]",
+  "  private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, IntPtr dacl, IntPtr sacl);",
   "  [DllImport(\"kernel32.dll\")]",
   "  private static extern IntPtr LocalFree(IntPtr memory);",
   "  [DllImport(\"userenv.dll\", CharSet = CharSet.Unicode, ExactSpelling = true)]",
@@ -201,6 +203,16 @@ const WINDOWS_ACL_SCRIPT = [
   "      } finally { LocalFree(descriptor); }",
   "    }",
   "  }",
+  // Opens the path object itself, as Read does, with WRITE_OWNER only.
+  "  public static void SetOwner(string path, System.Security.Principal.SecurityIdentifier owner) {",
+  "    byte[] sid = new byte[owner.BinaryLength];",
+  "    owner.GetBinaryForm(sid, 0);",
+  "    using (SafeFileHandle handle = CreateFile(path, 0x00080000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {",
+  "      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
+  "      uint result = SetSecurityInfo(handle, 1, 1, sid, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);",
+  "      if (result != 0) throw new Win32Exception((int)result);",
+  "    }",
+  "  }",
   "}",
   "'@",
   "while ($null -ne ($line = [Console]::In.ReadLine())) {",
@@ -208,6 +220,12 @@ const WINDOWS_ACL_SCRIPT = [
   // Direct assignment preserves the decoded array without nesting it inside
   // a single pipeline object.
   "$targets = $request.paths",
+  // The owner is this host's token user, never request data. A failed claim
+  // throws, which ends the host and fails the request.
+  "if ($request.setOwner -is [bool] -and $request.setOwner) {",
+  "  $claimant = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+  "  foreach ($target in @($targets)) { [ExecutablePathSecurity]::SetOwner([string]$target, $claimant) }",
+  "}",
   "$paths = @($targets | ForEach-Object {",
   "  $target = [string]$_",
   "  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new([ExecutablePathSecurity]::Read($target), 0)",
@@ -376,13 +394,13 @@ async function inspectPathRoute(
   return entry;
 }
 
-function aclOutputBytes(inspected: readonly InspectedPath[]): number {
+function aclOutputBytes(inspected: readonly { readonly path: string }[]): number {
   return MAX_ACL_OUTPUT_BYTES * Math.max(1, Math.ceil(inspected.length / ACL_OUTPUT_PATHS));
 }
 
-function aclBatches(inspected: readonly InspectedPath[]): InspectedPath[][] {
-  const batches: InspectedPath[][] = [];
-  let batch: InspectedPath[] = [];
+function aclBatches<T extends { readonly path: string }>(inspected: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  let batch: T[] = [];
   let chars = 0;
   for (const entry of inspected) {
     const size = JSON.stringify(entry.path).length + 1;
@@ -570,7 +588,7 @@ function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePri
   return { ...value, desktopPackage } as unknown as WindowsSecurityResult;
 }
 
-async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
+function windowsAclLaunch(): WindowsAclHostLaunch {
   // The current account's process environment is trusted; arbitrary actions
   // by that account are outside the filesystem admission boundary.
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
@@ -582,11 +600,15 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
   const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
   // The host process stays as fixed as the per-probe process was. Inputs that
   // travelled in its environment travel in each request line instead.
-  const launch: WindowsAclHostLaunch = {
+  return {
     command,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
     options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
   };
+}
+
+async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
+  const launch = windowsAclLaunch();
   // Captured before queueing, so concurrent first lookups each resolve the
   // package and are compared with the cached outcome below.
   const skippedPackage = cachedDesktopPackage;
@@ -595,6 +617,7 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids:
     paths: inspected.map((entry) => entry.path),
     capSids: [...capSids],
     skipPackage: skippedPackage !== undefined,
+    setOwner: false,
   }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(inspected) });
   const security = parseWindowsSecurity(result, skippedPackage);
   const desktopPackage = security.desktopPackage;
@@ -865,6 +888,60 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
     } catch { /* Untrusted or unreadable cap files supply no principals. */ }
   }
   assertWindowsSecurity(security, [...inspected.values()], rules, privateDirectories, capSids);
+}
+
+/**
+ * Make the current account the owner of objects the product just created.
+ *
+ * An elevated token usually gives new objects BUILTIN\Administrators as their
+ * owner, and admission requires the current account to own everything under a
+ * private root. This is the one place that ownership is established (the rule
+ * is written in docs/architecture/architecture.md, "Windows object
+ * ownership"). The resident ACL host sets the owner from its own token user,
+ * opening each path object itself, and the reply must show that owner for
+ * every path; anything else refuses. Elsewhere POSIX creation modes already
+ * leave the current account as owner, so there is nothing to claim.
+ */
+export async function claimPrivateOwnership(paths: readonly string[]): Promise<void> {
+  if (process.platform !== "win32" || paths.length === 0) return;
+  for (const path of paths) assertAbsolutePath(path);
+  const launch = windowsAclLaunch();
+  for (const batch of aclBatches(paths.map((path) => ({ path })))) {
+    const result = await exchangeWindowsAcl({
+      id: ++windowsAclRequestId,
+      paths: batch.map(({ path }) => path),
+      capSids: [],
+      skipPackage: true,
+      setOwner: true,
+    }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(batch) });
+    const claimed = result as { currentSid: unknown; paths: { path: unknown; owner: unknown }[] };
+    if (typeof claimed.currentSid !== "string" || !SID_PATTERN.test(claimed.currentSid)
+        || claimed.paths.length !== batch.length
+        || claimed.paths.some((entry, index) => entry.path !== batch[index]!.path || entry.owner !== claimed.currentSid)) {
+      throw new CodexExecutableLocationError("Runtime directory owner could not be set to the current account");
+    }
+  }
+}
+
+async function claimCreatedDirectory(path: string): Promise<string> {
+  try {
+    await claimPrivateOwnership([path]);
+  } catch (error) {
+    await fs.rm(path, { recursive: true, force: true });
+    throw error;
+  }
+  return path;
+}
+
+/** Create one private directory owned by the current account; its parent must exist. */
+export async function createPrivateDirectory(path: string): Promise<string> {
+  await fs.mkdir(path, { mode: 0o700 });
+  return claimCreatedDirectory(path);
+}
+
+/** `fs.mkdtemp` for a private directory owned by the current account. */
+export async function createPrivateTempDirectory(prefix: string): Promise<string> {
+  return claimCreatedDirectory(await fs.mkdtemp(prefix));
 }
 
 /** Admit the file's location; callers execute a separately pinned artifact. */

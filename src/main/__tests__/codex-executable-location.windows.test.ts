@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, realpathSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,9 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   assertCodexExecutableLocation,
   assertCodexLocations,
+  claimPrivateOwnership,
+  CodexExecutableLocationError,
+  createPrivateTempDirectory,
   _resetDesktopPackageCacheForTest,
   _resetWindowsAclHostForTest,
 } from "../codex-executable-location.js";
@@ -63,7 +66,7 @@ function realHostFixture() {
     discard: () => host.discard(),
   });
   const request = (id: number, paths: string[], capSids: string[] = []) => host.request(
-    { id, paths, capSids, skipPackage: true }, launch!,
+    { id, paths, capSids, skipPackage: true, setOwner: false }, launch!,
     { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 },
   );
   const prime = async () => {
@@ -168,4 +171,91 @@ it.runIf(process.platform === "win32")("admits a temporary native executable wit
   const executable = join(root, "fixture.exe");
   copyFileSync(join(process.env.SystemRoot!, "System32", "cmd.exe"), executable);
   await expect(assertCodexExecutableLocation(executable, "native", trust)).resolves.toBeUndefined();
+});
+
+interface RawReply { result: { currentSid: string; machineDomainSid: string | null; paths: { path: string; owner: string }[] } }
+
+it.runIf(process.platform === "win32")("claims created directories and files for the current account through the resident host", async () => {
+  const { host, request, prime } = realHostFixture();
+  await prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-claim-")));
+  roots.push(parent);
+  // What this process's token gives a new object on its own (Administrators
+  // under an elevated token with the default owner policy).
+  const unclaimed = realpathSync(mkdtempSync(join(parent, "unclaimed-")));
+  const directory = await createPrivateTempDirectory(join(parent, "claimed-"));
+  const file = join(directory, "copy.bin");
+  writeFileSync(file, "private");
+  await claimPrivateOwnership([file]);
+  const reply = JSON.parse(await request(300, [unclaimed, directory, file])) as RawReply;
+  const [defaultOwner, directoryOwner, fileOwner] = reply.result.paths.map(({ owner }) => owner);
+  expect(directoryOwner).toBe(reply.result.currentSid);
+  expect(fileOwner).toBe(reply.result.currentSid);
+  // Claims are request lines to the same resident host, not new processes.
+  expect(host.starts).toBe(1);
+  process.stdout.write(`ACL host owner claim evidence ${JSON.stringify({ defaultOwner, account: reply.result.currentSid, claimed: [directoryOwner, fileOwner], starts: host.starts })}\n`);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("refuses a claim the real host cannot apply", async () => {
+  const { prime } = realHostFixture();
+  await prime();
+  const missing = join(tmpdir(), "ave-owner-claim-absent", "missing");
+  await expect(claimPrivateOwnership([missing])).rejects.toBeInstanceOf(WindowsAclHostError);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("answers from its own imports when no module directory is searchable", async () => {
+  const empty = realpathSync(mkdtempSync(join(tmpdir(), "ave-empty-module-path-")));
+  roots.push(empty);
+  const replies: string[] = [];
+  const host = new WindowsAclHost((command, args, options) =>
+    spawn(command, args, { ...options, env: { ...options.env, PSModulePath: empty } }));
+  realHosts.push(host);
+  _setWindowsAclTransportForTest({
+    async request(request, launch, limits) {
+      const line = await host.request(request, launch, limits);
+      replies.push(line);
+      return line;
+    },
+    discard: () => host.discard(),
+  });
+  // The full lookup: paths, local account domain, sandbox group and package.
+  await expect(assertCodexExecutableLocation(join(process.env.SystemRoot!, "System32", "cmd.exe"), "native",
+    { capSidPath: join(tmpdir(), "absent-cap-fixture") })).resolves.toBeUndefined();
+  const reply = JSON.parse(replies[0]!) as RawReply;
+  expect(reply.result.machineDomainSid).toMatch(/^S-1-5-21-\d+-\d+-\d+$/);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("falls back to the directory service when LocalAccounts cannot be imported", async () => {
+  const { request, prime, launch } = realHostFixture();
+  await prime();
+  const expected = (JSON.parse(await request(400, [])) as RawReply).result.machineDomainSid;
+  const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+  const absent = script.replaceAll(String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
+    String.raw`Microsoft.PowerShell.LocalAccounts\Absent.psd1`);
+  expect(absent).not.toBe(script);
+  const host = new WindowsAclHost((command, args, options) => spawn(command, args, options));
+  realHosts.push(host);
+  const reply = JSON.parse(await host.request({ id: 401, paths: [], capSids: [], skipPackage: true, setOwner: false },
+    { ...launch, args: [...launch.args.slice(0, 4), Buffer.from(absent, "utf16le").toString("base64")] },
+    { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 })) as RawReply;
+  expect(expected).toMatch(/^S-1-5-21-\d+-\d+-\d+$/);
+  expect(reply.result.machineDomainSid).toBe(expected);
+}, 45_000);
+
+it.runIf(process.platform === "win32").each([
+  ["a failed claim", () => { throw new WindowsAclHostError("Windows ACL host exited (1)"); }, WindowsAclHostError],
+  ["a claim read back with another owner", (request: WindowsAclRequest) => JSON.stringify({ id: request.id, result: {
+    currentSid: "S-1-5-21-100-200-300-1001", desktopPackage: { status: "skipped" },
+    paths: request.paths.map((path) => ({ path, owner: "S-1-5-32-544", daclPresent: true, entries: [] })) } }), CodexExecutableLocationError],
+] as const)("removes a directory it created after %s", async (_label, answer, refusal) => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-refusal-")));
+  roots.push(parent);
+  const requests: WindowsAclRequest[] = [];
+  _setWindowsAclTransportForTest({
+    async request(request) { requests.push(request); return answer(request); },
+    discard: () => {},
+  });
+  await expect(createPrivateTempDirectory(join(parent, "claimed-"))).rejects.toBeInstanceOf(refusal);
+  expect(requests.map(({ setOwner, paths }) => ({ setOwner, count: paths.length }))).toEqual([{ setOwner: true, count: 1 }]);
+  expect(readdirSync(parent)).toEqual([]);
 });
