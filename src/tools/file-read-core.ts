@@ -73,9 +73,10 @@ export function assertReadableFilePath(
   } catch {
     resolved = lexical;
   }
-  const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(resolved)), "read");
+  const canonical = canonicalizePathForMatch(resolved);
+  const sensitive = isSensitivePath(caseFoldForMatch(canonical), "read");
   if (sensitive) return { ok: false, error: "sensitive-path" };
-  if (isConfiguredSessionReadPath(resolved)) return { ok: true, resolved };
+  if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);
   if (!check.allowed) return { ok: false, error: "path-not-allowed" };
   return { ok: true, resolved };

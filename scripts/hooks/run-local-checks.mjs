@@ -302,6 +302,14 @@ function ensureAppTestRuntimeAbi(dir) {
   }
 }
 
+// The background-shell suites load the git-ignored Windows job launcher. The
+// full tier builds it through `test:prepare`; the test-only and fast tiers call
+// `test:vitest` directly, so they run the same check here.
+function ensureWindowsJobLauncher(dir) {
+  if (!isWindows) return;
+  run(commands.node, [join(dir, "scripts/prepare-windows-job.mjs")], dir);
+}
+
 // ---------------------------------------------------------------------------
 // Push / commit branch policy
 // ---------------------------------------------------------------------------
@@ -969,6 +977,7 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   runAppTypecheckGate(dir, "targeted Vitest checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
   run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
@@ -1023,6 +1032,7 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   if (messageCatalog) runPackageScripts(dir, MESSAGE_CATALOG_CHECK_SCRIPTS, "ave message catalog checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
+  ensureWindowsJobLauncher(dir);
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {
