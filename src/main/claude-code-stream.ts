@@ -4,14 +4,27 @@ export const CLAUDE_CODE_MCP_SERVER_NAME = "ave-host-tools";
 export const CLAUDE_CODE_MAX_PROMPT_BYTES = 512 * 1024;
 export const CLAUDE_CODE_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-/** The CLI's tool list covers built-ins; MCP approval is a separate option. */
-export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly string[]): string[] {
+/**
+ * A model id `--model` may carry: a catalog id (`claude-sonnet-5-5`, a dated
+ * snapshot) starts with a letter or digit, so nothing here can read as another
+ * flag.
+ */
+const CLAUDE_CODE_MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/iu;
+
+/**
+ * The CLI's tool list covers built-ins; MCP approval is a separate option.
+ * `model` is passed as `--model <id>`; without it
+ * the CLI runs its own default model.
+ */
+export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly string[], model?: string): string[] {
+  if (model !== undefined && !CLAUDE_CODE_MODEL_ID.test(model)) invalid();
   return [
     "-p", "--output-format", "stream-json", "--verbose",
     "--tools", "", "--permission-mode", "default",
     "--strict-mcp-config", "--mcp-config", mcpConfigPath,
     "--setting-sources", "", "--settings", JSON.stringify({ disableAllHooks: true }),
     "--disable-slash-commands", "--no-chrome", "--no-session-persistence",
+    ...(model !== undefined ? ["--model", model] : []),
     ...(toolNames.length ? ["--allowedTools", toolNames.join(",")] : []),
   ];
 }

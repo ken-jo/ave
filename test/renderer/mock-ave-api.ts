@@ -21,7 +21,7 @@ import type { SessionFamily, SessionListKindFilter } from "../../src/shared/sess
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
 import { browserControlFixture } from "../../src/__tests__/support/browser-control-fixture.js";
 import type { TerminalDataEvent, TerminalRef, TerminalSessionRef } from "../../src/shared/terminal-session.js";
-import type { BrowserTabControlState } from "../../src/shared/browser-surface.js";
+import type { BrowserTabControlState, SessionTabBindingsState } from "../../src/shared/browser-surface.js";
 
 export type MockAveApi = Record<string, Mock>;
 
@@ -244,7 +244,9 @@ function makeTerminalDouble() {
 function makeBrowserTabsDouble() {
   const opListeners = new Set<(request: unknown) => void>();
   const controlListeners = new Set<(state: BrowserTabControlState) => void>();
+  const bindingListeners = new Set<(state: SessionTabBindingsState) => void>();
   let state: BrowserTabControlState = { revision: 0, tabs: [] };
+  let bindingState: SessionTabBindingsState = { revision: 0, bindings: [] };
   return {
     bindTab: vi.fn(async () => ({ ok: true as const })),
     stop: vi.fn(async () => ({ ok: true as const })),
@@ -253,6 +255,11 @@ function makeBrowserTabsDouble() {
     pausePopup: vi.fn(async () => ({ ok: true as const })),
     resumePopup: vi.fn(async () => ({ ok: true as const })),
     getState: vi.fn(async () => state),
+    getSessionBindings: vi.fn(async () => bindingState),
+    onSessionBindingsChanged: vi.fn((listener: (state: SessionTabBindingsState) => void) => {
+      bindingListeners.add(listener);
+      return () => { bindingListeners.delete(listener); };
+    }),
     onTabOp: vi.fn((listener: (request: unknown) => void) => {
       opListeners.add(listener);
       return () => { opListeners.delete(listener); };
@@ -269,6 +276,10 @@ function makeBrowserTabsDouble() {
     emitBrowserControl: (agentControlledTabIds: string[]) => {
       state = browserControlFixture(agentControlledTabIds, "agent-active", state.revision + 1);
       for (const listener of [...controlListeners]) listener(state);
+    },
+    emitSessionBindingsChanged: (bindings: SessionTabBindingsState["bindings"]) => {
+      bindingState = { revision: bindingState.revision + 1, bindings };
+      for (const listener of [...bindingListeners]) listener(bindingState);
     },
   };
 }
