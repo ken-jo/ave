@@ -1191,12 +1191,14 @@ describe("a turn parked on an approval, with two tiles", () => {
     // The panel closed: the toggle is the way back, and it says so too. Past
     // the close transition as well — the settled-closed panel used to unmount,
     // taking the side chat's claim and its parked question with it.
-    await act(async () => { fireEvent.click(toggle()); });
-    // Longer than the panel's close transition (ChatView's
-    // SIDE_PANEL_LAYOUT_TRANSITION_MS), after which the panel settles closed.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await act(async () => { fireEvent.click(toggle()); });
+      // Advance beyond the panel's close transition before checking its settled state.
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(container.querySelector('[data-testid="side-chat-view"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-side-panel-motion"]')).toHaveStyle({ display: "none" });
     await waitFor(() => {

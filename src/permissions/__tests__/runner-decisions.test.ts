@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -33,10 +33,14 @@ const ALL_DECISION_CASES = RUNNER_DECISIONS.flatMap((row) => {
 });
 const DECISION_CASES = [...new Map(ALL_DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row] as const)).values()];
 let directory: string;
+let accountDirectory: string;
 let managerSequence = 0;
 const floorManagers = new Map<ShellDialect, PermissionManager>();
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-"));
+  accountDirectory = join(directory, "accounts");
+  mkdirSync(accountDirectory);
+  accountDirectory = realpathSync.native(accountDirectory).replaceAll("\\", "/");
   // These checks only read policy. Persist each dialect's grant once; the
   // saved-grant cases below still exercise mutation and reload independently.
   for (const dialect of DIALECTS) {
@@ -55,8 +59,13 @@ function runnerManager(permissionsPath = join(directory, `${managerSequence++}.j
 }
 
 function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
+  // Absolute credential suffixes do not depend on the host's account lookup.
+  // Keep native drive syntax intact on platforms without the account mount.
+  const source = process.platform === "win32"
+    ? command
+    : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
-    ruleSubject: { kind: "shell", dialect, command, cwd: CWD },
+    ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
   });
 }
 
