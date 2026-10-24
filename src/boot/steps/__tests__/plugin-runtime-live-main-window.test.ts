@@ -239,7 +239,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const alerts of alertsServices.splice(0)) await alerts.flush();
-  tmpDirs.cleanup();
+  await tmpDirs.cleanup();
 });
 
 describe("hostApi.triggerConversation overlay send targets the live main window", () => {

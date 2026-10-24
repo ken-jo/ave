@@ -81,6 +81,7 @@ import { maskSensitiveData } from "../shared/dlp.js";
 import { createDlpSafeUuid, createNamespacedSessionId } from "../shared/dlp-safe-id.js";
 import { renderAgentProfilePrompt } from "./agent-profile-prompt.js";
 import type { GenericMessage } from "./llm/types.js";
+import { cachedLiveModelIds } from "./llm/model-list.js";
 import type {
   A2ASubAgentMessageBus,
   DeliverToParentInput,
@@ -1098,8 +1099,9 @@ function originSessionTag(originSessionId: string): string {
  *   3. API-key complexity   → MODEL_COMPLEXITY_MAP[vendor][tier]; null when
  *                             the vendor lacks that tier (design-intent
  *                             parent-model fallback, logged)
- *   4. API-key explicit ID  → used only when it is selectable for the active
- *                             vendor (LLM_VENDOR_MODEL_OPTIONS); otherwise
+ *   4. API-key explicit ID  → used only when the active vendor serves it: the
+ *                             catalog lists it for that vendor, or its live
+ *                             `/models` answer (`liveModels`) named it; otherwise
  *                             null (parent-model fallback, logged).
  *
  * Returning null means "no override" — the active runtime retains its
@@ -1110,7 +1112,8 @@ function originSessionTag(originSessionId: string): string {
 export function resolveSubAgentModel(
   profileModel: string | undefined,
   activeVendor: string,
-  subscriptionRuntime?: SubscriptionChatRuntimeSelection,
+  subscriptionRuntime: SubscriptionChatRuntimeSelection | undefined,
+  liveModels: readonly string[],
 ): string | null {
   const trimmed = profileModel?.trim();
   if (!trimmed) return null;
@@ -1155,7 +1158,7 @@ export function resolveSubAgentModel(
   // can actually serve it; an unavailable ID resolves to null (parent-model
   // fallback, logged) rather than reaching the provider and hard-failing the
   // child with a non-retryable model-not-found.
-  if (isModelAvailableForVendor(activeVendor, trimmed)) {
+  if (isModelAvailableForVendor(activeVendor, trimmed, liveModels)) {
     return trimmed;
   }
   log.warn(
@@ -2399,6 +2402,11 @@ export class SubAgentRunner {
     return this.deps.subAgentMemoryManager.listSubAgentSessionsForOrigin(originSessionId);
   }
 
+  /** Transcript existence, independent of row metadata and current run state. */
+  hasPersistedSession(sessionId: string): boolean {
+    return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
+  }
+
   /**
    * The sub-agent sessions work-board items spawned, newest first — the rows
    * the sidebar's conversation list shows beside the main sessions.
@@ -2846,6 +2854,7 @@ export class SubAgentRunner {
       args.profileModel,
       llmSettings.provider,
       subscriptionRuntime,
+      isLLMVendor(llmSettings.provider) ? cachedLiveModelIds(llmSettings, llmSettings.provider) : [],
     );
 
     // A builder carries mutable project/session overlay state. Never share it

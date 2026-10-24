@@ -72,6 +72,20 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("saves an empty model as an explicit unselected route", async () => {
+    const settings = makeSettings();
+    settings.llm.vendors.openai!.model = "";
+    const { api } = makeMockAveApi({ settings, hasApiKey: true });
+    Object.assign(api, { hasWebApiKey: vi.fn(async () => false), hasMarketplaceApiKey: vi.fn(async () => false) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    expect(result.current.model).toBe("");
+    await act(async () => result.current.save("llm"));
+    expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      llm: expect.objectContaining({ vendors: expect.objectContaining({ openai: expect.objectContaining({ model: "" }) }) }),
+    }));
+  });
+
   it.each(["chat", "web", "llm"])("keeps retirement pending when %s settings are saved without a provider choice", async (tab) => {
     let settings = makeSettings();
     settings.llm.retiredProvider = "copilot";
@@ -478,6 +492,7 @@ describe("useSettingsOrchestration", () => {
       result.current.selectMarketplaceProviderPreset(futureRouter);
     });
     await waitFor(() => expect(result.current.vendor).toBe("openai-compatible"));
+    expect(result.current.model).toBe("");
 
     let saved = false;
     await act(async () => {
@@ -499,7 +514,7 @@ describe("useSettingsOrchestration", () => {
           // the generic custom-provider row's, and a preset writing it is how
           // the two rows used to overwrite each other.
           "openai-compatible": expect.objectContaining({
-            presetModels: { "future-router": "future/free" },
+            presetModels: { "future-router": "" },
           }),
         },
       }),
@@ -735,6 +750,7 @@ describe("useSettingsOrchestration", () => {
 
     act(() => { result.current.selectMarketplaceProviderPreset(alpha); });
     await waitFor(() => expect(result.current.marketplaceProviderPresetId).toBe("alpha-gw"));
+    expect(result.current.model).toBe("");
     act(() => { result.current.setModel("alpha/chosen"); });
     await act(async () => { await result.current.save("llm"); });
 

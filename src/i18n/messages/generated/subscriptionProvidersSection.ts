@@ -1,4 +1,4 @@
-// i18n fragment. Source: src/ui/renderer/tabs/SubscriptionProvidersSection.tsx.
+// Subscription settings messages: source for the generated locale barrels.
 export const en = {
   "subscriptionProvidersSection.title": "Subscription providers",
   "subscriptionProvidersSection.description": "Use an existing subscription with a provider-specific official runtime while keeping its login and chat selection in one place.",
@@ -46,6 +46,7 @@ export const en = {
   "subscriptionProvidersSection.errorSelectionFailed": "The chat selection could not be saved. Try again.",
   "subscriptionProvidersSection.errorOperationFailed": "The provider operation could not be completed. Try again.",
   "subscriptionProvidersSection.loginPendingNotice": "Sign-in is waiting for you to complete it in an official browser.",
+  "subscriptionProvidersSection.claudeCliBillingDisclosure": "Uses your own Claude subscription through the sign-in tool on this computer; Ave never sees or stores your Claude credentials.",
   "subscriptionProvidersSection.deviceCodeLabel": "One-time device code",
   "subscriptionProvidersSection.deviceCodeHint": "Enter this code on the official sign-in page. The page address is never sent to Ave settings.",
   "subscriptionProvidersSection.configureRuntime": "Select official runtime",
@@ -113,6 +114,7 @@ export const ko: Record<keyof typeof en, string> = {
   "subscriptionProvidersSection.errorSelectionFailed": "대화 선택을 저장하지 못했습니다. 다시 시도하세요.",
   "subscriptionProvidersSection.errorOperationFailed": "공급자 작업을 완료하지 못했습니다. 다시 시도하세요.",
   "subscriptionProvidersSection.loginPendingNotice": "공식 브라우저에서 로그인을 완료할 때까지 기다리고 있습니다.",
+  "subscriptionProvidersSection.claudeCliBillingDisclosure": "이 컴퓨터의 로그인 도구를 통해 본인의 Claude 구독을 사용합니다. Ave는 Claude 자격 증명을 보거나 저장하지 않습니다.",
   "subscriptionProvidersSection.deviceCodeLabel": "일회용 디바이스 코드",
   "subscriptionProvidersSection.deviceCodeHint": "공식 로그인 페이지에 이 코드를 입력하세요. 페이지 주소는 Ave 설정으로 전달되지 않습니다.",
   "subscriptionProvidersSection.configureRuntime": "공식 런타임 선택",

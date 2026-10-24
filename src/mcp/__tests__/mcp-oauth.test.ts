@@ -973,6 +973,20 @@ describe("remote authorization", () => {
     expect((await session.fetch(`${state.base}/`)).ok).toBe(true);
   });
 
+  it("refreshes an origin-only resource without a trailing slash", async () => {
+    const state = await fixture();
+    state.endpointPath = "/";
+    state.resource = state.base;
+    state.expiresIn = 0;
+    const { session } = createSession(state, { config: { url: state.base } });
+    await expect(session.fetch(`${state.base}/`)).rejects.toThrow(/^MCP authentication required$/u);
+    await session.authenticate();
+    state.expiresIn = 3600;
+    expect((await session.fetch(`${state.base}/`)).ok).toBe(true);
+    expect(state.grants.map((grant) => grant.get("grant_type"))).toEqual(["authorization_code", "refresh_token"]);
+    expect(state.grants[1].get("resource")).toBe(state.base);
+  });
+
   it("requires metadata named by a challenge to describe exactly the challenged resource", async () => {
     const state = await fixture();
     state.declaredResource = state.base;

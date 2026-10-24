@@ -133,8 +133,13 @@ async function userRuns(tabId: string, tracker: TerminalBlockTracker, line: stri
 }
 
 async function typeAndWait(tabId: string, tracker: TerminalBlockTracker, line: string): Promise<string> {
+  const before = shown.get(tabId) ?? "";
+  const prompts = tracker.promptEndCount();
   const typed = await typeTerminalCommand(tabId, OWNER, line, tracker.currentCwd()!);
-  expect(typed, JSON.stringify(typed)).toMatchObject({ ok: true });
+  // A refusal names what the terminal showed while typing, so a CI-only
+  // failure carries the shell's own bytes.
+  expect(typed, `${JSON.stringify(typed)}; prompt ends ${prompts} -> ${tracker.promptEndCount()}; edit line ${JSON.stringify(tracker.editLineText())}; `
+    + `before typing ${JSON.stringify(before.slice(-1500))}; while typing ${JSON.stringify((shown.get(tabId) ?? "").slice(before.length))}`).toMatchObject({ ok: true });
   const id = (typed as { firstBlockId: number }).firstBlockId;
   await until(() => tracker.get(id)?.status === "done");
   expect(tracker.get(id)!.command).toBe(line);

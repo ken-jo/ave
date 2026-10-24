@@ -201,7 +201,11 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   };
 
   /** The stored conversation of the pane chat for `tabId`, if one is unarchived. */
-  const storedPaneSession = (tabId: string): string | undefined => store?.findPaneSession(tabId);
+  const storedPaneSession = (windowId: number, tabId: string): string | undefined => {
+    const sessionId = browserTabRegistry.paneConversation(windowId, tabId);
+    if (sessionId !== undefined || browserTabRegistry.isConversationSurfaceKnown(windowId, tabId)) return sessionId;
+    return store?.findPaneSession(tabId);
+  };
 
   /** Every pane chat of a window ends when the window navigates away or closes. */
   const watchedWindows = new Set<number>();
@@ -225,12 +229,12 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
    */
   const closePaneChat = async (windowId: number, tabId: string): Promise<string | undefined> => {
     const loop = panes.get(windowId, tabId);
-    const sessionId = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(tabId);
+    const sessionId = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(windowId, tabId);
     if (loop) {
       panes.release(windowId, tabId);
       await abortTurnOf(loop);
     }
-    browserTabRegistry.releasePaneConversation(windowId, tabId);
+    browserTabRegistry.releasePaneConversation(windowId, tabId, true);
     if (sessionId !== undefined && store?.hasSessionTranscript(sessionId)) {
       try {
         await store.updateSessionRowFields(sessionId, { archivedAt: new Date().toISOString() });
@@ -295,7 +299,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // sending view shows. Awaited, so the turn is reserved first and the guard
     // above refuses any send that arrives meanwhile.
     const target = pane !== null
-      ? (turns.restored ? undefined : { load: storedPaneSession(pane.tabId) })
+      ? (turns.restored ? undefined : { load: storedPaneSession(pane.windowId, pane.tabId) })
       : (p.sessionId !== undefined && p.sessionId !== loop.getSessionId() ? { load: p.sessionId as string } : undefined);
     if (target !== undefined) {
       turns.reserved = true;
@@ -324,7 +328,11 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // A pane's turn binds its session to the pane before any tool can run, so
     // the pane's tab is what its tools act on. Rail turns leave bindings alone.
     if (surface !== null) {
-      browserTabRegistry.bindConversationSurface(turnSideChatSessionId, { windowId: senderWindow!.id, surface });
+      const binding = browserTabRegistry.bindConversationSurface(turnSideChatSessionId, { windowId: senderWindow!.id, surface });
+      if (!binding.ok) {
+        panes.release(senderWindow!.id, surface.tabId);
+        return binding;
+      }
       watchPaneWindow(e.sender, senderWindow!.id);
     }
     // A pane chat's frames go to its own window; the rail's to the main one.
@@ -475,7 +483,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       const messages = loop.getHistory().getMessages() as GenericMessage[];
       return { ok: true as const, sessionId: loop.getSessionId(), messages: messages.map(serializeHistoryMessage) };
     }
-    const sessionId = storedPaneSession(tabId);
+    const sessionId = storedPaneSession(senderWindow.id, tabId);
     if (sessionId === undefined) return { ok: true as const, sessionId: null, messages: [] };
     const messages = (store?.loadSession(sessionId) ?? []) as GenericMessage[];
     return { ok: true as const, sessionId, messages: messages.map(serializeHistoryMessage) };
@@ -501,7 +509,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     // "new": the pane keeps its loop on a fresh conversation; the last one is
     // no longer the pane's (it stays listed, unarchived).
-    const previous = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(tabId);
+    const previous = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(windowId, tabId);
     if (loop) {
       const turns = turnsOf(loop);
       if (turns.reserved || loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };

@@ -20,25 +20,17 @@ jobs:
     name: Write, list and delete one object in the R2 release bucket
     if: github.ref == 'refs/heads/main'
     environment: release
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
-    # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Unset
-    # falls back to any self-hosted runner only so the check below can fail
-    # naming the variable, never to a billing-blocked hosted label. Before
-    # the repo goes public, set AVE_LINUX_RUNNER to its hosted label.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
+    # A GitHub-hosted runner, as every workflow job is
+    # (workflow-runner-policy.ts). Only a dispatch from main reaches this job.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Require the runner variable
-        shell: bash
-        env:
-          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER
-      # Self-hosted runners carry no AWS CLI. The script installs the official
-      # build after checking its signature, with no secret in scope.
+      # The script installs the official AWS CLI build after checking its
+      # signature, with no secret in scope, so the probe never depends on
+      # whichever version the runner image carries.
       - name: Provide the AWS CLI
         shell: bash
         run: bash .github/scripts/install-aws-cli.sh

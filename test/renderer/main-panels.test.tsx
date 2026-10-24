@@ -639,6 +639,7 @@ describe("main-area terminal and web panels", () => {
       focusedId: "main",
       surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null } },
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
     // A saved starting directory is known input; Manual output supplies no observed cwd.
@@ -696,6 +697,7 @@ describe("main-area terminal and web panels", () => {
       focusedId: "main",
       surfaces: { main: { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null } },
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
     // Main loads a secondary window with the role query (`shared/main-window-role.ts`).
@@ -730,6 +732,7 @@ describe("main-area terminal and web panels", () => {
       focusedId: "group-5",
       surfaces: {},
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: {},
     };
     const { container } = await renderApp({

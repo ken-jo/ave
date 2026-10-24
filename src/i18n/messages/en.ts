@@ -11,8 +11,14 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "llmTab.modelOtherGroup": "Other",
   "alerts.turnCompletionSound": "Turn completion sound",
   "alerts.turnCompletionSoundHelp": "Play the system notification sound when a response completes in the background. System sound and notification preferences apply.",
+  "chatThumbnails.open": "Open session previews",
+  "chatThumbnails.close": "Close session previews",
+  "chatThumbnails.title": "Session previews",
+  "chatThumbnails.hiddenForWidth": "Session previews hidden: tile is too narrow",
+  "chatPreviewRail.hiddenForWidth": "Work panel and side chat hidden: tile is too narrow",
   "be_terminalRun.notFoundHandler": "The shell has a command-not-found handler. Ask the user to run `unset -f command_not_found_handle` (bash) or `unfunction command_not_found_handler` (zsh) in this terminal, then retry. This removes the handler for this terminal only; Ave preserves it until the user chooses to remove it.",
   "overlayCardRegion.continueInNewConversation": "Continue in a new conversation",
   "suggestionsSession.title": "Suggestions",
