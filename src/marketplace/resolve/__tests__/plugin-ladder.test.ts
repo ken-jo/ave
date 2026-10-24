@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -87,6 +88,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let workRoot: string;
   let repos: FixtureRepo[] = [];
@@ -99,6 +101,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-ladder-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
   });
@@ -106,6 +109,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -124,7 +128,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function fixture(name?: string): { repo: FixtureRepo; name: string } {
     counter += 1;
     const repoName = name ?? `ladder-${counter}`;
-    const repo = createFixtureRepo(serverRoot, repoName);
+    const repo = copyFixtureRepo(serverRoot, repoName, emptyRepo);
     repos.push(repo);
     return { repo, name: repoName };
   }

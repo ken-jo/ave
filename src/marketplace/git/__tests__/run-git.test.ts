@@ -289,24 +289,42 @@ describe("GitRunner against a smart-HTTP server", () => {
   });
 
   it("reports an unreachable remote on timeout", async () => {
-    server.hang("slow");
-    const error = await expectCode(
-      t.runner.run(["ls-remote", server.url("slow")], { remote: remote(server.url("slow")), timeoutMs: 300 }),
-      "SOURCE_UNREACHABLE",
-    );
-    expect(error.message).toContain("timed out");
+    const requested = server.hang("timeout");
+    let expire!: () => void;
+    const cancel = vi.fn();
+    const schedule = vi.fn((callback: () => void, _delayMs: number) => {
+      expire = callback;
+      return cancel;
+    });
+    const timed = await createTestGitRunner({ _scheduleTimeoutForTest: schedule });
+    try {
+      const result = expectCode(
+        timed.runner.run(["ls-remote", server.url("timeout")], { remote: remote(server.url("timeout")), timeoutMs: 300 }),
+        "SOURCE_UNREACHABLE",
+      );
+      // The real transport is running; only its deadline is driven in process.
+      await requested;
+      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 300);
+      expire();
+      const error = await result;
+      expect(error.message).toContain("timed out");
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      await timed.cleanup();
+    }
   });
 
   it("stops on abort", async () => {
-    server.hang("slow");
+    const requested = server.hang("abort");
     const controller = new AbortController();
-    const pending = t.runner.run(["ls-remote", server.url("slow")], {
-      remote: remote(server.url("slow")),
+    const pending = expect(t.runner.run(["ls-remote", server.url("abort")], {
+      remote: remote(server.url("abort")),
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
       signal: controller.signal,
-    });
-    setTimeout(() => controller.abort(new Error("cancelled by test")), 100);
-    await expect(pending).rejects.toThrow("cancelled by test");
+    })).rejects.toThrow("cancelled by test");
+    await requested;
+    controller.abort(new Error("cancelled by test"));
+    await pending;
   });
 
   it("caps buffered output", async () => {

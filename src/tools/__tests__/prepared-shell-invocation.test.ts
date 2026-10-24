@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +26,33 @@ function fixture(command = "printf '%s\\0' \"$HOME\" \"$TMPDIR\" \"$PWD\" \"$HTT
   const handle = prepareShellInvocation(identity); handles.push(handle);
   return { cwd, identity, handle };
 }
+
+it.each(["linux", "darwin", "win32"] as const)("preserves the temporary directory collision guard on %s", (platform) => {
+  const home = mkdtempSync(join(tmpdir(), "shell-prepared-collision-")); roots.push(home);
+  mkdirSync(join(home, "tmp"));
+  const cleanup = vi.fn();
+  vi.spyOn(homeOwner, "createSandboxProcessHome").mockReturnValue({ path: home, env: { HOME: home }, cleanup });
+  vi.spyOn(resolver, "resolveShell").mockReturnValue({ cmd: "bash", shellArgs: (command) => ["-c", command] });
+  vi.spyOn(resolver, "shellEnvForChild").mockImplementation((_, env) => env);
+  vi.spyOn(resolver, "shellPathForHostPath").mockImplementation((_, path) => path);
+  vi.spyOn(resolver, "getBashCapabilities").mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "incoming" });
+  const plan = buildHostShellExecutionPlan({ platform, requestedSandbox: true,
+    activeCapability: { kind: "asrt", confidence: "verified", platform, reason: "Controlled sandbox fixture", confines: { filesystem: true, process: true, network: true } } });
+  const identity = { command: "printf ready", executionCwd: home, resolvedCwd: home, plan };
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { value: platform });
+    if (platform === "win32") {
+      handles.push(prepareShellInvocation(identity));
+      expect(cleanup).not.toHaveBeenCalled();
+    } else {
+      expect(() => prepareShellInvocation(identity)).toThrow(expect.objectContaining({ code: "EEXIST" }));
+      expect(cleanup).toHaveBeenCalledOnce();
+    }
+  } finally {
+    Object.defineProperty(process, "platform", originalPlatform);
+  }
+});
 
 describe.skipIf(process.platform === "win32")("prepared shell facts and resource ownership", () => {
   it("binds executable reads once before claim without granting search directories", () => {

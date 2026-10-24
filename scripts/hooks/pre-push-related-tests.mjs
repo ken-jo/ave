@@ -11,7 +11,9 @@ import {
 export async function collectRelatedTestFiles(context, sourceFiles, repoRoot) {
   const coverage = [];
   for (const source of sourceFiles) {
-    context.config.related = [resolve(repoRoot, source)];
+    // Vitest matches `related` against its module ids, which use forward
+    // slashes on every platform; a Windows backslash path matches nothing.
+    context.config.related = [resolve(repoRoot, source).replaceAll("\\", "/")];
     const specifications = await context.getRelevantTestSpecifications();
     coverage.push({
       source,

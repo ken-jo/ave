@@ -285,7 +285,9 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       decline("unresolved executed command", effective.words[0]);
     }
     const verb = stripCommandPath(head);
-    const shellBuiltin = !head.includes("/") && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
+    // Builtins match only their exact name; a path, `.exe` or case variant is
+    // an external program even when it normalizes to a builtin's name.
+    const shellBuiltin = head === verb && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
     const commandState = cloneState(assigned);
     for (const assignment of node.assignments) commandState.exported.add(assignment.name);
     for (const transition of effective.environmentTransitions) {

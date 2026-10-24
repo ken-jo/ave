@@ -7,7 +7,7 @@
  * first one's port. A mock of `node:http` would assert the shape of the calls
  * this module makes and none of that.
  */
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import { request as httpRequest } from "node:http";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
 
@@ -221,13 +221,25 @@ describe("what it refuses", () => {
     // owns, and the owner slot it holds would refuse the user's next attempt.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
-    await expect(catchers.wait(OWNER, handle, 5_000 /* min */)).rejects.toThrow(
-      /no redirect received/u,
-    );
+    // Only the wait's own timer is faked; the listener stays on real sockets.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let timedOut: Promise<void> | undefined;
+    try {
+      let settled = false;
+      const waiting = catchers.wait(OWNER, handle, 5_000 /* min */);
+      timedOut = expect(waiting).rejects.toThrow(/no redirect received/u);
+      void waiting.catch(() => undefined).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    await timedOut;
     await expect(hit(redirectUri, "/")).rejects.toThrow();
     // ...and the slot is free again.
     await expect(open(catchers)).resolves.toBeDefined();
-  }, 15_000);
+  });
 });
 
 describe("closing", () => {

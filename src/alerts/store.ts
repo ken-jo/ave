@@ -85,6 +85,7 @@ export class AlertStore {
   /** Insertion order is closing order, which is what the per-plugin cap evicts by. */
   private readonly closedById = new Map<string, ClosedAlert>();
   private writes: Promise<void> = Promise.resolve();
+  private writeQueued = false;
 
   constructor(private readonly dir: () => string) {}
 
@@ -198,13 +199,23 @@ export class AlertStore {
     return this.writes;
   }
 
+  /**
+   * Queue one write of the tables as they are when it starts. Changes made
+   * while a write is already queued ride on that write, so a burst of changes
+   * costs one write of the final state, not one per change.
+   */
   private persist(): void {
-    const file = {
-      version: STORE_VERSION,
-      open: [...this.openById.values()],
-      closed: [...this.closedById.values()],
-    };
-    this.writes = this.writes.then(() => writeJsonAtomic(this.dir(), STORE_FILE, file)).catch((err: unknown) => {
+    if (this.writeQueued) return;
+    this.writeQueued = true;
+    this.writes = this.writes.then(() => {
+      this.writeQueued = false;
+      const file = {
+        version: STORE_VERSION,
+        open: [...this.openById.values()],
+        closed: [...this.closedById.values()],
+      };
+      return writeJsonAtomic(this.dir(), STORE_FILE, file);
+    }).catch((err: unknown) => {
       // The in-memory tables still hold for this session.
       log.warn(`could not persist open alerts: ${errorMessage(err)}`);
     });
