@@ -16,7 +16,6 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
-import * as deadlines from "../../shared/abortable-deadline.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { contextBudgetForCurrentRuntime } from "../turn/compaction.js";
@@ -25,6 +24,13 @@ import {
   A2A_INPUT_REQUIRED_CONTROL_KIND,
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
 } from "../../tools/agent-send.js";
+
+/** Real filesystem I/O can schedule a lock retry after fake time ran out. */
+const retrySleep = vi.hoisted(() => ({ skip: false }));
+vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/abortable-deadline.js")>();
+  return { ...actual, sleep: (ms: number, signal?: AbortSignal) => retrySleep.skip ? Promise.resolve() : actual.sleep(ms, signal) };
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -851,11 +857,10 @@ describe("ConversationLoop onTurnSummary", () => {
       auditLogger: auditLogger as never,
     });
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
-    // Real filesystem I/O can schedule a lock retry after fake time ran out.
-    const retrySleep = vi.spyOn(deadlines, "sleep").mockResolvedValue(undefined);
+    retrySleep.skip = true;
     try {
       await loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
-    } finally { retrySleep.mockRestore(); }
+    } finally { retrySleep.skip = false; }
     expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
     expect(primarySent[0]?.model).toBe(model);
     expect(primarySent[0]?.outputTokenLimit).toBe(4_096);
