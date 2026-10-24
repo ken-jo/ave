@@ -560,11 +560,6 @@ function launchElectron() {
       // Ensure pino logger selects pino-pretty in dev runs. NODE_ENV=production
       // gates JSON output; dev runs use "development" so colorized text is used.
       NODE_ENV: process.env.NODE_ENV ?? "development",
-      // The launcher already passes --no-sandbox via shared Windows-safe flags
-      // for the foreground dev process; mirror that into the ave:// protocol
-      // command we register so OS-launched second instances can also boot on
-      // corp/VDI machines whose Chromium sandbox init fails without the flag.
-      AVE_WIN_NO_SANDBOX: process.env.AVE_WIN_NO_SANDBOX,
     };
     return prepareElectronLaunchEnv(e);
   })();
