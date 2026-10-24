@@ -105,7 +105,7 @@ import { withElectronNativeRebuildLock } from "../lib/electron-native-modules.mj
 import { ensureElectronAbiBetterSqlite3 } from "./node-native-abi.mjs";
 import { readJsonFile } from "../lib/knip-baseline.mjs";
 import { findTlsBypass, isTlsBypassScanTarget } from "../lib/tls-bypass-patterns.mjs";
-import { runCommand, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
+import { runCommand, splitArgumentsWithinBudget, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
 import {
   APP_TYPECHECK_GATE_SCRIPTS,
   getMissingPackageScripts,
@@ -1101,27 +1101,52 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   ensureAppTestRuntimeAbi(dir);
   ensureWindowsJobLauncher(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
-  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
+  runVitestChunks(bun, dir, vitestArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
 }
 
+// vitestArgs is the command (`run` or `related`), its flags, then the file
+// arguments; the file arguments may span several Vitest runs (runVitestChunks),
+// each with its own JSON report, and the zero-test check applies to their sum.
 function runVitestWithReport(bun, dir, vitestArgs, emptyMessage) {
+  const [mode, ...rest] = vitestArgs;
+  const flags = rest.filter((arg) => arg.startsWith("--"));
+  const files = rest.filter((arg) => !arg.startsWith("--"));
   const reportDirectory = mkdtempSync(join(tmpdir(), "ave-related-check-"));
-  const reportPath = join(reportDirectory, "report.json");
+  // Fixed-width names: every chunk's command line is measured with its own path.
+  const reportPath = (index) => join(reportDirectory, `report-${String(index).padStart(4, "0")}.json`);
   try {
-    run(
-      bun,
-      ["run", "test:vitest", "--", ...vitestArgs.slice(0, 1), "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...vitestArgs.slice(1)],
-      dir,
-      withoutGitContext()
-    );
-    const report = readJsonFile(reportPath);
-    if (!Number.isSafeInteger(report.numTotalTests) || report.numTotalTests <= 0 ||
-        !Number.isSafeInteger(report.numPassedTests) || report.numPassedTests <= 0) {
-      throw new Error(emptyMessage);
+    const chunks = runVitestChunks(bun, dir, files, (chunk, index) =>
+      ["run", "test:vitest", "--", mode, "--reporter=default", "--reporter=json", `--outputFile=${reportPath(index)}`, ...flags, ...chunk]);
+    let total = 0;
+    let passed = 0;
+    for (const index of chunks.keys()) {
+      const report = readJsonFile(reportPath(index));
+      if (!Number.isSafeInteger(report.numTotalTests) || !Number.isSafeInteger(report.numPassedTests)) {
+        throw new Error(emptyMessage);
+      }
+      total += report.numTotalTests;
+      passed += report.numPassedTests;
     }
+    if (total <= 0 || passed <= 0) throw new Error(emptyMessage);
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }
+}
+
+// Runs `bun <buildArgs(chunk, index)>` once per chunk of fileArgs that fits the
+// command-line budget (splitArgumentsWithinBudget): the chunks together carry
+// exactly fileArgs, and the first failing chunk fails the check. A file list
+// over the budget used to reach Windows as one spawn and fail with
+// ENAMETOOLONG. Returns the chunks.
+function runVitestChunks(bun, dir, fileArgs, buildArgs) {
+  const chunks = splitArgumentsWithinBudget(bun, fileArgs, buildArgs);
+  for (const [index, chunk] of chunks.entries()) {
+    if (chunks.length > 1) {
+      console.log(`[checks] Vitest chunk ${index + 1}/${chunks.length}: ${chunk.length} of ${fileArgs.length} file argument(s)`);
+    }
+    run(bun, buildArgs(chunk, index), dir, withoutGitContext());
+  }
+  return chunks;
 }
 
 // lockSuites: the suites whose trigger paths changed. relatedSelection: the
@@ -1161,7 +1186,7 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {
-    run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
+    runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
   }
   if (relatedSelection.sources.length === 0) return;
   if (relatedSelection.narrowed.length === 0) {
@@ -1189,19 +1214,27 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
 function getFastSourceRelatedSelection(dir, relatedFiles, consumerModules = []) {
   const discovered = [...relatedFiles, ...consumerModules];
   if (discovered.length === 0) return { tests: [], narrowed: [], sources: [], untestedConsumers: [], untestedModules: [] };
-  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...discovered], {
-    cwd: dir,
-    env: withoutGitContext(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) return { reason: "related test discovery failed" };
-  let coverage;
-  try {
-    coverage = JSON.parse(result.stdout);
-  } catch {
-    return { reason: "related test discovery returned an invalid report" };
+  // Discovery is per source, so the chunks' reports concatenate to the report
+  // of one spawn over every source.
+  const discoveryScript = join(dir, "scripts/hooks/pre-push-related-tests.mjs");
+  const coverage = [];
+  for (const chunk of splitArgumentsWithinBudget(commands.node, discovered, (sources) => [discoveryScript, ...sources])) {
+    const result = spawnSync(commands.node, [discoveryScript, ...chunk], {
+      cwd: dir,
+      env: withoutGitContext(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) return { reason: "related test discovery failed" };
+    let report;
+    try {
+      report = JSON.parse(result.stdout);
+    } catch {
+      return { reason: "related test discovery returned an invalid report" };
+    }
+    if (!Array.isArray(report)) return { reason: "related test coverage could not be resolved" };
+    coverage.push(...report);
   }
   // Every source may have no related test here; the report's shape and paths
   // are still validated.

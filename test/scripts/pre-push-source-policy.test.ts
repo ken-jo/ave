@@ -190,7 +190,8 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain('"--reporter=json"');
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
-    expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
+    // The direct list runs in budgeted chunks (pre-push-argv-budget.test.ts).
+    expect(hook).toContain('runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
