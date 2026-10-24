@@ -11,7 +11,7 @@
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getAveAppVersion } from "../../../shared/app-version.js";
 import { FakeVolume, nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService, type FolderServiceHarness } from "../../__tests__/fixtures/folder-service.js";
@@ -211,8 +211,14 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
 
   it("reports package transactions idle only once the last package lock is released", async () => {
     const idle: boolean[] = [];
-    const observed = await folderService({ root: mkdtempSync(join(tmpdir(), "ave-auto-update-idle-")), folders: nodeFolders(),
+    // The same source storage the outer fixture wrote the folder into (a volume unless a suite selects disk).
+    const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
+    const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
+    onTestFinished(() => {
+      observed.service.close();
+      rmSync(observedRoot, { recursive: true, force: true });
+    });
     const preview = await observed.service.previewSource({ input: folder, auth: "none" });
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
     await observed.service.addSource({ previewId: preview.previewId, id: "team" });
