@@ -17,24 +17,38 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner as buildTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { AskpassBroker } from "../askpass.js";
 import { BareRepo } from "../repo.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, GitRunner, type GitRemote, type GitResult } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
-// Process/authentication cases use a real broker; only its immutable runtime
-// and listener are shared. Each runner owns a fresh config and empty directory.
+// Each immutable token view owns a real broker; matching views share its
+// listener and detected executable. Runner configs and tickets stay private.
 let sharedRuntime: TestGitRunner;
-const brokerTokens: Record<string, string> = {};
+const tokenBrokers = new Map<string, Promise<AskpassBroker>>();
 beforeAll(async () => {
-  sharedRuntime = await buildTestGitRunner({ tokens: brokerTokens });
+  sharedRuntime = await buildTestGitRunner();
 });
-afterAll(async () => sharedRuntime.cleanup());
-async function createRunner(options: Parameters<typeof buildTestGitRunner>[0] = {}): Promise<TestGitRunner> {
+afterAll(async () => {
+  const results = await Promise.allSettled([
+    ...[...tokenBrokers.values()].map(async (broker) => (await broker).close()),
+    sharedRuntime.cleanup(),
+  ]);
+  const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  if (errors.length) throw new AggregateError(errors, "runner fixture cleanup failed");
+});
+async function createRunner(options: Omit<NonNullable<Parameters<typeof buildTestGitRunner>[0]>, "runtime"> = {}): Promise<TestGitRunner> {
   const { tokens = {}, ...configuration } = options;
-  for (const host of Object.keys(brokerTokens)) delete brokerTokens[host];
-  Object.assign(brokerTokens, tokens);
-  return buildTestGitRunner({ ...configuration, runtime: sharedRuntime });
+  const snapshot = Object.freeze({ ...tokens });
+  if (Object.keys(snapshot).length === 0) return buildTestGitRunner({ ...configuration, runtime: sharedRuntime });
+  const key = JSON.stringify(Object.entries(snapshot).sort(([a], [b]) => a.localeCompare(b)));
+  let broker = tokenBrokers.get(key);
+  if (!broker) {
+    broker = AskpassBroker.start({ getToken: (host) => snapshot[host] ?? null });
+    tokenBrokers.set(key, broker);
+  }
+  return buildTestGitRunner({ ...configuration, runtime: { git: sharedRuntime.git, broker: await broker } });
 }
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
@@ -62,6 +76,30 @@ describe("GitRunner invocation contract", () => {
     t = await createRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
   });
   afterAll(async () => t.cleanup());
+
+  it("keeps a runner's token view when another runner has different tokens", async () => {
+    const tokens: Record<string, string> = { "github.com": "first-token" };
+    const first = await createRunner({ tokens });
+    const github = remote("https://github.com/acme/tools");
+    const gitlab = remote("https://gitlab.com/acme/tools");
+    try {
+      const before = await first.runner.configArgs(github);
+      expect(before).toContain("credential.helper=");
+      const second = await createRunner({ tokens: { "gitlab.com": "second-token" } });
+      try {
+        expect(await first.runner.configArgs(github)).toEqual(before);
+        expect(await first.runner.configArgs(gitlab)).not.toContain("credential.helper=");
+        expect(await second.runner.configArgs(github)).not.toContain("credential.helper=");
+        expect(await second.runner.configArgs(gitlab)).toContain("credential.helper=");
+        delete tokens["github.com"];
+        expect(await first.runner.configArgs(github)).toEqual(before);
+      } finally {
+        await second.cleanup();
+      }
+    } finally {
+      await first.cleanup();
+    }
+  });
 
   it("builds the environment from scratch", () => {
     process.env.MARKETPLACE_TEST_LEAK_CANARY = "secret";
