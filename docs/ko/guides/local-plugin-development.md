@@ -145,7 +145,6 @@ bun run start
 | `AVE_DEV=1` | 개발자 도구와 개발 모드를 활성화. `bun run dev`가 자동 설정 |
 | `AVE_DEV_RELOAD=1` | 설치된 플러그인 payload의 변경 감시와 reload 활성화 |
 | `AVE_DEV_CONSOLE=0` | DevTools 자동 열기 끄기. `bun run start`의 기본값 |
-| `AVE_WIN_NO_SANDBOX=1` (Windows) | unpackaged corp/VDI 실행에서만 Chromium sandbox 우회. Windows safe launcher가 필요할 때 설정 |
 | GPU safe-flags (Windows) | `--disable-gpu --disable-software-rasterizer --disable-gpu-compositing --no-sandbox` 자동 추가 |
 | 콘솔 UTF-8 (Windows) | `chcp 65001`, `PYTHONIOENCODING=utf-8` 등 |
 

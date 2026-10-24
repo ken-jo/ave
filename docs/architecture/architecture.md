@@ -451,7 +451,11 @@ Important rules:
   the loops share the memory manager and the window-wide idle services. A
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
-  tray). Launching the app again without an `ave://` link restores and focuses
+  tray). Only a packaged app on its real profile registers itself as the OS
+  `ave://` handler; unpackaged, E2E, relocated-`AVE_HOME` and `--user-data-dir`
+  launches skip (`src/main/ave-protocol-registration.ts`), so a dev or test run
+  cannot take the installed app's deep links. Launching the app again without
+  an `ave://` link restores and focuses
   the primary window — or opens a fresh primary when it was closed — instead of
   opening another beside it. `app-state.ts`
   owns the set: broadcasts go to every main window (`getAppWindows`), point-to-

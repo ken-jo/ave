@@ -65,23 +65,29 @@ describe("main.ts — single-instance gate on app.whenReady", () => {
     expect(negBranchCode, "second-instance must not call whenReady").not.toMatch(/whenReady/);
   });
 
-  it("keeps packaged-Windows marker registration synchronous before the lock", () => {
+  it("decides ave:// self-registration synchronously before the lock, with one setter", () => {
+    const decision = source.indexOf("decideAveProtocolClientRegistration({");
     const markerProbe = source.indexOf(
-      "getPackagedWindowsProtocolMarkerState(process.execPath)",
+      "probeWindowsMarker: () => getPackagedWindowsProtocolMarkerState(process.execPath)",
     );
     const protocolSetter = source.indexOf(
       'app.setAsDefaultProtocolClient("ave")',
     );
     const lock = source.indexOf("app.requestSingleInstanceLock()");
 
-    expect(markerProbe).toBeGreaterThanOrEqual(0);
+    expect(decision).toBeGreaterThanOrEqual(0);
+    expect(markerProbe).toBeGreaterThan(decision);
     expect(protocolSetter).toBeGreaterThan(markerProbe);
     expect(lock).toBeGreaterThan(protocolSetter);
+    // The only setter call, behind the decision; no dev execPath/args branch.
+    expect(source.split("setAsDefaultProtocolClient(").length - 1).toBe(2);
+    expect(source).toContain("if (aveProtocolClientRegistration.register) {");
+    expect(source).toContain('hasUserDataDirSwitch: app.commandLine.hasSwitch("user-data-dir")');
+    expect(source).toContain("defaultAveHome: defaultAveHome()");
+    expect(source).not.toContain("buildDevProtocolArgs");
+    expect(source).not.toContain("removeAsDefaultProtocolClient");
     expect(source).toContain(
-      'app.isPackaged && process.platform === "win32"',
-    );
-    expect(source).toContain(
-      'packagedWindowsProtocolMarkerState === "unknown"',
+      'aveProtocolClientRegistration.reason === "nsis-marker-unknown"',
     );
     expect(source).toContain("skipped self-registration");
     expect(source).toContain("app.whenReady().then(() => {");

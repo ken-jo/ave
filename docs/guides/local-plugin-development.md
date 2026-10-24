@@ -133,7 +133,6 @@ AVE_DEV_RELOAD=1 bun run dev
 | `AVE_DEV=1` | Development mode and the Developer tools panel. Set by `bun run dev`; not set by `bun run start`. |
 | `AVE_DEV_RELOAD=1` | Unlocks development mode in the main process and starts the reload watcher. It does not show the Developer tools panel on its own. |
 | `AVE_DEV_CONSOLE=0` | Do not open developer tools automatically. `bun run start` defaults to `0`. |
-| `AVE_WIN_NO_SANDBOX=1` | Windows only, unpackaged only: launch without the process sandbox on machines that cannot run it. |
 
 In a packaged build every development-only variable is scrubbed, and the
 names that were set are logged as an error at boot (`shouldWarnPackagedFlagsIgnored`,

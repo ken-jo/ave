@@ -857,8 +857,8 @@ describe("installer smoke and packaging discipline", () => {
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
     const commands = jobRunCommands(installers);
 
-    // The packaged application claims HKCU ave:// for its executable when it
-    // launches, so no step launches it on a self-hosted (owner) Windows PC:
+    // A packaged application on its real profile claims HKCU ave:// for its
+    // executable, so no step launches it on a self-hosted (owner) Windows PC:
     // every step that runs a packaged-app launcher is gated to hosted Windows.
     const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
     const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
@@ -1317,7 +1317,7 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-  it("runs the NSIS smoke before win-unpacked and owner-cleans HKCU afterward", () => {
+  it("runs the NSIS smoke before win-unpacked and proves HKCU unclaimed afterward", () => {
     const smoke = readRepoFile("scripts/smoke-packaged-app.mjs");
     const installerSmoke = smoke.indexOf(
       "await runWindowsInstallerSmoke(releaseDir, timeoutMs)",
@@ -1329,7 +1329,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(installerSmoke).toBeGreaterThanOrEqual(0);
     expect(unpackedSmoke).toBeGreaterThan(installerSmoke);
     expect(
-      smoke.lastIndexOf("cleanupOwnedWindowsProtocolHandler(executable)"),
+      smoke.lastIndexOf("assertNoWindowsProtocolClaim(executable)"),
     ).toBeGreaterThan(smoke.indexOf("} finally {"));
     const launchBody = smoke.slice(
       smoke.indexOf("async function launchSmoke"),
@@ -1345,22 +1345,23 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("src/main/ave-protocol-registration.ts"))
       .toContain(".ave-nsis-per-machine-v1");
 
-    // The owner-only cleanup is shared: the launch smoke and the packaged
-    // escape gate both launch the full application from win-unpacked, and
-    // each removes exactly the claim that launch wrote.
+    // The no-claim check is shared: the launch smoke and the packaged escape
+    // gate both launch the full application from win-unpacked with an
+    // isolated AVE_HOME and --user-data-dir, so the app must skip
+    // self-registration; a claim naming that executable is removed and fails.
     const cleanupImport =
-      'import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";';
+      'import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";';
     expect(smoke).toContain(cleanupImport);
     const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
     expect(gate).toContain(cleanupImport);
     const control = gate.slice(gate.indexOf("async function measureControl"), gate.indexOf("async function main"));
-    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}cleanupOwnedWindowsProtocolHandler\(executable\);\n {2}\}/u);
+    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}assertNoWindowsProtocolClaim\(executable\);\n {2}\}/u);
 
     const cleanup = readRepoFile("scripts/lib/windows-protocol-cleanup.mjs");
     expect(cleanup).toContain('if (process.platform !== "win32") return;');
     const cleanupScript = cleanup.slice(
       cleanup.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
-      cleanup.indexOf("export function cleanupOwnedWindowsProtocolHandler"),
+      cleanup.indexOf("export function assertNoWindowsProtocolClaim"),
     );
     expect(cleanupScript.length).toBeGreaterThan(0);
     expect(cleanupScript).toContain("$expectedCommand");
@@ -1377,11 +1378,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(cleanupScript).toContain("$key.GetValueKind($name)");
     expect(cleanupScript).toContain("$commandKind = $commandKey.GetValueKind('')");
     expect(cleanupScript).toContain(
-      "if ($null -eq $rootKey) { throw 'expected win-unpacked HKCU ave protocol root is missing' }",
+      "if ($null -eq $rootKey) { Write-Output 'absent'; exit 0 }",
     );
     expect(cleanupScript).not.toContain(
-      "if ($null -eq $rootKey) { return }",
+      "expected win-unpacked HKCU ave protocol root is missing",
     );
+    expect(cleanupScript.trimEnd().endsWith('"Write-Output \'removed\'",\n].join("\\n");')).toBe(true);
+    expect(cleanup).toContain('if (outcome === "absent" || outcome === "foreign") return;');
+    expect(cleanup).toContain('if (outcome === "removed") {');
 
     expect(cleanupScript).toContain(
       "[Microsoft.Win32.RegistryValueKind]::String",
@@ -1665,12 +1669,12 @@ describe("installer smoke and packaging discipline", () => {
     // node-pty is N-API and ships per-platform prebuilds; postinstall must not
     // compile a per-Electron-ABI copy (it needs a C++ toolchain, `node-gyp
     // rebuild` deletes the working binding before it fails, and the `&&` chain
-    // then skips uv fetch + protocol registration + hook install).
+    // then skips uv fetch + hook install).
     expect(packageJson.scripts?.postinstall).not.toContain("electron-rebuild");
     // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
     // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.
