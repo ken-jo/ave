@@ -68,6 +68,13 @@ jobs:
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
         run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
+      # Install and save package archives before dependency scripts can run.
+      - name: Install Linux sandbox and real-shell tools
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap socat ripgrep zsh
+          commands: bwrap socat rg zsh
       # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
       # the owner's own bun home on a self-hosted runner; on Windows it is a
       # checksum-verified release download (see the action).
@@ -146,19 +153,18 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
-      # The terminal's real-shell tests (typing, and the differential check of
-      # what zsh and bash run against what the permission rules read) need zsh,
-      # which the Ubuntu image lacks. A runner without passwordless sudo keeps
-      # its own shells and those tests skip zsh.
-      - name: Install zsh for the real-shell terminal tests
+      - name: Allow unprivileged user namespaces
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: |
-          if command -v zsh >/dev/null; then exit 0; fi
-          if sudo -n true 2>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           else
-            echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
+            echo "unprivileged user namespaces already allowed"
           fi
+      - name: Prove the sandbox backend
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
       - name: Run the suite (coverage gate on nightly and dispatch)
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
@@ -541,13 +547,10 @@ jobs:
       # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
       # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
       # `--managed-python`, so no step relies on the machine's own python3.
-      # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
-      # runs the whole suite has no bubblewrap — so there they return early and
-      # pass without measuring anything. macOS needs no backend install; Linux
-      # gets its own job below, which installs the backend first.
-      # `AVE_REQUIRE_SANDBOX_CASES=1` is what stops that from being a silent
-      # arrangement: if the sandbox cannot initialize here, the cases FAIL
-      # instead of reporting a measurement they never took.
+      # The plugin-confinement cases need a live sandbox. Both Linux jobs
+      # install the backend; this job needs no backend install.
+      # `AVE_REQUIRE_SANDBOX_CASES=1` makes confinement jobs fail if the sandbox
+      # cannot initialize, instead of passing without taking a measurement.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -607,18 +610,10 @@ jobs:
       # CI host ("Testing on Headless CI Systems").
       - name: Install the Linux sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
-        # A self-hosted runner has no sudo and is provisioned with these
-        # already; install only what is missing so both runner kinds pass.
-        run: |
-          missing=0
-          for tool in bwrap socat rg xvfb-run bash zsh; do
-            command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
-          done
-          if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
-          else
-            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
-          fi
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap socat ripgrep xvfb bash zsh
+          commands: bwrap socat rg xvfb-run bash zsh
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
       # Dependencies"). A runner setting, not a product change: the app never
@@ -689,6 +684,8 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
+          src/permissions/__tests__/linux-sandbox-wrap.test.ts
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
