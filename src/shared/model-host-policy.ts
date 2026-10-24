@@ -1,3 +1,5 @@
+import type { CatalogModel } from "./model-catalog/types.js";
+
 /**
  * Host-owned model policy: the values Ave decides for itself rather than
  * reads from a model's description (issue #2501;
@@ -70,87 +72,28 @@ export function hostTpmDefault(vendor: string, model: string): number | undefine
 }
 
 // ── Request shape ────────────────────────────────────────────────────────────
-//
-// Facts about the Anthropic wire, not about the model's capacity: the catalog
-// lists Claude Sonnet 4.6 and Opus 4.6 at a 1M window with no note that the
-// window needs a beta header, and it carries no interleaving flag for
-// Anthropic. Each row names the model ids it applies to and the request
-// features it turns on.
 
-const CONTEXT_1M_BETA = "context-1m-2025-08-07";
-const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-
-interface ClaudeRequestShapeRow {
-  /** Matched against the model id as the route names it. */
-  readonly ids: RegExp;
-  /** The 1M window is delivered only with the `context-1m-2025-08-07` beta header. */
-  readonly context1MBeta?: true;
-  /** Numeric thinking may span tool calls with the `interleaved-thinking-2025-05-14` beta header. */
-  readonly interleavedNumericThinking?: true;
-}
-
-const CLAUDE_REQUEST_SHAPES: readonly ClaudeRequestShapeRow[] = [
-  // Any id that begins with the family id: dated and suffixed snapshots too.
-  { ids: /^claude-sonnet-4-6/iu, context1MBeta: true },
-  { ids: /^claude-opus-4-6/iu, context1MBeta: true },
-  // The numeric-thinking generations that support a budget across tool calls.
-  // A release date or `-latest` does not change a generation's capabilities;
-  // Sonnet 4.1 does not exist, so it is not listed.
-  { ids: /^claude-opus-4(?:-(?:0|1|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-  { ids: /^claude-sonnet-4(?:-(?:0|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-];
-
-/** The request-shape features the Anthropic wire carries for a model. */
+/** The request controls the selected catalog entry explicitly describes. */
 export interface ClaudeRequestShape {
-  /**
-   * Thinking is sent as `{type: "adaptive"}` with an effort, not as a numeric
-   * budget: version 4.6 onward. A release date after the major version is not
-   * a minor version.
-   */
   readonly adaptiveThinking: boolean;
-  readonly context1MBeta: boolean;
+  readonly numericThinking: boolean;
   readonly interleavedNumericThinking: boolean;
 }
 
-export function claudeRequestShape(model: string): ClaudeRequestShape {
-  const rows = CLAUDE_REQUEST_SHAPES.filter((row) => row.ids.test(model));
+export function claudeRequestShape(model: CatalogModel | undefined): ClaudeRequestShape {
+  const reasoning = model?.reasoning;
+  const numericThinking = reasoning?.supported === true && reasoning.budgetTokens !== undefined;
   return {
-    adaptiveThinking: takesAdaptiveThinking(model),
-    context1MBeta: rows.some((row) => row.context1MBeta === true),
-    interleavedNumericThinking: rows.some((row) => row.interleavedNumericThinking === true),
+    // A numeric budget remains usable on models offering both controls.
+    // Qualitative-only reasoning uses adaptive thinking. Unknown entries do
+    // not acquire request capabilities from the spelling of their ids.
+    adaptiveThinking: reasoning?.supported === true && !numericThinking && Boolean(reasoning.effort?.length),
+    numericThinking,
+    interleavedNumericThinking: numericThinking && model?.interleaved === true,
   };
 }
 
-function takesAdaptiveThinking(model: string): boolean {
-  const match = model.toLowerCase().match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/u);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
-/**
- * Whether a request goes over OpenAI's Responses API rather than Chat
- * Completions: every Azure Foundry request, and an OpenAI request for the
- * reasoning families (gpt-5.x, the o-series), which the Responses API serves
- * with reasoning summaries. A wire choice, not a statement that the model
- * reasons: whether a request carries `reasoning_effort` is the catalog's to say.
- */
-export function usesOpenAIResponsesWire(vendor: string, model: string): boolean {
-  if (vendor === "azure-foundry") return true;
-  if (vendor !== "openai") return false;
-  const id = model.toLowerCase();
-  return ["gpt-5", "o1", "o3", "o4"].some((family) => id.includes(family));
-}
-
-/**
- * The `anthropic-beta` values a Claude request carries, in this order: the 1M
- * window opt-in for a model that needs it, and interleaved thinking when this
- * request sends numeric thinking with tools to a generation that supports it.
- */
-export function claudeBetaHeaders(request: { context1MBeta: boolean; interleavedThinking: boolean }): string[] {
-  return [
-    ...(request.context1MBeta ? [CONTEXT_1M_BETA] : []),
-    ...(request.interleavedThinking ? [INTERLEAVED_THINKING_BETA] : []),
-  ];
+/** The beta header is requested only for explicitly declared interleaving. */
+export function claudeBetaHeaders(request: { interleavedThinking: boolean }): string[] {
+  return request.interleavedThinking ? ["interleaved-thinking-2025-05-14"] : [];
 }

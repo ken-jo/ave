@@ -522,7 +522,38 @@ export function App() {
       return sink;
     };
     const guestUrl = (tabId: string) => getWebSurfaces().find((each) => each.tabId === tabId)?.url ?? null;
+    const tabToSide: SurfaceMoves["tabToSide"] = (tabId, toGroupId) => {
+      const sink = sinkOf(toGroupId);
+      if (sink.activate(tabId)) {
+        chatGroups.focus(toGroupId);
+        return;
+      }
+      const surface = mainSurfaces.release(tabId);
+      let adopted = false;
+      if (surface) {
+        sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(tabId) : null);
+        adopted = true;
+        for (const [paneId, content] of Object.entries(chatGroups.contentById)) {
+          if (content?.surface === tabId) chatGroups.setPaneContent(paneId, PANE_HOME);
+        }
+      } else {
+        for (const group of chatGroups.groups) {
+          if (group.id === toGroupId) continue;
+          const source = sinkOf(group.id);
+          if (!source.snapshot().some((tab) => tab.tabId === tabId)) continue;
+          const tab = source.release(tabId);
+          if (!tab) return;
+          sink.adopt(tab, tab.kind === "browser" ? guestUrl(tabId) : null);
+          adopted = true;
+          break;
+        }
+      }
+      if (!adopted) return;
+      sink.open();
+      chatGroups.focus(toGroupId);
+    };
     return {
+      tabToSide,
       tabToMain: (fromGroupId, tabId, drop) => {
         const sink = sinkOf(fromGroupId);
         const tab = sink.release(tabId);
@@ -549,15 +580,7 @@ export function App() {
       paneToSide: (paneId, toGroupId = paneId) => {
         const surfaceId = chatGroups.contentById[paneId]?.surface;
         if (!surfaceId) return;
-        const surface = mainSurfaces.release(surfaceId);
-        if (!surface) return;
-        const sink = sinkOf(toGroupId);
-        sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(surface.tabId) : null);
-        // The pane goes back to its conversation, whose side panel now shows
-        // the surface.
-        chatGroups.setPaneContent(paneId, PANE_HOME);
-        sink.open();
-        chatGroups.focus(toGroupId);
+        tabToSide(surfaceId, toGroupId);
       },
     };
   }, [chatGroups, mainSurfaces]);
@@ -2585,6 +2608,8 @@ export function App() {
                                     registry={chatGroupSessions}
                                     env={chatGroupEnvironment}
                                     panelOpen={group.panelOpen}
+                                    thumbnailOpen={group.thumbnailOpen}
+                                    onThumbnailOpenChange={(open) => chatGroups.setThumbnailOpen(group.id, open)}
                                     focused={chatGroups.focusedId === group.id}
                                     // "Hidden" means this tile's CONVERSATION is not drawn on
                                     // screen NOW, whatever the reason. The tree answers one

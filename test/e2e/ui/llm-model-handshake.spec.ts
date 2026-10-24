@@ -1,6 +1,19 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+
+test.use({ seedApiKey: false });
+
+test.describe('unselected chat model', () => {
+  test('fresh settings show no selected model', async ({ app, mainWindow }, testInfo) => {
+    const settingsPage = await openInlineSettings(app, mainWindow, 'llm');
+    const chooser = settingsPage.getByTestId(TEST_IDS.llmModelSelect);
+    await expect(chooser).toContainText('Connect a provider to choose a model');
+    await expect(chooser).not.toContainText('gpt-5.4-mini');
+    await settingsPage.screenshot({ path: testInfo.outputPath('unselected-model.png') });
+    await closeInlineSettings(app, settingsPage);
+  });
+});
 
 /**
  * Handshake-only OpenAI-compatible model list.

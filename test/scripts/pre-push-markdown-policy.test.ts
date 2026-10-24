@@ -299,9 +299,9 @@ describe("documentation impact policy", () => {
       expect(steps[0]).toContain("fetch-depth: 0");
       const classify = steps.findIndex((step) => step.includes("id: docs-impact"));
       expect(classify).toBeGreaterThan(0);
-      // Before the classifier only runner preflight may run: the Node it runs
-      // on (self-hosted runners have no toolcache) and the runner-variable
-      // check. Neither can turn a required check green on its own.
+      // Before the classifier only runner preflight may run: the pinned Node
+      // it runs on, and the runner-variable check. Neither can turn a
+      // required check green on its own.
       for (const step of steps.slice(1, classify)) {
         expect(
           step.startsWith("uses: actions/setup-node@") || step.startsWith("name: Require the runner variable"),

@@ -12,7 +12,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, win32 } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
 import { isRecord } from "../shared/is-record.js";
@@ -169,7 +169,7 @@ const SAFE_INHERITED_ENV_NAMES = new Set([
 ]);
 
 function normalizedRuntimeDirectory(candidate: string, platform: NodeJS.Platform): string {
-  return platform === "win32" ? win32.normalize(candidate) : resolve(candidate);
+  return platform === "win32" ? win32.normalize(candidate) : posix.resolve(candidate);
 }
 
 function unsafeWindowsPath(path: string): boolean {
