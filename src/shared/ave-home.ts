@@ -125,7 +125,22 @@ const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
   readDacls: readWindowsDirectoryDacls,
 };
 
-/** One read-back process for all directories; a read failure keeps its path. */
+/**
+ * One read-back process for all directories; a read failure keeps its path.
+ *
+ * The inputs travel as one JSON value in `AVE_DACL_REQUEST`, decoded by
+ * ConvertFrom-Json; nothing is spliced into the fixed `-Command` text. This is
+ * deliberately not the request-line channel of the resident ACL host
+ * (windows-acl-host.ts): that host is spawned once and serves many requests,
+ * and a process's environment is fixed at spawn, so per-request data there can
+ * only travel on stdin — which in turn needs ASCII-escaped JSON because stdin
+ * is decoded through the console input code page. This is a one-shot
+ * `execFileSync` per boot with two paths: the environment carries the request
+ * exactly once, as UTF-16 on Windows, so no code page can alter a path, and
+ * the value is a few hundred characters against a 32,767-character limit.
+ * The icacls path rides in the same JSON, resolved here like the PowerShell
+ * binary, so no second variable names the system root.
+ */
 export function readWindowsDirectoryDacls(paths: readonly string[], protect = false): WindowsDirectoryDacl[] {
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
@@ -133,7 +148,8 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
     `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
-    $request = ConvertFrom-Json $env:AVE_DACL_PATHS;
+    $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    $icacls = [string]$request.icacls;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
     $sid = $identity.User.Value;
     $elevated = ([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
@@ -154,7 +170,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     }
     $results = @(foreach ($path in $request.paths) {
       if ($request.protect) {
-        & (Join-Path $env:AVE_DACL_SYSTEM_ROOT 'System32/icacls.exe') $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/q' | Out-Null;
+        & $icacls $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/q' | Out-Null;
         if ($LASTEXITCODE -ne 0) { @{ path = $path; category = 'icacls-failed'; error = 'Directory permission command failed' }; continue }
       }
       Read-Dacl $path $false
@@ -167,7 +183,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     }
     ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
   ], { encoding: "utf-8", windowsHide: true, env: { ...process.env,
-    AVE_DACL_PATHS: JSON.stringify({ paths, protect }), AVE_DACL_SYSTEM_ROOT: process.env.SystemRoot ?? process.env.windir } });
+    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) } });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length < paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");

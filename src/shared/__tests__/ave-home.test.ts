@@ -125,7 +125,7 @@ describe("ensureAveHomePrivate", () => {
       .toEqual({ enforcement: "posix-mode", home: dir });
     if (process.platform !== "win32") expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
-  it("passes untrusted paths only through JSON environment data", () => {
+  it("passes untrusted paths and the icacls path only through one JSON environment value", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     const paths = ["odd’; Write-Output x; 'path", "secret"];
     const results = paths.map(descriptor);
@@ -133,7 +133,10 @@ describe("ensureAveHomePrivate", () => {
     expect(readWindowsDirectoryDacls(paths)).toEqual(results);
     const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
     expect(args!.join(" ")).not.toContain(paths[0]);
-    expect(JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_PATHS!)).toEqual({ paths, protect: false });
+    const env = (options as { env: NodeJS.ProcessEnv }).env;
+    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, protect: false, icacls: join("C:\\Windows", "System32", "icacls.exe") });
+    // The system root reaches the child only inside the request, never as a second variable.
+    expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
   it("retains a per-path read error in one process", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
