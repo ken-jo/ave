@@ -1,5 +1,3 @@
-import { browserWorkspaceUrl } from "../../../shared/browser-workspace.js";
-
 /** Image schemes admitted by the renderer's img-src policy, alongside same-origin paths. */
 export const FAVICON_SCHEMES = ["data:", "blob:", "ave-content:"] as const;
 
@@ -11,10 +9,8 @@ export function faviconSource(value: unknown): string | null {
   return null;
 }
 
-/** Guest pages may supply image data or external URLs, never host-local resources. */
+/** Guest pages may supply only image data admitted by the renderer's img-src policy. */
 export function guestFaviconSource(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return null;
-  if (/^data:image\/[a-z\d.+-]+(?:;[^,]*)?,/i.test(value)) return value;
-  if (!/^https?:\/\//i.test(value) || /[\\\s]/.test(value)) return null;
-  return browserWorkspaceUrl(value);
+  return /^data:image\/[a-z\d.+-]+(?:;[^,]*)?,/i.test(value) ? value : null;
 }

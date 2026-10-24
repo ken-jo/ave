@@ -114,6 +114,7 @@ describe("chat columns", () => {
       const panelToggle = view.container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
       expect(thumbnailToggle.getAttribute("aria-disabled")).not.toBe("true");
       expect(panelToggle.getAttribute("aria-disabled")).not.toBe("true");
+      for (const toggle of [thumbnailToggle, panelToggle]) expect(toggle.classList.contains("aria-disabled:cursor-not-allowed")).toBe(true);
       fireEvent.click(thumbnailToggle);
       fireEvent.click(panelToggle);
       const resize = (width: number) => act(() => {
