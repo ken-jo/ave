@@ -24,16 +24,20 @@ const aclProbeMode = vi.hoisted(() => ({ real: false }));
 const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  const { fakeFixtureAcl, maskFixtureAncestorAcl } = await import("../../__tests__/support/native-executable.js");
-  const fast = fakeFixtureAcl(actual);
-  const real = maskFixtureAncestorAcl(actual);
-  return {
-    ...actual,
-    execFile: ((...args: Parameters<typeof actual.execFile>) => {
-      if ((args[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.AVE_EXECUTABLE_ACL_PATHS) accessRuleProbes.count++;
-      return (aclProbeMode.real ? real : fast).execFile(...args);
-    }) as typeof actual.execFile,
-  };
+  const { fakeFixtureAclTransport, installFixtureAclTransport, maskFixtureAncestorAclTransport } =
+    await import("../../__tests__/support/native-executable.js");
+  if (process.platform !== "win32") return actual;
+  const fast = fakeFixtureAclTransport(actual.execFile);
+  const real = maskFixtureAncestorAclTransport(actual.spawn);
+  // Each ACL host request is one access-rule probe.
+  installFixtureAclTransport({
+    request: (...args) => {
+      accessRuleProbes.count++;
+      return (aclProbeMode.real ? real : fast).request(...args);
+    },
+    discard: () => { fast.discard(); real.discard(); },
+  });
+  return actual;
 });
 
 const HOST = process.platform;

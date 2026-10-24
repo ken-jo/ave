@@ -4,6 +4,7 @@ import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
   EMPTY_MARKETPLACE_POLICY,
@@ -74,7 +75,8 @@ describe("loadMarketplacePolicy", () => {
     expect(await loadMarketplacePolicy(join(parent, "nested", "policy.json"))).toMatchObject({ ok: false });
   });
 
-  it.skipIf(!canCreateSymlinks())("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
+  it("treats a dangling policy symlink as unreadable rather than unrestricted", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
   });
@@ -443,7 +445,8 @@ describe("FilePolicySource (§18.6)", () => {
     expect(source.load.ok).toBe(false);
   });
 
-  it.skipIf(!canCreateSymlinks())("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
+  it("refreshes an absent policy to unreadable when a dangling symlink appears", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const source = await FilePolicySource.open(path);
     expect(source.digest).toBe("absent");
     symlinkSync(join(dir, "missing-target.json"), path, "file");

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertCodexExecutableLocation, assertCodexLocations } from "../../main/codex-executable-location.js";
-import { normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
+import { fixtureAclHost, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "./native-executable.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("./native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -37,6 +37,22 @@ describe.skipIf(process.platform !== "win32")("Windows fixture ancestor ACL mask
 
   it("keeps the real ACL of the fixture root itself", async () => {
     await expect(assertCodexExecutableLocation(fixture(true))).rejects.toThrow("Executable path is writable by another account");
+  });
+
+  it("reads a fixture's changed ACL again inside the same ACL host", async () => {
+    const executable = fixture();
+    await expect(assertCodexExecutableLocation(executable)).resolves.toBeUndefined();
+    const host = fixtureAclHost.current!;
+    const { pid, starts } = host;
+    expect(pid).toBeDefined();
+    // The grant is removed before its fixture root is deleted.
+    const root = roots.at(-1)!;
+    root.granted = true;
+    icacls(root.path, "/grant", `${AUTHENTICATED_USERS}:(M)`);
+    await expect(assertCodexExecutableLocation(executable)).rejects.toThrow("Executable path is writable by another account");
+    // Same host process, fresh descriptor read: nothing was cached between requests.
+    expect(host.pid).toBe(pid);
+    expect(host.starts).toBe(starts);
   });
 
   it("refuses a batch when one file's directory alone grants modify access to another account", async () => {

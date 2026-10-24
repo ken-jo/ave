@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import {
   applyUtf8Env,
-  applyWindowsNoSandboxEnv,
   applyWindowsSafeElectronFlags,
   ensureWindowsUserDataDir,
   extractUserDataDir,
@@ -43,15 +42,6 @@ test("applyWindowsSafeElectronFlags appends shared flags and caller extras once"
   assert.ok(WINDOWS_SAFE_ELECTRON_FLAGS.includes("--no-sandbox"));
 });
 
-test("applyWindowsNoSandboxEnv mirrors the same Windows-safe gate", () => {
-  const winEnv = { AVE_WIN_NO_SANDBOX: "0" };
-  assert.equal(applyWindowsNoSandboxEnv(winEnv, "win32").AVE_WIN_NO_SANDBOX, "1");
-  const gpuEnv = { AVE_KEEP_GPU: "1", AVE_WIN_NO_SANDBOX: "1" };
-  assert.equal(applyWindowsNoSandboxEnv(gpuEnv, "win32").AVE_WIN_NO_SANDBOX, undefined);
-  const macEnv = { AVE_WIN_NO_SANDBOX: "1" };
-  assert.equal(applyWindowsNoSandboxEnv(macEnv, "darwin").AVE_WIN_NO_SANDBOX, undefined);
-});
-
 test("ensureWindowsUserDataDir is shared by start/dev launchers", () => {
   const args = ensureWindowsUserDataDir(
     ["dist/src/main/main.js"],
@@ -81,11 +71,11 @@ test("prepareElectronLaunchEnv applies launch env policy in one place", () => {
     {
       ELECTRON_RUN_AS_NODE: "1",
       AVE_EXTRA_ELECTRON_FLAGS: "--foo",
+      AVE_WIN_NO_SANDBOX: "1",
     },
-    { platform: "win32" },
   );
   assert.equal(env.ELECTRON_RUN_AS_NODE, undefined);
-  assert.equal(env.AVE_WIN_NO_SANDBOX, "1");
+  assert.equal(env.AVE_WIN_NO_SANDBOX, undefined);
   assert.equal(env.PYTHONUTF8, "1");
 });
 
