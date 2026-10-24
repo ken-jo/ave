@@ -959,7 +959,7 @@ describe("pane chats are their own conversations", () => {
     const { store, pane } = setup({ [STORED_PANE_SESSION]: stored }, { [STORED_PANE_SESSION]: PANE_A.tabId });
     const load = vi.fn((windowId: number) => windowId === 1 ? {
       version: 1 as const, tree: { kind: "leaf" as const, chatGroupId: "main" }, focusedId: "main",
-      surfaces: {}, sideTabs: {}, panelOpenIds: ["main"],
+      surfaces: {}, sideTabs: {}, panelOpenIds: ["main"], thumbnailOpenIds: [],
     } : undefined);
     const save = vi.fn(async () => {});
     browserTabRegistry.setBindingPersistence({
