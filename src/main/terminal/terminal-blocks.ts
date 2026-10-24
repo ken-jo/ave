@@ -126,6 +126,11 @@ class PlainTextBuffer {
     if (this.tail.length > this.tailChars * 2) this.tail = this.tail.slice(-this.tailChars);
   }
 
+  /** Whether the last character was a CR that no later character has acted on yet. */
+  carriageReturnPending(): boolean {
+    return this.crPending;
+  }
+
   /** The current, uncommitted line (what the cursor row shows). */
   currentLine(): string {
     return this.line;
@@ -401,9 +406,20 @@ export class TerminalBlockTracker {
    * What the line editor shows after the prompt: typed or pasted text as the
    * shell echoed it, with line breaks from wrapping removed. Empty when no
    * prompt is up.
+   *
+   * A trailing space followed by a CR nothing has acted on yet is bash
+   * readline's wrap placeholder, not text: when prompt and line fill the row
+   * exactly, readline writes one blank on the next row and returns to its
+   * start (` ` CR), so the cursor sits where the next key goes (measured:
+   * bash 5.2 on ubuntu-24.04 and bash 5.3 on macOS echo a pasted
+   * `echo still-here` that ends at the margin as `echo still-here` ` ` CR).
+   * Only that one space goes; a later character turns the CR into an
+   * ordinary carriage return.
    */
   editLineText(): string {
-    return this.phase === "input" ? this.echo.text().replace(/[\r\n]/gu, "") : "";
+    if (this.phase !== "input") return "";
+    const text = this.echo.text().replace(/[\r\n]/gu, "");
+    return this.echo.carriageReturnPending() && text.endsWith(" ") ? text.slice(0, -1) : text;
   }
 
   /** The pid the shell reported for itself (`$$`) at its last prompt, or null. */
