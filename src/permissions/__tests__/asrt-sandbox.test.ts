@@ -31,7 +31,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, parse, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
@@ -1231,6 +1231,24 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
       // Outside the profile: kept.
       expect(denies).toContain(join(FAKE_AVE_HOME, "settings.json"));
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("Windows: a drive-root profile prunes no deny", () => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    // USERPROFILE=`C:\` is not a home: every deny on the drive would look
+    // like a profile row disjoint from the grants.
+    const driveRoot = ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" ? parse(tmpdir()).root : "/";
+    process.env.AVE_ASRT_TEST_HOME = driveRoot;
+    setProcessPlatform("win32");
+    try {
+      const locked = join(tmpdir(), "ave-root-profile-deny", "locked");
+      const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true, denyWrite: [locked] });
+      expect(bare(config.filesystem.denyWrite)).toContain(locked);
     } finally {
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;

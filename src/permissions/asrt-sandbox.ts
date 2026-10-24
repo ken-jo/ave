@@ -10,7 +10,7 @@ import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { policyHomeAnchors } from "../shared/policy-home.js";
+import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1444,14 +1444,19 @@ function writePersistenceDirectories(homes: readonly string[]): string[] {
   ];
 }
 
-/** The Windows user profile, or undefined when it cannot be resolved. */
+/**
+ * The Windows user profile, or undefined when it cannot be resolved. A drive
+ * root or other non-home value is rejected: treating `C:\` as the profile
+ * would prune every deny on the drive that no grant overlaps.
+ */
 function windowsProfileHome(): string | undefined {
+  let home: string;
   try {
-    const home = homedir();
-    return home === "" ? undefined : home;
+    home = homedir();
   } catch {
     return undefined;
   }
+  return isHomeAnchor(home, process.platform) ? home : undefined;
 }
 
 /**
@@ -1569,7 +1574,10 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
       return paths.filter((path) => {
         if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
         return caseFoldForMatch(canonicalizePathForMatch(path)) !== caseFoldForMatch(readablePrimarySessionRoot);
-      }).map((path) => process.platform === "win32" && entry.kind === "dir" ? path + sep : path);
+      }).map((path) => process.platform === "win32" && entry.kind === "dir" && entry.anchor !== "root"
+        // A POSIX-rooted row never reaches srt-win (windowsDenyTargets drops it by
+        // its exact spelling), so it keeps that spelling.
+        ? path + sep : path);
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
