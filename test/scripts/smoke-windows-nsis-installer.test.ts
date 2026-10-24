@@ -1450,6 +1450,12 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(spawnCleanup).toBeGreaterThan(clearModulePath);
     expect(restoreModulePath).toBeGreaterThan(spawnCleanup);
     expect(cleanupFunction).toContain("IntCmp $R8 0 ave_notification_module_env_failed");
+    expect(cleanupFunction).toContain("IntCmp $R8 0 ave_notification_module_env_restore_failed");
+    for (const label of ["ave_notification_module_env_failed:", "ave_notification_module_env_restore_failed:"]) {
+      const branch = cleanupFunction.slice(cleanupFunction.indexOf(label));
+      expect(branch.slice(0, branch.search(/\n\s*(Return|FunctionEnd)/))).toContain('StrCpy $R4 "1"');
+    }
+    expect(cleanupFunction).toContain("PSModulePath could not be restored after cleanup (cleanup exit $R4)");
     expect(cleanupFunction).toContain(
       "PowerShell executable is missing at $R6",
     );
