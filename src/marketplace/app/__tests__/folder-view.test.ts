@@ -29,13 +29,20 @@ afterEach(() => {
   rmSync(dirname(folder), { recursive: true, force: true });
 });
 
-async function addLocalMarket() {
-  writeFolderFiles(folder, {
+function localVolume() {
+  return new FakeVolume(process.platform, { drives: { [tmpdir().slice(0, 2).toUpperCase()]: "\\Device\\HarddiskVolume1" } });
+}
+
+async function addLocalMarket(volume?: FakeVolume) {
+  const files = {
     "marketplace.json": index,
     "skills/alpha/ave-package.json": skill("alpha"),
     "skills/alpha/SKILL.md": "Write alpha.\n",
-  });
-  const harness = await folderService({ root, folders: nodeFolders() });
+  };
+  if (volume) for (const [path, contents] of Object.entries(files)) volume.file(join(folder, path), contents);
+  else writeFolderFiles(folder, files);
+  const folders = volume ? { ...nodeFolders(), fs: volume } : nodeFolders();
+  const harness = await folderService({ root, folders });
   const preview = await harness.service.previewSource({ input: folder, auth: "none" });
   if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
   const view = await harness.service.addSource({ previewId: preview.previewId, id: "team" });
@@ -67,6 +74,7 @@ const SHARE = "\\Device\\Mup\\;LanmanRedirector\\;Z:000000000001a2b3\\files.corp
 
 describe("folder badges (§18.4.8)", () => {
   it("shows Local folder on the preview, the row and every package card of a folder on this computer", async () => {
+    // Keep the complete preview/add/catalog path on the real filesystem.
     const { harness, preview, view } = await addLocalMarket();
     try {
       expect(preview.badges).toEqual(["local-folder"]);
@@ -138,7 +146,7 @@ describe("folder badges when the folder or its classifier changes (§18.4.8)", (
 
 describe("package provenance of a folder (§18.4.8)", () => {
   it("names the folder, when it was read and the digest of what the package installs", async () => {
-    const { harness, view } = await addLocalMarket();
+    const { harness, view } = await addLocalMarket(localVolume());
     try {
       const detail = await harness.service.detail({ sourceId: "team", kind: "skill", name: "alpha" });
       const snapshot = (await harness.syncer.readSnapshot("team"))!;
@@ -157,7 +165,7 @@ describe("package provenance of a folder (§18.4.8)", () => {
 
 describe("revealFolder (§18.9)", () => {
   it("answers a folder source's canonical path, null for a git source, and refuses an unknown id", async () => {
-    const { harness, view } = await addLocalMarket();
+    const { harness, view } = await addLocalMarket(localVolume());
     try {
       await expect(harness.service.revealFolder("team")).resolves.toBe(view.path);
       const git = (await harness.service.listSources()).find((item) => item.transport === "git");
@@ -170,9 +178,10 @@ describe("revealFolder (§18.9)", () => {
   });
 
   it("says the folder is gone instead of opening nothing", async () => {
-    const { harness, view } = await addLocalMarket();
+    const volume = localVolume();
+    const { harness, view } = await addLocalMarket(volume);
     try {
-      rmSync(folder, { recursive: true, force: true });
+      volume.remove(folder);
       expect(await refused(harness.service.revealFolder("team"))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "not-found", path: view.path } });
     } finally {
       harness.service.close();
@@ -180,6 +189,7 @@ describe("revealFolder (§18.9)", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("says the folder moved when its path now leads to another folder, instead of showing that one", async () => {
+    // Real links and directory replacements verify the OS identities.
     const { harness, view } = await addLocalMarket();
     try {
       const elsewhere = join(dirname(folder), "elsewhere");

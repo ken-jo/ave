@@ -455,6 +455,7 @@ export default async function createPlugin() {
   it("starts a provider before a consumer even when the registry lists the consumer first", async () => {
     const providerReadyPath = join(root, "provider-ready");
     const consumerStartedPath = join(root, "consumer-started");
+    const gate = await childProcessGate(join(root, "provider-start-gate"));
     const consumer = await writePlugin({
       id: "reverse-order-consumer",
       requires: { capabilities: ["calendar-source"] },
@@ -474,12 +475,14 @@ export default async function createPlugin() {
     const provider = await writePlugin({
       id: "reverse-order-provider",
       capabilities: ["calendar-source"],
-      entrySource: `import { writeFile } from "node:fs/promises";
+      entrySource: `${gate.moduleSource}
+import { writeFile } from "node:fs/promises";
 export default async function createPlugin() {
   return {
     handlers: { reverse_order_provider_ping: async () => "pong" },
     start: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      gate.signal("provider-entered");
+      await gate.waitFor("release-provider");
       await writeFile(${JSON.stringify(providerReadyPath)}, "ready", "utf8");
     },
     stop: async () => {},
@@ -490,7 +493,14 @@ export default async function createPlugin() {
     await writeRegistry([consumer, provider]);
 
     const runtime = makeRuntime();
-    await runtime.startAll();
+    const starting = runtime.startAll();
+    try {
+      await gate.waitFor("provider-entered");
+      await expect(access(consumerStartedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await gate.signal("release-provider");
+      await starting;
+    }
 
     expect(runtime.listPluginIds().sort()).toEqual([
       consumer.id,

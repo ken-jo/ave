@@ -150,8 +150,8 @@ describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, re
       return test.skip("ASRT cannot initialize (sandbox dependencies missing)");
     }
 
-    // Keep the complete plugin socket path within macOS's Unix socket limit.
-    const temporaryBase = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+    // Keep the complete plugin socket path within the Unix socket limit.
+    const temporaryBase = process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp";
     tmpRoot = mkdtempSync(join(temporaryBase, "ave-uds-"));
     vi.stubEnv("AVE_HOME", tmpRoot);
     const workerFile = join(tmpRoot, "worker.cjs");
