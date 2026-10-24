@@ -661,7 +661,7 @@ function assertWindowsSecurity(
     if (!trusted(path.owner)) throw new CodexExecutableLocationError("Executable path has an untrusted owner");
     if (!path.daclPresent) throw new CodexExecutableLocationError("Executable path has unrestricted access");
     if (privateComponent && path.owner !== security.currentSid) {
-      throw new CodexExecutableLocationError("Runtime directory is not owned by the current account");
+      throw new CodexExecutableLocationError(`Runtime directory is not owned by the current account: ${JSON.stringify(path.path)} (owner ${path.owner}, account ${security.currentSid})`);
     }
     const componentRules = rules.get(key) ?? [{ routeKind: "script", role: "leaf" }];
     const mayIgnore = componentRules.every(({ routeKind, role }) =>
