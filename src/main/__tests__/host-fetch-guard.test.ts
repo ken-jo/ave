@@ -204,7 +204,7 @@ describe("evaluateHostFetch — SSRF guard on allow-listed names", () => {
 
 describe("evaluateHostFetch — allowPrivateNetworks governance opt-in", () => {
   it("permits an RFC1918 target only when the manifest opts in", async () => {
-    lookupMock.mockResolvedValueOnce([{ address: "10.185.177.209", family: 4 }]);
+    lookupMock.mockResolvedValueOnce([{ address: "10.10.1.209", family: 4 }]);
     const decision = await evaluateHostFetch({
       pluginId: "p",
       rawUrl: "https://api.example.com/x",

@@ -210,10 +210,15 @@ export const TOOL_TIMEOUT_POLICY = {
   // consume the reserve, it aborts as cleanup-unproven and external workload
   // release remains authoritative.
   shutdownCleanupMs: 60_000,
-  // Inner timeout for `forceKillProcessTree` between SIGTERM and SIGKILL on
-  // a single tracked child. Bounded so shutdown never hangs on a stubborn
-  // grandchild while still giving graceful exits a window.
+  // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
+  // Loaded Windows hosts can take several seconds to enumerate and kill a tree.
+  windowsProcessTreeKillMs: 10_000,
+  // The whole emergency sweep shares one budget, sized for a single slow
+  // tree pass on a loaded host (1 s is what taskkill lost to under load).
+  windowsEmergencyProcessSweepMs: 10_000,
+  // Give an ACP prompt cancellation time to acknowledge before closing transport.
+  acpAbortGraceMs: 1_000,
   // Unreferenced polling retains detached groups until absence is observed.
   processGroupPollMs: 1_000,
   // Warn once if an owned group survives this long after root settlement or
