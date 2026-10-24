@@ -407,12 +407,12 @@ export class TerminalBlockTracker {
    * shell echoed it, with line breaks from wrapping removed. Empty when no
    * prompt is up.
    *
-   * A trailing space followed by a CR nothing has acted on yet is bash
-   * readline's wrap placeholder, not text: when prompt and line fill the row
-   * exactly, readline writes one blank on the next row and returns to its
-   * start (` ` CR), so the cursor sits where the next key goes (measured:
-   * bash 5.2 on ubuntu-24.04 and bash 5.3 on macOS echo a pasted
-   * `echo still-here` that ends at the margin as `echo still-here` ` ` CR).
+   * A trailing space followed by a CR nothing has acted on yet is the line
+   * editor's wrap placeholder, not text: when prompt and line fill the row
+   * exactly, bash readline and zsh ZLE write one blank on the next row and
+   * return to its start (` ` CR), so the cursor sits where the next key goes
+   * (measured: bash 5.2 on ubuntu-24.04, bash 5.3 and zsh 5.9 on macOS echo
+   * a pasted line that ends at the margin as the line, ` `, CR).
    * Only that one space goes; a later character turns the CR into an
    * ordinary carriage return.
    */

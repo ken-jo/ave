@@ -294,16 +294,15 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       expect(await ranCommand(shell, result)).toBe(line);
     }, 30_000);
 
-    it("runs a line that ends exactly at the right margin (bash readline echoes a wrap placeholder, \" \" CR)", async () => {
+    it("runs a line that ends exactly at the right margin (the line editor echoes a wrap placeholder, \" \" CR)", async () => {
       const shell = await startShell(path!);
       // The prompt as drawn on its row: between its A and B markers, after any CR.
       const prompt = (shell.output().split("\u0007").at(-2) ?? "").replace(/\u001b\]133;B;[0-9a-f]+$/u, "").replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, "").split("\r").at(-1)!;
       // One column per character, so its length is its width.
       expect(prompt).toMatch(/^[ -~]+$/u);
       const line = "echo margin-reached";
-      // Prompt and line fill the row: bash's readline then writes a blank on
-      // the next row and returns to its start (" " CR). zsh draws no such
-      // placeholder and runs the same case as a control.
+      // Prompt and line fill the row: bash readline and zsh ZLE then write a
+      // blank on the next row and return to its start (" " CR).
       shell.pty.resize(prompt.length + line.length, 30);
       // Let the shell take the resize (and redraw) before typing.
       await new Promise((resolve) => setTimeout(resolve, 300));
