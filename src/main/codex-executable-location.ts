@@ -144,13 +144,25 @@ interface WindowsSecurityResult {
 // request line at a time. Each request re-reads every input below; nothing is
 // carried between requests. Paths and SIDs are request data decoded by the
 // JSON parser, never script text. Any error ends the host, which fails closed.
+//
+// Module autoloading is off and every module the script calls is imported by
+// its path under $PSHOME, the directory of the pinned powershell.exe. With
+// autoloading, the first cmdlet call searched every directory on the module
+// path for a module exporting it; the host's minimal environment leaves that
+// search without a usable analysis cache, so on a machine with many installed
+// modules (264 on the hosted windows-2025 image, Az among them) one start
+// took over 20 seconds before the first reply. Explicit imports also keep
+// modules from the user's or other module directories out of the host.
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  "$PSModuleAutoLoadingPreference = 'None'",
   "$ProgressPreference = 'SilentlyContinue'",
   "$WarningPreference = 'SilentlyContinue'",
   "$VerbosePreference = 'SilentlyContinue'",
   "$InformationPreference = 'SilentlyContinue'",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+  "Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
+  "Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1')",
   "Add-Type -TypeDefinition @'",
   "using System;",
   "using System.ComponentModel;",
@@ -207,6 +219,9 @@ const WINDOWS_ACL_SCRIPT = [
   "})",
   "$machineDomainSid = $null",
   "try {",
+  // LocalAccounts and Appx are imported where they are used, inside the
+  // lookups whose failure already falls back or reports an unavailable package.
+  "  Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop",
   "  $localUser = Get-LocalUser -ErrorAction Stop | Select-Object -First 1",
   "  $machineDomainSid = $localUser.SID.AccountDomainSid.Value",
   "} catch {",
@@ -230,6 +245,7 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "} catch {",
   "  try {",
+  "    Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop",
   "    $group = Get-LocalGroup -Name 'CodexSandboxUsers' -ErrorAction Stop",
   "    if ($group.Name -ceq 'CodexSandboxUsers' -and $group.Description -ceq 'Codex sandbox internal group (managed)') {",
   "      $members = @(Get-LocalGroupMember -Group $group -ErrorAction Stop | ForEach-Object { $_.SID.Value })",
@@ -257,6 +273,7 @@ const WINDOWS_ACL_SCRIPT = [
   "  if ($mappings.Count -eq 0) { $desktopPackage.reason = 'mapping-not-found' }",
   "  elseif ($mappings.Count -ne 1) { $desktopPackage.reason = 'ambiguous-mapping' }",
   "  else {",
+  "    Import-Module -Name ($PSHOME + '\\Modules\\Appx\\Appx.psd1') -ErrorAction Stop",
   "    $packages = @(Get-AppxPackage -Name 'Claude' -ErrorAction Stop | Where-Object { $_.PackageFamilyName -ieq $desktopPackageIdentity.familyName })",
   "    if ($packages.Count -eq 0) { $desktopPackage.reason = 'package-not-installed' }",
   "    elseif (@($packages | Where-Object { $_.PublisherId -ine $desktopPackageIdentity.publisherId }).Count -ne 0) { $desktopPackage.reason = 'publisher-mismatch' }",

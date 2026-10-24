@@ -910,6 +910,17 @@ describe("native access-rule admission", () => {
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
     expect(script).toContain("Get-AppxPackage -Name 'Claude' -ErrorAction Stop");
+    // No module-path search: autoloading is off before any cmdlet runs, and
+    // each module comes from the pinned PowerShell's own directory.
+    expect(script.split("\n")[1]).toBe("$PSModuleAutoLoadingPreference = 'None'");
+    const imports = script.split("\n").filter((line) => line.includes("Import-Module"));
+    expect(imports.map((line) => /Import-Module -Name \(\$PSHOME \+ '\\Modules\\([^']+)'\)/.exec(line)?.[1])).toEqual([
+      String.raw`Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1`,
+      String.raw`Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1`,
+      String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
+      String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
+      String.raw`Appx\Appx.psd1`,
+    ]);
     expect(script).not.toMatch(/Set-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
     expect(script).not.toContain(fixture.candidate);
     // The bounds that were execFile options now bound each host request.
