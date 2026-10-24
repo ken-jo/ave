@@ -1104,6 +1104,20 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });
 
+  it("requires shared temporary write regressions in the Linux confinement job", () => {
+    const job = workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("linux-confinement-tests");
+    const step = job?.split(/^ {6}- /mu).find((body) => body.startsWith("name: Run Linux confinement regressions\n"));
+    expect(step).toBeDefined();
+    expect(step).toMatch(/^ {10}AVE_REQUIRE_SANDBOX_CASES: "1"$/mu);
+    const commands = jobRunCommands(step as string);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatch(/^bun run test --\s/u);
+    expect(commands[0]?.split(/\s+/u)).toEqual(expect.arrayContaining([
+      "src/permissions/__tests__/linux-sandbox-wrap.test.ts",
+      "src/permissions/__tests__/asrt-sandbox.test.ts",
+    ]));
+  });
+
   it("keeps check:gate-core in step with its callers", () => {
     const body = packageScripts[HYGIENE_COMPOSITE.script];
     expect(body, `package.json has no "${HYGIENE_COMPOSITE.script}" script`).toBeDefined();
