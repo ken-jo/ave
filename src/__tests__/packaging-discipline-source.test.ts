@@ -481,6 +481,36 @@ describe("installer smoke and packaging discipline", () => {
       expect(target({ run: "true", env: { TOKEN: "${{ secrets.NPM_TOKEN }}" } })).toHaveLength(1);
       expect(target({ run: "true" }, { permissions: { "pull-requests": "write" } })).toHaveLength(1);
     });
+
+    const underTarget = (step: Record<string, unknown>) => forkRunnerViolations(
+      base({ "runs-on": "ubuntu-latest", steps: [step] }, { pull_request_target: null }),
+      "t.yml",
+    );
+
+    it.each([
+      ["the whole context serialized", { run: "echo \"${{ toJSON(secrets) }}\"" }],
+      ["the bare context", { run: "true", env: { ALL: "${{ secrets }}" } }],
+      ["the context passed to a function", { run: "true", env: { ALL: "${{ format('{0}', secrets) }}" } }],
+      ["a computed key", { run: "true", env: { ONE: "${{ secrets[inputs.name] }}" } }],
+      ["a step condition", { run: "true", if: "secrets.NPM_TOKEN != ''" }],
+    ])("refuses a secret read under pull_request_target through %s", (_label, step) => {
+      expect(underTarget(step)).toEqual(["t.yml reads a secret under pull_request_target"]);
+    });
+
+    it.each([
+      ["gh pr checkout", "gh pr checkout ${{ github.event.pull_request.number }}"],
+      ["a pull/<n>/head refspec", "git fetch origin pull/${{ github.event.pull_request.number }}/head:pr && git switch pr"],
+      ["a pull/<n>/merge refspec", "git fetch origin +pull/7/merge"],
+      ["a refs/pull/ ref", "git fetch origin refs/pull/7/head"],
+      ["the head sha from the payload", "git fetch origin && git checkout ${{ github.event.pull_request.head.sha }}"],
+      ["the head branch", "git checkout \"${{ github.head_ref }}\""],
+    ])("refuses a run step that fetches pull request code under pull_request_target through %s", (_label, run) => {
+      expect(underTarget({ run })).toEqual(["t.yml:check fetches pull request code in a run step under pull_request_target"]);
+    });
+
+    it("reads secrets as an expression context, not as a word in a script", () => {
+      expect(underTarget({ run: "cat secrets.txt && git log --oneline -1" })).toEqual([]);
+    });
   });
 
   it.each([

@@ -56,6 +56,9 @@ jobs:
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token, so it is not
+          # left in .git/config for the test suite's processes to read.
+          persist-credentials: false
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -565,6 +568,9 @@ jobs:
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token, so it is not
+          # left in .git/config for the test suite's processes to read.
+          persist-credentials: false
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
