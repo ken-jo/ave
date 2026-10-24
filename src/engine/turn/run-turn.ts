@@ -1,4 +1,3 @@
-import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 /**
  * runTurn — the top-level turn orchestration, extracted from
  * conversation-loop.ts as a free function over `self: LoopContext`. It threads
@@ -7,6 +6,7 @@ import { withCodeCheckpoint } from "../../memory/code-checkpoints.js";
  * token-projection fields it reads/writes live on the ConversationLoop
  * instance (via `self`), so turn_summary.tokensIn is computed exactly as before.
  */
+import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { randomUUID } from "node:crypto";
 // LoopContext — the turn-local mutable carrier these free functions operate
 // on. It IS the ConversationLoop instance: the class owns all turn state and
@@ -707,7 +707,8 @@ async function runTurnInSpan(
         },
       ),
     );
-    result = self.deps.disableSessionPersistence
+    if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
+    result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
       ? await runQuery()
       : await withCodeCheckpoint({ sessionId: effectiveSessionId, messageId: turnUserMessage.meta.messageId }, runQuery);
     await finalizeTurnState();

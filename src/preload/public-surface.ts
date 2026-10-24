@@ -1,10 +1,10 @@
-import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
 // public-surface.ts — the externally-parity-safe portion of `window.aveApi`
 // (#1409 + #1411 C11): chat/session interaction + starred, plugin-status +
 // marketplace list reads, and usage observability. Chat send mints/consumes the
 // SHARED gesture token via ./gesture-intent; this surface never touches the
 // gesture-gated mutating permission/policy family (that lives in the internal
 // surface). Channel names come from the contract SOT (no inline literals).
+import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
 import { ipcRenderer } from "electron";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import {

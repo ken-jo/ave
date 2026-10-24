@@ -31,7 +31,8 @@ vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
   return { ...actual, sleep: async (ms: number) => { sleeps.push(ms); } };
 });
 
-const { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } = await import("../code-checkpoints.js");
+const { checkpointFileMutation, restoreCodeCheckpoint: restoreWithPolicy, withCodeCheckpoint } = await import("../code-checkpoints.js");
+const restoreCodeCheckpoint = (session: string, message: string) => restoreWithPolicy(session, message, { cwd: root, extraAllowedDirectories: [] });
 
 const hostPlatform = process.platform;
 let root: string;

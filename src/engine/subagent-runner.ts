@@ -35,6 +35,7 @@ import {
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
 import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
+import { markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
@@ -3164,6 +3165,7 @@ export class SubAgentRunner {
         spawnMetadata,
       );
       initialMetadataPersisted = true;
+      await markCodeCheckpointUnavailable(input.originSessionId);
       if (
         executionPolicy
         && !this.hasAuthoritativeA2AWireProjectBinding(
@@ -4279,6 +4281,7 @@ export class SubAgentRunner {
         'sub-agent resume: failed to load session history for "' + resumeId + '"',
       );
     }
+    await markCodeCheckpointUnavailable(originSessionId ?? meta.originSessionId);
     if (
       executionPolicy
       && !projectRootEquals(child.getSessionProjectRoot(), meta.projectRoot)

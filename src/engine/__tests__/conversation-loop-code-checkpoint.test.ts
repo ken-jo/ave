@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { EditFileTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
@@ -18,6 +18,38 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 
 describe("turn-owned code checkpoint integration", () => {
+  it("makes the parent unavailable for child edits without retaining child turns", async () => {
+    const file = join(root, "child.txt");
+    const registry = new ToolRegistry();
+    registry.register(new WriteFileTool());
+    const memoryManager = new MemoryManager({ aveDir: join(root, "state") });
+    const child = new ConversationLoop(makeConversationLoopDeps({
+      memoryManager, toolRegistry: registry,
+      getDefaultProject: () => ({ projectRoot: root, projectName: "checkpoint workspace" }),
+    }));
+    child.initializeConversation("subagent", { projectRoot: root, projectName: "checkpoint workspace" });
+    let round = 0;
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn() {
+        if (round++ === 0) {
+          yield { type: "tool_call", id: "child-edit", name: "write_file", input: { path: file, content: "child" } };
+          yield { type: "message_complete", stopReason: "tool_use" };
+        } else yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    (child as unknown as { provider: LLMProvider }).provider = provider;
+    const parentId = "parent";
+    await withCodeCheckpoint({ sessionId: parentId, messageId: "spawn" }, () =>
+      child.runTurn("Create the child file.", undefined, undefined, { inputOrigin: "user-keyboard" }));
+    expect(await readFile(file, "utf8")).toBe("child");
+    expect(await restoreCodeCheckpoint(parentId, "spawn", { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
+    const ledger = JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8"));
+    expect(ledger.turns.map((turn: { sessionId: string }) => turn.sessionId)).toEqual([parentId]);
+    await child.runTurn("Finish.", undefined, undefined, { inputOrigin: "user-keyboard" });
+    expect(JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8")).turns).toHaveLength(1);
+  });
+
   it("binds native edits to durable user message identities through the real query and execution paths", async () => {
     const file = join(root, "source.txt");
     const registry = new ToolRegistry();
@@ -46,9 +78,9 @@ describe("turn-owned code checkpoint integration", () => {
     await loop.runTurn("Update the source file.", undefined, undefined, { inputOrigin: "user-keyboard" });
     const second = loop.getHistory().getMessages().filter((message) => message.role === "user").at(-1)!.meta!.messageId!;
     expect(await readFile(file, "utf8")).toBe("updated\r\n");
-    expect(await restoreCodeCheckpoint(loop.getSessionId(), second)).toEqual({ ok: true });
+    expect(await restoreCodeCheckpoint(loop.getSessionId(), second, { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
     expect(await readFile(file, "utf8")).toBe("created\r\n");
-    expect(await restoreCodeCheckpoint(loop.getSessionId(), first)).toEqual({ ok: true });
+    expect(await restoreCodeCheckpoint(loop.getSessionId(), first, { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
     await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
     expect((memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null)?.filter((message) => message.role === "user").map((message) => message.meta?.messageId)).toEqual([first, second]);
   });

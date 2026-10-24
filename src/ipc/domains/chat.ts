@@ -1,5 +1,3 @@
-import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
-import { isRewindMode } from "../../shared/code-rewind.js";
 /**
  * Chat domain IPC handlers.
  * Covers: ave:chat:*, ave:llm:*, ave:memory:*, ave:starred:*,
@@ -14,6 +12,8 @@ import { isRewindMode } from "../../shared/code-rewind.js";
  * canonical; this Electron adapter performs the one-way `ave:chat:stream`
  * compatibility projection at the display edge.
  */
+import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -1525,7 +1525,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (!personaPromptId.ok) return { ok: false, error: personaPromptId.error };
       const sessionId = conversationLoop.getSessionId();
       if (mode !== "conversation") {
-        const restored = await restoreCodeCheckpoint(sessionId, messageId);
+        const restored = await restoreCodeCheckpoint(sessionId, messageId, () => ({
+          cwd: conversationLoop.getSessionExecutionCwd(),
+          extraAllowedDirectories: conversationLoop.getTurnAdditionalDirectories(),
+        }));
         if (!restored.ok) {
           auditLogger.log({ timestamp: new Date().toISOString(), type: "warn", sessionId, input: `code_checkpoint_refused:${messageId}:${mode}`, output: restored.error });
           return restored;

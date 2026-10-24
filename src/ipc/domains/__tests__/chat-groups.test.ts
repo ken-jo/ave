@@ -90,6 +90,8 @@ type FakeLoop = {
   isSessionTransitioning: () => boolean;
   getSessionId: () => string;
   getSessionKind: () => "main";
+  getSessionExecutionCwd: () => string;
+  getTurnAdditionalDirectories: () => readonly string[];
   hasActiveTurn: () => boolean;
   getHistory: () => {
     length: number;
@@ -126,6 +128,8 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
     isSessionTransitioning: vi.fn(() => transitioning),
     getSessionId: () => loop.sessionId,
     getSessionKind: () => "main",
+    getSessionExecutionCwd: () => `/projects/${id}`,
+    getTurnAdditionalDirectories: () => [],
     hasActiveTurn: () => false,
     getHistory: () => ({
       length: messages.length,
@@ -309,6 +313,7 @@ describe("ave:chat:* with chat groups", () => {
       ]);
       registered.invoke(CHANNELS.chat.hasProvider, "group-2");
       const tile = registered.groups.get("group-2")!;
+      tile.getSessionExecutionCwd = () => root;
       const file = join(root, "code.txt");
       await writeFile(file, "before");
       await withCodeCheckpoint({ sessionId: tile.getSessionId(), messageId: "tile-q1" }, () =>
@@ -342,6 +347,16 @@ describe("ave:chat:* with chat groups", () => {
       const { invoke, file } = await setup();
       expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "conversation")).toMatchObject({ ok: true });
       expect(await readFile(file, "utf8")).toBe("agent");
+    });
+    it("refuses a code rewind after the tile's write scope is revoked", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      tile.getSessionExecutionCwd = () => join(root, "other");
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({
+        ok: false, error: "code-restore-conflict", conflictingFiles: [file],
+      });
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
     });
     it("rejects invalid restore modes without changing anything", async () => {
       const { invoke, tile, file } = await setup();

@@ -5,10 +5,11 @@ import { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { checkpointFileMutation, markCodeCheckpointUnavailable, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
+import { checkpointFileMutation, markCodeCheckpointUnavailable, restoreCodeCheckpoint as restoreWithPolicy, withCodeCheckpoint } from "../code-checkpoints.js";
 import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
 import { ApplyPatchTool, DeleteFileTool, EditFileTool, MoveFileTool, MultiEditTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import type { ToolExecutionContext } from "../../tools/types.js";
+import { createCodeCheckpointTurn } from "../../__tests__/support/code-checkpoint-turn.js";
 
 let root: string;
 let file: string;
@@ -22,7 +23,8 @@ beforeEach(async () => {
   vi.stubEnv("AVE_HOME", join(root, "state"));
 });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
-const turn = <T>(messageId: string, run: () => Promise<T>) => withCodeCheckpoint({ sessionId, messageId }, run);
+const turn = createCodeCheckpointTurn(() => sessionId);
+const restoreCodeCheckpoint = (session: string, message: string) => restoreWithPolicy(session, message, ctx);
 async function read(path = file) { expect((await new ReadFileTool().execute({ path }, ctx)).isError).toBe(false); }
 async function write(content: string, path = file) {
   expect((await new WriteFileTool().execute({ path, content }, ctx)).isError).toBe(false);
@@ -120,7 +122,7 @@ describe("native file-tool code checkpoints", () => {
     expect(await restoreCodeCheckpoint(sessionId, "bash")).toEqual({ ok: true });
     expect(await readFile(file, "utf8")).toBe("after shell");
     const ledger = JSON.parse(await readFile(join(root, "state/code-checkpoints/turns.json"), "utf8"));
-    expect(ledger[0].changes).toEqual([]);
+    expect(ledger.turns[0].changes).toEqual([]);
   });
 
   it("restores multi-edit, patch add/delete/move and deleted binary bytes", async () => {
@@ -184,7 +186,7 @@ describe("native file-tool code checkpoints", () => {
     expect(await restoreCodeCheckpoint(sessionId, "turn-1")).toEqual({ ok: true });
     const path = join(root, "state/code-checkpoints/turns.json");
     expect((await stat(path)).size).toBeLessThanOrEqual(CODE_CHECKPOINT_POLICY.maxStorageBytes);
-    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(CODE_CHECKPOINT_POLICY.maxSessionTurns);
+    expect(JSON.parse(await readFile(path, "utf8")).turns).toHaveLength(CODE_CHECKPOINT_POLICY.maxSessionTurns);
     if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
@@ -199,13 +201,14 @@ describe("native file-tool code checkpoints", () => {
     expect(await restoreCodeCheckpoint(busySessionId, "busy-1")).toEqual({ ok: true });
   });
 
-  it("refuses oversized images before the mutation happens", async () => {
+  it("continues oversized effects with code restore unavailable", async () => {
     const mutate = vi.fn(async () => {});
-    await expect(turn("large", () => checkpointFileMutation([{ path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) }], mutate))).rejects.toThrow("limit");
-    expect(mutate).not.toHaveBeenCalled();
+    await turn("large", () => checkpointFileMutation([{ path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) }], mutate));
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(await restoreCodeCheckpoint(sessionId, "large")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
   });
 
-  it("enforces the serialized byte cap before mutation and reloads full-size before-images", async () => {
+  it("reloads retained full-size before-images within the serialized byte cap", async () => {
     const original = Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes, 65);
     await writeFile(file, original);
     await turn("byte-cap", async () => {
@@ -213,8 +216,6 @@ describe("native file-tool code checkpoints", () => {
         const next = Buffer.from(original); next[0] = i;
         await checkpointFileMutation([{ path: file, content: next }], () => writeFile(file, next));
       }
-      const refused = Buffer.from(original); refused[0] = 99;
-      await expect(checkpointFileMutation([{ path: file, content: refused }], () => writeFile(file, refused))).rejects.toThrow("storage limit");
     });
     expect((await readFile(file))[0]).toBe(4);
     expect((await stat(join(root, "state/code-checkpoints/turns.json"))).size).toBeLessThanOrEqual(CODE_CHECKPOINT_POLICY.maxStorageBytes);
@@ -222,11 +223,12 @@ describe("native file-tool code checkpoints", () => {
     expect((await readFile(file)).equals(original)).toBe(true);
   }, 60_000);
 
-  it("refuses an oversized before-image and keeps the existing file", async () => {
+  it("deletes an oversized original with code restore unavailable", async () => {
     const bytes = Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1, 65);
     await writeFile(file, bytes);
-    await expect(turn("large-before", () => new DeleteFileTool().execute({ path: file }, ctx))).rejects.toThrow("size limit");
-    expect((await readFile(file)).equals(bytes)).toBe(true);
+    await turn("large-before", () => new DeleteFileTool().execute({ path: file }, ctx));
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await restoreCodeCheckpoint(sessionId, "large-before")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
   });
 
   it("does not retain a failed no-op move as a file change", async () => {

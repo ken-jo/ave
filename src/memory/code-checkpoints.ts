@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
@@ -9,7 +9,11 @@ import { sameFileIdentity } from "../lib/file-identity.js";
 import { BACKGROUND_ATTEMPTS, RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
 import { sleep } from "../shared/abortable-deadline.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
+import { ensureFileAccess } from "../tools/file-access-policy.js";
+import type { ToolExecutionContext } from "../tools/types.js";
+import { createLogger } from "../lib/logger.js";
 
+const log = createLogger("code-checkpoints");
 const namespace = openFeatureNamespace("code-checkpoints");
 const FILE_NAME = "turns.json";
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/).nullable();
@@ -29,10 +33,20 @@ const TurnSchema = z.object({
   changes: z.array(ChangeSchema),
 });
 const LedgerSchema = z.array(TurnSchema).max(CODE_CHECKPOINT_POLICY.maxTurns);
+const StoredChangeSchema = ChangeSchema.omit({ before: true }).extend({
+  before: z.string().regex(/^image-[a-f0-9-]{36}\.json$/).nullable(),
+  beforeHash: HashSchema,
+  storageBytes: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxStorageBytes),
+});
+const StoredTurnSchema = TurnSchema.extend({ changes: z.array(StoredChangeSchema) });
+const IndexSchema = z.object({ version: z.literal(2), turns: z.array(StoredTurnSchema) });
 type Change = z.infer<typeof ChangeSchema>;
-type Turn = z.infer<typeof TurnSchema>;
+type StoredChange = z.infer<typeof StoredChangeSchema>;
+type Turn = z.infer<typeof StoredTurnSchema>;
 interface TurnIdentity { sessionId: string; messageId: string }
-const turnContext = new AsyncLocalStorage<TurnIdentity>();
+interface ActiveTurn extends TurnIdentity { dir: string; unavailable: boolean; deleted: boolean; admitted: boolean }
+const turnContext = new AsyncLocalStorage<ActiveTurn>();
+const inFlight = new Set<ActiveTurn>();
 let queue: Promise<unknown> = Promise.resolve();
 
 function exclusive<T>(run: () => Promise<T>): Promise<T> {
@@ -57,30 +71,95 @@ async function verifyNamespace(): Promise<void> {
   }
 }
 
-async function load(): Promise<Turn[]> {
+async function readStorage(name: string, maxBytes = CODE_CHECKPOINT_POLICY.maxStorageBytes): Promise<unknown> {
   await verifyNamespace();
-  let handle;
-  let pathInfo;
-  try {
-    const path = join(namespace.dir, FILE_NAME);
-    pathInfo = await lstat(path, { bigint: true });
-    if (!pathInfo.isFile() || pathInfo.isSymbolicLink()) throw new Error("Code checkpoint storage is invalid");
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
+  const path = join(namespace.dir, name);
+  const pathInfo = await lstat(path, { bigint: true });
+  if (!pathInfo.isFile() || pathInfo.isSymbolicLink()) throw new Error("Code checkpoint storage is invalid");
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     if (!sameFileIdentity(pathInfo, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint storage identity changed");
     const info = await handle.stat();
-    if (!info.isFile() || info.nlink !== 1 || info.size > CODE_CHECKPOINT_POLICY.maxStorageBytes
+    if (!info.isFile() || info.nlink !== 1 || info.size > maxBytes
       || (typeof process.getuid === "function" && info.uid !== process.getuid())
       || (process.platform !== "win32" && (info.mode & 0o777) !== 0o600)) {
       throw new Error("Code checkpoint storage is invalid");
     }
-    return LedgerSchema.parse(JSON.parse(await handle.readFile("utf8")));
+    return JSON.parse(await handle.readFile("utf8"));
   } finally {
     await handle.close();
+  }
+}
+
+async function quarantineLedger(): Promise<void> {
+  await verifyNamespace();
+  const backup = join(namespace.dir, `${FILE_NAME}.corrupt-${Date.now()}-${randomUUID()}.bak`);
+  await retryFileLock(() => rename(join(namespace.dir, FILE_NAME), backup));
+  if (process.platform !== "win32" && typeof process.getuid === "function") {
+    const info = await lstat(backup, { bigint: true });
+    if (info.isFile() && info.nlink === 1n && info.uid === BigInt(process.getuid())) {
+      const handle = await open(backup, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!sameFileIdentity(info, await handle.stat({ bigint: true }))) throw new Error("Code checkpoint storage identity changed");
+        await handle.chmod(0o600);
+      } finally { await handle.close(); }
+    }
+  }
+  for (const active of inFlight) if (active.dir === namespace.dir && active.admitted) active.unavailable = true;
+}
+
+async function storeImage(bytes: Buffer | null): Promise<Pick<StoredChange, "before" | "beforeHash" | "storageBytes">> {
+  if (bytes === null) return { before: null, beforeHash: null, storageBytes: 0 };
+  const before = `image-${randomUUID()}.json`;
+  const encoded = bytes.toString("base64");
+  await namespace.writeJson(before, encoded);
+  return { before, beforeHash: hash(bytes), storageBytes: Buffer.byteLength(encoded) + 3 };
+}
+
+async function hydrate(change: StoredChange): Promise<Change> {
+  const before = change.before === null ? null : ChangeSchema.shape.before.parse(
+    await readStorage(change.before, Math.ceil(CODE_CHECKPOINT_POLICY.maxFileBytes / 3) * 4 + 3),
+  );
+  if (hash(before === null ? null : Buffer.from(before, "base64")) !== change.beforeHash) {
+    throw new Error("Code checkpoint image is invalid");
+  }
+  return { ...change, before };
+}
+
+async function load(): Promise<Turn[]> {
+  let parsed: unknown;
+  try { parsed = await readStorage(FILE_NAME); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    // Preserve damaged evidence; never trust its restore ranges.
+    await quarantineLedger();
+    return [];
+  }
+  try {
+    if (!Array.isArray(parsed)) return IndexSchema.parse(parsed).turns;
+    const legacy = LedgerSchema.parse(parsed);
+    const turns: Turn[] = [];
+    for (const turn of legacy) {
+      const changes: StoredChange[] = [];
+      for (const change of turn.changes) changes.push({ ...change,
+        ...await storeImage(change.before === null ? null : Buffer.from(change.before, "base64")),
+      });
+      turns.push({ ...turn, changes });
+    }
+    await save(turns);
+    return turns;
+  } catch {
+    await quarantineLedger();
+    return [];
+  }
+}
+
+async function sweepImages(turns: Turn[]): Promise<void> {
+  const retained = new Set(turns.flatMap((turn) => turn.changes.map((change) => change.before)));
+  for (const name of await readdir(namespace.dir)) {
+    if (/^image-[a-f0-9-]{36}\.json$/.test(name) && !retained.has(name)) {
+      await retryFileLock(() => unlink(join(namespace.dir, name)));
+    }
   }
 }
 
@@ -91,14 +170,26 @@ async function save(turns: Turn[], retained?: Turn): Promise<void> {
     const overfull = turns.find((turn) =>
       turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns,
     );
-    if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns
-      && Buffer.byteLength(JSON.stringify(turns, null, 2) + "\n") <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
-    const oldest = overfull ? turns.findIndex((turn) => turn.sessionId === overfull.sessionId) : 0;
-    if (turns[oldest] === retained) throw new Error("Code checkpoint storage limit exceeded");
+    const bytes = Buffer.byteLength(JSON.stringify({ version: 2, turns }, null, 2) + "\n")
+      + turns.reduce((total, turn) => total + turn.changes.reduce((sum, change) => sum + change.storageBytes, 0), 0);
+    if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns && bytes <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
+    const oldest = turns.findIndex((turn, index) => (!overfull || turn.sessionId === overfull.sessionId)
+      && turns.findIndex((other) => other.sessionId === turn.sessionId) === index
+      && ![...inFlight].some((active) => active.dir === namespace.dir
+        && active.sessionId === turn.sessionId && active.messageId === turn.messageId));
+    if (oldest < 0) {
+      if (bytes > CODE_CHECKPOINT_POLICY.maxStorageBytes && retained?.changes.length) {
+        retained.unavailable = true;
+        retained.changes = [];
+        continue;
+      }
+      break; // Pinned metadata is pruned when its turns settle.
+    }
     turns.splice(oldest, 1);
   }
   await verifyNamespace();
-  await namespace.writeJson(FILE_NAME, turns);
+  await namespace.writeJson(FILE_NAME, { version: 2, turns });
+  await sweepImages(turns);
 }
 
 /** Retry only Windows file locks, matching the ledger's staged rename; POSIX fails at once. */
@@ -165,25 +256,61 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
 }
 
 export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => Promise<T>): Promise<T> {
-  await exclusive(async () => {
-    const turns = await load();
-    const existing = turns.find((turn) => turn.sessionId === identity.sessionId && turn.messageId === identity.messageId);
-    if (!existing) turns.push({ ...identity, unavailable: false, consumed: false, changes: [] });
-    await save(turns, existing ?? turns[turns.length - 1]);
-  });
-  return turnContext.run(identity, run);
+  const active: ActiveTurn = { ...identity, dir: namespace.dir, unavailable: false, deleted: false, admitted: false };
+  inFlight.add(active);
+  try {
+    await exclusive(async () => {
+      const turns = await load();
+      active.admitted = true;
+      const existing = turns.find((turn) => turn.sessionId === identity.sessionId && turn.messageId === identity.messageId);
+      if (!existing) turns.push({ ...identity, unavailable: active.unavailable, consumed: false, changes: [] });
+      await save(turns, existing ?? turns[turns.length - 1]);
+    });
+    return await turnContext.run(active, run);
+  } finally {
+    inFlight.delete(active);
+    // Settling only prunes what this turn pinned; a failure must not replace the turn's own result.
+    await exclusive(async () => { const turns = await load(); await save(turns); })
+      .catch((error: unknown) => log.warn("code-checkpoints: settle after turn failed: %s", (error as Error).message));
+  }
+}
+
+async function makeUnavailable(turns: Turn[], identity: ActiveTurn): Promise<void> {
+  identity.unavailable = true;
+  // Missing records are a gap in every earlier restore range for this session.
+  const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
+  for (const item of turn ? [turn] : turns.filter((item) => item.sessionId === identity.sessionId)) {
+    item.unavailable = true;
+    item.changes = [];
+  }
+  await save(turns, turn);
 }
 
 /** Remote edits and file transfers have no host before-image contract. */
-export async function markCodeCheckpointUnavailable(): Promise<void> {
-  const identity = turnContext.getStore();
-  if (!identity) return;
+export async function markCodeCheckpointUnavailable(sessionId?: string): Promise<void> {
+  const inherited = turnContext.getStore();
+  const targets = sessionId === undefined ? (inherited ? [inherited] : [])
+    : [...inFlight].filter((active) => active.dir === namespace.dir && active.sessionId === sessionId);
   await exclusive(async () => {
+    if (!targets.some((identity) => !identity.deleted)) return;
     const turns = await load();
-    const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
-    if (!turn) throw new Error("Code checkpoint was pruned");
-    turn.unavailable = true;
-    await save(turns, turn);
+    for (const identity of targets) if (!identity.deleted) await makeUnavailable(turns, identity);
+  });
+}
+
+export async function deleteCodeCheckpoints(sessionId: string): Promise<void> {
+  await exclusive(async () => {
+    for (const active of inFlight) {
+      if (active.dir === namespace.dir && active.sessionId === sessionId) active.deleted = true;
+    }
+    const turns = (await load()).filter((turn) => turn.sessionId !== sessionId);
+    await save(turns);
+    // Damaged ledgers cannot safely identify the owners of their originals.
+    for (const name of await readdir(namespace.dir)) {
+      if (name.startsWith(`${FILE_NAME}.corrupt-`) && name.endsWith(".bak")) {
+        await retryFileLock(() => unlink(join(namespace.dir, name)));
+      }
+    }
   });
 }
 
@@ -193,31 +320,42 @@ export async function checkpointFileMutation<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const identity = turnContext.getStore();
-  if (!identity) return run();
+  if (!identity || identity.deleted) return run();
   return exclusive(async () => {
     const turns = await load();
     const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
-    if (!turn) throw new Error("Code checkpoint was pruned");
-    const changes: Change[] = [];
-    for (const effect of effects) {
-      const path = await canonicalPath(resolve(effect.path));
-      const before = await snapshot(path);
-      const content = "copyFrom" in effect
-        ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)))).bytes
-        : effect.content;
-      const after = typeof content === "string" ? Buffer.from(content) : content;
-      if (after && after.length > CODE_CHECKPOINT_POLICY.maxFileBytes) throw new Error("Code checkpoint file limit exceeded");
-      const previous = changes.find((change) => change.path === path);
-      if (previous) previous.afterHash = hash(after);
-      else changes.push({ path, before: before.bytes?.toString("base64") ?? null, mode: before.mode, afterHash: hash(after) });
+    if (!turn || turn.unavailable || identity.unavailable) {
+      await makeUnavailable(turns, identity);
+      return run();
+    }
+    const changes: StoredChange[] = [];
+    try {
+      for (const effect of effects) {
+        const path = await canonicalPath(resolve(effect.path));
+        const before = await snapshot(path);
+        const content = "copyFrom" in effect
+          ? (await snapshot(await canonicalPath(resolve(effect.copyFrom)))).bytes
+          : effect.content;
+        const after = typeof content === "string" ? Buffer.from(content) : content;
+        if (after && after.length > CODE_CHECKPOINT_POLICY.maxFileBytes) throw new Error("Code checkpoint file limit exceeded");
+        const previous = changes.find((change) => change.path === path);
+        if (previous) previous.afterHash = hash(after);
+        else changes.push({ path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) });
+      }
+    } catch {
+      await makeUnavailable(turns, identity);
+      return run();
     }
     turn.changes.push(...changes);
     // Write ahead: a crash cannot leave a successful edit without its before-image.
     await save(turns, turn);
+    if (turn.unavailable) {
+      identity.unavailable = true;
+      return run();
+    }
     for (const change of changes) {
-      const beforeHash = hash(change.before === null ? null : Buffer.from(change.before, "base64"));
       const current = await snapshot(change.path).catch(() => undefined);
-      if (!current || hash(current.bytes) !== beforeHash) {
+      if (!current || hash(current.bytes) !== change.beforeHash) {
         turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
         await save(turns, turn);
         throw new Error("File changed before checkpointed mutation");
@@ -228,7 +366,7 @@ export async function checkpointFileMutation<T>(
       // by their intended after-hash, never by arbitrary bytes read after execution.
       for (const change of changes) {
         const current = await snapshot(change.path).catch(() => undefined);
-        if (current && hash(current.bytes) === hash(change.before === null ? null : Buffer.from(change.before, "base64"))) {
+        if (current && hash(current.bytes) === change.beforeHash) {
           const index = turn.changes.indexOf(change);
           if (index >= 0) turn.changes.splice(index, 1);
         }
@@ -249,25 +387,34 @@ export async function checkpointFileMutation<T>(
 }
 
 export type CodeRestoreResult = { ok: true } | { ok: false; error: string; conflictingFiles?: string[] };
+type RestoreContext = Pick<ToolExecutionContext, "cwd" | "extraAllowedDirectories">;
 
-export async function restoreCodeCheckpoint(sessionId: string, messageId: string): Promise<CodeRestoreResult> {
+export async function restoreCodeCheckpoint(
+  sessionId: string,
+  messageId: string,
+  context: RestoreContext | (() => RestoreContext),
+): Promise<CodeRestoreResult> {
   return exclusive(async () => {
     try {
+      const accessDenied = (path: string) => ensureFileAccess(path, {
+        ...(typeof context === "function" ? context() : context), metadata: {},
+      }, "write");
       const turns = await load();
       const index = turns.findIndex((turn) => turn.sessionId === sessionId && turn.messageId === messageId);
       if (index < 0 || turns[index].consumed) return { ok: false, error: "code-checkpoint-unavailable" };
       const suffix = turns.slice(index).filter((turn) => turn.sessionId === sessionId);
-      if (suffix.some((turn) => turn.unavailable)) return { ok: false, error: "code-checkpoint-unavailable" };
-      const plan = new Map<string, Change>();
+      if (suffix.some((turn) => turn.unavailable) || [...inFlight].some((active) => active.dir === namespace.dir
+        && active.sessionId === sessionId)) return { ok: false, error: "code-checkpoint-unavailable" };
+      const plan = new Map<string, StoredChange>();
       const conflicts = new Set<string>();
       for (const change of suffix.flatMap((turn) => turn.changes)) {
         const previous = plan.get(change.path);
-        const beforeHash = hash(change.before === null ? null : Buffer.from(change.before, "base64"));
-        if (previous && previous.afterHash !== beforeHash) conflicts.add(change.path);
+        if (previous && previous.afterHash !== change.beforeHash) conflicts.add(change.path);
         plan.set(change.path, previous ? { ...previous, afterHash: change.afterHash } : { ...change });
       }
       const present = new Set<string>();
       for (const [path, change] of plan) {
+        if (accessDenied(path)) return { ok: false, error: "code-restore-conflict", conflictingFiles: [path] };
         const file = await snapshot(path).catch(() => undefined);
         const parent = change.before === null ? true : await lstat(dirname(path)).then((info) => info.isDirectory(), () => false);
         if (!file || !parent || hash(file.bytes) !== change.afterHash) conflicts.add(path);
@@ -275,7 +422,7 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
       }
       if (conflicts.size) return { ok: false, error: "code-restore-conflict", conflictingFiles: [...conflicts].sort() };
       const changed = new Set([...plan].filter(([, change]) =>
-        hash(change.before === null ? null : Buffer.from(change.before, "base64")) !== change.afterHash,
+        change.beforeHash !== change.afterHash,
       ).map(([path]) => path));
       // Stage every replacement before changing any target. Do not create missing
       // parent directories: their removal is an external change and must refuse.
@@ -287,13 +434,14 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
           const handle = await open(temporary, "wx", 0o600);
           staged.set(path, temporary);
           try {
-            await handle.writeFile(Buffer.from(change.before, "base64"));
+            await handle.writeFile(Buffer.from((await hydrate(change)).before!, "base64"));
             await handle.chmod(change.mode);
             await handle.sync();
           } finally { await handle.close(); }
         }
         // Recheck all files after staging, before the first destructive operation.
         for (const [path, change] of plan) {
+          if (accessDenied(path)) conflicts.add(path);
           const file = await snapshot(path).catch(() => undefined);
           if (!file || hash(file.bytes) !== change.afterHash) conflicts.add(path);
         }
@@ -313,7 +461,7 @@ export async function restoreCodeCheckpoint(sessionId: string, messageId: string
         }
         turns[index].changes = [...plan.values()].map((change) => ({
           ...change,
-          afterHash: hash(change.before === null ? null : Buffer.from(change.before, "base64")),
+          afterHash: change.beforeHash,
         }));
         await save(turns);
         return { ok: true };
