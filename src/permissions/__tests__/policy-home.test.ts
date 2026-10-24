@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -395,5 +395,31 @@ describe.skipIf(process.platform !== "win32")("independent profile anchors", () 
     expect(new BashAstValidator().validate("bash", { command: `rm -rf '${profile.replace(/\\/g, "/")}'` }, {
       cwd: home, facts: { dialect: "bash", environment: { HOME: process.env.HOME, USERPROFILE: profile } },
     }).decision).toBe("deny");
+  });
+});
+
+describe("deny floor spellings", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "ave-deny-spellings-"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps a linked runtime key spelling next to its target", () => {
+    const keys = join(root, "keys");
+    mkdirSync(keys);
+    writeFileSync(join(keys, "key-material"), "synthetic-key-fixture");
+    const alias = join(root, "keys-alias");
+    symlinkSync(keys, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.stubEnv("AVE_SECRET_KEY_FILE", join(alias, "key-material"));
+    const target = realpathSync.native(join(keys, "key-material"));
+    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      expect(denied).toEqual(expect.arrayContaining([join(alias, "key-material"), target]));
+    }
   });
 });

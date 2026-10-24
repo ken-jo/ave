@@ -1241,7 +1241,8 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of raw) {
-    const key = caseFoldForMatch(canonicalizePathForMatch(p));
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
     if (!seen.has(key)) {
       seen.add(key);
       out.push(p);
@@ -1333,7 +1334,8 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of [...readDeny, ...writePersistence]) {
-    const key = caseFoldForMatch(canonicalizePathForMatch(p));
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
     if (!seen.has(key)) {
       seen.add(key);
       out.push(p);
