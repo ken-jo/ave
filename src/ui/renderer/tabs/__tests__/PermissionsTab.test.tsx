@@ -24,6 +24,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
+import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -55,12 +56,6 @@ function reviewerResult(
     ok: true as const, verb,
     settings: { mode, fallbackOnError, parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION, interactive: { autoApprove } },
   };
-}
-
-async function renderPermissionsTab() {
-  await act(async () => {
-    render(<PermissionsTab />);
-  });
 }
 
 function installApi(
