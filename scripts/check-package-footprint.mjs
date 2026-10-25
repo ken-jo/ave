@@ -26,7 +26,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const fallbackAppAsar = resolve(root, "release", "linux-arm64-unpacked", "resources", "app.asar");
-const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "100");
+const maxAppAsarMb = Number(process.env.AVE_MAX_APP_ASAR_MB ?? "200");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const DEFAULT_PACKAGED_ELECTRON_LANGUAGES = Object.freeze(["en-US"]);
 
