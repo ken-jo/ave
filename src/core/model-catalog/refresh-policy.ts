@@ -1,6 +1,5 @@
 /** Keep refresh policy separate so settings can report it without importing network code. */
-import { readFile } from "node:fs/promises";
-import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
+import { isAdminPolicyFileAbsent, readAdminPolicyFile } from "../../lib/admin-policy-file.js";
 import { envForcedValueForSettingsPath } from "../../shared/env-backed-settings.js";
 import { parseStrictJson } from "../../shared/strict-json.js";
 
@@ -32,7 +31,7 @@ const POLICY_LIMITS = { maxBytes: 1024 * 1024, maxDepth: 64, maxNodes: 200_000, 
 export async function readModelCatalogRefreshPolicy(policyPath: string): Promise<"off" | null> {
   let bytes: Buffer;
   try {
-    bytes = await readFile(policyPath);
+    bytes = await readAdminPolicyFile(policyPath);
   } catch (error) {
     return (await isAdminPolicyFileAbsent(policyPath, error)) ? null : "off";
   }

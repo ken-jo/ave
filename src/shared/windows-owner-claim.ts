@@ -9,13 +9,15 @@ public static class WindowsOwnerClaim {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
   internal static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
   [DllImport("kernel32.dll", SetLastError = true)]
-  private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out long attributes, uint size);
+  internal static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out long attributes, uint size);
   [DllImport("advapi32.dll", SetLastError = true)]
   internal static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
   [DllImport("advapi32.dll", SetLastError = true)]
   private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, byte[] dacl, IntPtr sacl);
   [DllImport("kernel32.dll")]
   internal static extern IntPtr LocalFree(IntPtr memory);
+  [DllImport("advapi32.dll")]
+  internal static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
   private static string OwnerOf(SafeFileHandle handle) {
     IntPtr owner, group, dacl, sacl, descriptor;
     uint result = GetSecurityInfo(handle, 1, 1, out owner, out group, out dacl, out sacl, out descriptor);

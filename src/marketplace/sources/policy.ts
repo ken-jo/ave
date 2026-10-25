@@ -1,8 +1,8 @@
 /** Only system policy applies; absent restrictions are allowed, malformed restrictions fail closed. */
 import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
-import { lstat, readFile, stat as fsStat } from "node:fs/promises";
-import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
+import { lstat, stat as fsStat } from "node:fs/promises";
+import { isAdminPolicyFileAbsent, readAdminPolicyFile } from "../../lib/admin-policy-file.js";
 import { fileIdentityKey } from "../../lib/file-identity.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
@@ -349,7 +349,7 @@ export interface PolicyFileAccess {
 const NODE_FILE_ACCESS: PolicyFileAccess = {
   stat: (path) => fsStat(path, { bigint: true }),
   lstat: (path) => lstat(path),
-  readFile: (path) => readFile(path, "utf8"),
+  readFile: async (path) => (await readAdminPolicyFile(path)).toString("utf8"),
   now: () => Date.now(),
 };
 
@@ -408,7 +408,7 @@ async function readPolicy(path: string, platform: NodeJS.Platform, access: Polic
   return {
     load: parsePolicyText(path, text, platform),
     digest: createHash("sha256").update(text, "utf8").digest("hex"),
-    stat: isRacy(info, began) ? null : { key: statKey(info), readBegan: began },
+    stat: (access === NODE_FILE_ACCESS && process.platform === "win32") || isRacy(info, began) ? null : { key: statKey(info), readBegan: began },
   };
 }
 

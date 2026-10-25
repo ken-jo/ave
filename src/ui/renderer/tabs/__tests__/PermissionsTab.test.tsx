@@ -26,7 +26,7 @@ import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
-import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
+import { isPolicyUserEditable, type AdminPolicyDiagnostic, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 import { LONG_TOAST_TTL_MS } from "../../constants.js";
@@ -42,7 +42,7 @@ function policyGetPayload(loaded: {
   managed: boolean;
   source: PolicySource;
   adminPath?: string;
-}) {
+} & AdminPolicyDiagnostic) {
   return { version: 1 as const, updatedAt: "2026-01-01T00:00:00.000Z", ...loaded, editable: isPolicyUserEditable(loaded) };
 }
 
@@ -878,6 +878,15 @@ describe("PermissionsTab hook quarantine notice", () => {
 
 describe("PermissionsTab — explicit-approval policy editability", () => {
   const CHECKBOX_LABEL = t("permissionsTab.approvalDialogCheckboxAriaLabel");
+
+  it("shows the invalid administrative policy cause with edits locked", async () => {
+    const api = installApi([[]]);
+    const reason = "untrusted policy file at D:\\machine\\Ave\\policy.json (owner S-1-5-21-1001)";
+    api.policy.get.mockResolvedValueOnce(policyGetPayload({ requireExplicitApproval: true, managed: true, source: "admin", adminStatus: "invalid", adminReason: reason }));
+    await renderPermissionsTab();
+    expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
+    expect(screen.getByText(t("permissionsTab.invalidAdminPolicy", { reason }))).toBeVisible();
+  });
 
   it("enables the checkbox when no admin policy is deployed", async () => {
     installApi([[]]);
