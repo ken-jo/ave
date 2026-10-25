@@ -411,7 +411,6 @@ describe("PowerShell -EncodedCommand", () => {
     ["Get-Content x.txt | Invoke-Expression", "powershell"],
     ["Get-Content x.txt | pwsh -", "powershell"],
     ["Get-Content x.txt | pwsh -NoProfile -Command -", "powershell"],
-    ["Get-Content x.txt | & $shell", "powershell"],
   ] as const)("hides a pipeline that feeds stdin into a shell or interpreter: %s (%s)", (command, dialect) => {
     manager.setRules(ALLOW_LAUNCHERS);
     expect(inspectEncodedPowerShell(command, dialect).hidden, command).toBe(true);
@@ -431,6 +430,8 @@ describe("PowerShell -EncodedCommand", () => {
       ["git status --short | awk '{print $2}'", "bash"],
       ["Get-ChildItem | Where-Object Name -eq x | Select-Object -First 1", "powershell"],
       ["Get-Content x.txt | pwsh -c Get-Date", "powershell"],
+      ["git log | $PAGER", "bash"],
+      [`printf %s ${Buffer.from("record fixture changes", "utf8").toString("base64")}`, "bash"],
       ["git log -1 --format=%H 3f786850e387550fdab836ed7e6dc881de23001b", "bash"],
       ["npm install --save-dev typescript@5.4.5", "bash"],
       ["Get-ChildItem src -Recurse", "powershell"],

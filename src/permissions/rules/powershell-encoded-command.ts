@@ -30,7 +30,7 @@ const CALL_OPERATORS = new Set(["&", "."]);
 // token (a JWT, a file name) rather than a payload.
 const BASE64_RUN_RE = /(?<![A-Za-z0-9+/._-])[A-Za-z0-9+/]+(?:\s+[A-Za-z0-9+/]+)*={0,2}(?![A-Za-z0-9+/=._-])/g;
 
-/** The fewest decoded characters that count as text. Shorter decodes (`dGVzdA==` = "test") say too little to be code worth hiding. */
+/** The fewest decoded text code units (tab, LF, CR and printable ASCII U+0020-U+007E) that count as text. Shorter decodes (`dGVzdA==` = "test") say too little to be code worth hiding. */
 const MIN_TEXT = 8;
 const PRINTABLE_SHARE = 0.9;
 const MAX_DEPTH = 4;
@@ -49,8 +49,8 @@ export interface EncodedPowerShell {
 function isText(text: string): boolean {
   if (text.length < MIN_TEXT) return false;
   let printable = 0;
-  for (const char of text) {
-    const code = char.charCodeAt(0);
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
     if ((code >= 0x20 && code <= 0x7e) || code === 0x09 || code === 0x0a || code === 0x0d) printable += 1;
   }
   return printable >= MIN_TEXT && printable / text.length >= PRINTABLE_SHARE;
@@ -92,12 +92,11 @@ function readsCodeFromStdin(stage: WordStage): boolean {
   let start = 0;
   while (start < stage.words.length && CALL_OPERATORS.has(stage.words[start]!.text ?? "")) start += 1;
   const argv = stage.words.slice(start).map((word) => word.literal && word.text !== null ? word.text : undefined);
-  if (argv.length === 0) return false;
-  // A dynamic program name fed a pipe could be a shell.
-  if (argv[0] === undefined) return true;
+  // A dynamic program name is not read as a shell: what it is fed is left to the other checks, as on any command.
+  if (argv.length === 0 || argv[0] === undefined) return false;
   const wrapped = wrapperPrefixLength(argv);
   const head = argv[wrapped];
-  if (head === undefined) return wrapped < argv.length;
+  if (head === undefined) return false;
   const program = programName(head);
   if (POWERSHELL_EVAL.has(program.replace(/^microsoft\.powershell\.utility\\/, ""))) return true;
   if (!SHELL_SET.has(program) && !INTERPRETER_SET.has(program)) return false;
