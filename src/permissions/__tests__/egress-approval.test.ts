@@ -1,8 +1,4 @@
-/**
- * The egress ask on the approval dock: the `egress-host` request shape the
- * gate accepts, the answers it honours (desktop window, allow-once, a scope
- * the card offered) and how the requester maps them back (egress-approval.ts).
- */
+// The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
 import { describe, expect, it, vi } from "vitest";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { createApprovalGateEgressRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";

@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area B — hook discovery + TOFU lockfile.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import {
   chmodSync,
@@ -52,7 +48,6 @@ describe("Permission policy P4 hook-discovery", () => {
       const dir = join(tmpDir, "hooks");
       ensureHooksDirectory(dir);
       expect(readFileSync).toBeDefined(); // sanity
-      // Re-running is idempotent
       ensureHooksDirectory(dir);
     });
   });
@@ -209,10 +204,8 @@ describe("Permission policy P4 hook-discovery", () => {
       const dest = disableHook(hooks[0], join(dir, ".disabled"), "user");
       expect(dest).toContain(".disabled");
       expect(dest).toContain("pre-bad.sh");
-      // Original is gone
       const post = discoverHooks(dir);
       expect(post).toEqual([]);
-      // Sanity: original path no longer exists
       expect(() => readFileSync(path)).toThrow();
     });
 

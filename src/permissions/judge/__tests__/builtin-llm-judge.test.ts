@@ -90,12 +90,7 @@ describe("BuiltinLlmJudge", () => {
   });
 });
 
-/**
- * Parity through the SHIPPED dispatch lanes: the same LlmRiskClassifier drives
- * `dispatchReviewerForHeadless` / `dispatchReviewerForInteractiveAuto` (which
- * gate on `isReviewerAutoDecisionOutcome`) and the judge engine with the
- * builtin-llm provider. Any drift in the mapping or the failure handling fails here.
- */
+// Parity through the SHIPPED dispatch lanes: the same LlmRiskClassifier drives `dispatchReviewerForHeadless` / `dispatchReviewerForInteractiveAuto` (which gate on `isReviewerAutoDecisionOutcome`) and the judge engine with the builtin-llm provider. Any drift in the mapping or the failure handling fails here.
 describe("builtin-llm parity with the shipped reviewer dispatch", () => {
   const makeRoot = useTempDirs("ave-judge-parity-");
   const NO_RETRY = { maxAttempts: 1, baseDelayMs: 0, jitterPct: 0 };

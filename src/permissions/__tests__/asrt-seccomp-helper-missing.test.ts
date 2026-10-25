@@ -1,9 +1,4 @@
-/**
- * A missing vendored `apply-seccomp` helper must not fail ASRT initialization:
- * the default mode degrades a failed init to isolation=none, which would cost
- * the session its filesystem confinement to lose only seccomp. The resolver
- * warns once and pins nothing, so ASRT resolves the helper itself as before.
- */
+// A missing seccomp helper warns without pinning a path; failing initialization would lose filesystem isolation as well.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const warnings = vi.hoisted(() => [] as string[]);

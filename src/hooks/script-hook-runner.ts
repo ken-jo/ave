@@ -1,17 +1,5 @@
-/**
- * Permission policy — Layer 6 hook script runner.
- *
- * Public contract: docs/guides/user-hooks.md. Legacy scripts and declarative
- * command handlers share this runner, safe environment, output capture and
- * managed process lifetime. A successful command may be silent or return a
- * supported decision. Exit 2 uses stderr as denial feedback; other failures
- * remain fail-closed for blocking events.
- *
- * Production user commands pass host shell admission before spawning and use
- * the active OS sandbox policy. Generic argv never passes through an implicit
- * shell; legacy scripts retain the resolved interpreter path. DLP is applied
- * by the manager before serialization. A hook cannot upgrade an upstream deny.
- */
+// Blocking hooks fail closed on command failures; successful commands may be silent or return decisions, and exit 2 uses stderr as denial feedback. Shell admission, sandbox policy, safe env and caller-side DLP apply; hook allows never upgrade upstream denies (docs/guides/user-hooks.md).
+// Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import {
@@ -64,69 +52,39 @@ import {
 const log = createLogger("hook-runner");
 
 export interface RunOneHookOptions {
-  /** Per-hook timeout in ms. Defaults to {@link DEFAULT_HOOK_TIMEOUT_MS}. */
+  // Defaults to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs?: number;
-  /** Working directory for the spawned hook. Defaults to `process.cwd()`. */
+  // Defaults to process.cwd().
   cwd?: string;
-  /** Host-owned admission for a trusted user command; enrollment is not permission. */
+  // Host-owned admission for a trusted user command; enrollment is not permission.
   authorizeCommand?: HookCommandAuthorizer;
 }
 
-/**
- * The minimal shape the runner needs to execute one hook handler. Both a
- * legacy `.sh` `DiscoveredHook` and a declarative `hooks.json` `command`
- * handler normalize into this (see `hook-registry.ts`). Decoupling the runner
- * from `DiscoveredHook` is what lets a generic `command` argv run through the
- * SAME fail-closed / env-allowlist / timeout machinery as a `.sh` file.
- */
+// Legacy scripts and config argv share the same fail-closed runner, environment and timeout gates.
 export interface RunnableHook {
-  /** Stable identity for audit / logs (registry id or `.sh` fileName). */
   id: string;
-  /** Closed-set internal event (tool-use pre|post|perm OR a lifecycle event). */
   hookType: HookEvent;
-  /**
-   * argv to execute. A single-element argv ending in `.sh` is the legacy path
-   * (runs through the resolved shell for Windows interpreter resolution);
-   * anything else is spawned directly with NO shell (argv[0] = program).
-   */
+  // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
   env?: Record<string, string>;
-  /** Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`. */
+  // Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`.
   matcher?: string;
-  /** Path for audit/forensics — `.sh` abs path, or the resolved script arg. */
+  // Path for audit/forensics — `.sh` abs path, or the resolved script arg.
   hookPath: string;
-  /**
-   * Optional per-hook timeout (ms). Config entries carry their own clamped
-   * budget here; when set it takes precedence over `RunOneHookOptions.timeoutMs`
-   * so each hook in a mixed chain runs on its own ceiling. `.sh` hooks leave it
-   * unset and fall back to the option / default.
-   */
+  // Clamped per-hook timeout overrides the caller option, then the default.
   timeoutMs?: number;
-  /**
-   * Origin discriminant — `.sh` legacy hook vs declarative `hooks.json`
-   * `command` entry. Carried through onto every {@link ScriptHookInvocationResult}
-   * so the audit layer can tell config-hook vs `.sh`-hook denials apart.
-   * Defaults to `"sh"` for the legacy adapter.
-   */
+  // Runner results always carry origin for audit; legacy hooks default to sh.
   source?: "sh" | "config";
-  /**
-   * Trust identity of the executed code — the resolved local-script sha256 for a
-   * `.sh` hook, or a sha256 of the verbatim command argv for a generic command.
-   * The runner falls back to hashing `command` when this is absent so the result
-   * always carries a forensic anchor.
-   */
+  // Audit identity hashes trusted script bytes or verbatim argv; absent identities fall back to argv hashing.
   commandIdentity?: string;
   pluginOwner?: PluginHookOwner;
   confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
-/** sha256 (hex) of a verbatim command argv — the forensic anchor for a generic
- * `command` hook that has no on-disk local-script sha. */
 function hashCommandArgv(command: string[]): string {
   return sha256Hex(command.join("\0"));
 }
 
-/** Adapt a legacy `DiscoveredHook` to the {@link RunnableHook} shape. */
 export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
   return {
     id: hook.fileName,
@@ -135,61 +93,35 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     hookPath: hook.path,
     source: "sh",
-    // The `.sh` file IS the trusted local script — its content sha256 is the
-    // canonical command identity.
     commandIdentity: hook.sha256,
   };
 }
 
-/**
- * Is this a single legacy `.sh` file that must run through the resolved shell
- * (so Windows Git-Bash / WSL can pick the right interpreter)? Only a
- * single-element argv whose lone token ends in `.sh` qualifies — a generic
- * `command` (even `sh ./x.sh` or `python3 p.py`) is spawned directly.
- */
+// Only a lone .sh path uses interpreter resolution; generic argv, including sh ./x.sh, spawns directly.
 function isLegacyShellScript(command: string[]): boolean {
   return command.length === 1 && command[0].toLowerCase().endsWith(".sh");
 }
 
-/**
- * Build the injected hook env. PRESERVES the existing `AVE_HOOK_*` set and
- * ADDS `AVE_HOOK_EVENT` / `AVE_HOOK_MATCHER` (#811 §6.2). No secret vars are
- * ever added here — `buildSafeChildEnv` is the only env the child sees.
- */
+// Inject only hook metadata; buildSafeChildEnv supplies the secret-stripped environment.
 function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Record<string, string> {
-  // `event` is the closed-set surface (lifecycle events carry it explicitly;
-  // tool-use shapes leave it undefined → fall back to `hookType`).
+  // `event` is the closed-set surface (lifecycle events carry it explicitly; tool-use shapes leave it undefined → fall back to `hookType`).
   const event = payload.event ?? payload.hookType;
   return {
     AVE_HOOK_TYPE: payload.hookType,
-    // #811 — `AVE_HOOK_EVENT` is the closed-set event (alias of TYPE for the
-    // generic-command surface; the lifecycle event for lifecycle dispatches);
-    // `AVE_HOOK_MATCHER` exposes the configured matcher.
+    // AVE_HOOK_EVENT carries the closed event; AVE_HOOK_MATCHER exposes the configured matcher.
     AVE_HOOK_EVENT: event,
     ...(matcher !== undefined ? { AVE_HOOK_MATCHER: matcher } : {}),
-    // `toolName` is present on tool-use + PostToolUseFailure/PermissionDenied
-    // lifecycle payloads; absent on session-only lifecycle events.
+    // `toolName` is present on tool-use + PostToolUseFailure/PermissionDenied lifecycle payloads; absent on session-only lifecycle events.
     ...(payload.toolName !== undefined ? { AVE_HOOK_TOOL_NAME: payload.toolName } : {}),
-    // sessionId is on every shape — lifecycle hooks key their policy on it.
     AVE_HOOK_SESSION_ID: payload.sessionId,
     AVE_HOOK_TRUST_ORIGIN: payload.trustOrigin,
-    // Per-request MCP-aligned origin (#811 hooks-on-mcp-calls): a hook can deny
-    // by the SPECIFIC server/plugin via env (the convenient path, alongside the
-    // full stdin JSON). Only present on the tool-use shape.
+    // Tool-use origin metadata lets hooks restrict a specific server or plugin via env or stdin.
     ...("mcpServerId" in payload && payload.mcpServerId !== undefined ? { AVE_HOOK_MCP_SERVER_ID: payload.mcpServerId } : {}),
     ...("pluginId" in payload && payload.pluginId !== undefined ? { AVE_HOOK_PLUGIN_ID: payload.pluginId } : {}),
   };
 }
 
-/**
- * Run a single hook handler. Pipes the canonical stdin payload, captures
- * stdout (capped), enforces the timeout, and parses the verdict.
- *
- * Accepts either a legacy `DiscoveredHook` (back-compat) or a normalized
- * {@link RunnableHook} (declarative `command` handler). Exit code !=0,
- * malformed stdout, timeout, or spawn error collapse to `decision: "deny"`.
- * Observe-only callers retain the result without changing control flow.
- */
+// Timeout, spawn, nonzero exit and malformed output deny; observe-only callers record the result without changing control flow.
 export async function runOneHookScript(
   hook: DiscoveredHook | RunnableHook,
   payload: ScriptHookStdin,
@@ -203,18 +135,13 @@ export async function runOneHookScript(
   Object.freeze(runnable.command);
   if (runnable.env) Object.freeze(runnable.env);
   Object.freeze(runnable);
-  // Per-hook timeout precedence: the runnable's own (clamped) budget wins, then
-  // the caller-supplied option, then the default. This lets a mixed chain run
-  // each config entry on its own ceiling.
+  // Timeout precedence is per-hook budget, caller option, then default.
   const timeoutMs = runnable.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const confinement = runnable.confinement;
   const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
   const start = Date.now();
 
-  // Forensic anchors carried onto EVERY result this invocation produces. `source`
-  // discriminates `.sh` vs config; `commandIdentity` is the local-script sha (sh)
-  // or a hash of the verbatim argv (config). These let the audit layer tell
-  // config-hook from `.sh`-hook denials apart.
+  // Every result carries origin and the trusted script or argv hash for forensic attribution.
   const forensics = {
     hookPath: runnable.hookPath,
     hookType: runnable.hookType,
@@ -269,8 +196,6 @@ export async function runOneHookScript(
     ...(confinement ? { PLUGIN_ROOT: confinement.generationRoot, PLUGIN_DATA: confinement.dataDir } : {}),
   });
 
-  // Decide the spawn shape. Legacy single `.sh` → resolved shell (Windows
-  // interpreter resolution). Generic command → direct spawn, NO shell.
   let spawnCmd: string;
   let spawnArgs: string[];
   let spawnEnv: NodeJS.ProcessEnv;
@@ -284,17 +209,13 @@ export async function runOneHookScript(
       }
       throw err;
     }
-    // The hook file path is passed via `shellCommandForHookPath` so the script's
-    // own `$0` reflects its path. Env vars are injected as inline assignments
-    // (the shell consumes them) AND via the spawn env allowlist.
+    // Preserve the script path as $0; inject hook env through inline assignments and the spawn allowlist.
     const hookCommand = `${shellEnvAssignments(hookEnv)} ${shellCommandForHookPath(shell, runnable.command[0])}`;
     spawnCmd = shell.cmd;
     spawnArgs = shell.shellArgs(hookCommand);
     spawnEnv = shellEnvForChild(shell, childEnvBase);
   } else {
-    // Generic command-hook: spawn argv[0] directly with NO shell. Expand a
-    // leading `~` in each token (the shell would have done this; a direct
-    // spawn does not). NO shell quoting / parsing → no shell-injection surface.
+    // Expand leading ~ and spawn argv directly; shell quoting/parsing would introduce injection.
     const argv = runnable.command.map(expandLeadingTilde);
     spawnCmd = argv[0];
     spawnArgs = argv.slice(1);
@@ -312,18 +233,13 @@ export async function runOneHookScript(
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
-  // Each hook reads its own scope's gate (sandbox-scope-gates.test.ts). A
-  // bundled hook is an extension process: it is confined only while
-  // plugin-worker confinement is active. A user hook runs the user's own
-  // command, so it takes the host-shell plan: the one it was admitted under,
-  // or the live plan when no admission ran.
+  // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
     : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
   const scriptAnchor = resolveScriptAnchor(runnable.command);
   const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
-  // Only an exact script inside the protected hook directory gets a read
-  // exception. An arbitrary command argument must never relax a secret floor.
+  // Only an exact script inside the protected hook directory gets a read exception. An arbitrary command argument must never relax a secret floor.
   const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
     caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
   ) ? [canonicalAnchor] : [];
@@ -332,9 +248,7 @@ export async function runOneHookScript(
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
     : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
   if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
-    // srt-win: the hook runs through the stdio relay with an ACL grant on its
-    // own generation root (read) and data root (write); see
-    // `spawnWindowsBundledProcess`.
+    // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
       windowsSpawn = await spawnWindowsBundledProcess({
         label: `hook:${confinement?.pluginId ?? "user"}`,
@@ -442,17 +356,14 @@ export async function runOneHookScript(
         killProcessGroup: process.platform !== "win32",
       });
     }
-    // Detached (POSIX), the hook leads its own process group: the sandbox
-    // keeps the ended invocation's listener port while that group lives.
+    // Retain the invocation listener while the detached process group lives.
     if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
       wrappedEgress.noteProcessGroup(child.pid);
     }
-    // Through the relay the hook's input and output are the relay's streams,
-    // not the child's own pipes (`spawnWindowsBundledProcess`).
+    // Relay streams, not child pipes, carry hook input and output.
     const hookStdin = windowsSpawn?.stdin ?? child.stdin;
     const hookStdout = windowsSpawn?.stdout ?? child.stdout;
-    // The relayed output is copied from the child's own and can trail its
-    // `close` by a turn; the verdict waits for it, never longer than a second.
+    // Relayed output can lag child close; wait up to one second before parsing the verdict.
     const outputDrained: Promise<void> = windowsSpawn === undefined
       ? Promise.resolve()
       : new Promise<void>((resolveDrained) => {
@@ -472,7 +383,6 @@ export async function runOneHookScript(
       if (stdoutBytes > MAX_HOOK_STDOUT_BYTES) {
         if (!stdoutCapped) {
           stdoutCapped = true;
-          // Keep what we already have; don't grow further.
           stdoutChunks.push(c.subarray(0, Math.max(0, MAX_HOOK_STDOUT_BYTES - (stdoutBytes - c.byteLength))));
         }
         return;
@@ -608,10 +518,7 @@ export async function runOneHookScript(
   });
 }
 
-/** Coerce a `DiscoveredHook` or `RunnableHook` into the runner's working shape. */
 function normalizeRunnable(hook: DiscoveredHook | RunnableHook): RunnableHook {
-  // A RunnableHook carries `command` (string[]); a DiscoveredHook carries
-  // `path` + `fileName`. Discriminate on `command`.
   if (Array.isArray((hook as RunnableHook).command)) {
     return hook as RunnableHook;
   }
@@ -624,11 +531,7 @@ function shellEnvAssignments(env: Record<string, string>): string {
     .join(" ");
 }
 
-/**
- * Normalize legacy or event-scoped structured stdout into a deny-only gate.
- * No event argument retains the legacy parser contract. Unsupported control
- * fields return null, so mutation or context injection cannot silently succeed.
- */
+// Unsupported control fields reject stdout so mutation/context injection cannot silently succeed; no event retains the legacy parser contract.
 export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookStdout | null {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) return event === undefined ? null : { action: "allow", reason: "hook completed" };
@@ -696,13 +599,7 @@ export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookSt
   return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}) };
 }
 
-/**
- * Run a chain of hooks of the same type. Order = caller-supplied
- * (alphabetical from {@link discoverHooks}, then config file order). Stops at
- * the first deny — subsequent hooks are not invoked (deny precedence + don't
- * waste cycles). Each entry may be a legacy `.sh` `DiscoveredHook` or a
- * normalized {@link RunnableHook}.
- */
+// Preserve caller order and stop at the first denial; later hooks must not execute or override it.
 export async function runHookChain(
   hooks: Array<DiscoveredHook | RunnableHook>,
   payload: ScriptHookStdin,
@@ -728,7 +625,6 @@ export async function runHookChain(
   };
 }
 
-/** Human-readable identity for chain deny messages (`.sh` fileName or registry id). */
 function identityLabel(hook: DiscoveredHook | RunnableHook): string {
   if (Array.isArray((hook as RunnableHook).command)) {
     return (hook as RunnableHook).id;

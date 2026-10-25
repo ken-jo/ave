@@ -1,13 +1,4 @@
-/**
- * Tier 2 of the sub-agent approval chain, exercised through the gate.
- *
- * What is proved here is the lane's position and its bounds, not the
- * adjudicator's own behaviour — that is `parent-adjudicator.test.ts`, which
- * drives the module directly. These tests ask three questions instead: does an
- * answer from the parent end the ask without a dock, does every condition the
- * design reserves for a human still reach one, and can any failure of the lane
- * produce an allow.
- */
+// Tier 2 of the sub-agent approval chain, exercised through the gate. What is proved here is the lane's position and its bounds, not the adjudicator's own behaviour — that is `parent-adjudicator.test.ts`, which drives the module directly. These tests ask three questions instead: does an answer from the parent end the ask without a dock, does every condition the design reserves for a human still reach one, and can any failure of the lane produce an allow.
 import { describe, it, expect, vi } from "vitest";
 import {
   ApprovalGate,
@@ -29,7 +20,7 @@ import { auditRowStartingWith } from "./test-helpers.js";
 const CHILD_SESSION = "child-session-1";
 const PARENT_SESSION = "parent-session-1";
 
-/** An adjudicator that answers from a script and records what it was shown. */
+// An adjudicator that answers from a script and records what it was shown.
 class ScriptedParentAdjudicator implements ParentAdjudicator {
   readonly seen: ParentAdjudicationEvidence[] = [];
   readonly options: ParentAdjudicationOptions[] = [];
@@ -97,7 +88,7 @@ function makeGate(
   return { wc, auditLogger, gate };
 }
 
-/** An ask the lane answers, before a test flips one field of it. */
+// An ask the lane answers, before a test flips one field of it.
 function makeChildRequest(
   overrides: Partial<ApprovalRequestInput> = {},
 ): ApprovalRequestInput {
@@ -188,9 +179,7 @@ describe("parent adjudication — the answer", () => {
     expect(sent.parentEscalation).toEqual({
       cause: "parent-escalated",
       reason: "I cannot tell whether this path belongs to the task",
-      // Which child is asking, so the dock can name it. Carried by the host
-      // but written by the parent, hence masked and normalized on the way —
-      // see the title test below.
+      // Which child is asking, so the dock can name it. Carried by the host but written by the parent, hence masked and normalized on the way — see the title test below.
       childTitle: "report writer",
     });
     // Host-only inputs never ride along with it.
@@ -202,10 +191,7 @@ describe("parent adjudication — the answer", () => {
   });
 
   it("masks and normalizes the child title before the dock sees it", async () => {
-    // The title looks like host metadata and is not: `agent_spawn` reads it
-    // from the parent model's own tool arguments. Unmasked it can carry a
-    // secret past DLP, and un-normalized it can reorder or truncate the dock
-    // line it sits on.
+    // The title looks like host metadata and is not: `agent_spawn` reads it from the parent model's own tool arguments. Unmasked it can carry a secret past DLP, and un-normalized it can reorder or truncate the dock line it sits on.
     const adjudicator = new ScriptedParentAdjudicator({
       outcome: "escalate",
       cause: "parent-escalated",
@@ -232,9 +218,7 @@ describe("parent adjudication — the answer", () => {
   });
 
   it("never shows the parent the dock's purpose sentence", async () => {
-    // For a sub-agent turn that sentence can only have been lifted out of the
-    // child's own tool arguments, which would let a child argue its own case
-    // in the prompt that decides it.
+    // For a sub-agent turn that sentence can only have been lifted out of the child's own tool arguments, which would let a child argue its own case in the prompt that decides it.
     const adjudicator = new ScriptedParentAdjudicator({
       outcome: "escalate",
       cause: "parent-escalated",
@@ -342,11 +326,7 @@ describe("parent adjudication — the answer", () => {
   });
 
   it("tells the parent when a sibling's message is what prompted the call", async () => {
-    // The A2A lane force-asks precisely because a sibling's text is not
-    // something the receiver agreed to act on. Reaching the parent without
-    // that fact makes the force-ask indistinguishable from an ordinary one,
-    // and the parent judges "does this serve the task I gave it?" blind to
-    // the third agent that caused it.
+    // The A2A lane force-asks precisely because a sibling's text is not something the receiver agreed to act on. Reaching the parent without that fact makes the force-ask indistinguishable from an ordinary one, and the parent judges "does this serve the task I gave it?" blind to the third agent that caused it.
     const adjudicator = new ScriptedParentAdjudicator({
       outcome: "allow-once",
       reason: "in task",
@@ -451,11 +431,7 @@ describe("parent adjudication — what stays with the user", () => {
     await expectNotAdjudicated({ reviewerVerdict: undefined });
   });
 
-  // The same statement the HIGH exclusion makes, on the other axis. A verdict
-  // the host could not determine the effect of is the user's call to answer
-  // even when its rank sits inside the ceiling: the rank compare alone would
-  // hand it to the parent agent, which is the one reader that cannot know the
-  // rank is a strict default rather than an observation.
+  // The same statement the HIGH exclusion makes, on the other axis. A verdict the host could not determine the effect of is the user's call to answer even when its rank sits inside the ceiling: the rank compare alone would hand it to the parent agent, which is the one reader that cannot know the rank is a strict default rather than an observation.
   it("skips a verdict that requires explicit approval, inside the ceiling", async () => {
     await expectNotAdjudicated({
       reviewerVerdict: {
@@ -560,8 +536,7 @@ describe("parent adjudication — every failure escalates", () => {
       makeChildRequest({ abortSignal: controller.signal }),
     );
 
-    // The parent's allow is not honoured for a turn that no longer exists, and
-    // the ask does not land on a dock nobody can answer.
+    // The parent's allow is not honoured for a turn that no longer exists, and the ask does not land on a dock nobody can answer.
     expect(decision.choice).toBe("deny-once");
     expect(wc.send).not.toHaveBeenCalled();
   });
@@ -637,8 +612,7 @@ describe("parent adjudication — a repeated denial reaches the user", () => {
       await gate.requestAndWait(makeChildRequest({ id }));
     }
 
-    // Four answers, none of which reached a dock: the allow reset the count
-    // that the fourth would otherwise have completed.
+    // Four answers, none of which reached a dock: the allow reset the count that the fourth would otherwise have completed.
     expect(adjudicator.seen).toHaveLength(4);
     expect(wc.send).not.toHaveBeenCalled();
   });
@@ -670,8 +644,7 @@ describe("parent adjudication — a finished run releases its state", () => {
 
     gate.forgetChildRun(CHILD_SESSION);
 
-    // The ended run's two denials are gone: a resumed run's first denial is
-    // its first, not a third that reaches the user.
+    // The ended run's two denials are gone: a resumed run's first denial is its first, not a third that reaches the user.
     const resumed = await gate.requestAndWait(makeChildRequest({ id: "c" }));
     expect(resumed.choice).toBe("deny-once");
     expect(wc.send).not.toHaveBeenCalled();
@@ -701,8 +674,7 @@ describe("parent adjudication — a finished run releases its state", () => {
 
     gate.forgetChildRun(CHILD_SESSION);
 
-    // The policy may have moved the run between models mid-run, so both are
-    // told — each releases only what it charged.
+    // The policy may have moved the run between models mid-run, so both are told — each releases only what it charged.
     expect(reviewer.forgotten).toEqual([CHILD_SESSION]);
     expect(parentSession.forgotten).toEqual([CHILD_SESSION]);
   });
@@ -731,8 +703,7 @@ describe("parent adjudication — a finished run releases its state", () => {
       },
     );
 
-    // The reviewer is asked first; its failure must not cost the parent
-    // session its release, and must not be swallowed either.
+    // The reviewer is asked first; its failure must not cost the parent session its release, and must not be swallowed either.
     expect(() => gate.forgetChildRun(CHILD_SESSION)).toThrow(broken);
     expect(parentSession.forgotten).toEqual([CHILD_SESSION]);
   });

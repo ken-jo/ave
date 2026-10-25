@@ -13,15 +13,11 @@ export interface PreparedPluginHookProjection {
   owner: PluginHookOwner;
   entries: readonly HookConfigEntry[];
   confinement: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
-  /** What an approval of this hook covers (design §18.7.3); null when it cannot be determined. */
+  // What an approval of this hook covers; null when it cannot be determined.
   approvalDigest: string | null;
 }
 
-/**
- * Exact-generation trust records. A record names one generation; a new
- * generation's hook is approved explicitly or carried forward by its
- * approval digest (design §18.7.3).
- */
+// Exact-generation trust records. A record names one generation; a new generation's hook is approved explicitly or carried forward by its approval digest.
 export class PluginHookTrustStore implements ProjectionTrust<PreparedPluginHookProjection> {
   private readonly store: PluginContributionTrustStore;
 
@@ -41,7 +37,7 @@ export class PluginHookTrustStore implements ProjectionTrust<PreparedPluginHookP
     return this.store.record(projection.owner);
   }
 
-  /** Give an approval of this exact generation the digest of its running bytes, when it has none (version-2 migration). */
+  // Give an approval of this exact generation the digest of its running bytes, when it has none (version-2 migration).
   recordDigest(projection: PreparedPluginHookProjection): void {
     this.store.recordDigest(projection.owner, projection.approvalDigest);
   }
@@ -51,12 +47,12 @@ export class PluginHookTrustStore implements ProjectionTrust<PreparedPluginHookP
   }
 }
 
-/** Parse/fingerprint-only preparation. It performs no spawn or hook registration. */
+// Parse/fingerprint-only preparation. It performs no spawn or hook registration.
 export function preparePluginHookGeneration(
   generation: ActivePluginGeneration,
   payloadRoot: string,
   dataDir: string,
-  /** Each hook's approval digest, by local id (`extensionComponentDigests`). */
+  // Each hook's approval digest, by local id (`extensionComponentDigests`).
   approvalDigests: ReadonlyMap<string, string | null>,
 ): readonly PreparedPluginHookProjection[] {
   const projections: PreparedPluginHookProjection[] = [];

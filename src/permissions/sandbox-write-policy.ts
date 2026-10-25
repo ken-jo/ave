@@ -13,21 +13,13 @@ import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 
-/**
- * The shared control-file floor, minus the `.git` marker and its children.
- * Inside the sandbox `.git/*` controls are owned by `addGitControlPaths`,
- * `GIT_CONTROL_ENTRIES`, `MAC_GIT_CONTROL_GLOBS` and the Linux per-command
- * rescan: they deny hooks, config and the other execution controls at any
- * depth (including `.git/modules/**` and `.git/worktrees/*`) and deny a
- * missing marker, without freezing object and ref stores or making bwrap
- * create absent controls as mount points. `.gitconfig` and `.githooks` stay.
- */
+// Git execution controls use recursive platform-specific rules and Linux rescans; exclude .git from this shared floor so objects/refs remain writable without creating absent mountpoints. Keep .gitconfig and .githooks denied.
 export function isSandboxGitMetadataEntry(entry: string): boolean {
   return entry === ".git" || entry.startsWith(".git/");
 }
 const SANDBOX_PROTECTED_ROOT_ENTRIES = PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry));
 
-/** Linux discovery depth; the admitted root is depth zero. */
+// Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
 const MAX_GIT_SCAN_ENTRIES = 16_384;
 const MAX_GIT_METADATA_BYTES = 65_536;
@@ -109,7 +101,7 @@ const gitScanIgnoredDirectories = new Set([
   ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "vendor", "dist", "build", ".cache",
 ]);
 
-/** Canonical snapshots use forward slashes, independent of the native separator. */
+// Canonical snapshots use forward slashes, independent of the native separator.
 function isCanonicalPathWithin(root: string, path: string): boolean {
   const foldedRoot = process.platform === "win32" ? root.toLowerCase() : root;
   const foldedPath = process.platform === "win32" ? path.toLowerCase() : path;
@@ -117,7 +109,7 @@ function isCanonicalPathWithin(root: string, path: string): boolean {
     || foldedPath.startsWith(foldedRoot.endsWith("/") ? foldedRoot : `${foldedRoot}/`);
 }
 
-/** Physical snapshots retain Unicode and POSIX backslashes as filesystem identity. */
+// Physical snapshots retain Unicode and POSIX backslashes as filesystem identity.
 function isPhysicalPathWithin(root: string, path: string): boolean {
   const foldedRoot = process.platform === "win32" ? root.toLowerCase() : root;
   const foldedPath = process.platform === "win32" ? path.toLowerCase() : path;
@@ -158,15 +150,14 @@ function addProtectedRoutingPins(path: string, routingPins: Set<string>): void {
     for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
   } catch (error) {
     const marker = dirname(path);
-    // A regular .git pointer makes its child control paths structurally
-    // impossible. Every other inspection failure remains fail-closed.
+    // A regular.git pointer makes its child control paths structurally impossible. Every other inspection failure remains fail-closed.
     if ((error as NodeJS.ErrnoException).code === "ENOTDIR"
       && basename(marker) === ".git" && lstatSync(marker).isFile()) return;
     throw error;
   }
 }
 
-/** Compare filesystem grants, including canonical Windows aliases and casing. */
+// Compare filesystem grants, including canonical Windows aliases and casing.
 export function isGrantPathWithin(root: string, path: string): boolean {
   if (process.platform !== "win32") {
     const rel = relative(resolve(root), resolve(path));
@@ -181,7 +172,7 @@ function isMissingPath(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR";
 }
 
-/** No pipes, links or unbounded reads may turn discovery into an arbitrary file read. */
+// No pipes, links or unbounded reads may turn discovery into an arbitrary file read.
 function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | undefined {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)); }
@@ -209,8 +200,7 @@ function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | und
       throw new Error("Sandbox Git control metadata is not valid UTF-8");
     }
     budget.metadataBytes -= length;
-    // Only terminal CR/LF bytes delimit these control records. Other
-    // whitespace is path data, including a trailing space, tab or NBSP.
+    // Only terminal CR/LF bytes delimit these control records. Other whitespace is path data, including a trailing space, tab or NBSP.
     return decoded.replace(/[\r\n]+$/u, "");
   } finally { closeSync(fd); }
 }
@@ -220,7 +210,7 @@ function hasGitHead(directory: string): boolean {
   catch (error) { if (isMissingPath(error)) return false; throw error; }
 }
 
-/** Filesystem-only classification; a bare layout deliberately remains a non-worktree root. */
+// Filesystem-only classification; a bare layout deliberately remains a non-worktree root.
 export function findNonRepositoryWriteRoots(writeRoots: readonly string[]): string[] {
   return classifyNonRepositoryWriteRoots(writeRoots, {
     entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES,
@@ -346,12 +336,10 @@ function addGitDirectoryControls(
               discovery.replacedMarkers.add(nested);
               continue;
             }
-            // Metadata stores are identified by HEAD just like worktree markers.
-            // Grouping directories are still traversed for nested submodule names.
+            // Metadata stores are identified by HEAD just like worktree markers. Grouping directories are still traversed for nested submodule names.
             if (hasGitHead(nested) || containerName === "worktrees") queue.push(nested);
             else {
-              // An existing grouping directory can become a module store in
-              // the same invocation; protect its future controls as well.
+              // An existing grouping directory can become a module store in the same invocation; protect its future controls as well.
               discovery?.stores.set(nested, gitEntryIdentity(nested));
               if (discovery) queue.push(nested);
               for (const control of gitControlEntries(discovery)) paths.add(join(nested, control));
@@ -367,11 +355,7 @@ function addGitDirectoryControls(
   return true;
 }
 
-/**
- * Capture the bounded Linux control set without creating missing mount targets.
- * A post-command pass uses only pre-resolved stores: newly introduced routing
- * bytes and marker links never choose a host path for quarantine.
- */
+// Capture the bounded Linux control set without creating missing mount targets. A post-command pass uses only pre-resolved stores: newly introduced routing bytes and marker links never choose a host path for quarantine.
 export function snapshotSandboxGitControls(
   writeRoots: readonly string[], previous?: SandboxGitControlSnapshot,
 ): SandboxGitControlSnapshot {
@@ -420,7 +404,7 @@ export function snapshotSandboxGitControls(
   return finishGitControlSnapshot(roots, bareRoots, discovery, paths);
 }
 
-/** Narrow the captured grant set without re-reading or trusting later metadata. */
+// Narrow the captured grant set without re-reading or trusting later metadata.
 export function restrictSandboxGitControlSnapshot(
   snapshot: SandboxGitControlSnapshot, effectiveWriteRoots: readonly string[],
   isPathExcluded?: (path: string, includesChildren?: boolean) => boolean,
@@ -506,8 +490,7 @@ function addGitControlPaths(
     return addGitDirectoryControls(stores, paths, routingPins, budget, discovery);
   }
   if (!entry.isDirectory()) paths.add(marker);
-  // A marker link is not a supported repository pointer. Never read its target
-  // as host metadata; regular gitdir pointer files cover linked worktrees.
+  // A marker link is not a supported repository pointer. Never read its target as host metadata; regular gitdir pointer files cover linked worktrees.
   if (entry.isSymbolicLink()) throw new Error("Linked sandbox Git markers are unsupported");
   const resolvedMarker = realpathSync.native(marker);
   if (!entry.isDirectory()) paths.add(resolvedMarker);
@@ -596,8 +579,7 @@ function addNestedGitControlPaths(
       discovery.directories.set(current.path, routeIdentity);
       discovery.directoryTargets.set(current.path, canonical);
     }
-    // A directory link may be followed only within this admitted root. Another
-    // admitted root is discovered separately with the same invocation budget.
+    // A directory link may be followed only within this admitted root. Another admitted root is discovered separately with the same invocation budget.
     if (!isPhysicalPathWithin(canonicalRoot, canonical)) continue;
     if (visited.has(canonical)) continue;
     visited.add(canonical);
@@ -609,18 +591,14 @@ function addNestedGitControlPaths(
       let entry;
       try { if (!discovery?.isPathExcluded?.(marker)) entry = lstatSync(marker); }
       catch (error) { if (!isMissingPath(error)) return false; }
-      // A directory repository is identified by its HEAD marker. Pointer files
-      // remain controls even if their target is not yet a valid repository.
+      // A directory repository is identified by its HEAD marker. Pointer files remain controls even if their target is not yet a valid repository.
       if (entry !== undefined && (discovery || process.platform === "linux" || !entry.isDirectory() || hasGitHead(marker))) {
         if (!addGitControlPaths(marker, paths, routingPins, budget, discovery)) return false;
       }
     }
     if ((paths.size !== beforePathCount || routingPins.size !== beforeRoutingPinCount)
       && [...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
-    // Glob rules cover controls named beneath .git, but an existing pointer
-    // can route them to an arbitrary directory name. Discover every macOS
-    // indirection, including dependency and metadata trees, or revoke the
-    // incomplete grant when the shared entry/path budgets are exhausted.
+    // Glob rules cover controls named beneath.git, but an existing pointer can route them to an arbitrary directory name. Discover every macOS indirection, including dependency and metadata trees, or revoke the incomplete grant when the shared entry/path budgets are exhausted.
     if ((discovery || process.platform !== "darwin") && current.depth === SANDBOX_GIT_SCAN_DEPTH) continue;
     let directory;
     try { directory = opendirSync(discovery ? canonical : current.path); }
@@ -634,8 +612,7 @@ function addNestedGitControlPaths(
         const child = join(discovery ? canonical : current.path, entry.name);
         if (discovery && isPhysicalPathWithin(discovery.quarantineRoot, child)) continue;
         let descend = entry.isDirectory() || entry.isSymbolicLink();
-        // Some filesystems return DT_UNKNOWN. Such an entry is not evidence
-        // that a directory cannot contain protected metadata.
+        // Some filesystems return DT_UNKNOWN. Such an entry is not evidence that a directory cannot contain protected metadata.
         if (!descend && !entry.isFile() && !entry.isBlockDevice() && !entry.isCharacterDevice()
           && !entry.isFIFO() && !entry.isSocket()) {
           try { const stat = lstatSync(child); descend = stat.isDirectory() || stat.isSymbolicLink(); }
@@ -649,14 +626,7 @@ function addNestedGitControlPaths(
   return true;
 }
 
-/**
- * Sensitive/application literal denies include absent paths. Linux Git controls
- * alone use existing entries plus a recoverable post-command quarantine sweep.
- * Store locations come from their writers so changing a layout also changes
- * this boundary. Existing sensitive-write protection is unioned separately.
- * Its paths are inspected only for routing links; their owning union remains
- * responsible for emitting the corresponding deny entries.
- */
+// Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Existing sensitive-write protection is unioned separately. Its paths are inspected only for routing links; their owning union remains responsible for emitting the corresponding deny entries.
 export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly string[],
   userDataDir?: string,
@@ -722,8 +692,7 @@ export function buildMandatorySandboxWritePolicy(
   const discovered = new Set<string>();
   const discoveredRoutingPins = new Set<string>();
   const separatorPattern = process.platform === "win32" ? /[\\/]/u : /\//u;
-  // Scan narrow grants first so a broad ambient tree cannot spend the budget
-  // required by an independently admitted workspace or private temp root.
+  // Scan narrow grants first so a broad ambient tree cannot spend the budget required by an independently admitted workspace or private temp root.
   for (const root of [...roots].sort((left, right) => right.split(separatorPattern).length - left.split(separatorPattern).length)) {
     if (revoked.has(root)) continue;
     const local = new Set<string>();
@@ -737,8 +706,7 @@ export function buildMandatorySandboxWritePolicy(
     for (const path of localRoutingPins) discoveredRoutingPins.add(path);
   }
   if (process.platform === "linux") {
-    // Missing Git binds manufacture host mountpoints and can change repository
-    // interpretation. The post-command owner handles newly created controls.
+    // Missing Git binds manufacture host mountpoints and can change repository interpretation. The post-command owner handles newly created controls.
     for (const path of discovered) {
       try { lstatSync(path); }
       catch (error) { if (isMissingPath(error)) discovered.delete(path); else throw error; }
@@ -746,10 +714,7 @@ export function buildMandatorySandboxWritePolicy(
     for (const path of paths) addProtectedRoutingPins(path, routingPins);
     for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins);
     for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins);
-    // A bind mount follows a routing symlink to its target; it cannot pin the
-    // directory entry while leaving that entry's parent writable. Remove every
-    // grant that could replace the link. Independent child and sibling grants
-    // remain available because they do not make the routing parent writable.
+    // A bind mount follows a routing symlink to its target; it cannot pin the directory entry while leaving that entry's parent writable. Remove every grant that could replace the link. Independent child and sibling grants remain available because they do not make the routing parent writable.
     for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
       const routingParent = dirname(routingPath);
       for (const root of roots) {
@@ -759,8 +724,7 @@ export function buildMandatorySandboxWritePolicy(
   }
   const retained = roots.filter(root => !revoked.has(root));
   for (const path of discovered) {
-    // Revoked roots are read-only through the default filesystem jail. Never
-    // put a deny on their ancestor: it would also override retained child grants.
+    // Revoked roots are read-only through the default filesystem jail. Never put a deny on their ancestor: it would also override retained child grants.
     if (retained.some(root => isPhysicalPathWithin(root, path) || isPhysicalPathWithin(path, root))
       || !roots.some(root => isPhysicalPathWithin(root, path))) {
       paths.add(path);
@@ -776,13 +740,11 @@ export function buildMandatorySandboxWritePolicy(
     resolvePolicyDenyPath(path),
   ]))]
     .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
-  // Linux consumes routing links only to revoke covering grants. Replaying one
-  // as a deny bind would follow its target and could mask an unrelated subtree.
+  // Linux consumes routing links only to revoke covering grants. Replaying one as a deny bind would follow its target and could mask an unrelated subtree.
   if (process.platform !== "linux") {
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
-  // Backend globs cover future controls at any depth without denying ordinary
-  // object, ref, index and HEAD updates in existing metadata directories.
+  // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
   if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
   if (Buffer.byteLength(JSON.stringify(entries)) > MAX_GIT_POLICY_BYTES) throw new Error("Sandbox Git write policy exceeds its size limit");
   return {

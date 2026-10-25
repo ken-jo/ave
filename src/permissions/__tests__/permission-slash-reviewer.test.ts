@@ -1,6 +1,3 @@
-/**
- * Permission policy Phase 3 — `/permission reviewer` slash + settings persistence tests.
- */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -16,7 +13,7 @@ import {
 } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
 
-/** Only ever named in a fault; `normalizePermissionSettings` reads no file. */
+// Only ever named in a fault; `normalizePermissionSettings` reads no file.
 const SETTINGS_PATH = "/nonexistent/settings.json";
 
 const resources = new PermissionTestResources();
@@ -222,11 +219,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     const r = await dispatchPermissionReviewerCommand({ verb: "show", value: "" }, path);
     expect(r.ok).toBe(true);
     if (r.ok && r.verb === "show") {
-      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades
-      // to rule at runtime when no LLM provider is configured (fresh install),
-      // but the persisted/default mode is "llm" so intent stays visible.
-      // interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground
-      // calls are silently allowed; HIGH still surfaces.
+      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades to rule at runtime when no LLM provider is configured (fresh install), but the persisted/default mode is "llm" so intent stays visible. interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground calls are silently allowed; HIGH still surfaces.
       expect(r.settings.mode).toBe("llm");
       expect(r.settings).not.toHaveProperty("provider");
       expect(r.settings).not.toHaveProperty("model");
@@ -299,7 +292,6 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
 
   it("interactive off persists as an explicit fail-closed choice", async () => {
     const path = tmpSettingsPath();
-    // First flip to low, then back to off — confirms the toggle is bidirectional.
     await dispatchPermissionReviewerCommand({ verb: "interactive", value: "low" }, path);
     await dispatchPermissionReviewerCommand({ verb: "interactive", value: "off" }, path);
     const settings = readPermissionSettings(path);
@@ -354,9 +346,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
 
   it("setReviewerSettingsPersist preserves additionalDirectories", async () => {
     const path = tmpSettingsPath();
-    // Seed: write directories first.
     await writePermissionSettings({ additionalDirectories: ["/foo"] }, path);
-    // Now change reviewer.
     await setReviewerSettingsPersist({ mode: "rule" }, path);
     const settings = readPermissionSettings(path);
     expect(settings.permissions.additionalDirectories).toEqual(["/foo"]);
@@ -389,9 +379,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
   it("missing reviewer block → defaults", () => {
     const settings = normalizePermissionSettings({}, SETTINGS_PATH);
     expect(settings.permissions.reviewer).toEqual({
-      // Default reviewer mode is "llm" (strongest classifier; degrades to rule
-      // at boot when no provider is configured). interactive.autoApprove "medium"
-      // silently allows LOW/MEDIUM foreground calls.
+      // Default reviewer mode is "llm" (strongest classifier; degrades to rule at boot when no provider is configured). interactive.autoApprove "medium" silently allows LOW/MEDIUM foreground calls.
       mode: "llm",
       fallbackOnError: "deny",
       interactive: { autoApprove: "medium" },
@@ -417,8 +405,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    // Unknown enum values fall back to the new "llm" default (external
-    // boundary: hand-edited settings file with bad values).
+    // Unknown enum values fall back to the new "llm" default (external boundary: hand-edited settings file with bad values).
     expect(settings.permissions.reviewer.mode).toBe("llm");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
     expect(settings.permissions.reviewer).not.toHaveProperty("provider");
@@ -454,8 +441,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
   });
 
   it("explicit mode:rule + autoApprove:off are preserved (not overwritten by new defaults)", () => {
-    // Backward-compat: a user who explicitly configured the pre-change defaults
-    // must keep them. Only ABSENT fields fall to the new "llm"/"low" defaults.
+    // Backward-compat: a user who explicitly configured the pre-change defaults must keep them. Only ABSENT fields fall to the new "llm"/"low" defaults.
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {

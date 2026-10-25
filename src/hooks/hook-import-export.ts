@@ -7,7 +7,7 @@ const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
 
 export interface ImportedHookEntry {
-  /** The source file containing this handler, retained for studio review. */
+  // The source file containing this handler, retained for studio review.
   sourcePath: string;
   event: HookEvent;
   matcher?: string;
@@ -38,7 +38,7 @@ function hasForbiddenPlaceholder(value: string): boolean {
   return /\$\{user_config\.|\$\{CLAUDE_/u.test(rewritten);
 }
 
-/** Convert one source file's supported events and exec-form handlers into review-only entries. */
+// Convert one source file's supported events and exec-form handlers into review-only entries.
 export function importLegacyHooks(value: unknown, sourcePath: string): { entries: ImportedHookEntry[]; diagnostics: HookImportDiagnostic[] } {
   if (!sourcePath.trim()) throw new Error("hook import requires a source path");
   const entries: ImportedHookEntry[] = [];
@@ -115,7 +115,7 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
   return { entries, diagnostics };
 }
 
-/** Refuse publication until the user has reviewed each imported protocol boundary. */
+// Refuse publication until the user has reviewed each imported protocol boundary.
 export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, "needsAdaptation"> & { needsAdaptation?: boolean })[]): { version: 1; hooks: Record<string, unknown[]> } {
   const hooks: Record<string, unknown[]> = {};
   for (const [index, entry] of entries.entries()) {
@@ -135,7 +135,7 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
   return document;
 }
 
-/** Project reviewed native entries for an optional adjacent legacy layout. */
+// Project reviewed native entries for an optional adjacent legacy layout.
 export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks: Record<string, unknown[]>; notice: string } {
   const hooks: Record<string, unknown[]> = {};
   const back = (value: string) => value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")

@@ -3,7 +3,7 @@ export interface SandboxWrappedWord {
   readonly start: number;
 }
 
-/** Read the single-quoted argument format emitted by the sandbox runtime. */
+// Read the single-quoted argument format emitted by the sandbox runtime.
 export function parseSandboxWrappedWords(command: string, context = "Sandbox wrapper"): SandboxWrappedWord[] {
   const words: SandboxWrappedWord[] = [];
   let index = 0;

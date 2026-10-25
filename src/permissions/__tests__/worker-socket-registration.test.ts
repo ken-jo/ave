@@ -11,8 +11,7 @@ import {
 
 useVerifiedAveHomePrivacy();
 
-// Config ownership only: the probe gets a valid wrapper and a successful child
-// lifecycle. Runtime confinement and probe failures have separate coverage.
+// Config ownership only: the probe gets a valid wrapper and a successful child lifecycle. Runtime confinement and probe failures have separate coverage.
 const manager = vi.hoisted(() => ({
   config: undefined as { network: { allowUnixSockets?: string[] } } | undefined,
   update: vi.fn(),

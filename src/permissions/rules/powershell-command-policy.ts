@@ -1,26 +1,26 @@
-/** Closed command vocabulary. Unknown names and bindings never acquire known effects. */
+// Closed command vocabulary. Unknown names and bindings never acquire known effects.
 type PowerShellCommandEffect = "local" | "read" | "network" | "launcher" | "dispatch" | "file-write" | "variable-read" | "variable-write" | "provider-write";
 
 export interface PowerShellPathBinding {
   parameters: readonly string[];
   position?: number;
-  /** Named variable destinations select a non-file parameter set. */
+  // Named variable destinations select a non-file parameter set.
   variableParameters?: readonly string[];
 }
 
 export interface PowerShellCommandPolicy {
   aliases: readonly string[];
   effects: readonly [PowerShellCommandEffect, ...PowerShellCommandEffect[]];
-  /** A trailing '?' is a switch; '*' consumes the remaining argument list. */
+  // A trailing '?' is a switch; '*' consumes the remaining argument list.
   parameters: readonly string[];
-  /** Destination bindings whose filesystem paths can send data to a share. */
+  // Destination bindings whose filesystem paths can send data to a share.
   destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
-  /** A launcher whose executable path has a positively modeled binding. */
+  // A launcher whose executable path has a positively modeled binding.
   executable?: PowerShellPathBinding;
-  /** Ordinary content slots are data when their destination is proved local. */
+  // Ordinary content slots are data when their destination is proved local.
   content?: PowerShellPathBinding;
   argv?: { info?: readonly string[]; verbs?: readonly string[]; switches?: readonly string[]; modules?: readonly string[]; code?: readonly string[] };
-  /** File provenance uses the same command identity and parameter signature. */
+  // File provenance uses the same command identity and parameter signature.
   materializes?: {
     kind: "file" | "copy" | "rename" | "new" | "tree";
     destination?: PowerShellPathBinding;
@@ -28,12 +28,12 @@ export interface PowerShellCommandPolicy {
     native?: boolean;
     optional?: boolean;
   };
-  /** Native payload grammar; all other catalogue forms remain opaque. */
+  // Native payload grammar; all other catalogue forms remain opaque.
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
-  /** Credential-store access and explicit native transfer forms remain floors. */
+  // Credential-store access and explicit native transfer forms remain floors.
   credential?: true | RegExp;
   sink?: RegExp;
-  /** Literal property reads understood for this command's output objects. */
+  // Literal property reads understood for this command's output objects.
   members?: readonly string[];
 }
 
@@ -51,12 +51,7 @@ function nativePolicy(effects: PowerShellCommandPolicy["effects"], native: NonNu
   return { aliases: [], effects, parameters: [], native };
 }
 
-/**
- * Native effects: LOLBAS https://lolbas-project.github.io/ (Execute, Download,
- * Upload, AWL bypass catalogue snapshot, 2026-10-15), plus transport and host
- * spellings. Only explicitly modeled payload grammars acquire literal code.
- * Cmdlet aliases are the union of built-in spellings across supported editions.
- */
+// Native effects: LOLBAS https://lolbas-project.github.io/ (Execute, Download, Upload, AWL bypass catalogue snapshot, 2026-10-15), plus transport and host spellings. Only explicitly modeled payload grammars acquire literal code. Cmdlet aliases are the union of built-in spellings across supported editions.
 export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellCommandPolicy>> = Object.freeze(Object.assign(Object.create(null) as Record<string, PowerShellCommandPolicy>, {
   "acccheckconsole.exe": nativePolicy(["launcher"]),
   "addinutil.exe": nativePolicy(["launcher"]),
@@ -387,7 +382,7 @@ export type PowerShellExpressionKind = "literal" | "interpolation" | "group" | "
 
 export class PowerShellBudgetError extends Error {}
 
-/** One budget spans lexing, value analysis, scans and every nested script. */
+// One budget spans lexing, value analysis, scans and every nested script.
 export class PowerShellAnalysisBudget {
   steps = 0;
   chars = 0;

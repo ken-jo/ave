@@ -1,12 +1,4 @@
-/**
- * Boot-time construction of the judge chain from `permissions.judge.chain`.
- *
- * A stage whose dependency is not available — no LLM reviewer for a default
- * builtin-llm stage, or a selected model whose provider is not configured —
- * is kept with `judge: null`. The engine treats it as `unavailable`: the stage
- * escalates, and if it is the last stage the call asks / denies, never allows.
- * A stage is never silently swapped for a different provider or model.
- */
+// Keep unavailable stages as null so the chain escalates and ultimately asks/denies; never silently substitute another model or provider.
 import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
 import { BuiltinLlmJudge, type TracingRiskClassifier } from "./builtin-llm-judge.js";
 import type { JudgeChainStage } from "./judge-engine.js";
@@ -14,16 +6,13 @@ import { ExternalJudge, type JudgeFetch } from "./external-judge.js";
 import { formatJudgeModel, type JudgeModelRef, type JudgeSettings, type JudgeStageSettings } from "./judge-settings.js";
 
 export interface CreateJudgeDeps {
-  /** The reviewer's LLM classifier (current reviewer model), when the reviewer runs in `llm` mode. */
+  // The reviewer's LLM classifier (current reviewer model), when the reviewer runs in `llm` mode.
   reviewerClassifier: TracingRiskClassifier | null;
-  /** The model the reviewer classifier resolved to (the active chat model); recorded in the audit. */
+  // The model the reviewer classifier resolved to (the active chat model); recorded in the audit.
   reviewerModel: JudgeModelRef | string | null;
-  /**
-   * A classifier on a user-selected model, built through the same provider
-   * wiring as the chat model picker. Null when that provider is not configured.
-   */
+  // A classifier on a user-selected model, built through the same provider wiring as the chat model picker. Null when that provider is not configured.
   classifierForModel: (model: JudgeModelRef) => TracingRiskClassifier | null;
-  /** Non-secret transport identity for a selected model's verdict cache. */
+  // Non-secret transport identity for a selected model's verdict cache.
   cacheScopeForModel?: (model: JudgeModelRef) => Record<string, unknown>;
   autoApprove: () => ReviewerInteractiveAutoApprove;
   fetch: JudgeFetch;

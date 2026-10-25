@@ -1,26 +1,4 @@
-/**
- * Host-mediated worker-spawn primitive (worker-confinement PR D-1).
- *
- * Confines a LONG-LIVED HTTP plugin worker the host connects INBOUND to, under
- * ASRT with a bind-mounted UDS control channel. These tests stub ASRT
- * (`wrapWorkerCommand` / `cleanupAsrtSandboxAfterCommand` / the gate) +
- * `child_process.spawn` + `node:fs` to assert the WIRING — they do NOT exercise
- * the real Seatbelt/bwrap backend (that is the macOS runtime smoke, run
- * separately in worker-spawn-uds.smoke.test.ts). Covered:
- *   - gate OFF → plain spawn, args UNCHANGED, no wrap, no UDS dir, socketPath
- *     null, reviewer 'none'.
- *   - gate ON (mac/linux) → registerWorkerUnixSocketDir(socketDir) called BEFORE
- *     the wrap (the UDS allow is SHARED-config, not per-command); wrapWorkerCommand
- *     called with allowWrite=[socketDir,…] (FS jail only — no per-command UDS
- *     option, which is inert in current ASRT); spawn gets the wrapped argv
- *     (shell:false, stdin ignored); socketPath non-null; the worker is marked
- *     wrapped so the reviewer reports genuine asrt for its plugin tool.
- *   - udsArgName injection (arg form + env form).
- *   - idempotent any-exit cleanup → unmark + cleanup once on exit (and stop()
- *     does not double-run); reviewer falls back to none after.
- *   - win32 + gate ON → dedicated holder PID ACL grant + srt-win wrapped TCP
- *     worker, no shared all-plugin grant and no UDS injection.
- */
+// Stubbed wiring verifies wrap-before-spawn, shared socket registration, exact worker grants, live wrap markers and idempotent cleanup; native enforcement is covered in worker-spawn-uds.smoke.test.ts.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { egressInvocationOwner } from "../egress-invocations.js";
@@ -35,7 +13,7 @@ vi.mock("../srt-win-integrity.js", async (original) => ({
   assertSrtWinSpawnIntegrity: vi.fn(),
 }));
 
-// ─── node:fs / node:fs/promises mocks (no real disk touch) ──
+// node:fs / node:fs/promises mocks (no real disk touch)
 const mkdirMock = vi.fn<(path: unknown, opts?: unknown) => Promise<undefined>>(() =>
   Promise.resolve(undefined),
 );
@@ -50,8 +28,7 @@ vi.mock("node:fs/promises", () => ({
   mkdir: (path: unknown, opts?: unknown) => mkdirMock(path, opts),
 }));
 vi.mock("node:fs", async (importOriginal) => ({
-  // The real module underneath: the sandbox module's logger reaches for more
-  // of it than the cases below steer.
+  // The real module underneath: the sandbox module's logger reaches for more of it than the cases below steer.
   ...await importOriginal<typeof import("node:fs")>(),
   unlinkSync: (path: unknown) => unlinkSyncMock(path),
   rmdirSync: (path: unknown) => rmdirSyncMock(path),
@@ -75,7 +52,7 @@ vi.mock("../sandbox-process-home.js", () => ({
   }),
 }));
 
-// ─── child_process mock ─────────────────────────────────────
+// child_process mock
 const spawnMock = vi.fn<
   (cmd: string, args?: readonly string[], opts?: unknown) => unknown
 >();
@@ -85,13 +62,13 @@ vi.mock("node:child_process", async (importOriginal) => ({
     spawnMock(cmd, args, opts),
 }));
 
-// ─── managed-child tracker is a no-op stub here ─────────────
+// managed-child tracker is a no-op stub here
 vi.mock("../../main/managed-child-processes.js", () => ({
   assertManagedChildProcessAdmissionOpen: () => {},
   trackManagedChildProcess: () => () => {},
 }));
 
-// ─── ASRT mock — gate + wrap controllable per test ──────────
+// ASRT mock — gate + wrap controllable per test
 let gateActive = false;
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
@@ -126,15 +103,14 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   unregisterWorkerUnixSocketDir: (dir: string) => unregisterUdsMock(dir),
   grantWindowsWorkerFilesystemAccess: (opts: unknown) =>
     grantWindowsWorkerFilesystemAccessMock(opts),
-  // The host-secret read floor restated on the worker wrap (#1365 SOT).
-  // With the sandbox private roots, as the real floor carries them on POSIX.
+  // The host-secret read floor restated on the worker wrap SOT). With the sandbox private roots, as the real floor carries them on POSIX.
   getDefaultSensitiveReadDenyPaths: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/tmp/ave-test-sandbox-tmp",
     "/home/u/.ave/sandbox/home",
   ],
-  // The persistence-vector write floor restated on the worker wrap (#1449 SOT).
+  // The persistence-vector write floor restated on the worker wrap SOT).
   getDefaultSensitiveWriteDenyPaths: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
@@ -158,7 +134,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
 import { resolvePluginChildEntryPath } from "../confined-child.js";
 
-/** A minimal child-process double (NOT a shared helper — local to this file). */
+// A minimal child-process double (NOT a shared helper — local to this file).
 class StubWorkerChild extends EventEmitter {
   stdin = new PassThrough();
   stdout = new PassThrough();
@@ -192,16 +168,7 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 
 const REAL_PLATFORM = process.platform;
 
-/**
- * The control socket lives under the Ave home, and a Unix socket path is
- * limited to 103 bytes on macOS. The per-file test home sits under
- * `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the
- * longest plugin/worker pair here passes the limit and every gate-ON case
- * fails with the length error instead of testing what it names. These cases
- * run in a short Ave home of their own; `/tmp` rather than `os.tmpdir()`,
- * which on macOS is itself about 50 bytes. The guard allows it: it is outside
- * the account's `~/.ave`.
- */
+// The control socket lives under the Ave home, and a Unix socket path is limited to 103 bytes on macOS. The per-file test home sits under `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the longest plugin/worker pair here passes the limit and every gate-ON case fails with the length error instead of testing what it names. These cases run in a short Ave home of their own; `/tmp` rather than `os.tmpdir`, which on macOS is itself about 50 bytes. The guard allows it: it is outside the account's `~/.ave`.
 const REAL_AVE_HOME = process.env.AVE_HOME;
 let shortAveHome: string;
 beforeAll(() => {
@@ -254,7 +221,7 @@ afterEach(() => {
   __resetWrappedPluginWorkersForTest();
 });
 
-// ─── Gate OFF — plain unwrapped spawn ───────────────────────
+// Gate OFF — plain unwrapped spawn
 
 describe("spawnWorker — gate OFF (default)", () => {
   it("waits for relayed stdout after process exit before publishing completion", async () => {
@@ -320,9 +287,7 @@ describe("spawnWorker — gate OFF (default)", () => {
     // No wrap, no UDS dir creation.
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(mkdirMock).not.toHaveBeenCalled();
-    // Plain spawn with the EXACT command + args, shell:false. stdin is piped:
-    // it is the host's liveness pipe, the one EOF a worker of a crashed or
-    // killed host ever gets.
+    // Plain spawn with the EXACT command + args, shell:false. stdin is piped: it is the host's liveness pipe, the one EOF a worker of a crashed or killed host ever gets.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = spawnMock.mock.calls[0] as [string, string[], { shell: boolean; stdio: unknown[] }];
     expect(cmd).toBe("/opt/worker");
@@ -348,14 +313,13 @@ describe("spawnWorker — gate OFF (default)", () => {
       command: "/opt/worker",
     });
 
-    // An 'error' with no listener throws out of the emitter — on a real child
-    // that is the unhandled event a late EPIPE on the liveness pipe would raise.
+    // An 'error' with no listener throws out of the emitter — on a real child that is the unhandled event a late EPIPE on the liveness pipe would raise.
     expect(child.stdin.listenerCount("error")).toBeGreaterThan(0);
     expect(() => child.stdin.emit("error", new Error("EPIPE"))).not.toThrow();
   });
 });
 
-// ─── Gate ON (macOS) — wrapped spawn + UDS + reviewer ───────
+// Gate ON (macOS) — wrapped spawn + UDS + reviewer
 
 describe("spawnWorker — control socket path length", () => {
   it("refuses a socket path past the platform limit before creating, registering or spawning anything", async () => {
@@ -426,20 +390,16 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(mkdirMock).toHaveBeenCalledWith(socketDir, { recursive: true, mode: 0o700 });
     expect(unlinkSyncMock).toHaveBeenCalledWith(socketPath);
 
-    // The UDS allow is registered on the SHARED config (NOT per-command — that
-    // channel is inert in current ASRT).
+    // The UDS allow is registered on the SHARED config (NOT per-command — that channel is inert in current ASRT).
     expect(registerUdsMock).toHaveBeenCalledWith(socketDir);
 
-    // The per-command wrap carries ONLY the FS jail (socketDir first); there is
-    // NO per-command UDS option (allowUnixSocketPath / allowAllUnixSockets).
+    // The per-command wrap carries ONLY the FS jail (socketDir first); there is NO per-command UDS option (allowUnixSocketPath / allowAllUnixSockets).
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     const [cmdline, options] = wrapWorkerCommandMock.mock.calls[0] as [
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead?: string[]; denyWrite?: string[] }; allowUnixSocketPath?: string; allowAllUnixSockets?: boolean },
     ];
-    // The confinement primitive prepends the temp directory of the worker's
-    // PLUGIN — the one its child and hooks get too — so the socket dir is the
-    // first path the CALLER contributed rather than the first in the list.
+    // The confinement primitive prepends the temp directory of the worker's PLUGIN — the one its child and hooks get too — so the socket dir is the first path the CALLER contributed rather than the first in the list.
     const pluginTempDir = `/tmp/ave-test-sandbox-tmp/plugin-${Buffer.from("local-indexer").toString("hex")}`;
     expect(options.filesystem.allowWrite).toContain(socketDir);
     expect(options.filesystem.allowWrite[0]).toBe(pluginTempDir);
@@ -451,34 +411,26 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.allowWrite).toContain("/data/index");
     // A plugin worker is plugin-owned code: its write roots are pinned.
     expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
-    // And it reads no plugin's directory but the grants it was given: the
-    // plugins root is refused, those grants re-allowed inside it.
+    // And it reads no plugin's directory but the grants it was given: the plugins root is refused, those grants re-allowed inside it.
     expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBe(true);
     expect(options.filesystem.allowRead).toContain("/opt/worker");
     expect(options.filesystem.allowRead).toContain("/opt/scripts/embed.py");
     expect(options.allowUnixSocketPath).toBeUndefined();
     expect(options.allowAllUnixSockets).toBeUndefined();
-    // The host-secret read floor MUST be restated on the worker wrap — a
-    // per-command denyRead REPLACES (not unions) the shared boot array in ASRT,
-    // so an absent/empty denyRead re-exposes ~/.ave/secrets, ~/.ssh, … to the
-    // worker. Non-empty array here proves the #1365 floor is carried.
+    // The host-secret read floor MUST be restated on the worker wrap — a per-command denyRead REPLACES (not unions) the shared boot array in ASRT, so an absent/empty denyRead re-exposes ~/.ave/secrets, ~/.ssh, … to the worker. Non-empty array here proves the floor is carried.
     expect(Array.isArray(options.filesystem.denyRead)).toBe(true);
     expect(options.filesystem.denyRead?.length ?? 0).toBeGreaterThan(0);
-    // The sensitive write floor is also restated — a per-command denyWrite
-    // REPLACES the shared boot array, so worker/MCP wraps must carry it just as
-    // the terminal does (#1449).
+    // The sensitive write floor is also restated — a per-command denyWrite REPLACES the shared boot array, so worker/MCP wraps must carry it just as the terminal does.
     expect(options.filesystem.denyWrite).toContain("/home/u/.zshrc");
     expect(options.filesystem.denyWrite).toContain("/home/u/.ssh");
     expect(options.filesystem.denyWrite).toContain("/home/u/.config");
     expect(options.filesystem.denyWrite).toContain("/home/u/Library/LaunchAgents");
-    // The udsArgName was injected EXACTLY once (a duplicated injection would feed
-    // the worker `--uds <path> --uds <path>` and break its arg contract).
+    // The udsArgName was injected EXACTLY once (a duplicated injection would feed the worker `--uds <path> --uds <path>` and break its arg contract).
     expect(cmdline).toContain("--uds");
     expect(cmdline).toContain(socketPath);
     expect((cmdline.match(/--uds/g) ?? []).length).toBe(1);
 
-    // Spawn ran the WRAPPED argv, shell:false, stdin piped (the liveness pipe
-    // reaches the worker through the wrapper on this path too).
+    // Spawn ran the WRAPPED argv, shell:false, stdin piped (the liveness pipe reaches the worker through the wrapper on this path too).
     const [scmd, sargs, sopts] = spawnMock.mock.calls[0] as [string, string[], { shell: boolean; stdio: unknown[] }];
     expect(scmd).toBe("/bin/bash");
     expect(sargs[0]).toBe("-c");
@@ -523,11 +475,10 @@ describe("spawnWorker — gate ON (macOS)", () => {
   });
 });
 
-// ─── Gate ON (linux) — registers the socketDir; FS-jail-only wrap ───
+// Gate ON (linux) — registers the socketDir; FS-jail-only wrap
 
 describe("spawnWorker — a symlinked control dir", () => {
-  // `chmod` follows a link, so the refusal must come before the mode is forced:
-  // the other order would change the mode of whatever the link points at.
+  // `chmod` follows a link, so the refusal must come before the mode is forced: the other order would change the mode of whatever the link points at.
   it("refuses it before forcing any mode, so the host never chmods a link target", async () => {
     setProcessPlatform("darwin");
     gateActive = true;
@@ -574,9 +525,7 @@ describe("spawnWorker — gate ON (linux)", () => {
     });
 
     const socketDir = join(aveHome(), "plugins", "local-indexer", "run", "embed");
-    // Platform-uniform: the socketDir is registered on the shared config (the
-    // linux allowAllUnixSockets weakening is applied inside asrt-sandbox's
-    // withWorkerUnixSockets, asserted in the asrt-sandbox unit tests).
+    // Platform-uniform: the socketDir is registered on the shared config (the linux allowAllUnixSockets weakening is applied inside asrt-sandbox's withWorkerUnixSockets, asserted in the asrt-sandbox unit tests).
     expect(registerUdsMock).toHaveBeenCalledWith(socketDir);
     const [, options] = wrapWorkerCommandMock.mock.calls[0] as [
       string,
@@ -587,7 +536,7 @@ describe("spawnWorker — gate ON (linux)", () => {
   });
 });
 
-// ─── Idempotent any-exit cleanup ────────────────────────────
+// Idempotent any-exit cleanup
 
 describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("unmarks the worker + cleans up ONCE on child exit, then reviewer is none", async () => {
@@ -625,7 +574,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     // Reviewer falls back to none (no stale asrt) after the worker is gone.
     expect(resolveReviewerSandboxCapability("plugin", "index_search", undefined, "embed", "local-indexer").kind).toBe("none");
 
-    // stop() after exit must NOT double-run cleanup.
+    // stop after exit must NOT double-run cleanup.
     worker.stop();
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(unregisterUdsMock).toHaveBeenCalledTimes(1);
@@ -681,8 +630,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
       command: "/opt/worker",
     });
 
-    // The consumer owns lifecycle via the handle — onExit is how it learns the
-    // worker died (a crash with no onExit would leave the consumer's state stuck).
+    // The consumer owns lifecycle via the handle — onExit is how it learns the worker died (a crash with no onExit would leave the consumer's state stuck).
     const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
     worker.onExit((info) => exits.push(info));
     child.emit("exit", 3, null);
@@ -879,7 +827,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   });
 });
 
-// ─── Windows + gate ON → holder ACL grant + srt-win wrapped TCP ─
+// Windows + gate ON → holder ACL grant + srt-win wrapped TCP ─
 
 describe("spawnWorker — Windows with gate ON", () => {
   it("wraps the worker with a dedicated holder PID ACL grant and keeps TCP control", async () => {
@@ -945,8 +893,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       string,
       { filesystem: { allowRead?: string[]; allowWrite?: string[]; denyRead?: string[]; denyWrite?: string[] }; binShell?: string },
     ];
-    // The worker runs through the stdio relay: the line srt-win runs is the
-    // host's own runtime in relay mode, and nothing of the worker's is on it.
+    // The worker runs through the stdio relay: the line srt-win runs is the host's own runtime in relay mode, and nothing of the worker's is on it.
     expect(cmdline).toBe(
       `set "ELECTRON_RUN_AS_NODE=1"&& "${process.execPath}" "--preserve-symlinks" "--preserve-symlinks-main" `
         + `"${resolvePluginChildEntryPath()}" "--ave-child-transport=relay"`,
@@ -955,8 +902,7 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
     expect(options.filesystem.allowRead).toBeUndefined();
     expect(options.filesystem.allowWrite).toBeUndefined();
-    // No plugins-root deny on Windows: there it would be an ACE for the one
-    // account every confined process runs as.
+    // No plugins-root deny on Windows: there it would be an ACE for the one account every confined process runs as.
     expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBeUndefined();
     expect(options.filesystem.denyRead).toContain("/home/u/.ave/secrets");
     expect(options.filesystem.denyWrite).toContain("/home/u/.zshrc");
@@ -995,9 +941,7 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(workerOpts.shell).toBe(false);
     expect(workerOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);
 
-    // The worker's program, arguments and environment travel in the relay
-    // request; its stdout comes back through the relay; its stdin — the
-    // liveness pipe — is held open and never ended by the host.
+    // The worker's program, arguments and environment travel in the relay request; its stdout comes back through the relay; its stdin — the liveness pipe — is held open and never ended by the host.
     const peer = await startFakeRelayPeer(child.stdout);
     const request = await peer.request;
     expect(request.command).toBe(pythonExecutable);

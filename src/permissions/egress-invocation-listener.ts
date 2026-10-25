@@ -1,70 +1,37 @@
-/**
- * Per-invocation proxy listener: the port a confined process may reach IS
- * the identity of the invocation it belongs to.
- *
- * The ASRT proxy names an invocation by the proxy username (`srt.<id>`), which
- * the confined client presents. That is attribution, not a boundary: a
- * process that learns another live id can present it
- * (`egress-invocations.ts`). Where the OS can pin a confined process to one
- * loopback port — Windows MXC's per-container WFP filter permits exactly the
- * configured `runtimeConfig.networkProxy` endpoint — each invocation gets its
- * own listener here, and the host, not the client, says who is asking:
- *
- * - every request the listener accepts is forwarded to the ASRT proxy with
- *   THIS invocation's `Proxy-Authorization`; whatever the client sent in that
- *   header is dropped, so a stolen id buys nothing;
- * - Node's HTTP parser frames every request, pipelined ones included, so each
- *   one is re-stamped; CONNECT gets one stamp for its tunnel;
- * - a destination on the loopback interface (or the unspecified address) is
- *   refused here, before ASRT sees it: from inside the container, asking the
- *   proxy to dial `127.0.0.1:<another listener>` would otherwise reach another
- *   invocation's port from the host side and wear that invocation's identity.
- *   ASRT already refuses NAMES that resolve to loopback (its resolved-address
- *   guard); this covers the literals and the reserved loopback names an
- *   allow-list entry or an approved prompt could otherwise open.
- *
- * SOCKS is not served: MXC only sets `HTTP_PROXY`/`HTTPS_PROXY`, and a client
- * that speaks SOCKS to this port fails the HTTP parse and is disconnected.
- *
- * This module holds no policy of its own beyond that refusal. Which hosts are
- * allowed is still ASRT's decision, under the identity stamped here. It
- * excludes the shared extension proxy's reachable ports from its bind choices.
- */
+// The kernel-bound listener supplies invocation identity; drop client authorization and re-stamp every parsed HTTP request, including pipelined requests and CONNECT. Refuse loopback/unspecified destinations before forwarding so one listener cannot impersonate another through proxy chaining.
+// SOCKS fails HTTP parsing; exclude shared extension proxy ports from binds. Destination policy remains the runtime's decision under the host-stamped identity.
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { getWindowsProxyPortRange } from "./asrt-sandbox.js";
 
-/** Where the listener forwards, and as whom. Read once per forwarded request. */
+// Where the listener forwards, and as whom. Read once per forwarded request.
 interface InvocationProxyUpstream {
   readonly host: string;
   readonly port: number;
-  /** The complete `Proxy-Authorization` header value naming this invocation. */
+  // The complete `Proxy-Authorization` header value naming this invocation.
   readonly proxyAuthorization: string;
 }
 
 export interface InvocationProxyListener {
-  /** The loopback port the confined process is pinned to. */
+  // The loopback port the confined process is pinned to.
   readonly port: number;
-  /** The proxy URL to hand to the confinement layer (no userinfo). */
+  // The proxy URL to hand to the confinement layer (no userinfo).
   readonly url: string;
-  /** Stop accepting and drop every open connection. Idempotent. */
+  // Stop accepting and drop every open connection. Idempotent.
   close(): Promise<void>;
 }
 
 export interface OpenInvocationProxyListenerOptions {
-  /**
-   * The upstream for the next request, or undefined when the proxy is gone
-   * (the request is then refused with 502 rather than sent anywhere else).
-   */
+  // The upstream for the next request, or undefined when the proxy is gone (the request is then refused with 502 rather than sent anywhere else).
   readonly upstream: () => InvocationProxyUpstream | undefined;
-  /** Called for each destination refused here, with the reason. Never throws into the listener. */
+  // Called for each destination refused here, with the reason. Never throws into the listener.
   readonly onRefused?: (destination: string, reason: string) => void;
-  /** Upper bound on the CONNECT response head read back from the upstream. */
+  // Upper bound on the CONNECT response head read back from the upstream.
   readonly maxUpstreamHeadBytes?: number;
 }
 
-/** Why a destination is refused at the listener, or undefined to forward it. */
+// Why a destination is refused at the listener, or undefined to forward it.
 export function refusedInvocationProxyDestination(hostname: string): string | undefined {
   let host = hostname.trim().toLowerCase();
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
@@ -89,12 +56,10 @@ function refusedIPv6(address: string): string | undefined {
   blocked.addAddress("::1", "ipv6");
   blocked.addAddress("::", "ipv6");
   if (blocked.check(address, "ipv6")) return address === "::" ? "unspecified destination" : "loopback destination";
-  // An IPv4-mapped or IPv4-compatible spelling reaches the IPv4 address it
-  // carries; judge that address too.
+  // An IPv4-mapped or IPv4-compatible spelling reaches the IPv4 address it carries; judge that address too.
   const embedded = /^(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/.exec(address);
   if (embedded !== null) return refusedIPv4(embedded[1]!);
-  // The same in hex (`::ffff:7f00:1`, `::7f00:1`), as WHATWG URL parsing
-  // serializes `[::127.0.0.1]` and `[::ffff:127.0.0.1]`.
+  // The same in hex (`::ffff:7f00:1`, `::7f00:1`), as WHATWG URL parsing serializes `[::127.0.0.1]` and `[::ffff:127.0.0.1]`.
   const embeddedHex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(address);
   if (embeddedHex !== null) {
     const high = parseInt(embeddedHex[1]!, 16);
@@ -104,11 +69,7 @@ function refusedIPv6(address: string): string | undefined {
   return undefined;
 }
 
-/**
- * The hostname a client asked for, in the WHATWG spelling a resolver would
- * act on (`2130706433` and `0x7f.1` become `127.0.0.1`), or undefined when the
- * authority does not parse.
- */
+// The hostname a client asked for, in the WHATWG spelling a resolver would act on (`2130706433` and `0x7f.1` become `127.0.0.1`), or undefined when the authority does not parse.
 export function canonicalDestinationHost(authorityOrUrl: string): string | undefined {
   try {
     const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(authorityOrUrl)
@@ -120,7 +81,7 @@ export function canonicalDestinationHost(authorityOrUrl: string): string | undef
   }
 }
 
-/** Hop-by-hop and identity headers never forwarded from the client. */
+// Hop-by-hop and identity headers never forwarded from the client.
 const STRIPPED_REQUEST_HEADERS = new Set(["proxy-authorization", "proxy-connection", "proxy-authenticate"]);
 
 function forwardedHeaders(raw: readonly string[]): string[] {

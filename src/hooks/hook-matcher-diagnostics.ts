@@ -4,7 +4,7 @@ import { discoverHookTrustFiles } from "./hook-config-trust.js";
 import { buildHookRegistry, type HookRegistryEntry } from "./hook-registry.js";
 import { LEGACY_HOOK_DISABLE_NOTICE, readHookDisableCause } from "./hook-disable-state.js";
 
-/** Quarantine must not erase a broken guard. Repair or remove its file to clear it. */
+// Quarantine must not erase a broken guard. Repair or remove its file to clear it.
 export function collectHookMatcherDiagnostics(
   hooksDir = defaultHooksDir(),
   disabledDir = join(hooksDir, ".disabled"),

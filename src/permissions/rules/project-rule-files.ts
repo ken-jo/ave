@@ -1,11 +1,4 @@
-/**
- * Per-project permission rule files (issue #28, P1a):
- * `<ave home>/permissions/project-rules/<identity>.json`, where identity is the
- * Store B working-directory identity of the eligible repository root of
- * the session cwd, or the cwd itself (sha256 of the case-folded
- * canonical realpath). Rules are never written into the user's
- * repository. Project files hold rules-language specifiers only.
- */
+// Store project rules under app home, never in the repository; identity uses the eligible repository root or cwd canonical realpath and only rules-language specifiers are persisted.
 import { readFile, mkdir, readdir } from "node:fs/promises";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -19,10 +12,9 @@ import type { PermissionRule } from "../permission-manager.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rule-files.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
-
 export interface ProjectRulesFile {
   version: 1;
-  /** Canonical project root; must agree with the file name's identity. */
+  // Canonical project root; must agree with the file name's identity.
   projectRoot: string;
   rules: PermissionRule[];
   updatedAt: string;
@@ -36,7 +28,7 @@ export interface ProjectRulesLocation {
 
 const MAX_REPOSITORY_METADATA_BYTES = 65_536;
 
-/** Bound reads on the opened regular file, including concurrent growth. */
+// Bound reads on the opened regular file, including concurrent growth.
 function readRepositoryMetadata(path: string): string {
   const entry = lstatSync(path);
   if (!entry.isFile()) throw new Error("Invalid repository metadata");
@@ -83,7 +75,7 @@ function isRepositoryMarker(marker: string): boolean {
   return statSync(join(commonDir, "objects")).isDirectory() && statSync(join(commonDir, "refs")).isDirectory();
 }
 
-/** Nearest verified marker below home; uncertain discovery stays at cwd. */
+// Nearest verified marker below home; uncertain discovery stays at cwd.
 export function projectRootFor(projectCwd: string): string {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
   let home: string;
@@ -122,12 +114,12 @@ export function projectRootFor(projectCwd: string): string {
   return start;
 }
 
-/** The directory a project rule saved from `projectCwd` applies to; shown in the dock before saving. */
+// The directory a project rule saved from `projectCwd` applies to; shown in the dock before saving.
 export function projectRuleRoot(projectCwd: string): string {
   return captureApprovalWorkingDirectory(projectRootFor(projectCwd)).path;
 }
 
-/** Canonical directory shared by rule persistence and sandbox write protection. */
+// Canonical directory shared by rule persistence and sandbox write protection.
 export function projectRulesDirectory(baseDir: string): string {
   return resolve(baseDir, "permissions", "project-rules");
 }
@@ -198,7 +190,7 @@ export async function updateProjectRulesFile(
   });
 }
 
-/** Exact stored identity; listing and revoke must not repeat repository discovery. */
+// Exact stored identity; listing and revoke must not repeat repository discovery.
 function storedProjectRulesLocation(baseDir: string, projectRoot: string): ProjectRulesLocation {
   const captured = captureApprovalWorkingDirectory(projectRoot);
   return {
@@ -208,24 +200,16 @@ function storedProjectRulesLocation(baseDir: string, projectRoot: string): Proje
   };
 }
 
-/**
- * The rules file named by a stored identity, for revoking from a row the
- * listing produced. It never re-runs discovery, so a file whose project root no
- * longer resolves to its name can still be edited in place.
- */
+// The rules file named by a stored identity, for revoking from a row the listing produced. It never re-runs discovery, so a file whose project root no longer resolves to its name can still be edited in place.
 export function storedFileRulesLocation(baseDir: string, identity: string, projectRoot: string): ProjectRulesLocation {
   if (!/^[a-f0-9]{64}$/.test(identity)) throw new Error("Invalid project rules file identity");
   return { filePath: resolve(baseDir, "permissions", "project-rules", `${identity}.json`), projectRoot, identity };
 }
 
-/** A listed project rules file with the identity its name stores. */
+// A listed project rules file with the identity its name stores.
 export type StoredProjectRulesFile = ProjectRulesFile & { identity: string };
 
-/**
- * Enumerate stored projects, retaining independent corruption errors. A file
- * whose root no longer derives its own name is reported as an error and its
- * rules are still listed, so they stay revocable by that stored identity.
- */
+// Enumerate stored projects, retaining independent corruption errors. A file whose root no longer derives its own name is reported as an error and its rules are still listed, so they stay revocable by that stored identity.
 export async function listStoredProjectRules(baseDir: string): Promise<{
   files: StoredProjectRulesFile[];
   errors: ScopedPermissionRuleError[];

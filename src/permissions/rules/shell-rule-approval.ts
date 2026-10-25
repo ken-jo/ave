@@ -9,7 +9,7 @@ import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
 
-/** Derive display suggestions only from the host's original shell input. */
+// Derive display suggestions only from the host's original shell input.
 export function buildShellRuleApproval(command: string, projectCwd: string, rememberAllowed: boolean, sessionId?: string, runsSandboxed = false): ShellRuleApproval {
   const parsed = parseShellCommand(command);
   const shape = analyzeShellForRules(parsed, projectCwd);
@@ -49,7 +49,7 @@ function suggestionCovers(pattern: string, command: string, cwd: string): boolea
   }
 }
 
-/** Reuse the strict store validator and matcher for edited dock values. */
+// Reuse the strict store validator and matcher for edited dock values.
 export function shellRuleCoversCommand(pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
   if (maskSensitiveData(pattern).masked !== pattern) return false;
   validatePermissionRule({ pattern, action });

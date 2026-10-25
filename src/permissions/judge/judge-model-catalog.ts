@@ -1,12 +1,4 @@
-/**
- * The models a permission judge may run on, derived from the live `llm`
- * settings the chat model picker reads.
- *
- * Kept apart from `judge-settings.ts` on purpose: the settings schema is read
- * by the permission settings store, which most of the app imports, while this
- * catalog needs the model-list endpoint resolver from the LLM engine. Folding
- * the two together pulled the provider stack into every importer of the store.
- */
+// Keep model endpoint resolution separate from the settings schema so importing the permissions store does not pull in the provider stack.
 import { llmRouteModel, LLM_VENDOR_DEFAULTS, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { chatRouteModelOptions, type LlmModelListCache } from "../../shared/llm-model-list.js";
 import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
@@ -14,11 +6,11 @@ import { resolveModelRetirement } from "../../shared/context-budget.js";
 import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
 import type { JudgeModelCatalog } from "./judge-settings.js";
 
-/** The subset of `llm` settings the picker's option list is derived from. */
+// The subset of `llm` settings the picker's option list is derived from.
 export interface JudgeModelCatalogSource {
-  /** Saved per-vendor blocks: the user's selected model and configured endpoint. */
+  // Saved per-vendor blocks: the user's selected model and configured endpoint.
   vendors?: Partial<Record<LLMVendor, { model?: string; baseUrl?: string; presetModels?: Record<string, string> }>>;
-  /** `/models` handshake results, as the picker reads them. */
+  // `/models` handshake results, as the picker reads them.
   modelListCache?: LlmModelListCache;
   provider?: string;
   marketplaceProviderPresetId?: string;
@@ -26,12 +18,7 @@ export interface JudgeModelCatalogSource {
     "providerId" | "baseUrl" | "defaultModel" | "modelOptions" | "modelDiscoveryPolicy" | "requiresApiKey">[];
 }
 
-/**
- * The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`):
- * the current route's listing or seeded policy, its saved selection, and the
- * same retirement filter. A model identity selects each vendor's current route;
- * inactive presets do not add alternative credential routes to this catalog.
- */
+// The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`): the current route's listing or seeded policy, its saved selection, and the same retirement filter. A model identity selects each vendor's current route; inactive presets do not add alternative credential routes to this catalog.
 export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
   return {
     optionsFor(vendor) {

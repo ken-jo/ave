@@ -172,8 +172,7 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules,
-  // reviewer included.
+  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules, reviewer included.
   it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s while the sandbox is unavailable (%s prompts)", async (level, prompts) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();
@@ -187,8 +186,7 @@ describe("plain-shell invocation authorization", () => {
     } finally { await cache.flush(); }
   });
 
-  // I3: an explicit host request runs on a matching allow rule, otherwise it
-  // asks with the host-execution warning. A low reviewer verdict is no rule.
+  // I3: an explicit host request runs on a matching allow rule, otherwise it asks with the host-execution warning. A low reviewer verdict is no rule.
   it("does not let a low reviewer verdict stand in for the card on an explicit host request", async () => {
     const { classifier, cache } = lowReviewer();
     try {
@@ -200,8 +198,7 @@ describe("plain-shell invocation authorization", () => {
     } finally { await cache.flush(); }
   });
 
-  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is
-  // denied, with or without a matching rule, and no card is raised.
+  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is denied, with or without a matching rule, and no card is raised.
   it.each([false, true])("denies a headless explicit host request without asking (matching rule %s)", async (withRule) => {
     if (withRule) manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
     const { classifier, cache } = lowReviewer();

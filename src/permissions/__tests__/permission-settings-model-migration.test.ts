@@ -13,9 +13,7 @@ function writeProfile(reviewer: Record<string, unknown>): string {
   return path;
 }
 
-// The reviewer's model is `permissions.judge.model`. Older builds stored a
-// `reviewer.provider`/`reviewer.model` pair, including the removed built-in
-// default; none of it may come back as a reviewer model.
+// Only permissions.judge.model selects the reviewer; legacy reviewer model fields must not reappear.
 describe("retired reviewer model keys", () => {
   it.each([
     ["the removed built-in default", { provider: "openai", model: "gpt-4o-mini" }],

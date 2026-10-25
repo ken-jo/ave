@@ -14,20 +14,14 @@ import { detectSandboxCapability } from "../sandbox-capability.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../sensitive-paths.js";
 import { inspectHostRisk } from "../reviewer/host-risk-inspector.js";
 
-/** The comparison key the path-scope checks use: canonical form, then case-folded. */
+// The comparison key the path-scope checks use: canonical form, then case-folded.
 export function foldPathForMatch(raw: string): string {
   return caseFoldForMatch(canonicalizePathForMatch(raw));
 }
 
 const DEFAULT_ALLOWED_DIRECTORIES = ["/Users/example/work", "/Users/example/.ave"].map(foldPathForMatch);
 
-/**
- * The audit rows a gate wrote, in order, whichever field carried them.
- *
- * `AuditLogger.log` takes the row on `input` for a phase that is starting and
- * on `output` for one that ended, and a test reading the trail wants both in
- * the order they were written.
- */
+// The audit rows a gate wrote, in order, whichever field carried them. `AuditLogger.log` takes the row on `input` for a phase that is starting and on `output` for one that ended, and a test reading the trail wants both in the order they were written.
 export function auditRowTexts(auditLogger: {
   log: { mock: { calls: unknown[][] } };
 }): string[] {
@@ -47,41 +41,27 @@ export function makeTestPolicy(overrides: Partial<PolicyFile> = {}): PolicyFile 
   };
 }
 
-/**
- * Windows: `checkAsrtDependencies` only proves the srt-win binary + a provisioned
- * `srt-sandbox` user exist — it does NOT prove the box can actually SPAWN a
- * process as that user. `CreateProcessWithLogonW` is denied on managed Windows
- * where a GPO or EDR blocks secondary-logon-as-another-user, so the account + WFP
- * can be fully provisioned yet every wrapped spawn fails access-denied. Probe the
- * real egress fence once (the same call `SandboxManager.initialize` makes); a
- * throw means the sandbox cannot initialize on THIS machine. Memoized — the
- * capability is machine-level and never changes within a run.
- */
+// Windows: `checkAsrtDependencies` only proves the srt-win binary + a provisioned `srt-sandbox` user exist — it does NOT prove the box can actually SPAWN a process as that user. `CreateProcessWithLogonW` is denied on managed Windows where a GPO or EDR blocks secondary-logon-as-another-user, so the account + WFP can be fully provisioned yet every wrapped spawn fails access-denied. Probe the real egress fence once (the same call `SandboxManager.initialize` makes); a throw means the sandbox cannot initialize on THIS machine. Memoized — the capability is machine-level and never changes within a run.
 let _winSpawnProbe: Promise<boolean> | undefined;
 async function windowsSandboxCanSpawn(): Promise<boolean> {
   if (_winSpawnProbe === undefined) {
     _winSpawnProbe = (async () => {
       const previousCwd = process.cwd();
       try {
-        // The srt-sandbox probe inherits cwd. Test worktrees can be user-only,
-        // while the provisioned runtime directory is explicitly group-readable.
+        // The srt-sandbox probe inherits cwd. Test worktrees can be user-only, while the provisioned runtime directory is explicitly group-readable.
         const runtimeEntry = createRequire(import.meta.url).resolve(
           "@anthropic-ai/sandbox-runtime",
         );
         process.chdir(dirname(runtimeEntry));
         const mod = await import("@anthropic-ai/sandbox-runtime");
-        // ASRT 0.0.67: verifyWindowsWfpEgress needs an EXPLICIT srt-win spawn
-        // descriptor — the argless resolve throws (no implicit vendored fallback).
+        // ASRT 0.0.67: verifyWindowsWfpEgress needs an EXPLICIT srt-win spawn descriptor — the argless resolve throws (no implicit vendored fallback).
         await mod.verifyWindowsWfpEgress({
           proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE,
           srtWin: mod.resolveSrtWin({ path: getVendoredSrtWinExePath() }),
         });
         return true;
       } catch {
-        // Loud, not silent: the sandbox provisioned but cannot actually spawn
-        // (CreateProcessWithLogonW access-denied) — the live-init tests are
-        // SKIPPED (not hard-failed, so the push is not blocked), but the box is
-        // NOT getting OS isolation. Anyone who wants the sandbox on can recover.
+        // Loud, not silent: the sandbox provisioned but cannot actually spawn (CreateProcessWithLogonW access-denied) — the live-init tests are SKIPPED (not hard-failed, so the push is not blocked), but the box is NOT getting OS isolation. Anyone who wants the sandbox on can recover.
         console.warn(
           "[asrt-sandbox] Windows OS sandbox cannot spawn as `srt-sandbox` " +
             "(CreateProcessWithLogonW access-denied, 0x80070005): NOT providing " +
@@ -100,15 +80,7 @@ async function windowsSandboxCanSpawn(): Promise<boolean> {
   return _winSpawnProbe;
 }
 
-/**
- * Whether the real ASRT sandbox can actually initialize on this host —
- * supported platform AND no dependency errors (Linux: bwrap + socat + ripgrep),
- * AND (Windows only) the srt-sandbox spawn actually works. Shared by the
- * asrt-sandbox + worker-spawn UDS live tests so each can early-return as a skip
- * on a host that lacks the binaries or is policy-blocked from the sandbox logon.
- * The real boot degrades gracefully to unsandboxed on such a box, and CI covers
- * these live-init paths on Linux/mac + the Windows-logic suite covers win32 logic.
- */
+// Whether the real ASRT sandbox can actually initialize on this host — supported platform AND no dependency errors (Linux: bwrap + socat + ripgrep), AND (Windows only) the srt-sandbox spawn actually works. Shared by the asrt-sandbox + worker-spawn UDS live tests so each can early-return as a skip on a host that lacks the binaries or is policy-blocked from the sandbox logon. The real boot degrades gracefully to unsandboxed on such a box, and CI covers these live-init paths on Linux/mac + the Windows-logic suite covers win32 logic.
 export async function asrtCanInitialize(): Promise<boolean> {
   if (!(await isAsrtSandboxSupported())) return false;
   const deps = await checkAsrtDependencies();
@@ -117,16 +89,7 @@ export async function asrtCanInitialize(): Promise<boolean> {
   return true;
 }
 
-/**
- * A paired-platform controller authority whose revocation guard answers
- * `current`. Shared because two suites need the same fixture for opposite
- * reasons — one drives the away answerer directly, the other drives it through
- * `ApprovalGate` — and a second copy would let the two drift into testing
- * different objects.
- *
- * The guard is the only thing that can retire an already-admitted turn, so
- * tests control it here rather than standing up a whole platform runtime.
- */
+// A paired-platform controller authority whose revocation guard answers `current`. Shared because two suites need the same fixture for opposite reasons — one drives the away answerer directly, the other drives it through `ApprovalGate` — and a second copy would let the two drift into testing different objects. The guard is the only thing that can retire an already-admitted turn, so tests control it here rather than standing up a whole platform runtime.
 export function makePlatformBridgeAuthority(
   current = true,
 ): PlatformBridgeAuthority {
@@ -162,7 +125,7 @@ export function makeRiskClassifierContext(
   };
 }
 
-/** The first audit row whose text starts with `marker`, or undefined. */
+// The first audit row whose text starts with `marker`, or undefined.
 export function auditRowStartingWith(
   auditLogger: { log: { mock: { calls: unknown[][] } } },
   marker: string,
@@ -170,7 +133,7 @@ export function auditRowStartingWith(
   return auditRowTexts(auditLogger).find((row) => row.startsWith(marker));
 }
 
-/** Classify a builtin shell command the way the host does before review. */
+// Classify a builtin shell command the way the host does before review.
 export function inspectBuiltinCommandRisk(command: string) {
   return inspectHostRisk({ source: "builtin", finalInput: { command } });
 }

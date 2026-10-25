@@ -95,7 +95,7 @@ function latch<T>() {
   return { promise, release };
 }
 
-/** The recording server observes writes independently of the approval callback. */
+// The recording server observes writes independently of the approval callback.
 async function recordingUpstream() {
   const requests: string[] = [];
   let bytesReceived = 0;
@@ -185,8 +185,7 @@ function proxyOnlyConfig() {
   };
 }
 
-// The listener rejects Windows before sandbox initialization, so this contract
-// does not require a live sandbox backend.
+// The listener rejects Windows before sandbox initialization, so this contract does not require a live sandbox backend.
 describe.runIf(process.platform === "win32")("egress grant class on Windows without a listener lane", () => {
   async function expectListenerRefusalWithoutNetworkActivity() {
     const listenSpy = vi.spyOn(Server.prototype, "listen");

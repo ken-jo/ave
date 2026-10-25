@@ -10,7 +10,7 @@ import {
   type InvocationProxyListener,
 } from "../egress-invocation-listener.js";
 
-/** A fake upstream proxy that records the Proxy-Authorization of every request. */
+// A fake upstream proxy that records the Proxy-Authorization of every request.
 async function startRecordingUpstream(): Promise<{
   port: number;
   seen: Array<{ kind: string; target: string; auth: string | undefined }>;

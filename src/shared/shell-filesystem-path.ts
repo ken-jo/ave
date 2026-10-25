@@ -1,18 +1,12 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
-/** Preserve operand components until the filesystem has followed existing links.
- * path.resolve before realpath changes `link/..` into a different target.
- * On Windows, refuse ambiguous link-parent readings where child path semantics vary.
- * A new suffix inherits the last observed existing parent's identity, matching
- * the existing file guards' admission-time filesystem snapshot contract.
- */
+// Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
 export function resolveShellFilesystemPath(path: string, cwd: string): string {
   if (process.platform === "win32") {
     const absolute = isAbsolute(path) ? path : `${cwd}${sep}${path}`;
     const lexical = resolveExistingShellPath(resolve(cwd, path));
-    // Children can collapse parents before following links or follow each
-    // prefix first. Neither reading alone establishes the operand's identity.
+    // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
     const { root } = parse(absolute);
     let cursor = root;
     for (const component of absolute.slice(root.length).split(/[\\/]+/)) {
@@ -32,7 +26,7 @@ function resolveExistingShellPath(path: string, cwd = ""): string {
   return resolveFilesystemPath(path, cwd, Number.POSITIVE_INFINITY).path;
 }
 
-/** Resolve through the nearest existing ancestor without rewriting path bytes. */
+// Resolve through the nearest existing ancestor without rewriting path bytes.
 export function resolvePhysicalFilesystemPath(
   path: string,
   cwd: string,

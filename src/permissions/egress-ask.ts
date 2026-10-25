@@ -1,50 +1,5 @@
-/**
- * The egress ask callback: the one gate between a sandboxed process and a
- * host that no configured rule allows (design B, PR 4).
- *
- * ASRT runs with `strictAllowlist: false` and an empty `allowedDomains`, so
- * every connection a sandboxed process opens through the proxy reaches this
- * callback. It decides by who opened the connection:
- *
- *   | Who (by the invocation's identity)       | Decision                                               |
- *   |------------------------------------------|--------------------------------------------------------|
- *   | no identity, an unknown token, or (macOS/Linux) an identity the listener does not vouch for | deny, "unattributed connection" |
- *   | plugin worker, host its extension declares (or the model endpoint) | allow                          |
- *   | plugin worker, any other host            | deny, never asks, never sees a shell grant (I4)        |
- *   | shell or terminal, host a grant covers   | allow                                                  |
- *   | shell, asks turned off                   | deny                                                   |
- *   | shell, nobody can answer (background)    | deny (I5)                                              |
- *   | shell, otherwise                         | ask; allow only on an explicit allow                   |
- *   | terminal, asks turned off                | deny                                                   |
- *   | terminal, otherwise                      | ask in the tab's banner; deny after 120 s unanswered   |
- *
- * A terminal is always in the foreground (design F): the person who typed the
- * command is at the tab. Its second scope is "This tab" where a shell call's
- * is "This conversation" (`EGRESS_GRANT_SCOPE_LADDERS`); the destination
- * classes cap both the same way (`egressScopesForNetwork`).
- *
- * It is asked twice per connection (ASRT patch, name-first decisions). The
- * name phase sees the destination as named, before anything is resolved or
- * routed: every refusal the table above can reach without an address ends
- * there, so a destination that will be refused costs no DNS query and no
- * proxy lookup, and an interactive ask (card or banner) happens by name.
- * Only a name-phase allow leads to the resolved phase, which sees the
- * addresses (or that the upstream proxy resolves the name) and re-checks the
- * destination's class: a person's answer given for one class (say, public)
- * becomes a grant only if the destination turned out to be that class;
- * otherwise they are asked again with what it really is (this machine or a
- * private network, or unverified). Grants are matched by origin in both
- * phases (a shell grant never covers a terminal, nor the reverse). Only final
- * decisions are audited.
- *
- * It fails closed: anything that throws is a deny, and only the literal
- * `true` allows (ASRT 0.0.80 reads every other value as a deny, and
- * `{ allow: false, reason }` as a deny with that reason, which ASRT records in
- * its violation store and the deny monitor writes to the audit log).
- *
- * Every decision also writes an `egress-decision` audit row saying how it was
- * reached.
- */
+// Unknown/unvouched identities deny; workers reach only declared/model endpoints, never prompt or inherit shell grants. Shells require a matching grant or explicit foreground approval; disabled asks and unattended calls deny. Terminal asks use their tab and deny when unanswered.
+// Decide by name before DNS/routing, then recheck the resolved destination class; changed classes require fresh consent. Match origin in both phases so shell/tab grants cannot cross. Exceptions and every value except literal true deny; audit each final decision with its reason.
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
@@ -67,10 +22,10 @@ import {
 import type { EgressAskOrigin, EgressGrantNetwork, EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
 
-/** What the person is asked about: for a shell tool call on its card, for a terminal in its tab. */
+// What the person is asked about: for a shell tool call on its card, for a terminal in its tab.
 export type EgressApprovalRequest = EgressShellApprovalRequest | EgressTerminalApprovalRequest;
 
-/** A Bash or PowerShell tool call's ask, on the approval dock. */
+// A Bash or PowerShell tool call's ask, on the approval dock.
 export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon {
   readonly origin: "shell";
   readonly sessionId: string | undefined;
@@ -79,7 +34,7 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
   readonly workspaceRoot?: string;
 }
 
-/** A workspace terminal tab's ask, in the banner of that tab. */
+// A workspace terminal tab's ask, in the banner of that tab.
 export interface EgressTerminalApprovalRequest extends EgressApprovalRequestCommon {
   readonly origin: "terminal";
   readonly tabId: string;
@@ -88,18 +43,18 @@ export interface EgressTerminalApprovalRequest extends EgressApprovalRequestComm
 interface EgressApprovalRequestCommon {
   readonly origin: EgressAskOrigin;
   readonly destination: EgressDestination;
-  /** The scopes the card offers, narrowest first; never empty. */
+  // The scopes the card offers, narrowest first; never empty.
   readonly scopes: readonly EgressGrantScope[];
-  /** `local`: this machine or a private network; `unverified`: the upstream proxy resolves the name. The card says so for both, and offers no persistent scope. */
+  // `local`: this machine or a private network; `unverified`: the upstream proxy resolves the name. The card says so for both, and offers no persistent scope.
   readonly network: EgressGrantNetwork;
-  /** Ends the ask (the call was cancelled, the tab closed, or the banner timed out). */
+  // Ends the ask (the call was cancelled, the tab closed, or the banner timed out).
   readonly abortSignal: AbortSignal | undefined;
 }
 
-/** How long a terminal tab's banner holds a connection before it is denied (design F). */
+// How long a terminal tab's banner holds a connection before it is denied (design F).
 const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 
-/** What the person answered. A deny carries why (their choice, a timeout, no surface). */
+// What the person answered. A deny carries why (their choice, a timeout, no surface).
 export type EgressApprovalAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope }
   | { readonly allow: false; readonly reason: string };
@@ -107,32 +62,28 @@ export type EgressApprovalAnswer =
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 
 export interface EgressAskDeps {
-  /** The identity strength of this kind of process on this host (`egressIdentityStrength`). */
+  // The identity strength of this kind of process on this host (`egressIdentityStrength`).
   readonly identityStrength: (kind: "shell" | "extension", context?: Parameters<SandboxAskCallback>[1]) => EgressIdentityStrength;
-  /** The live owner of a token (`egressInvocationOwner`). */
+  // The live owner of a token (`egressInvocationOwner`).
   readonly ownerOf: (token: string) => EgressInvocationOwner | undefined;
-  /** The abort signal the token was opened with (`egressInvocationAbortSignal`). */
+  // The abort signal the token was opened with (`egressInvocationAbortSignal`).
   readonly abortSignalOf: (token: string) => AbortSignal | undefined;
-  /**
-   * The hosts a worker may reach: its extension's declared domains plus the
-   * model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`,
-   * optionally `:port`). `undefined` pluginId is a worker no extension owns.
-   */
+  // The hosts a worker may reach: its extension's declared domains plus the model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`, optionally `:port`). `undefined` pluginId is a worker no extension owns.
   readonly shellGrantScopes?: readonly EgressGrantScope[];
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
-  /** `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked. */
+  // `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked.
   readonly shellAskEnabled: () => boolean;
-  /** The approval surface, once the conversation layer has one; undefined before. */
+  // The approval surface, once the conversation layer has one; undefined before.
   readonly requester: () => EgressApprovalRequester | undefined;
-  /** Writes the decision row (`emitSandboxAudit`). */
+  // Writes the decision row (`emitSandboxAudit`).
   readonly audit: (entry: SandboxEgressDecisionAuditEntry) => void;
   readonly now?: () => Date;
-  /** How long a terminal banner waits for an answer; `TERMINAL_EGRESS_ASK_TIMEOUT_MS` unless a test shortens it. */
+  // How long a terminal banner waits for an answer; `TERMINAL_EGRESS_ASK_TIMEOUT_MS` unless a test shortens it.
   readonly terminalAskTimeoutMs?: number;
 }
 
-/** Fixed refusal reasons, so the model and the audit log read the same words. */
+// Fixed refusal reasons, so the model and the audit log read the same words.
 export const EGRESS_DENY_REASONS = {
   unattributed: "unattributed connection",
   malformed: "malformed destination",
@@ -150,11 +101,11 @@ interface Decision {
   readonly basis: EgressDecisionBasis;
   readonly scope: EgressGrantScope | null;
   readonly reason: string | null;
-  /** A name-phase allow: the resolved phase decides, and nothing is audited yet. */
+  // A name-phase allow: the resolved phase decides, and nothing is audited yet.
   readonly provisional?: true;
 }
 
-/** A person's allow given by name, held until the resolved phase confirms the destination's class. */
+// A person's allow given by name, held until the resolved phase confirms the destination's class.
 interface HeldAnswer {
   readonly scope: EgressGrantScope;
   readonly scopes: readonly EgressGrantScope[];
@@ -162,7 +113,7 @@ interface HeldAnswer {
   readonly at: number;
 }
 
-/** How long a held answer waits for its resolved phase, and how many are kept. */
+// How long a held answer waits for its resolved phase, and how many are kept.
 const HELD_ANSWER_TTL_MS = 120_000;
 const MAX_HELD_ANSWERS = 256;
 
@@ -173,52 +124,40 @@ const allow = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Deci
 const provisional = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Decision =>
   ({ allow: true, basis, scope, reason: null, provisional: true });
 
-/** A person's answer, before it becomes a grant: the scope chosen among those offered. */
+// A person's answer, before it becomes a grant: the scope chosen among those offered.
 type AskAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[] }
   | { readonly allow: false; readonly decision: Decision };
 
-/**
- * Whether `host:port` matches one allowlist entry, by ASRT's own
- * `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*`
- * anything, an optional `:port` suffix), so a worker reaches exactly what the
- * shared allowlist let it reach before the lists were split per extension.
- */
+// Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
 export function egressAllowlistMatches(entries: readonly string[], destination: EgressDestination): boolean {
   return entries.some((entry) =>
     typeof entry === "string" && matchesDomainPatternWithPort(destination.host, destination.port, entry));
 }
 
-/** Who a grant for this owner is held for. */
+// Who a grant for this owner is held for.
 function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwner): EgressGrantSubject {
   return owner.kind === "shell"
     ? { token, sessionId: owner.context.sessionId, tabId: undefined, workspaceRoot: owner.context.workspaceRoot, origin: "shell" }
     : { token, sessionId: undefined, tabId: owner.tabId, workspaceRoot: undefined, origin: "terminal" };
 }
 
-/** A terminal connection whose shared "Allow once" another connection already took: it asks again. */
+// A terminal connection whose shared "Allow once" another connection already took: it asks again.
 const ASK_AGAIN = Symbol("ask-again");
 
 export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback {
-  /**
-   * The ask in flight per (invocation, destination). `onceTaken` marks a
-   * terminal's "Allow once" as spent: it lets exactly one connection through.
-   */
+  // The ask in flight per (invocation, destination). `onceTaken` marks a terminal's "Allow once" as spent: it lets exactly one connection through.
   const pendingAsks = new Map<string, { readonly answer: Promise<AskAnswer>; onceTaken: boolean }>();
   const now = deps.now ?? (() => new Date());
   const terminalAskTimeoutMs = deps.terminalAskTimeoutMs ?? TERMINAL_EGRESS_ASK_TIMEOUT_MS;
 
-  /**
-   * Answers given by name, per (invocation, destination), one per connection
-   * that asked, waiting for that connection's resolved phase.
-   */
+  // Answers given by name, per (invocation, destination), one per connection that asked, waiting for that connection's resolved phase.
   const heldAnswers = new Map<string, HeldAnswer[]>();
   let heldCount = 0;
   const holdKey = (token: string, destination: EgressDestination, strength: EgressIdentityStrength): string =>
     `${token}\n${destination.host}\n${destination.port}\n${strength}`;
   const holdAnswer = (key: string, answer: HeldAnswer): void => {
-    // Bounded: past the cap the oldest held answers are dropped, and their
-    // connections are asked again in the resolved phase (never allowed).
+    // Bounded: past the cap the oldest held answers are dropped, and their connections are asked again in the resolved phase (never allowed).
     while (heldCount >= MAX_HELD_ANSWERS) {
       const oldest = heldAnswers.keys().next().value;
       if (oldest === undefined) break;
@@ -245,9 +184,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     network: Exclude<EgressDestinationNetwork, "reserved">,
     strength: EgressIdentityStrength,
   ): Promise<AskAnswer | typeof ASK_AGAIN> => {
-    // One card (or banner) per (invocation, destination, class): a client that
-    // opens several connections to one host while it is up waits on the same
-    // answer. A terminal tab's shell is one invocation, so this coalesces per tab.
+    // One card (or banner) per (invocation, destination, class): a client that opens several connections to one host while it is up waits on the same answer. A terminal tab's shell is one invocation, so this coalesces per tab.
     const key = `${token}\n${destination.host}\n${destination.port}\n${network}\n${strength}`;
     let pending = pendingAsks.get(key);
     if (pending === undefined) {
@@ -256,9 +193,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       pending = entry;
     }
     const answer = await pending.answer;
-    // A terminal's "Allow once" is one connection, never a standing grant: the
-    // first waiter takes it, any other connection that waited on the same
-    // banner goes back to asking.
+    // A terminal's "Allow once" is one connection, never a standing grant: the first waiter takes it, any other connection that waited on the same banner goes back to asking.
     if (owner.kind === "terminal" && answer.allow && answer.scope === "once") {
       if (pending.onceTaken) return ASK_AGAIN;
       pending.onceTaken = true;
@@ -297,8 +232,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         abortSignal: deps.abortSignalOf(token),
       });
     } else {
-      // The banner holds the connection for a bounded time, then denies; the
-      // tab closing (its shell's signal) ends it at once.
+      // The banner holds the connection for a bounded time, then denies; the tab closing (its shell's signal) ends it at once.
       const expiry = new AbortController();
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -326,7 +260,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     return { allow: true, scope: answer.scope, scopes };
   };
 
-  /** Make the grant a person's answer chose, and allow. */
+  // Make the grant a person's answer chose, and allow.
   const grantAnswer = async (
     token: string,
     owner: ShellEgressOwner | TerminalEgressOwner,
@@ -351,9 +285,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (token === undefined) return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
     const owner = deps.ownerOf(token);
     if (owner === undefined) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
-    // Where this kind of process has its own listener only the listener
-    // vouches for who connected; a key that came from the proxy username
-    // alone may have been read off another process, so it names nobody.
+    // Where this kind of process has its own listener only the listener vouches for who connected; a key that came from the proxy username alone may have been read off another process, so it names nobody.
     const strength = deps.identityStrength(owner.kind === "worker" ? "extension" : "shell", owner.kind === "terminal" ? undefined : context);
     if (strength === "kernel-channel"
       && context?.identity !== "listener") {
@@ -367,14 +299,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const phase: unknown = context?.phase;
     let network: EgressDestinationNetwork;
     if (phase === "name") {
-      // Nothing is resolved yet: the class the name alone says (an address
-      // literal, localhost, a local-network name; any other name is public
-      // until the resolved phase says otherwise).
+      // Nothing is resolved yet: the class the name alone says (an address literal, localhost, a local-network name; any other name is public until the resolved phase says otherwise).
       network = egressDestinationNetwork(canonicalHost);
     } else if (phase === "resolved") {
-      // ASRT resolved the destination once and will dial exactly these
-      // addresses, so a name is judged by what it resolved to as well.
-      // Read as unknown: a JavaScript caller is not bound by the declared type.
+      // ASRT resolved the destination once and will dial exactly these addresses, so a name is judged by what it resolved to as well. Read as unknown: a JavaScript caller is not bound by the declared type.
       const raw = context as { addresses?: unknown; resolution?: unknown };
       const addresses: unknown = raw.addresses;
       const resolution: unknown = raw.resolution;
@@ -382,10 +310,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         || (resolution !== "pinned" && resolution !== "upstream")) {
         return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
       }
-      // A name the upstream proxy resolves (this host could not, or a
-      // plain-HTTP request names it to the upstream) was never checked: it is
-      // offered at most This conversation, and no persistent grant covers it,
-      // unless its name alone already says more.
+      // A name the upstream proxy resolves (this host could not, or a plain-HTTP request names it to the upstream) was never checked: it is offered at most This conversation, and no persistent grant covers it, unless its name alone already says more.
       const judged = egressDestinationNetwork(canonicalHost, addresses);
       network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
     } else {
@@ -465,8 +390,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         reason: decision.reason === null ? null : maskSensitiveData(decision.reason).masked,
       });
     } catch {
-      // The audit sink reports its own failures; a row that could not be
-      // written must not turn an answer into a different one.
+      // The audit sink reports its own failures; a row that could not be written must not turn an answer into a different one.
     }
     return decision.allow ? true : { allow: false, reason: decision.reason ?? EGRESS_DENY_REASONS.failed };
   };

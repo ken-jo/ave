@@ -15,12 +15,7 @@ function entryAt(path: string): ReturnType<typeof lstatSync> | undefined {
   }
 }
 
-/**
- * Linux cannot deny absent bare-layout names without creating host mountpoints.
- * Capture absent reserved names, then quarantine entries appearing during the
- * invocation. Absence is not process provenance: external concurrent writers
- * must coordinate these names. Pre-existing entries and replaced roots survive.
- */
+// Linux cannot deny absent bare-layout names without creating host mountpoints. Capture absent reserved names, then quarantine entries appearing during the invocation. Absence is not process provenance: external concurrent writers must coordinate these names. Pre-existing entries and replaced roots survive.
 export async function prepareSandboxBareRepositoryCleanup(
   writeRoots: readonly string[], commandId: string, initial?: SandboxGitControlSnapshot,
 ): Promise<() => string | undefined> {
@@ -66,8 +61,7 @@ export async function prepareSandboxBareRepositoryCleanup(
         if ([...before.bareRoots].some(root => path === join(root, "hooks") && entryAt(join(root, "HEAD")) === undefined)) continue;
         const parent = dirname(path);
         const parentIdentity = before.stores.get(parent) ?? before.roots.get(parent) ?? before.directories.get(parent) ?? entryAt(parent);
-        // A missing parent means the entry went with it (a concurrent writer in
-        // a shared root removed the repository); nothing remains to quarantine.
+        // A missing parent means the entry went with it (a concurrent writer in a shared root removed the repository); nothing remains to quarantine.
         if (!parentIdentity) continue;
         candidates.set(path, parentIdentity);
       }

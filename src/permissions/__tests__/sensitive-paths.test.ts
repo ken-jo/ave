@@ -1,10 +1,3 @@
-/**
- * sensitive-paths unit tests — Tier S1+S2 + Permission policy P2.5 expansion
- *
- * Covers SENSITIVE_PATH_PATTERNS, isSensitivePath(), policyMatchPaths(),
- * canonicalizePathForMatch (frozen-canonical + bounded walk-up), and
- * caseFoldForMatch.
- */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { realpathSync, symlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -47,9 +40,7 @@ describe("SENSITIVE_PATH_PATTERNS", () => {
 
   it("contains core credential-store patterns", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ssh/**");
-    // The whole `.aws` dir, not just credentials/config: the SSO token cache
-    // (`.aws/sso/cache/*.json`) is a bearer credential too, and the OS sandbox
-    // floor has always denied the dir wholesale.
+    // The whole `.aws` dir, not just credentials/config: the SSO token cache (`.aws/sso/cache/*.json`) is a bearer credential too, and the OS sandbox floor has always denied the dir wholesale.
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.aws/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.gnupg/**");
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.kube/config");
@@ -232,7 +223,7 @@ describe("isSensitivePath — negative cases", () => {
   });
 });
 
-// ─── Permission policy P2.5 — Layer 0 expansion: OS + Ave-internal hits ───────
+// Permission policy.5 — Layer 0 expansion: OS + Ave-internal hits
 
 describe("isSensitivePath — Permission policy P2.5 OS sensitive paths", () => {
   it("matches /etc/shadow (and macOS /private/etc/shadow form)", () => {
@@ -317,7 +308,7 @@ describe("isSensitivePath — Permission policy P2.5 Ave-internal", () => {
   });
 });
 
-// ─── Permission policy P2.5 — canonicalizePathForMatch (frozen-canonical) ───────
+// Permission policy.5 — canonicalizePathForMatch (frozen-canonical)
 
 describe("canonicalizePathForMatch", () => {
   function portableMatchPath(value: string): string {
@@ -335,11 +326,9 @@ describe("canonicalizePathForMatch", () => {
   });
 
   it("normalizes NFD unicode to NFC", () => {
-    // NFD-decomposed `.ssh` should normalize to `.ssh`. Use a char
-    // that has a stable NFD form: `é` (U+00E9) ↔ `é`.
+    // NFD-decomposed `.ssh` should normalize to `.ssh`. Use a char that has a stable NFD form: `é` (U+00E9) ↔ `é`.
     const decomposed = "/tmp/café.txt";
     const result = canonicalizePathForMatch(decomposed);
-    // After NFC, the e + combining acute should fold back to single é.
     expect(result).toContain("café");
   });
 
@@ -350,9 +339,7 @@ describe("canonicalizePathForMatch", () => {
   });
 
   it("bounded walk-up cap (MAX_WALK_UP)", () => {
-    // Synthesize a deep non-existent path. Walk-up MUST terminate without
-    // hanging or throwing — the function is tested by completing under
-    // a generous time budget.
+    // Synthesize a deep non-existent path. Walk-up MUST terminate without hanging or throwing — the function is tested by completing under a generous time budget.
     const deep = "/tmp/" + "x/".repeat(MAX_WALK_UP + 10) + "leaf";
     const start = Date.now();
     const result = canonicalizePathForMatch(deep);
@@ -367,9 +354,7 @@ describe("canonicalizePathForMatch", () => {
   });
 
   it("symlink ancestor is not followed into a cycle", () => {
-    // Stage a self-symlink in a temp dir; canonicalize a child path and
-    // confirm we get a string back (no hang, no throw). On platforms that
-    // forbid self-symlinks, the test still passes via the bounded cap.
+    // Stage a self-symlink in a temp dir; canonicalize a child path and confirm we get a string back (no hang, no throw). On platforms that forbid self-symlinks, the test still passes via the bounded cap.
     const root = resources.makeTmpDir("ave-canonical-");
     const linkDir = join(root, "loop");
     try {
@@ -378,13 +363,11 @@ describe("canonicalizePathForMatch", () => {
       const result = canonicalizePathForMatch(child);
       expect(typeof result).toBe("string");
     } catch {
-      // Some platforms refuse self-symlinks — skip silently. The bounded
-      // walk-up still defends the algorithm; this is exercised above.
+      // Some platforms refuse self-symlinks — skip silently. The bounded walk-up still defends the algorithm; this is exercised above.
     }
   });
 
   it("sensitive-path detection still fires on relative .. inputs", () => {
-    // Build a path that resolves via .. into a sensitive directory.
     const result = canonicalizePathForMatch(
       "/Users/example/work/../.ave/secrets/openai.key",
     );

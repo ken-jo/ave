@@ -24,7 +24,7 @@ afterEach(async () => {
   await resetAsrtSandbox();
 });
 
-/** A local route endpoint; destination traffic never leaves this process. */
+// A local route endpoint; destination traffic never leaves this process.
 async function startTunnelUpstream(holdConnect = false) {
   const sockets = new Set<net.Socket>();
   const received: string[] = [];
