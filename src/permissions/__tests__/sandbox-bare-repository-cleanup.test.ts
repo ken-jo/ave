@@ -8,6 +8,7 @@ import * as atomicFile from "../../lib/atomic-file.js";
 import { prepareSandboxBareRepositoryCleanup } from "../sandbox-bare-repository-cleanup.js";
 import { createSandboxQuarantine, sandboxQuarantineRoot } from "../sandbox-quarantine.js";
 import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import * as sandboxWritePolicy from "../sandbox-write-policy.js";
 
 const { warnings } = vi.hoisted(() => ({ warnings: vi.fn() }));
 vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ warn: warnings }) }));
@@ -123,6 +124,56 @@ describe("sandbox protected Git quarantine", () => {
     expect(readFileSync(join(root, "HEAD"), "utf8")).toBe("retained");
     expect(quarantinedEntries()).toEqual([]);
     expect(warnings).toHaveBeenCalledWith(expect.stringContaining("EXDEV"));
+  });
+
+  it("skips a new repository a concurrent writer removed before the sweep reached it", async () => {
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "concurrent-removal");
+    const foreign = join(root, "foreign", ".git");
+    mkdirSync(join(foreign, "hooks"), { recursive: true });
+    writeFileSync(join(foreign, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(foreign, "commondir"), ".\n");
+    writeFileSync(join(root, "HEAD"), "moved");
+    const replace = atomicFile.replaceStagedFile;
+    vi.spyOn(atomicFile, "replaceStagedFile").mockImplementation((from, to) => {
+      if (basename(from) !== "HEAD") rmSync(dirname(foreign), { recursive: true, force: true });
+      replace(from, to);
+    });
+    const notice = cleanup();
+    expect(existsSync(dirname(foreign))).toBe(false);
+    expect(existsSync(join(root, "HEAD"))).toBe(false);
+    expect(notice).toContain(JSON.stringify(join(root, "HEAD")));
+    expect(notice).not.toContain("foreign");
+    expect(warnings).toHaveBeenCalledWith(expect.stringContaining("disappeared before quarantine"));
+  });
+
+  it("skips a new repository whose metadata directory vanished right after the post-invocation scan", async () => {
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "concurrent-parent-removal");
+    const foreign = join(root, "foreign", ".git");
+    mkdirSync(join(foreign, "hooks"), { recursive: true });
+    writeFileSync(join(foreign, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(foreign, "commondir"), ".\n");
+    writeFileSync(join(root, "HEAD"), "moved");
+    const scan = sandboxWritePolicy.snapshotSandboxGitControls;
+    const after = vi.spyOn(sandboxWritePolicy, "snapshotSandboxGitControls").mockImplementation((roots, previous) => {
+      const snapshot = scan(roots, previous);
+      if (previous) rmSync(dirname(foreign), { recursive: true, force: true });
+      return snapshot;
+    });
+    const notice = cleanup();
+    expect(after).toHaveBeenCalled();
+    expect(existsSync(join(root, "HEAD"))).toBe(false);
+    expect(notice).toContain(JSON.stringify(join(root, "HEAD")));
+    expect(notice).not.toContain("foreign");
+  });
+
+  it("still fails when a rename reports ENOENT for an entry that remains", async () => {
+    const cleanup = await prepareSandboxBareRepositoryCleanup([root], "enoent-present");
+    writeFileSync(join(root, "HEAD"), "retained");
+    vi.spyOn(atomicFile, "replaceStagedFile").mockImplementation(() => {
+      throw Object.assign(new Error("missing destination"), { code: "ENOENT" });
+    });
+    expect(cleanup).toThrow(/ENOENT: missing destination/);
+    expect(readFileSync(join(root, "HEAD"), "utf8")).toBe("retained");
   });
 
   it("retains and reports earlier moves if a later rename fails", async () => {

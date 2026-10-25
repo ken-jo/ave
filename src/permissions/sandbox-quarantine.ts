@@ -34,6 +34,12 @@ function entryAt(path: string): ReturnType<typeof lstatSync> | undefined {
   }
 }
 
+/** True only when the path, or a missing ancestor, no longer exists at all. */
+function vanished(path: string): boolean {
+  try { lstatSync(path); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+}
+
 function sameEntry(path: string, identity: NonNullable<ReturnType<typeof lstatSync>>): boolean {
   const current = entryAt(path);
   return current?.dev === identity.dev && current.ino === identity.ino;
@@ -113,8 +119,16 @@ export async function createSandboxQuarantine(commandId: string): Promise<Sandbo
         }
         log.warn(`Quarantined protected Git entry: ${JSON.stringify(original)} -> ${JSON.stringify(quarantined)}`);
       } catch (error) {
-        const reason = errorMessage(error);
         const code = (error as NodeJS.ErrnoException).code;
+        // A concurrent writer in a shared root (another process's repository
+        // in TMPDIR) may remove the entry, or its parent, before the sweep
+        // reaches it. Nothing remains to contain; any other failure, a
+        // replaced parent included, still fails the cleanup.
+        if (code === "ENOENT" && vanished(original)) {
+          log.warn(`Protected Git entry disappeared before quarantine: ${JSON.stringify(original)}`);
+          return;
+        }
+        const reason = errorMessage(error);
         const failure = t("sandboxPolicy.quarantineFailed", {
           path: JSON.stringify(original), reason: code ? `${code}: ${reason}` : reason, moves: notice() ?? "",
         });
