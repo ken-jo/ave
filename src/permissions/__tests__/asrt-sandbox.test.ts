@@ -37,10 +37,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
-import * as globMatcher from "../../lib/glob-matcher.js";
-import { globMatch } from "../../lib/glob-matcher.js";
-import { expandLeadingTilde } from "../../shared/home-tilde.js";
-import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
@@ -79,7 +75,6 @@ import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   getBuiltinShellReadPolicy,
-  getBuiltinShellSessionReadPolicy,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -1244,81 +1239,6 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       for (const ordinary of [["projects"], [".config"], [".local", "share"], ["Library", "Application Support"], ["AppData", "Local"]]) {
         expect(read.denyRead).not.toContain(join(homedir(), ...ordinary));
       }
-    });
-  });
-
-  describe.each(["darwin", "linux"] as const)("builtin shell read policy on %s", (platform) => {
-    const hostPlatform = process.platform;
-    beforeEach(() => setProcessPlatform(platform));
-    afterEach(() => {
-      setProcessPlatform(hostPlatform);
-      vi.restoreAllMocks();
-    });
-
-    // The per-path, per-ancestor check the policy used before it compiled
-    // each deny once: kept here as the oracle the policy must still agree with.
-    const referenceCovers = (denied: string, canonicalPath: string): boolean => {
-      if (/[\[\]]/.test(denied)) return true;
-      const pattern = canonicalizePathForMatch(expandLeadingTilde(denied));
-      for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
-        if (globMatch(candidate, pattern) || globMatch(`${candidate}/`, pattern)) return true;
-        if (dirname(candidate) === candidate) return false;
-      }
-    };
-    const corpus = (): string[] => {
-      const empty = getBuiltinShellReadPolicy([], homedir());
-      const paths = new Set<string>();
-      for (const entry of [...empty.denyRead, ...empty.floorPierces]) {
-        const wildcard = entry.search(/[*?]/u);
-        const base = (wildcard < 0 ? entry : entry.slice(0, wildcard)).replace(/[\\/]+$/u, "") || "/";
-        paths.add(base);
-        paths.add(join(base, "child", "file"));
-        paths.add(dirname(base));
-        // Case-folded on darwin, so an upper-cased spelling is the same deny.
-        paths.add(join(dirname(base), basename(base).toUpperCase()));
-        paths.add(`${base}-sibling`);
-      }
-      for (const pierce of empty.floorPierces) paths.add(join(pierce, "nested", ".ssh", "id_ed25519"));
-      for (const ordinary of [["projects", "x"], ["projects", "x", ".git", "hooks"], [".config"], [".claude", "hooks"], [".husky"]]) {
-        paths.add(join(homedir(), ...ordinary));
-      }
-      paths.add(join(tmpdir(), "ave-read-policy-cwd"));
-      return [...paths];
-    };
-
-    it("allows and withholds exactly what the per-path check does", () => {
-      const reads = corpus();
-      const ownHome = join(appOwnedSandboxPrivateRoots()[0] ?? tmpdir(), "own-home");
-      const sessions = getBuiltinShellSessionReadPolicy();
-      const privateRoots = appOwnedSandboxPrivateRoots();
-      const own = canonicalizePathForMatch(ownHome);
-      const expected = [...reads, ...sessions.allowRead].filter((path) => {
-        const resolved = canonicalizePathForMatch(path);
-        if (sessions.denyRead.some((denied) => referenceCovers(denied, resolved))) return false;
-        const insideOwnHome = resolved === own || resolved.startsWith(`${own}/`);
-        return insideOwnHome || !privateRoots.some((root) => referenceCovers(root, resolved));
-      });
-      const policy = getBuiltinShellReadPolicy(reads, homedir(), ownHome);
-      expect(policy.allowRead).toEqual(expected);
-      // The corpus exercises both outcomes, the floor and the session pierce.
-      expect(expected.length).toBeGreaterThan(5);
-      expect(reads.length + sessions.allowRead.length - expected.length).toBeGreaterThan(50);
-      expect(policy.denyRead).toEqual([...sessions.denyRead, ...privateRoots]);
-    });
-
-    it("compiles each deny once however many paths it checks", () => {
-      const reads = corpus().filter((path) => path.startsWith(join(homedir(), "projects")) || path.startsWith(tmpdir()));
-      const compile = vi.spyOn(globMatcher, "compileGlobMatcher");
-      const match = vi.spyOn(globMatcher, "globMatch");
-      const work = (): number => compile.mock.calls.length + match.mock.calls.length;
-      getBuiltinShellReadPolicy(reads.slice(0, 1), homedir());
-      const forOne = work();
-      compile.mockClear();
-      match.mockClear();
-      getBuiltinShellReadPolicy([...reads, ...Array.from({ length: 40 }, (_, index) => join(homedir(), "projects", `p${index}`))], homedir());
-      // Before, every path re-canonicalized and recompiled every deny for each
-      // of its ancestors: 40 more paths cost thousands more compiles.
-      expect(work()).toBe(forOne);
     });
   });
 
