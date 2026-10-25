@@ -109,7 +109,8 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
       "allow-project": scoped("allow-project", "project", payload.projectCwd !== undefined),
       "allow-everywhere": scoped("allow-everywhere", "always", true),
     },
-    warnsOnWildcardAllow: false,
+    // An edited `Network(*.…)` allow decides only sandboxed commands' connections; the host saves it with the same warning as a wildcard shell allow.
+    warnsOnWildcardAllow: true,
   };
 }
 
@@ -184,9 +185,14 @@ export function allowRefusalKey(model: ApprovalDecisionModel): string | null {
   return model.options[model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
 }
 
-/** True for a shell rule text that ends in the ` *` wildcard; matches the host's rule grammar (`Bash(git *)`, `PowerShell(Get-Item *)`). */
-export function isWildcardShellRuleText(text: string): boolean {
-  return /^\s*(?:bash|powershell)\s*\((?:.*\s)?\*\s*\)\s*$/i.test(text);
+/** True for a rule text the host saves with the `wildcard-allow-sandboxed-only` warning, matching its rule grammar: a shell rule ending in the ` *` wildcard (`Bash(git *)`, `PowerShell(Get-Item *)`) or a host rule naming subdomains (`Network(*.example.com)`). */
+export function isWildcardRuleText(text: string): boolean {
+  return /^\s*(?:bash|powershell)\s*\((?:.*\s)?\*\s*\)\s*$/i.test(text) || /^\s*network\s*\(\s*\*\./i.test(text);
+}
+
+/** The i18n key of the wildcard-allow warning for a card's rule kind. */
+export function wildcardWarningKey(model: ApprovalDecisionModel): string {
+  return model.variant === "network" ? "toolApprovalDialog.wildcardHostAllowSandboxedOnly" : "toolApprovalDialog.wildcardAllowSandboxedOnly";
 }
 
 /** The card rule a remembering choice stores: Always deny is user-global; allows are saved for the conversation, the project or everywhere. */

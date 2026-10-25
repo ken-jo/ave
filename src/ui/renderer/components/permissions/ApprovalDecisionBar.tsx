@@ -10,7 +10,8 @@ import {
   ALLOW_MENU_CHOICES,
   DECISION_LABEL_KEYS,
   defaultAllowChoice,
-  isWildcardShellRuleText,
+  isWildcardRuleText,
+  wildcardWarningKey,
   type ApprovalCardChoice,
   type ApprovalDecisionModel,
   type RememberingChoice,
@@ -112,7 +113,7 @@ export function ApprovalDecisionBar({
   const editorOpen = editing === "inline" && (state.draft !== null || selectedOption?.needsEdit === true);
   const draftText = state.draft ?? selectedOption?.rule ?? "";
   const warnWildcard = model.warnsOnWildcardAllow && state.selected !== null && state.selected !== "deny-always" &&
-    editorOpen && isWildcardShellRuleText(draftText);
+    editorOpen && isWildcardRuleText(draftText);
   const commit = (choice: ApprovalCardChoice | null) => {
     if (choice === null) return;
     const edited = editedRuleFor(model, state, choice);
@@ -201,7 +202,7 @@ export function ApprovalDecisionBar({
               ) : null}
               {warnWildcard ? (
                 <p role="note" className="text-[10px] font-medium text-warning" data-testid="approval-rule-wildcard-warning">
-                  {t("toolApprovalDialog.wildcardAllowSandboxedOnly")}
+                  {t(wildcardWarningKey(model))}
                 </p>
               ) : null}
             </div>

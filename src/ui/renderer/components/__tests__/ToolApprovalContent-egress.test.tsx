@@ -71,19 +71,46 @@ describe("network approval dock card", () => {
     expect(onDecide).toHaveBeenLastCalledWith("deny-once");
   });
 
-  it("an edited allow saves a host rule, then allows once", async () => {
-    const record = vi.fn().mockResolvedValue({ ok: true });
+  // A wildcard host allow decides only sandboxed commands' connections: the card says so while it is edited, and shows the host's warning on save.
+  it("an edited wildcard host allow warns while edited, saves the host rule, shows the host's warning, then allows once", async () => {
+    const record = vi.fn().mockResolvedValue({ ok: true, warning: "wildcard-allow-sandboxed-only" });
     vi.stubGlobal("ave", { userApproval: { record } });
     const onDecide = renderCard(request);
     selectDecision("allow-project");
     fireEvent.click(screen.getByTestId("approval-edit-rule"));
-    fireEvent.change(screen.getByTestId("approval-rule-input"), { target: { value: "Network(*.example.com)" } });
+    fireEvent.change(screen.getByTestId("approval-rule-input"), { target: { value: "Network(api.example.com)" } });
     expect(screen.queryByTestId("approval-rule-wildcard-warning")).toBeNull();
+    fireEvent.change(screen.getByTestId("approval-rule-input"), { target: { value: "Network(*.example.com)" } });
+    expect(screen.getByTestId("approval-rule-wildcard-warning")).toHaveTextContent(t("toolApprovalDialog.wildcardHostAllowSandboxedOnly"));
     fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({
       decision: "allow", scope: "persistent", rule: { action: "allow", scope: "project", pattern: "Network(*.example.com)" },
     }));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined, { egressScope: "once" }));
+    expect(screen.getByTestId("egress-approval-save-warning")).toHaveTextContent(t("toolApprovalDialog.wildcardHostAllowSandboxedOnly"));
+  });
+
+  it("a wildcard host deny carries no warning", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    renderCard(request);
+    selectDecision("deny-always");
+    fireEvent.click(screen.getByTestId("approval-edit-rule"));
+    fireEvent.change(screen.getByTestId("approval-rule-input"), { target: { value: "Network(*.example.com)" } });
+    expect(screen.queryByTestId("approval-rule-wildcard-warning")).toBeNull();
+  });
+
+  // One component for every network decision: a request without its payload draws the shared row with Deny only.
+  it("draws a request without its payload as the shared row, Deny only", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const onDecide = renderCard({ ...request, egressHost: undefined });
+    expect(screen.getByTestId("egress-approval-card")).toHaveTextContent(t("egressApprovalCard.invalid"));
+    expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "one-shot");
+    expect(screen.queryByTestId(TEST_IDS.allowSessionButton)).toBeNull();
+    expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
+    expect(openDecisionMenu("deny-always")).toHaveAttribute("data-disabled");
+    fireEvent.keyDown(screen.getByTestId("approval-choice-deny-always"), { key: "Escape" });
+    fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
+    expect(onDecide).toHaveBeenCalledWith("deny-once");
   });
 
   it("keeps the ask pending and says why when the host refuses the rule", async () => {
