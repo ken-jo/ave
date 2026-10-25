@@ -1,6 +1,3 @@
-/**
- * IPC shared types — dependency injection bag passed to every domain registrar.
- */
 import type { BrowserWindow } from "electron";
 import type { AppServices } from "../boot/types.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
@@ -12,32 +9,14 @@ import type { TailnetObserverConfigService } from "../main/tailnet-observer-conf
 export type IpcDeps = AppServices & {
   getMainWindow: () => BrowserWindow | null;
   getAppWindows?: () => Array<BrowserWindow | null | undefined>;
-  /**
-   * Host-owned event/lease runtime shared by every main-conversation surface.
-   * It is injected by main-process composition and intentionally optional for
-   * focused domain tests that exercise only one local transport.
-   */
+  // Production surfaces share one host-owned lease and event runtime; focused single-transport tests may omit it.
   conversationSurfaceRuntime?: ConversationSurfaceRuntime;
-  /**
-   * One host-composed command entrypoint shared by all main-conversation
-   * surfaces. Optional only for focused domain tests.
-   */
+  // Production surfaces share one command entrypoint; only focused domain tests may omit it.
   conversationCommandPort?: ConversationCommandPort;
-  /**
-   * Main-only owner facade for explicit Tailnet pairing and per-conversation
-   * sharing. It is absent unless the immutable P2 boot gate is enabled.
-   */
+  // The pairing/share facade exists only when its immutable boot gate is enabled.
   tailnetSharingOwnerService?: TailnetSharingOwnerService;
-  /**
-   * Main-only owner facade for the Telegram private-DM connection. Absent
-   * unless main composition built it, in which case every channel answers
-   * `telegram-connection-disabled`.
-   */
+  // Absent connection wiring returns telegram-connection-disabled.
   telegramConnectionService?: TelegramConnectionService;
-  /**
-   * Main-only owner facade for the Tailnet observer configuration. Absent
-   * unless main composition built it, in which case every channel answers
-   * `tailnet-observer-unavailable`.
-   */
+  // Absent observer wiring returns tailnet-observer-unavailable.
   tailnetObserverConfigService?: TailnetObserverConfigService;
 };

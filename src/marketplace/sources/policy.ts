@@ -1,14 +1,4 @@
-/**
- * The `marketplaces` section of the system policy file (design §12).
- *
- * Only the system-scope file counts: it is owned by the machine's
- * administrator, which no git repository and no user-level process can
- * write. A missing file or a file without the section means "no
- * restrictions". A section that cannot be read exactly as written — bad
- * JSON, duplicate keys, an unknown key, a pattern that does not parse —
- * fails closed: the caller treats every non-official source as
- * `SOURCE_POLICY_BLOCKED` rather than guessing what a typo meant.
- */
+/** Only system policy applies; absent restrictions are allowed, malformed restrictions fail closed. */
 import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, readFile, stat as fsStat } from "node:fs/promises";
@@ -48,11 +38,7 @@ export interface PackageKey {
   source: string;
 }
 
-/**
- * A source pre-registered by `marketplaces.additional` (origin `managed`): a
- * git repository, or a folder (§18.6), which holds `network-folder` through
- * this entry.
- */
+/** Managed folder entries confer network-folder consent. */
 type ManagedSourceSpec =
   | { transport: "git"; id: string; url: NormalizedSourceUrl; ref?: string; auth: SourceAuth; label?: string }
   | { transport: "folder"; id: string; path: string; label?: string };
@@ -61,29 +47,22 @@ export interface MarketplacePolicy {
   /** null = no allow list, every target not blocked is allowed. */
   allow: readonly SourcePattern[] | null;
   block: readonly SourcePattern[];
-  /** Normalized hosts that may be reached over plain http. */
   allowHttpHosts: ReadonlySet<string>;
-  /** Plain http is a policy block, `allowHttpHosts` excepted (design §18.6). */
+  /** HTTPS policy may exempt only allowHttpHosts entries. */
   requireHttps: boolean;
-  /** Internal and this-computer targets are a policy block, policy-listed hosts excepted (§18.6). */
+  /** Private-network policy exempts listed hosts. */
   blockPrivateNetworks: boolean;
   allowDirectInstall: boolean;
-  /** Folder sources and folder installs are allowed (§18.6); false is a policy block. */
   allowLocalSources: boolean;
   allowDisablingOfficial: boolean;
-  /**
-   * Automatic updates (§18.7.2): `"user"` leaves them to the user's
-   * switches, `"on"` and `"off"` decide for every package and lock the
-   * switches.
-   */
+  /** Policy on/off locks all package switches; user delegates to user settings. */
   autoUpdate: "user" | "on" | "off";
   additional: readonly ManagedSourceSpec[];
   defaultInstalls: readonly PackageKey[];
-  /** A key listed in both lists appears here only (§12). */
+  /** Required entries override matching defaults. */
   requiredInstalls: readonly PackageKey[];
 }
 
-/** The policy file's `marketplaces` section, or why it cannot be used; `path` is the file it came from, named in policy messages (§18.8). */
 export type PolicyLoad = { ok: true; policy: MarketplacePolicy; path: string } | { ok: false; error: string; path: string };
 
 export const EMPTY_MARKETPLACE_POLICY: MarketplacePolicy = Object.freeze({
@@ -143,7 +122,6 @@ function bool(value: unknown, path: string, fallback: boolean): boolean {
   return value;
 }
 
-/** Parse errors from source-url.ts carry the offending text; keep them. */
 function parsed<T>(path: string, parse: () => T): T {
   try {
     return parse();
@@ -170,19 +148,14 @@ function auth(value: unknown, path: string, url: NormalizedSourceUrl): SourceAut
     if (url.scheme === "ssh") fail(path, "token auth needs an http(s) URL");
     if (typeof entry.host !== "string") fail(`${path}.host`, "must be a string");
     const host = parsed(`${path}.host`, () => normalizeSourceHost(entry.host as string, entry.host as string));
-    // The token is only ever offered to the source's own host (§12).
+    // Offer source tokens only to the source own host.
     if (host !== url.host) fail(`${path}.host`, `must be the source's host ${url.host}`);
     return { kind: "token", host };
   }
   return fail(`${path}.kind`, "must be none, token or ssh");
 }
 
-/**
- * A list of package keys. `oneSourcePerPackage` (`requiredInstalls`): a
- * package can be installed from one source only, so two entries naming the
- * same kind and name from different sources contradict each other and make
- * the policy invalid (§12, §18.7.2), naming both.
- */
+/** Contradictory required sources for one package invalidate the policy. */
 function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string>, oneSourcePerPackage = false): PackageKey[] {
   if (!Array.isArray(value)) fail(path, "must be an array");
   const seen = new Set<string>();
@@ -210,7 +183,6 @@ function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string
   });
 }
 
-/** Why the policy blocks `url`: the first `block` pattern it matches, or an `allow` list it is not on; null when it does not. */
 export function policyBlock(
   policy: MarketplacePolicy,
   url: NormalizedSourceUrl,
@@ -226,12 +198,7 @@ export function isBlockedByPolicy(policy: MarketplacePolicy, url: NormalizedSour
   return policyBlock(policy, url, target) !== null;
 }
 
-/**
- * Why the policy blocks a folder (§18.6): `allowLocalSources: false`, the
- * first `block` `path:` pattern it matches ignoring case, or an `allow` list
- * none of whose `path:` patterns it matches with exact case. Null when it
- * does not. Applied to the lexical path, and again to the canonical one.
- */
+/** Check lexical and canonical folder paths; allow is case-sensitive and block is not. */
 export function folderPolicyBlock(
   policy: MarketplacePolicy,
   path: string,
@@ -250,14 +217,13 @@ function orEmpty(value: unknown): unknown {
   return value === undefined ? [] : value;
 }
 
-/** `autoUpdate` (§18.6): absent is `"user"`; anything but the three values is invalid. */
+/** Missing autoUpdate means user; unknown values invalidate the section. */
 function autoUpdateRule(value: unknown): MarketplacePolicy["autoUpdate"] {
   if (value === undefined) return "user";
   if (value === "user" || value === "on" || value === "off") return value;
   return fail(".autoUpdate", 'must be "user", "on" or "off"');
 }
 
-/** Parse the `marketplaces` value (not the whole file); throws on anything it cannot read exactly. A folder path is read for `platform`. */
 function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePolicy {
   const section = record(value, "", SECTION_KEYS);
   const allowHttpHosts = new Set(
@@ -287,7 +253,6 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
     const at = `.additional[${index}]`;
     const entry = record(item, at, ADDITIONAL_KEYS);
     if (typeof entry.id !== "string" || !SOURCE_ID_RE.test(entry.id)) fail(`${at}.id`, "is not a source id");
-    // The tab names a source back by the id it was handed scrubbed (§18.8).
     if (!isSourceId(entry.id)) fail(`${at}.id`, "looks like a password or token; choose another id");
     if (isReservedSourceId(entry.id)) fail(`${at}.id`, `${entry.id} is reserved`);
     if (additional.some((other) => other.id === entry.id)) fail(`${at}.id`, `${entry.id} is used twice`);
@@ -300,8 +265,7 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
     }
     if (typeof entry.url !== "string") fail(`${at}.url`, "must be a string");
     const url = parsed(`${at}.url`, () => normalizeSourceUrl(entry.url as string));
-    // An additional source is itself a listing (§18.2.2): plain http needs no other entry, unless the
-    // same policy requires https, which only allowHttpHosts excepts.
+    // Additional-source listing does not bypass requireHttps without allowHttpHosts.
     if (url.scheme === "http" && policy.requireHttps && !allowHttpHosts.has(url.host)) {
       fail(`${at}.url`, `plain http while requireHttps is true needs ${url.host} in allowHttpHosts`);
     }
@@ -331,13 +295,7 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
   return { ...policy, additional, defaultInstalls: defaults, requiredInstalls: required };
 }
 
-/**
- * An `additional` folder (§18.6): `path` instead of `url`, no `ref` or
- * `auth`. It is invalid under `allowLocalSources: false`, when the policy's
- * own lists block it, or when it is, contains or lies inside another
- * additional folder. The path is read as stage 1 reads typed input, except
- * that `~` names no home here.
- */
+/** Managed folders cannot use refs, subdirs, auth, home expansion or overlapping folder roots. */
 function managedFolder(
   entry: Record<string, unknown>,
   at: string,
@@ -364,7 +322,6 @@ function managedFolder(
   return { transport: "folder", id: entry.id as string, path, ...(entry.label !== undefined ? { label: entry.label as string } : {}) };
 }
 
-/** The `marketplaces` section of a policy file's text; a file problem is a result, only a bug throws. */
 function parsePolicyText(path: string, text: string, platform: NodeJS.Platform): PolicyLoad {
   try {
     const file = parseStrictJson(text);
@@ -379,20 +336,13 @@ function parsePolicyText(path: string, text: string, platform: NodeJS.Platform):
   }
 }
 
-/** The stat fields {@link statKey} compares. */
 type PolicyFileStat = Pick<BigIntStats, "size" | "mtimeMs" | "ctimeMs" | "mtimeNs" | "ctimeNs" | "ino" | "dev">;
 
-/**
- * The file system and clock a {@link FilePolicySource} reads through. Production
- * uses node's; a test substitutes a file system whose clock did not tick
- * between two writes, which real file systems do only by timing luck.
- */
+/** Filesystem and clock seams let tests expose rewrites within a single timestamp tick. */
 export interface PolicyFileAccess {
   stat(path: string): Promise<PolicyFileStat>;
-  /** Inspect the entry itself, including a symlink whose target is absent. */
   lstat(path: string): Promise<unknown>;
   readFile(path: string): Promise<string>;
-  /** Wall-clock milliseconds: the clock the file's times are stamped from. */
   now(): number;
 }
 
@@ -403,59 +353,29 @@ const NODE_FILE_ACCESS: PolicyFileAccess = {
   now: () => Date.now(),
 };
 
-/**
- * How long after the file's last change a read must begin before the stat it
- * recorded is trusted to tell the next change apart. File times are stamped
- * from a coarse clock: one kernel tick on NTFS (15.6 ms by default) and Linux,
- * two seconds for a FAT modification time, the server's clock on SMB and NFS.
- * A rewrite in the same tick as the change the read saw keeps every recorded
- * time, and with the size kept and the modification time put back the stat is
- * identical. A write that lands after a read began is stamped no earlier than
- * that moment, less one tick, less how far the writer's clock lags this one,
- * less how far this clock has stepped back since; while those three together
- * stay under the window, a change older than the window cannot be stamped
- * again. Three seconds covers the two-second FAT tick with a second for lag
- * and steps. A change time ahead of the clock (skew, or a modification time
- * set forward) is always racy, and a check that finds the clock behind the
- * moment the recorded read began does not trust the stat. Outside these
- * bounds a rewrite can be noticed late: at the next change that moves the
- * compared fields.
- */
+/** Trust stat equality only after the coarse-timestamp window and reject future or backward clock readings.
+ * Rewrites beyond the clock-skew bound may remain unnoticed until a compared field changes. */
 const RACY_WINDOW_MS = 3_000;
 
-/** One read of the policy file: its load, and the digest that names its content (§18.6). */
 interface PolicyRead {
   load: PolicyLoad;
-  /** sha256 of the file, `absent` without one, `unreadable:<code>` when it cannot be read. */
+  /** Digest is sha256, absent, or unreadable:<code>, never an error path. */
   digest: string;
-  /**
-   * The file's identity and change times when read (see {@link statKey}), for
-   * the next comparison, with the moment that read began; null when they
-   * cannot tell the next change apart and the next check must read the file
-   * again: the read was racy ({@link RACY_WINDOW_MS}), the file could not be
-   * read, or the policy in force came from an applied update.
-   */
+  /** Null forces another read after a racy timestamp, read failure or unapplied-stat update. */
   stat: RecordedStat | null;
 }
 
 interface RecordedStat {
   key: string;
-  /** `now()` when the read that recorded `key` began. */
   readBegan: number;
 }
 
-/**
- * What tells a rewrite, a replacement or a permission change apart without
- * reading the file: size, modification and status-change times, and the
- * file's identity. `chmod` changes only the status-change time, and a file
- * renamed into place has a new inode. Trusted only for a read that began
- * clearly after the file's last change ({@link RACY_WINDOW_MS}).
- */
+/** Size, times and identity detect rewrites, permissions and replacements only outside the racy window. */
 function statKey(info: PolicyFileStat): string {
   return `${fileIdentityKey(info)}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
 
-/** The file changed so close to `readBegan` (or after it) that a rewrite in the same clock tick would leave its stat unchanged. */
+/** Same-tick rewrites can preserve every stat field. */
 function isRacy(info: PolicyFileStat, readBegan: number): boolean {
   const latest = info.ctimeMs > info.mtimeMs ? info.ctimeMs : info.mtimeMs;
   return latest > BigInt(Math.floor(readBegan - RACY_WINDOW_MS));
@@ -492,42 +412,25 @@ async function readPolicy(path: string, platform: NodeJS.Platform, access: Polic
   };
 }
 
-/** Read the system policy file's `marketplaces` section. A file problem is a result; only a bug throws. */
 export async function loadMarketplacePolicy(path: string = getAdminPolicyPath(), platform: NodeJS.Platform = process.platform): Promise<PolicyLoad> {
   return (await readPolicy(path, platform)).load;
 }
 
-/** A newer read of the policy, not yet in force. */
 export interface PolicyUpdate {
   readonly load: PolicyLoad;
   readonly digest: string;
 }
 
-/**
- * Where every part of the marketplace reads the managed policy (design
- * §18.6): the gate, the registry's managed sources and the installers read
- * {@link PolicySource.load} when they need it, so one {@link PolicySource.apply}
- * changes all of them at once. The service refreshes it before every
- * operation through one queue: one check at a time, its update applied under
- * the exclusive operation lock before the next check begins (§12). A source
- * relies on that order and keeps none of its own.
- */
+/** All consumers share the applied policy; the service serializes checks and exclusive-lock application. */
 export interface PolicySource {
-  /** The policy in force. */
   readonly load: PolicyLoad;
-  /** Names the content `load` came from; a plan made under one digest expires under another. */
+  /** A changed content digest expires plans made under the previous policy. */
   readonly digest: string;
-  /** Read the file again: the update when its content differs from the policy in force, else null. */
   check(): Promise<PolicyUpdate | null>;
-  /** Put the update the last check returned in force. */
   apply(update: PolicyUpdate): void;
 }
 
-/**
- * The system policy file as a {@link PolicySource}: compared by identity,
- * change times and sha256 at each check, the times trusted only when the last
- * read began clearly after the file's last change ({@link RACY_WINDOW_MS}).
- */
+/** Re-read unless identity and timestamps came from a read safely after the last change. */
 export class FilePolicySource implements PolicySource {
   private current: PolicyRead;
 
@@ -540,7 +443,6 @@ export class FilePolicySource implements PolicySource {
     this.current = first;
   }
 
-  /** `platform` is the one folder paths in the file are read for: the running one, or a test's. */
   static async open(
     path: string = getAdminPolicyPath(),
     access: PolicyFileAccess = NODE_FILE_ACCESS,
@@ -559,16 +461,14 @@ export class FilePolicySource implements PolicySource {
 
   async check(): Promise<PolicyUpdate | null> {
     const base = this.current;
-    // Unchanged identity and change times, recorded by a read that was not racy: the file was not written,
-    // replaced or re-permissioned since that read. A clock now behind that read has stepped back, and a write
-    // since may carry the recorded times again.
+    // Equal stats are trustworthy only outside the racy window and without a backward clock step.
     const recorded = base.stat;
     if (recorded !== null && this.access.now() >= recorded.readBegan && (await policyStat(this.path, this.access)) === recorded.key) {
       return null;
     }
     const next = await readPolicy(this.path, this.platform, this.access);
     if (next.digest === base.digest) {
-      // Same content, perhaps touched: nothing to apply; the next check compares against these times.
+      // Unchanged content needs no apply, but record fresh times for the next check.
       this.current = { ...base, stat: next.stat };
       return null;
     }
@@ -576,7 +476,6 @@ export class FilePolicySource implements PolicySource {
   }
 
   apply(update: PolicyUpdate): void {
-    // The next check reads the file again and records its identity and times.
     this.current = { load: update.load, digest: update.digest, stat: null };
   }
 }

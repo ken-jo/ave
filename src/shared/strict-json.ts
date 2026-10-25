@@ -1,21 +1,9 @@
-/**
- * The one strict JSON grammar: duplicate keys rejected, forbidden keys
- * rejected, nesting bounded, and optional node/member/item budgets. String and
- * number tokens are decoded by `JSON.parse`/`Number`, so escapes and number
- * syntax follow the standard exactly.
- *
- * Callers pick a preset rather than re-implementing the scanner:
- * {@link parseStrictJson} below is the bounded byte-input preset with a
- * single opaque rejection code; the marketplace file parser
- * (`marketplace/catalog/strict-json.ts`) is a text preset that reports a
- * located `StrictJsonError`.
- */
+/** Reject duplicate and forbidden keys and bound nesting and optional budgets; decode scalar tokens with standard JSON semantics. Callers select byte or located-text error presets. */
 export interface StrictJsonTextOptions {
   readonly maxDepth: number;
   readonly maxNodes?: number;
   readonly maxObjectMembers?: number;
   readonly maxArrayItems?: number;
-  /** Object keys refused outright (checked before the duplicate-key rule). */
   readonly forbiddenKeys: ReadonlySet<string>;
   /** Build objects with a `null` prototype instead of `Object.prototype`. */
   readonly nullPrototypeObjects: boolean;
@@ -164,7 +152,6 @@ const rejectOpaque = (): never => {
   throw new Error("strict-json-rejected");
 };
 
-/** Bounded UTF-8 JSON parser that rejects duplicate and prototype-sensitive keys. */
 export function parseStrictJson(bytes: Uint8Array, limits: StrictJsonLimits): unknown {
   if (bytes.byteLength === 0 || bytes.byteLength > limits.maxBytes) {
     throw new Error("strict-json-size-invalid");

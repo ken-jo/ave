@@ -1,27 +1,5 @@
-/**
- * The validator as the plugin repositories vendor it: two bundles built with
- * their recipe, run by a plain `node` (`docs/design/plugin-hostapi-protocol.md`
- * §9.7 P2, §10.2).
- *
- * The recipe is the official repository's `tools/bundle-app-marketplace.mjs`
- * at the candidate wave, carried byte for byte in
- * `fixtures/bundle-app-marketplace.e53fb40a8.mjs`:
- *
- *   repository  ken-jo/agent-marketplace
- *   commit      e53fb40a8
- *   sha256      475a7275ccc1ec4793ac6c44598f729e19c335c5ec16f7be6b20a6d230aef85a
- *
- * and run the way its `tools/vendor.mjs` runs it — `bun -e <recipe> <app
- * checkout> <entry>` from the checkout. Refresh the fixture only when that
- * repository changes its recipe, and update the commit and hash here with it.
- *
- * What a vendored validator must be: free of `pino` (the recipe replaces the
- * app logger with a silent one, which the CLI needs because stdout is its
- * report), free of the build checkout's paths (the repository's own check
- * refuses a bundle that embeds one), runnable under bare Node although its
- * graph reaches `electron` (nothing on the validate path calls into it), and
- * silent on stdout but for the report.
- */
+// Keep the vendored fixture byte-for-byte with its upstream recipe; refresh its identity together.
+// Bundles must omit build paths, run under bare Node and reserve stdout for reports.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -44,7 +22,6 @@ const BUNDLES = {
 let scratch: string;
 let vendor: string;
 
-/** A `hello-world`-shaped plugin, logging at construct and in its tool. */
 function helloWorld(name: string, minAppVersion: string): string {
   const dir = join(scratch, name);
   mkdirSync(dir);

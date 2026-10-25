@@ -1,15 +1,4 @@
-/**
- * Pre-release verification for the docked approval card (#1973, unified
- * frame #2104).
- *
- * It landed with unit coverage only. The failure mode unit tests cannot see is
- * a wiring one: the dock is mounted once by App beside the routed content, and
- * if it never mounts every tool call needing an approval times out into a deny
- * and the app looks dead. So this drives the real
- * Electron build, pushes a real approval request down the real IPC channel,
- * and asserts the card is on screen, keyboard-driven, and that its target line
- * tracks the focused scope — the property the whole design rests on.
- */
+// Verify real approval mounting and keyboard decisions; missing wiring otherwise times out into denial.
 import { test, expect } from "@playwright/test";
 import type { ElectronApplication, Page } from "playwright";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -26,8 +15,7 @@ import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
 const SEEDED_SESSION_ID = "abcdabcd-1111-4222-8333-444444444444";
 
-// A request names the session that asked; the tile drawing that session is the
-// one that docks its card.
+// Session ownership determines which tile docks the request.
 const OUT_OF_DIR_REQUEST = {
   id: "release-check-1",
   sessionId: SEEDED_SESSION_ID,
@@ -64,9 +52,7 @@ test.describe("release check — docked approval card", () => {
       JSON.stringify(buildE2eBaseSettings(true, "ko"), null, 2),
       "utf-8",
     );
-    // The app blocks on "Loading user settings and memory..." until a session
-    // exists, so seed one; without it ChatView never mounts and nothing below
-    // can be observed.
+    // Seed a session so startup can mount the chat surface.
     const sessionId = SEEDED_SESSION_ID;
     const sessionsDir = resolve(tempHome, ".ave", "sessions");
     mkdirSync(sessionsDir, { recursive: true });
@@ -90,16 +76,12 @@ test.describe("release check — docked approval card", () => {
     );
 
     app = await launchElectron({
-      // Isolate Chromium's profile before app startup. AVE_USER_DATA_DIR is
-      // also passed for the app's own settings, but that environment variable
-      // alone is too late to prevent Electron's process-singleton lock from
-      // colliding with the canonical app intentionally left open for CDP.
-      // HOME points at the temp root so nothing reads the real one.
+      // Isolate the runtime profile before startup to avoid singleton-lock collisions.
+      // Environment-only profile configuration is too late; HOME also points to scratch.
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,
-        // The data home is the seeded `.ave` directory, where the session is.
         AVE_HOME: resolve(tempHome, ".ave"),
         AVE_USER_DATA_DIR: userDataDir,
         AVE_DEV: "1",
@@ -119,8 +101,7 @@ test.describe("release check — docked approval card", () => {
   test("boots with no renderer error", async () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
-    // The toolbar is the first persistent element after React mounts, so the
-    // renderer has booted (and had its chance to throw) once it is visible.
+    // A visible persistent toolbar proves the renderer mounted.
     await expect(page.getByTestId("main-toolbar")).toBeVisible({ timeout: 30_000 });
     expect(errors, `renderer threw: ${errors.join(" | ")}`).toEqual([]);
   });
@@ -128,17 +109,13 @@ test.describe("release check — docked approval card", () => {
   test("a real approval request mounts the card, and the target tracks focus", async () => {
     await expect(page.locator("body")).toBeVisible({ timeout: 30_000 });
 
-    // The renderer subscribes on mount; give React a beat, then push a genuine
-    // request down the real channel from main. Resend a few times so a slow
-    // first paint does not read as a wiring failure.
+    // Resend after mount so slow first paint cannot appear as a subscription failure.
     const bridgeReady = await page.evaluate(
       () => typeof (window as any).ave?.approval?.onRequest === "function",
     );
     expect(bridgeReady, "preload approval bridge missing").toBe(true);
 
-    // Prove the event reaches the renderer before blaming the card. Without
-    // this, a boot that stalls before ChatView mounts reads as a wiring defect
-    // in the card itself.
+    // Prove event delivery before attributing missing cards to approval wiring.
     await page.evaluate(() => {
       (window as any).__relSeen = [];
       (window as any).ave.approval.onRequest((r: unknown) => {
@@ -169,15 +146,11 @@ test.describe("release check — docked approval card", () => {
     const firstTarget = ((await target.textContent()) ?? "").trim();
     expect(firstTarget.length).toBeGreaterThan(0);
 
-    // Every decision must be rendered as its own button — the same three
-    // buttons every other approval kind renders (one frame, issue #2104).
     for (const testId of ["deny-button", "allow-always-button", "approve-button"]) {
       await expect(page.getByTestId(testId)).toBeVisible();
     }
 
-    // The dock hands keyboard focus to the fail-closed Reject decision on
-    // arrival, so a pending Enter/Space from the covered composer can never
-    // become an accidental approval.
+    // Focus Reject on arrival so pending composer keystrokes cannot approve accidentally.
     await expect
       .poll(async () => page.evaluate(() => {
         const el = document.activeElement;
@@ -187,8 +160,7 @@ test.describe("release check — docked approval card", () => {
 
     await page.getByTestId(TEST_IDS.approveButton).focus();
 
-    // Arrowing must move focus AND rewrite the target line. This is the
-    // property the design rests on: what will be granted is always on screen.
+    // Keyboard movement must update both focus and the visible grant target.
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("ArrowRight");
     await expect

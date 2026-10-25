@@ -1,16 +1,5 @@
-/**
- * Syntax highlighting for fenced code blocks, loaded lazily.
- *
- * Nothing here is in the initial renderer bundle except the grammar table: the
- * highlighter core (lowlight over highlight.js core) is its own chunk, and each
- * grammar is a separate chunk fetched the first time a fence names it. Until
- * both have loaded the block renders as plain text with the same font and
- * metrics, so highlighting only recolours — it never moves layout.
- *
- * Output is a hast tree (span elements with `hljs-*` classes and text), turned
- * into React elements by the caller. No HTML string is ever produced, so there
- * is no innerHTML on model-authored text.
- */
+/** Load highlighter and grammars lazily; plain-text fallback retains layout metrics and highlighting emits a syntax tree,
+ * never HTML. */
 import { useEffect, useMemo, useState } from "react";
 import type { LanguageFn, createLowlight } from "lowlight";
 
@@ -20,11 +9,8 @@ const MAX_HIGHLIGHT_CHARS = 100_000;
 type Lowlight = ReturnType<typeof createLowlight>;
 type GrammarModule = { default: LanguageFn };
 
-/**
- * Grammars offered, one lazy chunk each. An explicit table rather than a
- * template-literal import: a template import makes webpack emit a context with
- * every one of highlight.js's ~190 grammars.
- */
+/** Grammars offered, one lazy chunk each. An explicit table rather than a template-literal import: a template import makes
+ * webpack emit a context with every one of highlight.js's ~190 grammars. */
 const GRAMMARS: Record<string, () => Promise<GrammarModule>> = {
   bash: () => import(/* webpackChunkName: "hljs-bash" */ "highlight.js/lib/languages/bash"),
   c: () => import(/* webpackChunkName: "hljs-c" */ "highlight.js/lib/languages/c"),
@@ -132,8 +118,8 @@ export function useHighlightedCode(language: string | undefined, code: string): 
     setReady(false);
     loadGrammar(name).then(
       () => { if (!cancelled) setReady(true); },
-      // A grammar chunk that fails to load leaves the block as plain text,
-      // which is exactly what it was before highlighting existed.
+      // A grammar chunk that fails to load leaves the block as plain text, which is exactly what it was before highlighting
+      // existed.
       () => { if (!cancelled) grammarLoads.delete(name); },
     );
     return () => { cancelled = true; };
@@ -142,8 +128,8 @@ export function useHighlightedCode(language: string | undefined, code: string): 
   // Synchronous once loaded, so streaming text never shows a stale tree.
   return useMemo(() => {
     if (!ready || name === null || lowlight === null) return null;
-    // Each streamed token re-highlights the whole fence; past this size that
-    // is visible jank for little gain, so the block stays plain text.
+    // Each streamed token re-highlights the whole fence; past this size that is visible jank for little gain, so the block
+    // stays plain text.
     if (code.length > MAX_HIGHLIGHT_CHARS) return null;
     try {
       return lowlight.highlight(name, code);

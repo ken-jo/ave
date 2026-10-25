@@ -1,42 +1,6 @@
-/**
- * The agent browser tools: drive the browser tabs of the app window that
- * hosts the conversation.
- *
- *   browser_tabs        read     list this window's tabs; `select` shows one
- *   browser_snapshot    read on an agent tab; ask per origin (session) on a user tab
- *   browser_screenshot  same as browser_snapshot
- *   browser_wait        read     text to appear, or a time
- *   browser_navigate    ask      origin of the URL, session only (http/https only)
- *   browser_click       ask      origin of the tab, session only
- *   browser_type        ask      origin of the tab, session only
- *   browser_press_key   ask      origin of the tab, session only
- *   browser_tab_new     ask      origin of the URL, session only
- *   browser_tab_close   ask      agent tabs, session only
- *
- * POLICY lives in the ordinary pipeline, not here: each tool declares its
- * category, a remembered scope (`browser-origin` / `browser-agent-tabs`, both
- * session-only — no "always allow" for browser actions) and, for a tab the
- * user opened, `requiresPerActionApproval` (an explicit allow-once every
- * time). The hooks resolve the tab through the main-side registry using the
- * session the call belongs to; the model never supplies the origin.
- *
- * TOCTOU. A tab can navigate (or be released by the user's Stop) while the
- * approval card is open. Execute re-reads the tab's origin and opener and
- * compares them with the scope the call was authorized under; on a mismatch
- * it does nothing and says so, and calling again asks about the page the tab
- * shows now.
- *
- * SCOPE. Only the tabs of the window that hosts the calling conversation are
- * reachable (a sub-agent inherits its parent's); another window's tab answers
- * exactly like one that does not exist. Routines and headless runs get no
- * browser: no window hosts them, and every tool here is `arbitraryEgress`, so
- * unattended lanes never see the schemas at all.
- *
- * Everything read from a page (outline, title, URL) is framed
- * `<browser-content trust="untrusted-web-data">`. Page actions run in main
- * over the guest's DevTools session (main/browser/browser-actions.ts); those
- * and the execute bodies (browser-tools-execute.ts) load on first use.
- */
+/** Browser tools reach only the calling conversation's window; sub-agents inherit it, while routines and headless lanes receive no schemas.
+ * Use session-only origin scopes and per-action approval for user tabs; main resolves origins and execution rechecks opener and origin after approval.
+ * Refuse changed targets without acting, frame all page content as untrusted, and load main-owned actions on first use. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
@@ -53,6 +17,8 @@ import type {
   DefaultBrowserTab,
 } from "../main/browser/browser-tab-registry.js";
 import type { BrowserToolExecutors } from "./browser-tools-execute.js";
+import type { BrowserSessionActor, BrowserControlLease } from "../shared/browser-surface.js";
+import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 
 /** What the tools need of the main-side tab registry. */
@@ -60,11 +26,15 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   liveTab(handle: string): BrowserTabRecord<G> | undefined;
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined;
   listTabs(windowId: number): BrowserTabView[];
+  listSessionTabs(windowId: number, actor: BrowserSessionActor, includeDirectChildren: boolean): BrowserTabView[];
+  assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void;
+  acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease;
+  releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
   defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab;
   requestTabOp(
     windowId: number,
-    op: { op: "new"; url: string; sessionId?: string } | { op: "select" | "close"; tabId: string },
+    op: { op: "new"; url: string; sessionId?: string; actor: BrowserSessionActor; active?: boolean } | { op: "select" | "close"; tabId: string; actor: BrowserSessionActor },
     options?: { signal?: AbortSignal },
   ): Promise<BrowserTabOpOutcome>;
 }
@@ -73,7 +43,9 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly tab: BrowserTabRecord<G>;
   readonly signal: AbortSignal;
-  readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
+  readonly leaseId?: string;
+  readonly callerSignal?: AbortSignal;
+  readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number; readonly controlGeneration: number };
 }
 
 /** The page actions (main/browser/browser-actions.ts), loaded on first use. */
@@ -88,9 +60,17 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
     refCount: number;
     delta: boolean;
   }>;
-  screenshot(target: BrowserActionTab<G>): Promise<{ data: string; mimeType: string; bytes: number }>;
+  screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
   click(target: BrowserActionTab<G>, ref: string): Promise<void>;
+  hover(target: BrowserActionTab<G>, ref: string): Promise<void>;
+  drag(target: BrowserActionTab<G>, sourceRef: string, targetRef: string): Promise<void>;
+  select(target: BrowserActionTab<G>, ref: string, value: string): Promise<void>;
+  scroll(target: BrowserActionTab<G>, ref: string, direction: "up" | "down" | "left" | "right", pixels: number): Promise<void>;
+  upload(target: BrowserActionTab<G>, ref: string, options: {
+    windowId: number; sessionId: string;
+    pickFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>;
+  }): Promise<BrowserUploadResult>;
   type(target: BrowserActionTab<G>, ref: string, text: string, options: { submit?: boolean }): Promise<void>;
   pressKey(target: BrowserActionTab<G>, key: string, ref?: string): Promise<void>;
   navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<{ url: string }>;
@@ -100,6 +80,7 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
 
 export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends SessionWindowScopeDeps {
   readonly tabs: BrowserTabsAccess<G>;
+  readonly pickUploadFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>;
   readonly loadActions: () => Promise<BrowserPageActions<G>>;
 }
 
@@ -110,6 +91,12 @@ export const BROWSER_PRESSABLE_KEYS = [
 ] as const;
 
 const MAX_WAIT_MS = 30_000;
+const canonicalBrowserNavigationTools = new WeakSet<object>();
+
+export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null && canonicalBrowserNavigationTools.has(tool);
+}
+
 /** A tab handle from browser_tabs (minted by the main-side registry). */
 export const BROWSER_TAB_ID_PATTERN = /^tab-\d+$/;
 
@@ -143,7 +130,9 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
       if (handle === undefined) return undefined;
       const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
-      if (!tab || !tab.guest) return undefined;
+      if (!tab || !tab.guest || !sessionId) return undefined;
+      try { deps.tabs.assertActorAccess(tab, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) }); }
+      catch { return undefined; }
       return { tab, origin: browserOrigin(tab.guest.getURL()), opener: tab.opener };
     },
   };
@@ -153,7 +142,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     if (!resolved) return undefined;
     const guest = resolved.tab.guest;
     const actions = await deps.loadActions();
-    await actions.prepare({ tab: resolved.tab, signal: resolved.tab.actions.signal });
+    await actions.prepare({ tab: resolved.tab, signal: new AbortController().signal });
     // Pin an omitted tab before awaiting; selecting another tab cannot retarget approval.
     const current = policy.resolveTab({ tabId: resolved.tab.handle }, ctx?.sessionId);
     if (!current || current.tab.guest !== guest || current.origin !== resolved.origin || current.opener !== resolved.opener) {
@@ -169,6 +158,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       tabOpener: resolved.opener,
       tabId: resolved.tab.handle,
       documentId: resolved.tab.documentId,
+      controlGeneration: resolved.tab.controlGeneration,
     } : undefined;
   };
   const onAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => {
@@ -181,11 +171,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
   const notAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => !onAgentTab(raw, ctx);
   const readOnAgentTab = (raw: unknown, ctx?: ToolPolicyContext): ToolCategory =>
     onAgentTab(raw, ctx) ? "read" : "network";
-  /**
-   * A URL the tools will refuse (not http/https) opens nothing, so asking the
-   * user about it would only ask them to approve a refusal: it runs as a read
-   * and execute refuses it.
-   */
+  /** A URL the tools will refuse (not http/https) opens nothing, so asking the user about it would only ask them to approve a refusal: it runs as a read and execute refuses it. */
   const urlCategory = (raw: unknown): ToolCategory => {
     const input = asInput(raw);
     if (typeof input.url !== "string") return "read";
@@ -204,7 +190,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       kind: "browser-origin",
       origin,
       tabOpener: opener,
-      ...(tab ? { tabId: tab.handle, documentId: tab.documentId } : {}),
+      ...(tab ? { tabId: tab.handle, documentId: tab.documentId, controlGeneration: tab.controlGeneration } : {}),
     } : undefined;
   };
 
@@ -237,7 +223,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       description: t("be_browserTools.tabsDescription"),
       category: "read",
       isReadOnly: () => true,
-      jsonSchema: object({ select: { type: "string", description: t("be_browserTools.tabsSelectDescription") } }),
+      jsonSchema: object({ select: { type: "string", description: t("be_browserTools.tabsSelectDescription") }, scope: { type: "string", enum: ["window", "conversation"] }, includeDirectChildren: { type: "boolean" } }),
       execute: execute(BROWSER_TOOL.tabs),
     }),
     createDynamicTool({
@@ -263,7 +249,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       categoryForInput: readOnAgentTab,
       isReadOnly: (raw) => readOnAgentTab(raw) === "read",
       approvalMemoryScope: pageScope,
-      jsonSchema: object({ tabId: tabIdProperty }),
+      jsonSchema: object({ tabId: tabIdProperty, fullPage: { type: "boolean", enum: [false], description: t("be_browserTools.fullPageDescription") } }),
       execute: execute(BROWSER_TOOL.screenshot),
     }),
     createDynamicTool({
@@ -302,6 +288,21 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       jsonSchema: object({ tabId: tabIdProperty, ...refProperty }, ["ref"]),
       execute: execute(BROWSER_TOOL.click),
     }),
+    ...([
+      [BROWSER_TOOL.hover, "be_browserTools.hoverDescription", { ...refProperty }, ["ref"]],
+      [BROWSER_TOOL.drag, "be_browserTools.dragDescription", { sourceRef: refProperty.ref, targetRef: refProperty.ref }, ["sourceRef", "targetRef"]],
+      [BROWSER_TOOL.select, "be_browserTools.selectDescription", { ...refProperty, value: { type: "string", maxLength: 1000 } }, ["ref", "value"]],
+      [BROWSER_TOOL.scroll, "be_browserTools.scrollDescription", { ...refProperty, direction: { type: "string", enum: ["up", "down", "left", "right"] }, pixels: { type: "integer", minimum: 1, maximum: 2000 } }, ["ref", "direction", "pixels"]],
+      [BROWSER_TOOL.upload, "be_browserTools.uploadDescription", { ...refProperty }, ["ref"]],
+    ] as const).map(([name, description, properties, required]) => createDynamicTool({
+      ...common,
+      ...pageAction,
+      name,
+      description: t(description),
+      ...(name === BROWSER_TOOL.upload ? { requiresPerActionApproval: () => true } : {}),
+      jsonSchema: object({ tabId: tabIdProperty, ...properties }, [...required]),
+      execute: execute(name),
+    })),
     createDynamicTool({
       ...common,
       ...pageAction,
@@ -349,12 +350,18 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       requiresPerActionApproval: notAgentTab,
       approvalMemoryScope: (raw, ctx) => {
         const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
-        return resolved?.opener === "agent"
-          ? { kind: "browser-agent-tabs", tabId: resolved.tab.handle, documentId: resolved.tab.documentId }
-          : undefined;
+        if (!resolved) return undefined;
+        const identity = { tabId: resolved.tab.handle, documentId: resolved.tab.documentId, controlGeneration: resolved.tab.controlGeneration };
+        return resolved.opener === "agent"
+          ? { kind: "browser-agent-tabs", ...identity }
+          : resolved.origin === null ? undefined
+            : { kind: "browser-origin", origin: resolved.origin, tabOpener: resolved.opener, ...identity };
       },
       jsonSchema: object({ tabId: tabIdProperty }, ["tabId"]),
       execute: execute(BROWSER_TOOL.tabClose),
     }),
-  ];
+  ].map((tool) => {
+    if (tool.name === BROWSER_TOOL.navigate || tool.name === BROWSER_TOOL.tabNew) canonicalBrowserNavigationTools.add(tool);
+    return tool;
+  });
 }

@@ -1,21 +1,4 @@
-/**
- * Settings keys the boot environment can also decide.
- *
- * Every entry pairs a settings key with the environment variable the host
- * reads beside it. The settings side is the one a packaged-app user can reach;
- * the env side is what a launcher script or a shell profile can force. When
- * the two disagree the environment wins, so a control that rendered only the
- * saved value would be telling the user something that is not true of the
- * running app. The surfaces that render these controls ask the host which
- * variables are deciding and say so.
- *
- * The override is NOT always `settings || env`. Most of these variables can
- * only force a setting on, one can only force it off, and one decides in both
- * directions. Each entry therefore carries the rule itself as
- * {@link EnvBackedSetting.forcedValue} — and the resolver that reads the pair
- * calls that same function, so the two cannot drift into disagreeing about
- * what the environment is doing.
- */
+/** Share environment override rules between resolution and UI notices; variables may force on, off, or both. */
 
 import { normalizeShutdownCleanupTimeoutMs } from "./tool-timeout-policy.js";
 
@@ -23,107 +6,60 @@ export interface EnvBackedSetting {
   /** Dotted path into the settings object, as `updateSettings` nests it. */
   readonly settingsPath: string;
   readonly envVar: string;
-  /**
-   * What the environment forces this setting to, given the variable's current
-   * value — or `undefined` when the environment leaves the decision to the
-   * setting. `undefined` covers both "unset" and "set to something this gate
-   * does not act on".
-   *
-   * The return type follows the SETTING's type: a boolean gate answers with a
-   * boolean, a text setting answers with the string the environment supplies,
-   * and a numeric setting answers with the number it parsed. Read it through
-   * the resolver for that type — {@link resolveEnvBackedBoolean},
-   * {@link envForcedStringForSettingsPath}, {@link resolveEnvBackedNumber} —
-   * which narrow it back.
-   */
+  /** Undefined means the environment leaves control to settings; forced values retain the setting’s actual type. */
   readonly forcedValue: (envValue: string | undefined) => boolean | string | number | undefined;
 }
 
-/**
- * The historical shape: one exact value turns the setting on, anything else
- * (including unset) leaves it to the saved value. `settings || env`.
- */
+/** Only the exact opt-in value forces on; other values leave the setting in control. */
 function forcesOnAt(onValue: string) {
   return (envValue: string | undefined): boolean | undefined =>
     envValue === onValue ? true : undefined;
 }
 
-/**
- * The mirror image: one exact value turns the setting OFF. Used by the
- * variables whose NAME is the negative — `AVE_SKIP_CORP_CA=1` means "do not
- * do this", so it forces `corpCaEnabled` false rather than true.
- */
+/** Negative opt-in variables force off rather than on. */
 function forcesOffAt(offValue: string) {
   return (envValue: string | undefined): boolean | undefined =>
     envValue === offValue ? false : undefined;
 }
 
-/**
- * The text-setting shape: the variable supplies the value when it holds one,
- * and leaves the decision to the setting when it is unset or blank. Whitespace
- * is not a name, a DSN, or a URL — it is an empty export, and treating it as a
- * forced value would make the control claim the environment is deciding while
- * the app searches for nothing.
- */
+/** Unset or blank text leaves settings in control; whitespace is not a usable override. */
 function forcesTextWhenNonEmpty(envValue: string | undefined): string | undefined {
   const trimmed = envValue?.trim();
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-/** Values of `AVE_MARKETPLACE_UPDATE_CHECK` that turn the update check off. */
 const UPDATE_CHECK_OFF_RE = /^(0|false)$/i;
 
-/** Values of `AVE_MARKETPLACE_USE_CACHE` that mean ON; anything else set means OFF. */
 const USE_CACHE_ON_RE = /^(1|true|yes|on)$/i;
 
 export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
-  // The loopback HTTP surface and the A2A route family on it are independently
-  // opt-in: either one alone starts the server (`resolveLoopbackRouteFamilies`).
+  // Loopback and A2A route families opt in independently; outbound and receiver gates cannot widen them.
   { settingsPath: "system.localApiServer", envVar: "AVE_LOCAL_API", forcedValue: forcesOnAt("1") },
   { settingsPath: "features.a2aLoopbackServer", envVar: "AVE_A2A", forcedValue: forcesOnAt("1") },
-  // Outbound routing and the receiver profile are two more separate gates
-  // (`snapshotA2ARemoteGates`); neither widens the loopback family above.
   { settingsPath: "features.a2aRemoteRouting", envVar: "AVE_A2A_REMOTE", forcedValue: forcesOnAt("1") },
   {
     settingsPath: "features.a2aRemoteReceiver",
     envVar: "AVE_A2A_REMOTE_RECEIVER",
     forcedValue: forcesOnAt("1"),
   },
-  // Already has a control (Permissions → OS tool sandbox); it is here because
-  // the same environment trap applies to it.
+  // Shell and plugin-worker confinement have independent environment gates.
   { settingsPath: "features.osToolSandbox", envVar: "AVE_SANDBOX_ENABLED", forcedValue: forcesOnAt("1") },
-  // Chromium's GPU process. Read once, before `app.whenReady()`, so neither
-  // side of this pair can change the running app — the control says "next
-  // launch" for the same reason the resolver has to read the settings file
-  // directly instead of asking SettingsService, which does not exist yet.
+  {
+    settingsPath: "features.pluginWorkerConfinement",
+    envVar: "AVE_PLUGIN_WORKER_CONFINEMENT",
+    forcedValue: forcesOnAt("1"),
+  },
+  // GPU policy is read before app readiness; edits apply only on next launch.
   { settingsPath: "system.hardwareAcceleration", envVar: "AVE_KEEP_GPU", forcedValue: forcesOnAt("1") },
-  // The marketplace pair. Neither of these is `settings || env`:
-  //
-  //   AVE_MARKETPLACE_UPDATE_CHECK can only turn the check OFF — the host
-  //   reads it as `(setting ?? true) && env`, so an ON value changes nothing
-  //   and the setting still decides.
-  //
-  //   AVE_MARKETPLACE_USE_CACHE decides in BOTH directions once it is set. It
-  //   was the only control before the setting existed, and a deployment that
-  //   pinned it keeps that pin rather than having a profile quietly override
-  //   it.
-  //
-  // `resolveUpdateCheckEnabled` and `resolveKeepArtifacts` resolve
-  // through these functions, so the rule the UI reports is the rule the host
-  // applies.
+  // Update-check environment policy can force off only; an on value still respects the setting.
+  // Cache policy decides both directions when set; deployment pins outrank saved profiles.
   {
     settingsPath: "marketplace.updateCheckEnabled",
     envVar: "AVE_MARKETPLACE_UPDATE_CHECK",
     forcedValue: (envValue: string | undefined) =>
       envValue !== undefined && UPDATE_CHECK_OFF_RE.test(envValue) ? false : undefined,
   },
-  // The corporate root CA group. Injection happens before `bootstrap()`, so
-  // these are read straight off the settings file (see persisted-corp-ca.ts)
-  // and the controls say "next launch" for the same reason the GPU one does.
-  //
-  // `AVE_CORP_CA_CN` is the first TEXT setting here: it does not force a
-  // boolean, it supplies the name to look for. The registry reports it the
-  // same way regardless, so the control can say the environment is deciding.
+  // Corporate CA settings are read before boot, so changes apply on next launch.
   { settingsPath: "system.corpCaEnabled", envVar: "AVE_SKIP_CORP_CA", forcedValue: forcesOffAt("1") },
   { settingsPath: "system.corpCaDebugLog", envVar: "AVE_CORP_CA_DEBUG", forcedValue: forcesOnAt("1") },
   {
@@ -131,32 +67,18 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
     envVar: "AVE_CORP_CA_CN",
     forcedValue: forcesTextWhenNonEmpty,
   },
-  // The Sentry DSN. A second text entry, and the one that had the settings key
-  // already: `telemetry.sentryDsn` has existed since crash reporting shipped,
-  // the environment simply outranked it with nothing on screen saying so.
   {
     settingsPath: "telemetry.sentryDsn",
     envVar: "AVE_SENTRY_DSN",
     forcedValue: forcesTextWhenNonEmpty,
   },
-  // Per-model price corrections. The registry carries the RAW blob rather than
-  // the parsed list, because all this layer decides is "is the environment
-  // deciding this setting" — the parse and the whole-list precedence live in
-  // `shared/pricing-overrides.ts`, where the settings path and the env path
-  // meet. A blob that parses to nothing still counts as forced: the deployment
-  // set the variable, and a table the user could edit under it would be
-  // editing something the app is not reading.
+  // Report the raw price-correction blob as forced even if parsing yields no entries; parsing owns whole-list precedence.
   {
     settingsPath: "llm.pricingOverrides",
     envVar: "AVE_PRICING_OVERRIDE",
     forcedValue: forcesTextWhenNonEmpty,
   },
-  // The shutdown cleanup window: the first NUMERIC entry here. The gate is the
-  // same parse the setting itself goes through
-  // (`normalizeShutdownCleanupTimeoutMs`), so a value the environment supplies
-  // and a value the user picks are accepted or rejected on identical terms —
-  // and an unusable env value falls through to the setting rather than to no
-  // deadline at all.
+  // Numeric environment values must pass the same normalization as settings or fall through.
   {
     settingsPath: "system.shutdownCleanupTimeoutMs",
     envVar: "AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS",
@@ -168,12 +90,7 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
     forcedValue: (envValue: string | undefined) =>
       envValue === undefined ? undefined : USE_CACHE_ON_RE.test(envValue.trim()),
   },
-  // A pinned model catalog. `AVE_MODEL_CATALOG` names the catalog a run
-  // resolves against (`bundled`, a cached `<sha256>`, or an absolute file) —
-  // for headless runs and benchmarks that must not change catalog between
-  // launches — so any value turns the refresh off. Which catalog it names is
-  // read by the boot selection (`src/core/model-catalog/bundled.ts`), which
-  // refuses to boot on a value it cannot honour.
+  // Any catalog pin disables refresh; boot refuses pins it cannot honor.
   {
     settingsPath: "llm.modelCatalogRefresh",
     envVar: "AVE_MODEL_CATALOG",
@@ -186,15 +103,7 @@ const KNOWN_PATHS: ReadonlySet<string> = Object.freeze(
   new Set(ENV_BACKED_SETTINGS.map((entry) => entry.settingsPath)),
 );
 
-/**
- * Which of the listed settings the environment is currently deciding.
- *
- * A variable that is set but not to a value its gate acts on is NOT in this
- * list: the setting still decides there, which is what the resolvers do. The
- * DIRECTION is deliberately not in the payload — each control states what its
- * own variable does, because the three shapes read differently to a person and
- * one generic sentence would be wrong for two of them.
- */
+/** Report only variables whose values actually force known settings, not every set variable. */
 export function envForcedSettingsPaths(
   env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
@@ -205,11 +114,7 @@ export function envForcedSettingsPaths(
   );
 }
 
-/**
- * What the environment forces `settingsPath` to right now, or `undefined` when
- * it is leaving that setting to the saved value. Resolvers call this instead of
- * re-deriving the rule from `process.env` themselves.
- */
+/** Resolvers read this rule instead of re-deriving environment precedence. */
 export function envForcedValueForSettingsPath(
   settingsPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -219,16 +124,7 @@ export function envForcedValueForSettingsPath(
   return entry.forcedValue(env[entry.envVar]);
 }
 
-/**
- * {@link envForcedValueForSettingsPath} narrowed to a boolean setting. A
- * non-boolean answer means the caller asked a text gate for a boolean, which
- * is a wiring mistake rather than a forced value — so it reads as "not forced"
- * instead of coercing something the resolver would then act on.
- *
- * Module-private: {@link resolveEnvBackedBoolean} is the whole public use of
- * it, and exporting a second entry point would invite a caller to read the
- * forced value without applying the precedence rule that goes with it.
- */
+/** A type mismatch means not forced, never coercion into another setting type. */
 function envForcedBooleanForSettingsPath(
   settingsPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -237,15 +133,7 @@ function envForcedBooleanForSettingsPath(
   return typeof value === "boolean" ? value : undefined;
 }
 
-/**
- * The whole rule for a boolean setting the environment can also decide:
- * what the environment forces, else what the user saved, else the default.
- *
- * Every such setting resolves this way, so it resolves here — the per-feature
- * entry points are named wrappers around this call, not their own copies of the
- * precedence. Which values force, and in which direction, stays in the registry
- * entry above, where the settings UI reads it to tell the user.
- */
+/** Boolean precedence is forced environment value, saved setting, then default. */
 export function resolveEnvBackedBoolean(
   settingsPath: string,
   settingValue: boolean | undefined,
@@ -255,7 +143,6 @@ export function resolveEnvBackedBoolean(
   return envForcedBooleanForSettingsPath(settingsPath, env) ?? settingValue ?? fallback;
 }
 
-/** {@link envForcedValueForSettingsPath} narrowed to a text setting. */
 export function envForcedStringForSettingsPath(
   settingsPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -264,11 +151,7 @@ export function envForcedStringForSettingsPath(
   return typeof value === "string" ? value : undefined;
 }
 
-/**
- * {@link envForcedValueForSettingsPath} narrowed to a numeric setting. Kept
- * module-private for the same reason its boolean twin is: the forced value is
- * only ever wanted together with the precedence rule below.
- */
+/** Keep forced numeric reads private so callers also apply precedence. */
 function envForcedNumberForSettingsPath(
   settingsPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -277,14 +160,7 @@ function envForcedNumberForSettingsPath(
   return typeof value === "number" ? value : undefined;
 }
 
-/**
- * {@link resolveEnvBackedBoolean} for a numeric setting: what the environment
- * forces, else what the user saved, else the default.
- *
- * `settingValue` is expected to have passed the SAME normalization the registry
- * entry uses, so a stored value that could not be a timeout is `undefined` here
- * and falls through rather than being resolved to something unusable.
- */
+/** Numeric precedence is environment, normalized saved value, then default. */
 export function resolveEnvBackedNumber(
   settingsPath: string,
   settingValue: number | undefined,
@@ -294,18 +170,11 @@ export function resolveEnvBackedNumber(
   return envForcedNumberForSettingsPath(settingsPath, env) ?? settingValue ?? fallback;
 }
 
-/** The variable a surface should name when it reports a forced setting. */
 export function envVarForSettingsPath(settingsPath: string): string | null {
   return ENV_BACKED_SETTINGS.find((entry) => entry.settingsPath === settingsPath)?.envVar ?? null;
 }
 
-/**
- * Validate a forced-paths list arriving over IPC.
- *
- * The renderer decides what to tell the user from this, so an unrecognized
- * path is dropped rather than displayed: the list is a claim about keys this
- * build knows, and anything else is drift, not news.
- */
+/** Drop unknown IPC paths so renderer notices describe only settings this build recognizes. */
 export function parseEnvForcedSettingsPaths(value: unknown): readonly string[] | null {
   if (!Array.isArray(value)) return null;
   const paths = value.filter(

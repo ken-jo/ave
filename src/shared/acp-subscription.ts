@@ -1,14 +1,4 @@
-/**
- * Browser-safe contract for subscription-backed ACP runtime connections.
- *
- * These runtimes own their own device-code/OIDC credentials. Ave never
- * reads credential files, account identities, or raw runtime output. A short,
- * one-time device code may be deliberately projected while a login is pending;
- * the matching dynamic verification URL always remains in the main process.
- * This is connection setup only: ACP sessions must still pass through the
- * separate Ave tool-approval and audit bridge before they can become chat
- * providers.
- */
+/** Runtime credentials stay private; chat use still requires the host tool-approval and audit bridge. */
 
 import { isRecord } from "./is-record.js";
 
@@ -34,11 +24,7 @@ export type AcpSubscriptionConnectionState =
 
 export type AcpSubscriptionLoginMethod = "device-code";
 
-/**
- * Prompt content types explicitly negotiated by an ACP runtime at initialize.
- * These values stay main-owned until the safe, renderer-facing runtime status
- * projection is built; absent or malformed values are always false.
- */
+/** Only explicitly negotiated prompt variants are enabled; missing or malformed values are false. */
 export interface AcpSubscriptionPromptCapabilities {
   readonly image: boolean;
   readonly embeddedContext: boolean;
@@ -49,7 +35,6 @@ export const DEFAULT_ACP_SUBSCRIPTION_PROMPT_CAPABILITIES: AcpSubscriptionPrompt
   embeddedContext: false,
 });
 
-/** Parse only the stable ACP initialize capability shape, fail closed otherwise. */
 export function acpSubscriptionPromptCapabilitiesFromInitialize(
   initialize: unknown,
 ): AcpSubscriptionPromptCapabilities {
@@ -71,22 +56,13 @@ export interface AcpSubscriptionStatus {
   runtime: AcpSubscriptionRuntimeState;
   /** Runtime-owned subscription state; no credential material is projected. */
   connection: AcpSubscriptionConnectionState;
-  /** Present only while the official runtime is completing a device-code flow. */
   pendingLogin: AcpSubscriptionLoginMethod | null;
-  /**
-   * Strictly validated, short-lived user code from the official device flow.
-   * It is never persisted and is cleared as soon as the login process exits.
-   */
+  /** Short-lived device codes are never persisted and clear when login exits. */
   pendingDeviceCode: string | null;
-  /**
-   * The main process holds a strictly allowlisted official verification URL.
-   * The URL itself never crosses IPC; the renderer can only request that the
-   * main process opens it in the user's system browser.
-   */
+  /** Verification URLs stay in main; renderer may only request opening an allow-listed URL. */
   canOpenVerificationUrl: boolean;
   /** A bounded version string only after an explicit user-initiated verification. */
   version: string | null;
-  /** Negotiated ACP prompt variants from the last successful verification. */
   promptCapabilities: AcpSubscriptionPromptCapabilities;
 }
 

@@ -1,14 +1,4 @@
-/**
- * #885 v6 (#1554 lineage) — the governed-vs-bypass invariant is now enforced by
- * pure Tool-object visibility.
- *
- *  - A Tool with visibility `["model","app"]` loads once and, being
- *    model-visible, stays on the governed executor (`isUiOnly=false`).
- *  - An AUTH tool that resolves model-visible (the pure-form analog of "leaked
- *    into tools[]") is REJECTED by the auth-visibility check (must be exactly
- *    `["app"]`) — the #1554 "auth is never model-callable" invariant, now
- *    enforced at the tool-object level rather than by a cross-surface check.
- */
+/** Tool visibility determines governed dispatch; app-only declarations must never widen trusted bypass authority. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -59,7 +49,7 @@ describe("#885 v6 — dual-declared visibility (the #1554 governed-vs-bypass inv
         pureTool("t_one", ["model"]),
         pureTool("ui_only_method", ["app"]),
       ],
-      // deliberately NO `auth` block — this exercises the general (non-auth) case.
+      // Omit auth to cover ordinary app-only tools.
     });
     const manifest = await parsePluginJson(path, validator);
     expect(manifest.tools.find((t) => t.name === "shared_method")?._meta?.ui?.visibility,

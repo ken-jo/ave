@@ -6,12 +6,7 @@ import {
   RATIONALE_DISPLAY_CAPS,
 } from "../rationale-approval-display.js";
 
-/**
- * Emission-integrity totality: whatever the DLP mask does to the text, the
- * sealed display MUST parse. The bug this pins: a mask token inflating a
- * near-cap field over its limit made the renderer's parse return null, and the
- * approval card rendered with no tool identity at all.
- */
+/** Sealed displays must still parse after masking expands fields beyond their caps. */
 function readyDisplay(overrides: Partial<Parameters<typeof createRationaleApprovalDisplay>[0]> = {}) {
   return createRationaleApprovalDisplay({
     toolName: "agent_spawn",
@@ -48,28 +43,23 @@ describe("sealMaskedRationaleApprovalDisplay", () => {
   });
 
   it("degrades only the violating field, never the whole card", () => {
-    // A near-cap authority string that one 16-char token pushes over 160.
     const nearCap = "a".repeat(RATIONALE_DISPLAY_CAPS.authorityLength - 4);
     const display = readyDisplay({ requiredAuthority: nearCap });
     const sealed = sealMaskedRationaleApprovalDisplay(display, (v) =>
       v === nearCap ? nearCap + "[REDACTED:TOKEN]" : v,
     );
     expect(parseRationaleApprovalDisplay({ ...sealed })).not.toBeNull();
-    // Overflow is trimmed to the cap, not nuked: content survives —
+    // Mark truncation visibly so shortened values cannot be mistaken for complete authority text.
     expect(sealed.requiredAuthority.startsWith("aaa")).toBe(true);
-    // — and the cut is VISIBLE. A silent tail cut reads as a complete,
-    // different value, and the user would be approving that other value.
     expect(sealed.requiredAuthority.endsWith("…")).toBe(true);
     expect(sealed.requiredAuthority.length).toBeLessThanOrEqual(
       RATIONALE_DISPLAY_CAPS.authorityLength,
     );
-    // Untouched fields are byte-identical.
     expect(sealed.toolName).toBe(display.toolName);
   });
 
   it("never splits a surrogate pair at the truncation point", () => {
-    // An emoji straddling the cap boundary must be dropped whole — a lone
-    // surrogate renders as U+FFFD and reads as corruption, not truncation.
+    // Drop an emoji whole at the cap; never leave a lone surrogate.
     const cap = RATIONALE_DISPLAY_CAPS.authorityLength;
     const base = "a".repeat(cap - 2) + "😀😀";
     const display = readyDisplay({ requiredAuthority: "auth" });
@@ -82,7 +72,6 @@ describe("sealMaskedRationaleApprovalDisplay", () => {
   });
 
   it("substitutes a safe literal when the mask output cannot be salvaged", () => {
-    // A mask that empties the field entirely — nothing to trim toward validity.
     const sealed = sealMaskedRationaleApprovalDisplay(readyDisplay(), () => "  ");
     expect(parseRationaleApprovalDisplay({ ...sealed })).not.toBeNull();
     expect(sealed.toolName).toBe("[redacted]");
@@ -117,9 +106,7 @@ describe("sealMaskedRationaleApprovalDisplay", () => {
   });
 
   it("keeps a full-to-cap list intact", () => {
-    // An over-cap input display cannot exist — the constructor throws — so the
-    // boundary case is a list at exactly the cap, which must survive sealing
-    // without loss.
+    // Test the exact-cap boundary because constructors reject over-cap displays.
     const atCap = Array.from(
       { length: RATIONALE_DISPLAY_CAPS.listItems },
       (_, i) => `reason-${i}`,

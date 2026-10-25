@@ -33,10 +33,15 @@
         "src/headless.ts",
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
+        "src/tools/preview-document-child-main.ts",
         "scripts/smoke-live-model.mjs",
+        // Informational hook-matcher benchmark, run by hand (see its header).
+        "scripts/bench-hook-matchers.ts",
         "scripts/smoke-live-app.mjs",
         // Loaded by the installer packager through build.beforePack.
         "scripts/electron-before-pack.cjs",
+        // Run by electron-before-pack.cjs through a path (Windows builds).
+        "scripts/fetch-mxc.mjs",
         "scripts/hooks/run-local-checks.mjs",
         // Launched by the release builder after schema generation.
         "scripts/sync-plugin-host-protocol-mirror.mjs",
@@ -90,6 +95,8 @@
       ]
     },
     "web": {
+      // Manual catalog refresh command documented in web/DESIGN.md; no module imports it.
+      "entry": ["scripts/marketplace-snapshot.mjs"],
       // The nested web workspace owns a separate lockfile/install. Root Knip
       // still analyzes its sources and dependency declarations without
       // requiring web/node_modules to exist in desktop-app workflows.
@@ -143,6 +150,9 @@
     "pgrep",
     "plutil",
     "powershell.exe",
+    // PowerShell 7: the PSModulePath regression spawns it to prove the
+    // Windows PowerShell 5.1 env helper survives an inherited 7.x module path.
+    "pwsh.exe",
     "python3",
     "subst",
     "taskkill",

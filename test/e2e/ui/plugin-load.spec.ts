@@ -3,18 +3,7 @@ import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
 import { captureCommandMenus, capturedCommandMenus } from './command-menu.js';
 import { VIEW_FIXTURE_VIEW_KEY } from '../../fixtures/e2e-plugins/view-fixture.js';
 
-/**
- * Regression guard: a seeded plugin's UI view stays reachable. The seeded
- * plugin is the in-repository fixture (test/fixtures/e2e-plugins), so the
- * spec needs nothing outside this repository. The composer's
- * plugin grid is gone; a plugin's sidebar view is reached from the command
- * button's Plugins submenu, whose rows are keyed by the view key
- * (`plugin:<manifest id>:<view id>`).
- *
- * The menu is the OS's, so the spec reads the payload the renderer sends main
- * — built from the real app's loaded plugins — rather than a rendered popover
- * (see command-menu.ts).
- */
+// Use the repository fixture so plugin view reachability needs no external installation.
 const PLUGIN_VIEW_KEYS = [VIEW_FIXTURE_VIEW_KEY] as const;
 
 test('plugins with UI views appear in the command menu', async ({ app, mainWindow }) => {
@@ -23,7 +12,7 @@ test('plugins with UI views appear in the command menu', async ({ app, mainWindo
   await expect(trigger).toBeVisible({ timeout: 60_000 });
   await captureCommandMenus(app);
 
-  // Plugins load after the window: open the menu until their rows are in it.
+  // Plugins load after the window; wait for their menu rows.
   const pluginRows = async (): Promise<string[]> => {
     await trigger.click();
     const payloads = await capturedCommandMenus(app);

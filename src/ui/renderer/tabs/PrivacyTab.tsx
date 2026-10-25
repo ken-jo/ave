@@ -1,9 +1,3 @@
-/**
- * PrivacyTab — DLP Hit Statistics panel
- *
- * Shows cumulative redaction stats: total hits, by-kind bar chart,
- * daily trend sparkline, and top 5 patterns.
- */
 import { useCallback, useEffect, useState } from "react";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";

@@ -22,8 +22,9 @@ import { MCP_RESOURCE_FENCE_OPEN } from "../../shared/mcp-resource-bounds.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { TurnCallbacks, TurnDecisionEvent } from "../turn/types.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
-/** Derived so a widened callback union cannot drift from this file again. */
 type AssistantRoundStopReason =
   Parameters<NonNullable<TurnCallbacks["onAssistantRound"]>>[0]["stopReason"];
 import { genericToModelMessages, fullStreamToStreamEvent } from "../llm/vercel/adapter.js";
@@ -31,17 +32,6 @@ import { t } from "../../i18n/index.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../shared/model-host-policy.js";
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
 
 class RecordingPromptProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -93,9 +83,7 @@ describe("ConversationLoop queryLoop", () => {
     const setOriginSource = vi.fn();
     const setActiveSessionId = vi.fn();
     const setActiveRolePrompt = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => {
           throw new Error("prompt assembly failed");
@@ -105,12 +93,9 @@ describe("ConversationLoop queryLoop", () => {
         setActiveRolePrompt,
         setToolScope: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = new FakeProvider([]);
 
     await expect(loop.runTurn("질문", undefined, undefined, {
@@ -121,7 +106,6 @@ describe("ConversationLoop queryLoop", () => {
     }),
     ).rejects.toThrow("prompt assembly failed");
 
-    // The staged origin reaches the turn context, not the system prompt.
     expect(setOriginSource).not.toHaveBeenCalled();
     expect(setActiveSessionId).toHaveBeenNthCalledWith(1, expect.any(String));
     expect(setActiveSessionId).toHaveBeenLastCalledWith(null);
@@ -164,23 +148,19 @@ describe("ConversationLoop queryLoop", () => {
       ...fakeLlmSettings(),
       activeChatRuntime: { kind: "subscription" as const, provider: "codex" as const },
     };
-    // These values belong to the inactive API-key OpenAI configuration. The
-    // common query loop must not serialize them into a login-backed runtime.
+    // Inactive API-key controls must not enter a subscription request.
     settings.vendors.openai.enableThinking = true;
     settings.vendors.openai.thinkingBudgetTokens = 32_000;
 
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => settings,
         getSecret: () => "test-key",
       },
       systemPromptBuilder: { build },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     loop.getHistory().append({
       role: "user",
@@ -213,28 +193,17 @@ describe("ConversationLoop queryLoop", () => {
     });
   });
 
-
   it("persists persona prompt identity on the user message for retry replay", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => "system",
         setActiveRolePrompt: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("review this", undefined, undefined, {
@@ -260,35 +229,24 @@ describe("ConversationLoop queryLoop", () => {
 
   it("keeps the read-skill registry across user-turn boundaries", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const clear = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => "system",
         setToolScope: vi.fn(),
         setActiveSessionId: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       skillOverlay: { clear },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("질문", undefined, undefined, { inputOrigin: "user-keyboard",
     });
 
-    // The read-skill registry lives for the conversation: a turn boundary must
-    // not drop it (the bodies it authorizes stay in history).
+    // Loaded skill bodies remain in history, so their read registry must survive turn boundaries.
     expect(clear).not.toHaveBeenCalled();
   });
 
@@ -329,21 +287,16 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-        },
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: {
           build: () => "system",
           setToolScope: vi.fn(),
           setActiveSessionId: vi.fn(),
         },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         skillOverlay: overlay,
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       await loop.runTurn("brief me", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -355,9 +308,7 @@ describe("ConversationLoop queryLoop", () => {
         expect(systemPrompt).not.toContain("BRIEF SKILL BODY");
       }
       expect(JSON.stringify(provider.messages[0])).not.toContain("BRIEF SKILL BODY");
-      // Round 2 sees the body as the skill_load tool_result …
       expect(JSON.stringify(provider.messages[1])).toContain("BRIEF SKILL BODY");
-      // … and the next user turn still has it, without a re-read.
       expect(JSON.stringify(provider.messages[2])).toContain("BRIEF SKILL BODY");
       const history = loop.getHistory().getMessages();
       const toolResult = history.find((m) => m.role === "tool_result");
@@ -403,21 +354,16 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-        },
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: {
           build: () => "system",
           setToolScope: vi.fn(),
           setActiveSessionId: vi.fn(),
         },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         skillOverlay: overlay,
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       await loop.runTurn("brief child", undefined, undefined, {
@@ -436,22 +382,12 @@ describe("ConversationLoop queryLoop", () => {
 
   describe("typed /<skill-name> invocation", () => {
     function makeSlashLoop(isSkillName?: (name: string) => boolean) {
-      const provider = new RecordingPromptProvider([
-        [
-          { type: "text_delta", text: "model answered" },
-          { type: "message_complete", stopReason: "end_turn" },
-        ],
-      ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+      const provider = new RecordingPromptProvider(endTurnScript("model answered"));
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: { build: () => "system", setToolScope: vi.fn(), setActiveSessionId: vi.fn() },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
-        toolRegistry: new ToolRegistry(),
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         ...(isSkillName ? { isSkillName } : {}),
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
       return { loop, provider };
     }
@@ -520,9 +456,7 @@ describe("ConversationLoop queryLoop", () => {
       });
 
       it("sends a non-keyboard /<skill> to the model as plain text, without the command file", async () => {
-        // A surface other than the keyboard cannot invoke slash commands: the
-        // leading slash is stripped before routing, so neither the command file
-        // nor the skill route is reached.
+        // Non-keyboard origins cannot route privileged slash commands.
         const { loop, provider } = makeProjectSlashLoop((name) => name === "email-polish");
         const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
           inputOrigin: "tailnet-surface",
@@ -575,15 +509,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("please write this", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -639,15 +567,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("read and act", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -686,15 +608,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("plugin prompt", undefined, undefined, { inputOrigin: "plugin-emitted",
@@ -730,15 +646,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn(
@@ -791,22 +701,11 @@ describe("ConversationLoop queryLoop", () => {
     const inputClassifier = new InputClassifier();
     const routeEngine = new RouteEngine();
 
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: {
-        build: () => "system",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       inputClassifier,
       routeEngine,
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const reasoningDeltas: string[] = [];
@@ -861,9 +760,7 @@ describe("ConversationLoop queryLoop", () => {
         role: "assistant",
         content: "구조를 먼저 살펴보겠습니다.",
         thought: "먼저 프로젝트 구조를 확인합니다.",
-        // The persisted call names the registry entry it invoked, so a reloaded
-        // transcript can still attribute it (builtin here; plugin/MCP calls
-        // carry their owner the same way).
+        // Persist tool ownership so transcript attribution survives registry loss.
         toolCalls: [
           {
             id: "tool-1",
@@ -888,11 +785,7 @@ describe("ConversationLoop queryLoop", () => {
     ]);
   });
 
-  // R2-CR-1: per-round fan-out cap must not orphan tool_use ids in history.
-  // If the LLM emits >MAX_TOOL_CALLS_PER_ROUND (5) tool_use blocks in one
-  // round, only the capped slice may be persisted — every tool_use block in
-  // assistant history MUST have a matching tool_result block in the next
-  // user turn, otherwise Anthropic + OpenAI strict APIs 400 the next request.
+  // Cap persisted tool calls with execution; every persisted call must have a matching result.
   it("R2-CR-1: per-round fan-out cap persists only the capped slice (5) so tool_use/tool_result counts match", async () => {
     expect(MAX_AGENT_SPAWNS_PER_ROUND).toBe(5);
 
@@ -908,8 +801,6 @@ describe("ConversationLoop queryLoop", () => {
     }),
     );
 
-    // Round 1: LLM emits 15 tool_use blocks (5 over the cap).
-    // Round 2: LLM ends the turn cleanly.
     const fifteenToolCalls = Array.from({ length: 15 }).map((_, i) => ({
       type: "tool_call" as const,
       id: `tu-${i}`,
@@ -929,20 +820,11 @@ describe("ConversationLoop queryLoop", () => {
     ]);
     const inputClassifier = new InputClassifier();
     const routeEngine = new RouteEngine();
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       inputClassifier,
       routeEngine,
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call many tools", undefined, undefined, {
@@ -950,26 +832,19 @@ describe("ConversationLoop queryLoop", () => {
     });
 
     const messages = loop.getHistory().getMessages();
-    // Find the assistant message that committed the over-cap tool_use round.
     const assistantWithTools = messages.find(
       (m) =>
         m.role === "assistant" &&
         Array.isArray((m as { toolCalls?: unknown[] }).toolCalls),
     ) as { toolCalls: Array<{ id: string }> } | undefined;
     expect(assistantWithTools).toBeDefined();
-    // CRITICAL: assistant history must contain exactly the host fan-out cap.
     expect(assistantWithTools!.toolCalls).toHaveLength(
       MAX_AGENT_SPAWNS_PER_ROUND,
     );
 
-    // CRITICAL: tool_result count in history must match the persisted
-    // tool_use count. Any other ratio = next API request 400s.
     const toolResults = messages.filter((m) => m.role === "tool_result");
     expect(toolResults).toHaveLength(MAX_AGENT_SPAWNS_PER_ROUND);
 
-    // The persisted tool_use ids must be the first capped slice, not
-    // a later subset, and every persisted tool_use id has a matching
-    // tool_result.toolUseId.
     const persistedIds = assistantWithTools!.toolCalls.map((tc) => tc.id);
     expect(persistedIds).toEqual(
       Array.from({ length: MAX_AGENT_SPAWNS_PER_ROUND }).map(
@@ -1021,14 +896,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     const decisions: TurnDecisionEvent[] = [];
 
@@ -1039,10 +909,8 @@ describe("ConversationLoop queryLoop", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // The malformed call never reaches the executor; the healthy one does.
     expect(executed).toEqual(['{"a":1}']);
-    // The turn survives it — this is the whole point: before the fix the
-    // string input replayed on the wire and the provider 400'd the round.
+    // Malformed argument text must not replay and invalidate the next provider request.
     expect(result.text).toBe("done");
 
     const messages = loop.getHistory().getMessages();
@@ -1050,12 +918,10 @@ describe("ConversationLoop queryLoop", () => {
       (m) => m.role === "assistant" && Array.isArray((m as { toolCalls?: unknown[] }).toolCalls),
     ) as { toolCalls: Array<{ id: string; input: unknown }> } | undefined;
     expect(assistantWithTools).toBeDefined();
-    // History stores an object for the malformed call, never the raw string.
     for (const tc of assistantWithTools!.toolCalls) {
       expect(typeof tc.input).toBe("object");
     }
 
-    // Tool-pair invariant: every persisted tool_use still has a tool_result.
     const toolResults = messages.filter((m) => m.role === "tool_result") as Array<{
       toolUseId: string; content: string; isError?: boolean;
     }>;
@@ -1074,11 +940,7 @@ describe("ConversationLoop queryLoop", () => {
   });
 
   it("contains truncated arguments end to end, from the raw provider part to the tool_result", async () => {
-    // The test above hands the loop an event that already carries the marker.
-    // This one starts where the defect actually starts — the AI SDK part whose
-    // `input` is the raw argument text — and runs it through the real stream
-    // mapper, so a regression anywhere along adapter → collector → loop is
-    // caught rather than assumed away.
+    // Start at raw stream parts to cover the adapter, collector, and loop together.
     const truncated = '{"command":"echo hel';
     const rounds: Array<Array<Record<string, unknown> & { type: string }>> = [
       [
@@ -1121,21 +983,15 @@ describe("ConversationLoop queryLoop", () => {
       },
     }),
     );
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = new AdapterBackedProvider();
 
     const result = await loop.runTurn("call two tools", undefined, undefined, {
       inputOrigin: "user-keyboard",
     });
 
-    // The mapper parsed the good call's argument text; the broken one never ran.
     expect(executed).toEqual(['{"a":1}']);
     expect(result.text).toBe("done");
 
@@ -1150,8 +1006,6 @@ describe("ConversationLoop queryLoop", () => {
       t("be_conversationLoop.toolCallInvalidArguments", { excerpt: truncated }),
     );
 
-    // The raw string must not survive anywhere in the persisted assistant row —
-    // that is the byte the provider rejects the whole next request over.
     const assistantWithTools = messages.find(
       (m) => m.role === "assistant" && Array.isArray((m as { toolCalls?: unknown[] }).toolCalls),
     ) as { toolCalls: Array<{ id: string; input: unknown }> } | undefined;
@@ -1206,21 +1060,10 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call long tool then read chunk", undefined, undefined, {
@@ -1301,19 +1144,10 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: {
-          get: () => fakeLlmSettings(),
-          getSecret: () => "test-key",
-        },
-        systemPromptBuilder: {
-          build: () => "system",
-        },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         toolRegistry,
         memoryManager,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       expect(await loop.loadSession(sessionId)).toBe(true);
@@ -1372,11 +1206,7 @@ describe("ConversationLoop queryLoop", () => {
     }
   });
 
-  // ─── finish_reason=length CONTINUATION ──────────────────────────────────
-  // A truncated round (stopReason "max_tokens") with 0 tool calls re-invokes
-  // the model with a wire-only assistant prefill (vLLM continue_final_message),
-  // stitching the partials into ONE merged assistant message. Continuation is
-  // gated on the openai-compatible vendor; see vendorSupportsLengthContinuation.
+  // Supported runtimes continue length-truncated answers with a wire-only assistant prefill.
 
   it("continues a max_tokens round and returns the stitched assistant text (openai-compatible)", async () => {
     const toolRegistry = new ToolRegistry();
@@ -1390,17 +1220,13 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -1410,10 +1236,8 @@ describe("ConversationLoop queryLoop", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // Did NOT terminate on the truncated round; stitched both parts.
     expect(result.stopReason).toBe("end_turn");
     expect(result.text).toBe("Part one and part two.");
-    // History holds exactly ONE assistant message with the merged content.
     const assistants = loop
       .getHistory()
       .getMessages()
@@ -1422,7 +1246,6 @@ describe("ConversationLoop queryLoop", () => {
     expect((assistants[0] as { content: string }).content).toBe(
       "Part one and part two.",
     );
-    // The 2nd request injected a wire-only trailing assistant PREFILL = part one.
     const round2 = provider.messages[1];
     expect(round2.at(-1)).toEqual({ role: "assistant", content: "Part one " });
   });
@@ -1436,29 +1259,22 @@ describe("ConversationLoop queryLoop", () => {
           { type: "text_delta", text: "Subscription part one " },
           { type: "message_complete", stopReason: "max_tokens" },
         ],
-        // If the shared engine incorrectly continues, this synthetic second
-        // round would expose the unsafe host-stitching regression.
         [
           { type: "text_delta", text: "and two." },
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ], subscriptionProvider);
-      const loop = new ConversationLoop({
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         settingsService: {
-          // A stale API-key setting that supports vLLM prefill must never
-          // enable it for a subscription runtime.
+          // Subscription runtimes must not inherit prefill support from stale API-key settings.
           get: () => ({
             ...fakeLlmSettings({ provider: "openai-compatible" }),
             activeChatRuntime: { kind: "subscription", provider: subscriptionProvider },
           }),
           getSecret: () => "test-key",
         },
-        systemPromptBuilder: { build: () => "system" },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       const result = await loop.runTurn(
@@ -1490,17 +1306,13 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const rounds: Array<{ text: string; stopReason: string }> = [];
@@ -1514,8 +1326,7 @@ describe("ConversationLoop queryLoop", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // The continuation round must NOT close the UI card — onAssistantRound
-    // fires once, at the terminal round, with the merged text.
+    // Continuations keep the UI round open until the merged answer is terminal.
     expect(rounds).toEqual([
       { text: "Part one and part two.", stopReason: "end_turn" },
     ]);
@@ -1532,17 +1343,13 @@ describe("ConversationLoop queryLoop", () => {
         yield { type: "message_complete", stopReason: "max_tokens" };
       }
     }
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider =
       new InfiniteLengthProvider();
 
@@ -1550,12 +1357,10 @@ describe("ConversationLoop queryLoop", () => {
       inputOrigin: "user-keyboard",
     });
 
-    // 1 initial round + MAX_LENGTH_CONTINUATIONS(3) = 4 provider calls, well under 30.
     expect(calls).toBe(4);
-    expect(result.stopReason).toBe("max_tokens"); // residual truncation surfaced
-    // Every chunk stitched with inter-chunk whitespace preserved (raw carry);
-    // the final committed answer's trailing whitespace is trimmed once on merge.
-    expect(result.text).toBe("chunk-1 chunk-2 chunk-3 chunk-4"); // every chunk stitched
+    expect(result.stopReason).toBe("max_tokens");
+    // Preserve whitespace between chunks; trim only the final merged answer.
+    expect(result.text).toBe("chunk-1 chunk-2 chunk-3 chunk-4");
   });
 
   it("does NOT continue a max_tokens round for a non-openai-compatible vendor", async () => {
@@ -1569,24 +1374,20 @@ describe("ConversationLoop queryLoop", () => {
         yield { type: "message_complete", stopReason: "max_tokens" };
       }
     }
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider =
       new CountingProvider();
 
     const result = await loop.runTurn("x", undefined, undefined, {
       inputOrigin: "user-keyboard",
     });
-    expect(calls).toBe(1); // terminated immediately, no continuation
+    expect(calls).toBe(1);
     expect(result.stopReason).toBe("max_tokens");
     expect(result.text).toBe("cut off");
   });
@@ -1594,29 +1395,23 @@ describe("ConversationLoop queryLoop", () => {
   it("continues truncation INSIDE <think> without losing or duplicating reasoning", async () => {
     const toolRegistry = new ToolRegistry();
     const provider = new RecordingPromptProvider([
-      // Round 1: reasoning only, truncated mid-think (no text_delta, no </think>).
       [
         { type: "reasoning_delta", text: "step1 " },
         { type: "message_complete", stopReason: "max_tokens" },
       ],
-      // Round 2: finishes reasoning, then answers, clean end_turn.
       [
         { type: "reasoning_delta", text: "step2" },
         { type: "text_delta", text: "the answer" },
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -1626,13 +1421,11 @@ describe("ConversationLoop queryLoop", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    expect(result.text).toBe("the answer"); // answer only in result text
-    // Round-2 prefill re-opened the think block with the accumulated reasoning, no closing tag.
+    expect(result.text).toBe("the answer");
     expect(provider.messages[1].at(-1)).toEqual({
       role: "assistant",
       content: "<think>\nstep1 ",
     });
-    // History: ONE assistant message; reasoning concatenated, not duplicated.
     const assistant = loop
       .getHistory()
       .getMessages()
@@ -1644,28 +1437,15 @@ describe("ConversationLoop queryLoop", () => {
     expect(assistant.thought).toBe("step1 step2");
   });
 
-  // A resource attachment carries up to a read's worth of SERVER text. It has to reach
-  // the model (that is the point) but it must not be replayed inside the user's own
-  // transcript bubble, where it would read as something the user typed. `displayText`
-  // is the seam the staged-origin work already established for that, and the marker the
-  // user typed is what stands in for the body — exactly as an image's marker does.
+  // Server resource text reaches the model; transcript display retains only the user-authored marker.
   it("keeps an attached resource's body out of the user's transcript bubble", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const fence = [
@@ -1679,36 +1459,24 @@ describe("ConversationLoop queryLoop", () => {
     });
 
     const [firstMessage] = withoutRuntimeMeta(loop.getHistory().getMessages());
-    // The model DOES receive it — the parts are intact.
     expect(firstMessage.content).toEqual([
       { type: "text", text: "summarize [Resource #1]" },
       { type: "text", text: fence },
     ]);
-    // …and the transcript shows the user's own words only.
     const meta = (firstMessage as { meta?: { displayText?: string } }).meta;
     expect(meta?.displayText).toBe("summarize [Resource #1]");
     expect(meta?.displayText).not.toContain("SERVER BODY");
   });
 
   it("adds no displayText to a turn with no resource attachment", async () => {
-    // The seam exists for server-authored parts. An ordinary turn must not acquire a
-    // second copy of its own text in meta — that is what would make the two drift.
+    // Ordinary turns must not acquire a duplicate displayText copy that could drift.
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("plain question", undefined, undefined, {
@@ -1724,15 +1492,9 @@ describe("ConversationLoop queryLoop", () => {
 
 describe("reasoning-only round is not a finished turn", () => {
   function createLoop(provider: LLMProvider): ConversationLoop {
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     return loop;
   }
@@ -1747,9 +1509,6 @@ describe("reasoning-only round is not a finished turn", () => {
   }
 
   it("re-prompts a round that ended with reasoning but no text and no tool call", async () => {
-    // The measured shape: stopReason end_turn, empty visible text, no tool
-    // call, and reasoning that names the next action. Ending there is the loop
-    // giving up before the model did.
     const provider = new RecordingPromptProvider([
       reasoningOnlyRound(REASONING),
       [
@@ -1777,13 +1536,7 @@ describe("reasoning-only round is not a finished turn", () => {
   });
 
   it("replays the reasoning as an assistant turn so the wire keeps role alternation", async () => {
-    // The committed row carries the reasoning in `thought`, which no vendor
-    // maps onto the wire, and it has neither text nor tool calls, so the
-    // adapter drops it whole. Replaying the reasoning as the model's own prior
-    // turn is what puts it in front of the model AND keeps user/assistant
-    // alternation — a chat template that asserts alternation rejects the two
-    // consecutive user rows a bare instruction would leave behind. Assert
-    // against the REAL mapper, not the pre-adapter GenericMessage list.
+    // Replay reasoning as an assistant row so filtering empty rows cannot break role alternation.
     const provider = new RecordingPromptProvider([
       reasoningOnlyRound(REASONING),
       [
@@ -1801,7 +1554,6 @@ describe("reasoning-only round is not a finished turn", () => {
     expect(wire.map((message) => message.role)).toEqual([
       "user", "assistant", "user",
     ]);
-    // The dropped empty row leaves no trace: every row carries real content.
     for (const message of wire) {
       expect(JSON.stringify(message.content)).not.toBe("[]");
     }
@@ -1811,9 +1563,7 @@ describe("reasoning-only round is not a finished turn", () => {
   });
 
   it("replays only the tail of a long reasoning block", async () => {
-    // A reasoning block ends on the action it decided; the earlier text is the
-    // deliberation that led there. Bounding the replay keeps a runaway block
-    // from pushing the round over the context budget it just came back under.
+    // Replay the bounded reasoning tail to retain the next action without exhausting context.
     const head = "H".repeat(5_000);
     const tail = " and finally I will run the installer.";
     const provider = new RecordingPromptProvider([
@@ -1858,10 +1608,7 @@ describe("reasoning-only round is not a finished turn", () => {
     expect(replay!.content).toBe(thought);
     expect(instruction!.role).toBe("user");
 
-    // The replay rewrites the row only for that request. History keeps the
-    // committed shape — reasoning in `thought`, no assistant text — and never
-    // takes the instruction, which would otherwise replay on every later turn
-    // as if the user had typed it.
+    // Replays and instructions are request-only; history keeps the committed reasoning shape.
     const persisted = loop.getHistory().getMessages();
     expect(JSON.stringify(persisted)).not.toContain(instruction!.content);
     expect(persisted.filter((message) =>
@@ -1872,10 +1619,7 @@ describe("reasoning-only round is not a finished turn", () => {
   });
 
   it("lets queued guidance win the end-turn boundary without spending the cap", async () => {
-    // Guidance queued while the round ran is itself a re-prompt, and the
-    // end-turn boundary hands the round to it before the reasoning-only branch
-    // is reached. Nothing is armed, so nothing is spent: the NEXT reasoning-only
-    // round still gets the full budget.
+    // Guidance takes precedence without spending the reasoning-only re-prompt budget.
     const firstThought = "First thought.";
     const secondThought = "Second thought.";
     const provider = new RecordingPromptProvider([
@@ -1888,8 +1632,7 @@ describe("reasoning-only round is not a finished turn", () => {
     ]);
     const loop = createLoop(provider);
     const decisions: TurnDecisionEvent[] = [];
-    // queueGuidance requires an in-flight turn; the loop sets this itself in
-    // production, and the test stands in for the IPC thread that queues mid-turn.
+    // Stand in for guidance arriving through IPC while the controller marks a turn active.
     (loop as unknown as { currentAbortController: AbortController | null })
       .currentAbortController = new AbortController();
     loop.queueGuidance("use the other installer");
@@ -1903,8 +1646,7 @@ describe("reasoning-only round is not a finished turn", () => {
 
     const secondRoundText = JSON.stringify(provider.messages[1]!);
     expect(secondRoundText).toContain("use the other installer");
-    // The replay is not tied to the re-prompt: the guide alone would have left
-    // the dropped reasoning row collapsing its neighbours into two user turns.
+    // Guidance still needs assistant replay to avoid adjacent user rows.
     const guidedWire = genericToModelMessages(provider.messages[1]!, "openai");
     expect(guidedWire.map((message) => message.role)).toEqual([
       "user", "assistant", "user",
@@ -1913,10 +1655,8 @@ describe("reasoning-only round is not a finished turn", () => {
       expect(JSON.stringify(message.content)).not.toBe("[]");
     }
     expect(JSON.stringify(guidedWire[1]!.content)).toContain(firstThought);
-    // The first round's reasoning was never quoted into that round.
     expect(secondRoundText)
       .not.toContain(t("be_conversationLoop.reasoningOnlyContinuePrompt"));
-    // Round 2 reasons only as well, and its re-prompt still reports 0 spent.
     expect(decisions.filter((event) =>
       event.kind === "reasoning_only.continuation")).toEqual([
       expect.objectContaining({
@@ -1950,7 +1690,6 @@ describe("reasoning-only round is not a finished turn", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // 1 initial round + 2 re-prompts, then the turn ends as it does today.
     expect(calls).toBe(3);
     expect(result.stopReason).toBe("end_turn");
     expect(
@@ -1986,8 +1725,7 @@ describe("reasoning-only round is not a finished turn", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // No reasoning means nothing states what the model meant to do next, so
-    // there is nothing to re-prompt toward — unchanged behaviour.
+    // Without reasoning there is no intended next action to re-prompt toward.
     expect(calls).toBe(1);
     expect(result.text).toBe("");
     expect(
@@ -1996,30 +1734,15 @@ describe("reasoning-only round is not a finished turn", () => {
   });
 });
 
-// ─── Output ceiling + progress notification ──────────────────────────────
-//
-// The two host-owned brakes on a runaway turn: a per-vendor output ceiling on
-// each call, and a periodic notification telling the model what it has spent.
-
 describe("ConversationLoop output ceiling", () => {
   it("forwards the active vendor's outputTokenLimit to every chat round", async () => {
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ outputTokenLimit: 16_384 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -2028,25 +1751,14 @@ describe("ConversationLoop output ceiling", () => {
   });
 
   it("sends a chat ceiling above the background bound unclamped", async () => {
-    // The background bound is sized for plugins. A user who configures a
-    // larger chat ceiling used to get the plugin number silently instead.
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    // Chat ceilings must not be clamped to the plugin background limit.
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ outputTokenLimit: 32_768 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -2058,20 +1770,10 @@ describe("ConversationLoop output ceiling", () => {
   it("supplies the default ceiling when an existing vendor block declares none", async () => {
     const settings = fakeLlmSettings();
     delete settings.vendors[settings.provider].outputTokenLimit;
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: { get: () => settings, getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -2079,9 +1781,7 @@ describe("ConversationLoop output ceiling", () => {
     expect(provider.params[0]?.outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
   });
 
-  // A host-capped call and a provider-capped one both come back as
-  // stopReason "max_tokens", so the cap must not create a second truncation
-  // path: the same length-continuation stitches the answer either way.
+  // Host and provider truncation share the same continuation path.
   it("continues a host-capped round through the same length-continuation path", async () => {
     const provider = new RecordingPromptProvider([
       [
@@ -2093,17 +1793,12 @@ describe("ConversationLoop output ceiling", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible", outputTokenLimit: 128 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2116,19 +1811,16 @@ describe("ConversationLoop output ceiling", () => {
 
     expect(result.text).toBe("Part one and part two.");
     expect(decisions).toContainEqual({ kind: "length.continuation", branch: "continue" });
-    // The ceiling rode along on the continuation round too.
     expect(provider.params[1]?.outputTokenLimit).toBe(128);
   });
 });
 
 describe("ConversationLoop progress notification", () => {
-  // The suite renders messages in Korean, so assertions match the first line
-  // of the rendered notification rather than English prose.
+  // Assert localized notification structure rather than English prose.
   const NUDGE_HEADER = t("be_conversationLoop.progressNudge", {
     round: 0, elapsedSeconds: 0, toolCalls: 0, toolErrors: 0,
   }).split("\n")[0];
 
-  /** Settings stub whose `chat` block carries a progress-notification cadence. */
   function settingsWithNudgeCadence(progressNudgeRounds: number) {
     return {
       get: (key: string) =>
@@ -2139,7 +1831,6 @@ describe("ConversationLoop progress notification", () => {
     };
   }
 
-  /** A tool-calling turn long enough to cross a cadence of 2. */
   function loopingProvider() {
     const round = (id: string): StreamEvent[] => [
       { type: "tool_call", id, name: "probe", input: {} },
@@ -2171,14 +1862,10 @@ describe("ConversationLoop progress notification", () => {
 
   it("injects a wire-only notification on the cadence and records the decision", async () => {
     const provider = loopingProvider();
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(2),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2191,8 +1878,6 @@ describe("ConversationLoop progress notification", () => {
 
     expect(decisions).toContainEqual({ kind: "progress.nudge", branch: "cadence" });
 
-    // Round index 2 is the first multiple of the cadence, so its request — and
-    // no earlier one — ends with the notification.
     const lastOf = (index: number) => {
       const message = provider.messages[index]?.at(-1);
       return message && message.role === "user" ? String(message.content) : "";
@@ -2201,30 +1886,22 @@ describe("ConversationLoop progress notification", () => {
     expect(lastOf(0)).not.toContain(NUDGE_HEADER);
     expect(lastOf(1)).not.toContain(NUDGE_HEADER);
 
-    // Wire-only: nothing about the notification reached the stored transcript.
     const stored = loop.getHistory().getMessages()
       .map((message) => String((message as { content?: unknown }).content ?? ""));
     expect(stored.some((content) => content.includes(NUDGE_HEADER))).toBe(false);
   });
 
   it("counts assistant rounds, not loop iterations, and skips continuation rounds", async () => {
-    // The loop iterates for length continuations too, and `roundIndex` is
-    // deliberately held across them. A cadence counting iterations drifts off
-    // the assistant rounds the setting and the message both name: here it would
-    // fall due on the continuation round, where the request has to end with the
-    // assistant prefill, and be lost.
+    // Notification cadence counts assistant rounds, excluding length continuations.
     const provider = new RecordingPromptProvider([
-      // roundIndex 0 → 1: an ordinary tool round.
       [
         { type: "tool_call", id: "t1", name: "probe", input: {} },
         { type: "message_complete", stopReason: "tool_use" },
       ],
-      // roundIndex stays 1: truncated with no tool calls, so it is continued.
       [
         { type: "text_delta", text: "Part one " },
         { type: "message_complete", stopReason: "max_tokens" },
       ],
-      // The continuation. Tool calls end the chain, so roundIndex 1 → 2.
       [
         { type: "text_delta", text: "and part two." },
         { type: "tool_call", id: "t2", name: "probe", input: {} },
@@ -2235,7 +1912,7 @@ describe("ConversationLoop progress notification", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: (key: string) =>
           key === "chat"
@@ -2243,12 +1920,8 @@ describe("ConversationLoop progress notification", () => {
             : fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2263,11 +1936,8 @@ describe("ConversationLoop progress notification", () => {
     const lastContent = (index: number) =>
       String((last(index) as { content?: unknown } | undefined)?.content ?? "");
 
-    // Request 2 is the continuation: it must still end with the prefill.
     expect(last(2)?.role).toBe("assistant");
     expect(lastContent(2)).not.toContain(NUDGE_HEADER);
-    // Request 3 is the fourth iteration but only the third assistant round,
-    // and it is where roundIndex reaches the cadence.
     expect(lastContent(3)).toContain(NUDGE_HEADER);
     expect(
       decisions.filter((decision) => decision.kind === "progress.nudge"),
@@ -2275,13 +1945,9 @@ describe("ConversationLoop progress notification", () => {
   });
 
   it("shares one user row with the reasoning re-prompt when both fire", async () => {
-    // Two host instructions can fall on the same round. A chat template that
-    // asserts role alternation rejects a second consecutive user row, so they
-    // share the single appended row rather than each adding one.
+    // Merge simultaneous instructions into one user row to preserve role alternation.
     const thought = "I should check the tokenizer next.";
     const provider = new RecordingPromptProvider([
-      // Reasoning with no text and no tool call: arms the re-prompt, and
-      // advances roundIndex to 1, where a cadence of 1 also falls due.
       [
         { type: "reasoning_delta", text: thought },
         { type: "message_complete", stopReason: "end_turn" },
@@ -2291,14 +1957,10 @@ describe("ConversationLoop progress notification", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(1),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: string[] = [];
@@ -2310,40 +1972,32 @@ describe("ConversationLoop progress notification", () => {
     );
 
     const secondRound = provider.messages[1]!;
-    // Exactly one appended user row, carrying both instructions.
     const trailingUserRows = [...secondRound]
       .reverse()
       .findIndex((message) => message.role !== "user");
     expect(trailingUserRows).toBe(1);
     const appended = secondRound.at(-1)!;
     expect(appended.role).toBe("user");
-    // Not pinned to an elapsed-seconds value the clock decides: what matters is
-    // that both instructions are in the one row, in order, blank-line joined.
+    // Assert instruction order, not an elapsed-seconds value controlled by scheduling.
     const rePrompt = t("be_conversationLoop.reasoningOnlyContinuePrompt");
     const appendedText = String(appended.content);
     expect(appendedText.startsWith(`${rePrompt}\n\n`)).toBe(true);
     expect(appendedText.slice(rePrompt.length + 2)).toContain(NUDGE_HEADER);
-    // The reasoning replay still sits immediately before it.
     expect(secondRound.at(-2)!.role).toBe("assistant");
     expect(secondRound.at(-2)!.content).toBe(thought);
     expect(decisions).toContain("progress.nudge");
     expect(decisions).toContain("reasoning_only.continuation");
 
-    // Neither instruction reached the transcript.
     expect(JSON.stringify(loop.getHistory().getMessages()))
       .not.toContain(NUDGE_HEADER);
   });
 
   it("injects nothing when the cadence is 0", async () => {
     const provider = loopingProvider();
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(0),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: string[] = [];

@@ -1,68 +1,44 @@
-/**
- * Minimal outbound Telegram Bot API client for the owner-driven bridge.
- *
- * It exposes the receive calls plus one narrow send used for host-authored
- * control notices. It never calls `setWebhook`, `deleteWebhook`, `logOut`, or
- * `close`: those mutate a third-party production bot, and `logOut` locks it out
- * of the cloud Bot API entirely. A webhook that is already registered is
- * reported, never removed.
- *
- * `sendMessage` here is deliberately NOT the conversation delivery path — that
- * one lives in the delivery adapter, is fenced by the route guard, and carries
- * only the safe projection. This one exists so the host can say "your surface
- * is idle" when no route is current, which by definition cannot use a
- * route-fenced channel. Callers must keep its content free of conversation
- * material and must rate-limit it themselves.
- *
- * The bot token is request material only. It is never logged, never returned,
- * and never placed in an error message.
- */
+// Never mutate bot webhook or session configuration; report existing webhooks without removing them. Control notices contain no conversation data and
+// require caller rate limiting; never expose tokens in logs, results, or errors.
 
 import { isRecord } from "../shared/is-record.js";
 import { isPositiveSafeInteger } from "../shared/safe-integer.js";
 import { TELEGRAM_BOT_TOKEN_PATH_GRAMMAR } from "../shared/telegram-connection.js";
 
-/** Telegram caps `getUpdates` at 100; ask for a bounded batch explicitly. */
+// Telegram caps `getUpdates` at 100; ask for a bounded batch explicitly.
 const DEFAULT_UPDATE_LIMIT = 25;
-/**
- * The documented ceiling for the long-poll `timeout` is not stated in the API
- * reference, so stay well under the value Telegram's own server uses.
- */
+// The documented ceiling for the long-poll `timeout` is not stated in the API reference, so stay well under the value Telegram's own server uses.
 const DEFAULT_POLL_TIMEOUT_SECONDS = 45;
-/** Must exceed the long-poll timeout or every poll would abort mid-flight. */
+// Must exceed the long-poll timeout or every poll would abort mid-flight.
 const DEFAULT_POLL_REQUEST_TIMEOUT_MS = 60_000;
-/** Short calls (getMe/getWebhookInfo) do not long-poll. */
+// Short calls (getMe/getWebhookInfo) do not long-poll.
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
-/** Hard ceiling applied to a response body BEFORE it is parsed. */
+// Hard ceiling applied to a response body BEFORE it is parsed.
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECONDS = 3_600;
 const MIN_RETRY_AFTER_SECONDS = 1;
-/** Canonical positive decimal id; never a group or channel id. */
+// Canonical positive decimal id; never a group or channel id.
 const CANONICAL_CHAT_ID = /^[1-9][0-9]{0,15}$/;
-/** A control notice is a sentence, not a transcript. */
+// A control notice is a sentence, not a transcript.
 const MAX_CONTROL_TEXT_CHARS = 512;
-/**
- * Opaque host-minted callback token grammar. The Bot API bounds
- * `callback_data` at 64 bytes; restricting it to URL-safe identifier
- * characters keeps every byte one character and keeps structured payloads —
- * tool names, ids, JSON — unrepresentable by construction.
- */
+// Opaque host-minted callback token grammar. The Bot API bounds `callback_data` at 64 bytes; restricting it to URL-safe identifier characters keeps
+// every byte one character and keeps structured payloads — tool names, ids, JSON — unrepresentable by construction.
 const OPAQUE_CALLBACK_DATA = /^[A-Za-z0-9_-]{1,64}$/;
-/** A decision button carries one short verb, never content. */
+// A decision button carries one short verb, never content.
 const MAX_BUTTON_LABEL_CHARS = 32;
-/** Provider-issued callback query id; treated as an opaque bounded token. */
+// Provider-issued callback query id; treated as an opaque bounded token.
 const CALLBACK_QUERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type TelegramBotApiFailureReason =
-  /** 401: the token is wrong or was revoked. */
+  // 401: the token is wrong or was revoked.
   | "unauthorized"
-  /** 409: another receiver owns this bot's updates, or a webhook is set. */
+  // 409: another receiver owns this bot's updates, or a webhook is set.
   | "conflict"
-  /** 429: flood control; `retryAfterMs` is set when Telegram supplied it. */
+  // 429: flood control; `retryAfterMs` is set when Telegram supplied it.
   | "rate-limited"
-  /** Network failure, timeout, abort, or a non-2xx we cannot classify. */
+  // Network failure, timeout, abort, or a non-2xx we cannot classify.
   | "unreachable"
-  /** Well-formed HTTP, unusable payload: oversized, non-JSON, or wrong shape. */
+  // Well-formed HTTP, unusable payload: oversized, non-JSON, or wrong shape.
   | "invalid-response";
 
 export type TelegramBotApiResult<T> =
@@ -78,36 +54,30 @@ export interface TelegramBotIdentity {
 }
 
 export interface TelegramWebhookStatus {
-  /** True when the owner already pointed this bot at a webhook URL. */
+  // True when the owner already pointed this bot at a webhook URL.
   readonly hasWebhook: boolean;
 }
 
-/**
- * One update, kept as the exact bytes handed to the shared ingress core. The
- * re-serialization is deliberate: the core's contract is bytes-in, and it
- * re-applies the same shape allow-list the webhook path uses.
- */
+// One update, kept as the exact bytes handed to the shared ingress core. The re-serialization is deliberate: the core's contract is bytes-in, and it
+// re-applies the same shape allow-list the webhook path uses.
 export interface TelegramPolledUpdate {
   readonly updateId: number;
   readonly rawBody: Uint8Array;
 }
 
 interface TelegramGetUpdatesInput {
-  /**
-   * Confirms every update below it. Omit only before the first confirmation.
-   * `-1` is Telegram's documented idiom for "the most recent update", used once
-   * to seed past a backlog; no other negative value is accepted.
-   */
+  // Confirms every update below it. Omit only before the first confirmation. `-1` is Telegram's documented idiom for "the most recent update", used once
+  // to seed past a backlog; no other negative value is accepted.
   readonly offset?: number;
   readonly limit?: number;
   readonly timeoutSeconds?: number;
   readonly signal?: AbortSignal;
 }
 
-/** One host-minted decision button: a fixed verb plus an opaque token. */
+// One host-minted decision button: a fixed verb plus an opaque token.
 export interface TelegramDecisionButton {
   readonly label: string;
-  /** Opaque host token only; the grammar rejects structured payloads. */
+  // Opaque host token only; the grammar rejects structured payloads.
   readonly callbackData: string;
 }
 
@@ -115,37 +85,23 @@ export interface TelegramBotApiClient {
   getMe(signal?: AbortSignal): Promise<TelegramBotApiResult<TelegramBotIdentity>>;
   getWebhookInfo(signal?: AbortSignal): Promise<TelegramBotApiResult<TelegramWebhookStatus>>;
   getUpdates(input?: TelegramGetUpdatesInput): Promise<TelegramBotApiResult<readonly TelegramPolledUpdate[]>>;
-  /**
-   * Send one host-authored control notice. Not the conversation path: callers
-   * must pass fixed host text, never conversation content, and must apply their
-   * own cooldown — this client does no pacing.
-   */
+  // Send one host-authored control notice. Not the conversation path: callers must pass fixed host text, never conversation content, and must apply their
+  // own cooldown — this client does no pacing.
   sendMessage(chatId: string, text: string): Promise<TelegramBotApiResult<true>>;
-  /**
-   * Send one host-authored decision card with an inline keyboard of exactly
-   * the given buttons. Same contract as `sendMessage` — fixed host text, no
-   * conversation content, caller-owned pacing — plus opaque callback tokens.
-   * Returns the provider message id so the caller can later edit the card.
-   */
+  // Decision cards contain fixed host text, opaque callback tokens, and exactly the supplied buttons; callers own pacing and receive the message id.
   sendDecisionCard(
     chatId: string,
     text: string,
     buttons: readonly TelegramDecisionButton[],
   ): Promise<TelegramBotApiResult<{ readonly messageId: number }>>;
-  /**
-   * Replace one previously sent host-authored message's text. The reply
-   * markup is deliberately omitted from the request, which removes the inline
-   * keyboard — editing a decided card is what retires its buttons.
-   */
+  // Replace one previously sent host-authored message's text. The reply markup is deliberately omitted from the request, which removes the inline keyboard
+  // — editing a decided card is what retires its buttons.
   editMessageText(
     chatId: string,
     messageId: number,
     text: string,
   ): Promise<TelegramBotApiResult<true>>;
-  /**
-   * Acknowledge one callback query so the pressing client stops its spinner.
-   * `text` is an optional fixed host toast; omitted means a silent dismiss.
-   */
+  // Acknowledge one callback query so the pressing client stops its spinner. `text` is an optional fixed host toast; omitted means a silent dismiss.
   answerCallbackQuery(
     callbackQueryId: string,
     text?: string,
@@ -153,19 +109,9 @@ export interface TelegramBotApiClient {
 }
 
 export interface CreateTelegramBotApiClientOptions {
-  /** Process-held credential. Never persisted or logged by this module. */
+  // Process-held credential. Never persisted or logged by this module.
   readonly botToken: string;
-  /**
-   * The transport every Bot API request runs on. REQUIRED, and deliberately
-   * without a default.
-   *
-   * It used to fall back to the ambient `fetch`, which is Node's — a stack
-   * that reads neither the machine's proxy configuration nor its trust store.
-   * A caller that forgot one therefore went out direct, on a path the user
-   * never chose, and one that cannot complete at all where the direct route
-   * is intercepted. Requiring it makes forgetting the transport a compile
-   * error rather than a silent route change.
-   */
+  // Require OS-aware injected transport; ambient fetch would silently bypass configured proxy and trust.
   readonly fetchImplementation: typeof fetch;
   readonly requestTimeoutMs?: number;
   readonly pollRequestTimeoutMs?: number;
@@ -213,8 +159,7 @@ export function createTelegramBotApiClient(
       }
       return { ok: true, value: payload.result };
     } catch {
-      // Never surface the thrown value: a fetch error can carry the request
-      // URL, which contains the bot token.
+      // Never surface the thrown value: a fetch error can carry the request URL, which contains the bot token.
       return failure("unreachable");
     } finally {
       abort.dispose();
@@ -256,9 +201,8 @@ export function createTelegramBotApiClient(
           ...(input.offset === undefined ? {} : { offset: input.offset }),
           limit,
           timeout: timeoutSeconds,
-          // Always explicit: omitting it inherits whatever a prior setWebhook
-          // left configured on the bot. `callback_query` is the decision-card
-          // button press; the ingress parser fail-closes on everything else.
+          // Always explicit: omitting it inherits whatever a prior setWebhook left configured on the bot. `callback_query` is the decision-card button press; the
+          // ingress parser fail-closes on everything else.
           allowed_updates: ["message", "callback_query"],
         },
         timeoutSeconds * 1_000 + pollRequestTimeoutMs,
@@ -269,8 +213,7 @@ export function createTelegramBotApiClient(
       const updates: TelegramPolledUpdate[] = [];
       for (const entry of result.value) {
         if (!isRecord(entry) || !isPositiveSafeInteger(entry.update_id)) {
-          // Without a usable id the offset cannot advance past this batch, so
-          // treat the whole response as unusable rather than losing updates.
+          // Without a usable id the offset cannot advance past this batch, so treat the whole response as unusable rather than losing updates.
           return failure("invalid-response");
         }
         let rawBody: Uint8Array;
@@ -296,8 +239,7 @@ export function createTelegramBotApiClient(
         {
           chat_id: chatId,
           text,
-          // Same restraint as the conversation path: no parse mode, no entities,
-          // no keyboard, no link preview.
+          // Same restraint as the conversation path: no parse mode, no entities, no keyboard, no link preview.
           link_preview_options: { is_disabled: true },
           protect_content: true,
         },
@@ -412,18 +354,7 @@ function isValidDecisionButton(value: unknown): value is TelegramDecisionButton 
     && OPAQUE_CALLBACK_DATA.test(value.callbackData);
 }
 
-/**
- * Classify by HTTP status only. Telegram documents that the contents of an
- * error description may change, and the 409 wording exists only in its
- * open-source server, so parsing the description string is not safe.
- *
- * Flood control is the one case that reads the body, and it reads only the
- * documented integer `parameters.retry_after` (Bot API `ResponseParameters`),
- * never the description. Telegram states the wait there; the `Retry-After`
- * header is not part of the Bot API contract, so relying on it alone made the
- * loop retry on a guessed interval and extend the flood wait. A header that is
- * present still wins.
- */
+// Classify errors by status, never unstable descriptions; flood waits use documented integer retry_after with header precedence when present.
 async function classifyStatus(response: Response): Promise<TelegramBotApiResult<never> | undefined> {
   if (response.ok) return undefined;
   if (response.status === 401) return failure("unauthorized");
@@ -449,12 +380,7 @@ function bodyRetryAfterMs(payload: unknown): number | undefined {
   return typeof seconds === "number" ? retryAfterSecondsToMs(seconds) : undefined;
 }
 
-/**
- * The one conversion both the header and the body hint go through, so the
- * floor below cannot apply to one source and not the other. A stated wait of
- * zero is still flood control: re-polling on it immediately is the tight loop
- * the hint exists to prevent, so the shortest wait honoured is one second.
- */
+// Normalize header and body retry hints together; honor zero as a one-second wait to prevent a tight retry loop.
 function retryAfterSecondsToMs(seconds: number): number | undefined {
   if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > MAX_RETRY_AFTER_SECONDS) {
     return undefined;
@@ -462,10 +388,7 @@ function retryAfterSecondsToMs(seconds: number): number | undefined {
   return Math.max(seconds, MIN_RETRY_AFTER_SECONDS) * 1_000;
 }
 
-/**
- * Read at most `MAX_RESPONSE_BYTES` and parse only then. A polling ingress has
- * no proxy in front of it, so this is the only place the body size is bounded.
- */
+// Read at most `MAX_RESPONSE_BYTES` and parse only then. A polling ingress has no proxy in front of it, so this is the only place the body size is bounded.
 async function readBoundedJson(response: Response): Promise<unknown> {
   const declared = response.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared) && Number(declared) > MAX_RESPONSE_BYTES) {

@@ -1,8 +1,4 @@
-/**
- * Layer 1 path policy — allowed directories tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -35,9 +31,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { foldPathForMatch as fold } from "./test-helpers.js";
 import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 
-// The scratch directory is a boot-time artifact of the real app. Tests decide
-// per case whether it verifies; the default is "absent" so the other default
-// entries can be asserted without a machine-dependent third one.
+// The scratch directory is a boot-time artifact of the real app. Tests decide per case whether it verifies; the default is "absent" so the other default entries can be asserted without a machine-dependent third one.
 vi.mock("../../shared/ave-scratch.js", () => ({
   verifyAveScratchDir: vi.fn(() => ({ ok: false, path: "", reason: "absent in test" })),
 }));
@@ -149,28 +143,21 @@ describe("isPathAllowedForEffect — reads are wide, writes stay confined", () =
     expect(isPathAllowedForEffect(inside, fenced, "read")).toBe(true);
   });
 
-  // An empty directory list is deny-by-default for a write, and stays so: the
-  // asymmetry widens what a READ may reach, and cannot grant a write anything.
+  // An empty directory list is deny-by-default for a write, and stays so: the asymmetry widens what a READ may reach, and cannot grant a write anything.
   it("keeps deny-by-default for a write with no directories granted", () => {
     const none = { directories: [], blockReadsOutsideWorkingDirectories: false };
     expect(isPathAllowedForEffect(outside, none, "write")).toBe(false);
     expect(isPathAllowedForEffect(outside, none, "read")).toBe(true);
   });
 
-  // A read is admitted without the directory list ever being consulted, so an
-  // empty `canonicalPath` — which `isPathAllowed` denies — is admitted too.
-  // Nothing enforces on this: a path the caller could not resolve never
-  // reaches the predicate, and Layer 0 runs before it in both callers.
+  // A read is admitted without the directory list ever being consulted, so an empty `canonicalPath` — which `isPathAllowed` denies — is admitted too. Nothing enforces on this: a path the caller could not resolve never reaches the predicate, and Layer 0 runs before it in both callers.
   it("does not consult the path at all for an unfenced read", () => {
     expect(isPathAllowedForEffect("", wide, "read")).toBe(true);
     expect(isPathAllowed("", wide)).toBe(false);
   });
 });
 
-// The one statement of the asymmetry both enforcement paths ask. The tool path
-// scope runs it against `isPathAllowed` and the shell path policy against
-// `validateSandboxPath`; a second copy is how the two would come to disagree
-// about `ls /`.
+// The one statement of the asymmetry both enforcement paths ask. The tool path scope runs it against `isPathAllowed` and the shell path policy against `validateSandboxPath`; a second copy is how the two would come to disagree about `ls /`.
 describe("pathEffectIsConfined", () => {
   it("confines writes always and reads only when re-fenced", () => {
     expect(pathEffectIsConfined("write", false)).toBe(true);
@@ -182,14 +169,10 @@ describe("pathEffectIsConfined", () => {
 
 describe("isPathAllowed — Layer 0 deny still wins", () => {
   it("Layer 0 deny dominates (caller responsibility — see executor wiring)", () => {
-    // Note: isPathAllowed itself only does prefix logic. The executor is
-    // expected to run sensitive-path check FIRST. This test documents the
-    // contract — adding ~/.ave to additionalDirectories doesn't bypass
-    // Layer 0 because Layer 0 fires before Layer 1 in the executor pipeline.
+    // Note: isPathAllowed itself only does prefix logic. The executor is expected to run sensitive-path check FIRST. This test documents the contract — adding ~/.ave to additionalDirectories doesn't bypass Layer 0 because Layer 0 fires before Layer 1 in the executor pipeline.
     const dir = fold(pathResolve(homedir(), ".ave"));
     const sensitive = fold(pathResolve(homedir(), ".ave/secrets/openai.key"));
-    // Layer 1 alone considers the child allowed (parent dir matches);
-    // Layer 0 elsewhere will block it.
+    // Layer 1 alone considers the child allowed (parent dir matches); Layer 0 elsewhere will block it.
     expect(isPathAllowed(sensitive, { directories: [dir] })).toBe(true);
     // sanitizeAllowedDirectories drops ~/.ave/secrets explicitly.
     const sanitized = sanitizeAllowedDirectories([
@@ -213,8 +196,7 @@ describe("pickClosestParent — leaf-parent UX rule", () => {
   });
 
   it("returns null when the parent is itself a Layer 0 sensitive directory", () => {
-    // Generic id_rsa under any folder is Layer 0; the parent folder may
-    // not be sensitive but a deeper one inside .ssh is.
+    // Generic id_rsa under any folder is Layer 0; the parent folder may not be sensitive but a deeper one inside.ssh is.
     const leaf = fold("/Users/example/.ssh/id_rsa");
     // The leaf-parent is `~/.ssh` which is NOT itself a sensitive
     // *directory pattern* in the list (only `**/.ssh/**` entries are).
@@ -298,8 +280,7 @@ describe("validateDirectoryAddition", () => {
 
   it("warns when path contains '.env' segment", () => {
     const r = validateDirectoryAddition("/Users/example/work/proj/.env");
-    // .env file is itself sensitive (Layer 0), so this is rejected;
-    // adjacency warning is for a directory that *contains* such a child.
+    // .env file is itself sensitive (Layer 0), so this is rejected; adjacency warning is for a directory that *contains* such a child.
     expect(r.ok).toBe(false); // Layer 0 wins
   });
 
@@ -498,9 +479,7 @@ describe("computeDefaultAllowedDirectories", () => {
   it("includes process.cwd() and the Ave home (modulo Layer 0)", () => {
     const result = computeDefaultAllowedDirectories();
     expect(result.length).toBeGreaterThanOrEqual(1);
-    // The Ave home is allowed here as a parent dir (sensitive *children* are
-    // hard-blocked by Layer 0 but the dir itself is fine). Under the test
-    // runner it is this file's own home, not ~/.ave.
+    // The Ave home is allowed here as a parent dir (sensitive *children* are hard-blocked by Layer 0 but the dir itself is fine). Under the test runner it is this file's own home, not ~/.ave.
     const aveDir = fold(aveHome());
     expect(result).toContain(aveDir);
   });
@@ -515,8 +494,7 @@ describe("computeDefaultAllowedDirectories", () => {
       expect(result).toContain(fold(scratch));
       expect(isPathAllowed(fold(join(scratch, "build.log")), { directories: result })).toBe(true);
       expect(computeDefaultRuntimeAllowedDirectories()).toContain(canonicalizePathForMatch(scratch));
-      // A sibling under the same temp root is NOT a default: the temp root
-      // itself is never a Layer 1 default, only the verified scratch directory.
+      // A sibling under the same temp root is NOT a default: the temp root itself is never a Layer 1 default, only the verified scratch directory.
       expect(isPathAllowed(fold(join(scratchRoot, "other.log")), { directories: result })).toBe(false);
 
       vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: false, path: scratch, reason: "is a symbolic link" });

@@ -277,8 +277,7 @@ async function writePreparedPlugin(
     }],
     ...manifestOverrides,
   };
-  // `requires: undefined` in the overrides is a manifest that declares no host
-  // protocol at all — the shape decision 52 says reaches this path unrefused.
+  // Omitted requires means no host protocol declaration.
   if (manifest.requires === undefined) delete manifest.requires;
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(
@@ -517,25 +516,17 @@ describe("prepared artifact install identity", () => {
       .toBe("shared-identity");
   });
 
-  // Every throw site spanned by the prepared identity reservation belongs in
-  // this table: the reservation is released by one outer `finally`, so a phase
-  // that is absent here has its release asserted by structure alone. Adding a
-  // pre-publication throw site to `activatePreparedArtifact` without adding a
-  // row leaves that phase's release unproven.
+  // Cover every throw boundary with one outer reservation cleanup so retries cannot inherit leaked identity.
   const failurePhases: ReadonlyArray<{
     label: string;
     entrySource?: (toolName: string) => string;
-    /** Corrupt the registry provenance the activation input carries. */
     failsRegistryProvenance?: boolean;
     failsPreparePluginStart?: boolean;
-    /** Delete a receipt-declared payload file so materialization cannot copy it. */
     failsGenerationMaterialization?: boolean;
     failsHostApiIncarnation?: boolean;
     failsDurableCommit?: boolean;
     failsPublication?: boolean;
-    /** Message of the first activation's rejection; defaults to the injected error. */
     expectedMessage?: string;
-    /** Phases reached only after the durable commit callback has run. */
     reachesDurableCommit?: boolean;
   }> = [
     {
@@ -595,9 +586,7 @@ describe("prepared artifact install identity", () => {
       };
       const candidatePythonExecutable = join(root, "candidate-python");
       const failure = new Error(`${phase.label} failure`);
-      // Injections that live on the runtime rather than on the activation input
-      // must fail the first activation only, so the retry exercises the same
-      // runtime instance that still holds the reservation map.
+      // Arm runtime faults once so retry reuses the same reservation map.
       let injectRuntimeFailure = true;
       const failingCreateHostApi: PluginRuntimeOptions["createHostApi"] = (
         hostApiPluginId,
@@ -635,8 +624,6 @@ describe("prepared artifact install identity", () => {
         phase.entrySource,
       );
       if (phase.failsGenerationMaterialization) {
-        // The receipt still declares `entry.mjs`, so materializing the retained
-        // generation cannot copy the payload out of the staging tree.
         await rm(join(failedPrepared.pluginRoot, "entry.mjs"));
       }
       const failedRegistryEntry = phase.failsRegistryProvenance
@@ -684,11 +671,7 @@ describe("prepared artifact install identity", () => {
 
 type AuditEntry = { level: string; message: string; data?: unknown };
 
-/**
- * What boot reports for a manifest that declares no host protocol: the audit
- * event and the failed card. The refused update below must report the same
- * event with the same fields and the same message (§9.8 A1, decision 52).
- */
+/** Boot and refused updates must report the same protocol refusal event, fields and message. */
 async function bootRefusalOf(pluginId: string): Promise<{ audit: AuditEntry[]; message: string | undefined }> {
   const root = await mkdtemp(join(tmpdir(), "ave-boot-refusal-"));
   roots.push(root);
@@ -717,7 +700,7 @@ async function bootRefusalOf(pluginId: string): Promise<{ audit: AuditEntry[]; m
   await runtime.startAll();
   const card = runtime.listPluginCards().find((candidate) => candidate.id === pluginId);
   expect(card?.loadStatus).toBe("failed");
-  // Boot refuses an undeclared protocol before routing, so no arm was chosen.
+  // Undeclared protocol fails before routing, so no arm is recorded.
   expect(card?.arm).toBeUndefined();
   expect(card?.confinement).toBeUndefined();
   return {

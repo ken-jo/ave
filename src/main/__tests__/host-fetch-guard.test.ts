@@ -1,19 +1,10 @@
-/**
- * Tier A hostFetch egress gate — SSRF + allow-list policy.
- *
- * Exercises the pure `evaluateHostFetch` core directly so the egress contract
- * is pinned without standing up the full plugin runtime (mirrors
- * `network-access-allowlist.test.ts`). `node:dns` is stubbed so the DNS-aware
- * SSRF layer can be driven deterministically: an allow-listed name is pointed
- * at a private / loopback / link-local address and the decision is asserted.
- */
+// Stub DNS to exercise private-address rejection even for allow-listed names.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { REDIRECT_STATUSES } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 
-// ─── dns mock — configurable per test via `lookupMock` ──────────────
 const lookupMock = vi.fn<
   (host: string, opts: unknown) => Promise<Array<{ address: string; family: number }>>
 >();
@@ -24,8 +15,7 @@ vi.mock("node:dns", () => ({
   },
 }));
 
-// Module under test imported AFTER the mock so network-guard's
-// `import { promises as dns } from "node:dns"` binds to the stub.
+// Module under test imported AFTER the mock so network-guard's `import { promises as dns } from "node:dns"` binds to the stub.
 const { evaluateHostFetch, runHostFetchHops, MAX_REDIRECT_HOPS } = await import(
   "../host-fetch-guard.js",
 );
@@ -204,7 +194,7 @@ describe("evaluateHostFetch — SSRF guard on allow-listed names", () => {
 
 describe("evaluateHostFetch — allowPrivateNetworks governance opt-in", () => {
   it("permits an RFC1918 target only when the manifest opts in", async () => {
-    lookupMock.mockResolvedValueOnce([{ address: "10.185.177.209", family: 4 }]);
+    lookupMock.mockResolvedValueOnce([{ address: "10.10.1.209", family: 4 }]);
     const decision = await evaluateHostFetch({
       pluginId: "p",
       rawUrl: "https://api.example.com/x",
@@ -240,8 +230,7 @@ describe("evaluateHostFetch — allowPrivateNetworks governance opt-in", () => {
 });
 
 describe("evaluateHostFetch — declared loopback endpoint (local inference server)", () => {
-  // What a user pointing a plugin at LM Studio / LiteLLM / a local proxy has:
-  // a manifest that names the local machine, and a server that speaks http.
+  // What a user pointing a plugin at LM Studio / LiteLLM / a local proxy has: a manifest that names the local machine, and a server that speaks http.
   const LOCAL = ["localhost", "127.0.0.1", "::1", "api.example.com"];
 
   it("allows cleartext http to a declared 127.0.0.1 endpoint", async () => {
@@ -307,8 +296,7 @@ describe("evaluateHostFetch — declared loopback endpoint (local inference serv
   });
 
   it("denies cleartext http to a declared localhost that resolves off-machine", async () => {
-    // Poisoned hosts file / rebinding answer: the literal was declared, but the
-    // request would leave the machine, so the https rule applies again.
+    // Poisoned hosts file / rebinding answer: the literal was declared, but the request would leave the machine, so the https rule applies again.
     lookupMock.mockResolvedValue([{ address: "203.0.113.7", family: 4 }]);
     const decision = await evaluateHostFetch({
       pluginId: "p",
@@ -337,8 +325,7 @@ describe("evaluateHostFetch — declared loopback endpoint (local inference serv
   });
 
   it("denies cleartext http to a sub-label of a declared localhost", async () => {
-    // `foo.localhost` dot-boundary-matches the allow-list entry, but it is not
-    // the loopback literal — the exemption is by name, not by suffix.
+    // `foo.localhost` dot-boundary-matches the allow-list entry, but it is not the loopback literal — the exemption is by name, not by suffix.
     lookupMock.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
     const decision = await evaluateHostFetch({
       pluginId: "p",
@@ -350,12 +337,7 @@ describe("evaluateHostFetch — declared loopback endpoint (local inference serv
   });
 
   it("cleartext to an ordinary allow-listed host still needs the private PROOF — a public answer stays denied", async () => {
-    // This case used to pin "allowPrivateNetworks never opens cleartext, no
-    // DNS consulted". That invariant was repealed on purpose: cleartext to a
-    // PROVEN-private intranet host is now permitted (see the intranet
-    // describe below). What survives is the half that matters — the flag
-    // alone opens nothing; the resolution has to prove every address private,
-    // and a public answer is exactly the case the old rule existed for.
+    // Private-network approval alone is insufficient: every resolved address must prove private before cleartext is allowed.
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const decision = await evaluateHostFetch({
       pluginId: "p",
@@ -393,18 +375,13 @@ describe("evaluateHostFetch — declared loopback endpoint (local inference serv
   });
 });
 
-// ─── the hop loop — every followed redirect faces the same gate ─────────────
-
-/** Public addresses for every lookup: the SSRF layer approves, the loop decides. */
+// Public addresses for every lookup: the SSRF layer approves, the loop decides.
 function publicDns(): void {
   lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
 }
 
-/**
- * A scripted single-hop transport. Each entry answers one hop; the snapshots
- * are taken AT CALL TIME because the loop mutates one shared Headers object
- * across hops — reading it afterwards would show every call the final state.
- */
+// A scripted single-hop transport. Each entry answers one hop; the snapshots are taken AT CALL TIME because the loop mutates one shared Headers object
+// across hops — reading it afterwards would show every call the final state.
 function scriptedTransport(responses: Response[]) {
   const calls: Array<{ url: string; method: string; headers: Record<string, string> }> = [];
   const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -494,7 +471,7 @@ it("refuses a credential use when the transport has no handoff contract", async 
 });
 
 describe("runHostFetchHops — hop deadline", () => {
-  /** A server that accepts the connection and then says nothing, ever. */
+  // A server that accepts the connection and then says nothing, ever.
   function silentTransport() {
     const aborted: string[] = [];
     const transport = vi.fn((input: string | URL | Request, init?: RequestInit) =>
@@ -503,9 +480,7 @@ describe("runHostFetchHops — hop deadline", () => {
           aborted.push(String(input));
           reject(new DOMException("The operation was aborted.", "AbortError"));
         };
-        // A real transport checks the signal before it opens the socket, so a
-        // signal that is ALREADY aborted must reject rather than wait for an
-        // event that has been and gone.
+        // A real transport checks the signal before it opens the socket, so a signal that is ALREADY aborted must reject rather than wait for an event that has been and gone.
         if (init?.signal?.aborted) give();
         else init?.signal?.addEventListener("abort", give);
       })) as unknown as typeof fetch;
@@ -513,8 +488,7 @@ describe("runHostFetchHops — hop deadline", () => {
   }
 
   it("gives up on a hop that never produces headers", async () => {
-    // The plugin lane's one missing bound. Without it this call is held open
-    // for as long as the app runs, and the plugin looks merely slow.
+    // The plugin lane's one missing bound. Without it this call is held open for as long as the app runs, and the plugin looks merely slow.
     vi.useFakeTimers();
     try {
       publicDns();
@@ -531,8 +505,7 @@ describe("runHostFetchHops — hop deadline", () => {
   });
 
   it("leaves the plugin's own signal able to cancel sooner", async () => {
-    // The ceiling is an upper bound, not a replacement: a plugin that cancels
-    // at its own moment still cancels then.
+    // The ceiling is an upper bound, not a replacement: a plugin that cancels at its own moment still cancels then.
     publicDns();
     const { transport, aborted } = silentTransport();
     const pluginAbort = new AbortController();
@@ -793,10 +766,7 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
     expect(sameOrigin.calls[1]!.headers.authorization).toBe("Bearer t");
   });
 
-  // The route a download above WIRE_BYTES_MAX takes (protocol design §8): HTTP
-  // Range slices, each within the ceiling. A release asset answers its first
-  // hop with a 302 to a different origin (its CDN), so the slice is only a
-  // slice if `range` survives that hop and the 206 comes back as it was sent.
+  // Range slices must survive cross-origin redirects within WIRE_BYTES_MAX and retain the upstream 206 response.
   it("keeps range on a cross-origin hop and returns the 206 with its content-range", async () => {
     publicDns();
     const { transport, calls } = scriptedTransport([
@@ -834,8 +804,6 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
   });
 });
 
-// ─── the second cleartext exemption: a proven-private intranet endpoint ─────
-
 describe("evaluateHostFetch — cleartext to a proven-private intranet host", () => {
   const INTRANET = ["portal.internal.example"];
 
@@ -851,11 +819,7 @@ describe("evaluateHostFetch — cleartext to a proven-private intranet host", ()
   });
 
   it("split-horizon with a loopback answer ends DENIED — the SSRF layer owns loopback, not this flag", async () => {
-    // The private-only PROOF counts loopback (those bytes stay local), so the
-    // cleartext layer passes. The SSRF layer then rejects the loopback
-    // address, because reaching the user's own machine is a separate grant
-    // (the declared-literal mechanism) that allowPrivateNetworks never
-    // implies. Two layers, two questions, and the stricter one wins.
+    // Loopback may pass the private-only cleartext proof but still needs its separate literal-host grant at the SSRF layer.
     lookupMock.mockResolvedValue([
       { address: "10.20.30.40", family: 4 },
       { address: "127.0.0.1", family: 4 },
@@ -968,9 +932,8 @@ describe("runHostFetchHops — a followed hop into the intranet exemption", () =
   });
 
   it("the same hop WITHOUT the opt-in stays a refused downgrade", async () => {
-    // Hop 0 starts from a PUBLIC host: without allowPrivateNetworks a
-    // private-resolving origin would not clear the SSRF layer even over
-    // https, and this case is about the hop, not the origin.
+    // Hop 0 starts from a PUBLIC host: without allowPrivateNetworks a private-resolving origin would not clear the SSRF layer even over https, and this case
+    // is about the hop, not the origin.
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const { transport, calls } = scriptedTransport([
       redirect(302, "http://portal.internal.example/landing"),
@@ -1020,8 +983,7 @@ describe("runHostFetchHops — session-cookie injection", () => {
     const { options } = hopOptions(first, { redirect: "follow" }, transport);
     await runHostFetchHops({
       ...options,
-      // Distinct per host: proves the injector is consulted again with the hop's
-      // own URL rather than the header surviving from hop 0.
+      // Distinct per host: proves the injector is consulted again with the hop's own URL rather than the header surviving from hop 0.
       injectSessionCookie: async (url) =>
         url.hostname === "api.example.com" ? "API=1" : "SSO=2",
     });

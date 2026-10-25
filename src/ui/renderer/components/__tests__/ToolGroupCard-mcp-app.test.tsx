@@ -1,23 +1,4 @@
-/**
- * ToolGroupCard × McpAppView — single + multi tool integration.
- *
- * Regression guard for the path: when a tool entry carries `uiPayload`
- * (from MCP Apps spec §3.2 `_meta.ui`), the card MUST mount `<McpAppView>`
- * regardless of whether the tool sits alone (SingleToolInline) or grouped
- * with siblings (multi-tool path).
- *
- * Real production miss (2026-04 → 2026-05): only the multi-tool branch
- * rendered McpAppView. Single-tool MCP responses with `_meta.ui` had their
- * UI surface silently dropped at the renderer. Detected during #256 review
- * (2026-05-17). Bridge unit tests (`mcp-app-view.test.ts`) cover protocol
- * but not the *mounting* path through `ToolGroupCard`, so it slipped past CI.
- *
- * Test strategy: render `ToolGroupCard` with a fake `tool_group` ChatEntry,
- * stub `window.ave.mcp.readUiResource` so the lazy fetch resolves without
- * actually touching Electron. We don't drive a real `<webview>` here —
- * jsdom doesn't run it — but we DO assert that the McpAppView wrapper
- * mounts so the regression class above is closed.
- */
+/** MCP app payloads must mount their view in both single-tool and grouped-tool cards. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

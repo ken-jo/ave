@@ -1,13 +1,4 @@
-/**
- * Schema / runtime contract guard (capabilities reduction, Ph1/Ph2).
- *
- * The manifest `capabilities` field is NO LONGER a closed enum mirrored from
- * `KNOWN_CAPABILITIES`. It is a free-form, format-validated string list, so an
- * installed manifest that still declares a removed/legacy capability
- * (mail-source, worker-client, …) validates and loads instead of being rejected
- * at schema validation. The host enforces only KNOWN_CAPABILITIES at runtime;
- * every other string is a harmless self-declaration.
- */
+/** Capability declarations are free-form format-validated strings; only KNOWN_CAPABILITIES grant runtime behavior. */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -19,7 +10,6 @@ async function loadCapabilitiesItemsSchema(): Promise<{
   pattern?: string;
   type?: string;
 }> {
-  // Host-owned manifest schema SOT (ph2).
   const schemaPath = fileURLToPath(
     new URL("../../../schemas/plugin-manifest.schema.json", import.meta.url),
   );
@@ -33,8 +23,7 @@ async function loadCapabilitiesItemsSchema(): Promise<{
 describe("capability schema contract (free-form, not a closed enum)", () => {
   it("capabilities items is a format-validated free-form string, not an enum", async () => {
     const items = await loadCapabilitiesItemsSchema();
-    // No enum — an enum would reject installed manifests still declaring a
-    // removed/legacy capability string and brick their load.
+    // A closed enum would reject installed manifests that declare retired capabilities.
     expect(items.enum).toBeUndefined();
     expect(items.type).toBe("string");
     expect(typeof items.pattern).toBe("string");
@@ -43,8 +32,7 @@ describe("capability schema contract (free-form, not a closed enum)", () => {
   it("every host-ENFORCED capability matches the schema pattern", async () => {
     const items = await loadCapabilitiesItemsSchema();
     const re = new RegExp(items.pattern!);
-    // The two enforced strings (external-auth-consumer, host:overlay) must pass
-    // the format-hygiene pattern — including the colon in host:overlay.
+    // The format must allow the colon in host:overlay.
     for (const cap of KNOWN_CAPABILITIES) {
       expect(re.test(cap), `enforced cap '${cap}' must match schema pattern`).toBe(
         true,
@@ -57,9 +45,7 @@ describe("capability schema contract (free-form, not a closed enum)", () => {
   it("legacy / removed capability strings still validate (no install-brick)", async () => {
     const items = await loadCapabilitiesItemsSchema();
     const re = new RegExp(items.pattern!);
-    // Removed from the enforced vocab but still valid free-form declarations on
-    // already-installed manifests, where the host reads none of them. None may
-    // be rejected at schema validation.
+    // Retired capability strings remain valid declarations without granting host behavior.
     for (const legacy of [
       "worker-client",
       "mail-source",

@@ -27,7 +27,7 @@ import {
 } from "./telegram-bridge-fixtures.js";
 import { forbidAmbientFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
-/** Minimal safe-projection stand-in: only snapshot/subscribe are ever called. */
+// Minimal safe-projection stand-in: only snapshot/subscribe are ever called.
 function projectionStore(): SharedConversationProjectionStore {
   return {
     snapshot: (conversationId: string) => ({
@@ -53,12 +53,7 @@ function projectionStore(): SharedConversationProjectionStore {
   } as unknown as SharedConversationProjectionStore;
 }
 
-/**
- * Drives the REAL paired runtime through the owner-driven connection entry:
- * one shared secret store makes the fixture's digester and the runtime agree
- * on the actor digest, and the authority pairs that digest to the bound
- * conversation with a live approval — the shape a real share leaves behind.
- */
+// Share the secret store with the runtime so the fixture actor digest matches its live conversation approval.
 function connectionFixture(overrides: {
   readonly receiptStore?: unknown;
   readonly submit?: () => unknown;
@@ -87,31 +82,25 @@ function connectionFixture(overrides: {
     getMe: vi.fn(async () => ({ ok: true as const, value: { username: "a_bot" } })),
     getWebhookInfo: vi.fn(async () => ({ ok: true as const, value: { hasWebhook: false } })),
     sendMessage,
-    // Remote-approval card surface; exercised only when an approvalGate is
-    // handed to the bridge.
+    // Remote-approval card surface; exercised only when an approvalGate is handed to the bridge.
     sendDecisionCard: vi.fn(async () => ({ ok: true as const, value: { messageId: 900 } })),
     editMessageText: vi.fn(async () => ({ ok: true as const, value: true as const })),
     answerCallbackQuery: vi.fn(async () => ({ ok: true as const, value: true as const })),
   };
   const createBotApiClient = vi.fn(() => client as never);
-  // The outbound delivery transport takes its `fetch` as a required option, so
-  // the fixture hands it one that answers like the Bot API rather than letting
+  // The outbound delivery transport takes its `fetch` as a required option, so the fixture hands it one that answers like the Bot API rather than letting
   // a send reach the machine's network.
   const networkFetch = vi.fn(async () => new Response(
     JSON.stringify({ ok: true, result: { message_id: 1 } }),
     { status: 200, headers: { "content-type": "application/json" } },
   ));
 
-  // The command port's submit contract is SYNCHRONOUS: it returns the
-  // submission object (whose `completion` promise settles the receipt), or
-  // null while streaming.
+  // The command port's submit contract is SYNCHRONOUS: it returns the submission object (whose `completion` promise settles the receipt), or null while streaming.
   const submit = vi.fn<(actor: unknown, command: unknown) => unknown>(
     overrides.submit ?? (() => ({ completion: Promise.resolve() })),
   );
   const onFatal = vi.fn();
-  // A recorded offset marks every queued update as LIVE traffic; a null one
-  // would make the ingress treat the first batch as pre-pairing backlog and
-  // (correctly) skip it.
+  // A recorded offset marks every queued update as LIVE traffic; a null one would make the ingress treat the first batch as pre-pairing backlog and (correctly) skip it.
   let offset: number | null = 100;
 
   const input = {
@@ -144,16 +133,14 @@ function connectionFixture(overrides: {
   return { input, client, createBotApiClient, submit, onFatal, sendMessage, networkFetch,
     queue(...next: Batch[]) {
       batches.push(...next);
-      // Wake a poll parked on an empty queue so a batch queued after start —
-      // a button press for a card whose token did not exist yet — is fetched.
+      // Wake a poll parked on an empty queue so a batch queued after start — a button press for a card whose token did not exist yet — is fetched.
       while (parked.length > 0) parked.shift()?.();
     },
   };
 }
 
 async function settled(): Promise<void> {
-  // The poll loop hops several awaits between fetching an update and the
-  // command port; a few macrotask turns let one dispatch fully settle.
+  // The poll loop hops several awaits between fetching an update and the command port; a few macrotask turns let one dispatch fully settle.
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
 }
 
@@ -177,8 +164,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
   });
 
   it("admits Telegram's 4,096-UTF-16-unit text bound and no more", async () => {
-    // The ambient stack is nobody's transport here — the fixture hands the
-    // bridge its own, and a path that regresses to the global fails loudly.
+    // The ambient stack is nobody's transport here — the fixture hands the bridge its own, and a path that regresses to the global fails loudly.
     forbidAmbientFetch();
     const f = connectionFixture({
       receiptStore: {
@@ -195,8 +181,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
     await maybeStartTelegramConnectionBridge(f.input);
     await settled();
 
-    // Exactly the in-bound message reached the conversation; the one-emoji
-    // overflow died as an invalid envelope before authorization.
+    // Exactly the in-bound message reached the conversation; the one-emoji overflow died as an invalid envelope before authorization.
     expect(f.submit).toHaveBeenCalledOnce();
     // submit(actor, command): the text rides the command payload.
     expect(f.submit.mock.calls[0]?.[1]).toMatchObject({
@@ -265,9 +250,8 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
     expect(f.submit).toHaveBeenCalledOnce();
     expect(settle).not.toHaveBeenCalled();
 
-    // Owner disconnects and reconnects while the turn is still running; the
-    // receipt was reserved under the FIRST activation and must still settle
-    // when that turn's completion finally lands.
+    // Owner disconnects and reconnects while the turn is still running; the receipt was reserved under the FIRST activation and must still settle when that
+    // turn's completion finally lands.
     await stopTelegramBridgeServer("user");
     await maybeStartTelegramConnectionBridge(f.input);
     releaseCompletion?.();
@@ -324,8 +308,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
     expect(cardCall[0]).toBe(OWNER_CHAT_ID);
     const approveToken = cardCall[2][0]!.callbackData;
 
-    // The owner presses approve; the poller relays it into the SAME gate
-    // resolve chokepoint with the gate's own echo material, as the bridge.
+    // The owner presses approve; the poller relays it into the SAME gate resolve chokepoint with the gate's own echo material, as the bridge.
     f.queue({ ok: true, value: [callbackUpdate(102, approveToken)] });
     await vi.waitFor(() => expect(gate.resolve).toHaveBeenCalledWith(
       "req-9",

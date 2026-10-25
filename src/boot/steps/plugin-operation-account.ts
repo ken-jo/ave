@@ -17,16 +17,7 @@ export interface ResolvedPluginOperationAccount {
   readonly accountScopeHash: string;
 }
 
-/**
- * Bind app-origin operation policy to a Host-owned principal.
- *
- * Authenticated plugins receive both a revocable per-login principal and the
- * stable hash of the account identity reported by the manifest-owned status
- * Tool. Authless plugins receive a generation-bound principal plus a stable
- * plugin-owned anonymous scope. The stable scope never grants authority; it
- * only prevents reauthentication, update, or rollback from bypassing
- * serialization and fail-closed poison.
- */
+/** Stable account scope serializes operations across login generations; only the revocable principal grants authority. */
 export function resolvePluginOperationAccount(
   resolver: PluginOperationAccountResolver,
   manifest: { readonly auth?: unknown } | undefined,

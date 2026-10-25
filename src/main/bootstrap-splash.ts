@@ -1,12 +1,4 @@
-/**
- * Bootstrap splash — the temporary in-window HTML shown while boot runs.
- *
- * The real `index.html` is loaded only after IPC handlers are registered (so
- * the renderer's first `useEffect` IPC calls never race the handlers — §M-race
- * fix). The main process drives the splash status line directly from the boot
- * pipeline via `updateSplashStatus`, and enforces a minimum visible time so
- * the splash never flickers past on fast machines.
- */
+// Load the real renderer only after IPC registration; keep the splash visible long enough to avoid flicker.
 import { t } from "../i18n/index.js";
 import { AVE_LOGO_PATH, AVE_LOGO_VIEW_BOX } from "../shared/ave-logo.js";
 import { getAveAppVersion } from "../shared/app-version.js";
@@ -24,7 +16,7 @@ const BOOTSTRAP_MESSAGE_MIN_VISIBLE_MS = 500;
 const BOOTSTRAP_SPLASH_MIN_VISIBLE_MS = 500;
 let bootstrapSplashShownAt = 0;
 
-/** Record the moment the splash became visible (called from createWindow). */
+// Record the moment the splash became visible (called from createWindow).
 export function markBootstrapSplashShown(): void {
   bootstrapSplashShownAt = Date.now();
 }
@@ -36,9 +28,6 @@ export async function waitForMinimumBootstrapSplash() {
     await sleep(remaining);
   }
 }
-
-
-
 
 export const BOOTSTRAP_SPLASH = `<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><title>Ave</title>
@@ -163,14 +152,11 @@ export const BOOTSTRAP_SPLASH = `<!DOCTYPE html>
   </script>
 </body></html>`;
 
-/** Push a status message to the splash window from the main process.
- *  Best-effort — silently no-ops if the splash has already navigated away
- *  to the real renderer or if executeJavaScript rejects. */
+// Push a status message to the splash window from the main process. Best-effort — silently no-ops if the splash has already navigated away to the real
+// renderer or if executeJavaScript rejects.
 export function updateSplashStatus(message: string): void {
-  // No splash was shown (headless run, or a re-created window that passed
-  // `showBootstrapSplash: false`), so there is no status line to drive.
-  // `bootstrapSplashShownAt` is the same fact `waitForMinimumBootstrapSplash`
-  // reads — asking it here keeps both answers derived from one place.
+  // No splash was shown (headless run, or a re-created window that passed `showBootstrapSplash: false`), so there is no status line to drive.
+  // `bootstrapSplashShownAt` is the same fact `waitForMinimumBootstrapSplash` reads — asking it here keeps both answers derived from one place.
   if (bootstrapSplashShownAt <= 0) return;
   const mainWindow = getMainWindow();
   if (!mainWindow || mainWindow.isDestroyed()) return;

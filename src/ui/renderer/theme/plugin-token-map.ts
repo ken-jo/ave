@@ -9,11 +9,8 @@ import type { AveTokenName } from "../../../shared/plugin-ui-tokens.js";
 // valid `hsl()` for plugin webviews (which cannot consume bare triples).
 const _HSL_RE = /^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)%\s+(\d+(?:\.\d+)?)%(?:\s*\/\s*(\d+(?:\.\d+)?%?))?$/;
 
-/**
- * Convert an HSL triple string ("H S% L%" or "H S% L% / A%") to a CSS
- * `hsl(H, S%, L%)` / `hsla(H, S%, L%, A%)` value. Bundle tokens are stored as
- * bare HSL triples (Tailwind format); plugin webviews need the full wrapper.
- */
+/** Convert an HSL triple string ("H S% L%" or "H S% L% / A%") to a CSS `hsl(H, S%, L%)` / `hsla(H, S%, L%, A%)` value.
+ * Bundle tokens are stored as bare HSL triples (Tailwind format); plugin webviews need the full wrapper. */
 function tripleToHsl(triple: string): string {
   const m = _HSL_RE.exec(triple.trim());
   if (!m) return triple; // already formatted or raw value
@@ -69,22 +66,13 @@ const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-motion-ease-in-out":   "cubic-bezier(0.4, 0, 0.2, 1)",
 };
 
-/**
- * Build a color-mix() tinted surface value.
- *
- * @param color  - Resolved CSS color for the tint (e.g. `hsl(217, 91%, 60%)`)
- * @param base   - Resolved CSS color for the base surface (e.g. `hsl(222, 84%, 5%)`)
- * @param pct    - Percentage of `color` to mix in (remainder is `base`)
- */
+/** pct is the percentage of color to mix; the remainder comes from base. */
 function _tint(color: string, base: string, pct: number): string {
   return `color-mix(in srgb, ${color} ${pct}%, ${base})`;
 }
 
-/**
- * Derive the full --ave-* plugin token map from an active ThemeBundle.
- *
- * Bundles are self-contained — no legacy axis resolution needed.
- */
+/** Derive the full --ave-* plugin token map from an active ThemeBundle. Bundles are self-contained — no legacy axis
+ * resolution needed. */
 export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, string> {
   const t = bundle.tokens;
   const isLight = bundle.shell === "light";
@@ -106,8 +94,8 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
   const inputBorder = tripleToHsl(t["ui-line"]);
   const inputSubtle = tripleToHsl(t.muted);
 
-  // Mix percentages scale by shell mode and high-contrast requirement.
-  // AA contrast on dark surfaces; HC bundle bumps mix to 24/40 for elevated contrast over body background.
+  // Mix percentages scale by shell mode and high-contrast requirement. AA contrast on dark surfaces; HC bundle bumps mix to
+  // 24/40 for elevated contrast over body background.
   const primarySubtlePct = isHighContrast ? 24 : isLight ? 14 : 18;
   const primaryStrongPct = isHighContrast ? 40 : isLight ? 28 : 32;
   const statusSubtlePct  = isHighContrast ? 24 : 14;
@@ -147,8 +135,7 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
     "--ave-input-bar-action":      fg,
     "--ave-radius":          "0.6rem",
     "--ave-radius-sm":       "0.25rem",
-    // ── Derived tinted-surface tokens ────────────────────────────────────────
-    // Pre-computed so plugins use var(--ave-primary-bg-subtle) instead of
+        // Pre-computed so plugins use var(--ave-primary-bg-subtle) instead of
     // reinventing color-mix() across --pm-*, --accent-bg, --ah-* namespaces.
     "--ave-primary-bg-subtle":  _tint(primary, surface, primarySubtlePct),
     "--ave-primary-bg-strong":  _tint(primary, surface, primaryStrongPct),
@@ -160,12 +147,3 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
   };
   return { ..._INVARIANT, ...bundleTokens } as Record<AveTokenName, string>;
 }
-
-/**
- * @deprecated Use `bundleToPluginTokens(bundle)` instead.
- *
- * Legacy shim kept so existing callers (ThemeProvider tests that import
- * `resolvePluginTokens` from the barrel) continue to compile during the
- * transition. Will be removed in the next sprint.
- */
-export { bundleToPluginTokens as resolvePluginTokens };

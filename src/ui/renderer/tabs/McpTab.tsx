@@ -8,7 +8,7 @@ import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Separator } from "../../../components/ui/separator.js";
 import { Textarea } from "../../../components/ui/textarea.js";
-import type { McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
+import type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
 import { LONG_TOAST_TTL_MS } from "../constants.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
@@ -16,11 +16,11 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
-
-// ─── Helper types re-exported from renderer/types.ts ─
-
+import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
 type Transport = "stdio" | "http";
+
+const AUTH_STATUS_POLL_MS = 3_000;
 
 const STATUS_BADGE: Record<McpServerState["status"], string> = {
   connected: "bg-success/(--opacity-soft) text-success",
@@ -39,14 +39,39 @@ function getStatusLabel(status: McpServerState["status"]): string {
   return labels[status];
 }
 
+function getAuthStatusLabel(status: NonNullable<McpServerState["authStatus"]>): string {
+  const labels = {
+    required: t("mcpTab.authRequired"),
+    authenticating: t("mcpTab.authenticating"),
+    authenticated: t("mcpTab.authenticated"),
+    insufficient_scope: t("mcpTab.authStepUpRequired"),
+    error: t("mcpTab.authError"),
+  };
+  return labels[status];
+}
+
+/** Localized guidance for a host authorization failure code; never provider text. */
+function getAuthErrorMessage(code: McpAuthErrorCode | undefined): string {
+  switch (code) {
+    case "mcp-auth-required": return t("mcpTab.authRequiredMessage");
+    case "mcp-auth-storage-unavailable": return t("mcpTab.authStorageUnavailableMessage");
+    case "mcp-auth-storage-unreadable": return t("mcpTab.authStorageUnreadableMessage");
+    case "mcp-auth-registration-unsupported": return t("mcpTab.authRegistrationUnsupportedMessage");
+    case "mcp-auth-resource-mismatch": return t("mcpTab.authResourceMismatchMessage");
+    case "mcp-auth-index-unreadable": return t("mcpTab.authIndexUnreadableMessage");
+    default: return t("mcpTab.authFailedMessage");
+  }
+}
+
 const EMPTY_FORM = {
   id: "",
   transport: "stdio" as Transport,
   command: "",
   args: "",
   url: "",
-  auth: "none" as "none" | "sso" | "api-key",
+  auth: "none" as "none" | "sso" | "api-key" | "oauth",
   apiKey: "",
+  oauthClientId: "",
   headers: "",
   env: "",
   allowPrivateNetworks: false,
@@ -113,13 +138,14 @@ const WINDOWS_EXECUTABLE_PATTERN =
 /**
  * Validates that the auth/apiKey combination is coherent.
  * - "api-key" auth requires a non-empty API key.
+ * - "oauth" auth rejects an API key because credentials come from the browser flow.
  * - "none" auth rejects any API key value (it would be silently dropped by
  *   the config builder and confuse the user into thinking it was saved).
  *
  * Returns a user-facing error string, or null when the combination is valid.
  */
 export function validateAuthApiKey(
-  auth: "none" | "sso" | "api-key",
+  auth: "none" | "sso" | "api-key" | "oauth",
   apiKey: string,
 ): string | null {
   if (auth === "sso") {
@@ -127,6 +153,9 @@ export function validateAuthApiKey(
   }
   if (auth === "api-key" && !apiKey.trim()) {
     return t("mcpTab.apiKeyRequired");
+  }
+  if (auth === "oauth" && apiKey.trim()) {
+    return t("mcpTab.apiKeyNotAllowedWithOAuth");
   }
   if (auth === "none" && apiKey.trim()) {
     return t("mcpTab.apiKeyNotAllowedWithNoneAuth");
@@ -179,6 +208,7 @@ export function McpTab() {
     transport: `${formIdPrefix}-transport`,
     auth: `${formIdPrefix}-auth`,
     apiKey: `${formIdPrefix}-api-key`,
+    oauthClientId: `${formIdPrefix}-oauth-client-id`,
     command: `${formIdPrefix}-command`,
     args: `${formIdPrefix}-args`,
     env: `${formIdPrefix}-env`,
@@ -204,12 +234,9 @@ export function McpTab() {
     };
   }, []);
 
-  // ── Section A: 연결 상태 목록 ─────────────────────
   const [states, setStates] = useState<McpServerState[]>([]);
-  // ── Section B: 설정 파일 목록 ─────────────────────
   const [configs, setConfigs] = useState<McpServerConfigDto[]>([]);
   const [configPath, setConfigPath] = useState("");
-  // ── Section C: 서버 추가 폼 ───────────────────────
   const [form, setForm] = useState(EMPTY_FORM);
   const [formBusy, setFormBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -218,8 +245,12 @@ export function McpTab() {
   const [credentialTargetId, setCredentialTargetId] = useState<string | null>(null);
   const [credentialApiKey, setCredentialApiKey] = useState("");
   const [credentialBusy, setCredentialBusy] = useState(false);
+  const [authenticatingId, setAuthenticatingId] = useState<string | null>(null);
+  const authenticatingIdRef = useRef<string | null>(null);
+  const statesRequestRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
+    const requestId = ++statesRequestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -228,7 +259,7 @@ export function McpTab() {
         window.ave.mcp.getConfigs(),
         window.ave.mcp.getConfigPath(),
       ]);
-      setStates(statesRes);
+      if (requestId === statesRequestRef.current) setStates(statesRes);
       setConfigs(configsRes);
       setConfigPath(configPathRes);
     } catch (e) {
@@ -241,6 +272,27 @@ export function McpTab() {
   useEffect(() => {
     void fetchAll();
   }, [fetchAll]);
+
+  const hasOAuthServer = configs.some((config) => config.transport === "http" && config.auth === "oauth")
+    || states.some((state) => state.authStatus !== undefined);
+  useEffect(() => {
+    if (!hasOAuthServer) return;
+    let active = true;
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      const requestId = ++statesRequestRef.current;
+      void window.ave.mcp.servers().then((nextStates) => {
+        if (active && requestId === statesRequestRef.current) setStates(nextStates);
+      }).catch(() => { /* Keep the last observed status until the next refresh. */ })
+        .finally(() => { inFlight = false; });
+    }, AUTH_STATUS_POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [hasOAuthServer]);
 
   // 킬 스위치
   const handleKill = useCallback(
@@ -255,6 +307,25 @@ export function McpTab() {
     },
     [fetchAll, showBanner],
   );
+
+  const handleAuthenticate = useCallback(async (id: string) => {
+    if (authenticatingIdRef.current) return;
+    authenticatingIdRef.current = id;
+    setAuthenticatingId(id);
+    try {
+      const result = await window.ave.mcp.authenticate(id);
+      showBanner(
+        result.connected ? "success" : "error",
+        result.connected ? t("mcpTab.authSuccess", { id }) : getAuthErrorMessage(result.errorCode),
+      );
+      await fetchAll();
+    } catch {
+      showBanner("error", t("mcpTab.authFailedMessage"));
+    } finally {
+      authenticatingIdRef.current = null;
+      setAuthenticatingId(null);
+    }
+  }, [fetchAll, showBanner, t]);
 
   // 서버 제거
   const handleRemove = useCallback(
@@ -315,8 +386,17 @@ export function McpTab() {
       return;
     }
 
+    if (form.auth === "oauth" && form.transport !== "http") {
+      showBanner("error", t("mcpTab.oauthHttpOnly"));
+      return;
+    }
     const authError = validateAuthApiKey(form.auth, form.apiKey);
     if (authError) { showBanner("error", authError); return; }
+    const oauthClientId = form.oauthClientId.trim();
+    if (form.auth === "oauth" && oauthClientId && !isValidOAuthClientId(oauthClientId)) {
+      showBanner("error", t("mcpTab.oauthClientIdInvalid", { max: String(MAX_OAUTH_CLIENT_ID_LEN) }));
+      return;
+    }
 
     let config: McpServerConfig;
     try {
@@ -349,6 +429,7 @@ export function McpTab() {
           transport: "http",
           url: form.url.trim(),
           allowPrivateNetworks: form.allowPrivateNetworks,
+          ...(form.auth === "oauth" ? { oauth: oauthClientId ? { clientId: oauthClientId } : {} } : {}),
           ...(headers ? { headers } : {}),
         };
       }
@@ -363,10 +444,14 @@ export function McpTab() {
       setForm(EMPTY_FORM);
       setShowForm(false);
       showBanner(
-        result.connected ? "success" : "error",
+        result.connected || result.errorCode === "mcp-auth-required" ? "success" : "error",
         result.connected
           ? t("mcpTab.serverAddedConnected", { id: config.id })
-          : t("mcpTab.serverAddedNotConnected", { id: config.id, warning: result.warning ?? t("mcpTab.unknownCause") }),
+          : result.errorCode === "mcp-auth-required"
+            ? t("mcpTab.serverSavedAuthRequired", { id: config.id })
+            : result.errorCode
+              ? getAuthErrorMessage(result.errorCode)
+              : t("mcpTab.serverAddedNotConnected", { id: config.id, warning: result.warning ?? t("mcpTab.unknownCause") }),
       );
       notifySaved();
       void fetchAll();
@@ -445,11 +530,13 @@ export function McpTab() {
                 const st = getState(id);
                 const cfg = getConfig(id);
                 const status = st?.status ?? "disconnected";
+                const authStatus = authenticatingId === id ? "authenticating" : st?.authStatus;
+                const canAuthenticate = cfg?.transport === "http" && (cfg.auth === "oauth" || authStatus !== undefined);
                 return (
-                  <div key={id} className="rounded-md border bg-card p-3">
+                  <div key={id} data-mcp-server-id={id} className="rounded-md border bg-card p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-xs font-semibold line-clamp-1 min-w-0">{cfg?.bundled
                             ? `${t(cfg.bundled.kind === "agent-plugin" ? "gitMarketplace.server.plugin" : "gitMarketplace.server.extension")}: ${cfg.bundled.name}/${cfg.bundled.server}`
                             : id}</span>
@@ -459,6 +546,11 @@ export function McpTab() {
                           {cfg && (
                             <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                               {cfg.transport}
+                            </Badge>
+                          )}
+                          {authStatus && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0" role="status">
+                              {getAuthStatusLabel(authStatus)}
                             </Badge>
                           )}
                           {cfg?.auth && (
@@ -473,7 +565,13 @@ export function McpTab() {
                           </p>
                         ) : null}
                         {st?.lastError && (
-                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{st.lastError}</p>
+                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{
+                            authStatus === "required" ? t("mcpTab.authRequiredMessage")
+                              : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
+                          }</p>
+                        )}
+                        {st?.authError && (
+                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
                         )}
                         {st?.connectedAt && (
                           <p className="mt-0.5 text-[10px] text-muted-foreground">
@@ -492,6 +590,17 @@ export function McpTab() {
                         )}
                       </div>
                       <div className="flex gap-1.5 shrink-0">
+                        {canAuthenticate && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-xs px-2"
+                            disabled={authenticatingId !== null || authStatus === "authenticating"}
+                            onClick={() => void handleAuthenticate(id)}
+                          >
+                            {authStatus === "authenticating" ? t("mcpTab.authenticating") : t("mcpTab.authenticateButton")}
+                          </Button>
+                        )}
                         {cfg?.auth === "api-key" && (
                           <Button
                             variant="outline"
@@ -597,7 +706,7 @@ export function McpTab() {
                     className="w-full"
                     value={form.transport}
                     onChange={(e) =>
-                      setForm((f) => ({ ...f, transport: e.target.value as Transport }))
+                      setForm((f) => ({ ...f, transport: e.target.value as Transport, auth: e.target.value === "stdio" && f.auth === "oauth" ? "none" : f.auth }))
                     }
                   >
                     <NativeSelectOption value="stdio">{t("mcpTab.transportStdio")}</NativeSelectOption>
@@ -617,11 +726,12 @@ export function McpTab() {
                     className="w-full"
                     value={form.auth}
                     onChange={(e) =>
-                      setForm((f) => ({ ...f, auth: e.target.value as typeof EMPTY_FORM.auth }))
+                      setForm((f) => ({ ...f, auth: e.target.value as typeof EMPTY_FORM.auth, apiKey: e.target.value === "oauth" ? "" : f.apiKey }))
                     }
                   >
                     <NativeSelectOption value="none">{t("mcpTab.authNone")}</NativeSelectOption>
                     <NativeSelectOption value="sso">SSO</NativeSelectOption>
+                    {form.transport === "http" && <NativeSelectOption value="oauth">{t("mcpTab.authOAuth")}</NativeSelectOption>}
                     <NativeSelectOption value="api-key">{t("mcpTab.authApiKey")}</NativeSelectOption>
                   </NativeSelect>
                 </div>
@@ -634,11 +744,30 @@ export function McpTab() {
                     type="password"
                     className="h-7 text-xs font-mono"
                     placeholder={t("mcpTab.apiKeyPlaceholder")}
+                    disabled={form.auth === "oauth"}
                     value={form.apiKey}
                     onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
                   />
                 </div>
               </div>
+
+              {form.transport === "http" && form.auth === "oauth" && (
+                <div className="space-y-1">
+                  <Label htmlFor={formIds.oauthClientId} className="text-xs">
+                    {t("mcpTab.oauthClientIdLabel")}
+                  </Label>
+                  <Input
+                    id={formIds.oauthClientId}
+                    className="h-7 text-xs font-mono"
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={MAX_OAUTH_CLIENT_ID_LEN}
+                    value={form.oauthClientId}
+                    onChange={(e) => setForm((f) => ({ ...f, oauthClientId: e.target.value }))}
+                  />
+                  <p className="text-[10px] text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
+                </div>
+              )}
 
               {form.transport === "stdio" ? (
                 <>

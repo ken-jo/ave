@@ -35,7 +35,6 @@ function revocation(versions: string, patch: Partial<Revocation> = {}): Revocati
   return { kind: "skill", name: "alpha", versions, reason: "bad", at: AT, action: "disable", ...patch };
 }
 
-/** The first `v1.0.<n>` whose bucket for this installation is below/at-or-above `threshold`. */
 function versionInBucket(below: boolean, threshold: number): string {
   for (let n = 0; n < 1000; n++) {
     const v = `1.0.${n}`;
@@ -78,7 +77,6 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it("keeps a process-entry version from a 0.12.x app and from Windows, and offers it on darwin 0.13.0 (§9.7 P4)", () => {
-    // No new index field carries the entry kind (decision 34): minAppVersion and platforms do the selecting.
     const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin", "linux"] });
     const entryVersion = version("1.0.0", { hostProtocol: "3", platforms: ["darwin", "win32", "linux"] });
     const old = context({ appVersion: "0.12.4" });
@@ -105,7 +103,6 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it("buckets rollouts by sha256 of installation, source, kind, name and version", () => {
-    // The formula of §6.1 step 5, computed independently.
     const expected = createHash("sha256").update(`${INSTALLATION}:acme:skill:alpha:1.0.0`).digest().readUInt32BE(0) % 100;
     expect(rolloutBucket(INSTALLATION, "acme", "skill", "alpha", "1.0.0")).toBe(expected);
 
@@ -121,7 +118,6 @@ describe("chooseVersion (design §6.1)", () => {
     const revocations = [revocation(">=1.2.0 <1.4.0"), revocation("*", { name: "beta" })];
     expect(chooseVersion("acme", pkg(versions), revocations, context())).toMatchObject({ version: { version: "1.1.0" } });
     expect(chooseVersion("acme", pkg(versions), [revocation("*")], context())).toEqual({ state: "unavailable", reason: "revoked" });
-    // A revocation of another kind with the same name does not apply.
     expect(chooseVersion("acme", pkg(versions), [revocation("*", { kind: "theme" })], context())).toMatchObject({ version: { version: "1.3.0" } });
   });
 

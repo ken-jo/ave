@@ -1,16 +1,4 @@
-/**
- * AuditLogger permission audit chain integration tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7.
- *
- * Coverage:
- *   1. setupPermissionAuditChain bootstraps cleanly on a fresh file (genesis).
- *   2. setupPermissionAuditChain re-attaches to an existing file's tail.
- *   3. appendPermissionAuditEntry computes prevHash and writes JSONL.
- *   4. The full file passes verifyChain after sequential appends.
- *   5. appendPermissionAuditEntry throws when chain not initialized.
- *   6. Tampering one line in the file is detected by verifyChain.
- */
+/** Permission chains must satisfy docs/architecture/permission-policy-design.md, Layer 7. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   closeSync,
@@ -57,16 +45,12 @@ beforeEach(() => {
   auditLoggers = [];
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  // The logger's default directory, `<AVE_HOME>/audit`.
   vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
   await Promise.all(auditLoggers.map((logger) => logger.close()));
   if (existsSync(testHome)) {
-    // Not a bare `rmSync`: a foreign handle inside the tree refuses removal,
-    // and `rmSync`'s own maxRetries does not cover that error. See
-    // `src/__tests__/support/tmp-dir-teardown.ts`.
     await cleanupTmpDir(testHome);
   }
   vi.restoreAllMocks();
@@ -363,7 +347,6 @@ describe("AuditLogger permission audit chain", () => {
   });
 
   it("setupPermissionAuditChain re-bootstraps prevHash from an existing file's tail", async () => {
-    // Pre-seed a chain manually
     const existing = buildChainedEntries(SECRET, [
       { decision: "allow", auditId: "x1", ts: "t1", tool: "a", trustOrigin: "user-keyboard" },
       { decision: "deny", auditId: "x2", ts: "t2", tool: "b", trustOrigin: "user-keyboard" },
@@ -373,7 +356,6 @@ describe("AuditLogger permission audit chain", () => {
 
     const logger = createAuditLogger();
     await logger.setupPermissionAuditChain(SECRET);
-    // The next entry must chain off the existing tail, not genesis.
     const entry = await logger.appendPermissionAuditEntry({
       decision: "ask",
       auditId: "x3",
@@ -389,7 +371,6 @@ describe("AuditLogger permission audit chain", () => {
     const expectedPrev = computeLineHmac(SECRET, JSON.stringify(existing[1]));
     expect(entry.prevHash).toBe(expectedPrev);
 
-    // Whole file (existing + new) is still verifiable as a chain.
     const lines = readPermissionAuditLines(file);
     expect(lines.length).toBe(3);
     expect(verifyChain(SECRET, lines)).toEqual({ ok: true });
@@ -415,7 +396,6 @@ describe("AuditLogger permission audit chain", () => {
     const file = logger.getPermissionAuditLogFile();
     const lines = readPermissionAuditLines(file);
     expect(lines.length).toBe(10);
-    // Tamper line 4
     const obj = JSON.parse(lines[4]) as { tool: string };
     obj.tool = "TAMPERED";
     lines[4] = JSON.stringify(obj);
@@ -475,8 +455,7 @@ describe("AuditLogger permission audit chain", () => {
     expect(archiveName).toBeDefined();
     expect(readFileSync(join(auditDir, archiveName!), "utf-8"))
       .toBe(`${JSON.stringify(legacy)}\n`);
-    // The verified inode is emptied in place rather than renamed away, so the
-    // archived bytes come from the descriptor that was actually authenticated.
+    // Empty the verified inode in place so archival retains descriptor-authenticated bytes.
     expect(readFileSync(file, "utf-8")).toBe("");
 
     const appended = await logger.appendPermissionAuditEntry({

@@ -1,22 +1,10 @@
-/**
- * RoutinesScheduler — polls the {@link RoutinesStore} every 30s and fires
- * execution events when a routine's next-fire time has been reached.
- *
- * Execution mode branch:
- *   - "llm-session"       → calls onLlmSession handler (starts a ConversationLoop turn)
- *   - "notification-only" → calls onNotification handler (fires OS notification)
- *
- * For cron-expression routines, next-fire is evaluated via cron-evaluator.ts
- * using the current wall-clock time at each tick rather than advancing a stored
- * `at` field (cron semantics). A per-routine per-minute dedup key prevents
- * double-firing within the same minute window.
- */
+// Cron schedules use wall-clock evaluation rather than advancing a stored timestamp; deduplicate each routine per minute.
 import type { RoutinesStore, RoutineRecord } from "./routines-store.js";
 import { matchesCron } from "../routines/cron-evaluator.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
 
-export interface RoutineFiredEvent {
+interface RoutineFiredEvent {
   routine: RoutineRecord;
 }
 
@@ -25,10 +13,7 @@ export type NotificationHandler = (event: RoutineFiredEvent) => void;
 
 const POLL_INTERVAL_MS = 30_000;
 
-/**
- * Build a UTC ISO minute string used as a persistent dedup key for cron routines.
- * Format: "YYYY-MM-DDTHH:MMZ" (always UTC, no seconds).
- */
+// Build a UTC ISO minute string used as a persistent dedup key for cron routines. Format: "YYYY-MM-DDTHH:MMZ" (always UTC, no seconds).
 function minuteKeyUTC(now: Date): string {
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes()),
@@ -39,7 +24,6 @@ export class RoutinesScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly llmHandlers = new Set<LlmSessionHandler>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
-  /** M1: reentrancy guard — skip tick if previous check is still running. */
   private inFlight = false;
 
   constructor(
@@ -85,10 +69,7 @@ export class RoutinesScheduler {
     return () => this.notificationHandlers.delete(handler);
   }
 
-  /**
-   * Visible for tests — invoke a single polling pass to verify firing behaviour
-   * without waiting for the 30s interval.
-   */
+  // Visible for tests — invoke a single polling pass to verify firing behaviour without waiting for the 30s interval.
   async checkAndFire(): Promise<void> {
     const now = new Date();
     const active = this.store.listActive();
@@ -103,8 +84,7 @@ export class RoutinesScheduler {
           continue;
         }
         if (routine.schedule?.repeat?.kind === "cron") {
-          // Persist the dedup key before firing so that a crash/restart mid-dispatch
-          // does not re-fire in the same minute.
+          // Persist the dedup key before firing so that a crash/restart mid-dispatch does not re-fire in the same minute.
           const currentMinuteUTC = minuteKeyUTC(now);
           await this.store.update(routine.id, { lastFiredMinuteUTC: currentMinuteUTC });
         }
@@ -117,8 +97,6 @@ export class RoutinesScheduler {
       }
     }
   }
-
-  // ─── Internal ──────────────────────────────────────────────────────────────
 
   private isDue(routine: RoutineRecord, now: Date): boolean {
     if (routine.trigger !== "schedule") return false;
@@ -143,12 +121,7 @@ export class RoutinesScheduler {
     return Number.isFinite(at) && at <= now.getTime();
   }
 
-  /**
-   * Publicly dispatch a single routine through its execution-mode handlers,
-   * updating persistence (markFired) so lastFiredAt and dedup keys are written.
-   * Used by the IPC `trigger-now` handler so manual triggers go through the
-   * same code path as scheduled fires — persistence + fired event included.
-   */
+  // Manual triggers share scheduled execution, persistence, deduplication, and fired-event delivery.
   async dispatchNow(routineId: string): Promise<boolean | "plugins-missing"> {
     const active = this.store.listActive();
     const routine = active.find((r) => r.id === routineId);
@@ -159,9 +132,7 @@ export class RoutinesScheduler {
         routine.schedule?.repeat?.kind === "cron" ? minuteKeyUTC(new Date()) : undefined);
       return "plugins-missing";
     }
-    // M2: apply same cron dedup as the scheduled tick path — persist the
-    // minuteKey before dispatching so a scheduler-tick in the same minute
-    // does not double-fire.
+    // Persist minuteKey before manual dispatch so the scheduled tick cannot fire the same minute twice.
     if (routine.schedule?.repeat?.kind === "cron") {
       const minuteKey = minuteKeyUTC(new Date());
       if (routine.lastFiredMinuteUTC === minuteKey) return false;

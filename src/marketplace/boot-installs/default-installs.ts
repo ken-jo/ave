@@ -1,9 +1,4 @@
-/**
- * The packages a fresh installation starts with (design §10.2). Changed only
- * by an app release; the machine's policy file may add more
- * (`marketplaces.defaultInstalls`). Each key is installed once and then
- * belongs to the user.
- */
+/** Defaults belong to the user after their first application; policy may add more. */
 import type { PackageKey } from "../sources/policy.js";
 
 export const DEFAULT_INSTALLS: readonly PackageKey[] = Object.freeze([

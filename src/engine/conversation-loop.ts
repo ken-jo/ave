@@ -1,8 +1,5 @@
 import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 
-
-
-
 import { appendRequestOnlyText } from "./turn/request-only-text.js";
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
@@ -82,7 +79,6 @@ import type {
 } from "./turn/types.js";
 export type { TurnCallbacks, TurnResult, ConversationLoopDeps, RunTurnOptions } from "./turn/types.js";
 
-
 export type GuidanceDropReason = "joined-limit" | "turn-ended";
 
 export interface GuidanceQueueEntry {
@@ -95,13 +91,7 @@ export interface GuidanceQueueEntry {
   approvalReasonPrefix?: string;
   /** Host-owned hop context for a message-triggered receiver turn. */
   a2aCausalContext?: A2AAgentCausalContext;
-  /**
-   * Sanitized child title when this guidance is a sub-agent report.
-   *
-   * Structured provenance rather than sniffing `approvalReasonPrefix` for an
-   * `[Sub-Agent: …]` envelope: the renderer draws a distinct box off this field,
-   * and a string test would also match a user guide that merely quoted one.
-   */
+  // Structured child provenance prevents quoted labels from impersonating a child report.
   subAgentTitle?: string;
 }
 
@@ -115,17 +105,9 @@ type GuidanceDisposition = Pick<
   "onInjected" | "onDropped" | "approvalReasonPrefix" | "a2aCausalContext" | "subAgentTitle"
 >;
 
-
-
-
-// ─── Loop ───────────────────────────────────────────
-
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
-  /**
-   * Git ignore verdicts for first-touch instruction files, memoized for the
-   * session so a repeated touch does not spawn git again. Cleared on a session switch.
-   */
+  // Cache first-touch ignore verdicts per session to avoid repeated subprocesses.
   readonly gitIgnoreVerdicts = new Map<string, boolean>();
   /** The model override this loop was constructed with; a session switch restores it. */
   private readonly constructedModelOverride: string | undefined;
@@ -142,19 +124,12 @@ export class ConversationLoop {
   sessionProjectRoot: string | null = null;
   sessionProjectName: string | null = null;
   sessionProjectIsDefault = false;
-  /**
-   * #811 m2 — the sessionId the `SessionStart` lifecycle event last fired for.
-   * SessionStart must fire ONCE per session (not per turn): runTurn fires it on
-   * the first turn whose sessionId differs from this, then records it here.
-   * Reset by `newConversation` / `loadSession` so a switched-into session
-   * re-announces its start.
-   */
+  // Fire SessionStart once per session; switching sessions resets the marker.
   sessionStartFiredFor: string | null = null;
+  sessionSource: "startup" | "resume" | "clear" = "startup";
 
   tracer: ConversationTracer = createTracer(this.sessionId);
   cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-
-
 
   lastRoundProviderInputTokens = 0;
   /** Latest exact Codex context window, kept only for the matching runtime model. */
@@ -163,106 +138,42 @@ export class ConversationLoop {
     readonly model: string;
     readonly contextWindow: number;
   } | null = null;
-  /**
-   * Engine request-input projection for the exact request submitted to the
-   * latest provider round. Includes system prompt, provider-wire messages, and
-   * exposed tool schemas.
-   */
+  // Exact latest request projection, including prompt, wire messages, and tool schemas.
   lastRoundInputProjection: RequestInputProjection | null = null;
-  /**
-   * Latest context-fill SOT. Successful turns store turn_summary.tokensIn here;
-   * compact paths store their post-compact estimate. During an in-flight
-   * multi-round turn it temporarily follows the latest provider raw input as a
-   * calibration anchor until turn end recomputes the projected value.
-   */
+  // Context fill uses final projected input; in-flight provider input is only a calibration anchor.
   lastContextInputTokens = 0;
   /** Local full-request projection corresponding to `lastContextInputTokens`. */
   lastContextInputProjectionTokens = 0;
-  /** Current turn's AbortController — abortCurrentTurn() calls .abort() */
   currentAbortController: AbortController | null = null;
-  /** The running turn's crash-durability journal (see turn/turn-journal.ts); null between turns. */
   activeTurnJournal: import("./turn/turn-journal.js").TurnJournal | null = null;
-
-
 
   lastTurnScope: Set<string> | null = null;
 
-
-
   lastTurnToolNames: Set<string> | null = null;
-  /** Session-wide total of request_plugin activations (cap MAX_SESSION_PLUGIN_EXPANSION). */
   sessionPluginExpansions = 0;
-  /**
-   * Session-scoped on-demand activation set — registry-DISABLED plugins that an
-   * allow-listed (routine) session activated via request_plugin for THIS
-   * session ONLY. {@link resolveToolScope} (Gate 3) skips the disabled-drop for
-   * these ids so their already-registered tools stay in scope, WITHOUT ever
-   * persisting `enabled=true` (setPluginEnabled is never called by this path —
-   * the registry stays `enabled:false`). Empty for main chat, where
-   * `allowedPluginIds === undefined` means Gate 2 never lets a disabled id reach
-   * activation. NON-PERSISTENT: lives only for the loop instance's lifetime and
-   * is cleared on session reset alongside `sessionPluginExpansions`.
-   */
+  // Session-only activations may expose allowlisted disabled plugins without persisting enabled state.
+  // Clear them on reset; main chat cannot activate disabled plugins.
   sessionActivatedPluginIds = new Set<string>();
-  /** Session-wide total of tool_search promotions (cap MAX_TOOL_SEARCH_PER_SESSION). */
   sessionToolSearches = 0;
   sessionAdditionalDirectories: string[] = [];
 
-
-
   turnAdditionalDirectories: string[] = [];
-
-
 
   isCompacting: boolean = false;
 
   compactNum: number = 0;
 
-
-
   contextErrorPending: boolean = false;
-
-
 
   contextErrorRecoveryCount: number = 0;
 
-
-
   recoveryExhausted: boolean = false;
-  /**
-   * TPM reactive compact is an error-boundary recovery, not a normal threshold
-   * trigger. Try it once per error series and re-arm only after a clean turn so
-   * repeated 429 responses cannot amplify compact API calls.
-   */
+  // Try TPM recovery once per error series; re-arm only after a clean turn.
   rateLimitRecoveryAttempted: boolean = false;
-  /**
-   * "Guide" utterance buffer — mid-stream direction adjustments that the
-   * user typed while a turn is in flight. Drained at each round boundary in
-   * `queryLoop` (BETWEEN tool execution and the next LLM stream) and
-   * appended to history as a user message so the model sees it like any
-   * other turn input.
-   *
-   * Non-interrupting: the current LLM call and tool round are NOT aborted.
-   * Multiple guidance entries within one round boundary are joined with
-   * blank lines so the model receives them as a single coherent message.
-   *
-   * Bounded by `GUIDE_MAX_ENTRIES` (entry count) and `GUIDE_MAX_CHARS`
-   * (per-entry char count) — see `queueGuidance` rationale. Overflow is
-   * rejected at enqueue so memory + history bloat is hard-capped against
-   * runaway renderer / autorepeat keyboard pressure.
-   */
+  // Drain bounded guidance at round boundaries without aborting the active model or tool call.
   guidanceQueue: GuidanceQueueEntry[] = [];
 
-  /**
-   * Observers of "this turn is over and the loop is idle again".
-   *
-   * The A2A parent bus is the first subscriber: a child message that reached
-   * the durable mailbox while a turn held the loop has no other moment at
-   * which the host learns the loop became eligible for an autonomous wake.
-   * Before this seam the bus polled that transition with its own recheck state
-   * machine; now the loop announces it once, from the same cleanup that drops
-   * unreachable guidance.
-   */
+  // Turn settlement is the mailbox wake seam after unreachable guidance has been dropped.
   private readonly turnSettledListeners = new Set<(sessionId: string) => void>();
   private activeSessionTransition: SessionTransitionLease | null = null;
   private readonly sessionTransitionSettledListeners = new Set<() => void>();
@@ -280,17 +191,10 @@ export class ConversationLoop {
       deps.scriptHookManager,
       deps.auditLogger,
       () => deps.settingsService.get("features")?.hostClassifiesRisk ?? false,
-      // Couple the foreground plugin read-relaxation to the plugin worker
-      // effect-boundary actually filesystem-containing off-hostApi residuals.
-      // Generic host-shell ASRT is not enough here; the provider accepts only
-      // Tool.workerId calls that the host spawned and currently tracks as
-      // ASRT-wrapped (mac/linux UDS or Windows holder-PID ACL grant).
+      // Relax plugin reads only for tracked workers under active filesystem confinement.
+      // Host-shell sandboxing alone never authorizes worker read relaxation.
       isActiveSandboxFilesystemContainedForPluginEffects,
-      // Workspace IPC registration publishes the lifecycle after every loop is
-      // constructed; resolve the single authority lazily so persistent
-      // directory approvals never capture an empty snapshot. Reading the
-      // authority (not a per-loop dep field) is what makes sub-agent child
-      // loops and routine loops work without a wiring of their own.
+      // Resolve the shared workspace authority lazily so all loop instances see current directory grants.
       getWorkspaceRootLifecycle,
       deps.pluginOperationGrants,
       () => deps.pluginRuntime?.getGenerationAccess?.(),
@@ -300,56 +204,25 @@ export class ConversationLoop {
     this.refreshProvider();
   }
 
-
   get permissionManager(): import("../permissions/permission-manager.js").PermissionManager | undefined {
     return this.deps.permissionManager;
   }
-
-
-
 
   onPluginDisabled(pluginId: string): void {
     this.lastTurnScope?.delete(pluginId);
   }
 
-  /** Abort the current streaming turn. No-op if no turn in flight. */
   abortCurrentTurn(reason: Error = new Error("user cancelled turn")): void {
     this.currentAbortController?.abort(reason);
   }
 
-  /**
-   * Queue a mid-stream "guide" utterance for non-interrupting injection.
-   *
-   * The text is held in `guidanceQueue` and consumed at the next round
-   * boundary in `queryLoop` (between tool execution and the next LLM
-   * stream), where it is appended to history as a user message. The
-   * currently-streaming round is NOT aborted; in-flight tool calls receive
-   * the turn's abort signal only when the user explicitly stops the turn.
-   *
-   * Atomically checks `hasActiveTurn()` inline so the IPC handler cannot
-   * race the turn's `finally` block and silently leak a queued guide
-   * into the next turn.
-   *
-   * Returns:
-   *   - `"queued"` on success
-   *   - `"no-active-turn"` if no turn is in flight (caller must surface
-   *     this to the renderer so the user keeps their typed text)
-   *   - `"queue-full"` if `GUIDE_MAX_ENTRIES` is reached (DoS bound)
-   *   - `"too-long"` if `text` exceeds `GUIDE_MAX_CHARS` after trim
-   *   - `"empty"` if `text` is empty after trim (no-op, returned for parity)
-   */
+  /** Queue non-interrupting guidance only while a turn is active; reject overflow atomically.
+   * Callers must surface rejection so the renderer retains unsent text. */
   queueGuidance(text: string): "queued" | "no-active-turn" | "queue-full" | "too-long" | "empty" | "session-transition" {
     return this.enqueueGuidance(text);
   }
 
-  /**
-   * Queue guidance whose producer needs an explicit delivery disposition.
-   *
-   * A2A parent delivery persists the Message before calling this seam. The
-   * mailbox entry is acknowledged from `onInjected`, never merely because the
-   * in-memory enqueue succeeded; a turn that ends before the next round thus
-   * leaves the durable Message available for the parent's next turn.
-   */
+  /** Acknowledge durable guidance only after injection, never after enqueue alone. */
   queueGuidanceWithDisposition(
     text: string,
     disposition: GuidanceDisposition,
@@ -371,14 +244,7 @@ export class ConversationLoop {
     return "queued";
   }
 
-  /**
-   * Atomically discard guidance that can no longer reach a round boundary.
-   *
-   * The queue is detached before any producer callback runs, which makes this
-   * safe to call from overlapping cleanup paths without delivering duplicate
-   * dispositions. `runTurn` clears its active controller before calling this
-   * helper, so no new entry can join the detached batch while cleanup awaits.
-   */
+  /** Detach the queue before callbacks so overlapping cleanup cannot deliver duplicate dispositions. */
   async dropPendingGuidance(
     reason: GuidanceDropReason,
     callbacks?: Pick<TurnCallbacks, "onGuidanceDropped">,
@@ -398,12 +264,10 @@ export class ConversationLoop {
     }
   }
 
-  /** True when a turn is currently in flight. Renderer-facing visibility. */
   hasActiveTurn(): boolean {
     return this.currentAbortController !== null;
   }
 
-  /** Subscribe to turn-settled notifications. Returns the unsubscribe. */
   onTurnSettled(listener: (sessionId: string) => void): () => void {
     this.turnSettledListeners.add(listener);
     return () => {
@@ -411,28 +275,18 @@ export class ConversationLoop {
     };
   }
 
-  /**
-   * Announce that the turn for `sessionId` has released the loop.
-   *
-   * Called from the last statement of `runTurn`'s `finally`, so a listener
-   * observes `hasActiveTurn() === false` and sees every guidance drop
-   * disposition that this turn produced. Listener isolation is deliberate: an
-   * observer's throw must never mask the turn's real result.
-   */
+  /** Notify after controller release and guidance dispositions; isolate listener failures. */
   emitTurnSettled(sessionId: string): void {
     for (const listener of this.turnSettledListeners) {
       try {
         listener(sessionId);
       } catch {
-        // Observer failure is never the turn's problem.
       }
     }
   }
 
-
   refreshProvider(): void {
-    // Clear before rebuilding so a factory/configuration exception can never
-    // leave an API-key transport usable after subscription activation.
+    // Clear before rebuilding so failed subscription activation cannot leave an API-key transport usable.
     this.provider = null;
     this.lastReportedSubscriptionContextWindow = null;
     this.provider = buildProvider(this.deps);
@@ -442,12 +296,7 @@ export class ConversationLoop {
     return this.provider !== null;
   }
 
-  /**
-   * Run the current session on `model`, or on the constructed default when
-   * `undefined`. The override is the same `modelOverride` the provider and the
-   * context-window resolver already read, so the provider is rebuilt here and
-   * the next round uses the new model.
-   */
+  /** Rebuild the provider with the session model override; undefined restores the constructed default. */
   setSessionModelOverride(model: string | undefined): void {
     this.deps.modelOverride = model ?? this.constructedModelOverride;
     this.refreshProvider();
@@ -459,9 +308,6 @@ export class ConversationLoop {
     this.setSessionModelOverride(undefined);
   }
 
-
-
-
   async generateText(
     prompt: string,
     systemPrompt = t("be_conversationLoop.generateTextSystemPrompt"),
@@ -471,15 +317,10 @@ export class ConversationLoop {
     return generateText(this.provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, options);
   }
 
-  /**
-   * Status-bar connectivity probe. This is intentionally independent from
-   * chat history: a tiny one-shot LLM request proves the configured provider
-   * can answer after activation/restart without adding a visible turn.
-   */
+  /** Probe connectivity without adding a chat-history turn. */
   async pingProvider(timeoutMs = AI_PROVIDER_PING_TIMEOUT_MS): Promise<AiProviderPingResult> {
     return pingProvider(this.provider, this.deps.settingsService, timeoutMs);
   }
-
 
   getVendor(): string {
     return resolveVendorName(this.provider);
@@ -505,11 +346,7 @@ export class ConversationLoop {
     return estimateRequestInputProjection(input, this.provider ?? undefined);
   }
 
-  /**
-   * The per-turn context text (see `SystemPromptBuilder.buildTurnContext`), or
-   * "" when the builder renders none. It is sent only on a round that starts
-   * from a user message, appended inside that message (request-only-text.ts).
-   */
+  // Append varying turn context only inside a request user message; never persist it.
   buildTurnContext(memoryQuery: string, originSource: string | null): string {
     return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource) ?? "";
   }
@@ -517,7 +354,6 @@ export class ConversationLoop {
   estimateCurrentRequestProjection(params: {
     systemPrompt: string;
     toolSchemas: ToolSchema[];
-    /** The turn context the request carries inside its trailing user message, if any. */
     turnContext?: string;
   }): RequestInputProjection {
     const history = this.history.getMessages();
@@ -585,7 +421,6 @@ export class ConversationLoop {
     return t("be_conversationLoop.rateLimitCompactMessage", { waitText });
   }
 
-
   beginSessionTransition(reason: string): SessionTransitionLease {
     if (this.activeSessionTransition !== null) {
       throw new Error("conversation-loop:session-transition-in-progress");
@@ -625,7 +460,6 @@ export class ConversationLoop {
     return this.activeSessionTransition !== null;
   }
 
-  /** Subscribe to a session transition ending (the activity coordinator's idle signal); returns the unsubscribe. */
   onSessionTransitionSettled(listener: () => void): () => void {
     this.sessionTransitionSettledListeners.add(listener);
     return () => this.sessionTransitionSettledListeners.delete(listener);
@@ -644,7 +478,6 @@ export class ConversationLoop {
     );
   }
 
-  /** Initialize a newly constructed loop without an outgoing session to clean. */
   initializeConversation(kind: SessionKind = "main", project?: SessionProjectContext): void {
     initializeConversation(this, kind, project ?? (kind === "main" ? this.deps.getDefaultProject?.() : undefined));
   }
@@ -659,10 +492,7 @@ export class ConversationLoop {
   addSessionAdditionalDirectory(path: string): void {
     if (!this.sessionAdditionalDirectories.includes(path)) {
       this.sessionAdditionalDirectories.push(path);
-      // Every callsite that mutates the session list must
-      // notify multi-window PermissionsTab subscribers. The slash-dispatch
-      // path also broadcasts (ipc/domains/permissions.ts) — this closes
-      // the executor-callback path that was previously silent.
+      // Every session-list mutation must notify permission views in other windows.
       this.deps.broadcastPermissionConfigChanged?.();
     }
   }
@@ -675,10 +505,7 @@ export class ConversationLoop {
 
   getTurnAdditionalDirectories(): readonly string[] {
     return [
-      // Always-on first. `sessionAdditionalDirectories` is reassigned by
-      // `applyProjectContext` on every `newConversation()`, so anything that
-      // must survive a new chat cannot live there — it has to be part of the
-      // base set assembled here. See `baseAllowedDirectories`.
+      // Grants surviving new chats belong in baseAllowedDirectories, not reassigned session directories.
       ...baseAllowedDirectories(),
       ...(this.deps.getAdditionalDirectories?.() ?? this.deps.additionalDirectories ?? []),
       ...this.sessionAdditionalDirectories,
@@ -690,16 +517,7 @@ export class ConversationLoop {
     return this.history;
   }
 
-  /**
-   * Clear this session's on-demand plugin activations from PluginRuntime.
-   * Call after the session ends so the per-session Map entry doesn't
-   * accumulate as a stale entry from a discarded loop (e.g. after
-   * RoutineEngine discards the routine's ConversationLoop).
-   *
-   * ConversationLoop's own resetSession paths already call
-   * `clearSessionActivated(this.sessionId)` — this method covers the
-   * routine-fire path where the loop is discarded without a resetSession.
-   */
+  /** Clear runtime session activations when discarding a loop without a session reset. */
   cleanupSession(lease?: SessionTransitionLease): Promise<void> {
     const cleanup = async (ownedLease: SessionTransitionLease): Promise<void> => {
       this.assertSessionTransitionLease(ownedLease);
@@ -771,7 +589,6 @@ export class ConversationLoop {
     return this.sessionProjectRoot;
   }
 
-  /** Working directory owned by this conversation session. */
   getSessionExecutionCwd(): string {
     return this.sessionProjectRoot
       ?? this.deps.getDefaultProject?.().projectRoot
@@ -782,19 +599,7 @@ export class ConversationLoop {
     return this.sessionProjectName;
   }
 
-  /**
-   * True when the session's project binding is the app-managed default
-   * workspace root (no explicit project selection) rather than a user-picked
-   * project directory. UI-facing callers (chat.new domain handler,
-   * markMainActiveAfterTurn) use this to decide whether to persist
-   * projectRoot/projectName into session metadata at all — a "no explicit
-   * project" session's metadata omits them entirely (null is the normal
-   * state), while the in-memory execution binding (sessionProjectRoot /
-   * sessionAdditionalDirectories, set by applyProjectContext regardless of
-   * this flag) is unaffected — the agent still gets the default directory
-   * for tool access either way. See 2026-07 "remove Current Project
-   * labeling" refinement.
-   */
+  /** Ambient project bindings omit persisted project metadata but retain execution directory access. */
   getSessionProjectIsDefault(): boolean {
     return this.sessionProjectIsDefault;
   }
@@ -813,15 +618,7 @@ export class ConversationLoop {
     };
   }
 
-  /**
-   * Re-create the tracer keyed on the CURRENT `sessionId`. `tracer` is created
-   * at field-init against the constructor UUID; any code path that rebinds
-   * `sessionId` after construction (SubAgentRunner assigns the addressable
-   * childSessionId directly, without going through `newConversation`) must call
-   * this so dev traces are written under the live id. `newConversation` /
-   * `loadSession` already re-init the tracer inline; this is the equivalent
-   * seam for direct `sessionId` assignment.
-   */
+  /** Rebind tracing after direct sessionId changes so trace files name the addressable session. */
   rebindTracer(): void {
     this.tracer = createTracer(this.sessionId);
   }
@@ -830,9 +627,6 @@ export class ConversationLoop {
     return this.sessionRoutineTitle;
   }
 
-
-
-
   public enterViewMode(compactNum: number): { messageIndexAtCreation: number } | null {
     const checkpoints = this.deps.memoryManager.loadSessionMetadata(this.sessionId)?.checkpoints ?? [];
     const target = checkpoints.find((c) => c.compactNum === compactNum);
@@ -840,15 +634,8 @@ export class ConversationLoop {
     return { messageIndexAtCreation: target.messageCountAtTrigger };
   }
 
-
-
-
   public exitViewMode(): void {
-    // no-op: renderer-side state reset only
   }
-
-
-
 
   public async branchFromCheckpoint(compactNum: number): Promise<{
     newSessionId: string;
@@ -862,11 +649,9 @@ export class ConversationLoop {
     return this.sessionRoutineId;
   }
 
-
   getTraceFilePath(): string | undefined {
     return this.tracer.filePath;
   }
-
 
   setTracer(tracer: ConversationTracer): void {
     this.tracer = tracer;
@@ -880,18 +665,8 @@ export class ConversationLoop {
     return this.deps.settingsService.get("chat").autoCompact ?? true;
   }
 
-  /**
-   * Fire a NON-BLOCKING lifecycle event (#811 milestone-2, design §5).
-   * OBSERVE-ONLY: the dispatch result is discarded — a lifecycle hook's `deny`
-   * is recorded in the manager's audit but NEVER affects the turn (mirrors
-   * `PostToolUse`). Fail-soft: the manager never throws and we additionally
-   * swallow any unexpected error so a misbehaving hook can never break a turn /
-   * compaction. No-op when `scriptHookManager` is unwired (back-compat: no
-   * hooks.json ⇒ no lifecycle dispatch, behavior identical to today).
-   *
-   * The matcher subject is the live `sessionId`; trustOrigin is propagated so a
-   * hook can key on origin. No secrets pass through (env allowlist unchanged).
-   */
+  /** Lifecycle notifications are observe-only: ignore denials and unexpected errors.
+   * Pass session and trust origin without widening the hook environment. */
   async fireLifecycleEvent(
     event: LifecycleHookEvent,
     payload: import("../hooks/script-hook-types.js").LifecycleEventPayload = {},
@@ -900,20 +675,8 @@ export class ConversationLoop {
     return fireLifecycleEvent(this.deps, this.sessionId, event, payload, sessionIdOverride);
   }
 
-  /**
-   * Fire the ONE BLOCKING lifecycle event — `UserPromptSubmit` (#811 m2, design
-   * §5) — and return its decision for the caller to RESPECT. Unlike
-   * {@link fireLifecycleEvent} (observe-only, swallow-and-continue), this is
-   * SECURITY-SENSITIVE and FAIL-CLOSED:
-   *   - manager returns `deny` (a hook denied, or its dispatch failed closed) → deny
-   *   - an UNEXPECTED throw here → deny (refuse), NEVER allow
-   *
-   * BACK-COMPAT: with NO `scriptHookManager` wired, returns `allow` so the turn
-   * proceeds byte-identically to today (no hooks.json ⇒ never refused). The
-   * manager itself also returns `allow` when no trusted hook matches, so the
-   * "no hooks ⇒ proceeds" guarantee holds at both layers. `inputText` is
-   * DLP-redacted inside the manager before it reaches any hook.
-   */
+  /** UserPromptSubmit is blocking and fails closed on denial or unexpected throws.
+   * Missing managers or matching hooks allow; the manager DLP-redacts input before dispatch. */
   async fireUserPromptSubmit(
     payload: import("../hooks/script-hook-types.js").UserPromptSubmitPayload,
     sessionIdOverride?: string,
@@ -932,7 +695,6 @@ export class ConversationLoop {
     };
   }
 
-
   listSessions(limit?: number): Array<{ id: string; modifiedAt: Date; title: string }> {
     return this.deps.memoryManager.listSessions(limit).map((session) => ({
       id: session.id,
@@ -940,7 +702,6 @@ export class ConversationLoop {
       title: session.title,
     }));
   }
-
 
   loadSession(sessionId: string, lease?: SessionTransitionLease): Promise<boolean> {
     if (lease !== undefined) return loadSession(this, sessionId, lease);
@@ -957,10 +718,6 @@ export class ConversationLoop {
     );
   }
 
-  /**
-   * §4.5.2 B1 — Session resume with full state reset.
-   * Unlike loadSession (raw swap), also triggers auto-compact check.
-   */
   resetAndResume(sessionId: string, lease?: SessionTransitionLease): Promise<{
     ok: boolean;
     compacted: boolean;
@@ -974,9 +731,6 @@ export class ConversationLoop {
     );
   }
 
-
-
-
   async manualCompact(callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
@@ -985,9 +739,6 @@ export class ConversationLoop {
   }> {
     return manualCompact(this, callbacks);
   }
-
-
-
 
   async runTurn(
     input: string,
@@ -999,7 +750,7 @@ export class ConversationLoop {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
     return turnExtensionPolicyContext.run(
-      resolveTurnExtensionPolicy(options?.remoteControllerAuthority),
+      resolveTurnExtensionPolicy(options?.remoteControllerAuthority, this.deps.headless === true),
       () => runTurn(this, input, callbacks, abortSignal, options),
     );
   }
@@ -1030,9 +781,6 @@ export class ConversationLoop {
     return nextCarryForwardToolNames(this.deps, scope, toolCalls);
   }
 
-
-
-
   async applyBoundaryToSession(
     result: import("./structured-compact.js").CompactWithBoundaryResult,
     trigger: "auto-compact" | "manual",
@@ -1040,15 +788,12 @@ export class ConversationLoop {
     callbacks: TurnCallbacks | undefined,
 
     prevMessageCount: number,
-    /** §C1: verbatim pre-compact messages — persisted as checkpoint snapshot for branchFromCheckpoint. */
+    // Preserve verbatim pre-compact messages for checkpoint branching.
     messagesBefore: import("./llm/types.js").GenericMessage[],
     projectionContext: RequestProjectionContext,
   ): Promise<void> {
     return applyBoundaryToSession(this, result, trigger, estimatedBefore, callbacks, prevMessageCount, messagesBefore, projectionContext);
   }
-
-
-
 
   async runPreflightGuard(
     projectionContext: RequestProjectionContext,
@@ -1058,15 +803,6 @@ export class ConversationLoop {
   ): Promise<boolean> {
     return runPreflightGuard(this, projectionContext, abortSignal, callbacks, options);
   }
-
-  // ─── Private: Memory Extraction (§4.5.5 Hook 3) ───
-
-
-
-  // ─── Private: Tool Scope Resolution (Lazy Tool Scoping) ───────────
-
-
-
 
   resolveToolScope(input: string): ToolScope {
     return resolveToolScope(input, this.deps, {
@@ -1083,8 +819,6 @@ export class ConversationLoop {
   filterAllowedPluginIds(pluginIds: string[]): string[] {
     return filterAllowedPluginIds(this.deps, pluginIds);
   }
-
-  // ─── Private: Command Handler ─────────────────────
 
   async handleCommand(
     command: string,
@@ -1103,6 +837,5 @@ export class ConversationLoop {
     return handlePermissionCommand(this, args, inputOrigin, callbacks);
   }
 
-  // Compaction uses same-session checkpoints. Automatic session forks are not
-  // part of the compact path; forks only happen through explicit user action.
+  // Compaction stays in-session; forks require explicit user action.
 }

@@ -1,30 +1,5 @@
 import { createBootHostFixture, stationaryLeaseState } from "../../__tests__/support/host-runtime.js";
-/**
- * host-fetch-verb-snapshot.test.ts
- *
- * Closes the hostFetch VERB-FORGERY class (value-divergence variant). hostFetch
- * is the ONLY host chokepoint whose recorded read/write class depends on a
- * plugin-controlled arg VALUE (the HTTP method). A malicious 1st-party plugin
- * (in the declared threat model) could pass a STATEFUL `init.method` getter that
- * returns a safe verb (GET) the FIRST time it is read and a mutating verb (POST)
- * a later time. If the recorder, the audit line, and the wire each read the live
- * getter INDEPENDENTLY, the recorder could log a confirmed host-observed READ
- * while the wire actually performs a WRITE — a fail-open forgery in the dangerous
- * direction.
- *
- * The fix: the hostFetch host closure snapshots the verb to a PRIMITIVE with a
- * SINGLE getter read (destructuring `method` out of `init`), then derives the
- * recorded effect, the audit verb, AND the pinned wire verb from that one
- * primitive. This test drives the REAL closure (built via the production
- * `createHostApi` factory) with a counting/stateful getter and asserts: the
- * getter is invoked EXACTLY ONCE, and the recorded shadow effect == the wire
- * verb (both reflect the single read) — so the shadow can no longer say "read"
- * while the wire does POST.
- *
- * `evaluateHostFetch` is mocked to a deterministic allow so the test isolates the
- * verb-snapshot flow from the DNS/SSRF/allow-list gate (which is unchanged and
- * covered by host-fetch-guard.test.ts).
- */
+// Read a plugin-controlled method getter exactly once; the same primitive verb must drive the recorded effect, audit and wire request so a recorded read cannot become a write. Mock request approval only to isolate this from DNS/SSRF policy.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
@@ -32,8 +7,7 @@ const harness = vi.hoisted(() => ({
   readPluginRegistry: vi.fn(async () => ({ version: 1, plugins: [] })),
   appPrependOnceListener: vi.fn(),
   runtime: {
-    // boot installs each loaded plugin's partition policy before starting any
-    // of them, so the double needs the cheap half of startAll too.
+    // boot installs each loaded plugin's partition policy before starting any of them, so the double needs the cheap half of startAll too.
     load: vi.fn(async () => {}),
     startAll: vi.fn(async () => {}),
     listToolNames: vi.fn(() => [] as string[]),
@@ -95,15 +69,7 @@ vi.mock("../../plugins/registry.js", () => ({
   readPluginRegistry: harness.readPluginRegistry,
 }));
 
-// Deterministic egress allow: the verb the closure passes (`methodSnapshot`)
-// flows straight back as decision.method/effect, isolating the verb-snapshot
-// flow from the real DNS/SSRF/allow-list gate (unchanged; tested separately).
-// PARTIAL mock: `evaluateHostFetch` is replaced with a deterministic allow so
-// the verb-snapshot flow is isolated from DNS/SSRF (unchanged, covered by
-// host-fetch-guard.test.ts) — but `runHostFetchHops` stays REAL, because the
-// wire behaviour under test now lives inside it. The cases below never follow
-// a hop, so the loop's own internal `evaluateHostFetch` (which the partial
-// mock cannot reach) never runs and no live DNS is touched.
+// Deterministic egress allow: the verb the closure passes (`methodSnapshot`) flows straight back as decision.method/effect, isolating the verb-snapshot flow from the real DNS/SSRF/allow-list gate (unchanged; tested separately). PARTIAL mock: `evaluateHostFetch` is replaced with a deterministic allow so the verb-snapshot flow is isolated from DNS/SSRF (unchanged, covered by host-fetch-guard.test.ts) — but `runHostFetchHops` stays REAL, because the wire behaviour under test now lives inside it. The cases below never follow a hop, so the loop's own internal `evaluateHostFetch` (which the partial mock cannot reach) never runs and no live DNS is touched.
 vi.mock("../../main/host-fetch-guard.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../main/host-fetch-guard.js")>()),
   evaluateHostFetch: vi.fn(
@@ -155,7 +121,6 @@ type CreateHostApi = (
   installPluginId: string | null,
 ) => PluginHostApi;
 
-/** Build a REAL hostApi + the captured networkFetch mock (the wire). */
 async function buildRealHostApi(): Promise<{
   hostApi: PluginHostApi;
   networkFetch: ReturnType<typeof vi.fn>;
@@ -228,7 +193,6 @@ async function buildRealHostApi(): Promise<{
   return { hostApi, networkFetch };
 }
 
-/** Invoke the real hostFetch in a ledger scope; return the recorded effects + wire init. */
 async function driveHostFetch(
   hostApi: PluginHostApi,
   networkFetch: ReturnType<typeof vi.fn>,
@@ -255,8 +219,7 @@ describe("hostFetch verb snapshot — single read, recorded effect == wire verb"
     const statefulInit = {
       get method(): string {
         accessCount += 1;
-        // GET on the first read; POST on any later read. With a single read the
-        // ONLY value either consumer can observe is "GET".
+        // GET on the first read; POST on any later read. With a single read the ONLY value either consumer can observe is "GET".
         return accessCount === 1 ? "GET" : "POST";
       },
     } as unknown as RequestInit;
@@ -268,16 +231,13 @@ describe("hostFetch verb snapshot — single read, recorded effect == wire verb"
       statefulInit,
     );
 
-    // The getter was invoked exactly once — there is NO second, independent read
-    // the recorder/wire could disagree on.
+    // The getter was invoked exactly once — there is NO second, independent read the recorder/wire could disagree on.
     expect(accessCount).toBe(1);
     // The recorded shadow effect reflects that single read (GET → read)…
     expect(effects).toEqual([
       { kind: "hostFetch", effect: "read", target: "https://api.example.com" },
     ]);
-    // …and the WIRE verb is the SAME primitive — NOT a later re-read that would
-    // send POST. Before the fix the spread re-read the live getter → POST on the
-    // wire while the shadow said read (the forgery).
+    // …and the WIRE verb is the SAME primitive — NOT a later re-read that would send POST. Before the fix the spread re-read the live getter → POST on the wire while the shadow said read (the forgery).
     expect(wireInit.method).toBe("GET");
     expect(networkFetch).toHaveBeenCalledOnce();
   });
@@ -320,20 +280,7 @@ describe("hostFetch verb snapshot — single read, recorded effect == wire verb"
   });
 });
 
-/**
- * The redirect boundary, restated for the hop engine.
- *
- * The previous version of this block pinned `redirect: "error"` on the wire,
- * because that blanket pin was the only thing standing between the guard and
- * a followed hop it never saw. #2245 replaced the blanket: the transport under
- * `hostFetch` now takes exactly ONE hop (a 3xx comes BACK instead of being
- * followed or thrown), and following is a host-side loop that re-runs the full
- * gate per hop (pinned in host-fetch-guard.test.ts). What this file still owns
- * is the WIRE: whatever a plugin asks for, the transport itself must never be
- * told to follow. `"manual"` on the wire is that guarantee — the one mode that
- * issues no further request — and the plugin-visible policy is enforced above
- * it, in the loop.
- */
+// The wire must use manual redirects; only the host loop may follow, after rerunning the full gate on each hop.
 describe("hostFetch redirect boundary — the transport is never told to follow", () => {
   beforeEach(() => {
     harness.readPluginRegistry.mockReset();

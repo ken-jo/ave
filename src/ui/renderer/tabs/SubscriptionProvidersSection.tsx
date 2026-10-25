@@ -5,6 +5,8 @@ import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
 import {
+  isSubscriptionRuntimeId,
+  subscriptionRuntimeDescriptor,
   type SubscriptionConnectionState,
   type SubscriptionLoginMethod,
   type SubscriptionRuntimeCapabilities,
@@ -15,11 +17,8 @@ import {
   type SubscriptionRuntimeState,
 } from "../../../shared/subscription-runtime.js";
 
-/**
- * Renderer-safe subscription provider identifier. The main process owns any
- * executable paths, authentication URLs, account tokens, and raw runtime
- * output; none of those values belong in this UI contract.
- */
+/** Renderer-safe subscription provider identifier. The main process owns any executable paths, authentication URLs, account
+ * tokens, and raw runtime output; none of those values belong in this UI contract. */
 type SubscriptionProviderId = SubscriptionRuntimeId;
 
 type SubscriptionProviderRuntimeState = SubscriptionRuntimeState | "checking";
@@ -61,11 +60,8 @@ interface SubscriptionProviderDescriptor {
   /** Static, browser-safe provider description. */
   description: string;
   loginMethods: readonly SubscriptionLoginMethod[];
-  /**
-   * `discovered`: Ave finds the CLI and the card only reports what it found
-   * (with install guidance and "Check again" when nothing usable is there).
-   * `user-selected`: the card offers the official runtime picker.
-   */
+  /** `discovered`: Ave finds the CLI and the card only reports what it found (with install guidance and "Check again" when
+   * nothing usable is there). `user-selected`: the card offers the official runtime picker. */
   executable: SubscriptionRuntimeExecutableSource;
   supportsLogout?: boolean;
   /** The oldest runtime version Ave can run, when the runtime enforces one. */
@@ -84,8 +80,8 @@ export interface SubscriptionProviderStatus {
   canOpenLoginBrowser?: boolean;
   /** Offered in the settings page's one model chooser, never on this card. */
   models?: readonly SubscriptionProviderModel[];
-  /** Whether chat is host-verified. Only `chat` is read; the rest of the
-   *  projection describes the Ave agent harness, not this provider. */
+  /** Whether chat is host-verified. Only `chat` is read; the rest of the projection describes the Ave agent harness, not this
+   * provider. */
   capabilities?: Partial<SubscriptionProviderCapabilities>;
   /** The version the resolved runtime reported, when it has been read. */
   version?: string | null;
@@ -145,6 +141,7 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-runtime-not-configured": "subscriptionProvidersSection.errorRuntimeNotConfigured",
   "subscription-runtime-unavailable": "subscriptionProvidersSection.errorRuntimeUnavailable",
   "subscription-runtime-unsafe-location": "subscriptionProvidersSection.errorRuntimeUnsafeLocation",
+  "subscription-runtime-unsafe-npm-location": "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation",
   "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
   "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",
@@ -155,10 +152,8 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-operation-failed": "subscriptionProvidersSection.errorOperationFailed",
 };
 
-/**
- * Device codes are the sole transient authentication value this renderer may
- * display. Reject values that look like URLs, bearer tokens, or raw logs.
- */
+/** Device codes are the sole transient authentication value this renderer may display. Reject values that look like URLs,
+ * bearer tokens, or raw logs. */
 function isSafeDeviceCode(value: string | null | undefined): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9 -]{0,63}$/.test(value);
 }
@@ -180,26 +175,8 @@ function errorMessageKey(
   return ERROR_MESSAGE_KEYS[errorCode];
 }
 
-/**
- * The sign-in half of one provider row, for the row's expanded body.
- *
- * The settings page draws every provider — subscription-backed, API-key-backed,
- * or both — with ONE row renderer, so the header, the state word, the sub-line
- * and the refresh live there. What stays here is the part that is specific to a
- * subscription runtime and has no API-key counterpart: the CLI it runs on,
- * signing in, the one-time device code, and signing out. Splitting it this way
- * is what stops a provider having two headers, two state words and two refresh
- * buttons.
- *
- * A `discovered` runtime's CLI is found by Ave: this card says what was found,
- * or — when nothing usable is installed — how to install or update it and
- * offers "Check again". It never offers a file picker. A `user-selected`
- * runtime keeps the official runtime picker.
- *
- * The parent owns state refresh and all IPC calls, which keeps main-process
- * validation, browser launching, cancellation, and secret handling on the
- * privileged side.
- */
+/** Discovered runtimes expose install/update guidance, never a file picker; user-selected runtimes retain their picker.
+ * Parent IPC keeps validation and secret handling in main. */
 export function SubscriptionAuthControls({
   provider,
   actions,
@@ -211,8 +188,8 @@ export function SubscriptionAuthControls({
   const invoke = (operation: (() => void | Promise<void>) | undefined) => {
     if (!operation) return;
     try {
-      // The parent maps rejected IPC operations to a safe status.errorCode.
-      // Never surface an arbitrary runtime exception in the renderer.
+      // The parent maps rejected IPC operations to a safe status.errorCode. Never surface an arbitrary runtime exception in the
+      // renderer.
       void Promise.resolve(operation()).catch(() => undefined);
     } catch {
       // Synchronous callback failures follow the same safe parent-state path.
@@ -225,9 +202,12 @@ export function SubscriptionAuthControls({
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
   const pending = connection === "pending";
   const connected = connection === "connected";
+  // Login admits the executable before spawning; chat still needs verification.
+  const signedOutUnverified = runtime === "unverified" && connection === "signed-out";
   const hasRuntimeSelection = runtime !== "not-configured" && runtime !== "checking";
   const needsRuntimeSelection = runtime === "not-configured";
-  const needsVerification = runtime === "unverified" || (runtime === "ready" && connected && !chatReady);
+  const needsVerification = (runtime === "unverified" && !signedOutUnverified)
+    || (runtime === "ready" && connected && !chatReady);
   const isBusy = provider.busyAction !== null && provider.busyAction !== undefined;
   const disabled = provider.disabled === true || isBusy || provider.refreshPending === true;
   const safeDeviceCode = isSafeDeviceCode(status?.pendingDeviceCode)
@@ -239,8 +219,8 @@ export function SubscriptionAuthControls({
   const showGuidance = Boolean(descriptor.installGuidance)
     && (cliMissing || cliNeedsUpdate || (!discovered && needsRuntimeSelection));
   const checking = provider.refreshPending === true || provider.busyAction === "refresh";
-  // A found CLI that could not be used for another reason (a probe that failed
-  // to run, an auth status it could not read) gets the same way back.
+  // A found CLI that could not be used for another reason (a probe that failed to run, an auth status it could not read)
+  // gets the same way back.
   const cliUnavailable = discovered && runtime === "unavailable" && !cliNeedsUpdate;
   const checkAgainButton = actions.refreshStatus ? (
     <Button
@@ -261,8 +241,21 @@ export function SubscriptionAuthControls({
     </Button>
   ) : null;
 
+  // A runtime reached through the user's own installed CLI bills the user's own subscription; the card says so, and says the
+  // credentials stay there.
+  const usesOwnCli = isSubscriptionRuntimeId(descriptor.id)
+    && subscriptionRuntimeDescriptor(descriptor.id).transport === "claude-cli";
+
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
+      {usesOwnCli ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:billing-disclosure`}
+        >
+          {t("subscriptionProvidersSection.claudeCliBillingDisclosure")}
+        </p>
+      ) : null}
       {status?.errorCode && !(cliMissing && status.errorCode === "subscription-runtime-not-configured") ? (
         <p
           role="alert"
@@ -455,7 +448,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {!pending && !connected && runtime === "ready" ? descriptor.loginMethods.map((method) => (
+        {!pending && !connected && (runtime === "ready" || signedOutUnverified) ? descriptor.loginMethods.map((method) => (
           <Button
             key={method}
             type="button"
@@ -497,16 +490,7 @@ export function SubscriptionAuthControls({
 /** How a provider with two ways in is signed in to. */
 export type ProviderSignInMethod = "subscription" | "api";
 
-/**
- * The first question on a provider card that can be reached two ways: sign in
- * with the provider's subscription, or use an API key.
- *
- * One radio group, so it is reachable with Tab and moved with the arrow keys.
- * `value: null` checks neither — a card for a provider with nothing configured
- * yet asks rather than assumes, and shows no key field until "API key" is
- * picked. Choosing a method never removes the other method's credential; the
- * card offers that as its own action.
- */
+/** No configured method means neither radio is selected; switching methods must not delete the other credential. */
 export function SignInMethodChoice({
   rowId,
   planName,

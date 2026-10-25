@@ -8,18 +8,7 @@ import { assertPayloadOnlyPluginTree } from "./plugin-storage-layout.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseAgentPluginRoutineTemplates, parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
 
-/**
- * Closed on purpose, and doing security work without looking like it.
- *
- * A plugin may extend what the agent can DO. It may never extend who may TALK
- * to it. Adding a channel-shaped member here — a transport, a chat surface, a
- * remote controller — would let an installed plugin open an ingress the host's
- * own ingress core never sees, which is where every sender check, envelope
- * bound, leading-slash rejection, and durable receipt lives.
- *
- * The union being closed is the entire enforcement. There is no separate
- * allowlist to fall back on, so widening it is not an incremental change.
- */
+/** Contributions may extend agent actions, never who may address the agent; channel-shaped additions change the security boundary. */
 type PluginContributionKind = "skill" | "hook" | "mcpServer" | "prompt" | "routineTemplate";
 type PluginArchiveMemberKind = "file" | "directory" | "symlink" | "hardlink" | "device" | "other";
 
@@ -70,7 +59,6 @@ function fail(code: string, pluginId: string, contribution: string, safePath?: s
   throw new PluginContributionError(code, pluginId, contribution, safePath);
 }
 
-/** Validate and return one canonical plugin-root-relative POSIX path. */
 export function normalizePluginContributionPath(
   pluginId: string,
   contribution: string,
@@ -119,7 +107,6 @@ type ContributionManifest = Pick<
   "id" | "version" | "skills" | "hooks" | "mcpServers" | "prompts" | "routineTemplates"
 >;
 
-/** Pure declaration validation shared by manifest load, packaging, and install. */
 export function resolvePluginContributionDeclarations(
   manifest: ContributionManifest,
 ): readonly ResolvedPluginContribution[] {
@@ -167,7 +154,6 @@ function canonicalMemberPath(pluginId: string, rawPath: string): string {
   return normalizePluginContributionPath(pluginId, "archive", rawPath.replace(/\/$/, ""));
 }
 
-/** Validate declared contribution paths against an archive or installed-tree inventory. */
 export function validatePluginContributionInventory(
   manifest: ContributionManifest,
   members: readonly PluginArchiveMember[],
@@ -238,7 +224,6 @@ async function inventoryInstalledRoot(root: string, pluginId: string): Promise<P
   return members;
 }
 
-/** Read verified installed bytes into an immutable generation candidate. */
 export async function materializePluginContributions(
   pluginRoot: string,
   manifest: ContributionManifest,
@@ -275,12 +260,7 @@ export async function materializePluginContributions(
   return Object.freeze(output);
 }
 
-/**
- * Copy only receipt-covered package bytes into a generation-addressed cache.
- * The resulting root never includes the plugin's mutable `data/` directory and
- * is verified against the exact receipt before it becomes executable input for
- * bundled Hook or stdio MCP projections.
- */
+/** Copy only receipt-covered payload into immutable generation caches, excluding mutable state before executable projection. */
 export async function materializePluginGenerationRoot(
   pluginRoot: string,
   cacheRoot: string,
@@ -376,8 +356,7 @@ async function sealRetainedGeneration(directory: string): Promise<void> {
     if (entry.isDirectory()) {
       await sealRetainedGeneration(path);
     } else if (entry.isFile()) {
-      // Some bundled Hook/MCP commands are executed directly; owner read+exec
-      // preserves that contract while removing write access.
+      // Directly executed bundled commands need owner read/execute while write access is removed.
       await chmod(path, 0o500);
     } else {
       throw new Error(`retained plugin generation contains unsupported member: ${entry.name}`);
@@ -410,10 +389,7 @@ export async function removeRetainedPluginGeneration(
   const generationsRoot = resolve(cacheRoot, pluginId, "generations");
   const target = resolve(generationsRoot, generationId);
   if (dirname(target) !== generationsRoot) throw new Error("retained plugin generation path escaped cache root");
-  // A retained generation is a runtime ROOT, which a confined child is granted
-  // read-only (out-of-process-plugin.ts: write = data dir and socket dir, both
-  // under the plugin's install root, never here). So no live child can race
-  // this delete; a runtime directory inside it would break that, and refuses.
+  // Retained roots are read-only; runtime directories violate the premise for immediate deletion.
   await assertPayloadOnlyPluginTree(target);
   await makeRetainedGenerationRemovable(target);
   await rm(target, { recursive: true, force: true });

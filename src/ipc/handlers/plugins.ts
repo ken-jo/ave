@@ -1,11 +1,3 @@
-/**
- * plugins.ts (handlers) — transport-agnostic plugin handler logic (#1409 C10).
- *
- * Pure `handle*` functions import NOTHING from the Electron transport; the
- * `ipcMain.handle` wrapper stays in `domains/plugins.ts`. Public card/catalog
- * reads delegate directly. The E2E bundle projection remains behind its
- * trusted-renderer + AVE_E2E wrapper.
- */
 import type { IpcDeps } from "../types.js";
 import { isValidToolName } from "../../tools/types.js";
 import { isValidPluginId } from "../../plugins/public-contract.js";
@@ -67,15 +59,7 @@ export type PluginBundleE2eSnapshot =
 
 const E2E_LOCAL_ID = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
-/**
- * Test-only bundle observability projection.
- *
- * The IPC wrapper is available only under AVE_E2E=1 and a trusted Host
- * renderer. Keeping the projection here transport-agnostic makes its
- * allowlist and owner filtering independently testable. It intentionally
- * exposes neither arbitrary Skill paths nor registry entries owned by other
- * plugins.
- */
+// Trusted isolated-test projection exposes only its owner-filtered allowlist, never general runtime state.
 export async function handlePluginBundleE2eSnapshot(
   deps: IpcDeps,
   pluginId: unknown,
@@ -185,7 +169,6 @@ export async function handlePluginBundleE2eSnapshot(
   }
 }
 
-/** PUBLIC `ave:plugins:cards` — installed plugin cards for the renderer/api. */
 export function handlePluginCards(deps: IpcDeps) {
   return deps.pluginRuntime.listPluginCards(deps.toolRegistry);
 }

@@ -7,13 +7,6 @@ import {
   type SeededElectronContext,
 } from "./seeded-electron";
 
-/**
- * Pinned message toggle ("Star" → "Pin" rename, 2026-07). A finished assistant
- * turn carries a pin control in its action bar (TurnActionBar
- * `turn-pin-button`). Pressing it stores the turn in the starred list and
- * fills the pin icon; pressing it again removes it.
- */
-
 type StarredEntry = { sessionId: string; messageIndex: number; role: string; text: string };
 
 function starredList(page: Page): Promise<StarredEntry[]> {

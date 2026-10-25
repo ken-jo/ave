@@ -1,42 +1,5 @@
-/**
- * Bridges a {@link PluginRuntime} into the {@link PluginToolDelegate} a
- * {@link PluginMcpServer} calls for `tools/call`. This is where the loopback
- * (plugin-as-MCP-server) path applies the authoritative fail-closed runtime
- * gates before the plugin is invoked —
- *
- *  - inactive plugin → isError. A sub-agent's `sourceTools` allowlist is NOT
- *    `isPluginEnabled`-filtered, so this is the authoritative execution gate for
- *    every model path, not merely UI hiding.
- *  - manifest-integrity-disabled plugin → isError.
- *  - {@link ManifestIntegrityError} thrown by the read-only fs proxy →
- *    record the violation (so later calls fail closed + audit + UI emit fire) →
- *    isError.
- *
- * The structured plugin return value is carried back as
- * `_meta["ave/rawResult"]` (the reverse adapter re-surfaces it as
- * `metadata.rawResult`) so the executor.ts / boot.ts consumers that read the raw
- * value keep working — MCP's content model is text-first, so non-text structured
- * output rides `_meta`. `rawResult` is present only when the call succeeds.
- *
- * This is also where a plugin TRIGGERS an MCP App card. A plugin's tool handler
- * says "render this card with my result" by attaching the STANDARD MCP Apps
- * tool-result extension to its return value —
- *
- *   return { ...myResult, _meta: { ui: { resourceUri: "ui://<myId>/card.html" } } };
- *
- * — the same `_meta.ui.*` keys an external MCP server puts on its `CallToolResult`
- * (NOT a legacy reverse-DNS vendor key), so both arms declare a card identically. The
- * delegate lifts it onto the wire `_meta.ui`, from which `PluginMcpHost.invoke`
- * builds the {@link McpUiPayload} (stamping `serverId` itself — a plugin can never
- * point a card at another server). The declaration is stripped from the value, so
- * the model-facing text and `metadata.rawResult` stay the plugin's own result.
- *
- * Fail-closed: a `resourceUri` the plugin did not declare in `manifest.uiResources[]`
- * produces NO card. `declaredUiUris` is the SAME declared set the serving provider
- * indexes (`PluginUiResourceProvider.list()`) — not a second registry — so a card
- * can only ever be triggered for a uri that is actually servable under a reviewed
- * csp. An absent set (a plugin with no `uiResources[]`) means no card is possible.
- */
+/** Enforce runtime admission and manifest integrity before plugin execution.
+ * Preserve structured success data; emit cards only from the reviewed declared UI set. */
 import type { PluginRuntime } from "../plugins/runtime.js";
 import type { PluginToolDelegate, PluginToolOutcome } from "./plugin-mcp-server.js";
 import {
@@ -55,20 +18,7 @@ function errorOutcome(text: string): PluginToolOutcome {
   return { content: [{ type: "text", text }], isError: true };
 }
 
-/**
- * Split a plugin tool's return value into (the plugin's own result, the MCP Apps
- * card declaration it attached). Pure.
- *
- * A card is declared iff the value is a plain object carrying `_meta.ui` with a
- * non-empty string `resourceUri` — the MCP wire shape. When it is, `_meta` is
- * stripped from the value so the protocol envelope never leaks into the text the
- * model reads or into `metadata.rawResult`. Any other shape (string, array, no
- * `_meta`, malformed `ui`) passes through untouched: no card, value unchanged.
- *
- * `slot` is passed through with the same cast `mcp-client.ts` applies to an
- * external server's `_meta.ui.slot`, deliberately — both arms must behave
- * identically, and the render slot is a hint, not a security boundary.
- */
+/** Split plain-object card metadata from payload without changing other return shapes. */
 export function splitPluginToolUiMeta(value: unknown): { value: unknown; ui?: McpUiToolMeta } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { value };
   const record = value as Record<string, unknown>;
@@ -85,24 +35,15 @@ export function splitPluginToolUiMeta(value: unknown): { value: unknown; ui?: Mc
   if (typeof height === "number" && Number.isFinite(height)) ui.height = height;
   if (typeof title === "string") ui.title = title;
 
-  // The declaration is protocol, not payload — strip it either way (whether or not
-  // the uri survives the declared-only gate), so the result the model sees never
-  // depends on whether the card rendered.
+  // Strip protocol metadata whether or not the card declaration passes, keeping model data consistent.
   const { _meta: _protocol, ...rest } = record;
   return { value: rest, ui };
 }
 
-/**
- * Build the generation-pinned `tools/call` delegate for one first-party plugin.
- */
 export function pluginRuntimeToolDelegate(
   pluginRuntime: PluginRuntime,
   pluginId: string,
-  /**
-   * The `ui://` uris this plugin declared in `manifest.uiResources[]` — the same
-   * set its serving provider indexes. A card is emitted only for a uri in here.
-   * Defaults to empty: a plugin that declares no card cannot trigger one.
-   */
+  /** Only declared, servable UI URIs can trigger cards; absent declarations mean none. */
   declaredUiUris: ReadonlySet<string> = new Set(),
   generationId: string,
 ): PluginToolDelegate {
@@ -111,8 +52,7 @@ export function pluginRuntimeToolDelegate(
     // from an empty object.
     const finalPayload = Object.keys(args).length > 0 ? args : undefined;
 
-    // Gate 4 (authoritative execution gate) — ONE predicate module, shared with
-    // `PluginRuntime.readUiResource`; only the tools/call-shaped message is local.
+    // Share runtime admission with UI resource reads; only the refusal shape differs.
     const refusal = checkRuntimeAdmission(pluginRuntime, pluginId);
     if (refusal === "inactive") {
       return errorOutcome(
@@ -134,15 +74,12 @@ export function pluginRuntimeToolDelegate(
         finalPayload,
         generationId,
       );
-      // The plugin's own result, and (optionally) the card it asked the host to
-      // render with it — the standard MCP Apps `_meta.ui` tool-result extension.
       const { value: result, ui } = splitPluginToolUiMeta(returned);
       const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
 
       const meta: Record<string, unknown> = { [RAW_RESULT_META]: result };
       if (ui) {
-        // Declared-only, fail-closed: a card the manifest never declared is not
-        // servable under any reviewed csp, so it must not render at all.
+        // Undeclared cards have no reviewed policy and must not render.
         if (declaredUiUris.has(ui.resourceUri)) {
           meta.ui = ui;
         } else {

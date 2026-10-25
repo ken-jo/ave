@@ -5,37 +5,8 @@ import { parseTabId } from "../../../shared/tab-id.js";
 import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
 import { forgetActiveSurface } from "./active-surface.js";
 
-/**
- * Workspace-tab store — the state that ChatSidePanel used to hold in
- * component-local `useState`. Lifting it out of the panel is the linchpin of
- * the ChatSidePanel redesign (issue #1415): while the state lived inside
- * ChatSidePanel, it was destroyed every time the panel unmounted (closing the
- * rail, leaving the home view, or switching sessions) and no external surface
- * (e.g. the tool-activity open-action) could reach it.
- *
- * The store OWNS the tab list, the active tab, and the per-browser-tab manual
- * URL. It is mounted one level up (ChatView) — a component that stays mounted
- * across session navigation and the panel's open/close toggle — so tab state
- * now SURVIVES those transitions.
- *
- * Content-driven model (§6.10.2): the workspace opens EMPTY (no default tabs).
- * There are TWO kinds of tab:
- *   - LAUNCHER CONTAINER tabs (`addTab`) — a fresh terminal/browser/review/file
- *     surface the user explicitly opened. `content === null`, always `pinned`.
- *   - CONTENT tabs (`openInEphemeral` / `openPinned`) — a tab that points at a
- *     specific item (a preview-target or a web URL). Tool-activity left-click and
- *     indexer results route here.
- *
- * Ephemeral ↔ pinned (§6.10.2, VS Code preview-tab model): a single left-click
- * opens content in the ONE reusable ephemeral slot (replace-in-place); a
- * double-click / pin promotes it to a durable pinned tab. Invariant: at most
- * one ephemeral tab exists, guaranteed by construction (the only ephemeral
- * producer is `openInEphemeral`, which replaces the existing slot instead of
- * adding a second).
- *
- * Every tab is closeable; closing the last one empties the list and the
- * launcher takes over. Activity counts live solely in the tool activity (§6.10.4).
- */
+/** Keep tab state above panel unmount; start empty, keep at most one reusable ephemeral content slot, and pin explicit
+ * launcher tabs. */
 
 export type WorkspaceTabKind =
   | "file-browser"
@@ -43,23 +14,15 @@ export type WorkspaceTabKind =
   | "browser"
   | "terminal"
   | "subagent"
-  // The conversation's tool activity — every plugin and tool call, in full.
-  // A container tab like `terminal`: it lists, it does not point at one item.
+  // The conversation's tool activity — every plugin and tool call, in full. A container tab like `terminal`: it lists, it
+  // does not point at one item.
   | "activity"
-  // Reserved for the side-chat companion PR (a second, independently-streaming
-  // chat session in the rail). The tab kind is declared here now so the
-  // exhaustive tab switches (icon/label/testid/body) and the ordinal map stay
-  // coherent with `subagent`, added in the same sweep. It is intentionally NOT a
-  // launcher item and NOT reachable in this PR — opening one needs the 2nd
-  // ConversationLoop the companion PR adds, so surfacing it now would be a dead
-  // affordance. Its body-dispatch branch is an unreachable placeholder.
+  // Side-chat kind is absent from the launcher until its independent conversation loop can provide a reachable body.
   | "side-chat";
 export type WorkspaceTabMode = "ephemeral" | "pinned";
 
-/**
- * Identity source of a content tab. The content-tab `kind` is derived from the
- * source (`browser` → browser viewer, `preview` → preview-target viewer).
- */
+/** Identity source of a content tab. The content-tab `kind` is derived from the source (`browser` → browser viewer,
+ * `preview` → preview-target viewer). */
 export type WorkspaceTabContentRef =
   | { source: "preview"; targetId: string }
   | { source: "browser"; url: string };
@@ -71,10 +34,8 @@ export interface WorkspaceTab {
   mode: WorkspaceTabMode;
   /** `null` = launcher container tab (always pinned); non-null = content tab. */
   content: WorkspaceTabContentRef | null;
-  /**
-   * Set on a browser tab opened for the agent's `browser_tab_new`: main's
-   * request id, echoed on the tab's bind so main can tell the agent opened it.
-   */
+  /** Set on a browser tab opened for the agent's `browser_tab_new`: main's request id, echoed on the tab's bind so main can
+   * tell the agent opened it. */
   agentRequestId?: string;
 }
 
@@ -83,66 +44,38 @@ export interface WorkspaceTabsStore {
   activeTabId: string | null;
   browserUrlByTab: Record<string, string>;
   setActiveTabId: (id: string) => void;
-  /**
-   * Launcher: append a new pinned CONTAINER tab of the given kind and activate
-   * it. Never touches the ephemeral slot. Every tab is closeable.
-   */
+  /** Launcher: append a new pinned CONTAINER tab of the given kind and activate it. Never touches the ephemeral slot. Every
+   * tab is closeable. */
   addTab: (kind: WorkspaceTabKind) => void;
-  /**
-   * Programmatic launcher: activate the existing pinned CONTAINER tab of this
-   * kind, or create one if it does not exist. Used by event-driven surfaces
-   * such as sub-agent spawns where repeated events must not duplicate tabs.
-   */
+  /** Programmatic launcher: activate the existing pinned CONTAINER tab of this kind, or create one if it does not exist. Used
+   * by event-driven surfaces such as sub-agent spawns where repeated events must not duplicate tabs. */
   ensureContainerTab: (kind: WorkspaceTabKind) => void;
-  /**
-   * Content routing (left-click). Opens `content` in the single ephemeral slot:
-   * reuse the tab already showing this content (keeping its mode), else replace
-   * the existing ephemeral tab in-place, else append a new ephemeral tab.
-   */
+  /** Content routing (left-click). Opens `content` in the single ephemeral slot: reuse the tab already showing this content
+   * (keeping its mode), else replace the existing ephemeral tab in-place, else append a new ephemeral tab. */
   openInEphemeral: (content: WorkspaceTabContentRef) => void;
-  /**
-   * Content routing (double-click / open-and-keep). Opens `content` as a pinned
-   * tab: reuse (and promote) an existing tab for this content, else append a new
-   * pinned tab. Never touches the ephemeral slot.
-   */
+  /** Content routing (double-click / open-and-keep). Opens `content` as a pinned tab: reuse (and promote) an existing tab for
+   * this content, else append a new pinned tab. Never touches the ephemeral slot. */
   openPinned: (content: WorkspaceTabContentRef) => void;
   /** Promote a tab to pinned (double-click / pin button). Idempotent. */
   promoteToPinned: (id: string) => void;
-  /**
-   * Drop stale CONTENT tabs on a session switch. `isResolvable(targetId)` tests
-   * a preview target against the NEW session's target set. Preview-content tabs
-   * are keyed by session-scoped target ids (they embed the session's toolUseIds
-   * / attachment ids), so one opened in a prior session can never resolve
-   * against the new session — left un-pruned it survives as a dead
-   * `content-unavailable` placeholder and accumulates on every switch. Browser
-   * (url) content tabs carry their own url and launcher CONTAINER tabs carry no
-   * target, so both are always kept.
-   */
+  /** Prune session-scoped content targets on switch; URL content and launcher containers remain valid across sessions. */
   pruneContentTabs: (isResolvable: (targetId: string) => boolean) => void;
   closeTab: (id: string) => void;
   /** Close the launcher container tab of this kind, if one is open. */
   closeContainerTab: (kind: WorkspaceTabKind) => void;
   /** Set (or clear, with `null`) the manually-typed address for a browser tab. */
   setBrowserTabUrl: (tabId: string, url: string | null) => void;
-  /**
-   * Hand a tab out to the main area. The tab leaves this store WITHOUT being
-   * closed: its PTY or page lives on under the same id wherever it lands.
-   */
+  /** Hand a tab out to the main area. The tab leaves this store WITHOUT being closed: its PTY or page lives on under the same
+   * id wherever it lands. */
   releaseTab: (id: string) => WorkspaceTab | undefined;
-  /**
-   * Take in a tab that moved here (from the main area), as a pinned container
-   * tab with its id and number unchanged, and make it the active one. A browser
-   * tab's page keeps its address through `url`.
-   */
+  /** Take in a tab that moved here (from the main area), as a pinned container tab with its id and number unchanged, and make
+   * it the active one. A browser tab's page keeps its address through `url`. */
   adoptTab: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
   /** Whether this store holds `id` now (read from the latest state, not a render). */
   hasTab: (id: string) => boolean;
-  /**
-   * Open a NEW pinned browser tab for the agent (`browser_tab_new`) and
-   * activate it. Never reuses a tab showing the same url: the agent gets a tab
-   * of its own. Returns the new tab's id, or null for an unsafe url.
-   */
-  openAgentBrowserTab: (url: string, agentRequestId: string) => string | null;
+  /** Open a NEW pinned browser tab for the agent (`browser_tab_new`) and activate it. Never reuses a tab showing the same
+   * url: the agent gets a tab of its own. Returns the new tab's id, or null for an unsafe url. */
+  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -190,11 +123,8 @@ export function mintTabId(kind: WorkspaceTabKind): string {
   return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
 }
 
-/**
- * Tabs restored from a saved layout keep their ids. Ids from another scope
- * (an earlier launch) cannot meet this one's; one from this scope moves the
- * counter past it, so a tab minted afterwards cannot take it.
- */
+/** Tabs restored from a saved layout keep their ids. Ids from another scope (an earlier launch) cannot meet this one's; one
+ * from this scope moves the counter past it, so a tab minted afterwards cannot take it. */
 export function reserveTabIds(ids: Iterable<string>): void {
   for (const id of ids) {
     const parsed = parseTabId(id);
@@ -224,8 +154,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   stateRef.current = state;
   const previousTabsRef = useRef(state.tabs);
   const releasedTabIdsRef = useRef(new Set<string>());
-  // Retire surfaces from committed lists, including batched closes and
-  // replacements. A release transfers the surface to another store.
+  // Retire surfaces from committed lists, including batched closes and replacements. A release transfers the surface to
+  // another store.
   useEffect(() => {
     const nextKinds = new Map(state.tabs.map((tab) => [tab.id, tab.kind]));
     for (const tab of previousTabsRef.current) {
@@ -245,9 +175,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     "side-chat": 1,
   });
 
-  // The browser tabs this store holds keep their guests alive in the window's
-  // web-surface layer; a tab that leaves the store (closed, pruned, replaced by
-  // other content) lets its guest go.
+  // The browser tabs this store holds keep their guests alive in the window's web-surface layer; a tab that leaves the store
+  // (closed, pruned, replaced by other content) lets its guest go.
   const [liveSource] = useState(() => Symbol("workspace-tabs"));
   const liveBrowserKey = state.tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id).join("\n");
   useEffect(() => {
@@ -376,16 +305,15 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
-  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string): string | null => {
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean): string | null => {
     const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
       ? { source: "browser", url: rawUrl }
       : normalizeContentRef({ source: "browser", url: rawUrl });
     if (!content) return null;
-    // The id is taken here, outside the updater: an updater runs at flush
-    // time, and the caller needs the id now.
+    // The id is taken here, outside the updater: an updater runs at flush time, and the caller needs the id now.
     const id = mintTabId("browser");
     const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId };
-    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: id }));
+    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: active ? id : prev.activeTabId }));
     return id;
   }, []);
 

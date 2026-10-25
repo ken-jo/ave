@@ -1,7 +1,6 @@
 import type { TranslateFn } from "../i18n/translate.js";
 
-// Direction controls in a display name can visually reorder the adjacent
-// canonical id. The id remains ASCII and is never derived from this label.
+// Strip direction controls that could visually reorder the adjacent canonical ID; never derive the ID from this label.
 const DIRECTION_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 const FIELD_MARKERS = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\u00b7\u2022\u22c5:：|｜]/gu;
 

@@ -51,7 +51,6 @@ test("a bump that leaves the claims behind fails, and the failure IS the re-read
     const { code, err } = cli(root);
     assert.equal(code, 1);
     assert.match(err, /no claim names ASRT 0\.0\.75/);
-    // Every surviving claim is printed: that list is what the bumper walks.
     assert.match(err, /src\/a\.ts:1 {2}\(ASRT 0\.0\.73\)/);
     assert.match(err, /docs\/d\.md:1 {2}\(ASRT 0\.0\.73\)/);
   } finally {

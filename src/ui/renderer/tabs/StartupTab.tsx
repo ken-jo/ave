@@ -19,19 +19,8 @@ import { eventToAccelerator } from "../utils/accelerator-capture.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 
-/**
- * The cleanup windows the control offers, in milliseconds.
- *
- * A fixed list rather than a free number field: the setting is a deadline the
- * app enforces on itself while quitting, and the two ways to get it wrong —
- * too short to finish writing, long enough that quitting appears to hang —
- * are both reachable by typing. The environment variable still accepts any
- * positive value, which is the escape hatch for the deployment that needs one.
- *
- * The shipped default has to be one of these or the control would render a
- * selection the user cannot choose again, so it is taken from the policy
- * rather than restated.
- */
+/** Offer bounded shutdown deadlines from policy; free-form overrides remain deployment-owned and the default must stay
+ * selectable. */
 const SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS: readonly number[] = Object.freeze([
   15_000,
   30_000,
@@ -57,18 +46,16 @@ export function StartupTab() {
   const [toggleWindow, setToggleWindow] = useState<string | null>(null);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
   const [launchMinimized, setLaunchMinimized] = useState(false);
-  // Default mirrors `DEFAULT_SETTINGS.system.closeBehavior` so the radio group
-  // renders the correct selection even before `settings` arrives.
+  // Default mirrors `DEFAULT_SETTINGS.system.closeBehavior` so the radio group renders the correct selection even before
+  // `settings` arrives.
   const [closeBehavior, setCloseBehavior] = useState<"hide-to-tray" | "quit">(
     "hide-to-tray",
   );
-  // Placeholder only. `normalizeSystem` backfills the platform-derived default
-  // on every load, so the first real snapshot always carries a concrete boolean
-  // and the switch stays disabled until it arrives.
+  // Placeholder only. `normalizeSystem` backfills the platform-derived default on every load, so the first real snapshot
+  // always carries a concrete boolean and the switch stays disabled until it arrives.
   const [hardwareAcceleration, setHardwareAcceleration] = useState(true);
-  // Settings whose value the environment is deciding right now. A control that
-  // rendered only what is stored would be telling the user something untrue of
-  // the running app, so each affected control names its variable.
+  // Settings whose value the environment is deciding right now. A control that rendered only what is stored would be telling
+  // the user something untrue of the running app, so each affected control names its variable.
   const envForcedPaths = useEnvForcedSettings(api);
   // Corporate root CA. Acquired and injected before `bootstrap()`, so — like
   // the GPU switch above — these are next-launch settings, and the section
@@ -187,8 +174,8 @@ export function StartupTab() {
     [persistSystem],
   );
 
-  // An emptied field means "use the default" rather than "search for nothing";
-  // the host applies the same rule, so the field shows what will be saved.
+  // An emptied field means "use the default" rather than "search for nothing"; the host applies the same rule, so the field
+  // shows what will be saved.
   const normalizeCorpCaCommonName = useCallback(
     (raw: string) => raw.trim() || DEFAULT_CORP_CA_COMMON_NAME,
     [],
@@ -205,8 +192,8 @@ export function StartupTab() {
   const handleShutdownTimeoutChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const value = Number(event.target.value);
-      // The option values come from the frozen list above, so a value outside
-      // it means the DOM was tampered with rather than a choice being made.
+      // The option values come from the frozen list above, so a value outside it means the DOM was tampered with rather than a
+      // choice being made.
       if (!SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.includes(value)) return;
       setShutdownCleanupTimeoutMs(value);
       persistSystem({ shutdownCleanupTimeoutMs: value });

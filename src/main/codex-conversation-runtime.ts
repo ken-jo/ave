@@ -23,6 +23,9 @@ import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import type { ProviderRpcOperation } from "../engine/llm/provider-error-diagnostics.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("codex-conversation-runtime");
 
 export const CODEX_RPC_REQUEST_TIMEOUT_MS = 15_000;
 export const CODEX_MAX_RPC_LINE_BYTES = 1_000_000;
@@ -33,19 +36,12 @@ const MAX_DYNAMIC_TOOL_NAME_LENGTH = 128;
 const MAX_DYNAMIC_TOOL_NAMESPACE_LENGTH = 64;
 const MAX_DYNAMIC_TOOL_RESULT_BYTES = 750_000;
 const STAGED_IMAGE_FILE_NAME = new RegExp(`^ave-subscription-image-${UUID_SOURCE}\\.(?:png|jpe?g|gif|webp|bmp)$`);
-// A new app process may remove only files that predate this module. Paths
-// registered by live runtimes are always excluded, even during an open/write
+// A new app process may remove only files that predate this module. Paths registered by live runtimes are always excluded, even during an open/write
 // race in a concurrently starting session.
 const STAGED_IMAGE_ORPHAN_SWEEP_STARTED_AT_MS = Date.now();
 const liveStagedImagePaths = new Set<string>();
 
-/**
- * Codex app-server's grammar for a dynamic tool / namespace identifier, applied
- * in both directions (definitions the host publishes, call payloads Codex sends
- * back). It is the remote protocol's rule, not the host's: every name the host
- * registers (`TOOL_NAME_PATTERN`) also satisfies it, and the hyphen it admits is
- * for identifiers Codex itself may mint.
- */
+// Apply the remote dynamic-tool identifier grammar in both directions; it may admit identifiers the runtime mints beyond host tool names.
 const CODEX_DYNAMIC_TOOL_IDENTIFIER_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const RESERVED_DYNAMIC_TOOL_NAMESPACES = new Set([
   "functions",
@@ -72,12 +68,8 @@ export type CodexSpawnAppServer = (
 ) => ChildProcess;
 export type CodexAppServerRequestId = string | number;
 
-/**
- * Native features every app-server Ave spawns runs with disabled. Under
- * `--strict-config` an unknown name stops the server from starting, so the
- * user's CLI must know each one; `codex-user-runtime.ts` checks its
- * `features list` before Ave relies on it.
- */
+// Native features every app-server Ave spawns runs with disabled. Under `--strict-config` an unknown name stops the server from starting, so the user's
+// CLI must know each one; `codex-user-runtime.ts` checks its `features list` before Ave relies on it.
 export const CODEX_DISABLED_FEATURES: readonly string[] = Object.freeze([
   "plugins", "remote_control", "remote_plugin", "hooks",
   "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access",
@@ -87,32 +79,23 @@ export const CODEX_DISABLED_FEATURES: readonly string[] = Object.freeze([
   "view_image", "workspace_dependencies",
 ]);
 
-/**
- * argv for every `codex app-server` Ave spawns. The subscription client
- * (`codex-app-server-client.ts`) and the conversation runtime below start the
- * same binary behind the same hardening boundary. Native execution and
- * hosted tools are disabled where the protocol supports it, so the list
- * exists once: a flag added here reaches both, and the two
- * processes can no longer come up with different boundaries.
- */
+// Both runtime clients share one hardened argv so native execution and hosted-tool disabling cannot drift.
 export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze([
   "app-server",
-  // Tokens live in `auth.json` under the isolated CODEX_HOME. The keyring
-  // store needs the user's login keychain, which the isolated HOME (see
-  // sanitizedCodexConversationEnvironment) deliberately hides: macOS
-  // resolves the default keychain from $HOME and the sign-in ends in
-  // "A default keychain could not be found".
+  // Store tokens in the isolated runtime home; keyring login cannot find the default macOS keychain through the isolated HOME.
   "-c",
   'cli_auth_credentials_store="file"',
   "-c",
   'web_search="disabled"',
+  // Unelevated mode needs no UAC or sandbox accounts. Ave never requests elevated mode or windowsSandbox/setupStart; turns run read-only with no native environments.
+  ...(process.platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
   "--strict-config",
   ...CODEX_DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
   "--listen",
   "stdio://",
 ]);
 
-/** A spawned app-server whose stdio pipes both came up. */
+// A spawned app-server whose stdio pipes both came up.
 export type CodexAppServerChild = ChildProcess & {
   stdin: NonNullable<ChildProcess["stdin"]>;
   stdout: NonNullable<ChildProcess["stdout"]>;
@@ -122,20 +105,8 @@ export function hasCodexStdioStreams(child: ChildProcess): child is CodexAppServ
   return child.stdin !== null && child.stdout !== null;
 }
 
-/**
- * Wire a spawned app-server to the newline-delimited JSON it speaks on stdio.
- * `onLine` receives each parsed message; `onAbort` fires with the error code
- * the owner should close its transport with — `codex-runtime-start-failed`
- * when the process itself errors, `codex-operation-failed` for a stream
- * error, an exit, an over-long line or bytes that are not JSON. The owner
- * still decides what "abort" means (which child is current, how it is
- * killed), which is why this only reports.
- *
- * The stdout buffer is bounded by {@link CODEX_MAX_RPC_LINE_BYTES}; a line
- * that exceeds it is a protocol failure, not something to keep accumulating.
- * stderr is drained so a broken runtime cannot block on a full pipe, and is
- * never logged: it can carry auth and account context.
- */
+// Bound newline JSON buffering and report protocol/stream failures to the owner, which decides transport teardown.
+// Drain stderr without logging it because it may contain authentication context.
 export function attachCodexStdioTransport(
   child: CodexAppServerChild,
   onLine: (message: unknown) => void,
@@ -183,13 +154,15 @@ export class CodexConversationRuntimeError extends Error {
   constructor(
     readonly code: CodexConversationRuntimeErrorCode,
     readonly providerError?: SubscriptionTransportDiagnosticError["providerError"],
+    // Main-process startup detail; never included in renderer error payloads.
+    readonly detail?: string,
   ) {
     super(code);
     this.name = "CodexConversationRuntimeError";
   }
 }
 
-/** JSON-compatible values accepted by Codex App Server dynamic tool schemas. */
+// JSON-compatible values accepted by Codex App Server dynamic tool schemas.
 export type CodexConversationJsonValue =
   | null
   | boolean
@@ -198,18 +171,18 @@ export type CodexConversationJsonValue =
   | ReadonlyArray<CodexConversationJsonValue>
   | { readonly [key: string]: CodexConversationJsonValue };
 
-/** A single Ave-owned function exposed to Codex App Server. */
+// A single Ave-owned function exposed to Codex App Server.
 export interface CodexConversationDynamicToolFunction {
-  /** Omit for structural compatibility with Ave ToolSchema. */
+  // Omit for structural compatibility with Ave ToolSchema.
   readonly type?: "function";
   readonly name: string;
   readonly description: string;
-  /** Validated to JSON before it is sent to App Server. */
+  // Validated to JSON before it is sent to App Server.
   readonly inputSchema: unknown;
   readonly deferLoading?: boolean;
 }
 
-/** A namespace groups Ave-owned functions without exposing native Codex tools. */
+// A namespace groups Ave-owned functions without exposing native Codex tools.
 export interface CodexConversationDynamicToolNamespace {
   readonly type: "namespace";
   readonly name: string;
@@ -221,7 +194,7 @@ export type CodexConversationDynamicToolDefinition =
   | CodexConversationDynamicToolFunction
   | CodexConversationDynamicToolNamespace;
 
-/** A validated dynamic tool request scoped to the active Ave conversation turn. */
+// A validated dynamic tool request scoped to the active Ave conversation turn.
 export interface CodexConversationDynamicToolCall {
   readonly threadId: string;
   readonly turnId: string;
@@ -231,50 +204,41 @@ export interface CodexConversationDynamicToolCall {
   readonly arguments: CodexConversationJsonValue;
 }
 
-/**
- * The host must route this through Ave tool governance and return only a
- * model-visible result. Native Codex command/file/permission paths are never
- * delegated through this callback.
- */
+// The host must route this through Ave tool governance and return only a model-visible result. Native Codex command/file/permission paths are never
+// delegated through this callback.
 export type CodexConversationDynamicToolHandler = (
   call: CodexConversationDynamicToolCall,
 ) => Promise<string>;
 
-/**
- * Every thread runs in the host-created blank workspace with network access
- * disabled. Native Codex command, file, and permission paths remain denied;
- * only explicitly declared Ave dynamic tools can cross this boundary.
- */
+// Every thread runs in the host-created blank workspace with network access disabled. Native Codex command, file, and permission paths remain denied;
+// only explicitly declared Ave dynamic tools can cross this boundary.
 export interface CodexConversationRuntimeOptions {
-  /** Existing isolated Codex home owned by the main process. */
+  // Existing isolated Codex home owned by the main process.
   runtimeHome: string;
-  /** Existing isolated Codex SQLite directory owned by the main process. */
+  // Existing isolated Codex SQLite directory owned by the main process.
   sqliteHome: string;
-  /** Existing blank workspace with no user project files, rules, or plugins. */
+  // Existing blank workspace with no user project files, rules, or plugins.
   workspaceDir: string;
-  /** Optional existing isolated temporary directory; defaults to runtimeHome. */
+  // Optional existing isolated temporary directory; defaults to runtimeHome.
   runtimeTempDir?: string;
-  /**
-   * Resolves the user's verified `codex` executable (see
-   * `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime.
-   */
+  // Resolves the user's verified `codex` executable (see `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime.
   resolveRuntime: () => Promise<CodexExecutableArtifact>;
-  /** Test seam; production uses managed-child-processes. */
+  // Test seam; production uses managed-child-processes.
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
-  /** Optional, Ave-governed tools advertised once when the thread starts. */
+  // Optional, Ave-governed tools advertised once when the thread starts.
   dynamicTools?: ReadonlyArray<CodexConversationDynamicToolDefinition>;
 }
 
 export interface CodexConversationTurnInput {
   text: string;
-  /** Validated user and retained tool images to stage as localImage inputs. */
+  // Validated user and retained tool images to stage as localImage inputs.
   attachments?: readonly SubscriptionPromptAttachment[];
-  /** Optional subscription model id. It is never treated as an API-key model. */
+  // Optional subscription model id. It is never treated as an API-key model.
   model?: string | null;
-  /** Per-thread Ave ToolSchema-compatible dynamic tools. */
+  // Per-thread Ave ToolSchema-compatible dynamic tools.
   dynamicTools?: ReadonlyArray<CodexConversationDynamicToolDefinition>;
-  /** Cancels before this runtime may create a remote turn. */
+  // Cancels before this runtime may create a remote turn.
   abortSignal?: AbortSignal;
 }
 
@@ -285,7 +249,7 @@ interface PendingTurnCompletion {
   readonly providerError?: SubscriptionTransportDiagnosticError["providerError"];
 }
 
-/** Safe, per-turn projection of Codex App Server `tokenUsage.last`. */
+// Safe, per-turn projection of Codex App Server `tokenUsage.last`.
 export interface CodexConversationTokenUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -300,7 +264,7 @@ export interface CodexConversationTurnResult {
   threadId: string;
   turnId: string;
   status: CodexConversationTurnStatus;
-  /** Present only for a completed turn with an exact App Server `last` snapshot. */
+  // Present only for a completed turn with an exact App Server `last` snapshot.
   tokenUsage?: CodexConversationTokenUsage;
   providerError?: SubscriptionTransportDiagnosticError["providerError"];
 }
@@ -324,11 +288,8 @@ type CodexConversationServerRequestKind =
   | "dynamic-tool"
   | "unsupported";
 
-/**
- * A deliberately redacted projection of an App Server reverse RPC request.
- * It allows the host to audit that a request was rejected without exposing
- * commands, paths, tool arguments, account values, or other raw server data.
- */
+// A deliberately redacted projection of an App Server reverse RPC request. It allows the host to audit that a request was rejected without exposing
+// commands, paths, tool arguments, account values, or other raw server data.
 export interface CodexConversationServerRequest {
   kind: CodexConversationServerRequestKind;
   method: string;
@@ -343,7 +304,7 @@ export interface CodexConversationCallbacks {
   onReasoningDelta?: (event: CodexConversationReasoningDelta) => void;
   onTurnCompleted?: (result: CodexConversationTurnResult) => void;
   onServerRequest?: (request: CodexConversationServerRequest) => void;
-  /** Executes only a known Ave dynamic tool for the active thread and turn. */
+  // Executes only a known Ave dynamic tool for the active thread and turn.
   onDynamicToolCall?: CodexConversationDynamicToolHandler;
 }
 
@@ -357,17 +318,17 @@ interface ActiveTurn {
   readonly resolveTurnId: (turnId: string) => void;
   readonly rejectTurnId: (error: Error) => void;
   turnId: string | null;
-  /** ID from the authoritative turn/start response; only it may settle this turn. */
+  // ID from the authoritative turn/start response; only it may settle this turn.
   authoritativeTurnId: string | null;
-  /** Latest exact App Server `tokenUsage.last` for this active remote turn. */
+  // Latest exact App Server `tokenUsage.last` for this active remote turn.
   latestTokenUsage: CodexConversationTokenUsage | undefined;
-  /** Bounded start-response race buffer keyed by the provider turn id. */
+  // Bounded start-response race buffer keyed by the provider turn id.
   readonly pendingTokenUsageByTurnId: Map<string, CodexConversationTokenUsage>;
-  /** Bounded terminal-notification buffer until turn/start proves its exact id. */
+  // Bounded terminal-notification buffer until turn/start proves its exact id.
   readonly pendingCompletionByTurnId: Map<string, PendingTurnCompletion>;
   settled: boolean;
   interruptPromise: Promise<void> | null;
-  /** App-owned temporary localImage files, removed on every terminal path. */
+  // App-owned temporary localImage files, removed on every terminal path.
   attachmentPaths: string[];
   readonly handledDynamicToolCallIds: Set<string>;
 }
@@ -378,7 +339,7 @@ interface NormalizedDynamicTools {
 }
 
 const SAFE_LOCALE_ENV_NAMES = ["LANG", "LC_ALL"] as const;
-/** Host tools own execution; the private runtime workspace is not a model environment. */
+// Host tools own execution; the private runtime workspace is not a model environment.
 const NO_NATIVE_ENVIRONMENTS = Object.freeze([]);
 // Descriptive lifecycle items neither authorize execution nor establish turn identity.
 const PASSIVE_NATIVE_STREAM_ITEM_TYPES = new Set([
@@ -433,11 +394,8 @@ function trustedWindowsSystemRoot(): string {
   return "C:\\Windows";
 }
 
-/**
- * Construct the complete child environment from a fixed allowlist. No parent
- * PATH, proxy, credential, loader, Node, or Codex/OpenAI configuration leaks
- * into the subscription runtime.
- */
+// Construct the complete child environment from a fixed allowlist. No parent PATH, proxy, credential, loader, Node, or Codex/OpenAI configuration leaks
+// into the subscription runtime.
 export function sanitizedCodexConversationEnvironment(
   runtimeHome: string,
   sqliteHome: string,
@@ -490,11 +448,8 @@ export function sanitizedCodexConversationEnvironment(
   };
 }
 
-/**
- * Reject anything that is not an existing, absolute, non-symlink directory.
- * `invalid` builds the caller's domain error; the rejection rules are shared so
- * both Codex transports admit exactly the same set of runtime directories.
- */
+// Reject anything that is not an existing, absolute, non-symlink directory. `invalid` builds the caller's domain error; the rejection rules are shared
+// so both Codex transports admit exactly the same set of runtime directories.
 export function validateCodexRuntimeDirectory(candidate: string, invalid: () => Error): string {
   const trimmed = candidate.trim();
   if (!trimmed || !isAbsolute(trimmed)) throw invalid();
@@ -683,10 +638,7 @@ function projectTurnStatus(value: unknown): CodexConversationTurnStatus {
   return "failed";
 }
 
-/**
- * Project only `tokenUsage.last`: App Server's `total` is thread-cumulative
- * and must never become a per-turn audit or renderer value.
- */
+// Project only `tokenUsage.last`: App Server's `total` is thread-cumulative and must never become a per-turn audit or renderer value.
 function projectTurnTokenUsage(
   payload: CodexJsonRecord,
 ): { threadId: string; turnId: string; tokenUsage: CodexConversationTokenUsage } | null {
@@ -728,12 +680,8 @@ function projectTurnTokenUsage(
   };
 }
 
-/**
- * A reusable App Server conversation transport for subscription-backed Codex
- * chat. It intentionally exposes only Ave-governed dynamic tools, never
- * project-native tools, approval grants, raw reverse-RPC payloads, or arbitrary
- * App Server methods.
- */
+// A reusable App Server conversation transport for subscription-backed Codex chat. It intentionally exposes only Ave-governed dynamic tools, never
+// project-native tools, approval grants, raw reverse-RPC payloads, or arbitrary App Server methods.
 export class CodexConversationRuntime {
   private readonly resolveRuntime: () => Promise<CodexExecutableArtifact>;
   private readonly spawn: CodexSpawnAppServer;
@@ -746,6 +694,7 @@ export class CodexConversationRuntime {
   private threadDynamicTools: NormalizedDynamicTools | null = null;
   private pendingThreadDynamicTools: NormalizedDynamicTools | null = null;
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private threadStartPromise: Promise<string> | null = null;
   private threadId: string | null = null;
@@ -773,12 +722,8 @@ export class CodexConversationRuntime {
     return this.activeTurn !== null;
   }
 
-  /**
-   * Proves that the isolated App Server can initialize under this runtime's
-   * fail-closed policy and sees a ChatGPT subscription account, without
-   * creating a billable thread or turn. The live transport is retained so a
-   * later startTurn can reuse the verified child.
-   */
+  // Proves that the isolated App Server can initialize under this runtime's fail-closed policy and sees a ChatGPT subscription account, without creating a
+  // billable thread or turn. The live transport is retained so a later startTurn can reuse the verified child.
   async verifyIsolation(): Promise<void> {
     await this.ensureStarted();
     try {
@@ -856,7 +801,7 @@ export class CodexConversationRuntime {
     return active.completion;
   }
 
-  /** Requests normal protocol cancellation; completion remains signaled by turn/completed. */
+  // Requests normal protocol cancellation; completion remains signaled by turn/completed.
   async interrupt(): Promise<void> {
     const active = this.activeTurn;
     if (!active || active.settled) return;
@@ -866,13 +811,13 @@ export class CodexConversationRuntime {
     await active.interruptPromise;
   }
 
-  /** Safely closes the isolated transport and force-kills its managed child if needed. */
-  stop(): void {
-    this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
+  // Safely closes the isolated transport and force-kills its managed child if needed.
+  stop(): void | Promise<void> {
+    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
   }
 
   async shutdown(): Promise<void> {
-    this.stop();
+    await this.stop();
   }
 
   private createActiveTurn(threadId: string, callbacks: CodexConversationCallbacks): ActiveTurn {
@@ -883,8 +828,7 @@ export class CodexConversationRuntime {
       rejectCompletion = rejectTurn;
     });
     let resolveTurnId: (turnId: string) => void = () => {};
-    // A transport can close while turn/start is still awaiting its RPC reply.
-    // Keep that intermediate completion promise observed until startTurn can
+    // A transport can close while turn/start is still awaiting its RPC reply. Keep that intermediate completion promise observed until startTurn can
     // propagate the same error through its public return value.
     void completion.catch(() => undefined);
     let rejectTurnId: (error: Error) => void = () => {};
@@ -892,8 +836,7 @@ export class CodexConversationRuntime {
       resolveTurnId = resolve;
       rejectTurnId = reject;
     });
-    // startTurn normally resolves this promise before any caller needs it. The
-    // catch prevents a transport-start race from becoming an unhandled rejection.
+    // startTurn normally resolves this promise before any caller needs it. The catch prevents a transport-start race from becoming an unhandled rejection.
     void turnIdReady.catch(() => undefined);
     return {
       threadId,
@@ -916,11 +859,8 @@ export class CodexConversationRuntime {
     };
   }
 
-  /**
-   * Codex App Server accepts localImage paths. Stage bytes only in the
-   * app-owned isolated temporary directory, avoiding base64 expansion in the
-   * JSONL turn/start frame. Names contain no user-derived path component.
-   */
+  // Codex App Server accepts localImage paths. Stage bytes only in the app-owned isolated temporary directory, avoiding base64 expansion in the JSONL
+  // turn/start frame. Names contain no user-derived path component.
   private async stageInputImages(
     active: ActiveTurn,
     attachments: readonly SubscriptionPromptAttachment[],
@@ -943,9 +883,8 @@ export class CodexConversationRuntime {
         } finally {
           await handle?.close();
         }
-        // If stop/child-exit raced fs.open, writeFile, or close, the terminal
-        // path may already have attempted deletion before this handle existed.
-        // Throwing here reaches the retry below only after the handle is closed.
+        // If stop/child-exit raced fs.open, writeFile, or close, the terminal path may already have attempted deletion before this handle existed. Throwing here
+        // reaches the retry below only after the handle is closed.
         this.throwIfStagingTurnSettled(active);
       }
     } catch (error) {
@@ -955,11 +894,8 @@ export class CodexConversationRuntime {
     }
   }
 
-  /**
-   * Register before waiting for fs.open so a concurrent orphan sweep never
-   * observes a newly-created file as abandoned. Append to the active turn
-   * immediately after open resolves; no event can interleave those statements.
-   */
+  // Register before waiting for fs.open so a concurrent orphan sweep never observes a newly-created file as abandoned. Append to the active turn
+  // immediately after open resolves; no event can interleave those statements.
   private async openStagedImage(active: ActiveTurn, path: string): Promise<fs.FileHandle> {
     liveStagedImagePaths.add(path);
     try {
@@ -978,11 +914,8 @@ export class CodexConversationRuntime {
     }
   }
 
-  /**
-   * An abrupt process death can leave image bytes in the persistent isolated
-   * temp directory. Sweep only our exact UUID filename pattern, never recurse,
-   * skip every live reservation, and refuse symlinks or files from this process.
-   */
+  // An abrupt process death can leave image bytes in the persistent isolated temp directory. Sweep only our exact UUID filename pattern, never recurse,
+  // skip every live reservation, and refuse symlinks or files from this process.
   private async discardOrphanedStagedImages(directory: string): Promise<void> {
     try {
       const entries = await fs.readdir(directory, { withFileTypes: true, encoding: "utf8" });
@@ -1015,8 +948,7 @@ export class CodexConversationRuntime {
         await fs.rm(path, { force: true, maxRetries: 1 });
         liveStagedImagePaths.delete(path);
       } catch {
-        // The directory is app-owned and files are random, but a cleanup race
-        // must never change turn completion or expose a path to the renderer.
+        // The directory is app-owned and files are random, but a cleanup race must never change turn completion or expose a path to the renderer.
       }
     }));
   }
@@ -1071,7 +1003,7 @@ export class CodexConversationRuntime {
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
-      forceKillManagedChildProcess(child, "codex conversation missing transport streams");
+      await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }
 
@@ -1099,13 +1031,19 @@ export class CodexConversationRuntime {
       await initialized;
       if (process.platform === "win32") {
         const readiness = await this.request("windowsSandbox/readiness");
-        if (!isCodexJsonRecord(readiness) || readiness.status !== "ready") {
-          throw new CodexConversationRuntimeError("codex-runtime-start-failed");
+        const status = isCodexJsonRecord(readiness) ? readiness.status : undefined;
+        const boundedStatus = status === "notConfigured" || status === "updateRequired" || status === "ready"
+          ? status : "unknown";
+        if (boundedStatus !== "ready") {
+          log.warn({ readiness: boundedStatus }, "Windows sandbox readiness failed");
+          throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+            `Windows sandbox readiness: ${boundedStatus}`);
         }
       }
     } catch (cause) {
       const error = new CodexConversationRuntimeError("codex-runtime-start-failed",
-        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined);
+        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined,
+        cause instanceof CodexConversationRuntimeError ? cause.detail : undefined);
       this.abortTransport(error, child);
       throw error;
     }
@@ -1174,8 +1112,7 @@ export class CodexConversationRuntime {
   private setActiveTurnId(active: ActiveTurn, turnId: string): void {
     if (active.authoritativeTurnId !== null && active.authoritativeTurnId !== turnId) return;
     if (active.turnId === turnId) return;
-    // Notification IDs remain provisional until the matching turn/start RPC
-    // reply arrives; they must not unlock cancellation or usage attribution.
+    // Notification IDs remain provisional until the matching turn/start RPC reply arrives; they must not unlock cancellation or usage attribution.
     active.turnId = turnId;
   }
 
@@ -1185,8 +1122,7 @@ export class CodexConversationRuntime {
     }
     active.authoritativeTurnId = turnId;
     active.turnId = turnId;
-    // Consume only the exact pre-response `last` snapshot. Any provisional or
-    // historic notification is discarded once the RPC proves this turn ID.
+    // Consume only the exact pre-response `last` snapshot. Any provisional or historic notification is discarded once the RPC proves this turn ID.
     active.latestTokenUsage = active.pendingTokenUsageByTurnId.get(turnId);
     active.pendingTokenUsageByTurnId.clear();
     active.resolveTurnId(turnId);
@@ -1320,8 +1256,7 @@ export class CodexConversationRuntime {
       void this.handleDynamicToolCall(id, params, child);
       return;
     }
-    // User-input, auth-refresh, attestation, and any future reverse RPC remain
-    // unsupported unless a separately governed bridge is explicitly added.
+    // User-input, auth-refresh, attestation, and any future reverse RPC remain unsupported unless a separately governed bridge is explicitly added.
     this.writeMessage({
       id,
       error: { code: -32601, message: "Unsupported request" },
@@ -1346,8 +1281,7 @@ export class CodexConversationRuntime {
       this.writeServerRequestError(id, -32602, "Invalid dynamic tool request", child);
       return;
     }
-    // The response may be queued behind this reverse RPC on the same event
-    // turn. Wait for it, then revalidate the exact ID before executing Ave.
+    // The response may be queued behind this reverse RPC on the same event turn. Wait for it, then revalidate the exact ID before executing Ave.
     if (active.authoritativeTurnId === null) {
       try {
         await active.turnIdReady;
@@ -1436,9 +1370,8 @@ export class CodexConversationRuntime {
       && !active.settled
       && this.activeTurn === active
       && active.threadId === call.threadId
-      // Only the turn/start response proves that a reverse RPC belongs to
-      // this turn. A resumed thread can replay a same-thread dynamic call
-      // before that response, and it must never reach the Ave tool bridge.
+      // Only the turn/start response proves that a reverse RPC belongs to this turn. A resumed thread can replay a same-thread dynamic call before that
+      // response, and it must never reach the Ave tool bridge.
       && active.authoritativeTurnId === call.turnId;
   }
 
@@ -1542,8 +1475,7 @@ export class CodexConversationRuntime {
     ) {
       return false;
     }
-    // item/started is descriptive only: it neither binds a provisional ID nor
-    // executes a tool. The reverse RPC above waits for authoritative identity.
+    // item/started is descriptive only: it neither binds a provisional ID nor executes a tool. The reverse RPC above waits for authoritative identity.
     return true;
   }
 
@@ -1590,9 +1522,8 @@ export class CodexConversationRuntime {
     ) {
       return;
     }
-    // A usage notification is never allowed to bind the active turn. App
-    // Server can re-send historic thread usage after a resume/fork, so retain
-    // snapshots by ID until turn/start proves the exact active turn.
+    // A usage notification is never allowed to bind the active turn. App Server can re-send historic thread usage after a resume/fork, so retain snapshots
+    // by ID until turn/start proves the exact active turn.
     if (active.authoritativeTurnId === event.turnId) {
       active.latestTokenUsage = event.tokenUsage;
       return;
@@ -1604,8 +1535,7 @@ export class CodexConversationRuntime {
     ) {
       return;
     }
-    // A newer notification replaces the earlier `last` snapshot; it is not a
-    // delta and must never be summed.
+    // A newer notification replaces the earlier `last` snapshot; it is not a delta and must never be summed.
     active.pendingTokenUsageByTurnId.set(event.turnId, event.tokenUsage);
   }
 
@@ -1618,16 +1548,13 @@ export class CodexConversationRuntime {
 
     const status = projectTurnStatus(turn?.status);
     const providerError = status === "failed" ? projectSubscriptionTransportErrorDiagnostics(turn, "turn-completion") : undefined;
-    // A terminal notification cannot establish identity: resumed/forked threads
-    // may replay historic completions before this request's turn/start reply.
+    // A terminal notification cannot establish identity: resumed/forked threads may replay historic completions before this request's turn/start reply.
     if (active.authoritativeTurnId === null) {
-      // The first terminal status wins, matching immediate post-response
-      // semantics and preventing a replayed duplicate from changing it.
+      // The first terminal status wins, matching immediate post-response semantics and preventing a replayed duplicate from changing it.
       if (active.pendingCompletionByTurnId.has(turnId)) return;
       if (active.pendingCompletionByTurnId.size >= 2) {
-        // A third distinct terminal notification before turn/start identifies
-        // the active turn is ambiguous. Dropping it can lose the real terminal
-        // signal and leave the caller waiting forever, so close fail-closed.
+        // A third distinct terminal notification before turn/start identifies the active turn is ambiguous. Dropping it can lose the real terminal signal and
+        // leave the caller waiting forever, so close fail-closed.
         this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
         return;
       }
@@ -1686,11 +1613,12 @@ export class CodexConversationRuntime {
     }
   }
 
-  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void {
+  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.closeTransport(error, child);
-    if (child) forceKillManagedChildProcess(child, "codex conversation transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "codex conversation transport closed");
+    return this.termination;
   }
 
   private closeTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess | null): void {

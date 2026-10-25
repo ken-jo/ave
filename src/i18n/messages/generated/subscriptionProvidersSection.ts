@@ -1,4 +1,4 @@
-// i18n fragment. Source: src/ui/renderer/tabs/SubscriptionProvidersSection.tsx.
+// Subscription settings messages: source for the generated locale barrels.
 export const en = {
   "subscriptionProvidersSection.title": "Subscription providers",
   "subscriptionProvidersSection.description": "Use an existing subscription with a provider-specific official runtime while keeping its login and chat selection in one place.",
@@ -14,6 +14,7 @@ export const en = {
   "subscriptionProvidersSection.errorProviderNotSupported": "This subscription provider is not supported.",
   "subscriptionProvidersSection.errorRuntimeUnavailable": "The subscription runtime is unavailable.",
   "subscriptionProvidersSection.errorRuntimeUnsafeLocation": "The CLI file and every parent folder must be owned by your account or the system and must not be writable by other users. Install it in a protected location, then check again.",
+  "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation": "The npm CLI installation or its parent folders allow access by other users. On Windows, the native Claude Code installer (claude.exe) is recommended. Install it in a protected location, then check again.",
   "subscriptionProvidersSection.errorRuntimeNotConfigured": "Select the provider's official runtime before continuing.",
   "subscriptionProvidersSection.errorRuntimeVersionUnsupported": "The installed CLI is older than Ave supports. Update it, then check again.",
   "subscriptionProvidersSection.errorRuntimeIncompatible": "The installed CLI does not support everything Ave needs. Update it, then check again.",
@@ -45,6 +46,7 @@ export const en = {
   "subscriptionProvidersSection.errorSelectionFailed": "The chat selection could not be saved. Try again.",
   "subscriptionProvidersSection.errorOperationFailed": "The provider operation could not be completed. Try again.",
   "subscriptionProvidersSection.loginPendingNotice": "Sign-in is waiting for you to complete it in an official browser.",
+  "subscriptionProvidersSection.claudeCliBillingDisclosure": "Uses your own Claude subscription through the sign-in tool on this computer; Ave never sees or stores your Claude credentials.",
   "subscriptionProvidersSection.deviceCodeLabel": "One-time device code",
   "subscriptionProvidersSection.deviceCodeHint": "Enter this code on the official sign-in page. The page address is never sent to Ave settings.",
   "subscriptionProvidersSection.configureRuntime": "Select official runtime",
@@ -80,6 +82,7 @@ export const ko: Record<keyof typeof en, string> = {
   "subscriptionProvidersSection.errorProviderNotSupported": "이 구독 공급자는 지원되지 않습니다.",
   "subscriptionProvidersSection.errorRuntimeUnavailable": "구독 런타임을 사용할 수 없습니다.",
   "subscriptionProvidersSection.errorRuntimeUnsafeLocation": "CLI 파일과 모든 상위 폴더는 현재 사용자 또는 시스템 소유이며 다른 사용자가 수정할 수 없어야 합니다. 보호된 위치에 설치한 뒤 다시 확인하세요.",
+  "subscriptionProvidersSection.errorRuntimeUnsafeNpmLocation": "npm CLI 설치 위치 또는 상위 폴더에 다른 사용자가 접근할 수 있습니다. Windows에서는 네이티브 Claude Code 설치 프로그램(claude.exe)을 권장합니다. 보호된 위치에 설치한 뒤 다시 확인하세요.",
   "subscriptionProvidersSection.errorRuntimeNotConfigured": "계속하기 전에 공급자의 공식 런타임을 선택하세요.",
   "subscriptionProvidersSection.errorRuntimeVersionUnsupported": "설치된 CLI 버전이 Ave가 지원하는 버전보다 낮습니다. 업데이트한 뒤 다시 확인하세요.",
   "subscriptionProvidersSection.errorRuntimeIncompatible": "설치된 CLI가 Ave에 필요한 기능을 모두 지원하지 않습니다. 업데이트한 뒤 다시 확인하세요.",
@@ -111,6 +114,7 @@ export const ko: Record<keyof typeof en, string> = {
   "subscriptionProvidersSection.errorSelectionFailed": "대화 선택을 저장하지 못했습니다. 다시 시도하세요.",
   "subscriptionProvidersSection.errorOperationFailed": "공급자 작업을 완료하지 못했습니다. 다시 시도하세요.",
   "subscriptionProvidersSection.loginPendingNotice": "공식 브라우저에서 로그인을 완료할 때까지 기다리고 있습니다.",
+  "subscriptionProvidersSection.claudeCliBillingDisclosure": "이 컴퓨터의 로그인 도구를 통해 본인의 Claude 구독을 사용합니다. Ave는 Claude 자격 증명을 보거나 저장하지 않습니다.",
   "subscriptionProvidersSection.deviceCodeLabel": "일회용 디바이스 코드",
   "subscriptionProvidersSection.deviceCodeHint": "공식 로그인 페이지에 이 코드를 입력하세요. 페이지 주소는 Ave 설정으로 전달되지 않습니다.",
   "subscriptionProvidersSection.configureRuntime": "공식 런타임 선택",

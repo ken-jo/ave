@@ -1,29 +1,6 @@
 #!/usr/bin/env node
-/**
- * check-retired-name.mjs — a retired internal product name never comes back.
- *
- * The name is retired; see the private workspace for what it was. It may not
- * appear in any tracked file's content or path. The pattern is assembled from
- * code points below so that this gate does not spell it either.
- *
- * Every tracked file is scanned (binary files excepted), documentation included.
- * The name matches in any case after a non-letter (`_X_HOME`, `@x/plugin`), and
- * inside an identifier after a lower-case letter or digit when written
- * Capitalized or in capitals (`defineXPluginConfig`, `sourceX`). Words that
- * merely contain the letters (an `l` that ends one camelCase part before a
- * `Vis…` part, or a capital before the name) never match. The pattern is pinned
- * by sha256 in the self-test. ALLOWLIST is empty and should stay that way; an entry
- * that no longer matches any file is stale and fails as well, so the list can
- * only shrink. Run standalone with `node scripts/check-retired-name.mjs`; the
- * scanner is exported so `test/scripts/retired-name.test.mjs` can exercise it.
- *
- * The same gate keeps retired plugin ids out. Their list lives in
- * `scripts/lib/retired-plugin-ids.mjs`, the one source the host-source and tour
- * audits read as well. An id may stay only within the exact text that
- * RETIRED_PLUGIN_ALLOWLIST names, for a use that is not the retired plugin
- * (a third-party library, a heading anchor generated from kept prose); a stale
- * entry fails.
- */
+// Reject retired names and plugin ids in tracked paths and content.
+// Exact-text exceptions must stay necessary; stale exceptions fail.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -31,36 +8,23 @@ import { pathToFileURL } from "node:url";
 import { withoutGitContext } from "./lib/git-process-environment.mjs";
 import { RETIRED_PLUGIN_IDS, retiredPluginId, retiredPluginPattern } from "./lib/retired-plugin-ids.mjs";
 
-/** Retired internal product name; see the private workspace. Lower case. */
 export const RETIRED_NAME = String.fromCodePoint(0x6c, 0x76, 0x69, 0x73);
 
 const ANY_CASE = [...RETIRED_NAME].map((letter) => `[${letter}${letter.toUpperCase()}]`).join("");
 const CAPITALIZED = RETIRED_NAME[0].toUpperCase() + RETIRED_NAME.slice(1);
 const CAPITALS = RETIRED_NAME.toUpperCase();
 
-/**
- * Case-sensitive on purpose: a case-insensitive camelCase branch would match
- * an `l` that ends one word part before a capitalized `Vis…` part.
- */
+// Keep camel-case matching case-sensitive to avoid crossing unrelated word boundaries.
 export const RETIRED_NAME_PATTERN = new RegExp(
   `(?<![A-Za-z])${ANY_CASE}|(?<=[a-z0-9])${CAPITALIZED}|(?<=[a-z0-9])${CAPITALS}`,
   "u",
 );
 
-/**
- * Where the name may stay: `[path, reason]`. An entry ending in `/` covers
- * every tracked file under it; any other entry is one exact path. Empty.
- */
+// A trailing slash covers a directory; other entries name exact paths.
 export const ALLOWLIST = Object.freeze([]);
 
-/**
- * Exact text where a retired plugin id may stay: `{ path, words, text, reason }`.
- * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. Occurrences of `text`
- * in `path` are masked with equal-length spaces to keep surrounding text separate;
- * the rest of each line is still scanned. In `text`,
- * `{id}` stands for the id as spelled and `{Id}` for its Capitalized words,
- * so this list never spells an id either.
- */
+// Mask only exact allowed text, preserving surrounding boundaries.
+// {id} and {Id} expand the stored id without spelling retired names here.
 export const RETIRED_PLUGIN_ALLOWLIST = Object.freeze([
   Object.freeze({
     path: "docs/ko/architecture/architecture.md",
@@ -98,7 +62,6 @@ function allowlistEntry(path, allowlist) {
   return allowlist.find(([entry]) => (entry.endsWith("/") ? path.startsWith(entry) : path === entry));
 }
 
-/** Lines (1-based) of `text` that carry the name. */
 function matchingLines(text) {
   const lines = [];
   text.split("\n").forEach((line, index) => {
@@ -107,12 +70,7 @@ function matchingLines(text) {
   return lines;
 }
 
-/**
- * Scan the tracked files of `repoRoot`. `offenders` are files outside the
- * allowlist whose path or content carries the name: `lines` lists the content
- * lines, and `inPath` says whether the path itself does. `stale` are allowlist
- * entries that no tracked file needs any more.
- */
+// Report path and content matches separately; unused allow-list entries are stale.
 export function scanRetiredName(repoRoot, allowlist = ALLOWLIST) {
   const offenders = [];
   const used = new Set();
@@ -123,7 +81,6 @@ export function scanRetiredName(repoRoot, allowlist = ALLOWLIST) {
     try {
       bytes = readFileSync(resolve(repoRoot, path));
     } catch (error) {
-      // A tracked path deleted in the working tree carries no content to check.
       if (error?.code !== "ENOENT") throw error;
     }
     if (bytes && !bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) lines = matchingLines(bytes.toString("utf8"));
@@ -150,11 +107,6 @@ function allowedText(entry, text) {
   return text.replaceAll("{id}", retiredPluginId(entry)).replaceAll("{Id}", capitalized);
 }
 
-/**
- * Scan the tracked files of `repoRoot` for retired plugin ids. `offenders` are
- * `{ path, id, inPath, lines }` for each file and id outside the allowlist;
- * `stale` are the allowlist entries (as `path: text`) that no line needs.
- */
 export function scanRetiredPluginIds(repoRoot, allowlist = RETIRED_PLUGIN_ALLOWLIST, ids = RETIRED_PLUGIN_IDS) {
   const patterns = ids.map((entry) => [retiredPluginId(entry), retiredPluginPattern(entry)]);
   const allowed = allowlist.map((item) => {
@@ -191,7 +143,6 @@ export function scanRetiredPluginIds(repoRoot, allowlist = RETIRED_PLUGIN_ALLOWL
   return { offenders, stale };
 }
 
-// Same guard shape as `check-source-text-safe.mjs`.
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
   const repoRoot = resolve(import.meta.dirname, "..");

@@ -1,11 +1,5 @@
-/**
- * Ephemeral image staging for a paired Tailnet controller.
- *
- * A remote binary upload is never put in a command receipt, projection, audit
- * record, URL, or filesystem path. It remains in bounded process memory only
- * until exactly one accepted message.send claims it. Restarting the host drops
- * all staged bytes by design.
- */
+// Stage remote images in bounded process memory until one accepted send claims them.
+// Never put uploaded bytes in receipts, projections, audits, URLs, or paths; restart discards them.
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import type { UserContentPart } from "../engine/llm/types.js";
 import {
@@ -31,7 +25,7 @@ interface StagedAttachment {
   reservationId: string | null;
 }
 
-export interface TailnetAttachmentStageInput {
+interface TailnetAttachmentStageInput {
   /** SHA-256 of the exact paired actor/share binding; never a raw identity. */
   readonly ownerKey: string;
   /** Rechecked on durable pairing/share changes and immediately before claim. */
@@ -40,12 +34,12 @@ export interface TailnetAttachmentStageInput {
   readonly bytes: Buffer;
 }
 
-export interface TailnetAttachmentStageResult {
+interface TailnetAttachmentStageResult {
   readonly id: string;
   readonly expiresAt: number;
 }
 
-export interface TailnetAttachmentClaim {
+interface TailnetAttachmentClaim {
   /** Host-private reservation token; never serialized to a remote surface. */
   readonly reservationId: string;
   readonly attachmentIds: readonly string[];
@@ -69,7 +63,6 @@ export interface TailnetAttachmentStagingStore {
   clear(): void;
 }
 
-/** Build the in-memory, single-use remote image staging boundary. */
 export function createTailnetAttachmentStagingStore(
   options: CreateTailnetAttachmentStagingStoreOptions = {},
 ): TailnetAttachmentStagingStore {

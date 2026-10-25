@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import { cn } from "../../../lib/utils.js";
 import {
+  ArrowLeft,
   ArrowRight,
   ChevronDown,
   ChevronRight,
@@ -12,6 +13,7 @@ import {
   Folder,
   FolderPlus,
   Globe,
+  RotateCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -21,6 +23,8 @@ import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
+import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
+import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
 import type { AveApi } from "../types.js";
 import { isFileChangeOperation, type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
@@ -40,10 +44,10 @@ import {
 } from "./ChatSidePanelLayout.js";
 import {
   BrowserDocumentViewer,
-  DetailHeader,
   EmptyState,
   FileTreeRows,
-  PreviewBody,
+  PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   buildFileTree,
   fileBasename,
@@ -55,6 +59,20 @@ import {
   toRelativePath,
 } from "./ChatSidePanelPreview.js";
 
+
+/**
+ * The tree's roving row: the active row while it is visible, else the first
+ * row. Derived during render so the tree always has a tab stop; an effect
+ * would leave one committed render without one after the first listing, a
+ * collapse or a reload removes the active row.
+ */
+export function deriveRovingPath(
+  activeItemPath: string | null,
+  rows: ReadonlyArray<{ path: string }>,
+): string | null {
+  if (activeItemPath && rows.some((row) => row.path === activeItemPath)) return activeItemPath;
+  return rows[0]?.path ?? null;
+}
 
 type WorkspaceDirEntry = { name: string; path: string; type: "file" | "directory" };
 
@@ -241,16 +259,7 @@ function ProjectRootsBrowser({
     return out;
   }, [activeRoot, childrenByPath, expanded]);
 
-  // Clamp the roving pointer when the tree changes (collapse / reload / switch).
-  useEffect(() => {
-    if (flatNodes.length === 0) {
-      if (activeItemPath !== null) setActiveItemPath(null);
-      return;
-    }
-    if (!activeItemPath || !flatNodes.some((n) => n.path === activeItemPath)) {
-      setActiveItemPath(flatNodes[0].path);
-    }
-  }, [flatNodes, activeItemPath]);
+  const rovingPath = deriveRovingPath(activeItemPath, flatNodes);
 
   // Move DOM focus only for keyboard-driven changes (roving tabindex).
   useEffect(() => {
@@ -296,7 +305,7 @@ function ProjectRootsBrowser({
 
   const onTreeKeyDown = (e: ReactKeyboardEvent) => {
     if (flatNodes.length === 0) return;
-    const idx = flatNodes.findIndex((n) => n.path === activeItemPath);
+    const idx = flatNodes.findIndex((n) => n.path === rovingPath);
     const i = idx >= 0 ? idx : 0;
     const cur = flatNodes[i];
     switch (e.key) {
@@ -537,7 +546,7 @@ function ProjectRootsBrowser({
         const isDir = entry.type === "directory";
         const isOpen = expanded.has(entry.path);
         const opened = !isDir && entry.path === selectedPath;
-        const isActiveItem = entry.path === activeItemPath;
+        const isActiveItem = entry.path === rovingPath;
         return (
           <div key={entry.path}>
                 <div
@@ -940,6 +949,8 @@ export function FileBrowserWorkspace({
       canOpenExternal: false,
     };
   }, [fsPath]);
+  // The target the bottom pane shows (a directory pick wins over the session row).
+  const detailTarget = fsTarget ?? selectedFileTarget;
 
   useEffect(() => {
     if (selectedFile?.previewTargetId && selectedFile.previewTargetId !== selectedId) {
@@ -1067,17 +1078,11 @@ export function FileBrowserWorkspace({
           </div>
         }
         bottom={
-          <div className="min-h-0 p-3">
+          <div className={detailTarget && previewFillsPanel(detailTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
             {fsTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={fsTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={fsTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={fsTarget} />
             ) : selectedFileTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={selectedFileTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={selectedFileTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={selectedFileTarget} />
             ) : selectedFile ? (
               <div className="space-y-3">
                 <div className="flex min-w-0 items-center gap-2">
@@ -1217,6 +1222,9 @@ export function BrowserWorkspace({
   onManualUrlChange: (tabId: string, url: string | null) => void;
 }) {
   const { t } = useTranslation();
+  const guest = useWebSurfaceGuest(tabId);
+  const navigation = useGuestNavigation(guest);
+  const navigate = (action: () => void) => { void navigateBrowserTabAsUser(api, tabId, action); };
   const [addressDraft, setAddressDraft] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
   const latestTarget = useMemo(
@@ -1228,9 +1236,9 @@ export function BrowserWorkspace({
   );
 
   useEffect(() => {
-    setAddressDraft(manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
+    setAddressDraft(navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
     setAddressError(null);
-  }, [manualUrl, latestTarget, tabId]);
+  }, [navigation.url, manualUrl, latestTarget, tabId]);
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1252,7 +1260,7 @@ export function BrowserWorkspace({
     };
   }, [manualUrl, t, tabId]);
   const displayedTarget = manualTarget ?? latestTarget;
-  const shownUrl = displayedTarget?.kind === "url" ? displayedTarget.url : null;
+  const shownUrl = navigation.url ?? (displayedTarget?.kind === "url" ? displayedTarget.url : null);
 
   const submitAddress = () => {
     const normalized = normalizeBrowserNavigationUrl(addressDraft);
@@ -1279,6 +1287,21 @@ export function BrowserWorkspace({
           submitAddress();
         }}
       >
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
+          aria-label={t("mainPanels.back")} disabled={!navigation.canGoBack}
+          onClick={() => navigate(() => guest?.goBack())} data-testid="browser-back">
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
+          aria-label={t("mainPanels.forward")} disabled={!navigation.canGoForward}
+          onClick={() => navigate(() => guest?.goForward())} data-testid="browser-forward">
+          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
+          aria-label={t("mainPanels.reload")} disabled={!guest || !navigation.url}
+          onClick={() => navigate(() => guest?.reload())} data-testid="browser-reload">
+          <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
         <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
           data-testid="chat-side-panel-browser-address"
@@ -1326,6 +1349,8 @@ export function BrowserWorkspace({
           <TooltipContent>{t("chatPreviewRail.openUrl")}</TooltipContent>
         </Tooltip>
       </form>
+      <BrowserSurfaceTools api={api} tabId={tabId}
+        onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
       {addressError ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="chat-side-panel-browser-address-error">
           {addressError}

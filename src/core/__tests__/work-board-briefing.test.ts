@@ -1,18 +1,4 @@
-/**
- * WorkBoardEngine — the daily / weekly briefing.
- *
- * The briefing is the reports surface run backwards: instead of summarizing the
- * board it surveys the user's work and files what it found back onto the board
- * as proposals. Three things are worth pinning down, and all three are asserted
- * against a real {@link WorkBoardStore} over a temp path with a fake runner
- * standing in for the survey agent:
- *
- *   - the PROMPT the host hands the survey (bounded, autonomous, read-only,
- *     and told what is already on the board);
- *   - the PARSE of the survey's answer into proposals;
- *   - DUPLICATE SUPPRESSION — running the same briefing twice must refresh the
- *     card it already filed rather than adding a second one.
- */
+/** Survey prompts are bounded, autonomous, and read-only; repeated proposals must refresh existing cards. */
 import { describe, it, expect } from "vitest";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
@@ -30,14 +16,12 @@ import {
 interface SurveySpawn {
   title: string;
   instructions: string;
-  /** @see SubAgentToolScope */
   toolScope: SubAgentToolScope;
   maxRounds?: number;
   profileMode?: string;
   originSessionId?: string;
 }
 
-/** Runner whose survey answer is scripted per call. */
 function fakeRunner(answers: string[]): {
   runner: SubAgentRunner;
   spawns: SurveySpawn[];
@@ -61,7 +45,6 @@ function fakeRunner(answers: string[]): {
   return { runner, spawns };
 }
 
-/** The gate is never reached by a briefing — a survey mutates nothing. */
 const unusedGate = {
   async requestAndWait() {
     throw new Error("the briefing must not open a plan-approval prompt");
@@ -106,19 +89,15 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect(spawns).toHaveLength(1);
       const spawn = spawns[0];
 
-      // Bounded: the survey has no answer channel, so it runs on a host budget.
       expect(spawn.maxRounds).toBe(20);
-      // Read-only at the registry, not merely in the prompt.
       expect(spawn.toolScope.kind).toBe("exactly");
       const granted = spawn.toolScope.kind === "exactly" ? spawn.toolScope.names : [];
       expect(granted).toContain("read_file");
       expect(granted).not.toContain("write_file");
       expect(granted).not.toContain("web_fetch");
       expect(spawn.profileMode).toBe("plan");
-      // Autonomous: it is told there is nobody to ask.
       expect(spawn.instructions).toContain("AUTONOMOUSLY");
       expect(spawn.instructions).toContain("Do NOT ask the user any questions");
-      // And it is shown the board so it reports what is NOT already there.
       expect(spawn.instructions).toContain("finish the migration");
     } finally {
       cleanup();
@@ -149,7 +128,6 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect(proposal.blockers).toEqual([
         { reason: "The spec link is dead", resolution: "Ask for a new link" },
       ]);
-      // The instruction text is carried but never rendered as the card body.
       expect(proposal.taskBrief).toContain("Open the review thread");
     } finally {
       cleanup();
@@ -209,8 +187,7 @@ describe("WorkBoardEngine — briefing survey", () => {
   it("refreshes rather than duplicates when the same action item is surveyed twice", async () => {
     const { store, cleanup } = tempBoard();
     try {
-      // Second run re-words the summary and re-cases and re-punctuates the
-      // title — the drift the normalized-title key exists to absorb.
+      // Normalize title case and punctuation so reworded surveys refresh the same card.
       const reworded = ONE_ITEM
         .replace("Reply to the design review", "Reply to the Design Review!")
         .replace("Three reviewers are waiting on your answer.", "Still unanswered after five days.");
@@ -229,7 +206,6 @@ describe("WorkBoardEngine — briefing survey", () => {
       const listed = await store.listProposals();
       if (listed.status !== "ok") throw new Error("proposals unreadable");
       expect(listed.proposals).toHaveLength(1);
-      // The refresh carried the newer wording onto the card that was already there.
       expect(listed.proposals[0].summary).toBe("Still unanswered after five days.");
     } finally {
       cleanup();
@@ -316,7 +292,6 @@ describe("WorkBoardEngine — briefing survey", () => {
 
       release?.();
       expect((await inFlight).status).toBe("empty");
-      // One survey ran, not two — the second press cost nothing.
       expect(spawnCount).toBe(1);
     } finally {
       cleanup();

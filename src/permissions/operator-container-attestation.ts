@@ -104,12 +104,7 @@ interface OperatorContainerCapabilityFingerprints {
   readonly key: string;
 }
 
-/**
- * Host-issued short-lived authority. `expiresAt` retains the meaning signed by
- * the v1 operator attestation: no new execution authority may be acquired or
- * consumed at or after that instant. Process confinement is revalidated in
- * addition to, rather than instead of, this signed lifetime.
- */
+// No authority may be acquired or consumed at/after the signed expiry; revalidate process confinement as well as lifetime.
 export interface OperatorContainerCapability {
   readonly version: typeof CAPABILITY_VERSION;
   readonly id: string;
@@ -119,10 +114,7 @@ export interface OperatorContainerCapability {
 }
 
 declare const operatorContainerRevalidationLeaseBrand: unique symbol;
-/**
- * Host-issued, one-shot proof that the exact published capability passed a
- * fresh process/confinement observation. Structural lookalikes have no power.
- */
+// Host-issued, one-shot proof that the exact published capability passed a fresh process/confinement observation. Structural lookalikes have no power.
 export interface OperatorContainerRevalidationLease {
   readonly [operatorContainerRevalidationLeaseBrand]: true;
   readonly version: typeof REVALIDATION_LEASE_VERSION;
@@ -155,7 +147,7 @@ export interface OperatorContainerCapabilityAuditProjection {
   }>;
 }
 
-/** Verified data only. Possessing this object never grants host authority. */
+// Verified data only. Possessing this object never grants host authority.
 export interface OperatorContainerAttestationEvidence {
   readonly version: typeof EVIDENCE_VERSION;
   readonly expiresAt: number;
@@ -774,9 +766,7 @@ function parseStatus(
     fail("process-capabilities-invalid");
   }
   const uids = parseUidTuple(uidFields, "process-uids-invalid");
-  // A zero real or saved UID can restore an effective UID of zero without
-  // CAP_SETUID. Requiring only the current effective/filesystem identities to
-  // be non-root would therefore make the verified state temporary.
+  // A zero real or saved UID can restore an effective UID of zero without CAP_SETUID. Requiring only the current effective/filesystem identities to be non-root would therefore make the verified state temporary.
   if (uids.includes("0")) fail("process-root-uid-not-allowed");
   const dangerousMask = Object.values(DANGEROUS_CAPABILITIES)
     .reduce((mask, bit) => mask | (1n << BigInt(bit)), 0n);
@@ -1093,8 +1083,7 @@ async function collectCurrentFacts(deps: CapabilityState["deps"]): Promise<Curre
   if (cgroupMounts.length !== 1) fail("cgroup-v2-mount-ambiguous");
   const cgroupMount = cgroupMounts[0];
   if (!cgroupMount.mountOptions.includes("ro")) fail("cgroup-v2-mount-not-read-only");
-  // Membership is relative to the cgroup namespace root. mountinfo's root can
-  // retain a host-relative prefix and therefore is not comparable to it.
+  // Membership is relative to the cgroup namespace root. mountinfo's root can retain a host-relative prefix and therefore is not comparable to it.
   const localCgroupPath = cgroupPath === "/"
     ? cgroupMount.mountPoint
     : posix.join(cgroupMount.mountPoint, cgroupPath);
@@ -1260,7 +1249,7 @@ function claimsMatch(
   return timingSafeEqualHexDigest(expectedDigest, actualDigest);
 }
 
-/** Verify signed process evidence without issuing any host authority. */
+// Verify signed process evidence without issuing any host authority.
 export async function verifyOperatorContainerAttestationEvidence(
   attestationPath: string,
   input: OperatorAttestationDependencies = {},
@@ -1366,7 +1355,7 @@ function issueOperatorContainerCapability(
   return capability;
 }
 
-/** Re-check non-authoritative evidence for tests and diagnostics. */
+// Re-check non-authoritative evidence for tests and diagnostics.
 export async function revalidateOperatorContainerAttestationEvidence(
   evidence: OperatorContainerAttestationEvidence,
 ): Promise<OperatorContainerAttestationEvidence> {
@@ -1418,11 +1407,7 @@ function capabilityIsCurrent(
   return isOperatorContainerCapabilityWithinSignedLifetime(capability, state.deps.now());
 }
 
-/**
- * Re-read both the v1 signed lifetime and process/confinement facts before a
- * route consumes this capability. A future renewable authority must use a new
- * signed contract/version; v1 expiry is never reinterpreted after publication.
- */
+// Re-read both the v1 signed lifetime and process/confinement facts before a route consumes this capability. A future renewable authority must use a new signed contract/version; v1 expiry is never reinterpreted after publication.
 async function revalidateOperatorContainerCapability(
   capability: OperatorContainerCapability,
 ): Promise<OperatorContainerCapability> {
@@ -1449,7 +1434,7 @@ function publishOperatorContainerCapability(
   publishedCapability = capability;
 }
 
-/** The only authority-returning registry read; it always revalidates first. */
+// The only authority-returning registry read; it always revalidates first.
 export async function acquirePublishedOperatorContainerCapability(): Promise<
   OperatorContainerCapability | null
 > {
@@ -1457,10 +1442,7 @@ export async function acquirePublishedOperatorContainerCapability(): Promise<
   return revalidateOperatorContainerCapability(publishedCapability);
 }
 
-/**
- * Grant-minting acquire path. The returned lease is nominal, exact-capability
- * bound, and consumable once by execution-grant issuance.
- */
+// Grant-minting acquire path. The returned lease is nominal, exact-capability bound, and consumable once by execution-grant issuance.
 export async function acquirePublishedOperatorContainerCapabilityForGrant(): Promise<
   AcquiredOperatorContainerCapability | null
 > {
@@ -1475,7 +1457,7 @@ export async function acquirePublishedOperatorContainerCapabilityForGrant(): Pro
   return Object.freeze({ capability, revalidationLease });
 }
 
-/** Consume an exact fresh-observation lease. Failure never consumes another lease. */
+// Consume an exact fresh-observation lease. Failure never consumes another lease.
 export function consumeOperatorContainerRevalidationLease(
   capability: OperatorContainerCapability,
   lease: OperatorContainerRevalidationLease,
@@ -1495,11 +1477,7 @@ export function consumeOperatorContainerRevalidationLease(
   return true;
 }
 
-/**
- * Synchronous identity check for a capability that was already revalidated by
- * {@link acquirePublishedOperatorContainerCapabilityForGrant} in the same invocation.
- * It never substitutes for acquire-time process observation.
- */
+// Synchronous identity check for a capability that was already revalidated by acquirePublishedOperatorContainerCapabilityForGrant in the same invocation. It never substitutes for acquire-time process observation.
 export function isCurrentPublishedOperatorContainerCapability(
   capability: OperatorContainerCapability,
 ): boolean {
@@ -1513,9 +1491,7 @@ export function isCurrentPublishedOperatorContainerCapability(
 export async function verifyAndPublishOperatorContainerAttestation(
   attestationPath: string,
 ): Promise<OperatorContainerCapabilityAuditProjection> {
-  // The production issuer deliberately closes over system I/O, platform,
-  // clock, crypto, and the fixed trust root. Injectable verification above
-  // only returns inert evidence and cannot mint a capability.
+  // The production issuer deliberately closes over system I/O, platform, clock, crypto, and the fixed trust root. Injectable verification above only returns inert evidence and cannot mint a capability.
   const evidence = await verifyOperatorContainerAttestationEvidence(attestationPath);
   await revalidateOperatorContainerAttestationEvidence(evidence);
   const capability = issueOperatorContainerCapability(evidence);

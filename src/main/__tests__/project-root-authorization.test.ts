@@ -1,10 +1,10 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The exclusive broker route is process state owned by the workload runtime;
-// the resolver only asks it two questions, so those are all the fixture answers.
+// The exclusive broker route is process state owned by the workload runtime; the resolver only asks it two questions, so those are all the fixture answers.
 const broker = vi.hoisted(() => ({
   active: false,
   cwd: "/app",
@@ -163,15 +163,14 @@ describe("project root authorization under the exclusive workload-broker route",
       authorized: false,
       project: null,
     });
-    // The loop's fallback project is the guest cwd too, so an unauthorized
-    // or absent selection can never re-root a brokered session at the host.
+    // The loop's fallback project is the guest cwd too, so an unauthorized or absent selection can never re-root a brokered session at the host.
     expect(defaultWorkspaceProject()).toEqual(brokered);
     expect(sessionBoundProjectRootMatches("/app", "/app")).toBe(true);
     expect(sessionBoundProjectRootMatches(workspace, "/app")).toBe(false);
     expect(sessionBoundProjectRootMatches(null, "/app")).toBe(false);
   });
 
-  it("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
+  it.skipIf(!canCreateSymlinks())("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
     const alias = join(root, "workspace-alias");
     symlinkSync(workspace, alias);
     expect(sessionBoundProjectRootMatches(workspace, workspace)).toBe(true);
@@ -181,7 +180,7 @@ describe("project root authorization under the exclusive workload-broker route",
     expect(sessionBoundProjectRootMatches(null, workspace)).toBe(false);
   });
 
-  it("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
+  it.skipIf(!canCreateSymlinks())("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
     const alias = join(root, "workspace-link");
     symlinkSync(workspace, alias);
     expect(isAuthorizedWorkspaceProjectRoot(alias)).toBe(true);

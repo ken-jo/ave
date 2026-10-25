@@ -1,6 +1,8 @@
+import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
+import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
 import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
 import type {
   AgentInstallResultPayload,
@@ -11,14 +13,10 @@ import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js"
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
-  BrowserTabBindRequest,
-  BrowserTabBindResult,
-  BrowserTabControlState,
-  BrowserTabOpRequest,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
-import type { McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpAuthenticationResult, McpConfigMutationResult, McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
 import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
@@ -87,9 +85,11 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
+import type { EgressDenialRow } from "../../shared/egress-denials.js";
+import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
-export type { McpServerConfig, McpServerConfigDto, McpServerState };
+export type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState };
 export type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 export type { ExecutionMode } from "../../shared/permission-mode.js";
 
@@ -128,7 +128,7 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
-import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
+import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -589,12 +589,8 @@ export type AveApi = {
    * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
    * and main's tab-op / agent-control events. Optional for test fixtures.
    */
-  browserTabs?: {
-    bindTab: (request: BrowserTabBindRequest) => Promise<BrowserTabBindResult>;
-    stop: (tabId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    onTabOp: (handler: (request: BrowserTabOpRequest) => void) => () => void;
-    onControl: (handler: (state: BrowserTabControlState) => void) => () => void;
-  };
+  browserTabs?: import("../../shared/browser-surface.js").BrowserTabsApi;
+  browserWorkspace?: import("../../shared/browser-workspace.js").BrowserWorkspaceApi;
   /** Report the browser/terminal tab the user is looking at (a hint for agent tools). */
   setActiveSurface?: (surface: ActiveWorkspaceSurface | null) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
@@ -604,33 +600,7 @@ export type AveApi = {
    * Optional so test fixtures casting a partial object to AveApi keep compiling
    * — production preload always defines it.
    */
-  terminal?: {
-    spawn: (payload: { tabId: string; cwd?: string; cols?: number; rows?: number }) => Promise<
-      | { ok: true; tabId: string; replayed: boolean }
-      | { ok: false; reason: string; message: string }
-    >;
-    input: (tabId: string, data: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    resize: (
-      tabId: string,
-      cols: number,
-      rows: number,
-    ) => Promise<{ ok: true } | { ok: false; error: string }>;
-    kill: (tabId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-    onData: (handler: (payload: { tabId: string; chunk: string }) => void) => () => void;
-    onExit: (
-      handler: (payload: { tabId: string; exitCode: number; signal?: number }) => void,
-    ) => () => void;
-    /** Command-block summaries of one tab, newest first (no output). */
-    listBlocks: (tabId: string) => Promise<
-      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
-      | { ok: false; error: string }
-    >;
-    /** One command block with its plain-text output. */
-    getBlock: (tabId: string, blockId: number) => Promise<
-      | { ok: true; block: TerminalBlock }
-      | { ok: false; error: string }
-    >;
-  };
+  terminal?: import("../../shared/terminal-session.js").TerminalApi;
   /**
    * Side chat (workspace rail) — a second, independently-streaming chat session
    * driven by a dedicated ConversationLoop in main. `onStream` / `onFallback`
@@ -832,14 +802,12 @@ export type AveApi = {
    */
   chatEditResend: (messageId: string, newText: string) => Promise<{ ok: boolean; error?: string }>;
   /**
-   * Discard the conversation from this user message onward, in place. The
-   * message itself goes too — the caller owns putting its text back in the
-   * composer, which is what makes this a rewind rather than a delete.
+   * Restore conversation, native file-tool edits, or both before this user
+   * message. Omitted mode restores conversation only: the message and later
+   * rows are discarded and its input is returned for the composer. Code-only
+   * restore keeps the conversation intact.
    */
-  chatRewindTo: (messageId: string) => Promise<
-    | { ok: true; text: string; personaPromptId?: string }
-    | { ok: false; error: string }
-  >;
+  chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1425,11 +1393,15 @@ type ApprovalSentenceSelectResult =
  */
 import type {
   PermissionReviewSuggestionPayload,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
+
+export type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 
 export type AveUserApprovalApi = {
   record: (entry: {
@@ -1438,6 +1410,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
+    rule?: { pattern: string; scope: "project" | "user" };
     toolName: string;
     args: string;
     source: string;
@@ -1451,6 +1424,7 @@ export type AveUserApprovalApi = {
     approvalCacheKey?: string;
   }) => Promise<{ ok: boolean; error?: string; message?: string }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{
     key: string;
     decision?: UserApprovalDecision;
@@ -1462,6 +1436,8 @@ export type AveUserApprovalApi = {
     /** Safe display metadata. Exact input/trust/cache identity never crosses IPC. */
     toolName?: string;
     source?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>;
 };
 
@@ -1499,7 +1475,6 @@ export interface DeferredQueueEntry {
 }
 
 export type PermissionReviewerMode = "disabled" | "rule" | "llm" | "strict";
-export type PermissionReviewerProvider = "openai" | "anthropic" | "google" | "foundry" | "gcp-playground";
 export type PermissionReviewerFallbackOnError = "deny" | "rule";
 /** Issue #690 — interactive reviewer auto-approve scope. */
 export type PermissionReviewerInteractiveAutoApprove = "off" | "low" | "medium";
@@ -1516,8 +1491,6 @@ interface PermissionReviewerParentAdjudication {
 
 export interface PermissionReviewerSettings {
   mode: PermissionReviewerMode;
-  provider: PermissionReviewerProvider;
-  model: string;
   fallbackOnError: PermissionReviewerFallbackOnError;
   interactive: { autoApprove: PermissionReviewerInteractiveAutoApprove };
   parentAdjudication: PermissionReviewerParentAdjudication;
@@ -1526,7 +1499,7 @@ export interface PermissionReviewerSettings {
 export type PermissionReviewerDispatchResult =
   | {
       ok: true;
-      verb: "show" | "mode" | "provider" | "model" | "fallback" | "interactive" | "adjudication";
+      verb: "show" | "mode" | "fallback" | "interactive" | "adjudication";
       settings: PermissionReviewerSettings;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"
@@ -1552,6 +1525,8 @@ export type AvePermissionApi = {
    */
   onConfigChanged: (cb: () => void) => () => void;
   listRules: () => Promise<PermissionRule[]>;
+  listScopedRules: () => Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }>;
+  removeScopedRule: (rule: ScopedPermissionRule) => Promise<{ ok: boolean; error?: string; message?: string }>;
   addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
   removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
   /** Permission policy — list pending HIGH-risk deferred entries from reviewer. */
@@ -1622,6 +1597,29 @@ export type AvePermissionApi = {
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
   /**
+   * Read-only: the connections the sandbox proxy refused in the last 24 h,
+   * newest first, each with the tool call, terminal tab or plugin process
+   * that opened it ("unattributed" when no live invocation held its key).
+   */
+  egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
+  /** Read-only: the shell egress grants that outlive a call (conversation, terminal tab, workspace, always). */
+  egressGrantsList: () => Promise<
+    | { ok: true; grants: ListedEgressGrant[] }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
+  /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
+  upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
+    /** `credentialsRemoved`: the stored credentials belonged to the previous proxy and were removed. */
+    | { ok: true; view: UpstreamProxyView; credentialsRemoved?: true }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** MUTATING: revoke one shell egress grant. */
+  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
+  /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —
    * call ONLY from an explicit "Install now" click. Resolves to the install's
@@ -1631,18 +1629,18 @@ export type AvePermissionApi = {
    * user activation lapses after ~5 s, and main reads status itself.
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
+  approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */
   onReviewSuggestion: (cb: (payload: PermissionReviewSuggestionPayload) => void) => () => void;
   /** Permission policy — `/permission reviewer ...` slash dispatch. */
   reviewerDispatch: (
     rawArgs: string,
   ) => Promise<PermissionReviewerDispatchResult>;
-  /**
-   * Permission policy C3 — check whether an API key (or GCP service account)
-   * is stored for a given reviewer provider. Used by the settings UI to
-   * determine which providers are selectable (key-driven dynamic activation).
-   */
-  reviewerProviderHasKey: (provider: PermissionReviewerProvider) => Promise<boolean>;
+  judgeGet: () => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeReadResult>;
+  /** Only the changed fields: unchanged stored values (even rejected ones) stay as stored. */
+  judgeSet: (
+    patch: Partial<import("../../shared/permission-judge-settings.js").PermissionJudgeSettings>,
+  ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
     | {
@@ -1782,9 +1780,10 @@ export type AveHostApi = {
 export type AveMcpApi = {
   servers: () => Promise<McpServerState[]>;
   kill: (id: string) => Promise<void>;
+  authenticate: (id: string) => Promise<McpAuthenticationResult>;
   getConfigs: () => Promise<McpServerConfigDto[]>;
   getConfigPath: () => Promise<string>;
-  addConfig: (config: McpServerConfig) => Promise<{ connected: boolean; warning?: string }>;
+  addConfig: (config: McpServerConfig) => Promise<McpConfigMutationResult>;
   setApiKey: (id: string, apiKey: string) => Promise<{ connected: boolean; warning?: string }>;
   removeConfig: (id: string) => Promise<void>;
   /**
@@ -2024,6 +2023,11 @@ export interface AvePreviewApi {
       | "read-failed";
     message?: string;
   }>;
+  /**
+   * Table document (csv/tsv/xlsx/xls/ods) parsed in main under the same guard
+   * as `readFile`; returns one sheet as a bounded grid of display strings.
+   */
+  readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
 }
 
 /**

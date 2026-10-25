@@ -4,25 +4,8 @@ import type { AppUpdateBadgeState } from "../MainToolbar.js";
 
 const INSTALL_HANDOFF_SAFETY_RELEASE_MS = 10_000;
 
-/**
- * Subscribes to `api.onAppUpdateState` for the lifetime of the app and
- * exposes click-action handlers for the toolbar badge. The hook is
- * deliberately tiny (no internal caching beyond the active state) — the
- * main process is the SoT and pushes every transition.
- *
- * Initial state is fetched via `api.getAppUpdateState()` so a late mount
- * (renderer reload, etc.) catches up to whatever the main process has
- * already broadcast.
- *
- * Double-click guard: `inFlight` ref tracks an outstanding IPC so rapid
- * badge re-clicks don't queue multiple `downloadUpdate()` invocations
- * during the IPC round-trip window before the main process broadcasts
- * the next state. Cleared automatically when the next state arrives.
- *
- * Destructive-action confirmation is owned by the main process inside
- * `ave:update:install-now`. Keeping the native dialog and install trigger
- * in one IPC handler prevents a renderer caller from skipping confirmation.
- */
+/** Live host events own update state; guard duplicate clicks during IPC and keep install confirmation inside main's
+ * install-now handler. */
 export function useAppUpdate(
   api: AveApi,
   /**
@@ -70,9 +53,8 @@ export function useAppUpdate(
     const unsubscribe = api.onAppUpdateState((next) => {
       hasLiveStateRef.current = true;
       setState(next);
-      // State broadcast = main process accepted (or progressed past) our
-      // last in-flight action. Clear the gate so subsequent clicks (e.g.,
-      // retry after error) are not silently blocked.
+      // State broadcast = main process accepted (or progressed past) our last in-flight action. Clear the gate so subsequent
+      // clicks (e.g., retry after error) are not silently blocked.
       if (inFlightRef.current) {
         releaseInFlight();
       }
@@ -102,9 +84,8 @@ export function useAppUpdate(
         releaseInFlight();
       }
     } catch {
-      // Main-side logs warn; on rejection we release the gate so the user
-      // can retry. State broadcast normally clears this — only matters on
-      // a hard IPC failure where no state change arrives.
+      // Main-side logs warn; on rejection we release the gate so the user can retry. State broadcast normally clears this — only
+      // matters on a hard IPC failure where no state change arrives.
       releaseInFlight();
     }
   }, [api, releaseInFlight]);
@@ -116,18 +97,15 @@ export function useAppUpdate(
     try {
       const result = await api.installAppUpdate();
       if (!result.ok) {
-        // Unsigned macOS builds can't self-install (Squirrel.Mac needs a
-        // Developer ID); the main process opened the release page instead of
-        // leaving a silent no-op. Surface that fallback to the user.
+        // Unsigned macOS builds require manual installation; show the notice after main opens the release page.
         if (result.reason === "manual-install-required") {
           onNeedsManualInstall?.();
         }
         releaseInFlight();
         return;
       }
-      // Keep the gate locked while the updater-owned shutdown handoff is
-      // expected to close the app. If the app remains alive, release after a
-      // bounded delay so the badge cannot stay disabled forever.
+      // Keep the gate locked while the updater-owned shutdown handoff is expected to close the app. If the app remains alive,
+      // release after a bounded delay so the badge cannot stay disabled forever.
       scheduleInstallSafetyRelease();
     } catch {
       releaseInFlight();

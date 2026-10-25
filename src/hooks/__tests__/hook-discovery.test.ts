@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area B — hook discovery + TOFU lockfile.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import {
   chmodSync,
@@ -14,13 +10,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { buildHookRegistry, filterRegistryByEventAndTool } from "../hook-registry.js";
 import {
   buildAcceptedAtMap,
   diffAgainstLockfile,
   disableHook,
   discoverHooks,
   ensureHooksDirectory,
-  hookMatchesTool,
+  hookMatcherError,
+  compileHookMatcher,
   persistLockfile,
   readLockfile,
   type DiscoveredHook,
@@ -50,7 +48,6 @@ describe("Permission policy P4 hook-discovery", () => {
       const dir = join(tmpDir, "hooks");
       ensureHooksDirectory(dir);
       expect(readFileSync).toBeDefined(); // sanity
-      // Re-running is idempotent
       ensureHooksDirectory(dir);
     });
   });
@@ -204,13 +201,11 @@ describe("Permission policy P4 hook-discovery", () => {
       mkdirSync(dir);
       const path = writeHook(dir, "pre-bad.sh", "echo");
       const hooks = discoverHooks(dir);
-      const dest = disableHook(hooks[0], join(dir, ".disabled"));
+      const dest = disableHook(hooks[0], join(dir, ".disabled"), "user");
       expect(dest).toContain(".disabled");
       expect(dest).toContain("pre-bad.sh");
-      // Original is gone
       const post = discoverHooks(dir);
       expect(post).toEqual([]);
-      // Sanity: original path no longer exists
       expect(() => readFileSync(path)).toThrow();
     });
 
@@ -222,7 +217,7 @@ describe("Permission policy P4 hook-discovery", () => {
       writeFileSync(join(disabledDir, "pre-bad.sh"), "old");
       writeHook(dir, "pre-bad.sh", "new");
       const hooks = discoverHooks(dir);
-      const dest = disableHook(hooks[0], disabledDir);
+      const dest = disableHook(hooks[0], disabledDir, "user");
       expect(dest).not.toBe(join(disabledDir, "pre-bad.sh"));
       expect(dest).toContain("pre-bad.sh.");
     });
@@ -249,16 +244,16 @@ describe("Permission policy P4 hook-discovery", () => {
   });
 });
 
-describe("#811 hook matcher (mcp__.* / glob)", () => {
+describe("#811 hook matcher (exact names / regex)", () => {
   it("parses the `# ave-hook-matcher:` frontmatter directive", () => {
     writeHook(
       tmpDir,
       "pre-mcp.sh",
-      "#!/bin/sh\n# ave-hook-matcher: mcp_*\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
+      "#!/bin/sh\n# ave-hook-matcher: ^mcp_.*$\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
     );
     const hooks = discoverHooks(tmpDir);
     expect(hooks).toHaveLength(1);
-    expect(hooks[0].matcher).toBe("mcp_*");
+    expect(hooks[0].matcher).toBe("^mcp_.*$");
   });
 
   it("leaves matcher undefined when no directive is present", () => {
@@ -266,13 +261,53 @@ describe("#811 hook matcher (mcp__.* / glob)", () => {
     expect(discoverHooks(tmpDir)[0].matcher).toBeUndefined();
   });
 
-  it("hookMatchesTool: no matcher matches everything; glob anchors", () => {
-    expect(hookMatchesTool(undefined, "fs_write")).toBe(true);
-    expect(hookMatchesTool("mcp_*", "mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("mcp_*", "fs_write")).toBe(false);
-    expect(hookMatchesTool("mcp_hr_*", "mcp_hr_query")).toBe(true);
-    expect(hookMatchesTool("mcp_hr_*", "mcp_payroll_query")).toBe(false);
-    // anchored: a partial match does not pass
-    expect(hookMatchesTool("query", "mcp_hr_query")).toBe(false);
+  it("compileHookMatcher: no matcher, '' or '*' matches everything", () => {
+    expect(compileHookMatcher(undefined)("fs_write")).toBe(true);
+    expect(compileHookMatcher("")("fs_write")).toBe(true);
+    expect(compileHookMatcher("*")("fs_write")).toBe(true);
+  });
+
+  it("compileHookMatcher: plain names are exact, split on | or ,", () => {
+    expect(compileHookMatcher("Edit|Write")("Write")).toBe(true);
+    expect(compileHookMatcher("Edit, Write")("Edit")).toBe(true);
+    expect(compileHookMatcher("Edit|Write")("NotebookEdit")).toBe(false);
+    expect(compileHookMatcher("code-reviewer")("code-reviewer")).toBe(true);
+    // exact: a partial name does not pass
+    expect(compileHookMatcher("query")("mcp_hr_query")).toBe(false);
+  });
+
+  it("compileHookMatcher: other matchers are unanchored regular expressions", () => {
+    expect(compileHookMatcher("mcp__.*")("mcp__hr__query")).toBe(true);
+    expect(compileHookMatcher("mcp__.*")("fs_write")).toBe(false);
+    expect(compileHookMatcher("^mcp_hr_")("mcp_hr_query")).toBe(true);
+    expect(compileHookMatcher("^mcp_hr_")("mcp_payroll_query")).toBe(false);
+    expect(compileHookMatcher("Edit.*")("NotebookEdit")).toBe(true);
+    expect(compileHookMatcher("^Edit$")("NotebookEdit")).toBe(false);
+    expect(compileHookMatcher("mcp_hr_*")("prefix_mcp_hr_query")).toBe(true);
+    expect(compileHookMatcher("^mcp_hr_.*$")("prefix_mcp_hr_query")).toBe(false);
+  });
+
+  it("parses an exact name list with spaces from script frontmatter", () => {
+    writeHook(tmpDir, "pre-edit.sh", "#!/bin/sh\n# ave-hook-matcher: Edit, Write\nexit 0\n");
+    const hooks = discoverHooks(tmpDir);
+    expect(hooks[0].matcher).toBe("Edit, Write");
+    const registry = buildHookRegistry(hooks, []);
+    expect(filterRegistryByEventAndTool(registry, "pre", "Write")).toHaveLength(1);
+    expect(filterRegistryByEventAndTool(registry, "pre", "NotebookWrite")).toEqual([]);
+  });
+
+  it("an invalid regex matcher is reported and retains a denial guard", () => {
+    expect(hookMatcherError("*danger*")).toMatch(/.+/);
+    expect(hookMatcherError("mcp__.*")).toBeUndefined();
+    expect(hookMatcherError("Edit|Write")).toBeUndefined();
+    writeHook(
+      tmpDir,
+      "pre-bad.sh",
+      "#!/bin/sh\n# ave-hook-matcher: (unclosed\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'\n",
+    );
+    const hooks = discoverHooks(tmpDir);
+    // Still discovered for trust review; blocking events retain an inert guard.
+    expect(hooks).toHaveLength(1);
+    expect(buildHookRegistry(hooks, [])[0].matcherError).toContain("(unclosed");
   });
 });

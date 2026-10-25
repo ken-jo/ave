@@ -45,8 +45,8 @@ export function useSidebarTab(api: AveApi): UseSidebarTabResult {
   const setActiveTab = useCallback(
     (tab: SidebarTab) => {
       setActiveTabState(tab);
-      // Guard against persisting the seed value back before the initial read
-      // resolves (would race the mount-seed effect above with a redundant write).
+      // Guard against persisting the seed value back before the initial read resolves (would race the mount-seed effect above
+      // with a redundant write).
       if (!hydrated) return;
       void api.updateSettings({ system: { sidebarActiveTab: tab } });
     },

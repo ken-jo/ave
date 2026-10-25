@@ -12,7 +12,6 @@ export function studioConnectorWarning(value: string): string | undefined {
     ? "Possible embedded credential" : undefined;
 }
 
-/** Findings are advisory and always include the exact matching text. */
 export function lintStudioFiles(files: readonly { path: string; data: Buffer }[]): StudioLintFinding[] {
   const findings: StudioLintFinding[] = [];
   for (const file of files) {

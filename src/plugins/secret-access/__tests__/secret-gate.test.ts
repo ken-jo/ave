@@ -1,12 +1,4 @@
-/**
- * `runSecretGate` — the four tiers in order, with Tier 3 answered by the
- * app's host-secret grants (design §10.3).
- *
- * The grant's own conditions are covered in `grants.test.ts`; the two real
- * callers (`plugin-runtime.test.ts`, `resolve-api-key.test.ts`) cover their
- * audit and counter vocabulary. Here the question is the tier order and what
- * each tier reads.
- */
+/** Exercise secret-gate tier ordering; the grant tests independently cover source and artifact evidence. */
 import { describe, expect, it, vi } from "vitest";
 import type { HostSecretGrantEvidence } from "../grants.js";
 import { runSecretGate, type SecretGateInput } from "../secret-gate.js";

@@ -1,27 +1,9 @@
-/**
- * The window-level layer that holds every browser tab's `<webview>`.
- *
- * See `preview/web-surfaces.ts` for why the guests live here rather than where
- * they are shown. This file is the placement half: each guest is drawn in a
- * fixed-position frame laid over its tab's slot, clipped to the part of the
- * slot its scrolling/clipping ancestors leave visible, with the boxes of
- * registered occluders (pane cards) cut out of it.
- *
- * Stacking: the layer is portaled onto <body>, outside the app root (whose
- * route canvas is `isolation: isolate`, and whose side panel animates with
- * `will-change: transform` — either would capture a fixed descendant). Its
- * z-index sits above app content and BELOW the `z-50` portal layer that every
- * popover, menu, tooltip and dialog renders into, so those still draw over a
- * page.
- *
- * Placement is measured, not derived: after any change that can move a slot
- * (a slot or occluder appearing, a ResizeObserver tick, a window resize, a
- * CSS transition, an active drag) the layer runs a short frame loop that reads
- * each slot's box and writes only what changed.
- */
+/** Portal guests to body so transforms cannot capture fixed positioning; clip slots around occluders and stay below
+ * popovers. Measure moving slots during layout changes. */
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
+import { guestFaviconSource } from "../preview/favicon-source.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
@@ -37,6 +19,7 @@ import {
   setWebSurfaceElement,
   forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
+  noteWebSurfaceFavicon,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -73,11 +56,8 @@ function isEmpty(box: Box): boolean {
   return box.right - box.left < 1 || box.bottom - box.top < 1;
 }
 
-/**
- * The rounded corners a clipping ancestor gives the visible box where the two
- * share a corner — the side panel is a rounded card, and a page laid over its
- * last pixels must round off with it rather than poke out of its corners.
- */
+/** The rounded corners a clipping ancestor gives the visible box where the two share a corner — the side panel is a rounded
+ * card, and a page laid over its last pixels must round off with it rather than poke out of its corners. */
 function sharedCorners(visible: Box, clip: Box, style: CSSStyleDeclaration, current: string[]): string[] {
   const near = (a: number, b: number) => Math.abs(a - b) <= 1;
   const corners: Array<[boolean, string]> = [
@@ -91,8 +71,8 @@ function sharedCorners(visible: Box, clip: Box, style: CSSStyleDeclaration, curr
 
 /** The slot's box cut down to what every clipping ancestor leaves visible. */
 function visibleBox(slot: HTMLElement): { slot: Box; visible: Box; radius: string } | null {
-  // No client rects: the slot or an ancestor is `display: none`. `visibility`
-  // inherits, so the slot's own computed value covers its ancestors too.
+  // No client rects: the slot or an ancestor is `display: none`. `visibility` inherits, so the slot's own computed value
+  // covers its ancestors too.
   if (!slot.isConnected || slot.getClientRects().length === 0) return null;
   if (getComputedStyle(slot).visibility !== "visible") return null;
   const rect = slot.getBoundingClientRect();
@@ -199,8 +179,8 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
     }
     if (key !== entry.key) moved += 1;
     if (key === "hidden" && entry.key !== "hidden") {
-      // Hidden, not unmounted: the guest keeps its page. Its last size is kept
-      // too, so showing it again does not make the page relayout twice.
+      // Hidden, not unmounted: the guest keeps its page. Its last size is kept too, so showing it again does not make the page
+      // relayout twice.
       entry.frame.style.visibility = "hidden";
       entry.frame.style.pointerEvents = "none";
     }
@@ -215,8 +195,8 @@ let rafId = 0;
 function tick(): void {
   rafId = 0;
   const { moved } = placeWebSurfaces();
-  // A slot still moving keeps the loop alive: the side panel slides in with a
-  // script-driven transform, which no resize or transition event reports.
+  // A slot still moving keeps the loop alive: the side panel slides in with a script-driven transform, which no resize or
+  // transition event reports.
   if (moved > 0 || isSurfaceDragActive()) loopFrames = SETTLE_FRAMES;
   if (loopFrames > 0) {
     loopFrames -= 1;
@@ -225,8 +205,7 @@ function tick(): void {
 }
 
 function kick(): void {
-  // A drag that just started must free the pointer before its first move
-  // reaches a guest — not a frame later.
+  // A drag that just started must free the pointer before its first move reaches a guest — not a frame later.
   if (isSurfaceDragActive() !== dragApplied) placeWebSurfaces();
   loopFrames = SETTLE_FRAMES;
   if (rafId === 0) rafId = requestAnimationFrame(tick);
@@ -241,30 +220,39 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
     setWebSurfaceElement(surface.tabId, guest);
   }, [surface.tabId]);
 
-  // Where the page went on its own (links, redirects, in-page routes), for
-  // the saved layout's "last address" and the tab's address row. Only the
-  // main frame moves the page; a new guest process starts with no address.
+  // Where the page went on its own (links, redirects, in-page routes), for the saved layout's "last address" and the tab's
+  // address row. Only the main frame moves the page; a new guest process starts with no address.
   useEffect(() => {
     const guest = guestRef.current;
     if (!guest) return undefined;
     const onNavigate = (event: Event) => {
       const { url, isMainFrame } = event as Event & { url?: string; isMainFrame?: boolean };
       if (isMainFrame === false || (event.type === "did-navigate-in-page" && isMainFrame !== true)) return;
-      if (typeof url === "string") noteWebSurfaceLocation(surface.tabId, url);
+      if (typeof url === "string") {
+        if (event.type === "did-navigate") noteWebSurfaceFavicon(surface.tabId, null);
+        noteWebSurfaceLocation(surface.tabId, url);
+      }
     };
     const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
+    const onFavicon = (event: Event) => {
+      const icons = (event as Event & { favicons?: unknown }).favicons;
+      const favicon = Array.isArray(icons) ? icons.find((icon) => guestFaviconSource(icon) !== null) : undefined;
+      noteWebSurfaceFavicon(surface.tabId, guestFaviconSource(favicon));
+    };
     guest.addEventListener("did-attach", onAttach);
+    guest.addEventListener("page-favicon-updated", onFavicon);
     guest.addEventListener("did-navigate", onNavigate);
     guest.addEventListener("did-navigate-in-page", onNavigate);
     return () => {
       guest.removeEventListener("did-attach", onAttach);
       guest.removeEventListener("did-navigate", onNavigate);
       guest.removeEventListener("did-navigate-in-page", onNavigate);
+      guest.removeEventListener("page-favicon-updated", onFavicon);
     };
   }, [surface.tabId]);
 
-  // The guest is the tab's page wherever the tab is shown, so the layer binds
-  // it to the tab in main for the agent browser tools.
+  // The guest is the tab's page wherever the tab is shown, so the layer binds it to the tab in main for the agent browser
+  // tools.
   useEffect(() => {
     const guest = guestRef.current;
     if (!guest) return undefined;
@@ -296,9 +284,8 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
         src: surface.url,
         partition: AVE_SIDE_BROWSER_PARTITION,
         webpreferences: "contextIsolation=yes, sandbox=yes, nodeIntegration=no, javascript=yes",
-        // Popups (target=_blank, OAuth sign-in windows) reach main's
-        // side-browser window-open handler, which allows http(s) only and
-        // hardens every child window (`side-browser-webview.ts`).
+        // Popups (target=_blank, OAuth sign-in windows) reach main's side-browser window-open handler, which allows http(s) only
+        // and hardens every child window (`side-browser-webview.ts`).
         allowpopups: "true",
         style: {
           position: "absolute",
@@ -338,8 +325,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
     // Native drag and drop: the guest must not swallow `dragover` either.
     const onDragStart = () => beginSurfaceDrag();
     const onDragEnd = () => endSurfaceDrag();
-    // A drag whose source left the DOM reports no end; the next real pointer
-    // movement proves no drag is running.
+    // A drag whose source left the DOM reports no end; the next real pointer movement proves no drag is running.
     const onPointerMove = (event: PointerEvent) => {
       if (event.buttons === 0 && isSurfaceDragActive()) resetSurfaceDrag();
     };

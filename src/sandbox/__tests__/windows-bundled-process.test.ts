@@ -1,13 +1,10 @@
-/**
- * `spawnWindowsBundledProcess`: a bundled hook or MCP stdio server under
- * srt-win. What it holds (the ACL grant, the throwaway HOME), what it hands
- * the confined spawn, and that every failure gives all of it back. The relay
- * and the grant are each tested where they live; this is the composition.
- */
+/** `spawnWindowsBundledProcess`: a bundled hook or MCP stdio server under srt-win. What it holds (the ACL grant, the throwaway HOME), what it hands
+ * the confined spawn, and that every failure gives all of it back. The relay and the grant are each tested where they live; this is the composition. */
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 const SANDBOX_HOME = "C:\\sandbox\\home-1";
 const homeCleanup = vi.fn();
@@ -65,6 +62,7 @@ const input = {
   cwd: "C:\\p\\gen",
   allowRead: ["C:\\p\\gen"],
   allowWrite: ["C:\\p\\data"],
+  egressOwner: TEST_WORKER_EGRESS_OWNER,
 };
 
 describe("spawnWindowsBundledProcess", () => {
@@ -149,6 +147,23 @@ describe("spawnWindowsBundledProcess", () => {
     holdGrant.mockRejectedValueOnce(new Error("grant refused"));
     await expect(spawnWindowsBundledProcess(input)).rejects.toThrow("grant refused");
     expect(confinedSpawn).not.toHaveBeenCalled();
+    expect(homeCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks caller admission after preparation and releases the grant if permission changed", async () => {
+    let allowed = true;
+    const actualSpawn = vi.fn();
+    confinedSpawn.mockImplementationOnce(async (spec) => {
+      allowed = false;
+      spec.assertStillValid?.();
+      actualSpawn();
+      return { child: brokerChild(), confinement: "windows-srt" };
+    });
+    await expect(spawnWindowsBundledProcess({ ...input, assertStillValid: () => {
+      if (!allowed) throw new Error("permission revoked");
+    } })).rejects.toThrow("permission revoked");
+    expect(actualSpawn).not.toHaveBeenCalled();
+    expect(grantRelease).toHaveBeenCalledTimes(1);
     expect(homeCleanup).toHaveBeenCalledTimes(1);
   });
 

@@ -1,9 +1,4 @@
-/**
- * Out-of-process plugin path end-to-end (untrusted-stdio-isolation §3.1):
- * PluginMcpHost drives a REAL spawned `node` subprocess over StdioChildTransport
- * — proving the SAME host/projection works over a different (process-isolating)
- * transport, plus crash containment.
- */
+/** Verify host projection over a real subprocess and reject pending requests when it crashes. */
 import { describe, it, expect } from "vitest";
 import { resolve } from "node:path";
 import { StdioChildTransport } from "../experimental/stdio-child-transport.js";
@@ -16,8 +11,6 @@ function makeHost(registry: ToolRegistry): PluginMcpHost {
   const transport = new StdioChildTransport(process.execPath, [FIXTURE], {
     maxLineBytes: 1024 * 1024,
   });
-  // The host registers tools under the plugin id namespace; "echo" stands in for
-  // the spawned plugin's id.
   void registry;
   return new PluginMcpHost("echo", transport, {}, "test-generation");
 }
@@ -44,16 +37,7 @@ describe("StdioChildTransport — out-of-process plugin over a real subprocess",
 
     const tool = registry.findByName("echo_say");
     expect(tool?.source).toBe("plugin");
-    // Completing #885 per-tool category removal (out-of-process/stdio residual):
-    // the host IGNORES a plugin's wire-declared category — the fixture still SENDS
-    // "read" under an unknown vendor `_meta` prefix (see echo-stdio-server.mjs),
-    // but the reverse
-    // projection registers the default-strict "write" baseline just like the
-    // in-process loopback path. Under `hostClassifiesRisk` (default ON, all
-    // platforms) `inspectHostRisk` is the authoritative per-invocation classifier;
-    // the declared/wire category is SHADOW-ONLY, never an enforcement input, so
-    // this is fail-safe (read→write only tightens; enforcement is unaffected). A
-    // plugin grading its own danger is not a control (MCP spec: a server can lie).
+    // Wire risk claims cannot lower the registration baseline; the host classifies each invocation.
     expect(tool?.category).toBe("write");
 
     const out = await tool!.execute({ msg: "hi" }, {} as never);
@@ -67,8 +51,7 @@ describe("StdioChildTransport — out-of-process plugin over a real subprocess",
     const host = makeHost(registry);
     await publishTestHost(host, registry);
 
-    // The fixture process.exit(7)s on { crash: true }; the pending request must
-    // reject (transport onClose) rather than hang forever.
+    // Child exit must reject pending calls instead of leaving them to time out.
     const result = await registry.findByName("echo_say")!.execute({ crash: true }, {} as never);
     expect(result.isError).toBe(true);
 
@@ -76,8 +59,7 @@ describe("StdioChildTransport — out-of-process plugin over a real subprocess",
   }, 15_000);
 
   it("kills a child whose stdout passes the line bound without a newline", async () => {
-    // A child that never writes 0x0A would otherwise grow the host's buffer
-    // until the host ran out of memory.
+    // Bound unterminated child output so a missing newline cannot exhaust host memory.
     const transport = new StdioChildTransport(
       process.execPath,
       ["-e", "process.stdout.write('x'.repeat(4096)); setInterval(() => {}, 1000);"],

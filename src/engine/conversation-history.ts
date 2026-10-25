@@ -1,8 +1,5 @@
 import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 
-
-
-
 import type { GenericMessage } from "./llm/types.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
@@ -13,12 +10,7 @@ export interface ConversationHistoryOptions {
   maxMessages?: number;
 }
 
-/**
- * A message that has been through {@link ConversationHistory.append}, and so is
- * guaranteed addressable. Callers that need to name the row they just stored
- * read `meta.messageId` off this without a presence check — the guarantee is in
- * the type so a future append path cannot quietly stop honouring it.
- */
+/** Appended rows are addressable through meta.messageId without a presence check. */
 export type StoredMessage = GenericMessage & {
   meta: NonNullable<GenericMessage["meta"]> & { messageId: string };
 };
@@ -30,8 +22,7 @@ export class ConversationHistory {
   private readonly maxMessages: number;
 
   constructor(options?: ConversationHistoryOptions) {
-    // Default must be unbounded. Context reduction is owned by token-based
-    // auto-compact, not by a silent message-count eviction policy.
+    // Default history is unbounded; token compaction owns context reduction.
     this.maxMessages = normalizeMaxMessages(options?.maxMessages);
   }
 
@@ -69,31 +60,13 @@ export class ConversationHistory {
 
   private appendObserver: ((message: StoredMessage) => void) | undefined;
 
-  /**
-   * Observe every row appended from here on — the turn journal's hook for
-   * making each completed row durable the moment it exists. One observer at a
-   * time (a history belongs to one running turn); `undefined` detaches. The
-   * observer must not throw or mutate history: it only schedules a write.
-   */
+  /** The single append observer may schedule writes, never throw or mutate history. */
   setAppendObserver(observer: ((message: StoredMessage) => void) | undefined): void {
     this.appendObserver = observer;
   }
 
-  /**
-   * Attach `turnSummary` to the last assistant message. Dedicated entry-point
-   * (rather than a generic meta merge) so the type system enforces every
-   * required turnSummary field — including `freshInputTokens` — at every
-   * future call site, not just the one in conversation-loop today.
-   *
-   * No-op when there is no assistant message yet (rare tool-only termination).
-   *
-   * Mutation contract: `getMessages()` returns a shallow copy of the array
-   * but each element is the same object reference held internally, so an
-   * `attachTurnSummaryToLastAssistant` call AFTER a getMessages() snapshot
-   * IS visible through that snapshot. This is intentional — the persistence
-   * path (`saveSession`) calls `getMessages()` followed by attach so both
-   * see the same final meta.
-   */
+  /** Typed summary attachment is a no-op without an assistant row.
+   * Shared row references make later attachment visible through earlier array snapshots. */
   attachTurnSummaryToLastAssistant(
     turnSummary: NonNullable<NonNullable<GenericMessage["meta"]>["turnSummary"]>,
   ): boolean {
@@ -107,25 +80,12 @@ export class ConversationHistory {
     return false;
   }
 
-  /**
-   * Returns a SHALLOW copy of the messages array. Each element is the same
-   * object reference held internally — mutations applied via
-   * `attachTurnSummaryToLastAssistant` (or any future meta mutator) are
-   * visible through previously-returned snapshots. This is intentional:
-   * `saveSession` reads a snapshot then the loop attaches turnSummary, and
-   * both must see the same final meta.
-   */
+  /** Return a shallow array copy; later row metadata mutations remain visible to snapshots. */
   getMessages(): GenericMessage[] {
     return [...this.messages];
   }
 
-  /**
-   * Remove the exact object returned by append().
-   *
-   * Used for rollbackable host-injected messages: subsequent assistant or
-   * system notices remain intact, while an unconsumed injection is removed
-   * without truncating unrelated history.
-   */
+  /** Roll back an injected row by identity without truncating later unrelated history. */
   removeExact(message: GenericMessage): boolean {
     const index = this.messages.indexOf(message);
     if (index < 0) return false;
@@ -133,10 +93,7 @@ export class ConversationHistory {
     return true;
   }
 
-  /**
-   * Remove every surviving clone of one host-injected row. Auto-compaction may
-   * replace message object identities, so rollback cannot rely on removeExact.
-   */
+  // Compaction replaces row identities; remove every clone when rolling back an injection.
   removeByHostInjectionId(hostInjectionId: string): number {
     const before = this.messages.length;
     this.messages = this.messages.filter(
@@ -158,44 +115,22 @@ export class ConversationHistory {
   }
 
   restore(messages: GenericMessage[]): void {
-    // Restore from disk — preserve original createdAt (set on prior session
-    // turn) rather than restamping with the load time. Messages with no
-    // createdAt (legacy sessions written before the field existed) stay
-    // undefined — UI renders nothing rather than fake a fresh timestamp.
-    //
-    // applyToolResultCap re-runs on every restored tool_result *with the
-    // recompute flag* so that any host-attributed meta (`truncated` /
-    // `serializedStub`) read off disk is stripped and re-derived from the
-    // actual content. Defends against jsonl tampering: a row that arrives
-    // with `meta.serializedStub: true` would otherwise bypass the cap
-    // check in `wire-serialize.prepareMarkedToolResultsForWire` (security review
-    // Minor 2).
-    // Persisted user multipart content is untrusted: retain text and verified
-    // local data URLs, but discard remote/malformed binary parts before any
-    // resume, checkpoint, or retry can hand the history to a provider.
+    /** Preserve original timestamps and re-derive tool caps from untrusted disk content.
+     * Discard remote or malformed user binary parts before any provider replay. */
     const capped: GenericMessage[] = [];
-    // Two rows answering to one id is worse than a row with none: a lookup
-    // would silently take the first. A tampered or hand-merged file can carry
-    // duplicates, so the second one is re-minted rather than kept.
+    // Re-mint duplicate IDs so row lookup cannot silently return the wrong row.
     const seenIds = new Set<string>();
     for (const message of messages) {
       const normalized = normalizeRestoredUserContent(
         applyToolResultCap(message, { recompute: true }),
       );
-      // Rows written before ids existed get one here so the in-memory
-      // invariant ("every row is addressable") holds for the whole session.
-      // Rows that already carry one keep it, which is what lets a surface hold
-      // an id across a reload.
+      // Mint missing legacy IDs while retaining existing IDs across reload.
       if (normalized) capped.push(stampMessageId(normalized, seenIds));
     }
     this.messages = normalizeToolPairInvariant(capped).messages;
     this.trim();
   }
 
-  /**
-   * Edit/fork support. Keep only the first `count` messages.
-   * No-op if `count` is >= current length or negative.
-   */
   truncate(count: number): void {
     if (count < 0) return;
     if (count >= this.messages.length) return;
@@ -206,12 +141,7 @@ export class ConversationHistory {
     return this.messages.length;
   }
 
-  /**
-   * How many more messages can be appended before `trim()` would start
-   * dropping the oldest entries. The default conversation has no message-count
-   * cap; token preflight / auto-compact owns context control so persisted
-   * session transcript rows are not silently evicted.
-   */
+  /** Default history has no count cap; token compaction must not silently evict transcript rows. */
   getCapacityRemaining(): number {
     if (!Number.isFinite(this.maxMessages)) return Number.POSITIVE_INFINITY;
     return Math.max(0, this.maxMessages - this.messages.length);
@@ -225,15 +155,7 @@ export class ConversationHistory {
     return "";
   }
 
-  /**
-   * Reasoning of the same row `getLastAssistantText` reads — the row
-   * `attachTurnSummaryToLastAssistant` carries the turn's stats on.
-   *
-   * A turn can end with this non-empty while the text is empty: the model
-   * reasoned and emitted nothing. That is an answer's worth of spend, and the
-   * turn-summary gate uses this to tell it apart from a round the provider
-   * returned entirely blank.
-   */
+  /** Non-empty reasoning counts as spend even when the last assistant text is empty. */
   getLastAssistantThought(): string {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const msg = this.messages[i];
@@ -254,41 +176,17 @@ interface NormalizeToolPairOptions {
   preserveOpenToolTail?: boolean;
 }
 
-/**
- * Stamp `meta.createdAt` (wall-clock epoch ms) on any incoming message that
- * doesn't already carry one. Append boundary is the single chokepoint for
- * every message route (user input, LLM round assistant, executor tool_result,
- * structured-compact boundary) so this is the right place to ensure every
- * persisted row has a creation time. Existing createdAt is preserved so
- * restored or programmatically-constructed messages keep their original time.
- */
+/** Stamp missing creation times at append; preserve timestamps already supplied. */
 function stampCreatedAt(message: GenericMessage): GenericMessage {
   if (message.meta?.createdAt !== undefined) return message;
   return { ...message, meta: { ...(message.meta ?? {}), createdAt: Date.now() } };
 }
 
-/**
- * Give the row a durable identity if it does not already carry one.
- *
- * Owns every row that exists in memory: appended live, or restored into this
- * history. The id is random because nothing else ever has to reproduce it —
- * this history is the only thing holding the row. The other minter,
- * `legacyRowId` in memory/memory-manager.ts, owns rows that predate ids in a
- * session *file*, where two independent readers must derive the same name, so
- * it hashes (session, position) instead of drawing a uuid.
- *
- * Idempotent by design: a caller that minted the id before the append (so it
- * could announce the row on the timeline in the same breath) keeps its own,
- * and compaction clones keep theirs. Complete UUIDs are structural message
- * keys: content redaction must not rewrite their digit groups and break the
- * link to the row they name.
- */
+/** Preserve supplied row IDs and mint missing in-memory IDs randomly; file legacy IDs are deterministic.
+ * UUIDs are structural keys and must survive content redaction unchanged. */
 function stampMessageId(message: GenericMessage, taken?: Set<string>): StoredMessage {
   const existing = message.meta?.messageId;
-  // An id read back from disk is only usable if it is actually a non-empty
-  // string and nothing else in this history already answers to it. A number, an
-  // empty string, or a duplicate would make `find by id` return the wrong row
-  // or no row, so those are re-minted rather than trusted.
+  // Only non-empty, unique string IDs are usable after restore.
   const usable =
     typeof existing === "string" && existing.length > 0 && !(taken?.has(existing) ?? false);
   const messageId = usable ? existing : createDlpSafeUuid();
@@ -302,30 +200,8 @@ function normalizeMaxMessages(maxMessages: number | undefined): number {
   return Math.floor(maxMessages);
 }
 
-/**
- * Apply the Issue #902 generic tool_result size cap as a *meta-only* mark.
- * Non-tool_result messages pass through unchanged. Sub-cap content passes
- * through with reference equality.
- *
- * Why meta-only (no content swap here): provider sends run through
- * `wire-serialize.prepareMarkedToolResultsForWire`, while `MemoryManager.saveSession`
- * writes a stub JSONL row plus a file-backed artifact for oversized raw
- * content. This keeps in-memory content raw verbatim for the UI / inspection
- * while protecting both provider context and session JSONL size.
- *
- * Called from both `.append` (live executor → loop push) and `.restore`
- * (session jsonl rehydrate). Single chokepoint guarantees future append
- * sites added to the loop are auto-protected without further wiring.
- *
- * @param opts.recompute  When true (restore path), strip any pre-existing
- *                        host-attributed meta (`truncated`, `serializedStub`)
- *                        and re-measure the *content*. Defends against
- *                        jsonl tampering — a row that arrives with a forged
- *                        `serializedStub: true` would otherwise bypass the
- *                        `wire-serialize` cap check. Off by default (append
- *                        path) so an already-marked in-memory message stays
- *                        idempotent.
- */
+/** Mark oversized tool results without replacing raw inspection content.
+ * Restore re-measures and strips forged truncation or serializedStub claims; append is idempotent. */
 function applyToolResultCap(
   message: GenericMessage,
   opts?: { recompute?: boolean },
@@ -337,24 +213,19 @@ function applyToolResultCap(
     message = { ...message, meta: { ...meta, ...(outputArtifact ? { outputArtifact } : { outputArtifactUnavailable: true as const }) } };
   }
   if (!opts?.recompute && message.meta?.truncated !== undefined) return message;
-  // A skill read is the skill's instructions and is already host-bounded; a
-  // head/tail preview would hand the model a partial skill behind an extra
-  // chunk-read step. Measured as under-cap so a forged `truncated` is stripped.
+  // Host-bounded skill instructions must not be clipped; also strip forged truncation flags.
   const trimmed = isBoundedSkillReadResult(message)
     ? { truncated: undefined }
     : trimOversizedToolResult(message.content);
   if (trimmed.truncated === undefined) {
     if (!opts?.recompute) return message;
-    // Recompute path with sub-cap content: strip any forged host meta so
-    // the in-memory row reflects the actual content, not the disk claim.
+    // Sub-cap restored content still needs forged host metadata removed.
     if (message.meta?.truncated === undefined && message.meta?.serializedStub === undefined) {
       return message;
     }
     const { truncated: _t, serializedStub: _s, ...cleanMeta } = message.meta ?? {};
     return { ...message, meta: cleanMeta };
   }
-  // Over-cap: write the freshly-computed truncated info, drop any prior
-  // serializedStub claim (will be re-set by serialization on next send/save).
   const { serializedStub: _s, ...preservedMeta } = message.meta ?? {};
   return {
     ...message,

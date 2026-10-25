@@ -77,22 +77,18 @@ export function useChatState(
   const [streaming, setStreaming] = useState(false);
   /** True while a pre-turn auto-compact is running. */
   const [isCompacting, setIsCompacting] = useState(false);
-  /** triggerSource of the most recent compact_started event — used to render
-   *  the force-recover OFF-override banner (#916). Reset to null on compact_notice / done. */
+  /** Retain compact triggerSource until notice/done so force-recover overrides can be labeled. */
   const [compactTriggerSource, setCompactTriggerSource] = useState<"estimate" | "context-tokens" | "manual" | "force-recover" | "rate-limit" | null>(null);
-  /** True once recovery_exhausted fires — compact cannot reduce context (#917).
-   *  Cleared on clearForNewChat. */
+  /** True once recovery_exhausted fires — compact cannot reduce context (#917). Cleared on clearForNewChat. */
   const [isRecoveryExhausted, setIsRecoveryExhausted] = useState(false);
   const streamRef = useRef("");
   const thoughtRef = useRef("");
   const activeStreamIdRef = useRef<number | null>(null);
-  // The stream an interrupt send marked as cut short. Its closing frame may
-// never come (the turn can reject instead of settling), so the first frame
-// of a newer stream closes it here and takes its place.
+  // The stream an interrupt send marked as cut short. Its closing frame may never come (the turn can reject instead of
+  // settling), so the first frame of a newer stream closes it here and takes its place.
   const supersededStreamIdRef = useRef<number | null>(null);
-  // Stream ids climb within a transcript. Keep the highest closed id so any
-  // older straggler cannot be adopted as a fresh stream after its successor
-  // has finished. A late tool_end remains useful: it closes its old card.
+  // Stream ids climb within a transcript. Keep the highest closed id so any older straggler cannot be adopted as a fresh
+  // stream after its successor has finished. A late tool_end remains useful: it closes its old card.
   const retiredStreamIdRef = useRef<number | null>(null);
   // A stream closing lets go of the active id and any supersede in flight;
   // the retired id outlives it, since the retired stream's stragglers can
@@ -113,8 +109,8 @@ export function useChatState(
     retiredStreamIdRef.current = null;
   }, [releaseActiveStream]);
   const streamingRequestRef = useRef(0);
-  // Final assistant text is canonical at assistant_round(end_turn). Later
-  // deltas in the same stream are protocol tail noise, not a new response.
+  // Final assistant text is canonical at assistant_round(end_turn). Later deltas in the same stream are protocol tail noise,
+  // not a new response.
   const finalAssistantRoundClosedRef = useRef(false);
 
   const [editingEntryIdx, setEditingEntryIdx] = useState<number | null>(null);
@@ -157,12 +153,11 @@ export function useChatState(
         // 사용자 피드백 (2026-05-15): system entry → user bubble + 작은 hint 배지.
         const text = typeof ev.text === "string" ? ev.text : "";
         if (text.length === 0) return;
-        // A sub-agent report is not the user's own queued message — it gets its
-        // own box, carrying the child title so the user knows who reported.
+        // A sub-agent report is not the user's own queued message — it gets its own box, carrying the child title so the user
+        // knows who reported.
         const subAgentReport = ev.subAgentReport;
-        // The row the host appended for this injection, so the bubble drawn
-        // live names the same row a reloaded transcript names and the
-        // row-addressed actions reach it without waiting for a reload.
+        // The row the host appended for this injection, so the bubble drawn live names the same row a reloaded transcript names
+        // and the row-addressed actions reach it without waiting for a reload.
         const rowId = typeof ev.messageId === "string" ? { messageId: ev.messageId } : {};
         setEntries((p) => [
           ...p,
@@ -182,14 +177,7 @@ export function useChatState(
         return;
       }
       if (ev.type === "guidance_dropped") {
-        // Round-cap reached before the queued guidance could be injected
-        // (edge case — normal end-turn extends one more round to deliver
-        // the guide). Surface so the user knows their direction-adjustment
-        // was NOT applied — otherwise the silent-drop is worse UX than the
-        // pre-redesign abort-and-restart flow. Use a "⚠️" prefix so the
-        // failure surface is visually distinguishable from the "방향 지시
-        // 적용" success entry (round 2 critic m1 — same `system` kind
-        // styling, only the leading glyph + text differs).
+        // Surface guidance that could not fit before the round cap; it must be distinguishable from successfully applied guidance.
         const text = typeof ev.text === "string" ? ev.text : "";
         if (text.length === 0) return;
         setEntries((p) => [
@@ -203,8 +191,7 @@ export function useChatState(
         return;
       }
       if (streamId !== null) {
-        // A retired stream's tool results still close their cards; nothing
-        // else it says is taken up again.
+        // A retired stream's tool results still close their cards; nothing else it says is taken up again.
         const retiredToolEnd = retiredStreamIdRef.current !== null
           && streamId <= retiredStreamIdRef.current
           && ev.type === "tool_end";
@@ -370,8 +357,8 @@ export function useChatState(
         streamRef.current = "";
         thoughtRef.current = "";
       } else if (ev.type === "error") {
-        // LLM compact may have started but thrown — clear the indicator
-        // so the StatusBar item doesn't stick when compact_notice never arrives.
+        // LLM compact may have started but thrown — clear the indicator so the StatusBar item doesn't stick when compact_notice
+        // never arrives.
         setIsCompacting(false);
         setCompactTriggerSource(null);
         setEntries((p) =>
@@ -398,27 +385,23 @@ export function useChatState(
           { kind: "system", text: t("useChatState.piiRedactedText", { count, kindSuffix: kindLabel ? ` (${kindLabel})` : "" }) },
         ]);
       } else if (ev.type === "compact_started") {
-        // Pre-turn auto-compact started — show a transient "자동 압축 중..." hint.
-        // Cleared when `compact_notice` (completion) arrives.
+        // Pre-turn auto-compact started — show a transient "자동 압축 중..." hint. Cleared when `compact_notice` (completion) arrives.
         setIsCompacting(true);
-        // Capture triggerSource so ChatView/App can show distinct banner for
-        // force-recover (autoCompact OFF-override) vs normal compact (#916).
+        // Capture triggerSource so ChatView/App can show distinct banner for force-recover (autoCompact OFF-override) vs normal
+        // compact (#916).
         setCompactTriggerSource(ev.triggerSource ?? null);
       } else if (ev.type === "recovery_exhausted") {
-        // Issue #917 — force-recover budget consumed; compact cannot reduce context.
         setIsRecoveryExhausted(true);
       } else if (ev.type === "compact_notice") {
-        // Compact completed — clear the in-progress indicator. The checkpoint
-        // divider itself is the shared transcript reducer's.
+        // Compact completed — clear the in-progress indicator. The checkpoint divider itself is the shared transcript reducer's.
         setIsCompacting(false);
         setCompactTriggerSource(null);
         setEntries((p) => applyTranscriptFrame(p, ev));
       } else if (isTranscriptFrame(ev)) {
         setEntries((p) => applyTranscriptFrame(p, ev));
       } else if (ev.type === "done") {
-        // Defensive clear — if compact started but compact_notice never
-        // arrived (engine error path swallowed the throw), this prevents
-        // the indicator from sticking forever.
+        // Defensive clear — if compact started but compact_notice never arrived (engine error path swallowed the throw), this
+        // prevents the indicator from sticking forever.
         setIsCompacting(false);
         setCompactTriggerSource(null);
         if (debugStreamEnabled) {
@@ -439,8 +422,7 @@ export function useChatState(
           thoughtRef.current = "";
         } else if (streamRef.current || thoughtRef.current) {
           const doneRoute = ev.route;
-          // Strip <title>...</title> and [checkpoint] markers.
-          // that may have been streamed as raw deltas before post-turn cleanup.
+          // Strip <title>...</title> and [checkpoint] markers. that may have been streamed as raw deltas before post-turn cleanup.
           const detected = detectFromStream(streamRef.current);
           const finalText = visibleAssistantText(detected.cleanedText);
           if (debugStreamEnabled) {
@@ -485,13 +467,8 @@ export function useChatState(
     };
     const unsub = api.onChatStream(handleStreamEvent);
 
-    // E2E test seam — only exposed when AVE_DEV=1 (preload reads the env at
-    // runtime, so the gate stays inert in packaged production builds where the
-    // launcher never sets that flag). Playwright specs use this to inject
-    // synthetic tool_start / tool_end events without a live LLM provider.
-    // NOTE: `__aveDevMode` cannot be used as the gate here — esbuild inlines
-    // NODE_ENV at preload bundle time, so that flag is always `false` in the
-    // built app regardless of how the process is launched.
+    // Expose synthetic stream injection only under runtime AVE_DEV; bundled NODE_ENV-derived __aveDevMode cannot represent
+    // launch-time intent.
     const w = window as unknown as {
       ave?: { env?: { isDev?: boolean } };
       __aveChatStream?: { _emit: typeof handleStreamEvent };
@@ -526,18 +503,7 @@ export function useChatState(
     [],
   );
 
-  /**
-   * Overlay confirm → main chat insert (plugin trigger OR MCP-app `ui/message`).
-   *
-   * Inserts an imported_trigger entry (kind="imported_trigger") so the staged,
-   * NON-user-authored prompt is visible in chat history with its own provenance
-   * (`plugin:<id>` / `app:<serverId>`) — NOT as a plain user bubble. The user's next
-   * send turn (or an auto-fired handleAsk) will pick up from there.
-   *
-   * Conservative default: entry inserted, auto-turn NOT started. The caller
-   * (use-routine-overlay's handlePluginPrimaryAction) decides whether to also call
-   * handleAsk with the prompt.
-   */
+  /** Insert staged overlays as imported_trigger with provenance; insertion alone never starts a turn. */
   const insertImportedTriggerEntry = useCallback(
     (input: {
       sessionId: string;
@@ -594,23 +560,13 @@ export function useChatState(
     }
   }, []);
 
-  /**
-   * Mark the current turn's assistant entry as interrupted.
-   *
-   * The live counterpart of the persisted `meta.interrupted`: the abort
-   * INITIATOR (stop button after `chatAbort` settles, or an interrupting send
-   * as it goes out) calls this, so the badge appears without the engine
-   * pushing a "[중단됨]" literal through the text-delta stream. Only the turn
-   * at the end of the transcript is a candidate; a tool round that has no
-   * assistant entry yet has nothing to mark, and the reload path (persisted
-   * meta) still carries its badge.
-   */
+  /** Only mark the current tail turn interrupted; the abort initiator supplies the live badge and persisted metadata restores
+   * it after reload. */
   const markLastAssistantInterrupted = useCallback(() => {
     supersededStreamIdRef.current = activeStreamIdRef.current;
     setEntries(markTurnAssistantInterrupted);
   }, []);
-  // The host refused the interrupting send at admission, so the turn it
-  // would have cut short is still running untouched.
+  // The host refused the interrupting send at admission, so the turn it would have cut short is still running untouched.
   const unmarkLastAssistantInterrupted = useCallback(() => {
     supersededStreamIdRef.current = null;
     setEntries(clearTurnAssistantInterrupted);
@@ -713,9 +669,8 @@ export function useChatState(
   const resetStreamAccumulators = useCallback(() => {
     streamRef.current = "";
     thoughtRef.current = "";
-    // A fresh send belongs to the same session, so retain the retired stream
-    // high-watermark. Otherwise a late frame from the prior turn can arrive
-    // before the new stream and be adopted as its response.
+    // A fresh send belongs to the same session, so retain the retired stream high-watermark. Otherwise a late frame from the
+    // prior turn can arrive before the new stream and be adopted as its response.
     releaseActiveStream();
     finalAssistantRoundClosedRef.current = false;
   }, [releaseActiveStream]);
@@ -729,11 +684,10 @@ export function useChatState(
     finalAssistantRoundClosedRef.current = false;
   }, [releaseActiveStream]);
 
-  // ── Intent methods (replace raw setEntries) ──
   const seedRoutineEntries = useCallback((seeded: ChatEntry[]) => {
     finalAssistantRoundClosedRef.current = false;
-    // Same class as applyLoadedSession: the transcript on screen is replaced,
-    // so the previous conversation's suggestions no longer follow from it.
+    // Same class as applyLoadedSession: the transcript on screen is replaced, so the previous conversation's suggestions no
+    // longer follow from it.
     resetSuggestedReplies();
     resetStreamTracking();
     setEntries(seeded);
@@ -769,8 +723,8 @@ export function useChatState(
     setEntries((p) => upsertStreamingAssistant(p, content));
   }, []);
 
-  // A Continue whose turn the host refused never got a user row; its bubble
-  // (still awaiting the host's id) must not stay on screen as if it had.
+  // A Continue whose turn the host refused never got a user row; its bubble (still awaiting the host's id) must not stay on
+  // screen as if it had.
   const dropUnannouncedUserBubble = useCallback((text: string): void => {
     setEntries((p) => {
       for (let i = p.length - 1; i >= 0; i -= 1) {
@@ -789,9 +743,8 @@ export function useChatState(
     thoughtRef.current = "";
     releaseActiveStream();
     finalAssistantRoundClosedRef.current = false;
-    // Resuming an interrupted turn starts a new user row on the host; showing
-    // its bubble now keeps the resumed answer in its own turn instead of
-    // folding it into the interrupted one.
+    // Resuming an interrupted turn starts a new user row on the host; showing its bubble now keeps the resumed answer in its
+    // own turn instead of folding it into the interrupted one.
     if (opts?.userBubble) appendUserMessage(opts.userBubble);
     appendAssistantStatus(t("useChatState.continueFromLastUserStatus"));
     try {
@@ -814,16 +767,15 @@ export function useChatState(
   }, []);
 
   const applyLoadedSession = useCallback((loaded: ChatEntry[]) => {
-    // Session switch: clear any in-flight compact indicator. If a compact
-    // was running in the previous session, its compact_notice may never
-    // arrive for this hook instance — the StatusBar hint would stick.
+    // Session switch: clear any in-flight compact indicator. If a compact was running in the previous session, its
+    // compact_notice may never arrive for this hook instance — the StatusBar hint would stick.
     streamRef.current = "";
     thoughtRef.current = "";
     resetStreamTracking();
     finalAssistantRoundClosedRef.current = false;
     setIsCompacting(false);
-    // The loaded session did not produce the pending suggestions; whatever the
-    // user was reading before is gone from the transcript.
+    // The loaded session did not produce the pending suggestions; whatever the user was reading before is gone from the
+    // transcript.
     resetSuggestedReplies();
     setEntries(loaded);
   }, [resetStreamTracking]);
@@ -840,23 +792,19 @@ export function useChatState(
     // the indicator here too — same class as applyLoadedSession / clearForNewChat.
     streamRef.current = "";
     thoughtRef.current = "";
-    // This rewinds the current session rather than replacing it. Stream ids
-    // remain monotonic on its IPC channel, so retain the retired high-watermark
-    // and reject any old frame that arrives after the rewind.
+    // This rewinds the current session rather than replacing it. Stream ids remain monotonic on its IPC channel, so retain the
+    // retired high-watermark and reject any old frame that arrives after the rewind.
     releaseActiveStream();
     finalAssistantRoundClosedRef.current = false;
     setIsCompacting(false);
-    // The rewind drops the assistant turn the suggestions were generated from,
-    // so they no longer describe any reply the user can see.
+    // The rewind drops the assistant turn the suggestions were generated from, so they no longer describe any reply the user
+    // can see.
     resetSuggestedReplies();
     setEntries((p) => p.slice(0, entryIndex + 1));
   }, [releaseActiveStream]);
 
-  /**
-   * B1 — /compact manual command handler.
-   * Intercepts user messages starting with "/compact", calls IPC, then shows
-   * a system banner with the result. Returns true if intercepted.
-   */
+  /** B1 — /compact manual command handler. Intercepts user messages starting with "/compact", calls IPC, then shows a system
+   * banner with the result. Returns true if intercepted. */
   const handleCompactCommand = useCallback(
     async (input: string): Promise<boolean> => {
       const command = input.trimStart();

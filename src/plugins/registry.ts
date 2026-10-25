@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, resolve } from "node:path";
@@ -9,43 +10,15 @@ import { assertSafeArtifactSlug } from "./plugin-id.js";
 import { resolveTrustedRegistryManifestPath } from "./registry-manifest-trust.js";
 import { isRecord, isStringArray } from "../shared/is-record.js";
 
-/**
- * Legacy registry shape — `installedBy` ("admin"|"user") and
- * `_devLinked` (boolean) carried the install-source signal as two
- * orthogonal fields, now collapsed into the single
- * `installSource` enum. {@link migrateLegacyEntry} maps the legacy
- * shape onto the new enum and strips the deprecated fields, and
- * {@link readPluginRegistry} migrates the legacy form in memory. Persistence
- * is explicit through {@link migratePluginRegistry}, which uses the same
- * transaction as every other registry mutation.
- *
- * Post-2026-05 dev-link removal: the `"dev-link"` value (whether stored
- * directly in `installSource` or implied by the legacy `_devLinked: true`
- * boolean) is rewritten to `"local-dev"` on read with a loud audit
- * warning. There is no in-flight dev-link runtime any longer — the
- * receipt-check bypass is gone and any entry created by the old
- * `bun run dev:link` script can no longer load. Treating it as
- * `"local-dev"` is the closest still-valid sibling so the operator
- * sees a clear failure (missing receipt) instead of a silent skip.
- */
+/** Normalize legacy install-source fields and remove unsupported tool grants without weakening receipt checks. */
 interface LegacyRegistryEntry extends Omit<PluginRegistryEntry, "installSource"> {
   installedBy?: "admin" | "user";
   _devLinked?: boolean;
-  /**
-   * Pre-2026-05 registries may carry `installSource: "dev-link"`. The
-   * union no longer accepts this value at compile time, so the legacy
-   * shape is widened with a string here. {@link migrateLegacyEntry}
-   * normalises it to `"local-dev"`.
-   */
+  /** Read legacy dev-link strings only to normalize them to local-dev. */
   installSource?: PluginRegistryEntryInstallSource | "dev-link";
 }
 
-/**
- * Remove the retired `pluginAccess.plugins[].tools` grant from persisted
- * state while preserving event grants and approval scopes. Registry files are
- * user-owned JSON, so this narrows the runtime shape defensively even when an
- * old entry was written by a previous host version.
- */
+/** Remove retired tool grants while preserving supported event and approval data; persisted JSON is untrusted. */
 export function stripLegacyPluginToolGrants(
   access: PluginAccessSpec | undefined,
 ): { access: PluginAccessSpec | undefined; changed: boolean } {
@@ -71,30 +44,7 @@ export function stripLegacyPluginToolGrants(
   };
 }
 
-/**
- * Map a legacy entry onto the new {@link PluginRegistryEntryInstallSource}
- * enum. Returns `null` when the entry already conforms (no migration
- * needed).
- *
- * Mapping:
- *   - `_devLinked === true`              → `installSource: "local-dev"`  (post-purge: was "dev-link")
- *   - else `installedBy === "admin"`     → `installSource: "admin"`
- *   - else `installedBy === "user"`      → `installSource: "user"`
- *   - existing `installSource: "dev-link"` → rewritten to `"local-dev"`
- *
- * Entries that are already conformant — no legacy fields, not a dev-link,
- * with or without `installSource` — need no migration and return `null`, so
- * the caller does not re-persist + log them on every read. For such entries
- * `installSource` is simply left undefined, preserving the deployment-guard's
- * manifest-fallback behaviour for registries that pre-date the field.
- *
- * When an entry DOES need migration, the deprecated fields are stripped from
- * the returned entry.
- *
- * `out.devLinkRewritten` is set to `true` when the migration crossed the
- * dev-link → local-dev boundary so the caller can emit a single-shot
- * audit warning. NO silent fallback — the operator must see the rewrite.
- */
+/** Return null when conformant; report legacy install-source rewrites once rather than silently changing trust. */
 function migrateLegacyEntry(
   entry: LegacyRegistryEntry,
   out: { devLinkRewritten: boolean; legacyToolGrantsRemoved: boolean },
@@ -102,11 +52,7 @@ function migrateLegacyEntry(
   const hasLegacy = entry.installedBy !== undefined || entry._devLinked !== undefined;
   const hasDevLinkInstallSource = entry.installSource === "dev-link";
   const cleanedAccess = stripLegacyPluginToolGrants(entry.approvedPluginAccess);
-  // Already-conformant entries (new shape, no dev-link, no legacy fields)
-  // require no migration — whether or not installSource is set. (An entry
-  // with no derivable installSource was previously rebuilt into a structurally
-  // identical object on every read, triggering a needless re-persist + log
-  // each boot.)
+  // Conformant entries need no migration, including entries with no derivable installSource.
   if (!hasLegacy && !hasDevLinkInstallSource && !cleanedAccess.changed) return null;
   if (cleanedAccess.changed) out.legacyToolGrantsRemoved = true;
   let installSource: PluginRegistryEntryInstallSource | undefined;
@@ -120,7 +66,6 @@ function migrateLegacyEntry(
   } else if (entry.installedBy === "user") {
     installSource = "user";
   }
-  // Build a fresh object that preserves only the supported fields.
   const migrated: PluginRegistryEntry = {
     id: entry.id,
     manifestPath: entry.manifestPath,
@@ -138,16 +83,21 @@ function migrateLegacyEntry(
   return migrated;
 }
 
+/** Prune from installed IDs only when the registry can vouch for them; malformed or replaced files return undefined. */
+export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+  if (!existsSync(registryPath)) return undefined;
+  const registry = await readPluginRegistry(registryPath);
+  if (registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
+  return new Set(registry.plugins.map((entry) => entry.id));
+}
+
 export async function readPluginRegistry(registryPath: string): Promise<PluginRegistry> {
   logPluginLifecycle("debug", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_START, registryPath }, "registry read");
   let raw: string;
   try {
     raw = await readFile(registryPath, "utf-8");
   } catch (err) {
-    // First-boot path: registry lives at `~/.ave/plugins/registry.json`. On
-    // a fresh dev or first-time install the file simply doesn't exist yet
-    // — return the empty default so PluginRuntime.startAll can proceed and
-    // the registry will be lazily created by the first install/uninstall.
+    // An absent first-boot registry means empty state; other read failures remain errors.
     if (isMissingPathError(err)) {
       logPluginLifecycle("info", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_SKIP, reason: "first_boot_no_registry" }, "no registry — first boot");
       return { version: 1, plugins: [] };
@@ -168,8 +118,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
   if (parsed.version !== undefined && typeof parsed.version !== "number") {
     throw new Error(`Invalid plugin registry version: ${registryPath}`);
   }
-  // Apply legacy → installSource migration in memory. Persistence is an
-  // explicit transaction so a read can never overwrite a concurrent writer.
+  // Migrate in memory; only explicit transactions may persist without overwriting concurrent writers.
   let migratedCount = 0;
   const out = { devLinkRewritten: false, legacyToolGrantsRemoved: false };
   validateRawPluginRegistry(parsed, registryPath);
@@ -187,9 +136,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
   };
   validatePluginRegistry(registry, registryPath);
   if (out.devLinkRewritten) {
-    // Loud one-shot audit warning. Existing dev-link entries cannot load
-    // any longer (receipt verification now applies unconditionally) so
-    // the operator MUST notice this rewrite — there is no silent fallback.
+    // Report dev-link rewrites once because receipt enforcement can make the migrated install fail visibly.
     logPluginLifecycle(
       "warn",
       {
@@ -304,7 +251,7 @@ function validateOrigin(value: unknown, pluginId: string): void {
     new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "rung", "artifactSha256", "installedAt"]),
     `origin for '${pluginId}'`,
   );
-  // A folder install's commit is its revision (§18.4.3); every other rung's is a 40-hex commit.
+  // Folder pins use revisions; other source rungs use commit hashes.
   const commitOk = typeof value.commit === "string"
     && (value.rung === "folder" ? /^local-[a-f0-9]{64}$/.test(value.commit) : /^[a-f0-9]{40}$/.test(value.commit));
   const folderOriginOk = value.rung !== "folder" || value.sourceOrigin !== "official";
@@ -377,8 +324,7 @@ function validatePluginAccess(value: unknown, pluginId: string): void {
   assertOnlyKeys(value, new Set(["plugins", "agentApprovalScopes"]), `plugin access for '${pluginId}'`);
   if (!Array.isArray(value.plugins)) throw new Error(`Invalid plugin access targets: ${pluginId}`);
   for (const target of value.plugins) {
-    // Explicitly support the historical null target and retired tools array;
-    // migration removes both without accepting arbitrary malformed objects.
+    // Allow only the specific historical null target and retired tools shape during migration.
     if (target === null) continue;
     if (!isRecord(target) || typeof target.pluginId !== "string" || target.pluginId.length === 0) {
       throw new Error(`Invalid plugin access target: ${pluginId}`);
@@ -413,7 +359,6 @@ function validatePluginRegistry(registry: PluginRegistry, registryPath: string):
   }
 }
 
-/** Validate an untrusted registry-entry projection without reading or writing registry.json. */
 export function validatePluginRegistryEntries(
   entries: unknown[],
   context: string,
@@ -432,19 +377,8 @@ export function resolveManifestPathsFromRegistry(
   registryPath: string,
   entries: PluginRegistryEntry[],
 ): string[] {
-  // `dirname(registryPath) === pluginsRoot` by construction —
-  // `resolvePluginPaths` sets `registryPath: resolve(pluginsRoot,
-  // "registry.json")`.
   const pluginsRoot = dirname(registryPath);
-  // Keep inactive manifest paths discoverable as metadata. PluginRuntime does
-  // not instantiate them or assign an active generation pointer.
-  //
-  // Trust-root containment is the SAME check the sibling
-  // `resolveManifestLoadPlan` (runtime/index.ts) applies to this field,
-  // and it is applied here for the same reason: `validateRegistryEntry` only
-  // checks that `manifestPath` is a non-empty string, so a crafted
-  // `"../../etc/passwd"` reaches this function intact. Untrusted rows are
-  // dropped, matching the sibling's behaviour.
+  // Keep inactive manifests discoverable without instantiating them; apply the same trust-root checks as load plans.
   return entries
     .filter((entry) => entry.pendingUpdate === undefined)
     .flatMap((entry) => {
@@ -466,13 +400,7 @@ export function resolveManifestPathsFromRegistry(
     });
 }
 
-// ─── Registry transaction ────────────────────────────────────────────
-//
-// Serialize in-process contenders (withInProcessFileQueue) before acquiring
-// the cross-process lock. The lock target is a stable sibling anchor:
-// withFileLock may create its target, so it must never point at registry.json
-// (a missing registry means empty state, while an empty registry file is
-// corruption).
+// Serialize in-process contenders before cross-process locking; absent registry means empty, empty bytes mean corruption.
 
 const registryMutationContext = new AsyncLocalStorage<ReadonlySet<string>>();
 
@@ -543,16 +471,7 @@ async function withRegistryTransaction<T>(
   });
 }
 
-/**
- * Atomic read → mutate → write helper. Use this from any code path that
- * modifies the registry to ensure serialization with concurrent writers.
- *
- * Example:
- *   await updatePluginRegistry(path, (reg) => {
- *     const entry = reg.plugins.find(...);
- *     if (entry) entry.enabled = false;
- *   });
- */
+/** Serialize every registry mutation through this atomic read/mutate/write transaction. */
 export function updatePluginRegistry<T = void>(
   registryPath: string,
   mutator: (registry: PluginRegistry) => T,
@@ -563,7 +482,6 @@ export function updatePluginRegistry<T = void>(
   return withRegistryTransaction(registryPath, mutator);
 }
 
-/** Persist any in-memory legacy migration through the registry transaction. */
 export function migratePluginRegistry(registryPath: string): Promise<void> {
   return updatePluginRegistry(registryPath, () => undefined);
 }

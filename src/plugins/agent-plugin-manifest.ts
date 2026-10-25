@@ -24,15 +24,13 @@ export interface AgentPluginManifestIdentity {
   minAppVersion?: string;
 }
 
-/** Validate the shared three-branch shape before deciding which lifecycle owns it. */
 export function validatePluginManifestShape(bytes: Buffer | string): Record<string, unknown> {
   const value: unknown = parseStrictJson(Buffer.isBuffer(bytes) ? bytes.toString("utf8") : bytes);
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("plugin.json must be an object");
   const document = value as Record<string, unknown>;
   const foreign = foreignManifestTopLevelFields(document);
   for (const key of foreign) log.warn(`plugin.json: ignoring unknown top-level field ${key}`);
-  // Agent Plugins assigns no semantics to another vendor's namespace: report it
-  // like an unknown top-level field, then leave it unread and unvalidated.
+  // Unknown vendor namespaces have no Ave semantics; report them without reading or validating their contents.
   const extensions = document.extensions;
   if (extensions && typeof extensions === "object" && !Array.isArray(extensions)) {
     for (const key of Object.keys(extensions)) {
@@ -49,7 +47,6 @@ export function validatePluginManifestShape(bytes: Buffer | string): Record<stri
   return document;
 }
 
-/** Validate the non-executable branch of the shared manifest schema at a package boundary. */
 export function parseAgentPluginManifest(bytes: Buffer | string, expected: AgentPluginManifestIdentity = {}): AgentPluginPackageManifest {
   const document = validatePluginManifestShape(bytes);
   if (document.$schema !== AGENT_PLUGINS_SCHEMA_URL || !isPackageName(document.name)) throw new Error("plugin.json has an invalid schema or name");

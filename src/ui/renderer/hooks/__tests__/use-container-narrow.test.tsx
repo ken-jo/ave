@@ -1,18 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 
-/**
- * useContainerNarrow measures the ChatView container; `sidePanelLayout(width)`
- * says how the panel lays out inside it — a docked column with the pixel
- * floors when the container can hold both, an overlay over the transcript's
- * right edge (the panel keeping its own floor) when it cannot.
- *
- * The docking threshold is derived from the shared side-panel reserve (card
- * plus insets) plus a transcript floor — NOT a magic constant that exceeds
- * chat mode's reserved window. Chat mode's OS window reserves
- * `SIDE_PANEL_MIN_RESERVE` on top of its base width for the docked panel, so
- * its container clears the threshold and docks (regression guard for the
- * chat-mode modal-blur bug).
- */
+/** Derive docking from panel reserve plus transcript floor; measure the chat container so chat-mode windows can dock within
+ * their reserved width. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useRef } from "react";
@@ -20,11 +9,8 @@ import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH, useCont
 import { SIDE_PANEL_MIN_RESERVE, SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { MAIN_WINDOW_MIN_WIDTH } from "../../../../shared/shell-geometry.js";
 
-/**
- * A controllable ResizeObserver stub: capture the callback so a test can push
- * a specific content-box inline size and assert the hook's reaction. Replaces
- * the no-op stub from the shared setup for the lifetime of a test.
- */
+/** A controllable ResizeObserver stub: capture the callback so a test can push a specific content-box inline size and
+ * assert the hook's reaction. Replaces the no-op stub from the shared setup for the lifetime of a test. */
 function installControllableResizeObserver() {
   let latestCallback: ResizeObserverCallback | null = null;
   let observed: Element | null = null;
@@ -79,13 +65,12 @@ describe("useContainerNarrow", () => {
   });
 
   it("derives the docking threshold from the side-panel SoT (not a magic 900)", () => {
-    // The enter threshold must leave room for the panel plus a transcript
-    // column, and must sit BELOW chat mode's reserved container so chat docks.
+    // The enter threshold must leave room for the panel plus a transcript column, and must sit BELOW chat mode's reserved
+    // container so chat docks.
     expect(DOCK_ENTER_WIDTH).toBeGreaterThan(SIDE_PANEL_MIN_WIDTH);
     expect(DOCK_EXIT_WIDTH).toBeGreaterThan(DOCK_ENTER_WIDTH);
-    // The chat-mode side-panel window reserves SIDE_PANEL_MIN_RESERVE on top
-    // of the ~460px base window; after the collapsed sidebar padding the
-    // observed chat-view-root is ≈ 800px. Docking must be allowed there.
+    // The chat-mode side-panel window reserves SIDE_PANEL_MIN_RESERVE on top of the ~460px base window; after the collapsed
+    // sidebar padding the observed chat-view-root is ≈ 800px. Docking must be allowed there.
     expect(DOCK_EXIT_WIDTH).toBeLessThan(MAIN_WINDOW_MIN_WIDTH + SIDE_PANEL_MIN_RESERVE);
   });
 
@@ -93,8 +78,8 @@ describe("useContainerNarrow", () => {
     const observer = installControllableResizeObserver();
     try {
       const { result } = renderContainerNarrow();
-      // Chat mode with the side panel open: ~460 base + 448 panel window minus
-      // the collapsed sidebar padding + chrome ≈ 800px chat-view-root.
+      // Chat mode with the side panel open: ~460 base + 448 panel window minus the collapsed sidebar padding + chrome ≈ 800px
+      // chat-view-root.
       observer.emit(800);
       expect(result.current.isNarrow).toBe(false);
     } finally {
@@ -106,8 +91,7 @@ describe("useContainerNarrow", () => {
     const observer = installControllableResizeObserver();
     try {
       const { result } = renderContainerNarrow();
-      // A hand-shrunk container that cannot fit the 448px panel + a usable
-      // transcript column side by side.
+      // A hand-shrunk container that cannot fit the 448px panel + a usable transcript column side by side.
       observer.emit(500);
       expect(result.current.isNarrow).toBe(true);
     } finally {
@@ -119,7 +103,6 @@ describe("useContainerNarrow", () => {
     const observer = installControllableResizeObserver();
     try {
       const { result } = renderContainerNarrow();
-      // Enter narrow below DOCK_ENTER_WIDTH.
       observer.emit(DOCK_ENTER_WIDTH - 20);
       expect(result.current.isNarrow).toBe(true);
       // A width inside the dead-band ([enter, exit)) stays narrow — no dock flip.

@@ -1,9 +1,3 @@
-/**
- * Bundle registry: the bundles compiled into the app (`moonstone`, `gallery`)
- * and the installed theme packages. Every other theme, the
- * fourteen the server marketplace delivered among them, is a theme package
- * under its own id (design §5.5).
- */
 import type { ThemeBundle } from "./types.js";
 import { moonstoneBundle } from "./moonstone.js";
 import { galleryBundle } from "./gallery.js";
@@ -25,10 +19,7 @@ const COMPILED_BUNDLES = Object.freeze({
 /** The compiled bundles, in picker order. */
 export const BUNDLES: readonly ThemeBundle[] = Object.freeze(BUNDLE_IDS.map((id) => COMPILED_BUNDLES[id]));
 
-/**
- * Installed theme packages, keyed by package name. The installer refuses the
- * compiled ids, so the two never share one.
- */
+/** Installed theme packages, keyed by package name. The installer refuses the compiled ids, so the two never share one. */
 let installedBundles = new Map<string, ThemeBundle>();
 
 /** Replace the installed themes this renderer knows. */
@@ -43,11 +34,8 @@ export function findBundle(id: string): ThemeBundle | undefined {
   return isBundleId(id) ? COMPILED_BUNDLES[id] : installedBundles.get(id);
 }
 
-/**
- * The theme `followSystem` alternates `bundle` with: its declared `pair`, when
- * that theme is available and has the other shell. Undefined otherwise, and
- * then `followSystem` has nothing to switch.
- */
+/** The theme `followSystem` alternates `bundle` with: its declared `pair`, when that theme is available and has the other
+ * shell. Undefined otherwise, and then `followSystem` has nothing to switch. */
 export function systemPairOf(bundle: ThemeBundle): ThemeBundle | undefined {
   const pair = bundle.pair ? findBundle(bundle.pair) : undefined;
   return pair && pair.shell !== bundle.shell ? pair : undefined;

@@ -1,6 +1,3 @@
-/**
- * Tests for checkpoint chain fields (parentSessionId, summaryPreamble, checkpoints[]).
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +5,6 @@ import { join } from "node:path";
 import { isValidSessionId, MemoryManager } from "../memory-manager.js";
 import type { Checkpoint, SessionMetadata } from "../memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-
-// ── Fixtures ──────────────────────────────────────────────────────────────────
 
 function makeCheckpoint(overrides?: Partial<Checkpoint>): Checkpoint {
   return {
@@ -27,8 +22,6 @@ const SESSION_A = "aaaaaaaa-0000-1111-2222-333333333333";
 const SESSION_B = "bbbbbbbb-0000-1111-2222-333333333333";
 const SESSION_C = "cccccccc-0000-1111-2222-333333333333";
 
-// ── Setup ─────────────────────────────────────────────────────────────────────
-
 let dir: string;
 let mm: MemoryManager;
 
@@ -40,8 +33,6 @@ beforeEach(() => {
 afterEach(async () => {
   await cleanupTmpDir(dir);
 });
-
-// ── 1. appendCheckpoint ───────────────────────────────────────────────────────
 
 describe("appendCheckpoint", () => {
   it("adds a checkpoint to metadata with no prior checkpoints", () => {
@@ -126,8 +117,6 @@ describe("project metadata", () => {
   });
 });
 
-// ── 2. setSummaryPreamble ─────────────────────────────────────────────────────
-
 describe("setSummaryPreamble", () => {
   it("stores the preamble in metadata", () => {
     const meta: SessionMetadata = {};
@@ -170,8 +159,6 @@ describe("setSummaryPreamble", () => {
   });
 });
 
-// ── 4. Metadata validation ───────────────────────────────────────────────────
-
 describe("metadata validation", () => {
   it("silently drops checkpoint entries with invalid trigger values", async () => {
     const sessionId = SESSION_B;
@@ -207,8 +194,6 @@ describe("metadata validation", () => {
     expect(meta!.checkpoints![0].id).toBe("ckpt-valid");
   });
 });
-
-// ── 4b. Main active session state ────────────────────────────────────────────
 
 describe("main active session state", () => {
   it("persists resume state for an explicit main session", async () => {
@@ -271,8 +256,6 @@ describe("main active session state", () => {
   });
 });
 
-// ── 5b. normalizeCheckpoint range validation ──────────────────────────────────
-
 describe("normalizeCheckpoint range validation", () => {
   it("drops checkpoint with ctxUsageAtTrigger below 0", async () => {
     const sessionId = SESSION_A;
@@ -326,7 +309,7 @@ describe("normalizeCheckpoint range validation", () => {
     const sessionId = SESSION_C;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    // Test JSON-encoded null (representing NaN that was JSON.stringify'd, since JSON has no NaN literal)
+    // JSON encodes NaN as null; use null to exercise that persisted shape.
     writeFileSync(
       join(sessionsDir, `${sessionId}.meta.json`),
       JSON.stringify({
@@ -396,8 +379,6 @@ describe("normalizeCheckpoint range validation", () => {
   });
 });
 
-// ── 5e. normalizeSessionMetadata parentSessionId validation ──────────────────
-
 describe("normalizeSessionMetadata — parentSessionId regex validation", () => {
   it("drops parentSessionId with path-traversal characters during normalize", async () => {
     const sessionId = SESSION_A;
@@ -408,7 +389,6 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
       JSON.stringify({ sessionKind: "routine", routineId: "r1", parentSessionId: "../../../etc/passwd" }),
       "utf-8",
     );
-    // normalizeSessionMetadata must drop the invalid parentSessionId
     const meta = mm.loadSessionMetadata(sessionId);
     expect(meta).not.toBeNull();
     expect(meta!.routineId).toBe("r1");
@@ -429,13 +409,10 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
   });
 });
 
-// ── 5d. saveSessionMetadata truncation enforcement ────────────────────────────
-
 describe("saveSessionMetadata — summaryPreamble truncation invariant", () => {
   it("truncates summaryPreamble exceeding 8000 chars even when setSummaryPreamble was bypassed", async () => {
     const sessionId = SESSION_C;
     await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
-    // Bypass setSummaryPreamble by setting summaryPreamble directly in the metadata object
     const overlong = "z".repeat(12_000);
     await mm.saveSessionMetadata(sessionId, { summaryPreamble: overlong });
 
@@ -449,7 +426,6 @@ describe("saveSessionMetadata — summaryPreamble truncation invariant", () => {
     const overlong = "z".repeat(12_000);
     const original: SessionMetadata = { summaryPreamble: overlong };
     await mm.saveSessionMetadata(sessionId, original);
-    // The original object must not be mutated
     expect(original.summaryPreamble!.length).toBe(12_000);
   });
 
@@ -463,12 +439,7 @@ describe("saveSessionMetadata — summaryPreamble truncation invariant", () => {
   });
 });
 
-// ── 5f. isValidSessionId helper (3rd-pass: unified helper) ───────────────────
-
 describe("isValidSessionId helper — valid/invalid boundaries", () => {
-  // Access the helper indirectly via normalizeSessionMetadata by using loadSessionMetadata
-  // with injected parentSessionId values.
-
   it("accepts a standard UUID-format parentSessionId", async () => {
     const sessionsDir = join(dir, "sessions");
     await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
@@ -530,14 +501,11 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
   });
 });
 
-// ── 5g. normalizeSessionMetadata read-side preamble truncation ────────────────
-
 describe("normalizeSessionMetadata — read-side summaryPreamble truncation (defense-in-depth)", () => {
   it("truncates summaryPreamble exceeding 8000 chars on read (corrupted file)", async () => {
     const sessionId = SESSION_A;
     await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
-    // Write a meta file with an overlong preamble directly — simulates a corrupted/externally-written file
     const overlong = "x".repeat(10_000);
     writeFileSync(
       join(sessionsDir, `${sessionId}.meta.json`),
@@ -563,8 +531,6 @@ describe("normalizeSessionMetadata — read-side summaryPreamble truncation (def
   });
 });
 
-// ── saveCheckpointSnapshot / loadCheckpointSnapshot ──────────────────────────
-
 describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
   const SESSION_SNAP = "dddddddd-0000-1111-2222-333333333333";
 
@@ -584,19 +550,14 @@ describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
   });
 
   it("snapshot files do NOT appear in listSessions", async () => {
-    // Create a real session so listSessions has at least one entry
     await mm.saveSession(SESSION_SNAP, [{ role: "user", content: "real session" }]);
-    // Save a checkpoint snapshot for that session
     await mm.saveCheckpointSnapshot(SESSION_SNAP, 1, [{ role: "user", content: "pre-compact" }]);
 
     const sessions = mm.listSessions();
     const ids = sessions.map((s) => s.id);
 
-    // The real session must appear
     expect(ids).toContain(SESSION_SNAP);
-    // No snapshot-derived id (e.g. containing ".cp" or housed in ".checkpoints") should appear
     expect(ids.every((id) => !id.includes(".cp") && !id.includes(".checkpoints"))).toBe(true);
-    // Exactly one entry — snapshot did not add a ghost session
     const matchingReal = ids.filter((id) => id === SESSION_SNAP);
     expect(matchingReal).toHaveLength(1);
   });
@@ -628,8 +589,6 @@ describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
   });
 });
 
-// ── branchFromCheckpoint post-compaction simulation ──────────────────────────
-
 describe("saveCheckpointSnapshot post-compaction simulation", () => {
   const SESSION_BRANCH = "eeeeeeee-0000-1111-2222-333333333333";
 
@@ -641,25 +600,18 @@ describe("saveCheckpointSnapshot post-compaction simulation", () => {
     ];
     const postCompact = [{ role: "assistant", content: "compact summary only" }];
 
-    // Save snapshot at compact #1 (pre-compact state)
     await mm.saveCheckpointSnapshot(SESSION_BRANCH, 1, preCompact);
 
-    // Simulate PostTurnHookChain.saveSession overwriting main JSONL with post-compact data
     await mm.saveSession(SESSION_BRANCH, postCompact);
 
-    // Snapshot must still return the original pre-compact messages
     const loaded = mm.loadCheckpointSnapshot(SESSION_BRANCH, 1);
     expect(loaded).toEqual(preCompact);
 
-    // Main session now reflects post-compact state. `loadSession` mints a row
-    // identity for every row that has none, so the comparison is on the message
-    // itself rather than on byte-equality with the saved literal.
+    // loadSession adds missing row ids, so compare message content rather than saved literal bytes.
     const main = mm.loadSession(SESSION_BRANCH);
     expect(main).toMatchObject(postCompact);
   });
 });
-
-// ── 5h. saveSessionMetadata / loadSessionMetadata — IPC input validation ──────
 
 describe("saveSessionMetadata — invalid sessionId throws", () => {
   it("throws for path-traversal sessionId (../etc/passwd)", async () => {
@@ -727,8 +679,6 @@ describe("loadSessionMetadata — invalid sessionId throws", () => {
   });
 });
 
-// ── 5. Round-trip ─────────────────────────────────────────────────────────────
-
 describe("round-trip — write then read preserves all new fields", () => {
   it("persists all new fields and reads them back identically", async () => {
     const sessionId = SESSION_C;
@@ -774,10 +724,7 @@ describe("pruneCheckpointsDiscardedByRewind", () => {
   });
 
   it("keeps every checkpoint when the rewind discarded no boundary", async () => {
-    // The shape a session in its second compaction cycle has: boundary #1 was
-    // summarized away when #2 was written, so it is no longer a row anywhere.
-    // Rewinding the last message must not read that absence as a reason to
-    // delete the snapshot the first checkpoint still owns.
+    // Earlier compact boundaries may already be summarized away; their absence alone must not delete snapshots.
     await mm.saveSessionMetadata(SESSION_A, {
       checkpoints: [makeCheckpoint({ compactNum: 1 }), makeCheckpoint({ id: "ckpt-0002", compactNum: 2 })],
     });
@@ -826,9 +773,7 @@ describe("pruneCheckpointsDiscardedByRewind", () => {
   });
 
   it("drops the summary preamble only when the newest checkpoint goes with it", async () => {
-    // The preamble describes the conversation up to the LATEST boundary. Losing
-    // an older checkpoint leaves that description still true; losing the newest
-    // one leaves a summary of turns nothing points at any more.
+    // Only losing the latest checkpoint invalidates the summary preamble.
     await mm.saveSessionMetadata(SESSION_A, {
       summaryPreamble: "prior context summary",
       checkpoints: [makeCheckpoint({ compactNum: 1 }), makeCheckpoint({ id: "ckpt-0002", compactNum: 2 })],
@@ -842,15 +787,10 @@ describe("pruneCheckpointsDiscardedByRewind", () => {
   });
 
   it("a session rewound to its opening message reloads empty, not carrying the discarded message back", async () => {
-    // A session that compacted once: the checkpoint holds a snapshot in which
-    // the user's message still exists, and the loader re-inserts that message
-    // whenever the session on disk has no renderable user row left. A rewind to
-    // the opening message leaves exactly that state, so without pruning the
-    // discarded message reappears on the next load.
+    // Prune checkpoint recovery state before rewind or reload can resurrect a discarded user message.
     await mm.saveSessionMetadata(SESSION_C, { checkpoints: [makeCheckpoint({ compactNum: 1 })] });
     await mm.saveCheckpointSnapshot(SESSION_C, 1, [question("the discarded question")]);
     await mm.saveSession(SESSION_C, [boundary(1)] as never);
-    // Precondition — this is the resurrection the prune has to prevent.
     expect(JSON.stringify(mm.loadSession(SESSION_C))).toContain("the discarded question");
 
     await mm.pruneCheckpointsDiscardedByRewind(SESSION_C, [boundary(1), question("the discarded question")]);
@@ -860,8 +800,6 @@ describe("pruneCheckpointsDiscardedByRewind", () => {
   });
 });
 
-// ── isValidSessionId — the one shape, shared with the A2A task store and the
-// rationale stores (they import this predicate rather than keeping their own).
 describe("isValidSessionId — one rule for every session id", () => {
   const UUID = "12434f55-fbb9-4a54-b1a7-fb9638d8eebd";
 
@@ -873,12 +811,8 @@ describe("isValidSessionId — one rule for every session id", () => {
   });
 
   it("rejects what the four earlier validators disagreed on", () => {
-    // 257 alphanumerics: passed here (no cap), failed the 256-capped copies.
     expect(isValidSessionId("a".repeat(257))).toBe(false);
-    // Any free-form token passed the old `[A-Za-z0-9_-]+` rule.
     expect(isValidSessionId("parent-session")).toBe(false);
-    // Uppercase, a namespace nobody mints, a namespace without a tag, and a
-    // tag outside [a-z0-9].
     expect(isValidSessionId(UUID.toUpperCase())).toBe(false);
     expect(isValidSessionId(`side-x-${UUID}`)).toBe(false);
     expect(isValidSessionId(`sub-${UUID}`)).toBe(false);

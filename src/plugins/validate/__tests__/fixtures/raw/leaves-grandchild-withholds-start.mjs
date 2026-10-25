@@ -1,9 +1,4 @@
-/**
- * Starts a detached descendant that inherits its stdout and stderr and
- * outlives it, then answers construct, declaring a start hook, and never
- * answers start — so the run fails and the child is terminated while the
- * descendant still holds both pipes. Its pid is written to stderr.
- */
+/** Withhold start while a detached descendant holds inherited output pipes; report its PID for cleanup. */
 import { spawn } from "node:child_process";
 import { constructed, speak, WITHHOLD } from "./speak.mjs";
 

@@ -1,12 +1,3 @@
-/**
- * Tests for the three architect follow-ups from PR #331 (configSchema):
- *
- *   US-3c.1 — secretsPresent detection via ave:plugins:config:secret:list-keys
- *   US-3c.2 — restartPlugin() restarts one plugin, leaves others undisturbed
- *   US-3c.3 — SECRET_REDACTED_SENTINEL replaces "[REDACTED]" literal; equality
- *              checks on the sentinel don't produce false transitions
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,10 +12,6 @@ import {
   SECRET_REDACTED_SENTINEL,
 } from "../config-change-bus.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// US-3c.3 — SECRET_REDACTED_SENTINEL
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
   beforeEach(() => {
     _resetPluginConfigChangeBus();
@@ -35,7 +22,6 @@ describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
   });
 
   it("is stable across imports via Symbol.for key", () => {
-    // Symbol.for("ave.config.secret.redacted") must always return the same symbol
     expect(SECRET_REDACTED_SENTINEL).toBe(Symbol.for("ave.config.secret.redacted"));
   });
 
@@ -49,7 +35,6 @@ describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
     const [key, value] = received[0];
     expect(key).toBe("apiKey");
     expect(value).toBe(SECRET_REDACTED_SENTINEL);
-    // Must NOT be the old literal string
     expect(value).not.toBe("[REDACTED]");
   });
 
@@ -65,11 +50,8 @@ describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
       }
     });
 
-    // Secret update → sentinel
     emitPluginConfigChange("plugin.y", "apiKey", SECRET_REDACTED_SENTINEL);
-    // Cleartext update → actual value
     emitPluginConfigChange("plugin.y", "apiKey", "some-value");
-    // Another secret update
     emitPluginConfigChange("plugin.y", "apiKey", SECRET_REDACTED_SENTINEL);
 
     expect(sentinelHits).toHaveLength(2);
@@ -77,9 +59,7 @@ describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
   });
 
   it("setting the same secret twice fires the sentinel twice (no false equality skip)", () => {
-    // A listener doing prev === current with a Symbol will always see them as
-    // the same identity, so this tests that the bus still fires on every emit
-    // (the bus itself does not deduplicate).
+    // The bus must emit every update even when redacted sentinels share the same Symbol identity.
     const hits: unknown[] = [];
     subscribePluginConfigChange("plugin.z", "token", (_k, v) => hits.push(v));
 
@@ -91,10 +71,6 @@ describe("US-3c.3 — SECRET_REDACTED_SENTINEL", () => {
     expect(hits[1]).toBe(SECRET_REDACTED_SENTINEL);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// US-3c.2 — PluginRuntime.restartPlugin()
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
   let testDir: string;
@@ -168,19 +144,14 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
     });
     await runtime.startAll();
 
-    // Both plugins loaded before restart
     expect(runtime.listPluginIds()).toContain("plugin-a");
     expect(runtime.listPluginIds()).toContain("plugin-b");
 
-    // Restart only plugin-a
     await runtime.restartPlugin("plugin-a");
 
-    // plugin-a still present after restart
     expect(runtime.listPluginIds()).toContain("plugin-a");
-    // plugin-b untouched
     expect(runtime.listPluginIds()).toContain("plugin-b");
 
-    // Methods for both plugins are still callable
     expect(runtime.listToolNames()).toContain("plugin_a_hello");
     expect(runtime.listToolNames()).toContain("plugin_b_hello");
   });
@@ -197,14 +168,12 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
 
     const warnSpy = vi.spyOn(console, "warn");
 
-    // Should not throw
     await expect(runtime.restartPlugin("no-such-plugin")).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringMatching(/restart no-op/),
       expect.objectContaining({ pluginId: "no-such-plugin", phase: PluginPhase.RESTART_REQUEST }),
     );
 
-    // Existing plugin unaffected
     expect(runtime.listPluginIds()).toContain("plugin-a");
   });
 
@@ -229,11 +198,6 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
     expect(runtime.listPluginIds()).toContain("plugin-b");
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// US-3c.1 — ave:plugins:config:secret:list-keys IPC handler
-// (handler-level unit test mirroring ipc-bridge-runtime-handlers.test.ts)
-// ─────────────────────────────────────────────────────────────────────────────
 
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -313,7 +277,7 @@ function makeServicesForListSecretKeys(secretsMap: Record<string, string | null>
     } as any,
     conversationLoop: makeMockConversationLoop(makeMockPermissionManager()) as any,
     approvalGate: makeMockApprovalGate() as any,
-    mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn() } as any,
+    mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() } as any,
     toolRegistry: { setDenyRules: vi.fn(), size: 0 } as any,
     auditLogger: { log: vi.fn() } as any,
     idleScheduler: undefined,
@@ -331,7 +295,7 @@ describe("US-3c.1 — ave:plugins:config:secret:list-keys IPC handler", () => {
     registerIpcHandlers(
       makeServicesForListSecretKeys({
         "plugin.test.plugin.apiKey": "enc-value",
-        "plugin.test.plugin.token": null,   // not stored
+        "plugin.test.plugin.token": null,
       }),
       () => null,
     );
@@ -352,9 +316,9 @@ describe("US-3c.1 — ave:plugins:config:secret:list-keys IPC handler", () => {
 
     expect(result.ok).toBe(true);
     expect(result.keys).toContain("apiKey");
-    expect(result.keys).not.toContain("token");   // null → not present
-    expect(result.keys).not.toContain("endpoint"); // not a secret field
-    expect(result.keys).not.toContain("retries");  // not a secret field
+    expect(result.keys).not.toContain("token");
+    expect(result.keys).not.toContain("endpoint");
+    expect(result.keys).not.toContain("retries");
   });
 
   it("returns empty keys for a plugin without configSchema", async () => {

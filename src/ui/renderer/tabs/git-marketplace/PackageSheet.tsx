@@ -1,8 +1,4 @@
-/**
- * A package's sheet (design §15.2, §15.3, §15.6): the detail sections, then
- * the reviewed plan, the install progress and the result, all in place. What
- * the plan shows is what installs: the plan id is single use and expires.
- */
+/** Install exactly the reviewed plan; plan ids are single-use and expire. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";

@@ -166,7 +166,6 @@ function makeDeps() {
     },
     conversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
     sideChatConversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
-    // One pane chat's own loop, held while its pane is open.
     paneChatLoops: { all: () => [paneLoop] },
     auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn<() => TestAppWindow[]>(() => []),
@@ -356,8 +355,7 @@ describe("common subscription runtime IPC", () => {
       vendors: { openai: { model: "gpt-5", baseUrl: null } },
       activeChatRuntime: { kind: "api" },
     });
-    // As SettingsService does: the change applies at once, and a failed save
-    // puts memory back on the saved settings before rejecting.
+    // A failed settings save restores memory to the last persisted settings.
     const patch = vi.fn((value: unknown) => {
       state.applyLlmPatch(value);
       return Promise.resolve().then(() => {
@@ -375,8 +373,6 @@ describe("common subscription runtime IPC", () => {
       error: "subscription-operation-failed",
     });
     expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
-    // Bound once for the failed runtime, then again for the restored one —
-    // without a second write.
     expect(patch).toHaveBeenCalledOnce();
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
@@ -390,7 +386,6 @@ describe("common subscription runtime IPC", () => {
       vendors: { openai: { model: "gpt-5", baseUrl: null } },
       activeChatRuntime: { kind: "api" },
     });
-    // Each save settles with whether it landed.
     const saves = [deferred<boolean>(), deferred<boolean>()];
     const patch = vi.fn((value: unknown) => {
       const snapshot = state.applyLlmPatch(value);
@@ -413,8 +408,6 @@ describe("common subscription runtime IPC", () => {
     const second = invoke("ave:settings:subscription:use-for-chat", "kimi-code");
     await vi.waitFor(() => expect(state.currentLlm().activeChatRuntime).toMatchObject({ provider: "kimi-code" }));
 
-    // The first save fails; SettingsService puts memory back on disk (the
-    // API runtime) and fails the write made on top of it too.
     state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "api" } } });
     saves[0]!.resolve(false);
     saves[1]!.resolve(false);
@@ -475,8 +468,6 @@ describe("common subscription runtime IPC", () => {
     const patch = vi.fn(async (value: unknown) => {
       const snapshot = state.applyLlmPatch(value);
       if (patch.mock.calls.length === 1) return snapshot;
-      // The restore to the API runtime fails to save: memory goes back to
-      // the saved subscription selection.
       await Promise.resolve();
       state.applyLlmPatch({ llm: { activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5" } } });
       throw new Error("disk full");
@@ -513,7 +504,6 @@ describe("common subscription runtime IPC", () => {
       rewireReviewerAgent: vi.fn().mockImplementationOnce(() => { throw new Error("reviewer unavailable"); }),
       refreshSandboxNetworkConfig: vi.fn(async () => undefined),
     };
-    // The rollback's save fails: memory stays on the new, saved settings.
     deps.settingsService.replaceLlm = vi.fn(async () => { throw new Error("disk full"); });
     deps.conversationLoop.refreshProvider.mockImplementation(() => {
       bound.push(state.currentLlm().vendors.openai.baseUrl);
@@ -842,8 +832,7 @@ describe("common subscription runtime IPC", () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(state.deps as never);
 
-    // Kimi's selection must verify before it can persist. While that awaits,
-    // a newer API choice is valid and must own the final runtime.
+    // A newer valid runtime choice must win over an older selection still awaiting verification.
     const olderSubscription = invoke("ave:settings:subscription:use-for-chat", "kimi-code");
     await vi.waitFor(() => expect(runtime.verify).toHaveBeenCalledWith("kimi-code"));
     await expect(invoke("ave:settings:subscription:use-api-for-chat")).resolves.toEqual({ ok: true });

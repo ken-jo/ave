@@ -1,7 +1,4 @@
-/**
- * Composer `@file` search against a cold cache: keystrokes that arrive while
- * a root is still being walked share that walk instead of starting their own.
- */
+// Cold-cache keystrokes share one root walk.
 import { describe, expect, it, vi } from "vitest";
 
 const { collectFiles } = vi.hoisted(() => ({

@@ -1,28 +1,12 @@
 import { test, expect } from './fixtures';
 
-/**
- * E2E smoke for the FileEditDiff card rendered by ToolGroupCard for
- * edit_file / multi_edit / write_file tool results.
- *
- * Strategy mirrors tool-duration.spec.ts — inject synthetic tool_start
- * + tool_end events into the renderer's chat-stream channel via
- * `window.__aveChatStream._emit`, then assert the DOM that the
- * production reducer produces. This exercises the same wiring path
- * (StreamEvent → use-chat-state → applyToolEnd → ToolGroupCard →
- * FileEditDiff) without requiring a live LLM provider.
- *
- * Skips gracefully when the chat input or synthetic emit hook isn't
- * available — matches the offline-CI policy used by sibling specs.
- */
+// Inject tool stream frames through the production reducer to verify edit-card rendering.
 
 type StreamFn = (event: unknown) => void;
 type ChatStreamApi = { _emit?: StreamFn } | undefined;
 
 async function waitForChatReady(mainWindow: import('@playwright/test').Page): Promise<boolean> {
-  // Wait for the synthetic stream seam to appear on window. useChatState's
-  // useEffect runs as soon as App.tsx mounts (top-level), independent of any
-  // downstream conditional like the API-key gate, so this is the most stable
-  // ready signal for tests that drive the stream channel directly.
+  // The mounted stream seam is ready independently of API-key and downstream UI gates.
   try {
     await mainWindow.waitForFunction(
       () => typeof (window as unknown as { __aveChatStream?: { _emit?: unknown } })
@@ -96,9 +80,7 @@ test.describe('FileEditDiff e2e', () => {
     await expect(card).toContainText('hello');
     await expect(card).toContainText('annyeong');
 
-    // Regression: light themes previously rendered status-foreground white on
-    // translucent pastel hunks (~1.2:1). Verify the actual browser-composited
-    // colors, not only the token/class contract.
+    // Measure browser-composited colors; foreground-token assertions alone miss translucent-theme failures.
     for (const kind of ['removed', 'added'] as const) {
       const line = card.locator(`[data-diff-kind="${kind}"]`).first();
       await expect(line).toBeVisible();
@@ -162,11 +144,7 @@ test.describe('FileEditDiff e2e', () => {
     await expect(card).toContainText('ANSWER = 42');
   });
 
-  // Regression guard for the API-key card layering. The card is rendered
-  // as an `absolute` overlay (ChatView.tsx:947) sized `w-[400px]` and is
-  // expected NOT to occlude the chat history area where ToolGroupCard +
-  // FileEditDiff live. If a future change repositions or full-screens that
-  // card, this test should fail before users see broken interactions.
+  // The API-key overlay must leave history cards visible and interactive.
   test('FileEditDiff is interactive even when API-key overlay is visible', async ({ mainWindow }) => {
     const ready = await waitForChatReady(mainWindow);
     test.skip(!ready, 'Synthetic stream dispatch unavailable.');
@@ -197,10 +175,7 @@ test.describe('FileEditDiff e2e', () => {
     const card = mainWindow.locator('[data-testid="file-edit-diff"]').first();
     await expect(card).toBeVisible({ timeout: 5_000 });
 
-    // Verify hit-testing — the card's button is the actual click target,
-    // and Playwright's `click` would throw on intercept by the API-key
-    // overlay. Trial mode runs the full action chain without committing
-    // the click, which is sufficient to assert no overlay obstruction.
+    // Trial clicks prove hit-testing without performing the action.
     await card.locator('button').first().click({ trial: true });
   });
 

@@ -14,27 +14,12 @@ export interface EdgeResizeBarProps extends UseEdgeResizeOptions {
    * container is `overflow-hidden` (a straddled strip would be half-clipped).
    */
   variant?: "straddle" | "inset";
-  /** Passthrough style — e.g. Electron's WebkitAppRegion: "no-drag" when the
-   * bar overlays a window drag band. */
+  /** Passthrough style — e.g. Electron's WebkitAppRegion: "no-drag" when the bar overlays a window drag band. */
   style?: CSSProperties;
 }
 
-/**
- * Shared drag-to-resize edge bar — ONE visual + interaction + a11y code path
- * for every edge that resizes something: the left Sidebar's right edge, the
- * right-docked ChatSidePanel's left edge, and the gutters between tiled chat
- * groups. Renders a full-length 8px hit strip with a thin 2px visible rule
- * that tints on hover/focus, positioned at the resize edge (`edge="end"` →
- * bar sits at the panel's right, or bottom on the y axis; `edge="start"` →
- * left, or top). All drag/keyboard/reset logic is delegated to
- * `useEdgeResize`; this component only draws the bar and wires its DOM
- * events to that hook.
- *
- * a11y: `role="separator"` + `aria-orientation` (the orientation of the bar
- * itself: a width-resizing bar stands vertical) + arrow-key steps (direction
- * always matches the visual edge) + Home/End to the bounds + double-click or
- * Enter to reset to `resetWidth`.
- */
+/** Share resize interaction through useEdgeResize; separator orientation describes the bar, and arrow keys follow the
+ * visible edge. */
 export function EdgeResizeBar({
   width,
   edge,
@@ -63,9 +48,8 @@ export function EdgeResizeBar({
     applyElementRef,
   });
 
-  // A bar can sit on a web page's edge (the side panel's inset handle lies
-  // inside the card, over the page's first pixels). Pages are drawn above the
-  // app, so the bar is cut out of any page it overlaps — the pointer reaches it.
+  // A bar can sit on a web page's edge (the side panel's inset handle lies inside the card, over the page's first pixels).
+  // Pages are drawn above the app, so the bar is cut out of any page it overlaps — the pointer reaches it.
   const [bar, setBar] = useState<HTMLDivElement | null>(null);
   useEffect(() => (bar ? registerWebSurfaceOccluder(bar) : undefined), [bar]);
 

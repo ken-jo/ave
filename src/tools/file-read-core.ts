@@ -1,15 +1,4 @@
-/**
- * Shared file-read core (§6.10). The single source of truth for "which files
- * may be read for display, and how their text is windowed" — imported by BOTH
- * the builtin `read_file` tool (`file-tools.ts`) AND the preview-read IPC
- * handler (`ipc/domains/preview.ts`).
- *
- * INVARIANT (No-Fallback / SOT): the set of files a renderer may read for
- * preview MUST equal the set the agent's `read_file` reads without approval.
- * Both callers share {@link assertReadableFilePath} + {@link readTextFileWindow}
- * so the two never diverge — extracting them here makes that equality a
- * compile-time fact instead of a copy-paste that rots.
- */
+// Renderer previews and agent reads must share identical approval-free file access and line-window rules.
 import { createReadStream, realpathSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { finished } from "node:stream/promises";
@@ -23,36 +12,23 @@ import {
   isConfiguredSessionReadPath,
 } from "../permissions/sensitive-paths.js";
 
-/** Hard cap for text files rendered/read for preview (matches read_file). */
+// Text preview and read_file share this size cap.
 export const MAX_TEXT_FILE_BYTES = 2_000_000;
-/** Leading-byte sample size used for the NUL-byte binary sniff. */
-export const BINARY_SAMPLE_BYTES = 8_192;
+const BINARY_SAMPLE_BYTES = 8_192;
 
-/**
- * A glob pattern (`**\/*.md`, `foo?.ts`, `a{b,c}`) is a tool ARGUMENT, never a
- * concrete file — refusing it early is defense-in-depth so a renderer that
- * mistakes a pattern for a path can't drive a `stat("**\/*.md")`.
- */
+// Reject glob patterns before filesystem access; they are tool arguments, not concrete file paths.
 export function isGlobPattern(value: string): boolean {
   return /[*?[\]{}]/.test(value) || value.includes("**");
 }
 
-export type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
+type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
 
 export type AssertReadableResult =
   | { ok: true; resolved: string }
   | { ok: false; error: AssertReadableFailure };
 
-/**
- * Resolve + guard a candidate file path with the EXACT sequence the builtin
- * file tools use (`FileTool.ensureAllowed`): glob reject → Layer 0 sensitive
- * hard-block → Layer 1 sandbox boundary (symlink-safe realpath).
- *
- * Ordering is load-bearing: `~/.ave` is a Layer 1 allow root, but
- * `~/.ave/secrets` and other private stores are Layer 0 denies — sensitive MUST be
- * checked before the boundary so allow-listed roots never leak their sensitive
- * children.
- */
+// Check globs, then sensitive paths, then symlink-safe directory scope.
+// Sensitive denial must precede allowed-root checks so grants cannot expose private descendants.
 export function assertReadableFilePath(
   inputPath: string,
   cwd: string,
@@ -61,27 +37,23 @@ export function assertReadableFilePath(
   if (isGlobPattern(inputPath)) return { ok: false, error: "not-a-file" };
   const expanded = expandLeadingTilde(inputPath);
   const lexical = isAbsolute(expanded) ? pathResolve(expanded) : pathResolve(cwd, expanded);
-  // Resolve symlinks up-front so the guard checks AND the eventual stat/read
-  // operate on the SAME canonical target — closes the check-vs-read TOCTOU gap
-  // where a symlink could point inside an allowed root at validation time and be
-  // swapped out afterwards, and catches a symlink whose real target is a Layer 0
-  // sensitive file. A not-yet-existing path throws → keep the lexical form so the
-  // downstream stat still yields a clean not-a-file/read-failed.
+  // Guard and read the same canonical target so symlink swaps cannot redirect access to sensitive or outside files.
+  // Preserve lexical missing paths for clean downstream stat errors.
   let resolved = lexical;
   try {
     resolved = realpathSync.native(lexical);
   } catch {
     resolved = lexical;
   }
-  const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(resolved)), "read");
+  const canonical = canonicalizePathForMatch(resolved);
+  const sensitive = isSensitivePath(caseFoldForMatch(canonical), "read");
   if (sensitive) return { ok: false, error: "sensitive-path" };
-  if (isConfiguredSessionReadPath(resolved)) return { ok: true, resolved };
+  if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);
   if (!check.allowed) return { ok: false, error: "path-not-allowed" };
   return { ok: true, resolved };
 }
 
-/** NUL-byte sniff over the leading {@link BINARY_SAMPLE_BYTES}. */
 export async function isBinaryFile(path: string): Promise<boolean> {
   const stream = createReadStream(path, { start: 0, end: BINARY_SAMPLE_BYTES - 1 });
   const chunks: Buffer[] = [];
@@ -96,12 +68,7 @@ export async function isBinaryFile(path: string): Promise<boolean> {
   return Buffer.concat(chunks).includes(0);
 }
 
-/**
- * Read a zero-based line window of a UTF-8 text file. `content` preserves the
- * source separators between selected lines, omitting the final line's separator.
- * `lines` contains the same logical lines without separators, and `truncated`
- * reports whether more lines existed past `limit`.
- */
+// Window content preserves source separators except the last; lines omit separators and truncated reports a remaining tail.
 export async function readTextFileWindow(
   path: string,
   offset: number,

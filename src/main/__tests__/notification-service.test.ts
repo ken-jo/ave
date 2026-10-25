@@ -1,13 +1,4 @@
-/**
- * NotificationService — Issue #260 unit coverage.
- *
- * The service must:
- *   1. Cap body at 80 chars + ellipsis.
- *   2. Pick OS vs in-app gate based on window focused/minimized state.
- *   3. Audit every fire — kind, gate, title (NEVER body — PII).
- *   4. No-op when NODE_ENV === "test" or app not ready (guarded by ctor opts).
- *   5. Click handler dispatches IPC payload with contextRef.
- */
+// Audit notification metadata, never the body, which may contain PII.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   NotificationService,
@@ -50,8 +41,7 @@ function makeMockWindow(opts: {
 }
 
 function makeMockAuditLogger(): AuditLogger {
-  // Only `log` is used by NotificationService; cast through unknown so we
-  // don't have to stub the full AuditLogger surface.
+  // Only `log` is used by NotificationService; cast through unknown so we don't have to stub the full AuditLogger surface.
   const logger = { log: vi.fn() };
   return logger as unknown as AuditLogger;
 }
@@ -131,8 +121,7 @@ describe("NotificationService — body truncation", () => {
   });
 
   it("UTF-16 surrogate-safe truncation: emoji at boundary stays whole (L1)", () => {
-    // 79 chars + 4-byte emoji at codepoint 80. Without surrogate-safe slicing,
-    // `string.slice(0, 80)` would split the emoji's surrogate pair.
+    // 79 chars + 4-byte emoji at codepoint 80. Without surrogate-safe slicing, `string.slice(0, 80)` would split the emoji's surrogate pair.
     const padding = "x".repeat(79);
     const emoji = "\u{1F389}"; // 🎉 — code-point 0x1F389, surrogate pair in UTF-16.
     const input = padding + emoji + "rest";
@@ -442,8 +431,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
       isReady: () => true,
       isTestEnv: () => false,
     });
-    // Fire 3 within 1s — cooldown is 30s for turn-end, so only the first fires.
-    // Cooldown now uses performance.now() (monotonic) — stub it to control timing.
+    // Fire 3 within 1s — cooldown is 30s for turn-end, so only the first fires. Cooldown now uses performance.now() (monotonic) — stub it to control timing.
     const perfBase = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "turn-end", title: "응답", body: "a" });
@@ -519,8 +507,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
   });
 
   it("L2: exactly cooldownMs elapsed allows fire (< not <=)", () => {
-    // Boundary semantics: elapsedMs === cooldownMs must be allowed through.
-    // This test locks the `<` comparison so it can't accidentally become `<=`.
+    // Boundary semantics: elapsedMs === cooldownMs must be allowed through. This test locks the `<` comparison so it can't accidentally become `<=`.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
     const svc = new NotificationService({
@@ -541,9 +528,8 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
   });
 
   it("M1: wall-clock backward jump (clock skew) does not suppress subsequent fires", () => {
-    // Simulate an NTP step where Date.now() jumps backwards. Since cooldown
-    // now uses performance.now() (monotonic), the backward wall-clock jump
-    // has no effect on the gate — fires proceed normally.
+    // Simulate an NTP step where Date.now() jumps backwards. Since cooldown now uses performance.now() (monotonic), the backward wall-clock jump has no
+    // effect on the gate — fires proceed normally.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
     const svc = new NotificationService({
@@ -556,8 +542,7 @@ describe("NotificationService — per-kind rate limit (M4)", () => {
     // First fire at perfBase, then advance monotonic clock past cooldown.
     vi.spyOn(performance, "now").mockImplementation(() => perfBase);
     svc.fire({ kind: "turn-end", title: "a", body: "a" }); // fires
-    // Simulate wall clock going backward (Date.now() drops by 1 hour).
-    // Monotonic clock still advances past cooldown.
+    // Simulate wall clock going backward (Date.now() drops by 1 hour). Monotonic clock still advances past cooldown.
     vi.spyOn(performance, "now").mockImplementation(() => perfBase + 31_000);
     const wallNow = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => wallNow - 3_600_000); // 1h backward
@@ -595,9 +580,8 @@ describe("NotificationService — title sanitization (M1)", () => {
 
 describe("NotificationService — multi-window focus gate (#842)", () => {
   it("main blurred + aux window focused → focus gate ACTIVE (in-app toast, no OS pop)", () => {
-    // The pre-fix gate only consulted `win.isFocused()` on mainWindow. With
-    // an auth/link/preview auxiliary window holding focus, the gate now
-    // correctly classifies as in-app via the `isAnyWindowFocused` probe.
+    // The pre-fix gate only consulted `win.isFocused()` on mainWindow. With an auth/link/preview auxiliary window holding focus, the gate now correctly
+    // classifies as in-app via the `isAnyWindowFocused` probe.
     const win = makeMockWindow({ focused: false, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
     const svc = new NotificationService({
@@ -630,10 +614,8 @@ describe("NotificationService — multi-window focus gate (#842)", () => {
   });
 
   it("default isAnyWindowFocused returns false when Electron is unavailable (test env)", () => {
-    // Without injecting `isAnyWindowFocused`, the default tries to `require("electron")`.
-    // In a vitest environment without a real Electron context, the BrowserWindow
-    // call would throw — the wrapper returns false so notifications still fire
-    // via the OS path (degraded gracefully).
+    // Without injecting `isAnyWindowFocused`, the default tries to `require("electron")`. In a vitest environment without a real Electron context, the
+    // BrowserWindow call would throw — the wrapper returns false so notifications still fire via the OS path (degraded gracefully).
     const win = makeMockWindow({ focused: false });
     const factoryStub = makeNotificationFactoryStub();
     const svc = new NotificationService({
@@ -783,11 +765,7 @@ describe("NotificationService — alert kind", () => {
   });
 });
 
-// CRITICAL regression guard — critic iter 1 finding. The pre-fix `fire()`
-// applied the per-kind cooldown branch BEFORE the bypassFocusGate gate, so a
-// plugin's routine fire would silently coalesce a subsequent critical alert
-// (meeting.starting-soon, incident.page) within the 5s plugin cooldown window.
-// `bypassFocusGate=true` must escape BOTH gates.
+// bypassFocusGate must escape both focus gating and per-kind cooldown so routine traffic cannot suppress a critical alert.
 describe("NotificationService — bypassFocusGate × cooldown intersection (#843 regression)", () => {
   it("bypass=true fires even when a prior plugin emit is within cooldown window", () => {
     const win = makeMockWindow({ focused: false, minimized: false });
@@ -827,10 +805,8 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
   });
 
   it("non-bypass fire after a bypass fire still respects cooldown (slot consumed)", () => {
-    // bypass=true fires CONSUME the cooldown slot — the next non-bypass fire
-    // within cooldownMs is suppressed as normal. This guards against the
-    // alternate bug: bypass treated as "didn't happen at all", which would
-    // let a turn-loop spam non-bypass fires without cooldown.
+    // bypass=true fires CONSUME the cooldown slot — the next non-bypass fire within cooldownMs is suppressed as normal. This guards against the alternate
+    // bug: bypass treated as "didn't happen at all", which would let a turn-loop spam non-bypass fires without cooldown.
     const win = makeMockWindow({ focused: false, minimized: false });
     const auditLogger = makeMockAuditLogger();
     const factoryStub = makeNotificationFactoryStub();
@@ -866,9 +842,8 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
   });
 
   it("bypass=true also sets urgent (silent+bypassed paradox guard)", () => {
-    // code-reviewer iter 1 HIGH: bypassFocusGate without urgent produces a
-    // silent OS notification for an alert flagged as critical. urgent must
-    // auto-promote when bypass is set (unless caller explicitly opts out).
+    // code-reviewer iter 1 HIGH: bypassFocusGate without urgent produces a silent OS notification for an alert flagged as critical. urgent must auto-promote
+    // when bypass is set (unless caller explicitly opts out).
     const win = makeMockWindow({ focused: true, minimized: false });
     const factoryStub = makeNotificationFactoryStub();
     const svc = new NotificationService({
@@ -890,12 +865,7 @@ describe("NotificationService — bypassFocusGate × cooldown intersection (#843
   });
 });
 
-// #2103 — fire() is structurally never-throwing. The old invariant was
-// enforced per call site ("notification failure must never block X" wrappers)
-// and several call sites (boot steps, plugin event handlers, IPC handlers,
-// global-shortcut callbacks) had no wrapper at all. The service is now the
-// single enforcement point: no injected dependency failure, window-handle
-// race, or delivery error may escape fire() into the calling lifecycle flow.
+// fire() must contain every dependency, window-race, or delivery failure so notifications cannot interrupt the calling lifecycle.
 describe("NotificationService — never-throw contract (#2103)", () => {
   it("fire() does not throw when getMainWindow throws", () => {
     const factoryStub = makeNotificationFactoryStub();
@@ -927,8 +897,7 @@ describe("NotificationService — never-throw contract (#2103)", () => {
   });
 
   it("fire() does not throw when the window handle races destruction (isMinimized throws)", () => {
-    // Electron throws "Object has been destroyed" when a method runs on a
-    // window destroyed between the isDestroyed() check and the next call.
+    // Electron throws "Object has been destroyed" when a method runs on a window destroyed between the isDestroyed() check and the next call.
     const win = makeMockWindow({ focused: true });
     (win.isMinimized as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error("Object has been destroyed");
@@ -1026,5 +995,63 @@ describe("NotificationService — never-throw contract (#2103)", () => {
     expect(factoryStub.calls[0].clickHandler).toBeDefined();
     windowGone = true;
     expect(() => factoryStub.calls[0].clickHandler!()).not.toThrow();
+  });
+});
+
+describe("turn completion sound", () => {
+  it("reads the master live and suppresses without consuming cooldown even for a focus bypass", () => {
+    const factory = makeNotificationFactoryStub();
+    const log = vi.fn();
+    let enabled = false;
+    const soundEnabled = vi.fn(() => true);
+    const service = new NotificationService({
+      getMainWindow: () => null,
+      notificationFactory: factory.factory,
+      auditLogger: { log } as unknown as AuditLogger,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isOsNotificationsEnabled: () => enabled,
+      isTurnCompletionSoundEnabled: soundEnabled,
+    });
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
+    expect(factory.calls).toHaveLength(0);
+    expect(soundEnabled).not.toHaveBeenCalled();
+    expect(JSON.parse(log.mock.calls[0][0].input)).toMatchObject({
+      event: "notification.suppressed", reason: "os-notifications-disabled",
+    });
+    enabled = true;
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
+    expect(factory.calls).toHaveLength(1);
+    expect(factory.calls[0].silent).toBe(false);
+    expect(factory.calls[0].show).toHaveBeenCalledOnce();
+    enabled = false;
+    service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
+    expect(factory.calls).toHaveLength(1);
+  });
+
+  it("uses one normal-priority audible notification and shares the cooldown", () => {
+    const factory = makeNotificationFactoryStub();
+    let enabled = true;
+    const service = new NotificationService({
+      getMainWindow: () => null,
+      notificationFactory: factory.factory,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isTurnCompletionSoundEnabled: () => enabled,
+    });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
+    try {
+      service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
+      service.fire({ kind: "turn-end", title: "Done", body: "Duplicate" });
+      expect(factory.calls).toHaveLength(1);
+      expect(factory.calls[0]).toMatchObject({ silent: false, urgency: "normal" });
+      expect(factory.calls[0].show).toHaveBeenCalledOnce();
+      enabled = false;
+      clock.mockReturnValue(100_000 + __test.COOLDOWN_MS_BY_KIND["turn-end"] + 1);
+      service.fire({ kind: "turn-end", title: "Done", body: "Next", urgent: true });
+      expect(factory.calls).toHaveLength(2);
+      expect(factory.calls[1].silent).toBe(true);
+      expect(factory.calls[1].show).toHaveBeenCalledOnce();
+    } finally { clock.mockRestore(); }
   });
 });

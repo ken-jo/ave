@@ -1,7 +1,3 @@
-/**
- * D6 — thumbs up/down feedback on AssistantCard renderer test.
- * Verifies api.submitFeedback is called with the expected payload.
- */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -21,7 +17,6 @@ describe("D6 AssistantCard feedback buttons", () => {
     await submitChatMessage(container, "hello");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-    // Emit an assistant response so AssistantCard renders
     await act(async () => {
       emitChatStream({ type: "text_delta", text: "Hi there!" });
       emitChatStream({ type: "done" });
@@ -70,8 +65,7 @@ describe("D6 AssistantCard feedback buttons", () => {
       fireEvent.click(thumbsDownBtn);
     });
 
-    // Reason input now opens in a Popover portaled to document.body (floats
-    // above the 👎 button), so query the whole document, not just `container`.
+    // Query the whole document because the feedback popover is portaled outside the container.
     const reasonInput = await waitFor(() => {
       const el = document.querySelector('input[placeholder="이유 (선택)"]');
       if (!el) throw new Error("reason input not found");

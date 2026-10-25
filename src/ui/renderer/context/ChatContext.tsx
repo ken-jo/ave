@@ -57,7 +57,6 @@ export interface ChatContextValue {
   settingsLoaded?: boolean;
   onOpenSettings: (tab?: string) => void;
 
-  // Search
   searchOpen: boolean;
   searchQuery: string;
   searchCase: boolean;
@@ -77,11 +76,8 @@ export interface ChatContextValue {
   usedTokens: number;
   contextBudget: number;
 
-
-
   effectiveBudget: number;
-  // Issue #900 #1 — per-request TPM hint. tpmLimit undefined for models
-  // without a host TPM default (most models) → UI hides the indicator.
+  // Hide TPM hints when the model has no host default.
   tpmLimit: number | undefined;
   tpmPct: number | undefined;
   isTpmOverflow: boolean;
@@ -131,11 +127,8 @@ export interface ChatContextValue {
 
   activeVendor?: LLMVendor;
 
-  /**
-   * The API-key runtime the composer would send to. `activeVendor` above is
-   * scoped to the usage projection and goes undefined whenever that projection
-   * is unavailable, so it cannot answer a capability question. These two can.
-   */
+  /** The API-key runtime the composer would send to. `activeVendor` above is scoped to the usage projection and goes
+   * undefined whenever that projection is unavailable, so it cannot answer a capability question. These two can. */
   llmVendor: LLMVendor;
   llmModel: string;
   /** The active route's input modalities, for the image gate; `undefined` until settings have resolved. */

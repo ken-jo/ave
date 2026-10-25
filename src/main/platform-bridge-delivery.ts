@@ -1,11 +1,4 @@
-/**
- * Safe outbound delivery boundary for future chat-platform bridges.
- *
- * This module deliberately consumes only the already-projected shared snapshot
- * and event shapes.  It does not import the platform timeline or any owner
- * event type, so a provider adapter cannot accidentally serialize reasoning,
- * tool arguments/results, attachment bytes, paths, or private session detail.
- */
+// Consume only projected shared events so provider adapters cannot serialize private timeline data.
 import {
   toSafeTurnFailureSummary,
   type SharedConversationEventEnvelope,
@@ -19,29 +12,20 @@ import { requirePositiveInteger } from "../shared/safe-integer.js";
 
 const DEFAULT_MAX_CHANNELS = 128;
 const DEFAULT_MAX_PENDING_MESSAGES_PER_CHANNEL = 64;
-/**
- * Retry policy defaults for one transiently failing provider send. Two
- * in-place retries with doubling backoff absorb a network blip or a single
- * rate-limit window without turning the bounded queue into a hammer, and the
- * per-delay cap keeps a hostile provider `retry-after` hint from parking a
- * drain loop for minutes.
- */
+// Bound retries and capped delays absorb transient failures without letting retry-after park delivery indefinitely.
 const DEFAULT_MAX_TRANSIENT_SEND_RETRIES = 2;
 const DEFAULT_RETRY_BACKOFF_BASE_MS = 500;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 const SEND_FAILURE_PROPERTY = "platformBridgeDeliverySendFailure";
-/** Reason codes are short kebab-case tokens; anything else fails closed. */
+// Reason codes are short kebab-case tokens; anything else fails closed.
 const SEND_FAILURE_REASON = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MAX_SEND_FAILURE_RETRY_AFTER_MS = 3_600_000;
-/**
- * UTF-16 code units, not Unicode code points: every provider length limit this
- * module has to respect is expressed in the same unit as `String.length`, and
- * counting scalar values instead silently doubles an emoji-heavy payload.
- */
+// UTF-16 code units, not Unicode code points: every provider length limit this module has to respect is expressed in the same unit as `String.length`,
+// and counting scalar values instead silently doubles an emoji-heavy payload.
 const DEFAULT_MAX_TEXT_CHARS = 4_096;
 
-/** The only coarse status values a bridge provider may render. */
-export type PlatformBridgeOutboundStatus =
+// The only coarse status values a bridge provider may render.
+type PlatformBridgeOutboundStatus =
   | "idle"
   | "running"
   | "awaiting-local-approval"
@@ -54,11 +38,8 @@ export type PlatformBridgeOutboundStatus =
   | "turn-failed"
   | "turn-completed";
 
-/**
- * Provider-neutral, share-safe output.  In particular it intentionally omits
- * the source conversation id, timestamps, provider credentials, and raw event
- * union; a bridge already knows its paired destination and needs none of them.
- */
+// Provider-neutral, share-safe output. In particular it intentionally omits the source conversation id, timestamps, provider credentials, and raw event
+// union; a bridge already knows its paired destination and needs none of them.
 export type PlatformBridgeOutboundMessage =
   | {
     readonly kind: "snapshot";
@@ -75,29 +56,17 @@ export type PlatformBridgeOutboundMessage =
     readonly kind: "status";
     readonly cursor: number;
     readonly status: Exclude<PlatformBridgeOutboundStatus, "idle" | "running">;
-    /**
-     * Present only for `turn-failed`: the closed, share-safe failure summary
-     * (fixed category union plus a fixed table sentence, never raw error text).
-     */
+    // Present only for `turn-failed`: the closed, share-safe failure summary (fixed category union plus a fixed table sentence, never raw error text).
     readonly failure?: TurnFailureSummary;
-    /**
-     * Coarse safe tool identifier, present only for "awaiting-local-approval".
-     * It names WHAT is waiting for the desktop approval card; it never carries
-     * tool arguments, paths, or payloads.
-     */
+    // Coarse safe tool identifier, present only for "awaiting-local-approval". It names WHAT is waiting for the desktop approval card; it never carries tool
+    // arguments, paths, or payloads.
     readonly tool?: string;
   };
 
-/**
- * The only provider-specific extension point.  Discord, Telegram, and later
- * transports authenticate and format their own wire at their edge; they never
- * receive an owner timeline event from this module.
- */
+// The only provider-specific extension point. Discord, Telegram, and later transports authenticate and format their own wire at their edge; they never
+// receive an owner timeline event from this module.
 export interface PlatformBridgeDeliveryTransport<TChannel> {
-  /**
-   * Providers must honor signal and fence generation: a closed or
-   * re-paired destination must not publish an old queued message afterwards.
-   */
+  // Providers must honor signal and fence generation: a closed or re-paired destination must not publish an old queued message afterwards.
   send(
     channel: TChannel,
     message: PlatformBridgeOutboundMessage,
@@ -105,35 +74,25 @@ export interface PlatformBridgeDeliveryTransport<TChannel> {
   ): Promise<void>;
 }
 
-/** Host-owned egress fence passed to the provider adapter for every send. */
+// Host-owned egress fence passed to the provider adapter for every send.
 export interface PlatformBridgeDeliveryTransportSendOptions {
   readonly signal: AbortSignal;
-  /** New on every openChannel, including a re-pair of the same destination. */
+  // New on every openChannel, including a re-pair of the same destination.
   readonly generation: number;
 }
 
-/**
- * Structured, share-safe classification a provider transport attaches to one
- * send failure so this adapter can choose retry-in-place versus close without
- * reading any provider detail. It deliberately fits only retry semantics and a
- * short kebab-case reason code; credentials, endpoints, payload text, and
- * destination identifiers cannot pass through this shape. An unmarked throw
- * stays fail-closed: it is treated as permanent and closes the channel.
- */
+// Transport failures expose only retry semantics and safe reason codes, never provider detail; unmarked throws close the channel permanently.
 export interface PlatformBridgeDeliverySendFailure {
-  /** True only for failures worth retrying in place (network blip, 5xx, 429). */
+  // True only for failures worth retrying in place (network blip, 5xx, 429).
   readonly transient: boolean;
-  /** Provider-requested minimum wait before the next attempt, in milliseconds. */
+  // Provider-requested minimum wait before the next attempt, in milliseconds.
   readonly retryAfterMs?: number;
-  /** Short kebab-case classification code, e.g. "network" or "http-502". */
+  // Short kebab-case classification code, e.g. "network" or "http-502".
   readonly reason?: string;
 }
 
-/**
- * Mint the one error shape the drain loop's retry/close policy understands.
- * Transports throw this instead of implementing their own retry loops, so
- * delivery semantics (ordering, backoff, close) stay owned by this module.
- */
+// Mint the one error shape the drain loop's retry/close policy understands. Transports throw this instead of implementing their own retry loops, so
+// delivery semantics (ordering, backoff, close) stay owned by this module.
 export function platformBridgeDeliverySendFailureError(
   message: string,
   failure: PlatformBridgeDeliverySendFailure,
@@ -150,12 +109,8 @@ export function platformBridgeDeliverySendFailureError(
   return error;
 }
 
-/**
- * Read a transport-attached send-failure classification, or `undefined` for
- * anything unmarked or malformed. Validation fails closed to `undefined`
- * (permanent, no retry) so a forged or corrupted marker cannot buy retries or
- * smuggle unbounded strings into a close-reason log line.
- */
+// Read a transport-attached send-failure classification, or `undefined` for anything unmarked or malformed. Validation fails closed to `undefined`
+// (permanent, no retry) so a forged or corrupted marker cannot buy retries or smuggle unbounded strings into a close-reason log line.
 export function readPlatformBridgeDeliverySendFailure(
   error: unknown,
 ): PlatformBridgeDeliverySendFailure | undefined {
@@ -181,7 +136,7 @@ export function readPlatformBridgeDeliverySendFailure(
   };
 }
 
-export type PlatformBridgeDeliveryEnqueueResult =
+type PlatformBridgeDeliveryEnqueueResult =
   | "accepted"
   | "duplicate"
   | "conversation-mismatch"
@@ -189,64 +144,51 @@ export type PlatformBridgeDeliveryEnqueueResult =
   | "backpressure"
   | "invalid";
 
-export interface PlatformBridgeDeliveryChannelState {
-  /** Accepted projection cursor; -1 means no snapshot/event has been accepted. */
+interface PlatformBridgeDeliveryChannelState {
+  // Accepted projection cursor; -1 means no snapshot/event has been accepted.
   readonly lastAcceptedCursor: number;
-  /** Includes an in-flight provider send so the real memory bound is visible. */
+  // Includes an in-flight provider send so the real memory bound is visible.
   readonly pendingMessages: number;
   readonly closed: boolean;
 }
 
 export interface PlatformBridgeDeliveryChannel {
-  /** Queue one already-safe snapshot for this paired destination. */
+  // Queue one already-safe snapshot for this paired destination.
   enqueueSnapshot(snapshot: SharedConversationSnapshot): PlatformBridgeDeliveryEnqueueResult;
-  /** Queue one already-safe projection event for this paired destination. */
+  // Queue one already-safe projection event for this paired destination.
   enqueueEvent(event: SharedConversationEventEnvelope): PlatformBridgeDeliveryEnqueueResult;
-  /**
-   * Subscribe to one projection store after sending a fresh snapshot.  A
-   * channel can attach once; reconnecting callers close and open a new channel
-   * so no old subscription or cursor state can bleed into a new pairing.
-   */
+  // Subscribe to one projection store after sending a fresh snapshot. A channel can attach once; reconnecting callers close and open a new channel so no
+  // old subscription or cursor state can bleed into a new pairing.
   attach(
     store: SharedConversationProjectionStore,
     getHostState: () => { readonly busy: boolean },
   ): void;
-  /** Stop future delivery and discard every not-yet-sent safe message. */
+  // Stop future delivery and discard every not-yet-sent safe message.
   close(): void;
-  /** Resolve after the current bounded queue is drained or closed. */
+  // Resolve after the current bounded queue is drained or closed.
   waitForIdle(): Promise<void>;
   state(): PlatformBridgeDeliveryChannelState;
 }
 
 export interface PlatformBridgeDeliveryAdapter<TChannel> {
-  /**
-   * Register one provider destination after its pairing/authorization layer
-   * has bound it to a private conversation id.  That id remains internal and
-   * is never copied into a provider message.
-   */
+  // Register one provider destination after its pairing/authorization layer has bound it to a private conversation id. That id remains internal and is
+  // never copied into a provider message.
   openChannel(channel: TChannel, conversationId: string): PlatformBridgeDeliveryChannel;
-  /** Idempotently detach one provider destination. */
+  // Idempotently detach one provider destination.
   closeChannel(channel: TChannel): void;
-  /** Idempotently detach every provider destination. */
+  // Idempotently detach every provider destination.
   close(): void;
   channelCount(): number;
 }
 
-/**
- * One already-safe projection message waiting for a provider transport.
- *
- * A provider may compact only this bounded, safe representation; it never
- * receives the owner timeline or a private conversation id.
- */
+// One already-safe projection message waiting for a provider transport. A provider may compact only this bounded, safe representation; it never receives
+// the owner timeline or a private conversation id.
 export interface PlatformBridgeDeliveryQueuedMessage {
   readonly cursor: number;
   readonly message: PlatformBridgeOutboundMessage;
 }
 
-/**
- * Provider-specific compaction for messages that have not been handed to the
- * transport yet. The currently in-flight message is deliberately excluded.
- */
+// Provider-specific compaction for messages that have not been handed to the transport yet. The currently in-flight message is deliberately excluded.
 type PlatformBridgeDeliveryQueueCoalescer = (
   queued: readonly PlatformBridgeDeliveryQueuedMessage[],
   incoming: PlatformBridgeDeliveryQueuedMessage,
@@ -255,33 +197,27 @@ type PlatformBridgeDeliveryQueueCoalescer = (
 
 export interface CreatePlatformBridgeDeliveryAdapterOptions<TChannel> {
   readonly transport: PlatformBridgeDeliveryTransport<TChannel>;
-  /** Bound active destinations as well as queues; defaults to 128. */
+  // Bound active destinations as well as queues; defaults to 128.
   readonly maxChannels?: number;
-  /** Bound undelivered messages per channel, including an in-flight send; defaults to 64. */
+  // Bound undelivered messages per channel, including an in-flight send; defaults to 64.
   readonly maxPendingMessagesPerChannel?: number;
-  /** Bound each outgoing text chunk independently of projection retention; defaults to 4,096 UTF-16 code units. */
+  // Bound each outgoing text chunk independently of projection retention; defaults to 4,096 UTF-16 code units.
   readonly maxTextChars?: number;
-  /**
-   * Optional provider-owned compaction of not-yet-sent safe messages. It is
-   * invoked before the queue capacity check so a rate-limited transport can
-   * retain a bounded, latest-safe view without changing the canonical stream.
-   */
+  // Optional provider-owned compaction of not-yet-sent safe messages. It is invoked before the queue capacity check so a rate-limited transport can retain
+  // a bounded, latest-safe view without changing the canonical stream.
   readonly coalesceQueuedMessages?: PlatformBridgeDeliveryQueueCoalescer;
-  /** A slow channel is closed rather than silently dropping a partial transcript. */
+  // A slow channel is closed rather than silently dropping a partial transcript.
   readonly onBackpressure?: (channel: TChannel) => void;
-  /**
-   * A provider failure closes only its channel and never throws into the
-   * projection producer. `reason` is the transport's validated kebab-case
-   * classification code (or a policy-derived one) so a close is never silent.
-   */
+  // A provider failure closes only its channel and never throws into the projection producer. `reason` is the transport's validated kebab-case
+  // classification code (or a policy-derived one) so a close is never silent.
   readonly onDeliveryFailure?: (channel: TChannel, reason?: string) => void;
-  /** Bound in-place retries of one transiently failing send; defaults to 2. */
+  // Bound in-place retries of one transiently failing send; defaults to 2.
   readonly maxTransientSendRetries?: number;
-  /** First transient retry delay; doubles per attempt. Defaults to 500 ms. */
+  // First transient retry delay; doubles per attempt. Defaults to 500 ms.
   readonly retryBackoffBaseMs?: number;
-  /** Cap on one retry delay, including provider retry-after hints; defaults to 30,000 ms. */
+  // Cap on one retry delay, including provider retry-after hints; defaults to 30,000 ms.
   readonly maxRetryDelayMs?: number;
-  /** Injectable delay seam for deterministic retry tests. */
+  // Injectable delay seam for deterministic retry tests.
   readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
@@ -300,11 +236,7 @@ type ChannelRecord<TChannel> = {
   drainPromise: Promise<void> | undefined;
 };
 
-/**
- * Create one host-owned safe fan-out adapter.  It is intentionally not a
- * second event hub: callers feed it an authorized `SharedConversationProjectionStore`
- * subscription, and its per-channel queue merely isolates provider latency.
- */
+// Consume only authorized projection subscriptions; per-channel queues isolate provider latency without adding another event hub.
 export function createPlatformBridgeDeliveryAdapter<TChannel>(
   options: CreatePlatformBridgeDeliveryAdapterOptions<TChannel>,
 ): PlatformBridgeDeliveryAdapter<TChannel> {
@@ -355,12 +287,8 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
     }
   };
 
-  /**
-   * The one retry/close decision for a failed provider send. Transports only
-   * classify (via `platformBridgeDeliverySendFailureError`); whether to retry
-   * in place, how long to wait, and when to close is decided here so a second
-   * transport inherits identical delivery semantics.
-   */
+  // The one retry/close decision for a failed provider send. Transports only classify (via `platformBridgeDeliverySendFailureError`); whether to retry in
+  // place, how long to wait, and when to close is decided here so a second transport inherits identical delivery semantics.
   const sendFailurePolicy = (
     error: unknown,
     attemptsSoFar: number,
@@ -392,12 +320,10 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
     if (!isCurrent(record) || record.sending || record.queue.length === 0) return;
     record.sending = true;
     const drain = (async () => {
-      // In-place retries of the queue head preserve per-conversation ordering:
-      // nothing behind the head is handed to the transport until it settles.
+      // In-place retries of the queue head preserve per-conversation ordering: nothing behind the head is handed to the transport until it settles.
       let attempts = 0;
       while (isCurrent(record) && record.queue.length > 0) {
-        // Keep the in-flight message in the queue until it settles.  Queue
-        // length therefore bounds both buffered and actively delivered data.
+        // Keep the in-flight message in the queue until it settles. Queue length therefore bounds both buffered and actively delivered data.
         const next = record.queue[0]!;
         try {
           if (record.abortController.signal.aborted) return;
@@ -406,8 +332,7 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
             generation: record.generation,
           });
         } catch (error) {
-          // A rejected old/aborted send is not a failure of a newer pairing
-          // that reused the same provider destination key.
+          // A rejected old/aborted send is not a failure of a newer pairing that reused the same provider destination key.
           if (!isCurrent(record)) return;
           const decision = sendFailurePolicy(error, attempts);
           if (decision.action === "retry") {
@@ -415,8 +340,7 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
             try {
               await wait(decision.delayMs, record.abortController.signal);
             } catch {
-              // An aborted or failed delay falls through to the loop's
-              // isCurrent check rather than counting as a provider failure.
+              // An aborted or failed delay falls through to the loop's isCurrent check rather than counting as a provider failure.
             }
             continue;
           }
@@ -496,8 +420,7 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
     if (snapshot.cursor <= record.lastAcceptedCursor) return "duplicate";
 
     record.lastAcceptedCursor = snapshot.cursor;
-    // A newer snapshot is a safe resync barrier.  It supersedes pending older
-    // updates, but cannot cancel a provider request already handed to transport.
+    // A newer snapshot is a safe resync barrier. It supersedes pending older updates, but cannot cancel a provider request already handed to transport.
     discardQueuedAtOrBefore(record, snapshot.cursor);
     return enqueueMessage(record, {
       cursor: snapshot.cursor,
@@ -516,21 +439,18 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
 
     record.lastAcceptedCursor = event.cursor;
     const message = toEventMessage(event, maxTextChars);
-    // Empty assistant deltas have no provider-visible effect, but their cursor
-    // is still consumed so a forged/replayed duplicate cannot later be sent.
+    // Empty assistant deltas have no provider-visible effect, but their cursor is still consumed so a forged/replayed duplicate cannot later be sent.
     return message === undefined
       ? "accepted"
       : enqueueMessage(record, { cursor: event.cursor, message });
   };
 
   const waitForIdle = async (record: ChannelRecord<TChannel>): Promise<void> => {
-    // A shutdown/revoke must never wait indefinitely for a provider that
-    // ignores cancellation. The AbortSignal and generation are its egress
-    // fence; closed channels resolve immediately.
+    // A shutdown/revoke must never wait indefinitely for a provider that ignores cancellation. The AbortSignal and generation are its egress fence; closed
+    // channels resolve immediately.
     if (!isCurrent(record)) return;
 
-    // Draining can schedule one follow-up pass in its finally continuation.
-    // Loop until the observed promise is still the final one.
+    // Draining can schedule one follow-up pass in its finally continuation. Loop until the observed promise is still the final one.
     for (;;) {
       const pending = record.drainPromise;
       if (pending === undefined) return;
@@ -559,9 +479,8 @@ export function createPlatformBridgeDeliveryAdapter<TChannel>(
       );
       record.subscription = subscription;
       if (subscription.replay.snapshotRequired) {
-        // A fresh snapshot is safer than treating an unavailable replay tail as
-        // a complete transcript.  This should be rare because the subscription
-        // starts from the just-read snapshot cursor.
+        // A fresh snapshot is safer than treating an unavailable replay tail as a complete transcript. This should be rare because the subscription starts from
+        // the just-read snapshot cursor.
         enqueueSnapshot(record, store.snapshot(record.conversationId, getHostState()));
         return;
       }
@@ -735,7 +654,7 @@ function isValidOutboundMessage(
   }
 }
 
-/** Undefined, or a summary that already survives fail-closed re-validation unchanged. */
+// Undefined, or a summary that already survives fail-closed re-validation unchanged.
 function isSafeOutboundFailure(value: unknown): value is TurnFailureSummary | undefined {
   if (value === undefined) return true;
   const safe = toSafeTurnFailureSummary(value);
@@ -776,8 +695,7 @@ function toSnapshotMessage(
       : snapshot.busy
         ? "running"
         : "idle",
-    // The projection retains the tail of a long assistant reply; keeping the
-    // head here would resend its oldest retained window on every reconnect.
+    // The projection retains the tail of a long assistant reply; keeping the head here would resend its oldest retained window on every reconnect.
     text: safeTrailingText(snapshot.assistantText, maxTextChars),
   };
 }
@@ -821,10 +739,8 @@ function statusMessage(
   failure?: TurnFailureSummary,
   tool?: unknown,
 ): PlatformBridgeOutboundMessage {
-  // Fail closed: a summary that does not survive re-validation is dropped and
-  // the bare status still flows. The approval tool identifier follows the
-  // same rule against the one shared grammar — this module is the last
-  // owner-side boundary before a provider transport.
+  // Fail closed: a summary that does not survive re-validation is dropped and the bare status still flows. The approval tool identifier follows the same
+  // rule against the one shared grammar — this module is the last owner-side boundary before a provider transport.
   const safeFailure = toSafeTurnFailureSummary(failure);
   return {
     kind: "status",
@@ -845,12 +761,8 @@ function discardQueuedAtOrBefore<TChannel>(record: ChannelRecord<TChannel>, curs
   record.queue = inFlight === undefined ? later : [inFlight, ...later];
 }
 
-/**
- * Sanitize and keep the OLDEST `maxTextChars` UTF-16 code units.
- *
- * A surrogate pair is kept or dropped whole, so the bound stops one unit early
- * rather than emitting half of an astral character.
- */
+// Sanitize and keep the OLDEST `maxTextChars` UTF-16 code units. A surrogate pair is kept or dropped whole, so the bound stops one unit early rather
+// than emitting half of an astral character.
 function safeText(value: string, maxTextChars: number): string {
   let output = "";
   let unitCount = 0;
@@ -868,14 +780,7 @@ function safeText(value: string, maxTextChars: number): string {
   return output;
 }
 
-/**
- * Sanitize and keep the NEWEST `maxTextChars` UTF-16 code units.
- *
- * Snapshot text is the retained tail of a long reply, so bounding its head
- * would deliver the oldest retained words and drop the ones the reader is
- * waiting for. Exported so a provider coalescer applies this identical rule
- * instead of deriving a second, drifting one.
- */
+// Keep the newest text tail so length bounds do not drop the reply’s latest words; provider coalescers must share this rule.
 export function safeTrailingText(value: string, maxTextChars: number): string {
   const sanitized = safeText(value, Number.MAX_SAFE_INTEGER);
   if (sanitized.length <= maxTextChars) return sanitized;
@@ -904,7 +809,7 @@ function nonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
-/** Resolve (never reject) after the delay or as soon as the channel aborts. */
+// Resolve (never reject) after the delay or as soon as the channel aborts.
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   if (milliseconds <= 0 || signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) => {

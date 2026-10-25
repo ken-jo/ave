@@ -1,10 +1,5 @@
-/**
- * The per-principal sandbox temp directories: how a principal's id names its
- * directory, how the host creates it, and how boot empties the root.
- *
- * What a confined process can reach through them is measured against the real
- * sandbox in `confined-plugin-child.test.ts` ("the sandbox temp directories").
- */
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+// Native sandbox temp isolation is covered in confined-plugin-child.test.ts; this suite checks principal naming, creation and boot cleanup.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
@@ -68,6 +63,9 @@ describe("a principal's temp directory name", () => {
   it("is the kind and the lowercase hex of the id, one name per id whatever it holds", () => {
     expect(sandboxTempPrincipalDirName({ kind: "plugin", id: "a/b" })).toBe("plugin-612f62");
     expect(sandboxTempPrincipalDirName({ kind: "mcp", id: ".." })).toBe("mcp-2e2e");
+    expect(sandboxTempPrincipalDirName({ kind: "hook", id: "same" })).toBe("hook-73616d65");
+    expect(sandboxTempPrincipalDirName({ kind: "hook", id: "same" }))
+      .not.toBe(sandboxTempPrincipalDirName({ kind: "plugin", id: "same" }));
     // Case-insensitive filesystems: two ids that differ only in case keep two names.
     expect(sandboxTempPrincipalDirName({ kind: "plugin", id: "A" }))
       .not.toBe(sandboxTempPrincipalDirName({ kind: "plugin", id: "a" }));
@@ -82,8 +80,7 @@ describe("a principal's temp directory name", () => {
       expect(() => sandboxTempPrincipalDirName({ kind: "plugin", id }), JSON.stringify(id))
         .toThrow(/cannot name a temp directory/);
     }
-    // `�` is what a lone surrogate would have encoded to: refusing the
-    // surrogate is what keeps the two from sharing a directory.
+    // `�` is what a lone surrogate would have encoded to: refusing the surrogate is what keeps the two from sharing a directory.
     expect(sandboxTempPrincipalDirName({ kind: "plugin", id: "lone�surrogate" })).toMatch(/^plugin-/);
     const longest = sandboxTempPrincipalDirName({ kind: "plugin", id: "x".repeat(120) });
     expect(Buffer.byteLength(longest)).toBeLessThanOrEqual(255);
@@ -92,8 +89,7 @@ describe("a principal's temp directory name", () => {
   });
 });
 
-// Windows wraps confine through the sandbox HOME's own per-process TEMP and
-// never create these directories; modes and links there are not this contract.
+// Windows wraps confine through the sandbox HOME's own per-process TEMP and never create these directories; modes and links there are not this contract.
 describe.skipIf(process.platform === "win32")("creating a principal's temp directory", () => {
   it("creates it 0o700 under the app-owned root, and gives it back on a second call", () => {
     const first = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "p" });
@@ -152,8 +148,7 @@ describe("emptying a sandbox private root at boot", () => {
     await sweepSandboxPrivateRoot(root, new Set([kept]));
     expect(existsSync(kept)).toBe(true);
     expect(existsSync(stale)).toBe(false);
-    // A HOME is recorded by its canonical path, which differs from the lexical
-    // one wherever the root sits under a link (macOS `/var` → `/private/var`).
+    // A HOME is recorded by its canonical path, which differs from the lexical one wherever the root sits under a link (macOS `/var` → `/private/var`).
     const canonicalKept = join(realpathSync(root), sandboxTempPrincipalDirName({ kind: "plugin", id: "kept" }));
     await sweepSandboxPrivateRoot(root, new Set([canonicalKept]));
     expect(existsSync(kept)).toBe(true);
@@ -203,12 +198,14 @@ describe("the private roots in a sandbox read deny", () => {
     () => {
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
       const floor = getDefaultSensitiveReadDenyPaths();
-      const denyRead: string[] = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead.map((entry) => {
+        if (typeof entry !== "string") throw new Error("Expected plain host path entries");
+        return entry;
+      });
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());
-      // A one-character class: the same path, which ASRT re-emits after its
-      // allows minus the ones inside it, rather than a literal re-emitted bare.
+      // A one-character class: the same path, which ASRT re-emits after its allows minus the ones inside it, rather than a literal re-emitted bare.
       expect(denyRead).toContain(`${tempRoot.slice(0, -1)}[p]`);
       expect(denyRead).toContain(`${homeRoot.slice(0, -1)}[e]`);
       expect(denyRead).toContain(`${handoffRoot.slice(0, -1)}[f]`);
@@ -216,7 +213,8 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
       const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
-      expect(denyRead.filter((path) => !/\[[pef]\]$/.test(path))).toEqual(others);
+      // A marked `{ path, literal: true }` entry (ASRT 0.0.79) is kept, so it fails the equality.
+      expect(denyRead.filter((path) => typeof path !== "string" || !/\[[pef]\]$/.test(path))).toEqual(others);
     },
   );
 
@@ -238,11 +236,10 @@ describe("the private roots in a sandbox read deny", () => {
       try {
         writeFileSync(join(own.path, "own"), "own");
         writeFileSync(join(other.path, "other"), "other");
-        // `home` holds AVE_HOME, as a workspace at the user's HOME holds
-        // `~/.ave`: an ancestor of both private roots.
+        // `home` holds AVE_HOME, as a workspace at the user's HOME holds `~/.ave`: an ancestor of both private roots.
         const { argv, env } = await wrapWorkerCommand(
           `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
-          {
+          { commandId: TEST_COMMAND_ID,
             filesystem: {
               allowRead: [home, own.path],
               allowWrite: [own.path],

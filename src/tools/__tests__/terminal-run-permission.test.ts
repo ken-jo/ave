@@ -1,13 +1,6 @@
-/**
- * terminal_run takes the shell lane of the one permission pipeline: the
- * command it types is the rule subject of the same `Bash(...)` rules and
- * shell floors the bash tool's command is, in the directory the target
- * terminal's shell reported.
- *
- * Drives the real `ToolExecutor` with a real `PermissionManager` and the real
- * `terminal_run`; only the PTY write is a stub that records what would have
- * been typed. The terminal is a registered block tracker at an empty prompt.
- */
+import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
+/** terminal_run takes the shell lane of the one permission pipeline: the command it types is the rule subject of the same `Bash(...)` rules and shell floors the bash tool's command is, in the directory the target terminal's shell
+ * reported. Drives the real `ToolExecutor` with a real `PermissionManager` and the real `terminal_run`; only the PTY write is a stub that records what would have been typed. The terminal is a registered block tracker at an empty prompt. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +44,7 @@ async function run(
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${terminalCwd};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
   if (options.busy) tracker.recordOutput(`sleep 60\r\n${mark("C;cmdline_url=sleep%2060")}`);
-  registerTerminalBlockTracker(TAB, tracker, WINDOW);
+  registerTerminalBlockTracker(terminalSessionFixture(TAB), tracker, WINDOW);
 
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode(options.mode ?? "default");
@@ -71,6 +64,7 @@ async function run(
     liveOriginSessionId: () => undefined,
     activeTerminalTabId: () => TAB,
     boundSurface: () => undefined,
+    ensureAgentTerminal: async (tabId) => terminalSessionFixture(tabId),
     typeCommand,
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
     auditMismatch: () => {},
@@ -96,6 +90,7 @@ describe("terminal_run permission", () => {
     const { context } = await run("npm test");
     expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "npm test", cwd: terminalCwd });
     expect(context?.projectRulesCwd).toBe(terminalCwd);
+    expect(context?.shellExecution).toEqual({ runsSandboxed: false, sandboxAvailable: false });
   });
 
   it("asks with a card naming the sealed terminal and directory, and types only after approval", async () => {
@@ -106,7 +101,10 @@ describe("terminal_run permission", () => {
       toolName: "terminal_run",
       toolCategory: "shell",
       args: { command: "npm test", waitSeconds: 0 },
-      approvalMemory: { kind: "key", scope: { kind: "terminal-command", tabId: TAB, cwd: terminalCwd } },
+      approvalMemory: { kind: "key", scope: {
+        kind: "terminal-command", tabId: TAB, cwd: terminalCwd,
+        lane: "agent", terminalSessionId: `${TAB}/agent`, sandboxGeneration: "0",
+      } },
     });
     expect(denied.typed).toEqual([]);
     expect(denied.result.is_error).toBe(true);
@@ -121,6 +119,20 @@ describe("terminal_run permission", () => {
     expect(decision).toMatchObject({ decision: "allow" });
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(typed).toEqual(["npm test"]);
+  });
+
+  it("ignores a prefix for plain terminal execution even in allow mode", async () => {
+    const result = await run("printf ready", { mode: "allow", rules: [{ pattern: "Bash(printf *)", action: "allow" }] });
+    expect(result.decision).toMatchObject({ decision: "ask", layer: 6 });
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.typed).toEqual([]);
+  });
+
+  it("keeps the destructive floor for terminal execution in allow mode", async () => {
+    const result = await run("rm -rf build", { mode: "allow" });
+    expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(result.requestAndWait).toHaveBeenCalledOnce();
+    expect(result.typed).toEqual([]);
   });
 
   it("a Bash(...) deny rule refuses it, and nothing is typed", async () => {
@@ -139,8 +151,7 @@ describe("terminal_run permission", () => {
   });
 
   it("resolves relative operands in the terminal's directory, not the session's", async () => {
-    // The terminal's shell is outside the session's allowed directories, so
-    // `cat notes.txt` reads a file there and needs the directory grant.
+    // The terminal's shell is outside the session's allowed directories, so `cat notes.txt` reads a file there and needs the directory grant.
     const outside = mkdtempSync(join(tmpdir(), "ave-terminal-run-outside-"));
     terminalCwd = outside;
     try {
@@ -153,9 +164,8 @@ describe("terminal_run permission", () => {
     }
   });
 
-  // The terminal's zsh would run text after a `#` that bash (and so the
-  // rules) reads as a comment; such a command must never reach allow mode's
-  // no-card typing or slip past a Bash(...) deny rule.
+  // The terminal's zsh would run text after a `#` that bash (and so the rules) reads as a comment;
+  // such a command must never reach allow mode's no-card typing or slip past a Bash(...) deny rule.
   it.each([
     ["echo SAFE # ; echo PWNED", /# comment/],
     ["ls # ; rm -rf build", /# comment/],
@@ -185,11 +195,13 @@ describe("terminal_run permission", () => {
     const memory = request?.approvalMemory as Extract<ApprovalMemory, { kind: "key" }>;
     expect(memory.kind).toBe("key");
     expect(isSessionOnlyApprovalMemoryScope(memory.scope)).toBe(true);
-    // Each terminal's shell has its own sandbox jail, fixed when it spawned,
-    // so a decision for one terminal is not one for another.
-    expect(memory.key).toContain(terminalCwd);
-    expect(memory.key).toContain(TAB);
+    // Each terminal's shell has its own sandbox jail, fixed when it spawned, so a decision for one terminal is not one for another.
+    // The key is the tool name and a JSON identity: compare the parsed scope, since JSON escapes the backslashes of a Windows directory.
+    expect(memory.key.startsWith("terminal_run:")).toBe(true);
+    const { scope } = JSON.parse(memory.key.slice("terminal_run:".length)) as { scope: Record<string, unknown> };
+    expect(scope).toMatchObject({ cwd: terminalCwd, tabId: TAB });
     // The directory the card compares is derived, not part of the decision.
+    expect(scope).not.toHaveProperty("cwdForMatch");
     expect(memory.key).not.toContain("cwdForMatch");
   });
 });

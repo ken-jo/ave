@@ -1,11 +1,5 @@
 #!/usr/bin/env node
-/**
- * Launch-smoke the packaged app produced by electron-builder.
- *
- * This intentionally runs the unpacked binary under release/ instead of the
- * dev Electron launcher. It catches production-only dependency pruning errors
- * such as ERR_MODULE_NOT_FOUND before installers are uploaded.
- */
+// Launch the unpacked artifact to catch production dependency pruning failures before publication.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +10,7 @@ import {
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
-import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";
+import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
 import {
   launchSucceeded,
   readProductionLogsSince,
@@ -138,9 +132,7 @@ function assertPackagedFootprint(target, executable) {
 function smokeArgs(platform, env) {
   const args = [`--user-data-dir=${env.AVE_USER_DATA_DIR}`];
   if (platform === "linux") {
-    // GitHub's Linux runner needs a virtual display and often lacks a usable
-    // Chromium sandbox. The smoke is about packaged app startup and dependency
-    // pruning, so keep the launch environment deterministic.
+    // Use a deterministic virtual display on Linux; this smoke measures startup rather than display isolation.
     args.push("--disable-gpu", "--no-sandbox", "--password-store=gnome-libsecret");
   }
   if (platform === "win32") {
@@ -208,13 +200,7 @@ function assertPackagedFirstLaunchSeed(homeDir) {
   }
 }
 
-/**
- * #1499 E2 — assert the production log file sink actually wrote a file. A
- * PACKAGED app has no console, so `~/.ave/logs/ave-<date>.log` is the ONLY
- * readable log a diagnostics bundle / support engineer can rely on. If boot did
- * not attach the SonicBoom sink (the PR #684 ERR_MODULE_NOT_FOUND regression
- * class, or a broken `shouldEnableFileLogSink` gate), no file appears here.
- */
+// Packaged apps have no console; verify the production file sink wrote a readable log.
 function assertProductionLogFile(homeDir) {
   const logsDir = join(homeDir, "logs");
   if (!existsSync(logsDir)) {
@@ -350,7 +336,6 @@ async function launchSmoke(executable, timeoutMs) {
   try {
     await runPackagedAppOnce(executable, timeoutMs, env, "first launch");
     assertPackagedFirstLaunchSeed(aveHomeDir);
-    // #1499 E2 — production log sink must have written a real log file.
     assertProductionLogFile(aveHomeDir);
     const probe = prepareUpgradeProbe(aveHomeDir);
     await runPackagedAppOnce(executable, timeoutMs, env, "upgrade probe");
@@ -359,7 +344,7 @@ async function launchSmoke(executable, timeoutMs) {
   } finally {
     removeTempDirBestEffort(userDataDir);
     removeTempDirBestEffort(aveHomeDir);
-    cleanupOwnedWindowsProtocolHandler(executable);
+    assertNoWindowsProtocolClaim(executable);
   }
 }
 

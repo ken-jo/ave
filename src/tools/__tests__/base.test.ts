@@ -1,12 +1,3 @@
-/**
- * Tool interface + ZodTool + createDynamicTool unit tests.
- *
- * Verifies the canonical §6.4 {@link ../base.js Tool} contract end-to-end:
- *   - {@link ZodTool} subclass: schema-backed execute via executeTyped.
- *   - {@link createDynamicTool}: factory for runtime-built tools
- *     (plugin / MCP / factory paths).
- *   - {@link ToolRegistry} integration: tools register + look up cleanly.
- */
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 
@@ -19,8 +10,6 @@ import {
   type ToolExecutionResult,
 } from "../base.js";
 import { toolExecutionContext as ctx } from "./tool-context-fixture.js";
-
-// ─── Fixtures ─────────────────────────────────────────
 
 const echoInputSchema = z.object({ text: z.string() });
 
@@ -50,8 +39,6 @@ class PluginEchoTool extends EchoTool {
   override readonly source = "plugin" as const;
 }
 
-
-// ─── ZodTool ──────────────────────────────────────────
 
 describe("ZodTool", () => {
   it("toJsonSchema returns a JSON Schema derived from the zod input schema", () => {
@@ -98,8 +85,6 @@ describe("ZodTool", () => {
     expect(new PluginEchoTool().source).toBe("plugin");
   });
 });
-
-// ─── createDynamicTool ────────────────────────────────
 
 describe("createDynamicTool", () => {
   it("returns a Tool with every spec field plumbed through", () => {
@@ -170,8 +155,6 @@ describe("createDynamicTool", () => {
     expect(tool.isReadOnly({})).toBe(true);
   });
 });
-
-// ─── ToolRegistry integration ─────────────────────────
 
 describe("ToolRegistry with Tool instances", () => {
   it("accepts ZodTool subclasses directly", () => {
@@ -274,7 +257,7 @@ describe("ToolRegistry with Tool instances", () => {
     registry.register(new ReadOnlyEchoTool());
     registry.setDenyRules([{ pattern: "echo_*" }]);
 
-    expect(registry.size).toBe(2); // denied tool still registered
+    expect(registry.size).toBe(2);
     expect(registry.getVisibleTools().map((t) => t.name)).toEqual(["echo"]);
     expect(registry.getToolSchemas().map((s) => s.name)).toEqual(["echo"]);
   });

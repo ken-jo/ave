@@ -40,24 +40,18 @@ export interface LongTermMemoryConsolidationResult {
 
 export interface MemoryConsolidationRefreshOptions {
   reason: "manual" | "idle";
-  /** The exact active non-default project only; global sources always run first. */
   project?: ProjectScopedMemoryOptions;
 }
 
 export interface MemoryConsolidationServiceOptions {
   memoryManager: MemoryManager;
   memoryReviewer: Pick<MemoryReviewerService, "review">;
-  /** Manual consolidation is always available; idle provider use is opt-in. */
   isIdleConsolidationEnabled?: () => boolean;
   minIdleSuccessIntervalMs?: number;
   minIdleFailureBackoffMs?: number;
 }
 
-/**
- * Host-owned derived-memory maintenance. It never deletes or rewrites source
- * notes: source snapshots are exact-scope, bounded by MemoryManager, and a
- * compare-and-swap rejects a generated overview if those sources changed.
- */
+// Never rewrite source notes; bounded exact-scope snapshots and compare-and-swap guard derived overviews.
 export class MemoryConsolidationService {
   private readonly runningByScope = new Map<string, Promise<LongTermMemoryConsolidationScopeResult>>();
   private readonly lastIdleSuccessAt = new Map<string, number>();
@@ -82,9 +76,7 @@ export class MemoryConsolidationService {
     const snapshot = this.deps.memoryManager.getConsolidationSnapshot(options);
     const scopeKey = memoryScopeKey(snapshot.scope);
 
-    // Do not let a skipped idle attempt occupy the per-scope work slot. A
-    // manual request is always eligible and must never inherit an idle
-    // opt-out or throttle result.
+    // Skipped idle work must not occupy or throttle an eligible manual request.
     if (!this.isIdleRefreshEligible(snapshot, reason)) {
       return this.describeCurrentSnapshot(snapshot);
     }
@@ -187,15 +179,10 @@ export interface MemoryMaintenanceCoordinatorOptions {
   memoryCaptureService?: Pick<MemoryCaptureService, "runOnIdle">;
   preferenceRefreshService: Pick<PreferenceRefreshService, "runOnIdle">;
   memoryConsolidationService: MemoryConsolidationService;
-  /** Returns the current explicit project. Default workspaces must return undefined. */
   getCurrentProject?: () => ProjectScopedMemoryOptions | undefined;
 }
 
-/**
- * The single idle listener for provider-backed memory maintenance. Capture,
- * preference refresh, and derived overview maintenance run serially so they do
- * not make concurrent background calls through the active model provider.
- */
+// Serialize capture, preference refresh, and consolidation through one idle coordinator.
 export class MemoryMaintenanceCoordinator {
   private disposeIdleListener: (() => void) | null = null;
   private running: Promise<void> | null = null;
@@ -241,8 +228,7 @@ export class MemoryMaintenanceCoordinator {
     try {
       await this.deps.preferenceRefreshService.runOnIdle();
     } catch (error) {
-      // PreferenceRefreshService catches its own provider failures. Keep this
-      // defensive boundary so consolidation still follows a malformed adapter.
+      // Isolate refresh adapter failures so consolidation still runs.
       log.warn("idle preference refresh failed: %s", (error as Error).message);
     }
 

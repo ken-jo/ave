@@ -1,22 +1,4 @@
-/**
- * The published host protocol schema, held to the host that serves it.
- *
- * `schemas/plugin-host-protocol/3/protocol.schema.json` is generated from the
- * contract table and the wire types, and `check:plugin-host-protocol-schema`
- * holds the committed file to that output. Neither proves the output is RIGHT.
- * This does, two ways:
- *
- *  - parity: the schema names exactly the methods, notifications, error codes
- *    and capabilities the running dispatcher does — read from the same tables
- *    the host routes with, not from a list kept here;
- *  - the goldens: every frame under `fixtures/host-protocol/3/`, each recorded
- *    against the real child runtime, validates against it. A wire form the
- *    generator guessed wrong fails here, on a frame that really crossed.
- *
- * And it holds the generator to its own promise of byte-stable output, which
- * `check:plugin-host-protocol-schema` relies on to mean the same thing on a
- * Windows checkout.
- */
+/** Published protocol schemas must match served contracts and remain reproducible across platform line endings. */
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
@@ -81,7 +63,6 @@ const ajv = new (Ajv2020 as any)({ strict: true, allowUnionTypes: true, allError
 
 const compiled = new Map<string, (value: unknown) => boolean>();
 
-/** Validate `value` against one sub-schema, and return what failed. */
 function violations(where: string, schema: JsonSchema, value: unknown): string[] {
   let validate = compiled.get(where);
   if (!validate) {
@@ -93,7 +74,6 @@ function violations(where: string, schema: JsonSchema, value: unknown): string[]
   return errors.map((error) => `${where}${error.instancePath}: ${error.message}`);
 }
 
-/** Every `enum` value found under `schema`, at any depth. */
 function enumValues(schema: unknown): unknown[] {
   if (Array.isArray(schema)) return schema.flatMap(enumValues);
   if (!schema || typeof schema !== "object") return [];
@@ -164,13 +144,10 @@ describe("the schema names what the host serves, and nothing else", () => {
     expect(named.filter((code) => !closed.has(code))).toEqual([]);
     for (const path of DISPATCHABLE) {
       const errors = SCHEMA.$defs.methods[hostApiMethodOf(path)]!.errors;
-      // Any class the host throws is named by the classifier whichever member
-      // threw it, so a method may reply with any code but the version
-      // mismatch, which only `construct` answers.
+      // All host-thrown classes may appear on any method; version mismatch belongs only to construct.
       expect(enumValues(errors), path).toEqual(
         HOST_API_WIRE_ERROR_CODES.filter((code) => code !== "protocol-version-mismatch"),
       );
-      // What the member's own implementation raises is still said there.
       for (const code of HOSTAPI_PATH_CONTRACTS[path].errors) {
         expect(String(errors.description), path).toContain(code);
       }
@@ -194,13 +171,11 @@ describe("the schema names what the host serves, and nothing else", () => {
   });
 
   it("advertises what construct advertises for a host with every optional member bound", () => {
-    // `createValidationHost` implements every member, optional ones included.
     const table = createBoundHostApiDispatchTable(createValidationHost().api, { read: [], write: [] });
     expect(SCHEMA.$defs.capabilities.items.enum).toEqual(hostProtocolCapabilities(table));
   });
 });
 
-/** What a request, a reply or a notification must look like under the schema. */
 function frameViolations(where: string, frame: Frame, request?: Frame): string[] {
   const method = typeof frame.method === "string" ? frame.method : undefined;
   if (method !== undefined && "id" in frame) {
@@ -241,7 +216,6 @@ describe("every golden frame is valid under the schema", () => {
       const { request, response } = JSON.parse(
         readFileSync(join(GOLDEN_ROOT, "methods", "errors", file), "utf-8"),
       ) as { request: Frame; response: Frame };
-      // The request is not checked: most of these are malformed on purpose.
       return frameViolations(file, response, request);
     });
     expect(failures).toEqual([]);
@@ -266,8 +240,7 @@ describe("every golden frame is valid under the schema", () => {
     const failures = transcripts.flatMap((file) => {
       const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");
       const recorded = lines.map((line) => JSON.parse(line) as { from: string; frame: Frame });
-      // A reply is matched to the request the OTHER end sent with its id; the
-      // two directions allocate ids independently.
+      // Match replies to the opposite direction request IDs; each side allocates IDs independently.
       const requests = new Map<string, Frame>();
       return recorded.flatMap(({ from, frame }) => {
         if (typeof frame.method === "string" && "id" in frame) requests.set(`${from}:${String(frame.id)}`, frame);
@@ -290,10 +263,7 @@ describe("every golden frame is valid under the schema", () => {
     const failures = transcripts.flatMap((file) => {
       const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");
       const recorded = lines.map((line) => JSON.parse(line) as { from: string; frame: Frame });
-      // A registration's reply names the id the child chose; a handle's names
-      // the one the host allocated. Either way it is `result.handleId`. Read
-      // in a pass of its own: a registration's first event can cross before
-      // its reply does.
+      // Collect handle IDs separately: subscription events can arrive before registration replies.
       const requests = new Map<string, string>();
       const openedBy = new Map<string, string>();
       for (const { from, frame } of recorded) {
@@ -319,7 +289,6 @@ describe("every golden frame is valid under the schema", () => {
       });
     });
     expect(failures).toEqual([]);
-    // Every member that pushes something is exercised by a recorded conversation.
     expect([...covered].sort()).toEqual(
       Object.entries(SCHEMA.$defs.methods)
         .filter(([, entry]) => entry.events && !("not" in entry.events))
@@ -357,8 +326,6 @@ describe("the manifest construct carries is exactly one of entry and process", (
   });
 
   it("refuses a manifest with both, and one with neither", () => {
-    // Each is refused by the branch that would otherwise take it: a `false`
-    // member for both, a missing required key for neither.
     expect(violations("manifest", MANIFEST, { ...base, entry: "dist/index.js", process })).toEqual(
       expect.arrayContaining(["manifest/entry: boolean schema is false", "manifest/process: boolean schema is false"]),
     );
@@ -380,8 +347,7 @@ describe("the generator writes the same bytes on every checkout", () => {
     const fromLf = generateHostProtocolSchema().text;
     expect(fromLf).toBe(committed);
 
-    // Every blob is LF, but a source saved with platform endings, or a tree
-    // copied without git, reaches the compiler as CRLF.
+    // Generators must normalize source line endings so CRLF produces the same LF blobs.
     const sourceRoot = join(REPO_ROOT, "src").replaceAll("\\", "/");
     const readFile = ts.sys.readFile.bind(ts.sys);
     const crlfSources = new Set<string>();
@@ -397,7 +363,6 @@ describe("the generator writes the same bytes on every checkout", () => {
     } finally {
       reading.mockRestore();
     }
-    // The control: the generator really read the sources it documents as CRLF.
     expect([...crlfSources]).toEqual(expect.arrayContaining([
       "src/plugins/public-contract.ts",
       "src/plugins/isolation/host-api-wire.ts",
@@ -406,7 +371,6 @@ describe("the generator writes the same bytes on every checkout", () => {
     expect(fromCrlf).toBe(fromLf);
   }, 120_000);
 });
-
 
 describe("the command line always reports an outcome", () => {
   const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
@@ -423,8 +387,7 @@ describe("the command line always reports an outcome", () => {
     );
 
   it("checks, and says so, when started through a path spelled unlike its real one", () => {
-    // A symlink here, a junction on Windows. A `subst` drive, a short name or a
-    // drive letter's case gives the entry a second spelling the same way.
+    // Use a symlink or Windows junction to exercise alternate repository spellings.
     const dir = mkdtempSync(join(tmpdir(), "schema-cli-"));
     const linked = join(dir, "scripts");
     try {
@@ -435,9 +398,7 @@ describe("the command line always reports an outcome", () => {
       );
       expect(result.status, result.stderr).toBe(0);
     } finally {
-      // The link points at the repository's own scripts/. Nothing below
-      // recurses: the link goes first, on its own, and then its parent, which
-      // is empty by then — or, if the link somehow stayed, refuses to go.
+      // Unlink scripts/ first and remove only its empty parent; never recurse through the link.
       removeLinkOnly(linked);
       rmdirSync(dir);
       expect(existsSync(join(REPO_ROOT, "scripts", "generate-plugin-host-protocol-schema.ts"))).toBe(true);
@@ -446,8 +407,7 @@ describe("the command line always reports an outcome", () => {
   }, 120_000);
 
   it("removes a link without ever reaching into a real directory", () => {
-    // What makes the case above safe to clean up, held on every platform: given
-    // a real directory with something in it, the removal refuses.
+    // Cleanup must refuse a real nonempty directory.
     const dir = mkdtempSync(join(tmpdir(), "schema-cli-real-"));
     const kept = join(dir, "kept.txt");
     writeFileSync(kept, "kept", "utf-8");

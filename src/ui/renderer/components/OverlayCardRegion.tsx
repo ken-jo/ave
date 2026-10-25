@@ -1,33 +1,9 @@
-// OverlayCardRegion — mounts one surface's active OverlayCard from OverlayContext.
-//
-// Renders in a separate z-layer above the scroll area, in the pane frame's
-// floating lane (`PaneFrame`'s `lane`, so the card stays with the pane
-// whatever it shows). A card whose conversation no drawn pane holds is drawn
-// by no region: it waits with its conversation, and the sidebar row carries
-// the attention dot — see `overlayCardTile` and `pendingAnswers`.
-// Never injects entries into chat history; routine sources remain isolated.
-// Plugin, alert and routine cards are addressed to the dedicated
-// Suggestions conversation, so they render only in the region of a tile that
-// holds it — never over the conversation the user is working in.
-//
-// One card renders on ONE surface — see `overlayCardTile`. The queue is the
-// window's, but the SLICE of it a surface shows, and which card of that slice
-// is active, belong to that surface: a window-wide counter would say "1/3"
-// over a tile that has one card, and stepping next would move to a card that
-// renders somewhere else entirely.
-//
-// Two source variants:
-//   - routine: primary action opens the routine's session (only when
-//     `routineSessionId` is present — notification-only routines hide it)
-//   - plugin / app / alert (insertion-type): primary action deferred to
-//     `onPluginPrimaryAction`. An alert is a plugin's card the host rendered
-//     from the kind's declared templates.
-//   - proposal: a plugin's onboarding question. Three answers instead of one
-//     confirm, and the host performs the accepted action itself.
+// Cards stay with their owning conversation and never enter chat history; hidden conversations signal through sidebar
+// attention dots.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
-import { useOverlayContext } from "../context/OverlayContext.js";
+import { routineThumbnailOwner, useOverlayContext } from "../context/OverlayContext.js";
 import { OverlayCard } from "./OverlayCard.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "./FloatingRightLane.js";
@@ -44,32 +20,20 @@ export interface OverlayCardRegionProps {
    * its turn has to start there.
    */
   actionChatGroupId: string;
-  /**
-   * Where a card belongs, given the conversation it came from, and whether
-   * that conversation is still open. The window answers it, because only the
-   * window can see every tile.
-   */
+  /** Where a card belongs, given the conversation it came from, and whether that conversation is still open. The window
+   * answers it, because only the window can see every tile. */
   overlayCardTile: (card: { originSessionId?: string }) => OverlayCardPlacement;
-  /**
-   * Called when the user confirms a plugin overlay item, with the tile that
-   * showed the card — the conversation the staged prompt is inserted into and
-   * the turn is started in.
-   */
+  /** Called when the user confirms a plugin overlay item, with the tile that showed the card — the conversation the staged
+   * prompt is inserted into and the turn is started in. */
   onPluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => void;
-  /**
-   * The insertion card's second answer: run its prompt in a new conversation
-   * started in the tile that showed the card, rather than in the card's own.
-   * Omitted, the card offers only the primary action.
-   */
+  /** The insertion card's second answer: run its prompt in a new conversation started in the tile that showed the card,
+   * rather than in the card's own. Omitted, the card offers only the primary action. */
   onContinueInNewConversation?: (overlayItemId: string, chatGroupId: string) => void;
   /** Called when the user closes an alert card without accepting it. */
   onAlertDismiss?: (overlayItemId: string) => void;
   onRoutineAcknowledge?: (routineId: string, firedAt: string) => void;
-  /**
-   * The user's answer to an onboarding proposal, with the tile that showed the
-   * card — an accepted composer action prefills THAT conversation, the same
-   * rule the insertion cards follow.
-   */
+  /** The user's answer to an onboarding proposal, with the tile that showed the card — an accepted composer action prefills
+   * THAT conversation, the same rule the insertion cards follow. */
   onProposalAnswer?: (
     overlayItemId: string,
     disposition: OnboardingProposalDisposition,
@@ -82,30 +46,28 @@ export function OverlayCardRegion({
   onProposalAnswer,
 }: OverlayCardRegionProps) {
   const { t } = useTranslation();
-  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded } =
+  const { queue, dismiss, openSession, expandedCardIds, setCardExpanded, thumbnailSessions } =
     useOverlayContext();
 
-  // This surface's slice of the window queue. Every tile mounts a region and
-  // each keeps only the cards attributed to it, so a card is shown — and so
-  // dismissed or confirmed — exactly once however many tiles are open.
+  // This surface's slice of the window queue. Every tile mounts a region and each keeps only the cards attributed to it, so
+  // a card is shown — and so dismissed or confirmed — exactly once however many tiles are open.
   const mine = useMemo(
-    () => queue.filter((item) => overlayCardTile(item).chatGroupId === chatGroupId),
-    [queue, overlayCardTile, chatGroupId],
+    () => queue.filter((item) => overlayCardTile(item).chatGroupId === chatGroupId
+      && routineThumbnailOwner(item, thumbnailSessions) === null),
+    [queue, overlayCardTile, chatGroupId, thumbnailSessions],
   );
 
   // The region hangs in the tile's floating lane at the lane's own width.
   const regionClassName = `pointer-events-none ${FLOATING_LANE_ITEM_WIDTH}`;
 
   const [activeIndex, setActiveIndex] = useState(0);
-  // Clamped rather than corrected in an effect: the slice can shrink between
-  // renders (a card dismissed, or one that followed focus to another tile),
-  // and rendering `undefined` for a frame would flash the card away and back.
+  // Clamped rather than corrected in an effect: the slice can shrink between renders (a card dismissed, or one that followed
+  // focus to another tile), and rendering `undefined` for a frame would flash the card away and back.
   const index = mine.length === 0 ? 0 : Math.min(activeIndex, mine.length - 1);
   const active = mine[index] ?? null;
 
-  // A card that just arrived is the one the user means. Kept in an effect
-  // rather than inside a state updater because StrictMode double-invokes
-  // updaters, which would advance twice.
+  // A card that just arrived is the one the user means. Kept in an effect rather than inside a state updater because
+  // StrictMode double-invokes updaters, which would advance twice.
   const previousCountRef = useRef(0);
   useEffect(() => {
     if (mine.length > previousCountRef.current) setActiveIndex(mine.length - 1);
@@ -133,8 +95,8 @@ export function OverlayCardRegion({
       <div
         data-testid="overlay-card-region"
         data-overlay-surface={chatGroupId}
-        // Position comes from `FloatingRightLane`, which is also what kept the
-        // old tool-activity rail from landing on top of this card's controls.
+        // Position comes from `FloatingRightLane`, which is also what kept the old tool-activity rail from landing on top of this
+        // card's controls.
         className={regionClassName}
       >
         <div className="pointer-events-auto">
@@ -257,8 +219,7 @@ export function OverlayCardRegion({
                   secondaryAction: {
                     label: t("overlayCardRegion.continueInNewConversation"),
                     onClick: () => {
-                      // Same order as the primary action: off the queue, then run.
-                      // The handler puts it back if no conversation started.
+                      // Same order as the primary action: off the queue, then run. The handler puts it back if no conversation started.
                       dismiss(active.id);
                       onContinueInNewConversation(active.id, actionChatGroupId);
                     },

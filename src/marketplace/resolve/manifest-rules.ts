@@ -1,24 +1,5 @@
-/**
- * Git-install manifest rules (design §5.3, §6.2).
- *
- * A plugin installed from any git source must carry, in its staged
- * `plugin.json`, exactly what the descriptor promised: the same name and
- * version, a `requires.minAppVersion` equal to the descriptor's, and every
- * `PluginAuthority` field byte-for-byte after key canonicalization. The
- * descriptor is what the user consented to, so any difference is a package
- * inconsistency and stops the ladder (`MANIFEST_MISMATCH`).
- *
- * The manifest schema keeps `requires.minAppVersion` optional for local
- * development installs; this rule is the install plan's, not the schema's.
- *
- * A `process` manifest is held to the declared half of its admission
- * (docs/design/plugin-hostapi-protocol.md §9.7 P4, decision 34): the
- * descriptor must exclude Windows, pin a release or archive by sha256 and
- * declare no tree, so the ladder can never fall to the tree rung for it, and
- * require at least the first app that runs one. A declared host protocol
- * likewise needs at least the first app that serves it. The verified half is the rung
- * the receipt records, which the install transaction and the runtime read.
- */
+/** Staged manifests must match reviewed identity, version and canonicalized authority.
+ * Process entries require supported platforms, a pinned artifact, no tree rung and sufficient host floors. */
 import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
 import { HOST_PROTOCOL_FIRST_APP_VERSION, isServedHostProtocolVersion } from "../../plugins/isolation/host-api-wire.js";
 import { hasProcessEntry, PROCESS_ENTRY_FIRST_APP_VERSION } from "../../plugins/process-entry.js";
@@ -29,7 +10,6 @@ import { MARKETPLACE_DESCRIPTOR_FILE, type Platform, type PluginArtifactPins, ty
 import { MarketplaceError } from "../errors.js";
 import { isRecord } from "../../shared/is-record.js";
 
-/** Every field of `PluginAuthority`, in the order mismatches are reported. */
 export const PLUGIN_AUTHORITY_FIELDS = [
   "capabilities",
   "networkAccess",
@@ -47,16 +27,11 @@ export interface ExpectedPlugin {
   minAppVersion: string;
   hostProtocol?: string;
   authority: PluginAuthority;
-  /**
-   * The descriptor's platforms and artifact pins. Every producer passes both,
-   * `undefined` when the descriptor declares none, so no producer can leave a
-   * process manifest unchecked by forgetting them.
-   */
+  /** Every producer supplies platform and artifact fields so process admission cannot be skipped. */
   platforms: readonly Platform[] | undefined;
   artifact: PluginArtifactPins | undefined;
 }
 
-/** The fields of a version a plan or descriptor fixed, as the manifest rules read them. */
 interface ExpectedPluginSource {
   name: string;
   version: string;
@@ -67,7 +42,6 @@ interface ExpectedPluginSource {
   artifact: PluginArtifactPins;
 }
 
-/** What a plan's staged `plugin.json` must match: every field the plan fixed. */
 export function expectedPluginOf(plan: ExpectedPluginSource): ExpectedPlugin {
   return {
     name: plan.name,
@@ -80,11 +54,7 @@ export function expectedPluginOf(plan: ExpectedPluginSource): ExpectedPlugin {
   };
 }
 
-/**
- * The authority a `plugin.json` declares: exactly the fields its Ave
- * extension carries, so a comparison with a descriptor's is field by field.
- * Null when the manifest has no Ave extension.
- */
+/** Null without the host extension; compare its authority fields against the descriptor. */
 export function manifestAuthority(manifest: unknown): PluginAuthority | null {
   const ave = isRecord(manifest) && isRecord(manifest.extensions) ? manifest.extensions[AVE_EXTENSION_NAMESPACE] : undefined;
   if (!isRecord(ave)) return null;
@@ -100,10 +70,6 @@ function sameField(record: Record<string, unknown>, expected: PluginAuthority, f
 
 const COMPAT_UNDECLARED = "requires.minAppVersion is required for a git install";
 
-/**
- * The declared admission of a `process` manifest (§9.7 P4), each problem
- * naming the descriptor field to change.
- */
 function processEntryMismatches(expected: ExpectedPlugin, descriptor: string): string[] {
   const problems: string[] = [];
   if (expected.platforms === undefined) {
@@ -126,11 +92,7 @@ function processEntryMismatches(expected: ExpectedPlugin, descriptor: string): s
   return problems;
 }
 
-/**
- * Every rule the staged document breaks; empty = it matches the descriptor.
- * `descriptor` is how a problem names the descriptor file: its path in a
- * repository check, its file name on the install path.
- */
+/** Reports every mismatch; descriptor identifies the file in diagnostics. */
 export function gitInstallManifestMismatches(document: unknown, expected: ExpectedPlugin, descriptor = MARKETPLACE_DESCRIPTOR_FILE): string[] {
   if (!isRecord(document)) return ["plugin.json is not a JSON object"];
   const problems: string[] = [];
@@ -175,11 +137,7 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   return problems;
 }
 
-/**
- * Throw naming every broken rule: `PACKAGE_COMPAT_UNDECLARED` when the
- * manifest does not declare `requires.minAppVersion` (design §14), else
- * `MANIFEST_MISMATCH`.
- */
+/** Missing compatibility declarations differ from other manifest mismatches. */
 export function assertGitInstallManifest(document: unknown, expected: ExpectedPlugin): void {
   const problems = gitInstallManifestMismatches(document, expected);
   if (problems.includes(COMPAT_UNDECLARED)) {

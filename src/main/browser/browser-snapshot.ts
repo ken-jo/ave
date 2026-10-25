@@ -1,19 +1,5 @@
-/**
- * Accessibility snapshot of a browser tab, with element refs the action tools
- * address — the Playwright-MCP / Claude-in-Chrome shape.
- *
- * Pure: it turns the nodes of CDP `Accessibility.getFullAXTree` into text and
- * keeps each tab's ref table. No CDP calls here (browser-actions.ts does them),
- * so the ref rules are testable on plain data.
- *
- * REFS. An element gets a ref (`e<n>`, unique across tabs) the first time a
- * snapshot shows it, and keeps it for as long as the same DOM node is there,
- * so a re-snapshot does not renumber what the model already knows. A ref is
- * bound to the tab and the page (URL without fragment) it was minted on, and
- * remembers the element's role and accessible name: that fingerprint is how
- * an action re-finds the element when the page re-rendered it (same role and
- * name, new node), and how it notices the node now being something else.
- */
+// Refs persist for the same DOM node and bind to a tab, fragment-free URL, role, and accessible name. The fingerprint allows re-render recovery while
+// detecting stale or repurposed nodes.
 
 import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS } from "../../shared/browser-tools.js";
 
@@ -27,7 +13,7 @@ interface AXProperty {
   readonly value: AXValue;
 }
 
-/** The fields of a CDP `Accessibility.AXNode` this module reads. */
+// The fields of a CDP `Accessibility.AXNode` this module reads.
 export interface AXNode {
   readonly nodeId: string;
   readonly ignored?: boolean;
@@ -41,7 +27,7 @@ export interface AXNode {
   readonly backendDOMNodeId?: number;
 }
 
-/** Roles a person acts on: they get refs, and they are what `interactive` keeps. */
+// Roles a person acts on: they get refs, and they are what `interactive` keeps.
 const INTERACTIVE_ROLES: ReadonlySet<string> = new Set([
   "button",
   "link",
@@ -62,7 +48,7 @@ const INTERACTIVE_ROLES: ReadonlySet<string> = new Set([
   "treeitem",
 ]);
 
-/** Wrapper roles that add nothing to the outline when they carry no name. */
+// Wrapper roles that add nothing to the outline when they carry no name.
 const TRANSPARENT_ROLES: ReadonlySet<string> = new Set([
   "generic",
   "none",
@@ -71,7 +57,7 @@ const TRANSPARENT_ROLES: ReadonlySet<string> = new Set([
   "LineBreak",
 ]);
 
-/** Properties worth showing next to a role. */
+// Properties worth showing next to a role.
 const SHOWN_PROPERTIES: ReadonlySet<string> = new Set([
   "level",
   "checked",
@@ -84,13 +70,13 @@ const SHOWN_PROPERTIES: ReadonlySet<string> = new Set([
   "invalid",
 ]);
 
-/** Snapshot character ceiling, shared with the result fence. */
+// Snapshot character ceiling, shared with the result fence.
 export const SNAPSHOT_MAX_CHARS = BROWSER_OUTPUT_MAX_CHARS;
 
 export interface RefTarget {
   readonly ref: string;
   readonly tabId: string;
-  /** The page (URL without fragment) the ref was minted on. */
+  // The page (URL without fragment) the ref was minted on.
   readonly pageUrl: string;
   readonly loaderId?: string;
   readonly documentId?: number;
@@ -99,12 +85,14 @@ export interface RefTarget {
   readonly name: string;
 }
 
+export interface BrowserSelectOption { readonly value: string; readonly label: string; readonly disabled: boolean }
+
 interface TabRefState {
   pageUrl: string;
   loaderId?: string;
   documentId?: number;
   readonly byNode: Map<number, string>;
-  /** The last snapshot's lines per mode, for `delta`. */
+  // The last snapshot's lines per mode, for `delta`.
   readonly lastLines: Map<"full" | "interactive", readonly string[]>;
 }
 
@@ -124,10 +112,7 @@ function quote(value: string): string {
   return JSON.stringify(value.length > BROWSER_PAGE_STRING_MAX_CHARS ? `${value.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…` : value);
 }
 
-/**
- * The refs of every tab: minted here, resolved by the action tools. One
- * instance per process (see {@link browserRefs}); tests make their own.
- */
+// The refs of every tab: minted here, resolved by the action tools. One instance per process (see {@link browserRefs}); tests make their own.
 export class BrowserRefTable {
   private nextRef = 1;
   private readonly refs = new Map<string, RefTarget>();
@@ -136,8 +121,7 @@ export class BrowserRefTable {
   private tabState(tabId: string, pageUrl: string, loaderId?: string, documentId?: number): TabRefState {
     let state = this.tabs.get(tabId);
     if (!state || state.pageUrl !== pageUrl || state.loaderId !== loaderId || state.documentId !== documentId) {
-      // A new page: its elements are new elements. Old refs stay resolvable
-      // only to be reported stale (their pageUrl no longer matches).
+      // A new page: its elements are new elements. Old refs stay resolvable only to be reported stale (their pageUrl no longer matches).
       state = { pageUrl, loaderId, documentId, byNode: new Map(), lastLines: new Map() };
       this.tabs.set(tabId, state);
     }
@@ -158,16 +142,13 @@ export class BrowserRefTable {
     return ref;
   }
 
-  /**
-   * Render a snapshot of `nodes` (one tab, one page). `interactive` keeps only
-   * the elements a person acts on, as a flat list. `delta` returns only the
-   * lines added or removed since this tab's previous snapshot in the same mode.
-   */
+  // Render a snapshot of `nodes` (one tab, one page). `interactive` keeps only the elements a person acts on, as a flat list. `delta` returns only the
+  // lines added or removed since this tab's previous snapshot in the same mode.
   render(
     tabId: string,
     pageUrl: string,
     nodes: readonly AXNode[],
-    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number } = {},
+    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number; nativeSelectOptions?: ReadonlyMap<number, readonly BrowserSelectOption[]> } = {},
   ): { text: string; truncated: boolean; refCount: number; delta: boolean } {
     const state = this.tabState(tabId, pageKey(pageUrl), options.loaderId, options.documentId);
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
@@ -190,7 +171,7 @@ export class BrowserRefTable {
         if (!interactive || acts) {
           const ref = acts ? this.refFor(state, tabId, node, role, name) : undefined;
           if (ref) seenRefs.add(ref);
-          lines.push(formatLine(interactive ? 0 : depth, role, name, node, ref));
+          lines.push(formatLine(interactive ? 0 : depth, role, name, node, ref, node.backendDOMNodeId === undefined ? undefined : options.nativeSelectOptions?.get(node.backendDOMNodeId)));
           childDepth = interactive ? depth : depth + 1;
         }
       }
@@ -225,7 +206,7 @@ export class BrowserRefTable {
     return this.refs.get(ref);
   }
 
-  /** The page re-rendered the ref's element as a new node: point the ref at it. */
+  // The page re-rendered the ref's element as a new node: point the ref at it.
   rebind(ref: string, backendNodeId: number): void {
     const target = this.refs.get(ref);
     if (!target) return;
@@ -237,14 +218,14 @@ export class BrowserRefTable {
     target.backendNodeId = backendNodeId;
   }
 
-  /** Forget a closed tab's refs. */
+  // Forget a closed tab's refs.
   dropTab(tabId: string): void {
     this.tabs.delete(tabId);
     for (const [ref, target] of this.refs) if (target.tabId === tabId) this.refs.delete(ref);
   }
 }
 
-function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined): string {
+function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined, options?: readonly BrowserSelectOption[]): string {
   const parts = [`${"  ".repeat(depth)}- ${role}`];
   if (name) parts.push(quote(name));
   for (const property of node.properties ?? []) {
@@ -254,11 +235,12 @@ function formatLine(depth: number, role: string, name: string, node: AXNode, ref
     parts.push(value === true || value === "true" ? `[${property.name}]` : `[${property.name}=${String(value)}]`);
   }
   if (ref) parts.push(`[ref=${ref}]`);
+  if (options) parts.push(`options=${JSON.stringify(options)}`);
   const value = text(node.value);
   return value && value !== name ? `${parts.join(" ")}: ${quote(value)}` : parts.join(" ");
 }
 
-/** Cut at a line boundary under `maxChars`, saying how much was left out. */
+// Cut at a line boundary under `maxChars`, saying how much was left out.
 function capLines(lines: readonly string[], maxChars: number): { text: string; truncated: boolean } {
   const kept: string[] = [];
   let used = 0;
@@ -274,14 +256,14 @@ function capLines(lines: readonly string[], maxChars: number): { text: string; t
   return { text: kept.join("\n"), truncated: false };
 }
 
-/** Find the single node with this role and name (the re-render fingerprint), else undefined. */
+// Find the single node with this role and name (the re-render fingerprint), else undefined.
 export function findByFingerprint(nodes: readonly AXNode[], role: string, name: string): number | undefined {
   const matches = nodes.filter((node) =>
     !node.ignored && node.backendDOMNodeId !== undefined && text(node.role) === role && text(node.name) === name);
   return matches.length === 1 ? matches[0]!.backendDOMNodeId : undefined;
 }
 
-/** Role and name of one node, for checking a ref still points at what it named. */
+// Role and name of one node, for checking a ref still points at what it named.
 export function roleAndName(node: AXNode | undefined): { role: string; name: string } | undefined {
   return node ? { role: text(node.role), name: text(node.name) } : undefined;
 }

@@ -1,21 +1,4 @@
-/**
- * #885 b3 — the ONE `serverDisconnected` teardown sink, shared by BOTH MCP server
- * arms so a card cannot tell them apart:
- *
- *   - external servers  → `McpManager` (kill-switch / remove / disconnectAll),
- *   - first-party plugins running as in-process loopback MCP servers →
- *     `PluginLoopbackManager.retireGeneration()` (plugin disable / uninstall / re-sync).
- *
- * Before this was shared, only the external arm emitted: disabling a plugin tore
- * its loopback server down SILENTLY, leaving its live MCP-App cards rendered and
- * interactive against a server that no longer existed, while an external server's
- * cards correctly flipped to the `mcp-app-disconnected` placeholder. One sink, one
- * event shape (`CHANNELS.mcp.serverDisconnected` with `{ serverId }` — a loopback
- * server's id IS its pluginId), both arms.
- *
- * It lives here rather than in the boot step so the `mcp/` layer can reach it
- * without importing `boot/`.
- */
+/** Shared retirement sink disables cards and clears server partitions for both external and plugin servers. */
 import { createRequire } from "node:module";
 import { CHANNELS } from "../contract/app-contract.js";
 import { mcpAppPartitionName } from "../shared/mcp-app-partition.js";
@@ -35,26 +18,8 @@ export interface McpServerDisconnectedSinkDeps {
   fromPartition?: (name: string) => DisconnectSinkSession;
 }
 
-/**
- * Build the `onServerDisconnected` sink wired into McpManager AND
- * PluginLoopbackManager.
- *
- * On each teardown it does TWO things, in this order (broadcast → clear) so no live
- * webContents races a wiped jar:
- *   1. broadcast `serverDisconnected` to every non-destroyed window — the
- *      `isDestroyed()` guard + swallowed send cover the `disconnectAll`-at-shutdown
- *      case (Q4);
- *   2. `clearStorageData()` on the ephemeral per-server partition —
- *      an in-memory Session persists for the whole process lifetime, so a
- *      remove→re-add of the same id would otherwise inherit stale storage.
- *
- * The WHOLE body is wrapped in try/catch: the encode-time
- * length guard throws SYNCHRONOUSLY through `mcpAppPartitionName` (step 2) — the
- * `.catch()` on `clearStorageData()` only covers the async rejection — so without
- * the outer guard a tampered >128-char id (arriving via the
- * servers.json/loadFromConfig path that bypasses addConfig) would break teardown
- * mid-emit. Best-effort by contract anyway (Q4).
- */
+/** Broadcast retirement before clearing storage so live cards cannot race a wiped partition.
+ * Catch synchronous partition-name errors and asynchronous clear failures during best-effort teardown. */
 export function createMcpServerDisconnectedSink(
   deps: McpServerDisconnectedSinkDeps = {},
 ): (serverId: string) => void {
@@ -71,13 +36,11 @@ export function createMcpServerDisconnectedSink(
 
   return (serverId: string) => {
     try {
-      // 1. broadcast to every non-destroyed window.
       for (const win of getAllWindows()) {
         if (!win.isDestroyed()) {
           win.webContents.send(CHANNELS.mcp.serverDisconnected, { serverId });
         }
       }
-      // 2. clear the ephemeral per-server partition (best-effort, awaited-with-catch).
       void fromPartition(mcpAppPartitionName(serverId)).clearStorageData().catch(() => undefined);
     } catch (err) {
       log.warn("mcp: server-disconnected sink failed (%s): %s", serverId, (err as Error).message);

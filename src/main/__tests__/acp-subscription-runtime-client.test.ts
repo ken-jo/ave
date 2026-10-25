@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { PassThrough } from "node:stream";
@@ -42,9 +42,12 @@ interface LoginHarness {
 }
 
 const harnesses: LoginHarness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
-function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"): LoginHarness {
+function createLoginHarness(
+  provider: "kimi-code" | "grok-build" = "kimi-code",
+  resolveExecutable?: AcpSubscriptionRuntimeClientOptions["resolveExecutable"],
+): LoginHarness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-subscription-client-"));
   const runtimeHome = join(runtimeRoot, "home");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -62,7 +65,7 @@ function createLoginHarness(provider: "kimi-code" | "grok-build" = "kimi-code"):
     workspaceDir,
     executablePath: `C:\\approved\\${provider}.exe`,
     runtimeTempDir,
-    resolveExecutable: async () => `C:\\approved\\${provider}.exe`,
+    resolveExecutable: resolveExecutable ?? (async () => `C:\\approved\\${provider}.exe`),
     spawn,
     platform: "win32",
     clientVersion: "test-version",
@@ -84,6 +87,27 @@ afterEach(async () => {
 });
 
 describe("AcpSubscriptionRuntimeClient security boundary", () => {
+  it.each(["kimi-code", "grok-build"] as const)("revalidates the executable before starting sign-in (%s)", async (provider) => {
+    const resolveExecutable = vi.fn(async (path: string) => path);
+    const { client, spawnCalls } = createLoginHarness(provider, resolveExecutable);
+    await client.getStatus();
+    resolveExecutable.mockClear();
+    resolveExecutable.mockRejectedValueOnce(new Error("Executable rejected"));
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-runtime-invalid-executable" });
+    expect(spawnCalls).toHaveLength(0);
+    expect(resolveExecutable).toHaveBeenCalledOnce();
+    expect((await client.startDeviceCodeLogin()).connection).toBe("pending");
+    expect(spawnCalls).toHaveLength(1);
+    expect(resolveExecutable).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects missing runtime directories before starting sign-in", async () => {
+    const { client, runtimeTempDir, spawnCalls } = createLoginHarness();
+    renameSync(runtimeTempDir, `${runtimeTempDir}-moved`);
+    await expect(client.startDeviceCodeLogin()).rejects.toMatchObject({ code: "acp-operation-failed" });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it("uses only the fixed Kimi device-code argv and never projects untrusted runtime output", async () => {
     const { client, child, runtimeTempDir, spawnCalls } = createLoginHarness();
 
@@ -434,19 +458,25 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
   it("rejects a Grok Build prerelease at the governed minimum", async () => {
-    const { client, child, spawnCalls } = createLoginHarness("grok-build");
-    const verification = client.verify();
+    // The version probe's own timeout rejects with the same code. With setTimeout faked it cannot fire, so only the version check can reject.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const { client, child, spawnCalls } = createLoginHarness("grok-build");
+      const verification = client.verify();
 
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-    child.stdout.write("grok-build 0.2.116-alpha.1\n");
-    child.emit("close", 0);
+      // Answer the probe once it is running: output written before the spawn reaches no listener.
+      await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
+      child.stdout.write("grok-build 0.2.116-alpha.1\n");
+      child.emit("close", 0);
 
-    await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
-    expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
-    expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+      await expect(verification).rejects.toMatchObject({ code: "acp-runtime-unavailable" });
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]).toMatchObject({ args: ["--version"] });
+      expect(client.getCachedStatus()).toMatchObject({ runtime: "unverified", connection: "unknown" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
-
 
   it("reads configured status without executing the selected runtime", async () => {
     const { client, spawnCalls } = createLoginHarness();
@@ -456,7 +486,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(status).toMatchObject({ runtime: "unverified", connection: "unknown" });
     expect(spawnCalls).toHaveLength(0);
   });
-
 
   it("keeps an allowlisted Kimi verification URL in main and opens it only after an explicit request", async () => {
     const { client, child } = createLoginHarness();
@@ -486,7 +515,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(JSON.stringify(afterOpen)).not.toContain("auth.kimi.com");
     expect(JSON.stringify(afterOpen)).not.toContain("main-process-only");
   });
-
 
   it("accepts the official Grok Build device page without projecting its URL", async () => {
     const { client, child, spawnCalls } = createLoginHarness("grok-build");
@@ -628,9 +656,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       APPDATA: win32.join(win32.normalize(runtimeHome), "appdata"),
       LOCALAPPDATA: win32.join(win32.normalize(runtimeHome), "localappdata"),
     });
-    // Windows launch environments must not inherit a separate Unix-style
-    // home that could redirect third-party discovery outside the isolated
-    // provider directories.
+    // Windows launch environments must not inherit a separate Unix-style home that could redirect third-party discovery outside the isolated provider directories.
     expect(environment.HOME).toBeUndefined();
     for (const key of [
       "GROK_MANAGED_CONFIG",

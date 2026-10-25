@@ -63,6 +63,33 @@ describe("check-test-duplicates", () => {
     }
   });
 
+  it("excludes generated dependency caches while detecting real test and helper duplicates", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-duplicate-cache-"));
+    try {
+      const sourceDir = join(root, "test", "cache");
+      const cachedDir = join(root, ".cache", "bun", "dependency", "test");
+      mkdirSync(sourceDir, { recursive: true });
+      mkdirSync(cachedDir, { recursive: true });
+      const body = "return { observed: 17 };";
+      writeFileSync(join(sourceDir, "runtime.test.ts"), `function sourceCase() { ${body} }\n`);
+      writeFileSync(join(sourceDir, "helpers.ts"), `export function sourceHelper() { ${body} }\n`);
+      writeFileSync(join(cachedDir, "runtime.test.ts"), `function cachedCase() { ${body} }\n`);
+      writeFileSync(join(cachedDir, "helpers.ts"), `export function cachedHelper() { ${body} }\n`);
+
+      const result = analyzeDuplicateHelpers(root);
+
+      expect(result.files.map((file: string) => normalizeRepoPath(file, root)).sort()).toEqual([
+        "test/cache/helpers.ts",
+        "test/cache/runtime.test.ts",
+      ]);
+      expect(result.duplicateBodies).toHaveLength(1);
+      expect(result.duplicateBodies[0].entries).toHaveLength(2);
+      expect([...result.duplicateBodies[0].uniqueNames].sort()).toEqual(["sourceCase", "sourceHelper"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("detects substantial duplicate helpers without requiring prefix names", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-duplicate-general-name-"));
     try {
@@ -216,7 +243,6 @@ describe("check-test-duplicates", () => {
   it("reports two short identical helpers in two files regardless of length", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-duplicate-short-cross-file-"));
     try {
-      // 40 characters of body, plain names — below the old floor, no prefix.
       const body = "{ tracked.add(dir); return dir; }";
       expect(body.length).toBeLessThan(80);
       writeFileSync(join(root, "one.test.ts"), `const tracked = new Set<string>();\nfunction trackDir(dir: string) ${body}\n`);
@@ -267,8 +293,7 @@ describe("check-test-duplicates", () => {
       writeFileSync(join(root, "one.test.ts"), nested);
       writeFileSync(join(root, "two.test.ts"), nested.replace("function wait", "function pause"));
 
-      // wait/pause share a body and ARE reported; the nested release, the
-      // test-local `local`, and the empty noop/nothing are not.
+      // Ignore shared bodies inside nested declarations.
       const groups = analyzeDuplicateHelpers(root).duplicateBodies;
       expect(groups).toHaveLength(1);
       expect([...groups[0].uniqueNames].sort()).toEqual(["pause", "wait"]);

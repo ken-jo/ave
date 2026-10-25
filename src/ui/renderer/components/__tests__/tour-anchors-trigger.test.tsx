@@ -1,17 +1,6 @@
 // @vitest-environment jsdom
-/**
- * Tutorial-C PR #983 follow-up — verify the SpotlightTour `data-tour-anchor`
- * attributes are present on the live production DOM (Composer textarea,
- * InputActionBar root, SlashPicker trigger) and that the renderer-side
- * keyboard trigger (⌘+Shift+/) actually invokes `api.tour.start` with the
- * `first-boot-essentials` scenario.
- *
- * Critic verdict (cluster review of PR-A/-E/-C) raised MAJOR-1 + MAJOR-2:
- * the tour scenario referenced `[data-tour-anchor="…"]` selectors that
- * had zero matches in production code, and there was no caller for
- * `api.tour.start`. This spec freezes both fixes so a future refactor
- * cannot silently regress the dead-state.
- */
+/** Verify tour anchors and the keyboard start action through production DOM; declared selectors alone do not prove
+ * reachable onboarding. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -91,8 +80,8 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
   });
 
   it("SlashPicker trigger carries data-tour-anchor=command-palette-toggle", () => {
-    // The old ⌘ command-palette button merged into the unified SlashPicker; the tour
-    // anchor moved onto the picker's trigger so step 3 still resolves.
+    // The old ⌘ command-palette button merged into the unified SlashPicker; the tour anchor moved onto the picker's trigger so
+    // step 3 still resolves.
     const { getByTestId } = render(
       <TooltipProvider>
         <SlashPicker
@@ -133,9 +122,8 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
       onSend: vi.fn(),
       onCancel: vi.fn(),
     };
-    // The "chat-history" (search) + "settings-entry" (export) tour anchors moved
-    // from MainToolbar into the floating sidebar's cluster strip (#1319), so the
-    // Sidebar is the host component that must carry them now.
+    // The "chat-history" (search) + "settings-entry" (export) tour anchors moved from MainToolbar into the floating sidebar's
+    // cluster strip (#1319), so the Sidebar is the host component that must carry them now.
     const sidebarProps: Parameters<typeof Sidebar>[0] = {
     viewNav: {
       segments: [],
@@ -199,9 +187,8 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
     const modelCell = document.querySelector(scenario!.steps[5].anchorSelector);
     expect(modelCell).not.toBeNull();
     expect(modelCell!.getAttribute("data-testid")).toBe("iab-status-model");
-    // Sanity: every anchor the Z chain references must appear in the
-    // scenario. The set guarantees a refactor that drops a step still
-    // surfaces here.
+    // Sanity: every anchor the Z chain references must appear in the scenario. The set guarantees a refactor that drops a step
+    // still surfaces here.
     const anchors = new Set(scenario!.steps.map((s) => s.anchorSelector));
     expect(anchors.has('[data-tour-anchor="composer-input"]')).toBe(true);
     expect(anchors.has('[data-tour-anchor="input-action-bar"]')).toBe(true);
@@ -210,14 +197,10 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
     ).toBe(true);
     expect(anchors.has('[data-tour-anchor="chat-history"]')).toBe(true);
     expect(anchors.has('[data-tour-anchor="settings-entry"]')).toBe(true);
-    // Step 6 points at the model cell in the composer's status row. It used to
-    // name a status-bar cell keyed on the item id `vendor:llm`, which no
-    // producer emits any more, so the step had no anchor at all.
     expect(anchors.has('[data-tour-anchor="model-picker"]')).toBe(true);
     expect(anchors.has('[data-tour-anchor="status-bar-vendor"]')).toBe(false);
-    // The plugin-entry anchor was intentionally removed by #1311 — plugins are
-    // reached via the command palette (covered by the command-palette-toggle
-    // step above), so the first-boot tour no longer references it.
+    // The plugin-entry anchor was intentionally removed by #1311 — plugins are reached via the command palette (covered by the
+    // command-palette-toggle step above), so the first-boot tour no longer references it.
     expect(anchors.has('[data-tour-anchor="plugin-entry"]')).toBe(false);
   });
 });
@@ -312,9 +295,8 @@ describe("Tutorial-C PR #983 follow-up: ⌘+Shift+/ trigger", () => {
   });
 
   it("scenario registry exposes first-boot-essentials (defensive)", () => {
-    // The trigger references a hard-coded id. If a refactor renames or
-    // removes that scenario, the keyboard shortcut would silently invoke
-    // a non-existent scenario. Treat the id as a contract.
+    // The trigger references a hard-coded id. If a refactor renames or removes that scenario, the keyboard shortcut would
+    // silently invoke a non-existent scenario. Treat the id as a contract.
     expect(DEFAULT_TOUR_SCENARIOS["first-boot-essentials"]).toBeTruthy();
   });
 });

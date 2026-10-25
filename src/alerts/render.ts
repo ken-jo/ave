@@ -1,14 +1,4 @@
-/**
- * Turn a raise into the text the host shows and stages.
- *
- * A plugin supplies slot values, never text: the summary, the prompt and the
- * OS notification body are the kind's declared templates, and the values are
- * untrusted third-party data. Each value is checked against its declared slot
- * (shape and cap), stripped of control, bidi and invisible characters, and —
- * in the model-facing prompt — wrapped as `<untrusted-<slot>>` data with its
- * own angle brackets neutralised, so no value can close its wrapper. `ref`
- * slots (ids) reach the prompt only as a footer line and never the card.
- */
+/** Slots are untrusted data: validate and sanitize them, neutralize wrapper-closing brackets, and keep ref ids out of cards. */
 import type {
   AlertInput,
   AlertKindDeclaration,
@@ -18,37 +8,29 @@ import type {
 
 /** An alert's dedupe key: bounded, and free of anything that could read as markup. */
 export const ALERT_KEY_RE = /^[A-Za-z0-9_.:/@+=-]{1,256}$/;
-/** An opaque id a `ref` slot carries. */
 const REF_RE = /^[A-Za-z0-9+/=_-]{1,256}$/;
 
-// Control chars, soft hyphen, Mongolian vowel separator, zero-width and
-// direction marks, line/paragraph separators and bidi embeddings, word joiner
-// and invisible operators, bidi isolates, variation selectors, BOM.
+// Include invisible, bidi, variation-selector, and separator code points.
 const STRIP_CHARS_RE = new RegExp(
   "[\\u0000-\\u001f\\u007f\\u00ad\\u180e\\u200b-\\u200f\\u2028-\\u202f"
     + "\\u2060-\\u2064\\u2066-\\u2069\\ufe00-\\ufe0f\\ufeff]",
   "g",
 );
 
-/**
- * Strip invisible and direction-changing characters, collapse whitespace, and
- * cut to `maxLength` code points — never inside a surrogate pair — with an
- * ellipsis when anything was cut.
- */
+/** Truncate at code-point boundaries after removing invisible and direction-changing characters. */
 export function sanitizeSlotText(input: string, maxLength: number): string {
   const stripped = input.replace(STRIP_CHARS_RE, " ").replace(/\s+/g, " ").trim();
   const codePoints = [...stripped];
   return codePoints.length > maxLength ? `${codePoints.slice(0, maxLength).join("")}…` : stripped;
 }
 
-/** Mark a value as data for the model. Its own `<` and `>` become full-width so it cannot close the tag. */
+/** Neutralize angle brackets so slot values cannot close their untrusted-data wrapper. */
 function wrapUntrusted(slot: string, value: string): string {
   return `<untrusted-${slot}>${value.replace(/</g, "＜").replace(/>/g, "＞")}</untrusted-${slot}>`;
 }
 
 type SlotValue = string | readonly string[];
 
-/** Checked slot values, by slot name; an absent optional slot has no entry. */
 export type CheckedSlots = ReadonlyMap<string, SlotValue>;
 
 function codePointLength(text: string): number {
@@ -75,11 +57,7 @@ function checkSlot(slot: AlertSlotDeclaration, value: unknown): SlotValue | null
   return [...(value as string[])];
 }
 
-/**
- * Hold a raise's slots to the kind's declaration: every required slot present
- * and non-blank, each within its shape and cap, and no slot the kind does not
- * declare. The first failure names its field.
- */
+/** Reject missing, blank, oversized, or undeclared slots; report the first failing field. */
 export function checkSlots(
   kind: AlertKindDeclaration,
   slots: AlertInput["slots"] | unknown,
@@ -108,10 +86,7 @@ export function checkSlots(
   return { ok: true, values };
 }
 
-/**
- * The text for `locale`: the exact tag, then its language, then English. The
- * declaration requires `en`, so there is always one.
- */
+/** Locale fallback is exact tag, language, then required English. */
 export function localeText(text: AlertLocaleText, locale: string): string {
   const tag = locale.toLowerCase();
   if (Object.hasOwn(text, tag)) return text[tag]!;
@@ -129,14 +104,10 @@ function fill(template: string, render: (name: string) => string): string {
 }
 
 export interface RenderedAlert {
-  /** The kind's label; the card title and the OS notification title. */
   title: string;
-  /** The card text, with plain sanitised values. */
   summary: string;
-  /** The model-facing prompt, values wrapped as data, then the `ref` footer. */
   prompt: string;
   actionLabel: string | undefined;
-  /** The static OS notification body, or the kind's description when it declares none. */
   notificationBody: string;
 }
 

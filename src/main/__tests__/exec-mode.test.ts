@@ -1,15 +1,9 @@
-/**
- * Headless one-shot CLI: flag parsing, the stdout contract, the auto-deny
- * approval policy, and the exit-code mapping.
- *
- * The turn tests drive the REAL `runStreamedTurn` over a stub ConversationLoop
- * rather than a second event mapping, because the property under test is that
- * the events a benchmark reads on stdout are the events the host produced.
- */
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+// Drive runStreamedTurn itself so stdout events cannot drift from host events.
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 
 import {
@@ -68,13 +62,12 @@ function makeDeps(overrides: {
   setSecret?: (key: string, value: string) => Promise<void>;
   stdin?: string;
   isAuthorizedProjectRoot?: (projectRoot: string) => boolean;
-  /** Simulates the session authorizer binding a root other than the requested one. */
+  // Simulates the session authorizer binding a root other than the requested one.
   boundProjectRoot?: string | null;
 } = {}) {
   const turnImpl = overrides.runTurn ?? (async () => overrides.turnResult ?? COMPLETED_TURN);
   const runTurn = vi.fn(async (..._args: unknown[]) => turnImpl());
-  // An honest loop binds the root it was asked for; the override stands in
-  // for the session layer silently re-rooting the run elsewhere.
+  // An honest loop binds the root it was asked for; the override stands in for the session layer silently re-rooting the run elsewhere.
   let boundProjectRoot: string | null = null;
   const newConversation = vi.fn(async (_kind: string, project?: { projectRoot?: string }) => {
     boundProjectRoot = overrides.boundProjectRoot !== undefined
@@ -280,8 +273,7 @@ describe("execTurnRequested", () => {
     ["--exec-cwd=/tmp"],
     ["--executable"],
   ])("is false for %s alone", (flag) => {
-    // The secret writer is headless but runs no model and builds no prompt, so
-    // it is not a turn — the two questions have to stay separable.
+    // The secret writer is headless but runs no model and builds no prompt, so it is not a turn — the two questions have to stay separable.
     expect(execTurnRequested(["electron", "main.js", flag])).toBe(false);
   });
 });
@@ -340,13 +332,14 @@ describe("parseExecFlags", () => {
   });
 
   it("accepts a paired workload broker and defers guest cwd host stat", () => {
+    const cwd = resolve(LAUNCH_CWD, "unmounted-workload");
     const request = expectRequest(parseExecFlags([
       "--exec=hi",
-      "--exec-cwd=/app",
+      `--exec-cwd=${cwd}`,
       "--exec-workload-broker=/run/ave/workload.sock",
       "--exec-workload-capability=/run/ave/capability.json",
-    ], LAUNCH_CWD));
-    expect(request.turn?.cwd).toBe("/app");
+    ], LAUNCH_CWD, "linux"));
+    expect(request.turn?.cwd).toBe(cwd);
     expect(request.workloadBroker).toEqual({
       socketPath: "/run/ave/workload.sock",
       capabilityPath: "/run/ave/capability.json",
@@ -436,7 +429,32 @@ describe("parseExecFlags", () => {
     [["--set-secret="], "empty key"],
     [["--exec", "--set-secret=k"], "consumes stdin"],
   ])("rejects %j", (argv, fragment) => {
-    expect(parseExecFlags(argv, LAUNCH_CWD)).toEqual({ error: expect.stringContaining(fragment) });
+    expect(parseExecFlags(argv, LAUNCH_CWD, "linux"))
+      .toEqual({ error: expect.stringContaining(fragment) });
+  });
+
+  it.each([
+    ["--exec-workload-broker", "--exec-workload-broker=/run/ave/workload.sock"],
+    ["--exec-workload-broker", "--exec-workload-broker"],
+    ["--exec-workload-capability", "--exec-workload-capability=/run/ave/capability.json"],
+    ["--exec-workload-capability", "--exec-workload-capability"],
+  ])("refuses %s on native Windows (%s)", (flag, arg) => {
+    expect(parseExecFlags(["--exec=hi", arg], LAUNCH_CWD, "win32")).toEqual({
+      error: `exec: ${flag} selects the workload broker, which is the Linux route and is not supported on native Windows`,
+    });
+  });
+
+  it.each(["linux", "darwin"] as const)("still parses the workload broker pair on %s", (platform) => {
+    const request = expectRequest(parseExecFlags([
+      "--exec=hi",
+      "--exec-cwd=/app",
+      "--exec-workload-broker=/run/ave/workload.sock",
+      "--exec-workload-capability=/run/ave/capability.json",
+    ], LAUNCH_CWD, platform));
+    expect(request.workloadBroker).toEqual({
+      socketPath: "/run/ave/workload.sock",
+      capabilityPath: "/run/ave/capability.json",
+    });
   });
 
   it("allows a secret beside an inline prompt", () => {
@@ -673,7 +691,7 @@ describe("runExecTurn — headless approvals", () => {
     expect(harness.stderr.text()).toContain("did not bind to the requested project root");
   });
 
-  it("accepts a default-root alias that the session bound as the canonical default", async () => {
+  it.skipIf(!canCreateSymlinks())("accepts a default-root alias that the session bound as the canonical default", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-exec-alias-"));
     try {
       const alias = join(root, "workspace-link");

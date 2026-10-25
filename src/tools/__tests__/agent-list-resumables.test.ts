@@ -2,13 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAgentListTool } from "../agent-list.js";
 import { A2ATaskState } from "../../shared/a2a.js";
 
-/**
- * agent_list must answer the question the model actually asks it: "which
- * agents exist?" — including THIS conversation's suspended sub-agents. The
- * observed failure this pins: told to continue the agents, the model called
- * agent_list, got only profile definitions, and spawned fresh agents,
- * discarding the suspended children's context.
- */
+// Include this conversation's suspended children so listing agents does not discard resumable context.
 const PARENT = "9ebd3fcc-3317-4e83-9914-f6b32d3672ac";
 
 function makeTool(
@@ -67,10 +61,7 @@ describe("agent_list existing sub-agents", () => {
   });
 
   it("advertises only what the runner's resume gate accepts — INPUT_REQUIRED", async () => {
-    // The runner's resumeWithPolicy rejects everything but INPUT_REQUIRED, so
-    // advertising SUBMITTED/WORKING/unrecorded as resumable sends the model
-    // into a guided retry loop against a permanent rejection. They stay
-    // listed (the model benefits from knowing they existed) but non-resumable.
+    // Only INPUT_REQUIRED is resumable; list other states without inviting a rejected resume.
     const tool = makeTool([
       { spawnId: "s3", childSessionId: "sub-aaaa-3333", title: "t", modifiedAt: new Date() },
       { spawnId: "s4", childSessionId: "sub-aaaa-4444", title: "t", modifiedAt: new Date(), taskState: A2ATaskState.WORKING },
@@ -82,10 +73,7 @@ describe("agent_list existing sub-agents", () => {
   });
 
   it("does not advertise an INPUT_REQUIRED child whose resume budget is spent", async () => {
-    // The state SOT is only half the resume gate. A child that spent its
-    // resume-axis budget stays INPUT_REQUIRED forever, so reading the state
-    // alone advertises a resume that the runner refuses without running a
-    // turn — the same wasted round the WORKING case above exists to prevent.
+    // INPUT_REQUIRED is not resumable after the child's resume budget is exhausted.
     const tool = makeTool(
       [
         { spawnId: "s6", childSessionId: "sub-aaaa-6666", title: "live", modifiedAt: new Date(), taskState: A2ATaskState.INPUT_REQUIRED },

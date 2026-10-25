@@ -1,45 +1,9 @@
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
-/**
- * bootstrap() integration lock — §4.2 Boot Sequence.
- *
- * `boot.ts::bootstrap()` is the thin orchestrator that assembles the entire
- * AppServices graph. It had ZERO integration coverage: every existing boot
- * test exercises an extracted helper (sandbox-gate, plugin-runtime, managed-
- * marketplace, bootstrap-status, …) but none runs `bootstrap()` end-to-end.
- *
- * This test locks the CURRENT observable contract of a successful boot before
- * the decomposition refactor (C18) rearranges it:
- *
- *   1. AppServices KEY SET — the exact set of assembled service keys
- *      (`toMatchInlineSnapshot`). This is the primary lock: a decomposition
- *      must not silently drop or rename a service.
- *   2. CONSTRUCTION-ORDER invariants — the documented ordering guarantees that
- *      matter for correctness (approvalGate / permissionManager / routinesStore
- *      built and revocations fed BEFORE initPluginRuntime; the plugin
- *      runtime built before the ConversationLoop; the ConversationLoop built
- *      before the late-bound SubAgentRunner). Captured via call-order recording
- *      on the mocked seams.
- *   3. Cheap high-value boot outputs — the deferred lifecycle handles main.ts
- *      depends on (`shutdown`, `startRoutinesScheduler`, `startWorkBoardDueSoon`,
- *      `registerPluginEventBridge`) are wired as callables.
- *
- * Everything heavy is mocked at the module seam (electron, the boot step
- * modules, every store/service class, MCP, ASRT sandbox). The OS sandbox gate
- * is held OFF (settings `osToolSandbox:false`, no `AVE_SANDBOX_ENABLED`) so the
- * boot takes the deterministic skip path and never touches @anthropic-ai/
- * sandbox-runtime. The server marketplace fetcher is always the disabled
- * variant (packages arrive through the git marketplace), which is why the
- * mcp/agent/skill artifact stores are absent from the graph.
- *
- * COVERAGE CAVEAT: this locks the service-assembly SHAPE + ordering, not the
- * runtime behavior of each wired closure (those closures capture mocked deps
- * and are exercised by their own unit tests). It is a structural regression
- * lock for the decomposition, deliberately GREEN against current code.
- */
+/** Boot integration checks service shape and construction order with heavy dependencies mocked.
+ * It does not verify the behavior of closures wired to those mocks. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-// Shared call-order recorder. `vi.hoisted` guarantees this exists before the
-// hoisted vi.mock factories run, so each mocked seam can record when it fires.
+// Use a hoisted recorder so mock factories can record construction order.
 const h = vi.hoisted(() => {
   const order: string[] = [];
   const captured: Record<string, unknown> = { shutdownHooks: [] as string[] };
@@ -50,11 +14,7 @@ const h = vi.hoisted(() => {
   return { order, captured, rec, disposer };
 });
 
-// ── electron ───────────────────────────────────────────────────────────────
-// `app` is backed by a REAL EventEmitter rather than bare spies: the listener
-// ceiling this file locks (see the shutdown-listener describe at the bottom) is
-// a property of the emitter, so a boot that added listeners past Node's default
-// would have to make the emitter itself warn for the guard to mean anything.
+// Use a real event emitter so listener-ceiling assertions observe actual runtime warnings.
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   const BrowserWindow = Object.assign(function BrowserWindow() {}, {
@@ -90,10 +50,7 @@ vi.mock("electron", async () => {
   };
 });
 
-// The shutdown coordinator is a seam here for two reasons: importing it for
-// real would drag every teardown target (servers, pty manager, host API) into
-// this file's graph, and the hook NAMES are what the listener-ceiling suite
-// asserts bootstrap registers.
+// Mock shutdown implementation but assert registered hook names without importing the teardown graph.
 vi.mock("../../main/app-shutdown.js", () => ({
   configureAppShutdownHost: vi.fn(),
   registerBootPluginShutdown: vi.fn(),
@@ -105,7 +62,6 @@ vi.mock("../../main/app-shutdown.js", () => ({
   runAppShutdownCleanup: vi.fn(async () => "completed"),
 }));
 
-// ── boot step seams (the modules bootstrap orchestrates) ─────────────────────
 vi.mock("../services.js", () => ({
   bootstrapCoreServices: vi.fn(async () => {
     h.rec("core");
@@ -135,9 +91,7 @@ vi.mock("../services.js", () => ({
         deletePluginSecrets: vi.fn(async () => 0),
       },
       memoryManager: {},
-      // Core boot now owns a capture gateway whose reviewer is late-bound once
-      // the active conversation loop has been created. Keep the integration
-      // graph faithful to the production CoreServices contract.
+      // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
       inputClassifier: {},
       toolRegistry: { setDenyRules: vi.fn(), size: 0 },
@@ -154,9 +108,10 @@ vi.mock("../conversation.js", () => ({
       getVisibilityDenyRules: vi.fn(() => []),
       setBroadcastUserApprovalHit: vi.fn(),
       setBroadcastConfigChanged: vi.fn(),
-      // Boot pushes the Layer 1 read fence in from the settings file on every
-      // reviewer re-wire, so a stub that omits it fails the whole bootstrap.
+      // Every reviewer rewire must apply the settings read fence.
       setBlockReadsOutsideWorkingDirectories: vi.fn(),
+      getJudgeBreaker: vi.fn(() => ({})),
+      setJudge: vi.fn(),
     };
   }),
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
@@ -174,7 +129,6 @@ vi.mock("../conversation.js", () => ({
     return {
       getSessionId: vi.fn(() => undefined),
       getTurnAdditionalDirectories: vi.fn(() => []),
-      // Wiring subscribes the A2A bus to turn-settled notifications.
       onTurnSettled: vi.fn(() => () => {}),
     };
   }),
@@ -217,9 +171,7 @@ vi.mock("../tools.js", () => ({
   wireIdleScheduler: vi.fn(async () => ({ stop: vi.fn() })),
 }));
 
-// Captures the dep bag each uninstall-lifecycle entry point receives FROM
-// bootstrap(). These are the real closures boot.ts builds; the module behind
-// them is stubbed so boot stays hermetic, but the arguments are production's.
+// Capture real boot closure arguments while mocking lifecycle implementations.
 vi.mock("../../plugins/uninstall-lifecycle.js", () => ({
   recoverPendingPluginUninstallCleanups: vi.fn(async (deps: unknown) => {
     h.captured["recoverCleanupDeps"] = deps;
@@ -273,11 +225,10 @@ vi.mock("../steps/plugin-runtime.js", () => ({
 vi.mock("../../plugins/plugin-bundle-lifecycle.js", () => ({
   PluginBundleLifecycle: class {
     recoverRetirements = vi.fn(async () => h.rec("retirementsRecovered"));
+    bundledMcpCredentialSource = vi.fn(() => ({}));
   },
 }));
 
-// The revocation feed is mocked so the headless assertions below can read
-// what boot hands it.
 vi.mock("../steps/revocation-bootstrap.js", () => ({
   feedRevocationsFromSnapshots: vi.fn(async (input: { home: string; pluginRegistryPath: string }) => {
     h.captured["revocationFeed"] = { home: input.home, pluginRegistryPath: input.pluginRegistryPath };
@@ -347,7 +298,6 @@ vi.mock("../plugin-surface-permissions.js", () => ({
   setActivePluginSurfacePermissionScope: vi.fn(),
 }));
 
-// ── data / mcp ───────────────────────────────────────────────────────────────
 vi.mock("../../data/starred-store.js", () => ({ StarredStore: class {} }));
 vi.mock("../../data/feedback-store.js", () => ({ FeedbackStore: class {} }));
 
@@ -365,13 +315,13 @@ vi.mock("../../mcp/mcp-manager.js", () => ({
     killSwitch = vi.fn(async () => {});
     listServers = vi.fn(() => [] as unknown[]);
     setPluginGenerationAccess = vi.fn();
+    registerBundledCredentialSource = vi.fn();
   },
 }));
 vi.mock("../../mcp/mcp-elicitation-resolver.js", () => ({
   createElicitationResolverFactory: vi.fn(() => vi.fn()),
 }));
 
-// ── main/* services + helpers ────────────────────────────────────────────────
 vi.mock("../../main/plugin-auth-partition-tracker.js", () => ({
   openAuthWindow: vi.fn(),
   clearAuthPartition: vi.fn(),
@@ -523,7 +473,6 @@ vi.mock("../../work-board/work-memory.js", () => ({
   appendMemory: vi.fn(async () => {}),
 }));
 
-// ── plugins/* ────────────────────────────────────────────────────────────────
 vi.mock("../../plugins/marketplace.js", () => ({
   PluginMarketplaceService: class {},
 }));
@@ -555,24 +504,32 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
   })),
 }));
 
-// ── permissions/* (incl. dynamically imported sandbox modules) ───────────────
 vi.mock("../../permissions/sandbox-capability.js", () => ({
+  detectSandboxCapability: vi.fn(() => ({
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "sandbox disabled by bootstrap integration fixture",
+    confines: { filesystem: false, process: false, network: false },
+  })),
   isActiveSandboxFilesystemContained: vi.fn(() => false),
   isActiveSandboxShellContained: vi.fn(() => false),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
   setActiveSandboxCapability: vi.fn(),
-  setSandboxRequestedAtBoot: vi.fn(),
+  setShellSandboxRequestedAtBoot: vi.fn(),
+  setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
+  setWindowsSandboxSubstrate: vi.fn(),
+  getWindowsSandboxSubstrate: vi.fn(() => null),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
-  // The boot step sweeps both private roots and creates the HOME root, so they
-  // live under a directory this file owns in the OS temp dir — never the real
-  // AVE_HOME — whose parent can be created.
+  // Boot sweeps private roots; use an owned temporary home, never the real application home.
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
   const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
   return {
+    subscribeAsrtViolations: vi.fn(async () => () => {}),
     appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
     appOwnedSandboxHomeRoot: vi.fn(() => join(roots, "home")),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
@@ -584,27 +541,32 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    isAsrtMacRuntimeProbeError: vi.fn(() => false),
+    closeAllEgressConnections: vi.fn(() => 0),
     isAsrtSandboxActive: vi.fn(() => false),
-    updateAsrtSandboxConfig: vi.fn(async () => {}),
-    computeUnionAllowedDomains: vi.fn(() => []),
     normalizeUnionForAsrt: vi.fn(() => []),
     computeDynamicEndpointHosts: vi.fn(() => []),
   };
 });
-vi.mock("../../permissions/permission-settings-store.js", () => ({
-  readPermissionSettings: vi.fn(() => ({
-    permissions: { additionalDirectories: [] },
-  })),
-}));
+vi.mock("../../permissions/permission-settings-store.js", async () => {
+  // No persisted judge block means judge off.
+  const { normalizeJudgeSettings } = await import("../../permissions/judge/judge-settings.js");
+  return {
+    readPermissionSettings: vi.fn(() => ({
+      permissions: { additionalDirectories: [] },
+    })),
+    readJudgeSettings: vi.fn(() => normalizeJudgeSettings(undefined)),
+  };
+});
 vi.mock("../../permissions/user-approval-store.js", () => ({
   migrateCanonicalization: vi.fn(async () => {}),
+  setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({
   bindManifestIntegrityAudit: vi.fn(),
   manifestIntegrityState: { onViolation: vi.fn() },
 }));
 
-// ── audit/* (dynamically imported inside bootstrap) ──────────────────────────
 vi.mock("../../audit/audit-logger.js", () => ({
   AuditLogger: class {
     setupPermissionAuditChain = vi.fn();
@@ -628,8 +590,7 @@ vi.mock("../../audit/hmac-chain.js", () => ({
   computeLineHmac: vi.fn(() => "h".repeat(64)),
 }));
 
-// ── ipc/domains/permissions.js — mocked so the concurrently-edited IPC domain
-//    tree is not pulled into this test (bootstrap only needs the broadcaster).
+// Mock the broadcaster to keep unrelated IPC implementations out of the boot graph.
 vi.mock("../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
@@ -638,9 +599,7 @@ import { bootstrap, type AppServices } from "../../boot.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
-// Boot resolves `~/.ave` through `AVE_HOME` (the retired-cache sweep in
-// marketplace-setup removes directories under it), so both boots below run
-// against a scratch home, never the developer's own.
+// Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
 process.env["AVE_HOME"] = "/tmp/ave-boot-test/ave-home";
 afterAll(() => {
@@ -648,15 +607,9 @@ afterAll(() => {
   else process.env["AVE_HOME"] = savedAveHome;
 });
 
-/**
- * Node reports a listener leak through `process.emitWarning`, so the spy has to
- * be in place before the first boot below runs. It keeps the real
- * implementation: the assertion is about what was emitted, not about silencing
- * it.
- */
+/** Observe process warnings before boot and keep the real implementation so leak checks cannot silence their evidence. */
 const emitWarningSpy = vi.spyOn(process, "emitWarning");
 
-/** Names of the warnings Node raised while the boots below ran. */
 function emittedWarningNames(): string[] {
   return emitWarningSpy.mock.calls.map(([warning]) =>
     typeof warning === "string" ? warning : String((warning as Error)?.name ?? warning),
@@ -670,7 +623,6 @@ function fakeWindow() {
   } as unknown as import("electron").BrowserWindow;
 }
 
-/** Assert both labels were recorded and `a` fired strictly before `b`. */
 function assertBefore(a: string, b: string) {
   const ia = h.order.indexOf(a);
   const ib = h.order.indexOf(b);
@@ -686,13 +638,9 @@ describe("bootstrap() integration lock", () => {
   let services: AppServices;
   let savedSandboxEnv: string | undefined;
 
-  // A whole-app boot, not an ordinary fixture. The suite-wide 45s hook budget is
-  // sized for the latter, and this hook lands within a few seconds of it on
-  // Windows once the runner transforms the full service graph on demand — so a
-  // loaded full-suite run times the hook out and skips all nine assertions. The
-  // headroom is for the runner's import cost, not for the product's boot.
+  // Allow for transforming the whole service graph on Windows; the extra hook budget covers import cost.
   beforeAll(async () => {
-    // Hold the OS-sandbox gate OFF for a deterministic skip path (no ASRT init).
+    // Keep OS isolation off for a deterministic boot path without native runtime initialization.
     savedSandboxEnv = process.env["AVE_SANDBOX_ENABLED"];
     delete process.env["AVE_SANDBOX_ENABLED"];
     const win = fakeWindow();
@@ -718,6 +666,15 @@ describe("bootstrap() integration lock", () => {
     expect(readPluginRegistry).toHaveBeenLastCalledWith("/tmp/ave-boot-test/plugins/registry.json");
     vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
     expect(await getIds()).toEqual([]);
+  });
+
+  it("registers the app-plugin MCP credential source over a registry that must exist to vouch", async () => {
+    const lifecycle = services.pluginBundleLifecycle as unknown as { bundledMcpCredentialSource: ReturnType<typeof vi.fn> };
+    const mcp = services.mcpManager as unknown as { registerBundledCredentialSource: ReturnType<typeof vi.fn> };
+    const [installedPackages] = lifecycle.bundledMcpCredentialSource.mock.calls[0] as [() => Promise<ReadonlySet<string> | undefined>];
+    expect(mcp.registerBundledCredentialSource).toHaveBeenCalledWith("plugin", lifecycle.bundledMcpCredentialSource.mock.results[0]!.value);
+    // An existing empty registry would retire every sign-in; use a nonexistent path.
+    await expect(installedPackages()).resolves.toBeUndefined();
   });
 
   it("dispatches a routine whose canonical plugin ID differs from its registry install ID", async () => {
@@ -852,54 +809,31 @@ describe("bootstrap() integration lock", () => {
   });
 
   it("enforces the documented construction-order invariants", () => {
-    // Core services are the foundation — everything else depends on them.
     assertBefore("core", "approvalGate");
-    // §B1/§F7 + cluster M1 + Routines-SOT: the ApprovalGate,
-    // PermissionManager, and RoutinesStore are ALL built before
-    // initPluginRuntime, because the per-plugin HostApi factory wires against
-    // each of them at plugin construction time.
+    // Build approval, permission, and routine services before plugin construction consumes their HostApi dependencies.
     assertBefore("approvalGate", "initPluginRuntime");
     assertBefore("permissionManager", "initPluginRuntime");
     assertBefore("routinesStore", "initPluginRuntime");
-    // Revocations reach the load gate before any plugin can load.
+    // Revocations must reach the load gate before any plugin loads.
     assertBefore("revocation", "initPluginRuntime");
-    // The plugin runtime exists before the ConversationLoop is composed (the
-    // loop captures pluginRuntime among its deps).
+    // Create plugin runtime before the conversation loop captures it.
     assertBefore("initPluginRuntime", "conversationLoop");
-    // The ConversationLoop is built before the late-bound SubAgentRunner, which
-    // reuses the loop's dep set.
+    // Create the loop before the late-bound sub-agent runner reuses its dependencies.
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
     assertBefore("retirementsRecovered", "startPlugins");
-    // Runtime deletes of trees a confined child may still write wait for these
-    // boot sweeps, which must finish before any plugin starts.
+    // Finish boot sweeps before any confined process can write into trees scheduled for deletion.
     assertBefore("tombstonesSwept", "startPlugins");
     assertBefore("socketDiscardSwept", "startPlugins");
-    // Storage written before the host-only directory existed is copied out of
-    // `data/` before any plugin (or other confined process) can run.
-    // Loading a plugin (inside initPluginRuntime) refuses a root whose data/
-    // holds state but has no storage/ yet, so the copy precedes the load too.
+    // Copy state from data/ to storage/ before confined processes start; plugin loading refuses unmigrated roots.
     assertBefore("hostStorageMigrated", "initPluginRuntime");
     assertBefore("hostStorageMigrated", "startPlugins");
-    // Plugins register their alert kinds as they start, and a boot-time
-    // uninstall replay must find the alerts pipeline listening.
+    // Start alert listeners before uninstall replay encounters plugin alert kinds.
     assertBefore("alertsSetup", "uninstallCleanupReplay");
     assertBefore("alertsSetup", "startPlugins");
   });
 
-  // ── plugin-state cleanup dep bag ────────────────────────────────────────
-  //
-  // `plugin.uninstalled` is what drops the stale registry-entry cache entry
-  // (src/boot/steps/plugin-runtime.ts:555 → refreshRegistryEntryCache, whose
-  // comment says "so a re-install does not inherit the previous Tier-3 bypass
-  // or manifest SHA decision") and what every per-plugin
-  // `onEvent("plugin.uninstalled")` subscriber hangs off. It is optional on
-  // `PluginUninstallLifecycleDeps`, so a wiring that forgets it type-checks and
-  // silently emits nothing.
-  //
-  // boot.ts used to hand-spell the dep bag three times and pass `emitHostEvent`
-  // in exactly ONE of them. These assertions drive the REAL closure bootstrap()
-  // built and check the arguments that actually reach the lifecycle module.
+  // Drive the actual boot closures and require emitHostEvent on every uninstall path; an omitted optional callback silently loses uninstall events.
   describe("plugin-state cleanup dep bag", () => {
     function bagFor(key: string): Record<string, unknown> {
       const bag = h.captured[key];
@@ -921,7 +855,6 @@ describe("bootstrap() integration lock", () => {
   });
 
   it("wires the core, conversation, and plugin-runtime seams into the graph", () => {
-    // Present as assembled objects (the graph is wired, not partial).
     expect(services.conversationLoop).toBeDefined();
     expect(services.approvalGate).toBeDefined();
     expect(services.pluginRuntime).toBeDefined();
@@ -982,8 +915,7 @@ describe("bootstrap() integration lock", () => {
   });
 
   it("stops its own timers and watchers through the shutdown coordinator, not its own listeners", () => {
-    // The interactive launch still wires both of bootstrap's teardown paths —
-    // it just no longer spends an Electron listener on either.
+    // Interactive boot must wire both teardown paths without adding application listeners.
     expect(h.captured["shutdownHooks"]).toEqual(["watcher-telemetry", "diff-cache"]);
     expect(h.captured["appEvents"]).toBeUndefined();
   });
@@ -998,17 +930,7 @@ describe("bootstrap() integration lock", () => {
   });
 });
 
-/**
- * A headless `--exec` boot opens no DISCRETIONARY service connection.
- *
- * The rule is one fact — the `launch` argument — and this suite is what proves
- * each consequence comes off it: neither the release check, the telemetry
- * uploaders, the announcement poll nor the model catalog refresh are started. (The git marketplace's sync starts with the window, in main.ts, so
- * a headless boot never reaches it.) It also proves the halves of the
- * boundary that are NOT discretionary: revocations are still fed from the
- * local snapshots, and plugins on disk still load. The interactive boot above
- * is the control; both run against the same mocked seams.
- */
+/** Headless boot suppresses discretionary network refreshes while retaining local revocations and plugin loading. */
 describe("bootstrap() headless launch opens no discretionary service connection", () => {
   let headlessServices: AppServices;
   let savedSandboxEnv: string | undefined;
@@ -1016,8 +938,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
   beforeAll(async () => {
     savedSandboxEnv = process.env["AVE_SANDBOX_ENABLED"];
     delete process.env["AVE_SANDBOX_ENABLED"];
-    // The interactive boot above already called each of these, and recorded its
-    // own ordering; the assertions here are about what THIS boot does.
+    // Assertions here isolate the headless boot from the interactive control's recorded calls.
     vi.mocked(wireAnnouncementCheck).mockClear();
     vi.mocked(wireModelCatalogRefresh).mockClear();
     h.order.length = 0;
@@ -1038,7 +959,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
   });
 
   it("still feeds the plugin trust chain", () => {
-    // Revocations and host-secret grants read only local snapshots.
+    // Revocations and secret grants read local snapshots only.
     expect(h.order).toContain("revocation");
     expect(h.captured["revocationFeed"]).toEqual({ home: expect.any(String), pluginRegistryPath: expect.stringMatching(/registry\.json$/u) });
   });
@@ -1056,8 +977,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
   });
 
   it("still loads the plugins already on disk", () => {
-    // The point of the cut: what is dropped is the network refresh in front of
-    // the registry snapshot, never the snapshot itself.
+    // Suppress network refresh without dropping the registry snapshot.
     expect(h.order).toContain("initPluginRuntime");
     expect(h.order).toContain("startPlugins");
     expect(headlessServices.pluginRuntime.listPluginIds()).toEqual([]);
@@ -1070,10 +990,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     routineEngineOptions.createConversationLoop({ scope: {} });
     const mainDeps = h.captured["mainConversationDeps"] as Record<string, unknown>;
     expect(mainDeps["approvalSurface"]).toBe("unavailable");
-    // Native --exec keeps the ordinary main-chat tool and egress scope. The
-    // approval capability must never be inferred from the routine-only
-    // `headless` scope switch; the unattended policy lane is a host-issued
-    // per-turn authority minted by exec-mode, not a loop flag.
+    // One-shot execution keeps main-chat tool and egress scope; unattended authority is host-issued per turn and must not be inferred from headless flags.
     expect(mainDeps["headless"]).toBeUndefined();
     expect(mainDeps["allowedPluginIds"]).toBeUndefined();
     expect(mainDeps["toolRegistry"]).toBe(headlessServices.toolRegistry);
@@ -1099,11 +1016,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
   });
 
   it("adds no `before-quit` listener of its own, and Node never reports a leak", () => {
-    // A one-shot run writes its stderr straight to whoever launched it, so a
-    // `MaxListenersExceededWarning` there reads as a defect in the run. The
-    // count is bounded by construction: teardown that needs no ordering is a
-    // shutdown hook, and both hooks below share the single listener `main.ts`
-    // owns — which this file's Electron seam never installs.
+    // One-shot stderr exposes listener leaks; unordered teardown hooks must share the main process listener.
     expect((h.captured["shutdownHooks"] as string[])).toEqual([
       "watcher-telemetry",
       "diff-cache",

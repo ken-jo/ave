@@ -1,15 +1,4 @@
-/**
- * Permission policy Layer 3 — Category Registry coverage.
- *
- * Pins the contract:
- *   - registerStandardCategories() populates exactly 5 axes
- *   - lookup throws on unknown categories
- *   - listKnownCategories() reports the populated set
- *   - decisionFor() returns the design's matrix lanes
- *
- * Phase 3 risk classifier will read riskWeight here; pin those numbers
- * so a future weight bump is a deliberate decision.
- */
+// Pin category weights so changes to the permission matrix are deliberate.
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import {
   clearCategoryRegistry,
@@ -20,9 +9,7 @@ import {
 } from "../category-registry.js";
 import type { ToolCategory } from "../../tools/types.js";
 
-// Restore the standard set at file teardown so other tests in the same
-// vitest worker (which cache module state) don't observe an empty
-// registry left over by the lookup-errors describe block.
+// Restore the standard set at file teardown so other tests in the same vitest worker (which cache module state) don't observe an empty registry left over by the lookup-errors describe block.
 afterAll(() => {
   clearCategoryRegistry();
   registerStandardCategories();

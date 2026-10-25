@@ -1,19 +1,5 @@
-/**
- * Terminal and web panels in the main area — a pane whose content is a
- * surface (`ViewLocation.view` `terminal` / `web` with its `surface` id).
- *
- * The pane draws the same frame every pane draws; what differs is the body.
- * A terminal body is the PTY view for the surface's tab id (`PtyTerminalView`,
- * single-mounted, so the same tab shown elsewhere hands over rather than
- * duplicating). A web body is an address row over a `WebSurfaceSlot`: the page
- * itself lives in the window's surface layer and is only laid over the slot,
- * so a routed-away or hidden web pane keeps its page.
- *
- * Each surface pane has its own chat panel beside its body (the header's
- * panel toggle): the side chat, bound to this pane's tab, so what the user
- * asks there acts on the page or terminal they are looking at.
- */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
+/** Terminal views hand over a single mount; web pages remain in the window layer when their panes are hidden. */
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, PanelRightClose, PanelRightOpen, RotateCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -23,7 +9,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { BUILTIN_VIEW_ICONS, BUILTIN_LABEL_KEYS } from "../utils/view-location.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
-import { getWebSurfaceElement, subscribeWebSurfaces } from "../preview/web-surfaces.js";
+import { useGuestNavigation, useWebSurfaceGuest, type GuestElement, type GuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { MainSurface } from "../preview/main-surfaces.js";
 import { PaneFrame, usePanePanelSlot } from "./PaneFrame.js";
 import { SideChatView, type SideChatRuntime } from "./SideChatView.js";
@@ -32,67 +18,9 @@ import { PtyTerminalView } from "./PtyTerminalView.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
-import { navigateBrowserTabAsUser, useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
-import { AgentControlBadge } from "./AgentControlBadge.js";
-
-/** The subset of a `<webview>` a panel's chrome drives. */
-interface GuestElement extends HTMLElement {
-  getURL(): string;
-  getTitle(): string;
-  canGoBack(): boolean;
-  canGoForward(): boolean;
-  goBack(): void;
-  goForward(): void;
-  reload(): void;
-}
-
-export interface GuestNavigation {
-  url: string | null;
-  title: string | null;
-  canGoBack: boolean;
-  canGoForward: boolean;
-}
-
-const NO_NAVIGATION: GuestNavigation = { url: null, title: null, canGoBack: false, canGoForward: false };
-
-/** The live `<webview>` of a tab, once the layer has rendered it. */
-export function useWebSurfaceGuest(tabId: string): GuestElement | null {
-  return useSyncExternalStore(subscribeWebSurfaces, () => getWebSurfaceElement(tabId)) as GuestElement | null;
-}
-
-/**
- * Where the tab's page actually is — its live url and title, which a page
- * changes on its own (links, redirects, SPA routes) — read from the guest's
- * navigation events. Before the guest has attached there is nothing to read.
- */
-export function useGuestNavigation(guest: GuestElement | null): GuestNavigation {
-  const [state, setState] = useState<GuestNavigation>(NO_NAVIGATION);
-  useEffect(() => {
-    if (!guest) {
-      setState(NO_NAVIGATION);
-      return undefined;
-    }
-    const read = () => {
-      try {
-        setState({
-          url: guest.getURL() || null,
-          title: guest.getTitle() || null,
-          canGoBack: guest.canGoBack(),
-          canGoForward: guest.canGoForward(),
-        });
-      } catch {
-        // `getURL` throws until the guest has attached; its dom-ready reads again.
-      }
-    };
-    const events = ["dom-ready", "did-navigate", "did-navigate-in-page", "page-title-updated", "did-stop-loading"];
-    for (const name of events) guest.addEventListener(name, read);
-    read();
-    return () => {
-      for (const name of events) guest.removeEventListener(name, read);
-    };
-  }, [guest]);
-  return state;
-}
+import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
+import { BrowserControlHeader } from "./BrowserControlHeader.js";
+import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 
 /** A web page's name for its pane: its title, else its host, else the kind's label. */
 export function webPanelTitle(navigation: GuestNavigation, fallbackUrl: string | null, kindLabel: string): string {
@@ -125,8 +53,6 @@ function WebPanelBody({
 }) {
   const { t } = useTranslation();
   const shownUrl = navigation.url ?? surface.url ?? "";
-  const agentControlled = useAgentControlledTabIds().has(surface.tabId);
-  const stopAgent = () => void api.browserTabs?.stop(surface.tabId);
   const navigateAsUser = (navigate: () => void) => void navigateBrowserTabAsUser(api, surface.tabId, navigate);
   const [draft, setDraft] = useState(shownUrl);
   const [error, setError] = useState<string | null>(null);
@@ -158,7 +84,7 @@ function WebPanelBody({
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
-      {agentControlled ? <AgentControlBadge onStop={stopAgent} /> : null}
+      <BrowserControlHeader api={api} tabId={surface.tabId} />
       <form
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
@@ -191,6 +117,7 @@ function WebPanelBody({
           "web-panel-open-external",
         )}
       </form>
+      <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
       {error ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="web-panel-address-error">{error}</div>
       ) : null}
@@ -226,10 +153,8 @@ type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "chi
 /** The pane chat's share of the tile: room for a transcript, never most of the page. */
 const PANE_CHAT_WIDTH = "clamp(280px, 38%, 440px)";
 
-/**
- * A surface pane's own chat, docked in the tile's aside slot beside the page
- * or terminal. It is the side chat, bound to this pane's tab.
- */
+/** A surface pane's own chat, docked in the tile's aside slot beside the page or terminal. It is the side chat, bound to
+ * this pane's tab. */
 function PaneChatPanel({
   api,
   surface,
@@ -267,18 +192,14 @@ function PaneChatPanel({
   );
 }
 
-/**
- * A pane showing a terminal or a web page. `frame` carries what every pane is
- * as a tile (focus, split, maximize, close); this component adds the title,
- * glyph and body that the surface decides.
- */
+/** A pane showing a terminal or a web page. `frame` carries what every pane is as a tile (focus, split, maximize, close);
+ * this component adds the title, glyph and body that the surface decides. */
 export function SurfacePane({
   api,
   surface,
   paneId,
   frame,
   onNavigate,
-  onCwd,
   onAttachText,
   chatRuntime,
   onSessionsChanged,
@@ -293,8 +214,6 @@ export function SurfacePane({
   onSessionsChanged?: () => void | Promise<void>;
   /** A web surface's address row asked for `url`. */
   onNavigate: (tabId: string, url: string) => void;
-  /** A terminal's shell reported its working directory. */
-  onCwd: (tabId: string, cwd: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
   onAttachText?: (text: string) => AttachTextResult;
 }) {
@@ -307,7 +226,6 @@ export function SurfacePane({
   const label = `${kindLabel} ${surface.ordinal}`;
   const title = surface.kind === "terminal" ? label : webPanelTitle(navigation, surface.url, label);
   const attention = useTerminalAttention().get(surface.tabId)?.message ?? null;
-  const reportCwd = useCallback((cwd: string) => onCwd(surface.tabId, cwd), [onCwd, surface.tabId]);
   const meta = surface.kind === "terminal" && surface.cwd ? { text: directoryName(surface.cwd), title: surface.cwd } : null;
   // The pane's own chat: the header's panel toggle opens it beside the body.
   const [chatOpen, setChatOpen] = useState(false);
@@ -350,7 +268,6 @@ export function SurfacePane({
             tabLabel={label}
             initialCwd={surface.cwd ?? null}
             attended={frame.focused ?? false}
-            onCwd={reportCwd}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (

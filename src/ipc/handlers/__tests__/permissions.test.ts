@@ -1,16 +1,3 @@
-/**
- * permissions.ts (handlers) — negative-path regression guards for the trust
- * narrowing (3-agent cluster review of PR #1441, critic MAJOR-1).
- *
- * `resolvePermissionModeApprovalBypass`
- * (`src/permissions/permission-mode-apply.ts`) is the ONLY place a
- * transport-agnostic {@link SetPermissionModeBypass} is narrowed into the strict
- * {@link PermissionModeApprovalBypass} that lets `applyPermissionModeCommand`
- * skip the in-app approval surface. These tests pin down every rejected shape
- * as well as the two accepted surfaces, plus a behavior-level guard that a
- * rejected bypass never short-circuits the durable-mode approval flow in
- * {@link handleSetPermissionMode}.
- */
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -160,15 +147,12 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
       explicitUserAction: true,
     });
 
-    // The bypass was rejected by resolvePermissionModeApprovalBypass, so
-    // applyPermissionModeCommand had to go through the normal ApprovalGate
-    // ask — which this test stubs to deny. The mutation must NOT apply.
+    // A rejected bypass must still enter the normal approval path and leave denied mutations unapplied.
     expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
     expect(result).toMatchObject({ ok: false, error: "durable-mode-denied" });
   });
 
-  // ── Durability follows the CHANNEL ──
   it("the in-app settings surface still gets a DURABLE change (unchanged local-UI trust context)", async () => {
     const { deps, permissionManager, approvalGate } = makeDeps();
 
@@ -181,7 +165,6 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
     expect(result).toEqual({ ok: true, mode: "auto" });
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("auto");
     expect(permissionManager.setMode).not.toHaveBeenCalled();
-    // The built-in confirmation still stands in for the prompt.
     expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
   });
 
@@ -210,7 +193,6 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
     expect(result).toEqual({ ok: true, mode: "auto" });
     expect(permissionManager.setMode).toHaveBeenCalledWith("auto");
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
-    // Still no second prompt: the ApprovalGate dock already asked.
     expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
   });
 
@@ -228,8 +210,7 @@ describe("handleSetPermissionMode — rejected bypass does not short-circuit app
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
   });
 
-  // A shape that fails narrowing is NOT "external" — downgrading it to a
-  // session change would drop the ApprovalGate ask that currently guards it.
+  // Failed provenance narrowing cannot downgrade an external mutation into an unprompted session change.
   it("a bypass that fails narrowing still takes the durable path (and its prompt)", async () => {
     const { deps, approvalGate } = makeDeps();
 

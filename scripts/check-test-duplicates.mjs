@@ -1,24 +1,4 @@
-/**
- * check-test-duplicates.mjs — duplicated test-helper scan
- *
- * Two comparisons, one gate and one report:
- *
- *   - EXACT: two helpers whose normalised bodies are byte-identical (comments
- *     and whitespace stripped). This is the gate (`--fail-on-duplicates`).
- *   - PARAPHRASE: two helpers whose bodies differ only in parameter names,
- *     literals, or a `reject` handle one of them also threads through. This
- *     is reported, never failed.
- *
- * WHY THE SECOND COMPARISON EXISTS. An audit found eight `deferred()`
- * promise helpers, seven approval-gate stubs and nine `makeRequest()` fixture
- * builders spread across suites while this gate printed
- * `duplicate helper implementations: 0` — every pair differed by a renamed
- * parameter, a `reject` the second copy also captured, or a `PromiseLike`
- * where the first said `Promise`. An exact-body gate reads a tree full of
- * near-copies as clean, and "0" was taken as "nothing to share". The
- * paraphrase count makes that scatter visible without turning every renamed
- * parameter into a red push; a helper worth sharing is a review decision.
- */
+// Exact normalized helper copies fail; near-copies are advisory candidates for sharing.
 import { basename, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
@@ -39,10 +19,9 @@ const ROOT = process.cwd();
 
 const SKIP_DIRS = new Set([
   ".git",
-  // Agent worktrees (`.claude/worktrees/**` and `.worktrees/**`) are transient
-  // checkouts of this very
-  // repo — scanning them reports every helper as a 2-3x "duplicate" of itself, and
-  // they never exist in CI's clean checkout. Skip so a local run matches CI.
+  // Generated dependency caches can contain their packages' own test suites.
+  ".cache",
+  // Exclude transient worktrees so helpers are not counted as copies of themselves.
   ".claude",
   ".worktrees",
   "coverage",
@@ -61,13 +40,8 @@ const SHARED_RENDERER_MOCK_FILE_RE = /^mock-ave-api\.(?:ts|tsx|mts|mjs|js)$/;
 const TEST_SUPPORT_PATH_RE = /(?:^|\/)(?:test|__tests__|fixtures)(?:\/|$)/;
 const HELPER_NAME_RE =
   /^(?:make|create|write|setup|fixture|mock|fake|stub|build)[A-Z_][A-Za-z0-9_]*$/;
-/**
- * Floor for the advisory name-hotspot path and for same-file pairs ONLY. A
- * helper name repeated across files is worth reporting when its body is
- * substantial or its name says "fixture"; it is noise for a two-line `ctx()`.
- * The cross-file exact-body path is not gated by this — it was, and six groups
- * of identical 40-character helpers went unreported while the gate printed 0.
- */
+// Apply size thresholds only to advisory hotspots and same-file pairs.
+// Cross-file exact duplicates count at every length.
 const MIN_GENERAL_HELPER_BODY_LENGTH = 80;
 const IGNORED_HELPER_NAMES = new Set([
   "setup",
@@ -128,24 +102,13 @@ export function collectHelpers(files, root = ROOT) {
         node.forEachChild(visit);
         return;
       }
-      // Exact path: every helper a suite could import instead of redeclaring,
-      // whatever its length. Two identical bodies in two FILES are a duplicate
-      // whether they are 40 characters or 400; the length floor is only a noise
-      // filter for the name-hotspot path and for same-file pairs (see
-      // collectDuplicateBodies). What the exact path excludes is structural, not metric:
-      // closures nested inside another helper or a test body (a promise
-      // executor's `resolve`, a fixture's inner `cleanup`) are that helper's
-      // implementation, not something a second suite could share, and a body
-      // with no identifier or literal at all (`{}`, `undefined`, `() => {}`)
-      // is a placeholder, not a helper.
+      // Count shareable helpers at every length, excluding nested closures and empty placeholders.
       const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
       const candidate = isHelperCandidate(name, normalizedBody);
       if (isShareableScope(node) && hasSubstance(normalizedBody)) {
         if (!byBody.has(normalizedBody)) byBody.set(normalizedBody, []);
         byBody.get(normalizedBody).push({ name, rel, line, candidate });
-        // Paraphrase path: with names and literals collapsed, every one-line
-        // `() => "x"` helper has the same shape, so the length floor is not a
-        // noise filter here but the definition of "enough structure to share".
+        // Collapsing names makes trivial bodies identical; require enough structure for this advisory.
         if (normalizedBody.length >= MIN_GENERAL_HELPER_BODY_LENGTH) {
           const shape = normalizeHelperShape(normalizedBody);
           if (!byShape.has(shape)) byShape.set(shape, []);
@@ -179,11 +142,7 @@ function getHelperNode(node) {
   return null;
 }
 
-/**
- * A helper another file could import: declared at module scope, or directly
- * inside a `describe` callback (a module-like grouping scope). Anything nested
- * in a test body or in another function is local to that function.
- */
+// Shareable helpers live at module scope or directly inside describe, never inside test bodies.
 function isShareableScope(node) {
   let current = node.parent;
   while (current && !isSourceFile(current)) {
@@ -203,7 +162,7 @@ function isShareableScope(node) {
 
 const PLACEHOLDER_TOKENS = new Set(["undefined", "null", "true", "false", "void", "return"]);
 
-/** A body that names something — an identifier, a string, a number — rather than `{}` or a bare literal. */
+// A meaningful body names an identifier or literal instead of being an empty placeholder.
 function hasSubstance(normalizedBody) {
   const tokens = normalizedBody.match(/[A-Za-z_$][A-Za-z0-9_$]*|"[^"]*"|'[^']*'|`[^`]*`|\d+/g) ?? [];
   return tokens.some((token) => !PLACEHOLDER_TOKENS.has(token));
@@ -226,12 +185,7 @@ export function collectDuplicateNames(byName) {
     .sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]));
 }
 
-/**
- * Identical bodies across two files are always a finding. Within ONE file they
- * are a finding only when a helper is a candidate by name or size: two short
- * same-file wrappers that differ only in their defaults (`futureIso` /
- * `pastIso`) are one local API, not a copy waiting to be shared.
- */
+// Cross-file exact copies always count; same-file wrappers need a matching name or size.
 export function collectDuplicateBodies(byBody) {
   return [...byBody.entries()]
     .map(([body, entries]) => {
@@ -268,13 +222,7 @@ const KEYWORDS = new Set([
   "void", "while", "yield",
 ]);
 
-/**
- * The paraphrase key: a normalised body with every identifier collapsed to
- * `$`, every literal to `"$"` / `0`, a `reject`/`rej` handle (its
- * parameter, destructured binding, or `reject = x;` assignment) dropped, and
- * whitespace removed. Two helpers with the same key say the same thing in
- * different names.
- */
+// Normalize names, literals and optional rejection handles to detect structurally equivalent helpers.
 export function normalizeHelperShape(normalizedBody) {
   return normalizedBody
     .replace(/\b(?:reject|rej)\b\s*=\s*[A-Za-z_$][\w$]*\s*;?/g, "")
@@ -285,11 +233,7 @@ export function normalizeHelperShape(normalizedBody) {
     .replace(/\s+/g, "");
 }
 
-/**
- * Shape groups that span more than one FILE and more than one exact body:
- * the near-copies the exact gate cannot see. Groups of exact copies are the
- * gate's business and are left out here.
- */
+// Report near-copies only across files and exclude groups already caught by exact matching.
 export function collectParaphraseGroups(byShape) {
   return [...byShape.entries()]
     .map(([shape, entries]) => ({
@@ -347,7 +291,7 @@ export function runDuplicateCli(args = process.argv.slice(2), options = {}) {
     if (group.entries.length > 8) stdout(`  - ... ${group.entries.length - 8} more`);
   }
 
-  // Advisory, never a failure: see the header for why the count is printed.
+  // Near-copy findings are advisory.
   stdout(`paraphrased helper implementations (advisory): ${paraphraseGroups.length}`);
   if (showParaphrases) {
     for (const group of paraphraseGroups.slice(0, limit)) {

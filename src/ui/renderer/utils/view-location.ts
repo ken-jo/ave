@@ -1,21 +1,4 @@
-/**
- * Where the main window is, as one value.
- *
- * `activeView` alone cannot say it: Settings is one view key but several
- * places, and a path that renders "Settings" while the user is on the
- * Permissions page is exactly the kind of lie this series has been removing.
- * The settings tab became observable from outside the panel in #1992, so the
- * location can now carry it.
- *
- * Deliberately NOT part of a location:
- *   - the chat session. Loading another conversation changes what `home`
- *     shows and its root crumb names the context it is in — the plain
- *     conversations list, or the project the session belongs to — but the
- *     location stays the same one; sessions are not a navigation depth in
- *     the sidebar. (Owner decision.)
- *   - the marketplace, which opens an external URL and is not an in-app
- *     place at all.
- */
+/** Locations include settings tabs and surface instances, but exclude chat sessions and external marketplace navigation. */
 import { Brain, CalendarDays, Globe, KanbanSquare, KeyRound, Repeat2, Terminal, type LucideIcon } from "lucide-react";
 import {
   SETTINGS_TAB_LABEL_KEYS,
@@ -30,11 +13,8 @@ export interface ViewLocation {
   view: InlineViewKey;
   /** Only meaningful when `view === "settings"`; absent everywhere else. */
   settingsTab?: SettingsTab;
-  /**
-   * Only meaningful for an instance view (`terminal`, `web`): the surface (tab)
-   * id it shows. Two panes may each show a terminal, but never the same one —
-   * the one-pane-per-location rule compares this too.
-   */
+  /** Only meaningful for an instance view (`terminal`, `web`): the surface (tab) id it shows. Two panes may each show a
+   * terminal, but never the same one — the one-pane-per-location rule compares this too. */
   surface?: string;
 }
 
@@ -54,14 +34,13 @@ export function sameViewLocation(a: ViewLocation, b: ViewLocation): boolean {
   return a.view === b.view && a.settingsTab === b.settingsTab && a.surface === b.surface;
 }
 
-/** One crumb. `target` is absent on the last one — you cannot navigate to
- *  where you already are, so it renders as text rather than a control. */
+/** One crumb. `target` is absent on the last one — you cannot navigate to where you already are, so it renders as text
+ * rather than a control. */
 export interface BreadcrumbSegment {
   key: string;
   label: string;
   target?: ViewLocation;
 }
-
 
 export interface BreadcrumbDeps {
   t: TranslateFn;
@@ -105,17 +84,15 @@ export function viewLocationBreadcrumb(
       { key: "plugins", label: t("sidebar.pluginsLabel") },
       {
         key: location.view,
-        // Fall back to the plugin id when the view list has not loaded yet:
-        // a raw id is honest, an empty crumb is not.
+        // Fall back to the plugin id when the view list has not loaded yet: a raw id is honest, an empty crumb is not.
         label: deps.pluginViewLabel(location.view) ?? parsed.pluginId,
       },
     ];
   }
 
   if (location.view === "home") {
-    // There is no "home": the conversation surface is either the plain
-    // conversations list or a project, the two tabs the sidebar already names.
-    // Neither crumb carries a target — this IS where the user is.
+    // There is no "home": the conversation surface is either the plain conversations list or a project, the two tabs the
+    // sidebar already names. Neither crumb carries a target — this IS where the user is.
     const project = deps.sessionProject;
     return project
       ? [
@@ -137,11 +114,8 @@ export function viewLocationBreadcrumb(
  */
 export type PaneViewKey = Exclude<BuiltinViewKey, "home">;
 
-/**
- * Built-in view → the label its own sidebar entry already uses. Reused rather
- * than restated so a renamed destination cannot be one thing in the rail, a
- * second in the path, and a third in the pane header that carries it.
- */
+/** Built-in view → the label its own sidebar entry already uses. Reused rather than restated so a renamed destination
+ * cannot be one thing in the rail, a second in the path, and a third in the pane header that carries it. */
 export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
   settings: "mainToolbar.settings",
   "work-board": "mainToolbar.workBoard",
@@ -153,16 +127,7 @@ export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
   web: "chatPreviewRail.tab.browser",
 };
 
-/**
- * Built-in view → its glyph, beside the label it is named by.
- *
- * The sidebar row that opens a view and the pane header that then carries it
- * are the same destination seen twice, so they read from one map rather than
- * each picking an icon: a glyph changed in one place cannot become two
- * different pictures of the same place. `memory` has no sidebar row today
- * (removed in the 2026-07 shell refinement, the view stays routable) and is
- * listed here because the pane header still has to draw it.
- */
+/** Sidebar and pane headers share one glyph map; routable views still need a glyph even when absent from the sidebar. */
 export const BUILTIN_VIEW_ICONS: Record<PaneViewKey, LucideIcon> = {
   settings: KeyRound,
   "work-board": KanbanSquare,

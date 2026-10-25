@@ -3,15 +3,7 @@ import fs from 'node:fs';
 import { test, expect } from './fixtures.js';
 import { scenarios } from './matrix.js';
 
-/**
- * Screenshot capture harness. Data-driven over `scenarios` (matrix.ts) — one
- * Playwright test per key so `--grep <key>` reruns a single screenshot, and
- * `skip` entries surface as Playwright's native "skipped" status (visible in
- * the reporter, not silently absent) instead of being filtered out of the
- * run entirely.
- *
- * Output: test/screenshots/out/<key>.png (gitignored — see README.md).
- */
+// Keep one test per capture key so filtering and explicit skip reporting remain available.
 const OUT_DIR = path.resolve(import.meta.dirname, 'out');
 
 test.beforeAll(() => {
@@ -19,13 +11,7 @@ test.beforeAll(() => {
 });
 
 for (const [key, entry] of Object.entries(scenarios)) {
-  // Skipped scenarios declare a fixture-free test body so a full matrix run
-  // doesn't pay for an app launch per skip (see README.md "Capture coverage").
-  // The runner only instantiates
-  // fixtures a test's callback actually destructures, so omitting
-  // `{ app, mainWindow }` here means `test.skip(reason)` fires with zero
-  // Electron startup cost, while still reporting as a native "skipped" test
-  // (visible in the list reporter) instead of being silently absent.
+  // Skipped scenarios must not request launch fixtures or start an app.
   if (entry.skip) {
     const reason = entry.skip;
     test(`capture: ${key}`, () => {
@@ -34,10 +20,7 @@ for (const [key, entry] of Object.entries(scenarios)) {
     continue;
   }
 
-  // Scenarios that need real plugin UIs declare `plugins: [...]`. Bind the
-  // per-scenario install list to the fixture option via a nested describe so
-  // `test.use()` (which must be called at describe/file scope, not inside a
-  // test body) applies only to this key's Electron launch.
+  // Bind per-scenario fixture options at describe scope, never inside a test body.
   test.describe(() => {
     if (entry.plugins && entry.plugins.length > 0) {
       test.use({ installPlugins: entry.plugins });
@@ -45,10 +28,7 @@ for (const [key, entry] of Object.entries(scenarios)) {
     if (entry.keepReviewer) {
       test.use({ keepReviewer: true });
     }
-    // Conversational keys drive a real model turn against the harness's local
-    // scripted endpoint (fixtures.ts "Scripted provider"). Binding the options
-    // here rather than inside the test body is the same describe-scope
-    // requirement `installPlugins` has.
+    // Bind scripted-provider options at describe scope so conversational states exist before capture.
     if (entry.scriptedScript) {
       test.use({ scriptedScript: entry.scriptedScript });
     }
@@ -81,15 +61,8 @@ for (const [key, entry] of Object.entries(scenarios)) {
     }
     await target.screenshot({ path: path.join(OUT_DIR, `${key}.png`) });
 
-    // A refused request means the host asked for something the script does not
-    // model; the endpoint answers those with an error rather than an improvised
-    // completion, so the frame just taken would show the UI's transport-error
-    // state. Assert after the capture so the bad artifact is on disk to look at.
-    //
-    // Unconsumed trailing turns are NOT a failure: a key that captures mid-turn
-    // deliberately stops before the tail of its script. The direction that
-    // matters — a call the script did not anticipate — is what `violations`
-    // records.
+    // Assert refused requests after capture to retain diagnostic artifacts.
+    // Unconsumed script entries can be intentional when capturing a held in-flight turn.
     if (scriptedProvider) {
       expect(scriptedProvider.violations, 'scripted provider refused a request').toEqual([]);
     }

@@ -18,10 +18,8 @@ import { formatClockTime } from "../../../shared/format-time.js";
 
 export interface WorkspaceStatsSectionProps {
   api: AveApi;
-  /**
-   * Navigate the sibling settings nav to a different tab. Stat cards use this
-   * to deep-link into the detail tab when the user clicks a count card.
-   */
+  /** Navigate the sibling settings nav to a different tab. Stat cards use this to deep-link into the detail tab when the user
+   * clicks a count card. */
   onNavigate: (tab: SettingsTab) => void;
 }
 

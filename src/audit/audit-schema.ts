@@ -1,21 +1,4 @@
-/**
- * Audit schema (Layer 7).
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7,
- * §11 v2.1 binding decisions.
- *
- * Discriminated union per `decision` field. Every entry shares
- * `AuditCommon` (timestamp, auditId, prevHash for HMAC chain). This
- * file defines the shapes only — emission lives in `audit-logger.ts`
- * and chain construction in `hmac-chain.ts`.
- *
- * The telemetry `AuditEntry` (turn / dlp / approval) remains the
- * general telemetry channel in `audit-logger.ts`. Permission audit entries
- * are a separate channel — written to their own JSONL file and
- * tagged via the `decision` discriminator (the telemetry channel uses
- * `type` instead). Consumers that filter on `decision` get only permission
- * events without seeing telemetry noise.
- */
+/** Permission rows discriminate on decision in a dedicated channel; telemetry rows use type. See docs/architecture/permission-policy-design.md, Layer 7. */
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { HookTrustOrigin, ScriptHookType } from "../hooks/script-hook-types.js";
@@ -29,98 +12,48 @@ import type { JudgeAuditRecord } from "../permissions/judge/judge-engine.js";
 import type { DeferredApprovalSource, DeferredGrantScope, RiskLevel } from "../shared/permission-review-status.js";
 
 
-/**
- * Layer 5 reviewer agent verdict — kept structurally compatible with
- * `permissions/reviewer/risk-classifier.ts::RiskVerdict` so callers
- * can pass the runtime verdict in directly.
- */
-export interface RiskVerdict {
+/** Keep reviewer verdicts structurally compatible with RiskVerdict. */
+interface RiskVerdict {
   level: RiskLevel;
   reason: string;
 }
 
-/**
- * Layer 6 hook-chain result entry — captured per script in the chain
- * so audit can reconstruct which hook said what.
- *
- * #811 (design §7) — extended with FORWARD-COMPATIBLE optional fields for the
- * command-hooks / lifecycle expansion. All additions are optional so existing
- * readers and historical rows keep working; `hookType` is RETAINED as the
- * derived back-compat alias of `event` (writers may emit both — `event` is the
- * richer closed-set surface, `hookType` is the narrow pre|post|perm projection).
- */
+/** New hook fields are optional for stored-row compatibility; hookType remains the required derived event alias. */
 export interface HookResult {
   hookName: string;
-  /**
-   * Narrow pre|post|perm projection — derived alias of {@link event}. Kept
-   * required so back-compat readers that key on `hookType` never see `undefined`.
-   */
+  /** Required legacy pre/post/perm projection of event. */
   hookType: ScriptHookType;
   action: "allow" | "deny";
   reason: string;
   durationMs: number;
-  /**
-   * Closed-set lifecycle event (design §5). Today equals `hookType`; widens to
-   * the full event surface (Stop / UserPromptSubmit / …) in later milestones.
-   */
+  /** Closed-set lifecycle event corresponding to hookType. */
   event?: ScriptHookType;
-  /** The configured glob matcher that selected this hook (absent ⇒ match-all). */
+  /** Absent matcher means match all. */
   matcher?: string;
-  /** Handler type — `"command"` today; http/mcp/prompt/agent in later phases. */
+  /** Command handler type. */
   handlerType?: "command";
-  /**
-   * Trust identity of the command: the resolved local-script sha256, or a hash
-   * of the verbatim command string when no local anchor exists. Lets forensics
-   * tie an audit row to the exact code that ran.
-   */
+  /** Hash the resolved script or verbatim unanchored command to identify exactly what ran. */
   commandIdentity?: string;
-  /**
-   * Origin discriminant — a legacy `.sh` hook vs a declarative `hooks.json`
-   * command entry. Absent on historical rows.
-   */
+  /** Distinguish script hooks from declarative commands; older rows omit this field. */
   source?: "sh" | "config";
-  /**
-   * Decision surface incl. the non-blocking lifecycle outcome. `"observe"` is
-   * reserved for non-blocking events whose `deny` is recorded as a policy signal
-   * only (design §7). Today's blocking events emit `allow`/`deny`.
-   */
+  /** Observe records non-blocking denial signals; blocking events emit allow or deny. */
   decision?: "allow" | "deny" | "observe";
-  /** Why the hook failed closed, when it did. */
   failureReason?: "timeout" | "nonzero-exit" | "spawn-error" | "bad-output";
 }
 
-/**
- * Routine scope snapshot at the moment of evaluation. Mirrors
- * `permissions/permission-manager.ts::ReviewerDispatchInput.routineScope`
- * but is intentionally `Record<string, unknown>` rather than the typed
- * `RoutineScope` to keep the audit shape stable across schema bumps.
- */
-export type RoutineScopeSnapshot = Record<string, unknown>;
+/** Snapshot routine scope as an untyped record so audit shape survives runtime schema changes. */
+type RoutineScopeSnapshot = Record<string, unknown>;
 
-/**
- * Common fields present on every permission audit entry. The chain link is
- * the `prevHash` field — `audit-logger`'s emitter computes
- * `prevHash = HMAC(secret, prevLine)` binds each entry to its predecessor.
- * New rows also carry `entryHash`, an HMAC over that row before `entryHash`
- * is appended, so the active tail is authenticated without waiting for a
- * successor. `entryHash` is optional only for reading pre-migration rows.
- */
-export interface AuditCommon {
-  /** ISO 8601 timestamp. */
+/** prevHash links exact serialized rows; entryHash authenticates the current tail and is optional only for older rows. */
+interface AuditCommon {
   ts: string;
-  /** UUIDv4 — uniquely identifies this audit entry. */
   auditId: string;
-  /** Tool-call correlation id (when applicable). */
   toolUseId?: string;
-  /**
-   * Public-safe host shell substrate selected for this exact invocation.
-   * This excludes tool arguments, directories, approval bindings, permits,
-   * nonces, HMACs, and capability reasons.
-   */
+  /** Public shell metadata must exclude arguments, paths, approvals, permits, nonces, HMACs, and capability reasons. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
-  /** Route-neutral shadow decision. This does not prove authorization or spawn. */
+  /** A shadow decision proves neither authorization nor spawn. */
   executionRoute?: ExecutionPlanAuditProjection;
-  /** Metadata-only lifecycle evidence for one host-issued plugin operation grant. */
+  /** Operation-grant lifecycle evidence contains metadata only. */
   pluginOperation?: {
     pluginId: string;
     operation: string;
@@ -134,21 +67,14 @@ export interface AuditCommon {
     grantId?: string;
   };
 
-  /** Trust origin propagated through the eval pipeline. */
   trustOrigin: HookTrustOrigin;
-  /**
-   * Hex-encoded HMAC over the previous line's serialized form.
-   * For the first entry of the file this is HMAC(secret, "genesis").
-   */
+  /** Hex HMAC of the previous serialized line; the first row hashes genesis. */
   prevHash: string;
   entryHash?: string;
   readonly workloadBrokerCorrelation?: ToolExecutionAuditMetadata["workloadBrokerCorrelation"];
 }
 
-/**
- * Host-owned correlation metadata threaded only through audit writers. It is
- * never renderer payload data and never carries approval material.
- */
+/** Host-owned correlation metadata must never carry renderer data or approval material. */
 export interface ToolExecutionAuditMetadata {
   readonly toolUseId?: string;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
@@ -161,23 +87,12 @@ export interface ToolExecutionAuditMetadata {
     operation: Exclude<WorkloadBrokerOperation, "handshake">;
     grant: WorkloadExecutionGrantProjection;
   }>;
-  /**
-   * Host-only snapshot of the operation-governance state captured when the
-   * invocation resolved its Tool. `null` means the governed discriminant was
-   * missing or invalid; `undefined` means the Tool was not governed.
-   *
-   * Audit writers use this snapshot instead of consulting the mutable
-   * ToolRegistry after generation admission, replacement, or uninstall.
-   */
+  /** Capture governance at tool resolution, not from the mutable registry later. Null means invalid or missing governance; undefined means ungoverned. */
   readonly governedOperation?: string | null;
 }
 
-/**
- * Layer N → "allow" — the tool call was permitted at layer `layer`.
- * `directory` and `directoryAllowed` are present only when the tool
- * invocation declares an explicit path or directory surface.
- */
-export interface AuditAllow extends AuditCommon {
+/** Directory fields appear only for invocations declaring an explicit path surface. */
+interface AuditAllow extends AuditCommon {
   decision: "allow";
   tool: string;
   source: ToolSource;
@@ -185,28 +100,9 @@ export interface AuditAllow extends AuditCommon {
   directory?: string;
   directoryAllowed?: true;
   scope?: RoutineScopeSnapshot;
-  /**
-   * Grant lifetime for out-of-allowed-dir directory approvals. Set when
-   * the user resolved an `AuditAsk` (out-of-allowed-dir) with allow-once
-   * / allow-session / allow-always. Forensic replay distinguishes
-   * "narrow + turn-bound" vs "parent + conversation-bound" vs
-   * "parent + persisted" grants from a single audit log diff.
-   * `"degraded-to-turn"` records the propagateGrantScope fallback when a
-   * session-intent grant could not be wired through to the conversation
-   * loop and was conservatively narrowed.
-   */
+  /** Record directory grant lifetime; degraded-to-turn marks a session-intent grant conservatively narrowed after propagation failed. */
   grantLifetime?: "turn" | "session" | "always" | "degraded-to-turn";
-  /**
-   * Stable id of the rule that allowed, for a Layer-1 directory allow that came
-   * from POLICY rather than from a user gesture — today only
-   * `path-scope/read-anywhere`, a read admitted outside the authorized
-   * directories because reads are not confined to them.
-   *
-   * Mutually exclusive with `grantLifetime` on a directory row, and the pair is
-   * what tells the two kinds of allow apart in replay: a grant records how long
-   * a person authorized the directory for, a policy allow records which rule
-   * decided and outlives nothing.
-   */
+  /** Policy directory allows carry a rule id instead of grantLifetime; policy admission creates no user grant. */
   policyRule?: string;
   layer: number;
   reviewer?: RiskVerdict;
@@ -214,12 +110,8 @@ export interface AuditAllow extends AuditCommon {
   rateLimitRemaining?: number;
 }
 
-/**
- * Layer N → "ask" — the user was prompted. The audit captures the
- * *prompt* event; the eventual user gesture (allow/deny) lands as a
- * follow-up `AuditAllow` or `AuditDeny`.
- */
-export interface AuditAsk extends AuditCommon {
+/** Ask records the prompt; the eventual gesture creates a separate allow or deny row. */
+interface AuditAsk extends AuditCommon {
   decision: "ask";
   tool: string;
   source: ToolSource;
@@ -230,13 +122,8 @@ export interface AuditAsk extends AuditCommon {
   hookChain?: HookResult[];
 }
 
-/**
- * Layer N → "deny" — short-circuit fail. `denyReasons[]` carries the
- * collected reasons (spec §3 Layer 2). With short-circuit eval only
- * one entry is recorded in v1 — but the schema is plural so future
- * dual-deny / dry-run modes don't need a schema bump.
- */
-export interface AuditDeny extends AuditCommon {
+/** Short-circuit denials currently record one reason in the plural schema. */
+interface AuditDeny extends AuditCommon {
   decision: "deny";
   tool: string;
   source: ToolSource;
@@ -245,13 +132,8 @@ export interface AuditDeny extends AuditCommon {
   hookChain?: HookResult[];
 }
 
-/**
- * Layer 5 routed to deferred queue — the reviewer agent classified
- * the call at the caller-selected deferred threshold and the user must
- * surface the entry from the `DeferredQueuePanel`. The `queueId` ties this
- * audit row to a specific entry in `~/.ave/permissions/deferred-queue.jsonl`.
- */
-export interface AuditDeferred extends AuditCommon {
+/** queueId links the deferred reviewer decision to its persisted queue entry. */
+interface AuditDeferred extends AuditCommon {
   decision: "deferred";
   tool: string;
   source: ToolSource;
@@ -260,12 +142,8 @@ export interface AuditDeferred extends AuditCommon {
   queueId: string;
 }
 
-/**
- * Foreground user resolution for a previously deferred HIGH-risk action.
- * The queue file stores the mutable entry status; this append-only audit row
- * preserves the user's approval/rejection action in the tamper-evident chain.
- */
-export interface AuditDeferredResolve extends AuditCommon {
+/** Keep user resolution append-only on the authenticated chain while queue status remains mutable. */
+interface AuditDeferredResolve extends AuditCommon {
   decision: "deferred_resolve";
   tool: string;
   source: ToolSource;
@@ -273,68 +151,32 @@ export interface AuditDeferredResolve extends AuditCommon {
   reviewerVerdict: RiskVerdict;
   queueId: string;
   resolution: "approved" | "rejected";
-  /**
-   * Issue #690 P4 — provenance of the user gesture that resolved the
-   * deferred entry. Main requires this field for new writes; historical rows
-   * written before it existed may omit it, so audit readers must tolerate
-   * `undefined`.
-   */
+  /** Require gesture provenance on new writes; older rows may omit it. */
   approvalSource?: DeferredApprovalSource;
-  /**
-   * Breadth of the grant an `"approved"` resolution applied. Present only on
-   * approvals, since a rejection grants nothing. Rows written before deferred
-   * approvals carried a grant omit it.
-   */
+  /** Grant breadth appears only on approvals; older rows may omit it. */
   grantScope?: DeferredGrantScope;
   reason?: string;
 }
 
-/**
- * Layer 8 `/permission mode ...` slash invocation. Spec §3 Layer 8
- * mandates `trustOrigin === "user-keyboard"` — but we record the
- * origin here so forensics can spot a slash dispatcher bug if a
- * non-user-keyboard origin ever reaches this entry.
- */
-export interface AuditModeChange extends AuditCommon {
+/** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */
+interface AuditModeChange extends AuditCommon {
   decision: "mode_change";
   fromMode: ExecutionMode;
   toMode: ExecutionMode;
   durable: boolean;
-  /**
-   * Present when an explicit user action is the confirmation surface for a
-   * durable mode change, so no secondary tool approval surface was shown:
-   *   - `"settings-ui"` / `"builtin-slash"` — a first-party renderer user action
-   *     (Settings toggle / built-in `/permission mode` slash).
-   *   - `"local-api-approval"` — an external origin (local-api / cli, #1409)
-   *     initiated the change and the user consented via the in-app ApprovalGate
-   *     approval dock at the transport-lifecycle layer BEFORE the handler ran. The
-   *     `trustOrigin` field stays on the permission axis (`"user-keyboard"`,
-   *     the human's Allow click), so `confirmationSource` is the sole forensic
-   *     marker that the request was externally initiated.
-   * Historical rows omit this field.
-   */
+  /** confirmationSource distinguishes direct settings/slash consent from externally initiated approval. trustOrigin records the human click in both cases; older rows omit the source. */
   confirmationSource?: "settings-ui" | "builtin-slash" | "local-api-approval";
 }
 
-/**
- * §3.5 manifest integrity violation — a `category: "read"` plugin
- * tool attempted a write through the runtime fs proxy. The plugin
- * is added to `manifestIntegrityState.disabledPluginIds` and this
- * row records the attempt for forensics.
- */
-export interface AuditManifestViolation extends AuditCommon {
+/** Record and disable read-category plugins that attempt writes through the filesystem proxy. */
+interface AuditManifestViolation extends AuditCommon {
   decision: "manifest_violation";
   pluginId: string;
   toolName: string;
   attemptedOperation: string;
 }
 
-/**
- * An ACTIVE-mode permission judge decision (issue #28 P2). Shadow-mode judge
- * rows stay on the plain shadow channel; a decision that changed what the
- * user saw is recorded here, on the HMAC chain. `judgeRecord` carries the
- * redacted request, never raw tool arguments.
- */
+/** Active judge decisions belong on the authenticated chain with redacted requests; shadow decisions stay on the shadow channel. */
 interface AuditJudge extends AuditCommon {
   decision: "judge";
   tool: string;
@@ -359,10 +201,6 @@ export type PermissionAuditEntryInput = PermissionAuditEntry extends infer Entry
     : never
   : never;
 
-/**
- * Type guard — distinguishes permission audit entries from older
- * `AuditEntry` (which uses `type` instead of `decision`).
- */
 export function isPermissionAuditEntry(value: unknown): value is PermissionAuditEntry {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;

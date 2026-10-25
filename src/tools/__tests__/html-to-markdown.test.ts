@@ -50,13 +50,8 @@ describe("htmlToMarkdown", () => {
   });
 
   it("stays linear on tags that never close", () => {
-    // The growth of CPU time from 37.5 KB to 600 KB is judged, not a wall-clock cap that a loaded runner can breach.
-    // Linear code reads 15-18 against the bound of 64. The ratio catches a super-linear term only once that term
-    // dominates the cost at 600 KB: at this spread, a quadratic term must cost about four times the linear work
-    // there. A smaller quadratic slips through. A rescan of index/1024 characters per position read 28-62 and
-    // passed, while index/64 read 106 and failed. A wider spread does not help, because the geometric-mean bound
-    // rises faster than the quadratic share. A bound nearer 18 would trade away the noise margin. Going larger
-    // than 600 KB would multiply the cost of every run.
+    // Compare CPU growth across sizes to tolerate runner load; the 64x bound catches dominant superlinear costs.
+    // Smaller quadratic costs can pass; tightening the bound would sacrifice noise tolerance.
     const SMALL = 37_500;
     const LARGE = 16 * SMALL;
     const MAX_GROWTH = linearGrowthBound(LARGE / SMALL);
@@ -71,7 +66,7 @@ describe("htmlToMarkdown", () => {
       if (growth === undefined) continue;
       expect(growth, `${JSON.stringify(unit)}: ${smallMs.toFixed(1)} ms at ${SMALL}, ${largeMs.toFixed(1)} ms at ${LARGE}`).toBeLessThan(MAX_GROWTH);
     }
-    // The judgement reads CPU time, so load cannot move it; the wall time spent collecting that CPU time can.
+    // CPU-time measurement is load-independent, but collecting it takes variable wall time.
   }, 180_000);
 
   it("keeps parsing quoted attributes that contain > and <", () => {
@@ -88,10 +83,7 @@ describe("htmlToMarkdown", () => {
   });
 
   it("reads a deeply nested list as plain text instead of re-indenting it per level, and keeps deep quotes bounded", () => {
-    // Asserted on the output, not on wall-clock time: a coverage run on a loaded
-    // runner is many times slower than a laptop. Re-indenting every level turns
-    // this 250 KB page into megabytes of "- " markers; the render budget reads it
-    // as plain text instead, which is also what keeps it fast.
+    // Assert output rather than elapsed time; the render budget prevents deep nesting from expanding into megabytes.
     for (const [open, close] of [["<ul><li>", "</li></ul>"], ["<blockquote>", "</blockquote>"]]) {
       const levels = Math.floor(250_000 / open.length);
       const html = `<title>Nest</title>${open.repeat(levels)}deepest${close.repeat(levels)}`;

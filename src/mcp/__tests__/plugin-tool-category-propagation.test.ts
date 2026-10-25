@@ -1,16 +1,5 @@
-/**
- * #885 v6 — per-tool `category` is REMOVED from the plugin contract (Q3). The
- * loopback forward projection no longer emits `_meta["ave/category"]`, so
- * the reverse projection registers EVERY plugin tool at the write-equivalent
- * default-strict baseline. The effective category is derived HOST-side per
- * invocation (`resolveEnforcedCategory` / `inspectHostRisk`), NOT from the wire.
- *
- * This pins the security-preserving property that the 2026-06-26 permission
- * incident cared about: a plugin tool can NEVER register as `read` on the wire
- * (a silent downgrade would be a defect). The safe `write` baseline is now
- * UNIFORM across every plugin tool, and the whole plugin still loads (a missing
- * declaration was never — and is no longer — a hard fail).
- */
+/** Wire category claims cannot lower risk; all plugin tools register with a strict baseline.
+ * Effective risk is derived by the host for each invocation. */
 import { describe, it, expect, vi } from "vitest";
 import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -62,15 +51,12 @@ describe("#885 v6 — loopback plugin tools register write-equivalent (category 
     registry.reservePluginReplacement(MANIFEST.id, tools, []).publish();
     host.publishPrepared(tools);
     const registered = tools.map((tool) => tool.name);
-    // Category is optional (host-classifies-risk) — the whole plugin still loads.
     expect(registered).toEqual(["mixed_read", "mixed_write", "mixed_undeclared"]);
 
     for (const name of registered) {
       const tool = registry.findByName(name);
       expect(tool?.source).toBe("plugin");
-      // v6: the wire carries no category → uniform write-equivalent baseline.
       expect(tool?.category).toBe("write");
-      // Security invariant: a plugin tool is NEVER silently classified read.
       expect(tool?.category).not.toBe("read");
       expect(tool?.isReadOnly({})).toBe(false);
     }

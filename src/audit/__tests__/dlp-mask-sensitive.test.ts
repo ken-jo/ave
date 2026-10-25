@@ -1,8 +1,3 @@
-/**
- * maskSensitiveData() — DLP_PATTERNS coverage, edge cases, no false positives.
- *
- * UQ-QUALITY SEV-2 #2
- */
 import { describe, it, expect } from "vitest";
 import { maskSensitiveData, redactForLLM } from "../dlp-filter.js";
 import { fixtureSecret } from "./secret-fixtures.js";
@@ -16,7 +11,6 @@ describe("maskSensitiveData — 주민등록번호 (Korean RRN)", () => {
   });
 
   it("does not mask a RRN-like string with gender digit outside [1-4]", () => {
-    // Gender digit 5 → not a valid RRN pattern
     const { masked } = maskSensitiveData("900101-5234567");
     expect(masked).toContain("900101-5234567");
   });
@@ -30,9 +24,7 @@ describe("maskSensitiveData — 주민등록번호 (Korean RRN)", () => {
 });
 
 describe("maskSensitiveData — 신용카드 (credit card)", () => {
-  // A Luhn-valid 16-digit test card. Its checksum makes it a card to the
-  // converged detector; the last four digits survive, the rest are masked, and
-  // the original separators are preserved.
+  // Use a Luhn-valid card and preserve only its last four digits and separators.
   it("masks a Luhn-valid 16-digit card with spaces, preserves last 4 and grouping", () => {
     const { masked, detections } = maskSensitiveData("카드: 4111 1111 1111 1111");
     expect(masked).not.toContain("4111 1111 1111 1111");
@@ -53,9 +45,7 @@ describe("maskSensitiveData — 신용카드 (credit card)", () => {
     expect(detections).toContain("신용카드");
   });
 
-  // Convergence: the display masker now applies the same Luhn gate as the LLM
-  // redactor, so a card-length digit run that fails Luhn is a non-card and is
-  // left intact by BOTH — it is not masked with a fake silhouette.
+  // Display and model redactors must both leave non-Luhn digit runs intact.
   it("leaves a card-length digit run that fails Luhn intact", () => {
     const { masked, detections } = maskSensitiveData("주문번호: 1234 5678 9012 3456");
     expect(masked).toContain("1234 5678 9012 3456");
@@ -80,7 +70,7 @@ describe("maskSensitiveData — API 키 (sk- prefix)", () => {
 
   it("does NOT mask sk- with fewer than 20 chars (too short to be a real key)", () => {
     const { masked, detections } = maskSensitiveData("sk-abc123");
-    // Pattern requires 20+ alphanum chars after sk-
+    // The token pattern requires at least 20 alphanumeric characters after sk-.
     expect(detections).not.toContain("API 키");
     expect(masked).toContain("sk-abc123");
   });
@@ -156,11 +146,7 @@ describe("maskSensitiveData — clean text (no false positives)", () => {
   });
 });
 
-// Both entry points must share one detection set. Each case drives BOTH
-// maskSensitiveData (display-shape mask) and redactForLLM (full redaction) and
-// asserts they AGREE on detection — a hit is a hit for both, a miss for both.
-// The two forms below are exactly the ones that previously split: the display
-// masker missed them while the redactor caught them.
+// Both entry points must agree on detection despite different replacement shapes.
 describe("converged detection — maskSensitiveData and redactForLLM agree", () => {
   it("both catch a dashless Korean mobile form", () => {
     const text = "번호 01098765432";
@@ -181,7 +167,6 @@ describe("converged detection — maskSensitiveData and redactForLLM agree", () 
   });
 
   it("both catch a 15-digit Luhn-valid card", () => {
-    // 15-digit Amex-shaped test number; passes Luhn.
     const text = "카드 378282246310005";
     const { masked, detections } = maskSensitiveData(text);
     expect(masked).not.toContain("378282246310005");
@@ -199,8 +184,7 @@ describe("converged detection — maskSensitiveData and redactForLLM agree", () 
     expect(redactForLLM(text).counts.PHONE_US).toBe(1);
   });
 
-  // Drift the other way: neither over-masks. A card-length run failing Luhn and
-  // a resident-ID shape embedded inside a longer digit run are non-PII to both.
+  // Neither entry point may over-mask invalid cards or ids embedded in longer digit runs.
   it("both leave a non-Luhn card-length run intact", () => {
     const text = "주문 1234 5678 9012 3456";
     expect(maskSensitiveData(text).masked).toContain("1234 5678 9012 3456");
@@ -208,19 +192,13 @@ describe("converged detection — maskSensitiveData and redactForLLM agree", () 
   });
 
   it("both leave a resident-ID shape embedded in a longer digit run intact", () => {
-    // No word boundary before the 6-1-6 shape: it is part of a longer number.
     const text = "ref 99900101-1234567";
     expect(maskSensitiveData(text).detections).not.toContain("주민등록번호");
     expect(redactForLLM(text).counts.SSN_KR ?? 0).toBe(0);
   });
 });
 
-// ── privacy toggle: PII is optional, credentials are not ─────────────────────
-//
-// `privacy.piiRedactEnabled` governs PII. `pii: false` is what the governed
-// surfaces pass when the user has the toggle off, and it must leave every
-// personal-data pattern intact while still removing credentials — a leaked
-// token is a security defect whatever the privacy setting says.
+// The privacy toggle governs PII only; credentials must always be removed.
 describe("maskSensitiveData — pii: false (privacy toggle off)", () => {
   it("leaves every PII class intact and reports no detection", () => {
     const text = [

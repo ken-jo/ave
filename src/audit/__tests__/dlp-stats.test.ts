@@ -1,6 +1,3 @@
-/**
- * DLP statistics over real streamed JSONL fixtures.
- */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

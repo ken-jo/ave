@@ -3,31 +3,13 @@ import {
   type Attachment,
 } from "../types/attachments.js";
 
-/**
- * Marker recognized inside textarea body. Four shapes share `#N`:
- *   [Image #1]
- *   [File #2]
- *   [Pasted text #3 +12 lines]
- *   [Resource #4]
- *
- * The trailing chars after `#N` are loose to tolerate the paste suffix
- * but the regex requires a closing `]` and forbids embedded `[`.
- *
- * ONE spelling of the alternation, shared by the two regexes in THIS file (parse and
- * find-at-caret): a kind added to one and missed in the other parses as a marker but
- * cannot be deleted as one, or vice versa. `compose.ts` has a third regex for the
- * paste marker specifically and deliberately does not share this one — it matches a
- * LOOSER line-count suffix so a user who hand-edited the number still gets their text
- * substituted. An earlier version of this comment claimed all three shared it.
- */
+/** Share marker alternation between parse and caret lookup; paste substitution separately accepts edited line-count
+ * suffixes. */
 const MARKER_LABELS = "Image|File|Pasted text|Resource";
 const MARKER_BODY = `\\[(?:${MARKER_LABELS}) #(\\d+)(?:\\s+\\+\\d+\\s+lines)?\\]`;
 const MARKER_RE = new RegExp(MARKER_BODY, "g");
 
-/**
- * Parse all marker numbers present in the textarea body.
- * Order of appearance is preserved; duplicates are deduplicated.
- */
+/** Parse all marker numbers present in the textarea body. Order of appearance is preserved; duplicates are deduplicated. */
 export function parseMarkers(text: string): number[] {
   const seen = new Set<number>();
   const result: number[] = [];
@@ -51,19 +33,7 @@ export function stripMarkers(text: string): string {
   return text.replace(MARKER_RE, "").replace(/[ \t]{2,}/g, " ").trim();
 }
 
-/**
- * Collapse a long path for display: when the stem (the substring before the
- * last `.`, including any parent directory segments) is ≥
- * PATH_COLLAPSE_THRESHOLD chars, return `first5 + "…" + last5 + .ext`.
- * Otherwise return the original string. The dot in the extension is preserved
- * verbatim — paths without an extension fall back to whole-string collapse.
- *
- * Whole-path (not basename-only) collapse is deliberate: in the overlay we
- * want long absolute paths like `/Users/example/Desktop/budget-2026.pdf` to
- * remain recognizable on both ends rather than dropping all directory
- * context, which would yield a bare `budget-2026.pdf` and lose the user's
- * mental anchor for *where* the file sits on disk.
- */
+/** Collapse the whole path while preserving the extension and both ends so directory context remains recognizable. */
 export function collapsePath(path: string): string {
   const dotIdx = path.lastIndexOf(".");
   const hasExt = dotIdx > 0 && dotIdx < path.length - 1;
@@ -92,21 +62,8 @@ export function buildMarkerText(att: Attachment): string {
   }
 }
 
-/**
- * Locate the marker `[…]` that the caret is currently inside or just after.
- *
- * Backspace UX: when the user presses backspace inside or at the trailing
- * edge of a marker, the entire `[…]` block is removed in one keystroke
- * (Slack-style citation chip). Without this, partial-character deletes
- * invalidate the regex → the chip drops but a `[Image #` fragment is left
- * behind, forcing the user to clean up by hand.
- *
- * The cursor must be strictly after the opening `[` (so caret on the `[`
- * itself does not nuke the chip — that's a left-arrow, not a delete intent)
- * and at most at the position immediately after the closing `]`.
- *
- * Returns null when the caret is not inside any marker.
- */
+/** Backspace removes an entire marker only after its opening bracket and through its trailing edge; partial deletion would
+ * orphan marker fragments. */
 export function findMarkerAt(
   text: string,
   cursor: number,
@@ -119,9 +76,8 @@ export function findMarkerAt(
       openIdx = i;
       break;
     }
-    // A `]` at i = cursor - 1 is the closing bracket of OUR marker — keep
-    // walking back. A `]` at any earlier position means the caret sits
-    // outside the marker boundary.
+    // A `]` at i = cursor - 1 is the closing bracket of OUR marker — keep walking back. A `]` at any earlier position means
+    // the caret sits outside the marker boundary.
     if (ch === "]" && i < cursor - 1) return null;
   }
   if (openIdx === -1) return null;

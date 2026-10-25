@@ -1,16 +1,86 @@
-/**
- * English message catalog — the canonical key set for the whole app.
- *
- * Every other locale (see {@link ./ko}) must provide a translation for each
- * key here; missing keys fall back to this English text at runtime and are a
- * type error at build time. Keys are dot-namespaced by surface/component
- * (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces:
- * `"Hello {name}"`.
- *
- * This file is the seed; surface-specific keys are appended as each module is
- * migrated off hardcoded strings.
- */
+/** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
+ * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
+  "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
+  "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",
+  "sandboxPolicy.scanEntryBudget": "Project too large to scan for nested repositories within the directory-entry budget",
+  "sandboxPolicy.scanPathBudget": "Project has too many repository control paths to scan within the policy budget",
+  "sandboxPolicy.scanInaccessible": "Nested repository discovery could not safely read or resolve the project",
+  "sandboxPolicy.scanRouting": "A writable routing link could replace protected repository paths",
+  "sandboxPolicy.noWriteRoots": "no writable project roots",
+  "sandboxPolicy.cleanupPending": "Sandbox process termination is unconfirmed; repository quarantine is pending.",
+  "sandboxPolicy.cleanupFailed": "Sandbox repository quarantine failed: {reason}. Repository entries may remain; inspect them before running independent Git.",
+  "sandboxPolicy.terminalWindow": "Linux Agent terminals keep the Git protection scan from shell startup. Repositories or Git control paths created later inside its existing writable roots can remain writable until that shell exits, with no time limit; foreground commands, background jobs and raw terminal input share this window. Close and reopen the Agent shell before using those repositories. Projects outside its initial writable roots remain read-only.",
+  "sandboxPolicy.terminalChanged": "Repository protection changed since this Agent shell started. Close and reopen the Agent shell to refresh its sandbox before running this command.",
+  "sandboxStatus.retry": "Retry status query",
+  "sandboxStatus.queryFailed": "Sandbox status unknown · could not query the host",
+  "sandboxStatus.off": "Sandbox off · {reason}",
+  "sandboxStatus.disabled": "disabled in settings",
+  "sandboxStatus.unsupported": "platform not supported",
+  "sandboxStatus.shellUnavailable": "shell isolation unavailable",
+  "sandboxStatus.unavailable": "isolation could not start",
+  "permissionJudge.retry": "Retry",
+  "permissionJudge.rollbackFailed": "Judge settings and runtime could not be restored. Restart the app before relying on automation.",
+  "permissionJudge.externalChange": "Judge settings changed in another window. Reload to replace your unsaved edits with the saved settings.",
+  "permissionJudge.reload": "Reload saved settings",
+  "permissionJudge.title": "Approval judge",
+  "permissionJudge.description": "Review unresolved tool calls after permission rules and mandatory safeguards.",
+  "permissionJudge.loading": "Loading judge settings…",
+  "permissionJudge.mode": "Judge mode",
+  "permissionJudge.off": "Off",
+  "permissionJudge.shadow": "Shadow · record judgments",
+  "permissionJudge.active": "Active · apply judgments",
+  "permissionJudge.modeHelp": "Shadow records judgments while you keep deciding. Active applies judgments. Turning off removes all stages.",
+  "permissionJudge.categories": "Tool categories",
+  "permissionJudge.shell": "Shell",
+  "permissionJudge.write": "Write",
+  "permissionJudge.network": "Network",
+  "permissionJudge.chainHelp": "Stages run in order. An undecided result or a confidence below the threshold proceeds to the next stage. Add up to four stages.",
+  "permissionJudge.stage": "Stage {number}",
+  "permissionJudge.stageId": "Stage identifier",
+  "permissionJudge.provider": "Judge provider",
+  "permissionJudge.builtin": "Built-in model",
+  "permissionJudge.command": "External command",
+  "permissionJudge.url": "External URL",
+  "permissionJudge.model": "Judge model",
+  "permissionJudge.currentReviewer": "Permission reviewer model",
+  "permissionJudge.reviewerModel": "Permission reviewer model",
+  "permissionJudge.reviewerModelHelp": "Reviews tool calls in automatic approval and is the default model for built-in judge stages. Unset follows your chat model and changes when it does.",
+  "permissionJudge.followChatModel": "Follow chat model",
+  "permissionJudge.followChatModelNamed": "Follow chat model · {model}",
+  "permissionJudge.modelUnavailableFacts": "Unavailable",
+  "permissionJudge.storedChainRejected": "The saved judge chain could not be accepted, so judge automation asks you instead. Saving other settings keeps it; replace or turn off the chain to clear this.",
+  "permissionJudge.reviewerModelUnavailable": "The selected reviewer model is unavailable. Automatic review asks you instead until you pick an available model or follow the chat model.",
+  "permissionJudge.executable": "Absolute executable path",
+  "permissionJudge.arguments": "Arguments · one per line, blank lines ignored",
+  "permissionJudge.environment": "Environment variable names · comma separated",
+  "permissionJudge.endpoint": "Endpoint · HTTPS or loopback HTTP",
+  "permissionJudge.threshold": "Escalate below confidence · 0 to 1, optional",
+  "permissionJudge.moveUp": "Move up",
+  "permissionJudge.moveDown": "Move down",
+  "permissionJudge.remove": "Remove",
+  "permissionJudge.moveUpStage": "Move stage {number} up",
+  "permissionJudge.moveDownStage": "Move stage {number} down",
+  "permissionJudge.removeStage": "Remove stage {number}",
+  "permissionJudge.addStage": "Add judge stage",
+  "permissionJudge.save": "Save judge settings",
+  "permissionJudge.saving": "Saving…",
+  "permissionJudge.saved": "Judge settings saved.",
+  "permissionJudge.warnings": "{count} saved settings could not be applied. Review the values below before saving.",
+  "permissionJudge.readFailed": "Judge settings could not be loaded. Reopen settings to try again.",
+  "permissionJudge.invalidSettings": "Check each stage, model, endpoint and threshold, then save again. Stage identifiers must be unique.",
+  "permissionJudge.keyboardRequired": "Press a key in this settings window, then save again.",
+  "permissionJudge.saveFailed": "Judge settings could not be saved. Try again.",
+  "permissionJudge.rewireFailed": "Judge settings could not be activated. The previous settings were restored.",
+  "llmTab.modelOtherGroup": "Other",
+  "alerts.turnCompletionSound": "Turn completion sound",
+  "alerts.turnCompletionSoundHelp": "Play the system notification sound when a response completes in the background. System sound and notification preferences apply.",
+  "chatThumbnails.open": "Open session previews",
+  "chatThumbnails.close": "Close session previews",
+  "chatThumbnails.title": "Session previews",
+  "chatThumbnails.hiddenForWidth": "Session previews hidden: tile is too narrow",
+  "chatPreviewRail.hiddenForWidth": "Work panel and side chat hidden: tile is too narrow",
   "be_terminalRun.notFoundHandler": "The shell has a command-not-found handler. Ask the user to run `unset -f command_not_found_handle` (bash) or `unfunction command_not_found_handler` (zsh) in this terminal, then retry. This removes the handler for this terminal only; Ave preserves it until the user chooses to remove it.",
   "overlayCardRegion.continueInNewConversation": "Continue in a new conversation",
   "suggestionsSession.title": "Suggestions",
@@ -142,7 +212,6 @@ export const en = {
 
   "constants.reasoningEffortCustom": "Custom",
 
-  // ── Settings → Appearance → Language ──────────────────────────────
   "settings.appearance.language.title": "Language",
   "settings.appearance.language.description":
     "Choose the language used throughout the app. Changes apply immediately.",
@@ -167,7 +236,6 @@ export const en = {
   "mainDialog.cancelButton": "Cancel",
   "mainDialog.importConversationTitle": "Import conversation",
 
-  // ── E4 — Startup / global shortcuts settings tab ──────────────────
   "settingsContent.tabStartup": "Startup",
   "startupTab.title": "Startup & Shortcuts",
   "startupTab.description":
@@ -239,10 +307,6 @@ export const en = {
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
 } as const;
 
-/**
- * Union of the *seed* (hand-curated, common) translation keys. The full app
- * key space is `string` (see {@link ./index.MessageKey}) because per-surface
- * keys are merged in from generated fragments; this strict type just keeps the
- * Korean seed catalog ({@link ./ko}) in lockstep with the English seed.
- */
+/** Union of the *seed* (hand-curated, common) translation keys. The full app key space is `string` (see {@link ./index.MessageKey}) because per-surface
+ * keys are merged in from generated fragments; this strict type just keeps the Korean seed catalog ({@link ./ko}) in lockstep with the English seed. */
 export type SeedMessageKey = keyof typeof en;

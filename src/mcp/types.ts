@@ -46,15 +46,9 @@ export interface McpServerApproval {
 
 
   requiredAuth: "sso" | "api-key" | "oauth" | "mtls" | "none";
-  /**
-   * For stdio API-key servers, the exact environment variable name that may
-   * receive the user-supplied key at process launch.
-   */
+  /** For stdio API-key servers, the exact environment variable name that may receive the user-supplied key at process launch. */
   apiKeyEnv?: string;
-  /**
-   * For HTTP API-key servers, the exact custom header name that may receive the
-   * user-supplied key. Omit to allow the built-in Bearer Authorization path.
-   */
+  /** For HTTP API-key servers, the exact custom header name that may receive the user-supplied key. Omit to allow the built-in Bearer Authorization path. */
   apiKeyHeader?: string;
 
   tlsRequired: boolean;
@@ -78,14 +72,8 @@ export interface McpServerApproval {
 
   maxConcurrentRequests: number;
 
-  /**
-   * Admin gate for `allowPrivateNetworks` on the matching per-server config.
-   * When the client config sets `allowPrivateNetworks: true` (escape hatch
-   * for on-prem / loopback servers), governance requires EITHER this flag
-   * OR `globalRules.allowPrivateNetworks` to be `true` as well. Defaults to
-   * false — preventing a self-elevating config file from bypassing
-   * NetworkGuard.
-   */
+  /** Admin gate for `allowPrivateNetworks` on the matching per-server config. When the client config sets `allowPrivateNetworks: true` (escape hatch for on-prem / loopback servers),
+   * governance requires EITHER this flag OR `globalRules.allowPrivateNetworks` to be `true` as well. Defaults to false; preventing a self-elevating config file from bypassing NetworkGuard. */
   allowPrivateNetworks?: boolean;
 }
 
@@ -100,32 +88,15 @@ export interface McpGlobalRules {
   policyRefreshIntervalMs: number;
   /** Existing policies without this field continue to admit user approvals. */
   allowUserApprovedServers?: boolean;
-  /**
-   * Admin gate for per-server `allowPrivateNetworks`. If not `true`, any
-   * `http` server config that opts into private-network access is rejected
-   * at governance — preventing a self-elevating config file from bypassing
-   * NetworkGuard. Defaults to false.
-   */
+  /** Admin gate for per-server `allowPrivateNetworks`. If not `true`, any `http` server config that opts into private-network
+   * access is rejected at governance; preventing a self-elevating config file from bypassing NetworkGuard. Defaults to false. */
   allowPrivateNetworks?: boolean;
 }
 
-// ─── MCP Protocol Types ────────────────────────────
-
-/**
- * MCP transport types.
- *
- * - `stdio`    : local subprocess with newline-delimited JSON-RPC on stdin/stdout.
- * - `http`     : MCP Streamable HTTP transport (final `2026-07-28` revision).
- *                Single POST endpoint that returns either `application/json`
- *                for single responses or `text/event-stream` for streaming.
- * - `sse`      : legacy HTTP+SSE dual-endpoint transport. Governance layer only
- *                (validation path); runtime client is not implemented — prefer `http`.
- * - `websocket`: not implemented at the client layer — governance validation only.
- */
+/** MCP transport types. - `stdio` : local subprocess with newline-delimited JSON-RPC on stdin/stdout. - `http` : MCP Streamable HTTP transport (final `2026-07-28` revision). Single POST endpoint that returns either `application/json` for single responses or
+ * `text/event-stream` for streaming. - `sse` : legacy HTTP+SSE dual-endpoint transport. Governance layer only (validation path); runtime client is not implemented; prefer `http`. - `websocket`: not implemented at the client layer; governance validation only. */
 type McpTransportKind = "stdio" | "http" | "sse" | "websocket";
 export type McpCapability = "tools" | "resources" | "prompts";
-
-// ─── Config: discriminated union on `transport` ────
 
 interface McpServerConfigBase {
   id: string;
@@ -143,6 +114,8 @@ export interface McpOAuthConfig {
   authorizationServers?: string[];
   scopes?: string[];
   clientRegistration?: "client-id-metadata-document" | "dynamic" | "preregistration" | "manual";
+  /** Public client ID the authorization server pre-registered for Ave. When set it is used before any metadata document or dynamic registration. No secret is stored. */
+  clientId?: string;
 }
 
 export interface McpStdioServerConfig extends McpServerConfigBase {
@@ -157,32 +130,13 @@ export interface McpStdioServerConfig extends McpServerConfigBase {
   cwd?: string;
   /** Host-owned, package-stable writable directory for a bundled server. */
   pluginDataDir?: string;
-  /**
-   * HOST-POPULATED: the retained generation payload a plugin-bundled server
-   * runs from. Every wrapped stdio server is refused the plugins root, where
-   * that payload lives, so this is the one directory under it a bundled server
-   * reads. Set only by `preparePluginMcpGeneration`; a value from any other
-   * source is dropped at connect (`McpManager.connectServer`) and never
-   * crosses to the renderer.
-   */
+  /** HOST-POPULATED: the retained generation payload a plugin-bundled server runs from. Every wrapped stdio server is refused the plugins root, where that payload lives, so this is the one
+   * directory under it a bundled server reads. Set only by `preparePluginMcpGeneration`; a value from any other source is dropped at connect (`McpManager.connectServer`) and never crosses to the renderer. */
   bundledPayloadRoot?: string;
   /** Safe env var name that receives apiKey at process launch. */
   apiKeyEnv?: string;
-  /**
-   * HOST-POPULATED filesystem-jail root for the ASRT-wrapped worker spawn
-   * When the OS-tool sandbox gate is ON, the stdio worker
-   * is wrapped through {@link ../permissions/asrt-sandbox.js wrapWorkerCommand}
-   * and this directory is the ONLY path the wrapped process may write — its
-   * per-server sandbox root under `~/.ave/mcp/<serverId>/`.
-   *
-   * TRUST: this field is populated EXCLUSIVELY by the host at connect time
-   * (`McpManager.connectServer` derives it from {@link aveHome}); it MUST NEVER
-   * originate from plugin/renderer/marketplace/config-file input (those are
-   * untrusted surfaces — a server-supplied write-jail root would defeat the
-   * jail). It is therefore deliberately NOT persisted to `servers.json` and is
-   * stripped from the renderer DTO. When ABSENT at wrap time the worker is
-   * wrapped DENY-ALL-WRITES (fail-closed) — never a HOME-wide or cwd fallback.
-   */
+  /** Only the host may derive this worker write jail; never accept it from plugin, renderer, marketplace, or persisted configuration.
+   * Strip it from renderer DTOs and persistence; absence at wrap time denies all writes, never falls back to home or cwd. */
   sandboxRoot?: string;
   url?: never;
   headers?: never;
@@ -200,12 +154,8 @@ export interface McpHttpServerConfig extends McpServerConfigBase {
   headers?: Record<string, string>;
   /** Safe header name that receives apiKey on MCP HTTP requests. */
   apiKeyHeader?: string;
-  /**
-   * Opt-in escape hatch for on-prem / localhost deployments. When true,
-   * NetworkGuard's private-IP check is skipped for this server — the governance
-   * `allowedUrls` allowlist is still the primary gate. Defaults to false.
-   * Mirrors the host-wide NetworkGuard SSRF-protection pattern.
-   */
+  /** Opt-in escape hatch for on-prem / localhost deployments. When true, NetworkGuard's private-IP check is skipped for this server; the
+   * governance `allowedUrls` allowlist is still the primary gate. Defaults to false. Mirrors the host-wide NetworkGuard SSRF-protection pattern. */
   allowPrivateNetworks?: boolean;
   command?: never;
   args?: never;
@@ -213,11 +163,8 @@ export interface McpHttpServerConfig extends McpServerConfigBase {
   apiKeyEnv?: never;
 }
 
-/**
- * Legacy / not-yet-implemented transports. Kept on the discriminated union so
- * governance validation paths that branch on `config.transport === "sse"` or
- * `"websocket"` continue to type-check unchanged.
- */
+/** Legacy / not-yet-implemented transports. Kept on the discriminated union so governance validation
+ * paths that branch on `config.transport === "sse"` or `"websocket"` continue to type-check unchanged. */
 export interface McpLegacyRemoteServerConfig extends McpServerConfigBase {
   transport: "sse" | "websocket";
   url: string;
@@ -237,46 +184,28 @@ export type McpServerConfig =
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/**
- * Renderer-safe config DTO.
- *
- * Secret-bearing fields remain write-only in the main process and never cross
- * the IPC boundary back to the renderer.
- */
+/** Renderer-safe config DTO. Secret-bearing fields remain write-only in the main process and never cross the IPC boundary back to the renderer. */
 export type McpServerConfigDto = DistributiveOmit<
   McpServerConfig,
   "apiKey" | "headers" | "env" | "args" | "sandboxRoot" | "cwd" | "pluginDataDir" | "bundledPayloadRoot"
 > & { bundled?: { kind: "plugin" | "agent-plugin"; name: string; server: string } };
 
-/**
- * MCP Apps spec `McpUiToolVisibility` — WHO may call a tool.
- * - `"model"`: the agent may call it.
- * - `"app"`: the tool's OWN app (this server's `ui://` card) may call it.
- *
- * ONE declaration: this is an alias of {@link ToolSurface} (`plugins/runtime/
- * tool-visibility.ts`, the host's single surface-visibility reader), which had the
- * identical `"model" | "app"` union. A type-only import, so the reverse edge
- * (tool-visibility.ts already imports this module's `Tool` type-only) is erased at
- * runtime — no cycle.
- */
+/** MCP Apps spec `McpUiToolVisibility`; WHO may call a tool. - `"model"`: the agent may call it. - `"app"`: the tool's OWN app (this server's `ui://` card) may call it. ONE declaration: this is an alias of {@link ToolSurface} (`plugins/runtime/
+ * tool-visibility.ts`, the host's single surface-visibility reader), which had the identical `"model" | "app"` union. A type-only import, so the reverse edge (tool-visibility.ts already imports this module's `Tool` type-only) is erased at runtime; no cycle. */
 export type McpUiToolVisibility = ToolSurface;
 
 export interface McpToolSchema {
   name: string;
   description: string;
+  /** Untrusted permission hints; only an explicit saved rule may grant access. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
   inputSchema: {
     type: "object";
     properties: Record<string, unknown>;
     required?: string[];
   };
-  /**
-   * MCP Apps spec `_meta.ui` on a TOOL (`McpUiToolMeta`). Only `visibility` is
-   * read by the host: it is the spec's gate on app→server `tools/call` — a host
-   * MUST reject an app's call to a tool whose visibility does not include
-   * `"app"`. Absent ⇒ the spec default `["model","app"]`, materialized ONCE at
-   * ingestion in `mcp-tool-adapter.ts` (the external-server analog of
-   * `parsePluginJson`'s U1 defaulting site) so no downstream reader defaults.
-   */
+  /** MCP Apps spec `_meta.ui` on a TOOL (`McpUiToolMeta`). Only `visibility` is read by the host: it is the spec's gate on app→server `tools/call`; a host MUST reject an app's call to a tool whose visibility does not
+   * include `"app"`. Absent ⇒ the spec default `["model","app"]`, materialized ONCE at ingestion in `mcp-tool-adapter.ts` (the external-server analog of `parsePluginJson`'s U1 defaulting site) so no downstream reader defaults. */
   _meta?: {
     ui?: {
       visibility?: McpUiToolVisibility[];
@@ -291,12 +220,8 @@ interface McpPromptArgumentSummary {
   required?: boolean;
 }
 
-/**
- * A server-declared prompt discovered via `prompts/list`. Prompts are a
- * user-controlled MCP primitive (parallel to registeredTools but never
- * model-callable): the user picks one, supplies arguments, and the host fetches
- * it via `prompts/get`.
- */
+/** A server-declared prompt discovered via `prompts/list`. Prompts are a user-controlled MCP primitive (parallel to
+ * registeredTools but never model-callable): the user picks one, supplies arguments, and the host fetches it via `prompts/get`. */
 export interface McpPromptSummary {
   name: string;
   title?: string;
@@ -304,12 +229,8 @@ export interface McpPromptSummary {
   arguments?: McpPromptArgumentSummary[];
 }
 
-/**
- * A resource the server declared (`resources/list`), already validated and bounded
- * at the client boundary — see `shared/mcp-resource-bounds.ts`. The `uri` is an
- * OPAQUE identifier: the host hands it back to the publishing server and never
- * resolves it itself.
- */
+/** A resource the server declared (`resources/list`), already validated and bounded at the client boundary; see
+ * `shared/mcp-resource-bounds.ts`. The `uri` is an OPAQUE identifier: the host hands it back to the publishing server and never resolves it itself. */
 export interface McpResourceSummary {
   uri: string;
   name: string;
@@ -318,32 +239,17 @@ export interface McpResourceSummary {
   mimeType?: string;
   /** Server-declared size in bytes, when it gave a sane one. */
   size?: number;
-  /** Listed, but the host refuses to fetch it (`https:` — see the policy doc §4). */
+  /** Listed, but the host refuses to fetch it (`https:`; see the policy doc §4). */
   hostFetchRefused?: boolean;
 }
 
-/**
- * A URI TEMPLATE the server declared (`resources/templates/list`).
- *
- * Its identity is `uriTemplate`, NOT `uri` — the distinction is load-bearing rather than
- * pedantic. A template is a pattern the host completes, so it fails the URI predicate by
- * design (braces are refused there), and a consumer that stored one in a `uri` field
- * would hand a brace-string to a validator that can only refuse it.
- *
- * `variables` is derived here rather than re-parsed per consumer: the dialog renders one
- * field per entry, in this order. The expansion does not read this list — it re-scans the
- * template — but both come from the one grammar in `shared/mcp-resource-template-bounds`,
- * so a form and an expansion cannot disagree about what the template asks for.
- */
+/** A URI TEMPLATE the server declared (`resources/templates/list`). Its identity is `uriTemplate`, NOT `uri`; the distinction is load-bearing rather than pedantic. A template is a pattern the host completes, so it fails the URI predicate by design (braces are refused there), and a consumer that stored one in a `uri` field would hand a brace-string to a validator
+ * that can only refuse it. `variables` is derived here rather than re-parsed per consumer: the dialog renders one field per entry, in this order. The expansion does not read this list; it re-scans the template; but both come from the one grammar in `shared/mcp-resource-template-bounds`, so a form and an expansion cannot disagree about what the template asks for. */
 export interface McpResourceTemplateSummary {
   uriTemplate: string;
   name: string;
-  /**
-   * The host will not fetch what this template produces, because its LITERAL scheme is
-   * one the host refuses. Absent when the scheme is itself a variable — that case is
-   * unknowable until expansion, which is why the read re-derives the refusal instead of
-   * trusting this.
-   */
+  /** The host will not fetch what this template produces, because its LITERAL scheme is one the host refuses. Absent when the scheme is
+   * itself a variable; that case is unknowable until expansion, which is why the read re-derives the refusal instead of trusting this. */
   hostFetchRefused?: boolean;
   title?: string;
   description?: string;
@@ -352,9 +258,38 @@ export interface McpResourceTemplateSummary {
   variables: string[];
 }
 
+/** Host-owned authorization state. `insufficient_scope` means the current grant still works but
+ * the server asked for more scope (403 step-up); only the explicit Authenticate action requests it. */
+export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "insufficient_scope" | "error";
+
+/** Stable, renderer-safe authorization failure codes. */
+export type McpAuthErrorCode =
+  | "mcp-auth-required"
+  | "mcp-auth-failed"
+  | "mcp-auth-storage-unavailable"
+  | "mcp-auth-storage-unreadable"
+  | "mcp-auth-registration-unsupported"
+  /** Protected-resource metadata describes a different resource than this endpoint. */
+  | "mcp-auth-resource-mismatch"
+  /** The credential index is unreadable; stored sign-ins are not cleaned up until it is rebuilt. */
+  | "mcp-auth-index-unreadable";
+
+export interface McpAuthenticationResult {
+  connected: boolean;
+  errorCode?: McpAuthErrorCode;
+}
+
+export interface McpConfigMutationResult extends McpAuthenticationResult {
+  warning?: string;
+}
+
 export interface McpServerState {
   id: string;
   status: "disconnected" | "connecting" | "connected" | "error";
+  /** Host-owned authorization state. Credentials never cross this boundary. */
+  authStatus?: McpAuthStatus;
+  /** A renderer-safe authorization problem to show on the server row. */
+  authError?: McpAuthErrorCode;
   connectedAt?: string;
   lastError?: string;
   registeredTools: string[];
@@ -368,38 +303,18 @@ export interface McpServerState {
   resourceTemplates?: McpResourceTemplateSummary[];
 }
 
-// ─── Validation Results ────────────────────────────
-
 export type ValidationResult =
   | { valid: true }
   | { valid: false; reason: string; layer: number };
 
 // ─── MCP Apps UI Payload (MCP Apps spec 2026-01-26) ─
 
-/**
- * Slot in which the MCP App should be rendered.
- * - `"chat"` : inline in the chat message flow (below the tool card)
- * - `"sidebar"` : docked to the sidebar panel
- * - `"tool-result"` : embedded inside the ToolGroupCard result row
- */
+/** Slot in which the MCP App should be rendered. - `"chat"` : inline in the chat message flow (below the tool
+ * card) - `"sidebar"` : docked to the sidebar panel - `"tool-result"` : embedded inside the ToolGroupCard result row */
 export type McpUiSlot = "chat" | "sidebar" | "tool-result";
 
-/**
- * A UI resource's declared CSP — the MCP Apps spec shape (`McpUiResourceCsp`).
- *
- * Deliberately **domain buckets, not CSP directive names**. The previous host type
- * was keyed by directive (`scriptSrc`/`connectSrc`/…), which meant a spec-conformant
- * server's `connectDomains` was silently dropped and its network access denied.
- *
- * Lives on the RESOURCE (`resources/read` content item `_meta.ui`), never on the
- * tool result — the tool's `_meta.ui` carries only `resourceUri` + rendering hints.
- *
- * Kept structurally identical to upstream `McpUiResourceCsp` rather than imported
- * from it: this type crosses the main/preload/renderer boundary, and ext-apps 1.7.4's
- * `.d.ts` files use extensionless relative imports that do not resolve under
- * `moduleResolution: NodeNext`. `__tests__/mcp-app-csp.test.ts` pins it against the
- * upstream type so a spec change fails the suite instead of drifting silently.
- */
+/** CSP domain buckets belong to resource metadata, not tool results.
+ * Mirror the upstream shape locally because its declarations do not resolve under this compiler mode; tests pin compatibility. */
 export interface McpUiResourceCsp {
   /** Origins for network requests (fetch/XHR/WebSocket) → `connect-src`. */
   connectDomains?: string[];
@@ -411,20 +326,8 @@ export interface McpUiResourceCsp {
   baseUriDomains?: string[];
 }
 
-/**
- * Sandbox permissions a UI resource requests (spec `McpUiResourcePermissions`).
- * Each maps to a Permissions-Policy feature on the inner app iframe. Absent ⇒ denied.
- *
- * The HOST computes both the iframe `allow` attribute and the Electron session grant
- * from this — see `shared/mcp-app-permissions.ts`, which is the single mapping table
- * and holds the fail-closed rules. A declaration only ever SELECTS from that table:
- * the inner frame carries `allow-same-origin` (it inherits the per-server proxy origin,
- * not the renderer's `file://`), so a delegated feature can actually be honored. This
- * is the full spec shape; which keys the host can DEMONSTRABLY deliver is decided by
- * the capability table and proven by `test/e2e/ui/mcp-app-permissions.spec.ts`. A key
- * the table does not carry is simply never granted (an external server may still send
- * it on the wire — it is matched by nothing and denied).
- */
+/** Resource declarations select only host-mapped permissions; absent or unknown features remain denied.
+ * Main derives both iframe allow and session grants from the shared mapping, with the inner frame using its per-server origin. */
 export interface McpUiResourcePermissions {
   camera?: Record<string, never>;
   microphone?: Record<string, never>;
@@ -438,52 +341,18 @@ export interface McpUiResourceMeta {
   permissions?: McpUiResourcePermissions;
 }
 
-/**
- * What `resources/read` yields for a UI resource: the HTML plus the resource's OWN
- * declared security metadata. `readResource` previously returned a bare string and
- * dropped `_meta` entirely, which is why the CSP had to be (wrongly) sourced from the
- * tool result. Main builds the sandbox-proxy CSP header from this.
- */
+/** What `resources/read` yields for a UI resource: the HTML plus the resource's OWN declared security metadata. `readResource` previously returned a bare
+ * string and dropped `_meta` entirely, which is why the CSP had to be (wrongly) sourced from the tool result. Main builds the sandbox-proxy CSP header from this. */
 export interface McpUiResourceRead {
   html: string;
   csp?: McpUiResourceCsp;
   permissions?: McpUiResourcePermissions;
 }
 
-/**
- * A first-party plugin's declaration of ONE `ui://` resource it serves — the
- * plugin→host serving contract for MCP App cards. This is the plugin-side analog
- * of an external MCP server's `resources/read` for a `ui://` resource, so BOTH
- * paths converge on the SAME {@link McpUiResourceRead} model (HTML + the
- * resource's OWN declared csp).
- *
- * "Declared POLICY, served CONTENT": the manifest declares the uri and the
- * resource's security policy; the CONTENT comes from the plugin itself
- * (`RuntimePlugin.readUiResource`), exactly as an external MCP server answers
- * `resources/read` with bytes. The host never resolves or reads a
- * plugin-declared disk path — the plugin IS the MCP server, the host relays.
- *
- * Why csp/permissions stay in the MANIFEST and are NOT returned by the hook: they are
- * security POLICY — static, schema-validated, reviewable before any plugin code runs,
- * and covered by `manifestSha256`. A runtime-supplied policy could present a narrow CSP
- * at review and widen it at serve time, or request the camera only once installed.
- *
- * Security invariants (enforced fail-closed at serve time — see
- * `plugin-ui-resource-provider.ts`, the single chokepoint):
- *  - `uri` authority MUST equal the declaring plugin's id — a plugin can only
- *    serve its OWN `ui://` namespace (own-namespace-only). Load-bearing: the
- *    serverId keys the sandbox-proxy origin, its partition, and the network
- *    `declaredOriginsByServer` union, so a plugin must not police its own
- *    namespace.
- *  - the uri MUST be one this manifest declared (declared-only) — this is what
- *    binds served content to the csp the host computes the CSP header from.
- *  - `csp` / `permissions` are the resource's OWN declared policy. Main COMPUTES the
- *    sandbox-proxy CSP header and the iframe `allow` attribute from them; the plugin
- *    never supplies a policy HEADER STRING or an allow-list, and the renderer can never
- *    inject one.
- */
+/** Serve plugin content through the shared resource model; policy stays in the validated, integrity-covered manifest, never the runtime response.
+ * Require the declaring plugin's URI authority and an exact manifest-declared resource; main computes CSP and iframe grants from that resource only. */
 export interface PluginUiResourceDecl {
-  /** `ui://<pluginId>/<path>` — authority MUST equal the declaring plugin's id. */
+  /** `ui://<pluginId>/<path>`; authority MUST equal the declaring plugin's id. */
   uri: string;
   /** The resource's own declared CSP (spec `McpUiResourceCsp`). @optional */
   csp?: McpUiResourceCsp;
@@ -491,21 +360,12 @@ export interface PluginUiResourceDecl {
   permissions?: McpUiResourcePermissions;
 }
 
-/**
- * The MCP Apps TOOL-RESULT `_meta.ui` extension (spec §3.2) — how a server says
- * "render this card with my result". These are the STANDARD `_meta.ui.*` keys, not
- * a legacy reverse-DNS vendor extension, so both arms declare a card identically: an
- * external MCP server puts it on its `CallToolResult`, and a first-party plugin
- * puts it on its handler's return value (the loopback delegate lifts it onto the
- * wire, see `plugin-runtime-delegate.ts`).
- *
- * Deliberately NO `csp` — per spec that lives on the RESOURCE, and main derives the
- * header there ({@link McpUiResourceMeta}). A `csp` on a tool result is ignored.
- */
+/** The MCP Apps TOOL-RESULT `_meta.ui` extension (spec §3.2); how a server says "render this card with my result". These are the STANDARD `_meta.ui.*` keys, not a legacy reverse-DNS vendor extension, so both arms declare a card identically: an external MCP server puts it on its `CallToolResult`, and a
+ * first-party plugin puts it on its handler's return value (the loopback delegate lifts it onto the wire, see `plugin-runtime-delegate.ts`). Deliberately NO `csp`; per spec that lives on the RESOURCE, and main derives the header there ({@link McpUiResourceMeta}). A `csp` on a tool result is ignored. */
 export interface McpUiToolMeta {
-  /** `ui://<serverId>/<path>` — the card to render. */
+  /** `ui://<serverId>/<path>`; the card to render. */
   resourceUri: string;
-  /** Preferred render slot — defaults to `"chat"` when omitted. @optional */
+  /** Preferred render slot; defaults to `"chat"` when omitted. @optional */
   slot?: McpUiSlot;
   /** Preferred height in pixels. @optional */
   height?: number;
@@ -528,72 +388,37 @@ export interface McpToolCallOutput {
   images?: McpContentImage[];
 }
 
-/**
- * Payload produced by an MCP tool that declares a UI extension.
- *
- * MCP Apps spec §3.2 — a tool response may carry `_meta.ui` to request
- * that the host render an interactive micro-app alongside the text reply.
- * The host fetches the resource at `resourceUri` (a `ui://` scheme URL
- * resolved against the connected MCP server) and renders it in a sandboxed
- * webview / iframe using the `AppBridge` postMessage JSON-RPC channel.
- */
+/** Payload produced by an MCP tool that declares a UI extension. MCP Apps spec §3.2; a tool response may carry `_meta.ui` to request that the host render an interactive micro-app alongside the text reply. The
+ * host fetches the resource at `resourceUri` (a `ui://` scheme URL resolved against the connected MCP server) and renders it in a sandboxed webview / iframe using the `AppBridge` postMessage JSON-RPC channel. */
 export interface McpUiPayload {
   /** MCP server that owns this UI resource. */
   serverId: string;
   /** Exact plugin generation for loopback cards; absent for external MCP servers. */
   generationId?: string;
-  /**
-   * `ui://` URI pointing to the HTML resource on the MCP server.
-   * The main process resolves this via `resources/read` to fetch the HTML.
-   */
+  /** `ui://` URI pointing to the HTML resource on the MCP server. The main process resolves this via `resources/read` to fetch the HTML. */
   resourceUri: string;
-  /** Preferred render slot — defaults to `"chat"` when omitted. */
+  /** Preferred render slot; defaults to `"chat"` when omitted. */
   slot?: McpUiSlot;
-  /** Preferred height in pixels — defaults to 300 when omitted. */
+  /** Preferred height in pixels; defaults to 300 when omitted. */
   height?: number;
   /** Human-readable title shown in the webview title bar. */
   title?: string;
-  // NOTE: deliberately NO `csp` here. Per spec, `csp`/`permissions` live on the
-  // RESOURCE (`resources/read` content item `_meta.ui`), not on the tool result, and
-  // the CSP must never round-trip through the renderer — a compromised renderer
-  // could forge a permissive policy and widen the envelope containing the untrusted
-  // app. Main derives it from the resource it just fetched. A `csp` on a tool result
-  // is ignored.
+  // NOTE: deliberately NO `csp` here. Per spec, `csp`/`permissions` live on the RESOURCE (`resources/read` content item `_meta.ui`), not on the tool result, and the CSP must never round-trip through the
+  // renderer; a compromised renderer could forge a permissive policy and widen the envelope containing the untrusted app. Main derives it from the resource it just fetched. A `csp` on a tool result is ignored.
 }
 
-/**
- * What `ave.mcp.readUiResource` returns — everything a card needs to render one
- * MCP App through the sandbox-proxy.
- *
- * It is a bundle rather than a bare HTML string because the two halves are now
- * delivered over different channels: the proxy DOCUMENT is navigated to (and
- * carries the CSP header the app inherits), while the app HTML travels over the
- * JSON-RPC bridge as `ui/notifications/sandbox-resource-ready`. Main mints both
- * together so they cannot drift.
- */
+/** What `ave.mcp.readUiResource` returns; everything a card needs to render one MCP App through the sandbox-proxy. It is a bundle rather than a bare HTML string because the two halves are now delivered over different channels:
+ * the proxy DOCUMENT is navigated to (and carries the CSP header the app inherits), while the app HTML travels over the JSON-RPC bridge as `ui/notifications/sandbox-resource-ready`. Main mints both together so they cannot drift. */
 export interface McpUiResourceBundle {
-  /**
-   * `ave-mcp-app://<hex(serverId)>/proxy.html?t=<token>` — the host-owned
-   * sandbox-proxy document for this card. The token selects the CSP main serves
-   * it with; it is host-minted and bound to the serverId.
-   */
+  /** `ave-mcp-app://<hex(serverId)>/proxy.html?t=<token>`; the host-owned sandbox-proxy document for
+   * this card. The token selects the CSP main serves it with; it is host-minted and bound to the serverId. */
   proxyUrl: string;
   /** The app HTML, mounted into the inner sandboxed iframe by the relay preload. */
   html: string;
 }
 
-/**
- * Result of an MCP App's `tools/call` on its OWN server, as it crosses
- * main → preload → renderer (`CHANNELS.mcp.callTool`).
- *
- * Deliberately an OUTCOME, not a thrown error: every denial (cross-server,
- * app-visibility, permission/consent) and every tool failure comes back as
- * `{ ok: false }` with a kebab-case code + English message, which the bridge
- * handler turns into an MCP-style `{ isError: true, content: [...] }`
- * `CallToolResult` for the app. `result` is the host tool layer's raw value
- * (a rendered text string for external MCP tools; whatever the plugin method
- * returned on the loopback path).
- */
+/** Result of an MCP App's `tools/call` on its OWN server, as it crosses main → preload → renderer (`CHANNELS.mcp.callTool`). Deliberately an OUTCOME, not a thrown error: every denial (cross-server, app-visibility, permission/consent) and every tool failure comes back as `{ ok: false }` with a
+ * kebab-case code + English message, which the bridge handler turns into an MCP-style `{ isError: true, content: [...] }` `CallToolResult` for the app. `result` is the host tool layer's raw value (a rendered text string for external MCP tools; whatever the plugin method returned on the loopback path). */
 export type McpUiToolCallOutcome =
   | { ok: true; result: unknown }
   | { ok: false; error: string; message?: string };

@@ -14,7 +14,7 @@ import { SecretEncryptionUnavailableError, type SecretEncryption } from "./secre
 const KEY_BYTES = 32;
 const NONCE_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
-// The algorithm and format version are authenticated along with the content.
+// Authenticate the algorithm and format version alongside content.
 const ENVELOPE_HEADER = Buffer.from("ave-external-key:aes-256-gcm:1\0", "ascii");
 
 export class SecretKeyFileError extends Error {
@@ -68,9 +68,7 @@ function readPrivateKey(keyFilePath: string): KeyObject {
   const bytes = Buffer.alloc(KEY_BYTES);
   const verification = Buffer.alloc(KEY_BYTES);
   try {
-    // Validate the opened descriptor, not a path check that can become stale
-    // before open. NOFOLLOW rejects links and NONBLOCK prevents a FIFO from
-    // hanging startup before fstat can reject its type.
+    // Validate the open descriptor; NOFOLLOW rejects links and NONBLOCK prevents FIFO hangs before fstat.
     fd = openSync(keyFilePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = fstatSync(fd, { bigint: true });
     assertPrivateKeyFile(opened);
@@ -87,7 +85,7 @@ function readPrivateKey(keyFilePath: string): KeyObject {
     return createSecretKey(bytes);
   } catch (error) {
     if (error instanceof SecretKeyFileError) throw error;
-    // Do not expose file content, the path, or an underlying provider error.
+    // Errors must expose neither content, paths, nor provider details.
     throw new SecretKeyFileError("Secret key file could not be read safely");
   } finally {
     bytes.fill(0);
@@ -96,11 +94,7 @@ function readPrivateKey(keyFilePath: string): KeyObject {
   }
 }
 
-/**
- * The host supplies the path to an existing protected key. Key creation,
- * backup and rotation belong to the operator. The key is pinned for this
- * process lifetime; a different key file takes effect on the next startup.
- */
+/** Operators own key creation and rotation; pin the protected key until next startup. */
 export function createNodeSecretEncryption(keyFilePath?: string): SecretEncryption {
   const key = keyFilePath === undefined ? undefined : readPrivateKey(keyFilePath);
   return Object.freeze({

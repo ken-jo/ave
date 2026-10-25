@@ -1,10 +1,4 @@
-/**
- * Boot §4.2 Step 8 — Post-boot hooks (release prep + update detector).
- *
- * Wires anonymous telemetry, crash reporter, auto-updater, plugin lifecycle
- * telemetry, first-boot consent prompt, and the plugin-update-check timer.
- * All init is best-effort (try/catch around release prep; non-fatal).
- */
+/** Release initialization is best-effort and must not prevent boot. */
 import { resolve } from "node:path";
 import { app } from "electron";
 import { createAutoUpdater } from "../../main/auto-updater.js";
@@ -28,8 +22,7 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
   let autoUpdaterStop: (() => void) | undefined;
 
   try {
-    // Always started: this is the local minidump collector, and `remoteReporting`
-    // is what decides whether a dump may leave the machine.
+    // Collect minidumps locally; remoteReporting alone controls whether they leave the machine.
     startCrashReporter({
       userDataPath: app.getPath("userData"),
       telemetry: settingsService.get("telemetry"),
@@ -50,7 +43,6 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     telemetry.start();
     telemetry.track("app_start");
 
-    // S12 — first-boot consent prompt.
     const telemetrySettings = settingsService.get("telemetry");
     if (!telemetrySettings.telemetryPromptAnswered) {
       setTimeout(() => {
@@ -64,14 +56,10 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
       }, 500);
     }
 
-    // S12 — PluginTelemetryClient. The device id lives under `~/.ave/telemetry/`
-    // like every other feature's user data; it used to sit in a second `.ave`
-    // root under Electron's userData, and is carried over once so the device
-    // keeps its identity.
+    // Preserve device identity while moving telemetry into its feature namespace.
     const deviceUuidPath = resolve(openFeatureNamespace("telemetry").dir, "device-uuid");
     relocateDeviceUuid(resolve(app.getPath("userData"), ".ave", "device-uuid"), deviceUuidPath);
-    // The endpoint comes from the service document, read only for a user who
-    // opted in (announcements have their own switch).
+    // Resolve the telemetry endpoint only for opted-in users; announcements have separate consent.
     const ptClient = new PluginTelemetryClient({
       settings: () => settingsService.get("telemetry"),
       endpoint: consentedTelemetryEndpoint(() => settingsService.get("telemetry"), input.serviceClient),

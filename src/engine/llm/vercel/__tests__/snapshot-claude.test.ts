@@ -1,20 +1,4 @@
-/**
- * L1–L4 snapshot parity tests for VercelUnifiedProvider (Claude / Anthropic path).
- *
- * Per docs/references/vercel-ai-sdk-migration.md §11 + §5.2 P3:
- *   L1 — Structural: StreamEvent type sequence matches expectation
- *   L2 — Content:    concatenated text_delta + reasoning_delta matches baseline
- *   L3 — Tool:       tool_call payload (id/name/input) deep-equal
- *   L4 — Signature:  captured per-step via fullStream events (NEVER onFinish /
- *                    response.messages aggregate — that loses signatures #12433)
- *                    AND round-tripped verbatim into the next request's
- *                    assistant.reasoning part.
- *
- * Also exercises:
- *   - Budget → thinking config mapping for adaptive and numeric-only models.
- *   - Numeric interleaving beta opt-in only for supported tool requests.
- *   - Short-reasoning-then-tool (#12433 empty-buffer edge) → log-and-skip.
- */
+// Capture signatures per stream step and echo them verbatim; aggregate responses can lose them.
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect, streamFromArray as fromArray } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
@@ -24,13 +8,8 @@ import {
 } from "../adapter.js";
 import { mapBudgetToEffort } from "../../reasoning-plan.js";
 import { claudeRequestShape } from "../../../../shared/model-host-policy.js";
+import { catalogModelFor } from "../../../../shared/context-budget.js";
 import { extractSignatureSafely } from "../signature-shim.js";
-
-
-
-// ────────────────────────────────────────────────────────────────
-// Unit: helpers
-// ────────────────────────────────────────────────────────────────
 
 describe("Claude helpers — budget → thinking effort mapping", () => {
   it("maps 4 budget bands: low / medium / high / max", () => {
@@ -44,24 +23,11 @@ describe("Claude helpers — budget → thinking effort mapping", () => {
     expect(mapBudgetToEffort(32_000)).toBe("max");
   });
 
-  it("separates adaptive-capable versions from numeric-only versions and release dates", () => {
-    expect(claudeRequestShape("claude-sonnet-4-5").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-sonnet-4-6").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-opus-4.6").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-opus-4").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-haiku-4").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-sonnet-4-20250514").adaptiveThinking).toBe(false);
-    // Future-proof: claude-5.x and later are picked up without code changes.
-    expect(claudeRequestShape("claude-sonnet-5-20270101").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-5-opus").adaptiveThinking).toBe(true);
-    expect(claudeRequestShape("claude-3-5-sonnet-latest").adaptiveThinking).toBe(false);
-    expect(claudeRequestShape("claude-3-opus-20240229").adaptiveThinking).toBe(false);
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
-// Unit: signature shim (#12433 log-and-skip)
-// ────────────────────────────────────────────────────────────────
+  it("reads the reasoning control from catalog metadata without inferring a future version", () => {
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-haiku-4-5")?.model).numericThinking).toBe(true);
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-sonnet-5-5")?.model).adaptiveThinking).toBe(true);
+    expect(claudeRequestShape(catalogModelFor("claude", "claude-sonnet-99")?.model).adaptiveThinking).toBe(false);
+  });});
 
 describe("signature-shim — extractSignatureSafely", () => {
   it("returns signature when present", () => {
@@ -88,10 +54,6 @@ describe("signature-shim — extractSignatureSafely", () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────
-// Unit: message-mapper — thinkingBlocks round-trip
-// ────────────────────────────────────────────────────────────────
-
 describe("message-mapper — thinkingBlocks → assistant.reasoning parts (P3)", () => {
   it("prepends reasoning parts BEFORE text and tool-call parts, carrying signatures", () => {
     const result = genericToModelMessages([
@@ -108,7 +70,6 @@ describe("message-mapper — thinkingBlocks → assistant.reasoning parts (P3)",
 
     const asst = result[0] as { role: string; content: Array<Record<string, unknown>> };
     expect(asst.role).toBe("assistant");
-    // Order: reasoning, reasoning, text, tool-call
     expect(asst.content.map((p) => p.type)).toEqual([
       "reasoning",
       "reasoning",
@@ -148,15 +109,9 @@ describe("message-mapper — thinkingBlocks → assistant.reasoning parts (P3)",
   });
 });
 
-// ────────────────────────────────────────────────────────────────
-// Unit: stream-mapper — per-step signature capture (NEVER onFinish)
-// ────────────────────────────────────────────────────────────────
-
 describe("stream-mapper — Claude signature capture per-step", () => {
   it("stays silent about an unsigned reasoning block on a non-Anthropic wire", async () => {
-    // A self-hosted model reasons heavily and signs nothing, so before the
-    // wire gate this warned once per reasoning block -- thousands of times a
-    // run, which is how a warning stops being read at all.
+    // Unsigned routes must not emit a missing-signature warning for every reasoning block.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const canned = [
       { type: "start" },
@@ -178,8 +133,6 @@ describe("stream-mapper — Claude signature capture per-step", () => {
     if (last?.type === "message_complete") {
       expect(last.thinkingBlocks ?? []).toEqual([]);
     }
-    // The reasoning itself still reaches the caller -- only the Anthropic
-    // echo bookkeeping is skipped.
     expect(events.some((e) => e.type === "reasoning_delta")).toBe(true);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -274,11 +227,9 @@ describe("stream-mapper — Claude signature capture per-step", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const canned = [
       { type: "reasoning-start", id: "r1" },
-      // No reasoning-delta — empty buffer edge case
       {
         type: "reasoning-end",
         id: "r1",
-        // No providerMetadata / signature
       },
       {
         type: "tool-call",
@@ -338,9 +289,7 @@ describe("stream-mapper — Claude signature capture per-step", () => {
     const events = await collect(fullStreamToStreamEvent(fromArray(canned), "claude"));
     const last = events.at(-1);
     if (last?.type === "message_complete") {
-      // Spread-conditional emits only when defined — undefined keys must
-      // not pollute the usage shape (downstream cost math treats undefined
-      // and 0 differently in the OpenAI/Gemini branches).
+      // Omit undefined usage keys; absent and zero cache counts have different accounting semantics.
       expect(last.usage).toBeDefined();
       expect("cacheReadTokens" in (last.usage ?? {})).toBe(false);
       expect("cacheWriteTokens" in (last.usage ?? {})).toBe(false);
@@ -356,7 +305,7 @@ describe("stream-mapper — Claude signature capture per-step", () => {
         totalUsage: {
           inputTokens: 100,
           outputTokens: 5,
-          cachedInputTokens: 30, // SDK-normalized, no providerMetadata
+          cachedInputTokens: 30,
         },
       },
     ];
@@ -364,7 +313,6 @@ describe("stream-mapper — Claude signature capture per-step", () => {
     const last = events.at(-1);
     if (last?.type === "message_complete") {
       expect(last.usage?.cacheReadTokens).toBe(30);
-      // No providerMetadata.anthropic.cacheCreationInputTokens — write side stays absent
       expect("cacheWriteTokens" in (last.usage ?? {})).toBe(false);
     }
   });
@@ -420,7 +368,7 @@ describe("stream-mapper — Claude signature capture per-step", () => {
         totalUsage: { inputTokens: 50, outputTokens: 2, cachedInputTokens: 10 },
         providerMetadata: {
           anthropic: {
-            cacheReadInputTokens: 999, // Authoritative when present
+            cacheReadInputTokens: 999,
             cacheCreationInputTokens: 5,
           },
         },
@@ -434,10 +382,6 @@ describe("stream-mapper — Claude signature capture per-step", () => {
     }
   });
 });
-
-// ────────────────────────────────────────────────────────────────
-// Integration: adapter wiring for Claude
-// ────────────────────────────────────────────────────────────────
 
 describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", () => {
   it("projects adaptive thinking and effort without a numeric interleaving opt-in", async () => {
@@ -466,7 +410,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
 
     await collect(
       provider.streamTurn({
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5-5",
         systemPrompt: "sys",
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
@@ -489,16 +433,14 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
         effort: "high",
       },
     });
-    // Adaptive thinking interleaves automatically; only the context opt-in stays.
-    expect(callArg.headers).toEqual({
-      "anthropic-beta": "context-1m-2025-08-07",
-    });
+    // Adaptive thinking interleaves with the default context window without beta headers.
+    expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/anthropic");
   });
 
-  it("claude-3.x — no `context-1m-2025-08-07` header (not a 1M-beta model in the request-shape table)", async () => {
+  it("claude-3.x — no beta header", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -531,17 +473,14 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    // Negative case for the 1M-beta auto-send: claude-3-5-sonnet is not a
-    // 1M-beta row of the host's request-shape table (model-host-policy.ts), so
-    // the adapter must not emit any anthropic-beta header (no thinking either →
-    // no interleaved beta).
+    // Unsupported model policies must not add context or interleaving beta headers.
     expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/anthropic");
   });
 
-  it("claude-3.x + thinking uses budget-based enabled thinking", async () => {
+  it("an unclassified model carries no inferred thinking control", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -576,12 +515,8 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.providerOptions).toEqual({
-      anthropic: {
-        thinking: { type: "enabled", budgetTokens: 5000 },
-      },
-    });
-    // No tools → no beta header even with thinking.
+    expect(callArg.providerOptions).toBeUndefined();
+    // No tools means no interleaving beta header.
     expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
@@ -617,7 +552,6 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
         model: "claude-sonnet-4-6",
         systemPrompt: "sys",
         messages: [{ role: "user", content: "hi" }],
-        // enableThinking omitted
         tools: [
           {
             name: "t",
@@ -630,25 +564,16 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.providerOptions).toBeUndefined();
-    // 1M beta still applies — thinking off, but the request-shape table says
-    // this model's 1M window needs the header, so the adapter opts in.
-    expect(callArg.headers).toEqual({
-      "anthropic-beta": "context-1m-2025-08-07",
-    });
+    expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/anthropic");
   });
 });
 
-// ────────────────────────────────────────────────────────────────
-// L4 — Signature byte-equality round-trip (turn-1 capture → turn-2 echo)
-// ────────────────────────────────────────────────────────────────
-
 describe("Claude — L4 signature byte-equality round-trip", () => {
   it("signatures captured on turn 1 are echoed verbatim into turn 2 assistant.reasoning", async () => {
-    // Turn 1: mock a claude stream that emits two signed reasoning blocks
-    // plus a tool-call. Capture thinkingBlocks from message_complete.
+    // Capture signed blocks from one turn and verify byte-identical replay on the next.
     const turn1Stream = [
       { type: "reasoning-start", id: "r1" },
       { type: "reasoning-delta", id: "r1", text: "plan A" },
@@ -692,9 +617,6 @@ describe("Claude — L4 signature byte-equality round-trip", () => {
       { thinking: "plan B", signature: "SIG_BBB_BYTE_EQUAL_02" },
     ]);
 
-    // Turn 2: build the next assistant GenericMessage that includes those
-    // thinkingBlocks verbatim, map to ModelMessage, and assert the signatures
-    // are BYTE-EQUAL in the outgoing reasoning parts.
     const turn2Request = genericToModelMessages([
       { role: "user", content: "please continue" },
       {
@@ -725,7 +647,6 @@ describe("Claude — L4 signature byte-equality round-trip", () => {
       }).providerOptions.anthropic.signature,
     ).toBe("SIG_BBB_BYTE_EQUAL_02");
 
-    // Order: reasoning, reasoning, tool-call (text dropped since content "")
     expect(asst.content.map((p) => p.type)).toEqual([
       "reasoning",
       "reasoning",
@@ -733,10 +654,6 @@ describe("Claude — L4 signature byte-equality round-trip", () => {
     ]);
   });
 });
-
-// ────────────────────────────────────────────────────────────────
-// [HIGH PRIVACY] Cross-vendor thinkingBlocks leak prevention
-// ────────────────────────────────────────────────────────────────
 
 describe("message-mapper — cross-vendor thinkingBlocks leak prevention", () => {
   it("strips thinkingBlocks when vendor=gemini (must never send Claude signed thoughts to Gemini)", () => {
@@ -755,10 +672,9 @@ describe("message-mapper — cross-vendor thinkingBlocks leak prevention", () =>
 
     const asst = result[0] as { role: string; content: Array<Record<string, unknown>> };
     expect(asst.role).toBe("assistant");
-    // No reasoning parts — thinkingBlocks must be stripped for non-claude vendors
+    // Foreign routes must not receive signed reasoning blocks.
     const reasoningParts = asst.content.filter((p) => p.type === "reasoning");
     expect(reasoningParts).toHaveLength(0);
-    // Text part still present
     expect(asst.content.some((p) => p.type === "text")).toBe(true);
   });
 

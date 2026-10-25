@@ -1,7 +1,3 @@
-/**
- * `updates.json` (design §18.7.1): the version-1 shape round-trips, anything
- * else is refused whole, and the due rules read it.
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +40,6 @@ describe("parseUpdateHistory", () => {
       attempts: 2,
       lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "github.com" }, at: T1 },
     });
-    // A failure outside a marketplace refusal is kept as `unavailable` with its scrubbed message (§18.7.5).
     expect(history.packages["acme:plugin:stats"]?.lastError).toEqual({ code: "unavailable", message: "EACCES: permission denied", at: T1 });
     expect(history.packages["acme:agent-plugin:notes"]).toMatchObject({ from: "1.0.0", displayName: "Notes" });
     expect(parseUpdateHistory(JSON.stringify(history))).toEqual(history);

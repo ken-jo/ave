@@ -1,20 +1,4 @@
-/**
- * PluginRuntime — per-session on-demand activation isolation (real Map methods).
- *
- * Exercises the REAL PluginRuntime.setSessionActivated / isSessionActivated /
- * clearSessionActivated against an actual instance (not a local mock Map). The
- * existing delegate-level isolation test stands up its own Map stub, so a
- * regression that reverted production `clearSessionActivated` from
- * `this.sessionActivatedBySession.delete(sessionId)` to a global `.clear()`
- * (wiping ALL sessions) would NOT fail it. This test closes that gap:
- *
- * MUTATION GUARD — if `clearSessionActivated(sessionId)` were reverted to
- * wiping every session's activation, the "session B's clear does NOT remove
- * session A's activation" assertion below FAILS.
- *
- * The session-activation Map methods are pure in-memory state, independent of
- * plugin load/registry machinery, so no `startAll()` is required.
- */
+/** Session activation stays in isolated in-memory state and never mutates registry enablement. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -48,9 +32,7 @@ describe("PluginRuntime — per-session activation isolation (real methods)", ()
     runtime.setSessionActivated("session-A", "local-indexer");
 
     expect(runtime.isSessionActivated("session-A", "local-indexer")).toBe(true);
-    // A different session never inherits session A's activation.
     expect(runtime.isSessionActivated("session-B", "local-indexer")).toBe(false);
-    // A different plugin in the same session is unaffected.
     expect(runtime.isSessionActivated("session-A", "meeting")).toBe(false);
   });
 
@@ -59,8 +41,7 @@ describe("PluginRuntime — per-session activation isolation (real methods)", ()
     runtime.setSessionActivated("session-A", "local-indexer");
     runtime.setSessionActivated("session-B", "meeting");
 
-    // Clearing session B must leave session A untouched. A global `.clear()`
-    // regression would wipe BOTH and fail the session-A assertion.
+    // Clearing one session must preserve every other session activation.
     runtime.clearSessionActivated("session-B");
 
     expect(runtime.isSessionActivated("session-A", "local-indexer")).toBe(true);
@@ -77,7 +58,6 @@ describe("PluginRuntime — per-session activation isolation (real methods)", ()
 
     expect(runtime.isSessionActivated("session-A", "local-indexer")).toBe(false);
     expect(runtime.isSessionActivated("session-A", "meeting")).toBe(false);
-    // Session B's unrelated activation survives session A's clear.
     expect(runtime.isSessionActivated("session-B", "samplemail")).toBe(true);
   });
 });

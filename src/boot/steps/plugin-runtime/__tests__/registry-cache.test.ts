@@ -70,7 +70,7 @@ describe("plugin runtime registry-entry cache", () => {
       await cache.refreshRegistryEntryCache();
       expect(cache.getRegistryEntry("meeting")?.origin).toBeUndefined();
 
-      // The §16.3 migration binds the entry without an install event.
+      // Background origin binding does not emit an install event.
       const pinned = new Date("2026-09-24T00:00:00.000Z");
       await write("ave");
       await utimes(registryPath, pinned, pinned);

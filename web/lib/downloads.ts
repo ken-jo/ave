@@ -35,6 +35,15 @@ export interface DownloadTarget {
  */
 const RELEASE_CHANNEL_ORIGIN = "https://downloads.agent-connector.ai";
 
+/**
+ * Whether the release channel holds a published release. While it is false
+ * the download page shows each system's card in its "release in preparation"
+ * state without the installer link (the alias answers 404 until the first
+ * release is uploaded); the setup steps stay readable. Set it to true in the
+ * change that follows the first published release.
+ */
+export const RELEASE_PUBLISHED = false;
+
 /** The stable `latest/` alias for one installer. */
 const latest = (file: string) => `${RELEASE_CHANNEL_ORIGIN}/latest/${file}`;
 

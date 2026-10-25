@@ -37,6 +37,15 @@ const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 
+const { searchWorkspaceFiles } = vi.hoisted(() => ({
+  searchWorkspaceFiles: vi.fn(async () => ({ matches: [], truncated: false })),
+}));
+
+vi.mock("../domains/workspace-file-search.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../domains/workspace-file-search.js")>()),
+  searchWorkspaceFiles,
+}));
+
 vi.mock("electron", () => {
   const noopWindow = {
     id: 1,
@@ -92,9 +101,9 @@ const auditLogger = {
 };
 
 /**
- * Enough shape for each `register*Handlers` to finish wiring. Handlers are
- * never driven past their guard here, so the bodies behind these stubs do not
- * have to be faithful — only present enough that registration completes.
+ * Enough shape for each `register*Handlers` to finish wiring. The host sender
+ * reaches handler bodies, so their dependencies stay inert. Workspace search
+ * returns the deterministic result above to keep this sender matrix scoped.
  */
 function makeDeps(): never {
   return {
@@ -182,6 +191,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["plugins", CHANNELS.plugins.configSecretSet, ["p", "k", "v"]],
   ["plugins", CHANNELS.runtime.counts, []],
   ["plugins", CHANNELS.mcp.servers, []],
+  ["plugins", CHANNELS.mcp.authenticate, ["server-a"]],
   // The host renderer registers plugin webviews on the shell's behalf, so this
   // one lives on the bridge channel prefix but is host-only: a shell that could
   // call it would be minting its own plugin binding.
@@ -220,12 +230,15 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Filesystem reach: workspace roots, attachment picking, file preview.
   ["workspace", CHANNELS.workspace.listRoots, []],
   ["workspace", CHANNELS.workspace.listDir, [{ path: "/" }]],
+  // A valid query, so the host frame reaches the search call past query
+  // validation; searchWorkspaceFiles is mocked above, so no filesystem walk runs.
   ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
+  ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
   ["usage", CHANNELS.usage.pricingOverrides, []],
@@ -327,11 +340,18 @@ describe("host-renderer-only IPC channels", () => {
   it.each(HOST_ONLY_CHANNELS)("%s %s refuses a plugin shell frame", async (_domain, channel, args) => {
     await invoke(channel, pluginShellFrameEvent(), args);
     expect(guardRowsFor(channel).length).toBeGreaterThan(0);
+    if (channel === CHANNELS.workspace.searchFiles) {
+      expect(searchWorkspaceFiles).not.toHaveBeenCalled();
+    }
   });
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
     await invoke(channel, hostFrameEvent(), args);
     expect(guardRowsFor(channel)).toEqual([]);
+    if (channel === CHANNELS.workspace.searchFiles) {
+      expect(searchWorkspaceFiles).toHaveBeenCalledTimes(1);
+      expect(searchWorkspaceFiles).toHaveBeenCalledWith(expect.objectContaining({ query: "src" }));
+    }
   });
 });
 

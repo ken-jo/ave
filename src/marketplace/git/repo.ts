@@ -1,17 +1,5 @@
-/**
- * Operations on one source's bare partial clone (design §2, §7.3, §9.3).
- *
- * The repository holds full commit history and trees but no blobs
- * (`--filter=blob:none`): ancestry checks never lack objects, and file
- * contents are fetched only for the paths the app actually reads. Refs under
- * `refs/ave/` name the fetched commits; automatic gc and maintenance are
- * off for every call (run-git.ts), so a commit an install still references
- * stays present after the pin moves on.
- *
- * Only the commands the design lists are used: `ls-remote`, `init --bare`,
- * `fetch`, `rev-parse`, `merge-base --is-ancestor`, `cat-file`, `ls-tree`,
- * `rev-list` and `archive`.
- */
+/** Bare partial clones retain commit history and trees; blobs are fetched only for requested paths.
+ * Install refs remain reachable because automatic maintenance is disabled. */
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Parser, type ReadEntry } from "tar";
@@ -37,7 +25,6 @@ export interface ExportLimits {
 }
 
 export interface ExportedFile {
-  /** Path relative to the exported directory, `/`-separated. */
   path: string;
   size: number;
   executable: boolean;
@@ -45,7 +32,7 @@ export interface ExportedFile {
 
 function assertCommitId(value: string, what: string): void {
   if (!OID.test(value)) throw new Error(`${what} is not a 40-hex commit id: ${value}`);
-  // A legacy grant pin's commit (design §16.3): a caller reached git with a version that has no tree.
+  // Zero-commit legacy grant pins have no tree and must not reach git.
   if (value === NULL_OBJECT_ID) throw new Error(`${what} is the all-zero object id, which names no commit or tree`);
 }
 
@@ -63,21 +50,11 @@ export function assertRepoPath(path: string): void {
   }
 }
 
-/** How many of the remote's branches and tags a missing ref lists. */
 const LISTED_REFS = 10;
 
-/** The redirect statuses curl reports when git does not follow them (`http.followRedirects=false`). */
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
-/**
- * The address a call that a host redirected is tried at once more: the same
- * scheme, host, port and path with `.git` appended, or null when there is
- * none. The stored address never carries `.git` (source-url.ts), and GitLab
- * answers `/group/repo` with a redirect to `/group/repo.git`. git never
- * follows a redirect (run-git.ts) and the redirect's Location is not read:
- * the retry goes to the host the call was bound to, so it is checked by the
- * same address rule.
- */
+/** Retry only the same-origin path with .git appended; never trust a redirect Location. */
 function suffixRetryUrl(remote: GitRemote, error: unknown): string | null {
   if (remote.url.scheme === "ssh" || remote.url.path.endsWith(".git")) return null;
   if (!(error instanceof MarketplaceError) || error.code !== "SOURCE_UNREACHABLE") return null;
@@ -92,11 +69,7 @@ export class BareRepo {
     readonly dir: string,
   ) {}
 
-  /**
-   * One call against `remote`, run once more at its `.git` address when the
-   * host answered it with a redirect ({@link suffixRetryUrl}). When that
-   * address holds no repository either, the redirect is what is reported.
-   */
+  /** Retry a redirect once at the explicit .git address; preserve the original redirect if it fails. */
   private async remoteRun(
     remote: GitRemote,
     args: (url: string) => string[],
@@ -122,7 +95,6 @@ export class BareRepo {
     return new BareRepo(runner, dir);
   }
 
-  /** `refs → oid` advertised by the remote (probe before add, §7.2). */
   async lsRemote(remote: GitRemote, ref?: string, signal?: AbortSignal): Promise<Map<string, string>> {
     const result = await this.remoteRun(remote, (url) => ["ls-remote", "--", url, ...(ref ? [ref] : ["HEAD"])], {
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
@@ -136,7 +108,6 @@ export class BareRepo {
     return refs;
   }
 
-  /** The remote's branch and tag names (`main`, `v1.2.0`), branches first, at most `limit`. */
   async refNames(remote: GitRemote, limit: number, signal?: AbortSignal): Promise<string[]> {
     const refs = await this.remoteRun(remote, (url) => ["ls-remote", "--refs", "--", url, "refs/heads/*", "refs/tags/*"], {
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
@@ -148,12 +119,7 @@ export class BareRepo {
     return [...branches, ...tags].slice(0, limit);
   }
 
-  /**
-   * Fetch `ref` (default: the remote's HEAD) with full commit history and no
-   * blobs into `refs/ave/<localRef>`, and return the fetched commit. A ref
-   * the remote does not have fails with the branches and tags it does have
-   * (design §18.8).
-   */
+  /** Fetch full history without blobs into an owned ref; missing refs report available branches and tags. */
   async fetchRef(remote: GitRemote, ref: string | undefined, localRef: string, signal?: AbortSignal): Promise<string> {
     const source = ref ?? "HEAD";
     if (source.startsWith("-") || /[\s:^~?*[\\]/u.test(source)) {
@@ -187,7 +153,6 @@ export class BareRepo {
     return oid;
   }
 
-  /** Is `commit` a commit object in this repository? */
   async hasCommit(commit: string): Promise<boolean> {
     assertCommitId(commit, "commit");
     try {
@@ -199,11 +164,7 @@ export class BareRepo {
     }
   }
 
-  /**
-   * Committer time of `commit`, ISO-8601. `git log`, not `git show -s`: show
-   * still diffs against the parent, and rename detection on a commit that
-   * deletes and adds files reads blobs this partial clone does not have.
-   */
+  /** Use git log: show may diff parents and fetch missing blobs during rename detection. */
   async commitTime(commit: string): Promise<string> {
     assertCommitId(commit, "commit");
     const result = await this.runner.run(["log", "-1", "--format=%cI", commit], { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.local });
@@ -225,7 +186,6 @@ export class BareRepo {
     }
   }
 
-  /** Entries under `path` at `commit` (optionally recursive); `path: null` lists the root. */
   async lsTree(commit: string, path: string | null, recursive: boolean): Promise<TreeEntry[]> {
     assertCommitId(commit, "commit");
     if (path !== null) assertRepoPath(path);
@@ -244,14 +204,8 @@ export class BareRepo {
     return entries;
   }
 
-  /**
-   * Make every blob under `paths` at `commit` present locally with one fetch
-   * per batch of missing object ids (the request partial-clone lazy fetching
-   * issues), then prove none is missing. `--no-walk` limits the listing to
-   * that commit's tree (otherwise every historical version of the paths is
-   * listed), and `--sparse` keeps the commit even when it did not change the
-   * paths (otherwise history simplification drops it and nothing is listed).
-   */
+  /** Fetch missing blobs in bounded batches, then verify none remain.
+     * --no-walk limits history; --sparse retains commits that did not change the selected paths. */
   async ensureBlobs(remote: GitRemote, commit: string, paths: readonly string[], signal?: AbortSignal): Promise<void> {
     assertCommitId(commit, "commit");
     for (const path of paths) assertRepoPath(path);
@@ -301,14 +255,7 @@ export class BareRepo {
     return result.stdout;
   }
 
-  /**
-   * Write the tree at `path` in `commit` into `dest` (§9.3): blobs are made
-   * present first, then `git archive` of that subtree streams a tar that is
-   * checked entry by entry. Only regular files and directories are accepted; a symlink,
-   * submodule or path that is not portable stops the export. Files land
-   * relative to `path`; `""` exports the whole tree (a direct source whose
-   * package is the repository root).
-   */
+  /** Fetch blobs before exporting; accept only portable regular files and directories beneath the selected tree. */
   async exportPath(
     remote: GitRemote,
     commit: string,
@@ -317,9 +264,7 @@ export class BareRepo {
     limits: ExportLimits,
     signal?: AbortSignal,
   ): Promise<ExportedFile[]> {
-    // A gitlink (submodule) becomes an empty directory in the tar and a
-    // symlink a link entry; the tree says what each entry really is, and it is
-    // present without blobs, so check it before fetching anything.
+    // Inspect tree modes before downloading: gitlinks become directories in tar and would otherwise hide submodules.
     const root = path === "";
     let fileCount = 0;
     for (const entry of await this.lsTree(commit, root ? null : path, true)) {
@@ -331,13 +276,11 @@ export class BareRepo {
       }
       if (entry.type === "blob") fileCount += 1;
     }
-    // Refuse an oversized tree before its blobs are downloaded; the byte limit
-    // needs the blobs and is checked while the archive streams.
+    // Reject excessive entries before downloading blobs; streamed extraction checks byte limits.
     if (fileCount > limits.maxFiles) {
       throw new MarketplaceError("CONTENT_RULE_VIOLATION", `more than ${limits.maxFiles} files: ${path || "the repository root"}`);
     }
     await this.ensureBlobs(remote, commit, root ? [] : [path], signal);
-    // The prefix only tells archive entries from anything else in the stream.
     const prefix = "export/";
     const files = new Map<string, { data: Buffer[]; size: number; executable: boolean }>();
     const identities = new Set<string>();
@@ -380,8 +323,7 @@ export class BareRepo {
     });
     const parsed = new Promise<void>((resolve) => parser.on("end", () => resolve()));
 
-    // The tree-ish form reads only this subtree; `archive <commit> -- <path>`
-    // also reads blobs outside the path, which a partial clone does not have.
+    // Archive the subtree tree-ish; a commit plus pathspec can read blobs outside the selected path.
     await this.runner.run(["archive", "--format=tar", `--prefix=${prefix}`, root ? `${commit}^{tree}` : `${commit}:${path}`], {
       gitDir: this.dir,
       timeoutMs: GIT_TIMEOUTS_MS.export,

@@ -1,12 +1,4 @@
-/**
- * Routine cards are addressed to the dedicated Suggestions conversation.
- *
- * A routine fires on a schedule, with no conversation behind it. Its running,
- * failed and result cards used to be drawn over whichever conversation was
- * focused; the renderer now addresses them to the Suggestions conversation, so
- * main makes that conversation exist — and rise in the list — before each one
- * is sent.
- */
+/** Create and promote the Suggestions conversation before sending scheduled routine cards. */
 import { describe, expect, it, vi } from "vitest";
 import { wireRoutinesScheduler } from "../routines-wiring.js";
 import { ROUTINES } from "../../../shared/ipc-channels.js";
@@ -38,7 +30,6 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
 
 const routine = { id: "routine-a", trigger: { kind: "manual" }, execution: "llm-session", title: "Morning" };
 
-/** Each card send is preceded by a touch of the Suggestions conversation. */
 function expectTouchedBefore(send: ReturnType<typeof vi.fn>, touch: ReturnType<typeof vi.fn>, channel: string) {
   const at = send.mock.calls.findIndex(([sent]) => sent === channel);
   expect(at).toBeGreaterThanOrEqual(0);

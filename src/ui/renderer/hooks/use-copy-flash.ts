@@ -1,14 +1,4 @@
-/**
- * Copy a value to the clipboard and flash "copied" for a moment.
- *
- * One implementation for every copy button that confirms itself inline. The
- * copies this replaced disagreed on the flash (1500 ms, 1200 ms, or never
- * resetting — the pairing-code buttons read "copied" until the component
- * remounted) and on whether "copied" meant the write succeeded or merely that
- * the button was pressed. Here it means the write resolved: a clipboard that
- * refuses the write, or is absent, shows no confirmation for a copy that did
- * not happen.
- */
+/** Flash copied only after a successful clipboard write; refused or unavailable writes show no confirmation. */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** How long the "copied" confirmation stays up. */

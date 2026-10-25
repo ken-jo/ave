@@ -10,11 +10,7 @@ import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 
-/**
- * One armed, one-shot fault on the local install's root swap
- * (`rename(<id>.tmp-…, <installDir>)`). Every other `rename` passes through,
- * so the rest of this suite runs against the real filesystem.
- */
+/** Inject one root-swap failure; all other renames use the real filesystem. */
 const swapFault = vi.hoisted(() => ({
   failRenameInto: undefined as string | undefined,
   /** Runs once, right after the swap rename into this root succeeds. */
@@ -85,7 +81,6 @@ describe("PluginMarketplaceService.installLocal", () => {
       "utf-8",
     );
 
-    // Source plugin: minimal Phase 1-shaped manifest + a dist/ entry.
     await mkdir(join(sourceDir, "dist"), { recursive: true });
     await writeFile(
       join(sourceDir, "plugin.json"),
@@ -140,8 +135,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(registry.plugins).toEqual([]);
   });
 
-  // A local install is never pinned by a release or archive artifact, so a
-  // process entry is refused before anything is copied.
+  // Local installs have no pinned artifact and must refuse process entries before copying.
   it("refuses a process-entry extension before local install changes the registry", async () => {
     await writeFile(join(sourceDir, "plugin.json"), JSON.stringify({
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -160,25 +154,21 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("skips node_modules/electron, .git, and nested node_modules/electron during cp", async () => {
-    // Keep this fixture inert because the canonical test runner itself uses
-    // Electron's patched fs. The contract here is excluding the Electron tree,
-    // not asking the runner to parse an intentionally corrupt ASAR archive.
+    // Keep the archive fixture inert: the runner uses a patched filesystem; only tree exclusion is under test.
     const electronDir = join(sourceDir, "node_modules", "electron", "dist", "Electron.app", "Contents", "Resources");
     await mkdir(electronDir, { recursive: true });
     const electronFixture = join(electronDir, "electron-fixture.bin");
     await writeFile(electronFixture, Buffer.from([0, 1, 2, 3]));
     expect(existsSync(electronFixture)).toBe(true);
-    // Sibling dep that SHOULD be copied (plugin runtime needs it).
     await mkdir(join(sourceDir, "node_modules", "node-ical"), { recursive: true });
     await writeFile(
       join(sourceDir, "node_modules", "node-ical", "index.js"),
       "module.exports = {};\n",
     );
-    // Monorepo-style nested node_modules/electron — must also be skipped.
+    // Nested node_modules/electron trees must also be excluded.
     const nestedElectron = join(sourceDir, "packages", "child", "node_modules", "electron");
     await mkdir(nestedElectron, { recursive: true });
     await writeFile(join(nestedElectron, "package.json"), '{"name":"electron"}\n');
-    // .git tree present at install time so the filter can be observed.
     await mkdir(join(sourceDir, ".git"), { recursive: true });
     await writeFile(join(sourceDir, ".git", "HEAD"), "ref: refs/heads/main\n");
 
@@ -191,7 +181,6 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(
       existsSync(join(installDir, "packages", "child", "node_modules", "electron")),
     ).toBe(false);
-    // Non-electron deps must survive.
     expect(
       existsSync(join(installDir, "node_modules", "node-ical", "index.js")),
     ).toBe(true);
@@ -211,18 +200,13 @@ describe("PluginMarketplaceService.installLocal", () => {
     const service = makeService();
     await expect(service.installLocal(sourceDir)).rejects.toThrow(/non-empty 'version' string/);
 
-    // The throw fires before any filesystem mutation, so the install
-    // dir must NOT exist and the registry must remain empty.
     expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
     const reg = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(reg.plugins).toHaveLength(0);
   });
 
   it("promotes an existing legacy dev-link entry (rewritten to local-dev on read) and re-stamps installSource='local-dev'", async () => {
-    // Pre-populate registry with a legacy dev-link entry. readPluginRegistry
-    // rewrites it to "local-dev" on read; installLocal then re-stamps the
-    // entry, leaving installSource on "local-dev" (its declared policy is
-    // not admin).
+    // Reading migrates dev-link to local-dev; reinstall must preserve the non-admin install source.
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -272,8 +256,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     const paths = receipt.files.map((f: { path: string }) => f.path).sort();
     expect(paths).toContain("plugin.json");
     expect(paths).toContain("dist/hostPlugin.js");
-    // node_modules paths must NOT be in the receipt — those are runtime
-    // deps, not integrity-tracked artifacts.
+    // Runtime dependencies are excluded from integrity receipts.
     for (const p of paths) {
       expect(p.startsWith("node_modules/")).toBe(false);
     }
@@ -289,7 +272,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(result.ok).toBe(true);
   });
 
-  // POSIX-only: an unprivileged Windows source can hold only a junction, and the staging cp({ verbatimSymlinks }) re-creates it as a "dir" symlink (node lib/internal/fs/cp/cp.js onLink), which fails EPERM before rejectSideloadSymlinks (marketplace.ts) is reached.
+  // Windows junction staging requires symlink privileges and can fail before the sideload-link guard.
   it.skipIf(process.platform === "win32")("rejects a contained source symlink before it can be promoted", async () => {
     const target = join(sourceDir, "dist", "hostPlugin.js");
     const link = join(sourceDir, "dist", "hostPlugin-link.js");
@@ -349,10 +332,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(await readFile(registryPath, "utf-8")).toBe(before.registry);
   });
 
-  // An unprivileged Windows process cannot create a file symlink (EPERM) but
-  // can plant a directory junction, which the receipt walk's lstat reports as
-  // a link. POSIX keeps the executable file symlink and adds the same
-  // directory link.
+  // Windows uses an unprivileged directory junction; POSIX also covers a file symlink.
   it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
     "rejects an unlisted %s in the installed payload",
     async (linkKind) => {
@@ -367,7 +347,6 @@ describe("PluginMarketplaceService.installLocal", () => {
       const outsideDir = join(testDir, "outside-tools");
       await mkdir(outsideDir, { recursive: true });
       await writeFile(join(outsideDir, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      // A junction on Windows; the type is ignored on POSIX.
       await symlink(outsideDir, join(installDir, "dist", "injected-tool"), "junction");
     }
 
@@ -507,9 +486,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(rollbackBackups).toEqual([]);
   });
 
-  // The local-dev twin of the artifact-store promotion tests: the candidate is
-  // activated (its `sockets/` and `run/` materialised at the final root) before
-  // the durable commit replaces that root.
+  // Activation creates runtime directories at the final root before durable commit; the swap must preserve them.
   describe("socket directories of the already-activated candidate", () => {
     afterEach(() => {
       swapFault.failRenameInto = undefined;
@@ -595,9 +572,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
     });
 
-    // A live worker creating its control-socket leaf at the promoted root in
-    // the window between the swap rename and the carry back: two non-empty
-    // `run/` directories, merged entry by entry rather than refused.
+    // A live worker can create a run/ leaf during the swap; both directories must merge without loss.
     it("merge with a worker leaf created at the promoted root during the swap", async () => {
       const service = makeService();
       await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
@@ -626,19 +601,14 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(swapFault.afterRenameInto).toBeUndefined();
       expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
         .toMatchObject({ version: "2.0.0" });
-      // The run/ root the live children were wrapped against, not the one the
-      // worker made in the window.
+      // Keep the original run/ directory identity that confines live children.
       expect(statSync(join(installDir, "run")).ino).toBe(run);
       expect(statSync(join(installDir, "run", "w1")).ino).toBe(w1);
       expect(await readFile(join(installDir, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
       expect(existsSync(join(installDir, "run", "w2"))).toBe(true);
     });
 
-    // The carry back into the promoted root stops after the worker's new leaf
-    // was created there but before it joined the original run/, which is still
-    // in the recovery backup. The restore has to finish that merge first:
-    // reversing it as found would move the original's leaves into the leaf's
-    // fresh run/ and bring that directory back in place of the original.
+    // Finish the interrupted merge before rollback so the original run/ directory identity survives.
     it("finish an interrupted merge before restoring, keeping the original run/", async () => {
       const service = makeService();
       await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
@@ -673,10 +643,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect((await readdir(join(installDir, "run"))).sort()).toEqual(["w1", "w2"]);
     });
 
-    // The swap itself failing: the live root is already gone and the catch
-    // removes the staged root. The predecessor is still the live generation, so
-    // its socket directories must come back with the restored install rather
-    // than go with the staged root.
+    // A failed swap must restore the predecessor socket directories with its install root.
     it("go back to the restored install when the root swap itself fails", async () => {
       const service = makeService();
       await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
@@ -738,9 +705,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
   });
 
-  // Once confined processes may run, every root a predecessor or candidate
-  // may still have in its confinement is tombstoned for the next boot rather
-  // than deleted while that child could race the delete.
+  // Roots still reachable by confined children wait in tombstones until boot.
   describe("once confined processes may run", () => {
     const tombstones = async () => {
       const dir = join(pluginsDir, TOMBSTONE_SUBDIR);
@@ -810,9 +775,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(await tombstonedVersions()).toEqual(["1.2.3"]);
     });
 
-    // The pre-copy delete of the staging root assumes payload only: nothing
-    // confined is granted a path there. A leftover one holding a runtime
-    // directory is refused, and it goes to the tombstones.
+    // Staging deletion is safe only for payload-only roots; runtime directories require tombstoning.
     it("refuses a leftover staging root that holds a runtime directory", async () => {
       const now = 1_700_000_000_000;
       vi.spyOn(Date, "now").mockReturnValue(now);
@@ -831,7 +794,6 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, tombstoned[0]!, "data"))).toBe(true);
     });
 
-    // The restore stage of a rollback is also deleted at once as payload only.
     it("refuses a leftover restore stage that holds a runtime directory", async () => {
       const service = makeService();
       await service.installLocal(sourceDir, preparedActivationOptionsForTest);
@@ -858,10 +820,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(existsSync(join(stale, "data"))).toBe(true);
     });
 
-    // A fresh install has no recovery backup, so the activated candidate's
-    // runtime directories are parked in the staged root for the swap. When the
-    // swap fails, that root holds directories the candidate is still bound to:
-    // it goes to the tombstones, not into a recursive delete or a leak.
+    // A failed fresh-install swap must tombstone runtime directories still bound to the candidate.
     it("tombstones a staged root that holds the candidate's runtime directories when the swap fails", async () => {
       const service = makeService();
       const installDir = join(pluginsDir, "test-plugin");
@@ -1028,9 +987,7 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors manifest.pluginAccess into registry approvedPluginAccess (parity with marketplace install)", async () => {
-    // Without this, assertPluginEventAccess finds no grant for a
-    // dev-sideloaded plugin and any cross-plugin event subscribe
-    // (e.g. sampleassistant listening to samplemail email.new) throws at startup.
+    // Sideloaded cross-plugin event subscriptions require an approvedPluginAccess grant.
     const accessSpec = {
       plugins: [
         { pluginId: "samplemail", events: ["email.new", "calendar.event.upcoming"] },
@@ -1062,11 +1019,7 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors approvedPluginAccess on UPDATE (existing entry path) — not just on insert", async () => {
-    // Dev re-install: a pre-existing local-dev entry is overwritten by the
-    // new installLocal call AND approvedPluginAccess must be overwritten so
-    // a later cross-plugin event subscribe is granted. Using "local-dev"
-    // here (rather than the now-removed "dev-link") since both produce the
-    // same code path after the read-time migration.
+    // Reinstall must replace approvedPluginAccess so new cross-plugin subscriptions are authorized.
     const accessSpec = {
       plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
     };
@@ -1133,10 +1086,7 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("keeps an existing schema-v2 receipt valid, reading its absent admission as none", async () => {
-    // A receipt written before the admission catalog existed says, truthfully,
-    // that no catalog authorised it. That is a fact to preserve, not a missing
-    // field to default — so it normalises to null rather than failing or being
-    // back-filled with the current document.
+    // A receipt predating admission records null; never backfill it from the current catalog.
     const { hashReceiptFiles, listFilesRecursive, verifyInstallReceiptRaw } = await import(
       "../plugin-install-receipt.js"
     );

@@ -20,8 +20,8 @@ describe("App session project reconciliation", () => {
         projectRoot: "C:\\work\\alpha",
         projectName: "alpha",
       } as never,
-      // The general chat is its own conversation with no project identity —
-      // not the project session's history read back under another id.
+      // The general chat is its own conversation with no project identity — not the project session's history read back under
+      // another id.
       historyBySession: { "general-session": { messages: [] } },
       sessions: [{
         id: "general-session",

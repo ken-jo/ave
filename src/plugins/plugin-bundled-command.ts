@@ -9,14 +9,7 @@ export function isBundledPathLikeToken(token: string): boolean {
   return token.startsWith(".") || token.startsWith("~") || token.includes("/") || token.includes("\\");
 }
 
-/**
- * Anchor path-like command tokens to a sealed, receipt-verified generation.
- *
- * The artifact generation id carried by the caller already commits to every
- * receipt-covered byte. Do not hash an executable here: reading a path and
- * later spawning that same path creates a check/use race. Materialization
- * seals the retained generation before this function can return it.
- */
+/** Anchor commands only to sealed receipt-verified generations; the artifact identity already pins their covered bytes. */
 export function anchorBundledCommand(
   payloadRoot: string,
   descriptorPath: string,

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, isHostApprovalRejectedDecision, type ApprovalRequest, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit } from "../../permissions/host-shell-execution-permit.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, parseHostShellExecutionInput } from "../../permissions/host-shell-execution-plan.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { BashTool, BashToolInputSchema, PowerShellTool, PowerShellToolInputSchema } from "../shell-tools.js";
 import { approvalFailureOutcome } from "../pipeline/approval-outcome.js";
@@ -15,7 +15,7 @@ const temporaryDirectories: string[] = [];
 function prepare() {
   const cwd = mkdtempSync(join(tmpdir(), "host-shell-approval-"));
   temporaryDirectories.push(cwd);
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture capability", confines: { filesystem: true, process: true, network: true } });
   const plan = getHostShellExecutionPlan("host");
   const binding = buildHostShellExecutionPermitBinding({ plan, toolName: "bash", toolUseId: "host-once", rawInput: HOST_INPUT, executionCwd: cwd, extraAllowedDirectories: [] })!;
@@ -24,10 +24,10 @@ function prepare() {
   const request: ApprovalRequestInput = { id: "host-once", category: "tool", toolCategory: "shell", toolName: "bash", args: HOST_INPUT, source: "builtin", createdAt: Date.now(), reason: "Explicit host execution", allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding };
   return { cwd, plan, binding, webContents, gate, request };
 }
-afterEach(() => {
+afterEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  for (const dir of temporaryDirectories.splice(0)) cleanupTmpDir(dir);
+  for (const dir of temporaryDirectories.splice(0)) await cleanupTmpDir(dir);
 });
 
 describe("explicit host shell authorization", () => {

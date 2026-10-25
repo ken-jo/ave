@@ -1,5 +1,3 @@
-// Pure parsing + highlight helpers.
-
 import React from "react";
 import type { RenderHtmlPayload } from "../types.js";
 import {
@@ -8,7 +6,7 @@ import {
   RENDER_HTML_MIN_HEIGHT,
 } from "../constants.js";
 
-export function clampPreviewHeight(value: unknown): number {
+function clampPreviewHeight(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return RENDER_HTML_DEFAULT_HEIGHT;
   }

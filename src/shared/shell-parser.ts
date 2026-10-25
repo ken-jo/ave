@@ -37,8 +37,7 @@ runtimeGlobal._aveShellParserBridge = {
 };
 try {
   const { instance } = await WebAssembly.instantiate(wasmBytes, runtime.importObject);
-  // Starting the runtime registers its synchronous callback before yielding.
-  // The lifetime promise stays pending while that callback remains callable.
+  // Starting the runtime registers the synchronous callback before yielding; its lifetime promise must remain pending while the callback is callable.
   void runtime.run(instance).then(() => { runtimeFailure = new Error("Shell parser runtime exited"); }, (error: unknown) => {
     runtimeFailure = error instanceof Error ? error : new Error("Shell parser runtime failed");
   });
@@ -91,7 +90,7 @@ export function parseShellSyntax(source: string): ShellSyntaxNode {
     return { ...result.tree, BraceWords: result.braceWords, EscapedStrings: result.escapedStrings } as ShellSyntaxNode;
   } catch (error) {
     if (error instanceof ShellAnalysisError) throw error;
-    // A trap or broken ABI may leave Go's runtime unusable. Never re-enter it.
+    // A runtime trap or broken ABI may poison the runtime; never re-enter it.
     runtimeFailure = error instanceof Error ? error : new Error("Shell parser runtime failed");
     throw runtimeFailure;
   }

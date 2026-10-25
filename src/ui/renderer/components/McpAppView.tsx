@@ -1,30 +1,5 @@
-/**
- * McpAppView — MCP Apps spec §3 sandboxed UI renderer.
- *
- * Renders a `ui://` resource from an MCP server through the upstream
- * `@modelcontextprotocol/ext-apps` `AppBridge`, inside an Electron <webview> on a
- * dedicated per-server `ave-mcp-app:<hex(serverId)>` partition (#885 b1 storage
- * isolation), with no nodeIntegration and contextIsolation=yes.
- *
- * ─── The double-iframe sandbox proxy ─────────────────────────────────────────
- * The <webview> does NOT load the app HTML directly. It loads a host-owned,
- * script-free **sandbox-proxy document** served from the privileged
- * `ave-mcp-app://` scheme with a real CSP response header. The host-owned relay
- * preload running in that document then mounts the app HTML into an INNER
- * `<iframe sandbox="allow-scripts allow-same-origin" srcdoc>` — the spec's required
- * sandbox pair, so the inner frame inherits the proxy's per-server origin.
- *
- * That indirection is the whole point. An ext-apps guest connects with the default
- * `PostMessageTransport(window.parent, window.parent)`. A <webview> guest is a
- * TOP-LEVEL document, so `window.parent === window` and the app would post to
- * ITSELF — which is exactly why the previous hand-rolled bridge here was dead. In
- * the inner frame `window.parent` is the proxy: a real, different FRAME (a different
- * frame is what postMessage needs, not a different origin). So postMessage genuinely
- * crosses and the app runs COMPLETELY UNMODIFIED.
- *
- * Message path:
- *   AppBridge ⇄ WebviewIpcTransport ⇄ <webview> ipc ⇄ relay preload ⇄ inner App
- */
+/** Use a per-server partition with no node integration and isolated context. A CSP-protected proxy embeds the app in a
+ * sandboxed inner frame so window.parent is a distinct frame; bridge messages cross the relay preload and webview IPC. */
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiPayload, McpUiResourceBundle } from "../../../mcp/types.js";
@@ -41,14 +16,14 @@ import {
   type McpAppCardSize,
 } from "../../../shared/mcp-app-card-size.js";
 import { useOptionalTheme, findBundle, bundleToPluginTokens, DEFAULT_BUNDLE_ID } from "../theme/index.js";
-// The host-side wiring lives in its own React-free module so the real-<webview> e2e
-// gate can import and exercise THE SHIPPING WIRING rather than a look-alike copy.
+// The host-side wiring lives in its own React-free module so the real-<webview> e2e gate can import and exercise THE
+// SHIPPING WIRING rather than a look-alike copy.
 import { createMcpAppBridge } from "./mcp-app-bridge.js";
-// Standard ext-apps `McpUiHostContext` builder (theme/locale/timeZone → standard
-// style-variable vocabulary). React-free so it stays importable by the e2e gate.
+// Standard ext-apps `McpUiHostContext` builder (theme/locale/timeZone → standard style-variable vocabulary). React-free so
+// it stays importable by the e2e gate.
 import { buildMcpAppHostContext } from "./mcp-app-host-context.js";
-// The display-mode SoT: what the host advertises (`availableDisplayModes`) AND what
-// the `onrequestdisplaymode` handler will accept — one module, so they cannot drift.
+// The display-mode SoT: what the host advertises (`availableDisplayModes`) AND what the `onrequestdisplaymode` handler
+// will accept — one module, so they cannot drift.
 import {
   MCP_APP_DEFAULT_DISPLAY_MODE,
   type McpUiDisplayMode,
@@ -66,11 +41,11 @@ import {
   reviveCardIfAt,
   subscribeCardLocation,
 } from "../state/mcp-app-card-location-store.js";
-// `openExternalUrl` (the `onopenlink` egress path) lives on `window.aveApi`, reached
-// through the renderer's `getApi()` — NOT `window.ave` (a curated subset without it).
+// `openExternalUrl` (the `onopenlink` egress path) lives on `window.aveApi`, reached through the renderer's `getApi()` —
+// NOT `window.ave` (a curated subset without it).
 import { getApi } from "../api-client.js";
-// The card's ORIGIN chat session — the second binding `onmessage` needs (see below).
-// Optional: this component also mounts outside the chat subtree.
+// The card's ORIGIN chat session — the second binding `onmessage` needs (see below). Optional: this component also mounts
+// outside the chat subtree.
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { hostTimeZone } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -86,17 +61,7 @@ function tokenFromProxyUrl(proxyUrl: string): string | null {
 
 export function McpAppView({
   payload,
-  /**
-   * The mode this MOUNT presents the card in — and, because a mount NEVER changes it,
-   * the mode it truthfully reports for its whole life. A transcript card is `inline`
-   * (the default); an away panel passes its own mode explicitly (`McpAppPipPanel`,
-   * `McpAppFullscreenPanel`).
-   *
-   * A display-mode change does not mutate this: it MOVES the card to the other mount
-   * and the losing mount stops being a live app (see `applyDisplayMode`). That is what
-   * makes the host context structurally honest — there is no state a mount could set to
-   * claim a presentation it is not in.
-   */
+  /** A mount's display mode is fixed; mode changes move the card to another mount and retire the losing bridge. */
   displayMode: mountDisplayMode = MCP_APP_DEFAULT_DISPLAY_MODE,
   /**
    * The card's ORIGIN chat session, threaded in by a mount with no `ChatContext`
@@ -106,17 +71,7 @@ export function McpAppView({
    * `ui/update-model-context` has no error channel in the spec) would never find out.
    */
   originSessionId,
-  /**
-   * The id this mount's display-mode transitions are filed under in the shared
-   * location store — NOT the same as `cardIdRef` below (that one is deliberately
-   * "once per mount", used only for the `ui/update-model-context` slot). A HOME
-   * mount (the transcript / preview-rail instance that owns a card for its whole
-   * lifetime) leaves this undefined and mints its own on first render. An AWAY
-   * mount that renders on a home mount's behalf (`McpAppPipPanel`,
-   * `McpAppFullscreenPanel`) is handed the home's id explicitly, so a move it makes
-   * (e.g. pip → fullscreen) lands on the SAME card the home mount is dormant for, not
-   * a fresh, unrelated one.
-   */
+  /** Home mints a stable location id and passes it to away mounts; per-mount model-context ids are separate. */
   locationId,
 }: {
   payload: McpUiPayload;
@@ -125,15 +80,8 @@ export function McpAppView({
   locationId?: string;
 }) {
   const { t, locale } = useTranslation();
-  // Host theme sources for the standard `McpUiHostContext`: shell (light/dark) and
-  // the active bundle id (drives the curated `--ave-*` token map we translate to
-  // the standard style-variable vocabulary — never leaking `--ave-*` to the app).
-  // `useOptionalTheme` (NOT `useTheme`): McpAppView is mounted from surfaces that may
-  // lack a ThemeProvider ancestor (isolated card/preview test harnesses; and it keeps
-  // the card robust in any away mount). A throwing `useTheme()` here would crash
-  // the whole render tree of any such host. With no provider it falls back to the
-  // light default bundle — which only happens in isolation, since the app root always
-  // mounts a real ThemeProvider.
+  // Translate standard theme context without exposing host tokens; isolated mounts without a theme provider use the light
+  // default.
   const themeCtx = useOptionalTheme();
   // The theme `:root` holds and its revision: shell and tokens both come from
   // it, and only once it is written. `resolved` and `effectiveBundleId` change
@@ -142,31 +90,21 @@ export function McpAppView({
   const appliedBundle = themeCtx?.appliedBundle ?? findBundle(DEFAULT_BUNDLE_ID);
   const appliedRevision = themeCtx?.appliedRevision ?? 0;
 
-  // ── The card's ORIGIN session — the `onmessage` session binding ───────────────
-  // A card belongs to the chat session it was rendered in. We latch the FIRST session
-  // id we see (not the live one) so the binding is the card's origin, and main can
-  // compare it against the conversation loop's current session: a message from a card
-  // whose session is no longer live must never be injected into the conversation the
-  // user navigated to — it degrades to a notification (one rule, main-side).
-  //
-  // A mount with no ChatContextProvider ancestor cannot read the session from context —
-  // it receives the origin session as `originSessionId` and that takes precedence here. Surfaces with neither (an isolated harness) leave this
-  // empty, which is not a session id and therefore never matches — the fail-safe branch.
+  // Latch the card's origin session; stale-card messages must not enter a newly selected conversation. Missing origin never
+  // matches a live session.
   const chatCtx = useOptionalChatContext();
   const originSessionIdRef = useRef("");
   if (originSessionIdRef.current === "") {
     originSessionIdRef.current = originSessionId ?? chatCtx?.currentSessionId ?? "";
   }
 
-  // ── The card's IDENTITY — the third `onupdatemodelcontext` binding ────────────
-  // `ui/update-model-context` OVERWRITES one slot per card, so main needs to know WHICH
+    // `ui/update-model-context` OVERWRITES one slot per card, so main needs to know WHICH
   // card is speaking. The id is minted HERE, in the trusted renderer, once per mount: the
   // app never sees it and cannot name one, so it can only ever overwrite its own slot.
   const cardIdRef = useRef("");
   if (cardIdRef.current === "") cardIdRef.current = crypto.randomUUID();
 
-  // ── The card's LOCATION identity — shared with the store, distinct from cardIdRef ──
-  // See the `locationId` prop doc above. Minted once (seeded from the prop when this is
+    // See the `locationId` prop doc above. Minted once (seeded from the prop when this is
   // an AWAY mount rendering on a home's behalf), stable for the mount's lifetime.
   const cardLocationIdRef = useRef("");
   if (cardLocationIdRef.current === "") cardLocationIdRef.current = locationId ?? crypto.randomUUID();
@@ -195,57 +133,24 @@ export function McpAppView({
   const [disabled, setDisabled] = useState(false);
   const bridgeRef = useRef<{ bridge: AppBridge; transport: WebviewIpcTransport; token: string | null } | null>(null);
 
-  // `payload.height` is only the INITIAL seed now (and the loading/placeholder height).
-  // The live <webview> dimensions move to state so the app's
-  // `ui/notifications/size-changed` (via the injected `onResize` adapter) can grow the
-  // card with its content. `width` stays undefined → the webview keeps its responsive
-  // `100%` default until the app declares a width. Both the seed (server-declared, on
-  // the tool result) and every live update (app-declared) go through the SAME bounds.
+  // Bound both initial and live app sizes through the same validator; retain responsive width until the app declares one.
   const seedHeight = mcpAppCardSeedHeight(payload.height);
   const [size, setSize] = useState<McpAppCardSize>({ height: seedHeight });
 
-  // `onsizechange` adapter injected into the bridge — THE ONE SINK that turns the app's
-  // reported numbers into pixels, and therefore the one place they are bounded:
-  // `clampMcpAppCardSize` rejects non-finite / ≤ 0 values (the dimension keeps its
-  // previous value), preserves whichever dimension the notification omitted, and clamps
-  // the rest into `MCP_APP_CARD_{MIN,MAX}_{WIDTH,HEIGHT}_PX`. CSS cannot do this job: the
-  // card's containing block has an indefinite height, so `max-height: 100%` resolves to
-  // `none` and a `height: 5_000_000` card would push the transcript out of reach.
-  // Stable identity so the ref-callback bridge lifecycle (keyed on [payload, bundle])
-  // never re-creates the bridge for a resize.
+  // Clamp reported sizes at ingress; percentage max-height cannot bound an indefinite container. Keep resize callback
+  // identity stable to preserve the bridge.
   const handleResize = useCallback((next: { width?: number; height?: number }) => {
     setSize((prev) => clampMcpAppCardSize(next, prev));
   }, []);
 
-  // ── `onrequestdisplaymode` — the card MOVES, this mount does not ──────────────
-  // This mount's mode is `mountDisplayMode` and never changes; the ref only exists so the
+    // This mount's mode is `mountDisplayMode` and never changes; the ref only exists so the
   // bridge handler reads the current prop rather than a stale closure.
   const displayModeRef = useRef(mountDisplayMode);
   displayModeRef.current = mountDisplayMode;
   const getDisplayMode = useCallback(() => displayModeRef.current, []);
 
-  // Apply a SUPPORTED mode (the handler filters the rest against the advertised SoT) and
-  // resolve to the mode the CARD is in afterwards — the mount's own mode when the host
-  // declined, since nothing moved.
-  //
-  // REPLACE, NEVER CLONE. Every arm moves the card between mounts through the shared
-  // location store, and the losing mount stops being a live app: two live bridges for
-  // one card — one of them lying about its mode to a spec-conformant app — is exactly
-  // what the store's single-location-per-card invariant avoids. This function is only
-  // ever CALLED by the card's currently live mount (a dormant mount renders no
-  // `<webview>`, so it never gets a bridge), so `current` (`displayModeRef.current`,
-  // this MOUNT's own fixed role — inline home / pip panel / fullscreen panel) tells us
-  // unambiguously which of the branches below applies:
-  //   · → an AWAY slot (`pip` or `fullscreen`): `moveCard` writes the card into that
-  //     slot; the slot's panel (`McpAppPipPanel` / `McpAppFullscreenPanel`, each
-  //     subscribed to the store) picks it up and mounts a fresh `<McpAppView>` for it,
-  //     and this mount goes dormant. Both slots live in THIS renderer's heap, so the
-  //     move is symmetric in every direction — pip → fullscreen and fullscreen → pip
-  //     are the same write from a different current mount, and the store does not care
-  //     which mount initiated it, only that exactly one location is true.
-  //   · → inline, from either away slot: revives the card through the store's guarded
-  //     chokepoint. A revive that no longer matches the card's current location does
-  //     not apply, and this mount then reports the mode it is still in.
+  // Move cards, never clone them: exactly one mount owns a live bridge. Inline revival must match the current shared
+  // location before reporting success.
   const applyDisplayMode = useCallback(
     async (mode: McpUiDisplayMode): Promise<McpUiDisplayMode> => {
       const current = displayModeRef.current;
@@ -260,9 +165,8 @@ export function McpAppView({
         return mode;
       }
 
-      // mode === "inline". The card is in this renderer's store, so the revive needs no
-      // IPC — and if the guard rejects it (the card is no longer where this mount
-      // thinks), nothing moved and the mount reports the mode it is still in.
+      // mode === "inline". The card is in this renderer's store, so the revive needs no IPC — and if the guard rejects it (the
+      // card is no longer where this mount thinks), nothing moved and the mount reports the mode it is still in.
       if (current === "pip" || current === "fullscreen") {
         if (!reviveCardIfAt(cardLocationIdRef.current, { kind: current })) return current;
       }
@@ -271,27 +175,8 @@ export function McpAppView({
     [payload],
   );
 
-  // ── Reclaim a leaked AWAY entry when the HOME mount unmounts ──────────────────
-  // The home mount is a transcript child, so switching/starting a conversation
-  // UNMOUNTS it. If its card had been moved AWAY, the store entry
-  // would otherwise OUTLIVE this mount: the session-independent `McpAppPipPanel`
-  // (mounted in the main content region) keeps a live <webview>+bridge for a card from the
-  // conversation the user just left — still able to call tools and post
-  // `ui/update-model-context` against the now-stale `originSessionId` — and that entry
-  // is never reclaimed (a remounted home mints a FRESH `locationId`, so it can never
-  // find the orphan again). On unmount, reclaim through the SAME guarded chokepoint
-  // (`reviveCardIfAt`, no new store mutator), keyed on the card's CURRENT location so
-  // the guard always matches; deleting the entry fires the pip listener and the panel
-  // tears the bridge down.
-  //
-  // TRUE-unmount only: the cleanup is registered once and fires only when this
-  // component leaves the tree, never on a re-render — so a card moved to pip WITHIN a
-  // live conversation (where the home mount stays MOUNTED and merely goes dormant — a
-  // move does not unmount it) is left alone. HOME mount ONLY (`mountDisplayMode ===
-  // "inline"`): the pip panel's own away McpAppView shares this exact `locationId`, and
-  // if IT reclaimed here it would delete the home's entry while itself still live — the
-  // two-live-bridges hazard inverted. That away mount is `displayMode="pip"`, so this
-  // guard excludes it.
+  // Only true home-mount unmount reclaims the current away entry; re-renders and away-mount cleanup must not revive
+  // duplicate bridges.
   useEffect(() => {
     if (mountDisplayMode !== "inline") return undefined;
     return () => {
@@ -310,13 +195,7 @@ export function McpAppView({
   const buildHostContext = useCallback(() => {
     const tokens: Record<string, string> = appliedBundle ? { ...bundleToPluginTokens(appliedBundle) } : {};
 
-    // `bundleToPluginTokens` never carries `--ave-font-family` — ThemeProvider
-    // writes it directly onto `document.documentElement.style`, decoupled from the
-    // bundle token map, only when the user picked a custom font (see
-    // ThemeProvider's `applySettingsAppearance`). Read the LIVE computed value so
-    // the `--font-sans` mapping reflects an actual user override instead of never
-    // firing. Deliberately NOT the default HOST_FONT_STACK: apps with no override
-    // should fall back to their own font, not inherit Ave's default stack.
+    // Read the live custom-font override from root styles; absent an override, guests keep their own default font.
     if (typeof document !== "undefined") {
       const family = getComputedStyle(document.documentElement)
         .getPropertyValue("--ave-font-family")
@@ -324,8 +203,8 @@ export function McpAppView({
       if (family) tokens["--ave-font-family"] = family;
     }
 
-    // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a
-    // presentation it is not in (a mode change moves the card to the other mount instead).
+    // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a presentation it is not in (a mode
+    // change moves the card to the other mount instead).
     return buildMcpAppHostContext({
       shell: appliedBundle?.shell ?? "light",
       tokens,
@@ -335,9 +214,8 @@ export function McpAppView({
     });
   }, [appliedBundle, locale, timeZone, mountDisplayMode]);
 
-  // Hold the latest builder in a ref so the ref-callback bridge lifecycle
-  // (`attachWebview`, keyed only on [payload, bundle]) can seed the initial context
-  // at mount without re-subscribing on every theme/locale change.
+  // Hold the latest builder in a ref so the ref-callback bridge lifecycle (`attachWebview`, keyed only on [payload, bundle])
+  // can seed the initial context at mount without re-subscribing on every theme/locale change.
   const buildHostContextRef = useRef(buildHostContext);
   buildHostContextRef.current = buildHostContext;
 
@@ -349,24 +227,13 @@ export function McpAppView({
     let cancelled = false;
     setBundle(null);
     setError(null);
-    // A fresh payload (new card / re-invocation) starts enabled even if the
-    // previous serverId had disconnected; the disconnect event only disables
-    // the specific card that was live when it fired.
+    // A fresh payload (new card / re-invocation) starts enabled even if the previous serverId had disconnected; the disconnect
+    // event only disables the specific card that was live when it fired.
     setDisabled(false);
-    // Re-seed the live card size from the new payload (bounded — the seed is untrusted
-    // too); the app will resize it again via `ui/notifications/size-changed` once it
-    // renders.
+    // Re-seed the live card size from the new payload (bounded — the seed is untrusted too); the app will resize it again via
+    // `ui/notifications/size-changed` once it renders.
     setSize({ height: mcpAppCardSeedHeight(payload.height) });
-    // A fresh payload is a fresh card: it is live in THIS mount again, whatever the
-    // previous card had talked the host into moving away. Read the
-    // CURRENT location synchronously and revive from exactly that — never a stale
-    // guess — so the store's own guard cannot reject this reclaim.
-    //
-    // ONLY the HOME mount (mountDisplayMode === "inline") ever does this. An AWAY
-    // mount (an away panel's own McpAppView instance) is
-    // never "home" for any card — reviving here on ITS OWN payload-driven effect would
-    // send the home mount live again while THIS mount is also still live, which is
-    // exactly the two-live-bridges failure the location store exists to prevent.
+    // Only home mounts reclaim a fresh payload from its current location; away mounts would revive a second bridge.
     if (mountDisplayMode === "inline") {
       const awayLocation = getCardLocation(cardLocationIdRef.current);
       if (awayLocation.kind !== "inline") {
@@ -387,9 +254,8 @@ export function McpAppView({
     return () => { cancelled = true; };
   }, [payload, mountDisplayMode]);
 
-  // b3 — subscribe to the main→renderer server-disconnected broadcast. When the
-  // payload's own server is torn down, disable in place (webview unmounts via
-  // the `disabled` render branch below; the transcript record is untouched).
+  // b3 — subscribe to the main→renderer server-disconnected broadcast. When the payload's own server is torn down, disable
+  // in place (webview unmounts via the `disabled` render branch below; the transcript record is untouched).
   useEffect(() => {
     const onServerDisconnected = window.ave?.mcp?.onServerDisconnected;
     if (typeof onServerDisconnected !== "function") return;
@@ -420,8 +286,8 @@ export function McpAppView({
         payload,
         bundle.html,
         node as unknown as BridgeWebviewElement,
-        // Seed the initial standard host context. Read the latest builder via ref
-        // so this callback stays keyed on [payload, bundle].
+        // Seed the initial standard host context. Read the latest builder via ref so this callback stays keyed on [payload,
+        // bundle].
         buildHostContextRef.current(),
         // React-owned adapters: resize drives card state; open-link reuses the host's
         // existing effect-gated egress (`window.aveApi.openExternalUrl`); call-tool
@@ -437,18 +303,16 @@ export function McpAppView({
             args,
             payload.generationId,
           ),
-          // `onmessage` is bound to BOTH the card's server and the card's origin
-          // session. The app names neither, so it can neither impersonate another
-          // server nor speak into a conversation the user has left.
+          // `onmessage` is bound to BOTH the card's server and the card's origin session. The app names neither, so it can neither
+          // impersonate another server nor speak into a conversation the user has left.
           postMessage: (params) =>
             window.ave.mcp.postUiMessage(payload.serverId, originSessionIdRef.current, params),
-          // `onrequestdisplaymode` — the card's mode is McpAppView's state, and the
-          // applier maps a mode onto the host's EXISTING window seams (see above).
+          // `onrequestdisplaymode` — the card's mode is McpAppView's state, and the applier maps a mode onto the host's EXISTING
+          // window seams (see above).
           getDisplayMode,
           applyDisplayMode,
-          // `ondownloadfile` is bound to the card's server (for the audit trail; the app
-          // names none). Main decodes the inline bytes, refuses to fetch any URI the app
-          // supplies, and the user's save dialog authorizes the write.
+          // `ondownloadfile` is bound to the card's server (for the audit trail; the app names none). Main decodes the inline bytes,
+          // refuses to fetch any URI the app supplies, and the user's save dialog authorizes the write.
           downloadFile: (params) => window.ave.mcp.downloadFile(payload.serverId, params),
           // `onupdatemodelcontext` is bound to the card's server, its origin session, AND
           // this card instance. The app names none of the three, so it can overwrite only
@@ -467,14 +331,8 @@ export function McpAppView({
     }
   }, [payload, bundle, handleResize, getDisplayMode, applyDisplayMode]);
 
-  // Push host-context updates to a mounted bridge when a theme has been written to
-  // :root (`appliedRevision` — another theme, the other side of a pair, or the same
-  // theme updated in place) or the locale changes. Keyed on the revision alone, not on
-  // `resolved`/`effectiveBundleId`, which change before the write: the app never sees a
-  // shell and tokens from two themes. `setHostContext` auto-diffs and only notifies the view of changed
-  // fields (no-op on the mount pass, which matches the seed). `displayMode` is NOT in
-  // here: this mount's mode is fixed for its lifetime, so there is no mode update to push
-  // — a mode change moves the card to the OTHER mount, whose seed carries the new mode.
+  // Push context after appliedRevision so shell and tokens come from the same theme; locale may change, but a mount's mode
+  // cannot.
   useEffect(() => {
     const current = bridgeRef.current;
     if (!current) return;
@@ -500,17 +358,7 @@ export function McpAppView({
           <span>{error}</span>
         </div>
       ) : mountDisplayMode === "inline" && location.kind !== "inline" ? (
-        // The card LIVES IN AN AWAY SURFACE right now (the pip panel or the fullscreen
-        // panel). This is a host-owned placeholder, not an app: no <webview>, so no
-        // bridge, no app state, and nothing here can claim a display mode. It reverts to
-        // a live card when the away mount sends it back — the app's own `inline`
-        // request, or the away panel's own close button.
-        //
-        // Gated on `mountDisplayMode === "inline"`: ONLY the home mount ever renders an
-        // "away" placeholder for its own card. An away panel's own McpAppView instance
-        // reads the same location for ITSELF (that is exactly where its card is), so
-        // without this gate a mount would render a placeholder pointing at its OWN live
-        // self.
+        // Only dormant home mounts render away placeholders; no webview or bridge exists there until guarded revival.
         <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }} data-testid={`mcp-app-${location.kind}`}>
           <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{location.kind === "pip" ? t("mcpAppView.openInPip") : t("mcpAppView.openInFullscreen")}</span>
@@ -526,20 +374,13 @@ export function McpAppView({
           src: bundle.proxyUrl,
           partition: mcpAppPartitionName(payload.serverId),
           allowpopups: "false",
-          // No `preload` attribute — under `sandbox=yes` it is silently ignored.
-          // The relay preload rides `session.registerPreloadScript()` on the
-          // partition, which is the only mechanism that actually loads it.
+          // No `preload` attribute — under `sandbox=yes` it is silently ignored. The relay preload rides
+          // `session.registerPreloadScript()` on the partition, which is the only mechanism that actually loads it.
           webpreferences: "contextIsolation=yes, sandbox=yes, nodeIntegration=no, javascript=yes",
           disablewebsecurity: "false",
           style: {
-            // Grow with the app's reported content size (basic-host's resize intent).
-            // `size` is ALREADY BOUNDED — `clampMcpAppCardSize` is the real cap, applied
-            // where the numbers enter the host. There is deliberately no `maxHeight:
-            // "100%"` here: the card's containing block has an indefinite height, so a
-            // percentage max-height resolves to `none` and caps NOTHING — it would be a
-            // comment-shaped bound, not a bound. `maxWidth: "100%"` does work (the
-            // parent's width IS definite) and stays as the responsive-layout guard.
-            // `width` stays a plain `100%` until the app declares one.
+            // Bound height at ingress because percentage max-height resolves to none in an indefinite container; percentage width
+            // remains a valid responsive guard.
             width: size.width != null ? `${size.width}px` : "100%",
             maxWidth: "100%",
             height: `${size.height}px`,

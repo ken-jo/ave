@@ -24,7 +24,7 @@ import {
 
 export const RATIONALE_TRIGGER_DENIED_RESULT =
   "Rationale approval was denied; the action was not executed.";
-export const RATIONALE_TRIGGER_CANCELLED_RESULT =
+const RATIONALE_TRIGGER_CANCELLED_RESULT =
   "Rationale approval was cancelled; the action was not executed.";
 export const RATIONALE_TRIGGER_TIMED_OUT_RESULT =
   "Rationale approval timed out; the action was not executed.";
@@ -73,11 +73,7 @@ export type RationaleCoordinatorFactory = (
   input: RationaleCoordinatorFactoryInput,
 ) => Promise<RationaleConversationRuntime | null> | RationaleConversationRuntime | null;
 
-/**
- * The query loop prepares a runtime before it changes meta-tool ordering.
- * A null/throwing factory must therefore be observable before the legacy
- * batch is split, while the executor still revalidates every actual action.
- */
+// Resolve null or failed factories before splitting legacy batches; execution still revalidates every action.
 export interface RationaleRuntimePreparationInput {
   readonly coordinatorFactory?: RationaleCoordinatorFactory;
   readonly requestAnchor: RequestAnchor | null;
@@ -97,11 +93,7 @@ export interface ExecuteRationaleAwareBatchInput {
   readonly requestAnchor: RequestAnchor | null;
   readonly rationaleProvenance: RationaleEligibilityProvenance;
   readonly sessionId: string;
-  /**
-   * A runtime prepared before query-loop meta-tool ordering changed. `null`
-   * explicitly preserves the legacy executor path and avoids retrying a
-   * failed factory after the split.
-   */
+  // A prepared null runtime preserves legacy ordering and prevents factory retries after splitting.
   readonly rationaleRuntime?: RationaleConversationRuntime | null;
   readonly coordinatorFactory?: RationaleCoordinatorFactory;
 }
@@ -133,8 +125,7 @@ function abortSafely(
   try {
     runtime.abort(ticketId);
   } catch {
-    // Abort is cleanup-only. A broken cleanup callback must never prevent the
-    // host from reconstructing every original tool_use/result pairing.
+    // Cleanup failures must not prevent reconstruction of every original call/result pair.
   }
 }
 
@@ -194,7 +185,6 @@ export async function prepareRationaleConversationRuntime(
       ? runtime
       : null;
   } catch {
-    // No control was materialized. Preserve the existing permission/prompt path.
     return null;
   }
 }
@@ -213,11 +203,7 @@ function preparedRuntimeMatchesBatch(
     : null;
 }
 
-/**
- * Resolve one executable tool batch without ever exposing the host control as
- * an ordinary result. Once a control exists, every exit completes the original
- * tool_use/result pairing and retires the live ticket on exceptional paths.
- */
+/** Host controls never become tool results; every exit pairs original calls and retires live tickets. */
 export async function executeRationaleAwareConversationBatch(
   input: ExecuteRationaleAwareBatchInput,
 ): Promise<RationaleAwareBatchResult> {
@@ -280,7 +266,6 @@ export async function executeRationaleAwareConversationBatch(
     cancelledSiblingProposalGuardIncomplete,
   });
 
-  // A rationale-required outcome can only be produced with a bound runtime.
   if (!runtime) return terminal(RATIONALE_TRIGGER_FAILED_RESULT);
 
   try {
@@ -311,10 +296,7 @@ export async function executeRationaleAwareConversationBatch(
       );
     }
 
-    // The reviewer auto-approve-on-aligned terminal already minted the one-shot
-    // authorization; it must SKIP the user prompt and go straight to the shared,
-    // unchanged sealed-resume execution chokepoint. Every other outcome still
-    // opens exactly one host ApprovalGate request for this ticket.
+    // Reviewer authorization skips the modal but still uses sealed resume; other outcomes open one approval.
     if (!roundResolution.autoApproved) {
       const approval = await runtime.promptForApproval(ticketId, {
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),

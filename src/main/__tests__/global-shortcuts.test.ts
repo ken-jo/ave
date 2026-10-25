@@ -1,16 +1,6 @@
-/**
- * E4 — global-shortcuts reconcile / conflict / teardown.
- *
- * MUTATION CONTRACT:
- *  - Removing the "unregister previous before binding" step makes the
- *    accelerator-change test fail (stale binding not released).
- *  - Removing the notifyFailure call on register()===false makes the conflict
- *    test fail (No-Fallback: a conflict must be surfaced, never swallowed).
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// globalShortcut is imported at module load; provide a stub so the import
-// resolves. All tests inject their own `deps`, so this stub is never called.
+// globalShortcut is imported at module load; provide a stub so the import resolves. All tests inject their own `deps`, so this stub is never called.
 vi.mock("electron", () => ({
   globalShortcut: {
     register: vi.fn(() => true),
@@ -143,8 +133,7 @@ describe("unregisterAllGlobalShortcuts", () => {
     const unregisterAll = vi.fn();
     unregisterAllGlobalShortcuts({ unregisterAll });
     expect(unregisterAll).toHaveBeenCalledTimes(1);
-    // After a full unregister, a subsequent reconcile should NOT try to
-    // unregister a stale accelerator (state cleared).
+    // After a full unregister, a subsequent reconcile should NOT try to unregister a stale accelerator (state cleared).
     const nextDeps = makeDeps();
     reconcileGlobalShortcuts({ toggleWindow: ACCEL, enabled: true }, nextDeps);
     expect(nextDeps.unregister).not.toHaveBeenCalled();

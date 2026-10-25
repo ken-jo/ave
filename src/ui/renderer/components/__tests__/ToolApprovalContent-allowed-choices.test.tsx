@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { buildPermissionEvaluationContext } from "../../../../permissions/evaluation-context.js";
@@ -43,7 +43,7 @@ describe("ToolApprovalContent allowed choices", () => {
         pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
       }),
     };
-    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={onDecide} />);
+    renderApproval(request, onDecide);
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project");
     const always = screen.getByTestId(TEST_IDS.allowAlwaysButton);
     expect(always).toBeEnabled();
@@ -57,7 +57,7 @@ describe("ToolApprovalContent allowed choices", () => {
 
   it("keeps a non-recordable ordinary request disabled even when its displayed risk is medium", () => {
     const request = { ...makeOneShotPluginRequest(), allowedChoices: undefined, persistentAllowAllowed: false };
-    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={vi.fn()} />);
+    renderApproval(request, vi.fn());
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
   });
 
@@ -65,13 +65,7 @@ describe("ToolApprovalContent allowed choices", () => {
     const onDecide = vi.fn();
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeOneShotPluginRequest()}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeOneShotPluginRequest(), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");

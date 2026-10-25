@@ -1,27 +1,5 @@
-/**
- * The plugin artifact ladder (design §6.2, §6.4).
- *
- * A plan is fixed at plan time: the snapshot commit the catalog row came
- * from and the version's own commit. Execution reads only those, so a sync
- * that moves the pin between plan and execute cannot change what is
- * installed. The ladder tries release → archive → tree:
- *
- *   - release and archive are used only with a sha256 pin stored in git;
- *   - a transport or verification failure moves on to the next rung;
- *   - a staged plugin.json that differs from the descriptor stops the ladder
- *     (MANIFEST_MISMATCH): the package is inconsistent, and another rung
- *     would only hide that.
- *
- * The result is a zip in memory with its hash and the outcome of every rung.
- * A pinned zip already kept under its digest is read back instead of
- * downloaded, and a downloaded one that the rung used is kept.
- * The tree rung packs the exported files into a zip too, so every rung goes
- * through the same zip preflight and the same install pipeline.
- *
- * A folder source has one rung instead, `folder` (§18.4.2,
- * {@link runFolderRung}): it never downloads, installs the built tree the plan
- * captured, and lists what the folder holds but does not install.
- */
+/** Try pinned release, archive, then tree at the planned commits; manifest mismatch stops all rungs.
+ * Folder installs use only the captured built tree and never download. */
 import AdmZip from "adm-zip";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -59,55 +37,39 @@ export interface PluginInstallPlan extends PackagePlan {
 export interface StagedPluginArtifact {
   plan: PluginInstallPlan;
   zipBuffer: Buffer;
-  /** Zip sha256 (release, archive) or tree digest (tree, folder). */
   artifactSha256: string;
   rung: PluginRung;
   rungs: RungOutcome[];
-  /**
-   * The used rung's bytes travelled over plain http on some hop: the
-   * declared URL or a redirect target (§15.2 Delivery, §18.2.3). Bytes read
-   * back from the kept artifacts carry the declared URL's transport, since
-   * the hops of their first download are not recorded. Always false for the
-   * tree and folder rungs, which download nothing.
-   */
+  /** Actual downloads record plaintext redirect hops; cached bytes retain only declared transport. */
   unencrypted: boolean;
-  /** The staged plugin.json document, already checked against the descriptor. */
   manifestDocument: unknown;
-  /** Top-level entries of a folder package that are not installed (§18.4.2); empty for a git source. */
   notInstalled: string[];
 }
 
-/** The part of the artifact store the ladder uses: the zip preflight and a bounded root read. */
 interface ZipInspector {
   readRequiredRootTextFiles(slug: string, zipBuffer: Buffer, requests: readonly RequiredMarketplaceRootTextFile[]): Readonly<Record<string, string>>;
 }
 
-/** What the folder rung reads: the captured copy, the zip preflight and the limits. */
 export interface FolderLadderDeps extends RepositoryAccess {
   zip: ZipInspector;
   limits: Readonly<MarketplaceArtifactLimits>;
-  /** Scratch directory for the export; removed before the rung returns. */
   workRoot: string;
 }
 
 export interface LadderDeps extends FolderLadderDeps {
-  /** The source's bare partial clone and the remote its blobs come from. */
   repo: BareRepo;
   remote: GitRemote;
-  /** The source URL: release assets without `url` live on its host. */
+  /** Releases without explicit URLs inherit the source web origin. */
   sourceUrl: NormalizedSourceUrl;
   gate: NetworkGate;
-  /** The source as its catalog's downloads are judged (§18.2.3): its host, label and confirmations. */
   catalog: CatalogSource;
-  /** The stored token for the source host when the source uses token auth; GitHub release assets then go through the REST API. */
+  /** Token-authenticated release assets use the source token through the release API. */
   sourceToken: string | null;
-  /** The source uses token auth and no token is stored for its host: a hidden (404) release asset needs sign-in. */
+  /** A hidden release asset without a stored source token requires sign-in. */
   tokenMissing: boolean;
-  /** Pinned zips kept from earlier downloads, by digest. */
   artifacts: ArtifactCache;
 }
 
-/** Ladder failure that carries every rung outcome so far (for the plan view and diagnostics). */
 export class LadderError extends MarketplaceError {
   constructor(
     code: MarketplaceErrorCode,
@@ -122,22 +84,17 @@ export class LadderError extends MarketplaceError {
 
 const MANIFEST_LIMIT = 1024 * 1024;
 const RELEASE_METADATA_LIMIT = 1024 * 1024;
-/** `owner/name`; neither segment may be `.` or `..`. */
 const RELEASE_REPO = /^(?!\.\.?\/)[A-Za-z0-9_.-]+\/(?!\.\.?$)[A-Za-z0-9_.-]+$/u;
-/** Top-level entries a tree-rung directory may hold (design §5.2); the descriptor is not installed. */
 const TREE_TOP_LEVEL_FILES = new Set(["plugin.json", MARKETPLACE_DESCRIPTOR_FILE]);
 const TREE_TOP_LEVEL_DIRS = new Set(["dist", "assets"]);
 
-/** A plan for the row's candidate version (design §6.1). */
 export function planPluginInstall(row: CatalogRow): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
   return planPluginVersion(row, candidateVersion(row));
 }
 
-/** A plan for one listed version of the row: the candidate, or an older version chosen to roll back. */
 export function planPluginVersion(row: CatalogRow, version: IndexVersion): PluginInstallPlan {
   if (row.kind !== "plugin") throw new Error(`${row.kind} ${row.name} is not a plugin`);
-  // Snapshot validation requires both for every plugin version.
   if (!version.authority || !version.artifact) throw new Error(`${row.name}@${version.version} has no authority or artifact`);
   return { ...planPackage(row, version), kind: "plugin", authority: version.authority, artifact: version.artifact };
 }
@@ -148,10 +105,7 @@ function same(a: unknown, b: unknown): boolean {
   return (a === undefined) === (b === undefined) && (a === undefined || canonicalStringify(a) === canonicalStringify(b));
 }
 
-/**
- * The descriptor at the version's commit must say what the index copy says:
- * that commit is what the plan is bound to, and the index is only a copy.
- */
+/** Read the authoritative descriptor at the planned version commit, not just the index copy. */
 async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: RepositoryAccess): Promise<void> {
   const descriptor = await readDescriptorAtVersion(plan, deps);
   const payload = descriptor.payload as { authority?: unknown; artifact?: unknown };
@@ -165,7 +119,6 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: Reposito
   }
 }
 
-/** Read and check plugin.json from a zip that passed the preflight. */
 function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: FolderLadderDeps, rungs: readonly RungOutcome[], rung: PluginRung): unknown {
   const stop = (code: MarketplaceErrorCode, message: string, cause?: unknown) =>
     new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE
@@ -183,28 +136,21 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Folder
   } catch (error) {
     throw stop("MANIFEST_MISMATCH", `${plan.name}@${plan.version}: plugin.json does not parse: ${(error as Error).message}`, error);
   }
-  // A process entry is admitted only from a marketplace's pinned release or
-  // archive (§9.7 P4). A direct source is no marketplace, even with its own
-  // descriptor and a pinned release, so it is refused on every rung; this is
-  // where the entry kind of what it serves is first known, a first install and
-  // an entry→process update alike. Both the plan and the source say whether
-  // the source is direct, and either suffices to refuse.
+  // Process entries require a marketplace pinned release or archive; either direct-source marker refuses them.
   if (hasProcessEntry(document) && (plan.sourceOrigin === "direct" || deps.direct)) {
     throw stop(
       PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
       `${plan.name}@${plan.version}: a direct source serves a process entry, which is installed only from a marketplace release or archive pinned by sha256`,
     );
   }
-  // A folder install is categorically ineligible (§18.4.9): its bytes came
-  // from no pinned release or archive, under any later admission rule.
+  // Folder bytes cannot satisfy pinned-artifact process admission.
   if (rung === FOLDER_RUNG && hasProcessEntry(document)) {
     throw stop(
       PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
       `${plan.name}@${plan.version}: a folder serves a process entry, which is installed only from a marketplace release or archive pinned by sha256`,
     );
   }
-  // Defence in depth behind the declared-pin rule: the tree rung is the last,
-  // so stopping here hides no other rung.
+  // Reject process entries on the final tree rung even if declared-pin validation was bypassed.
   if (rung === "tree" && hasProcessEntry(document)) {
     throw stop(
       PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
@@ -214,13 +160,12 @@ function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: Folder
   try {
     assertGitInstallManifest(document, expectedPluginOf(plan));
   } catch (error) {
-    // PACKAGE_COMPAT_UNDECLARED or MANIFEST_MISMATCH; either stops the ladder.
+    // Missing compatibility or manifest mismatch stops the entire ladder.
     throw stop(isMarketplaceError(error) ? error.code : "MANIFEST_MISMATCH", (error as Error).message, error);
   }
   return document;
 }
 
-/** A rung failure the ladder moves past. */
 class VerificationFailure extends Error {
   constructor(
     readonly code: MarketplaceErrorCode,
@@ -234,11 +179,9 @@ class VerificationFailure extends Error {
 interface RungBytes {
   zipBuffer: Buffer;
   artifactSha256: string;
-  /** Some hop that carried these bytes was plain http. */
   unencrypted: boolean;
 }
 
-/** Whether any hop a rung's downloads were admitted on was plain http, redirects included. */
 class HopTransport {
   plainHttp = false;
   readonly onHop = (hop: string): void => {
@@ -266,13 +209,8 @@ function verifyPinned(zipBuffer: Buffer, pin: string, what: string, hops: HopTra
   return { zipBuffer, artifactSha256: digest, unencrypted: hops.plainHttp };
 }
 
-/**
- * A GitHub release asset through the REST API, which serves private
- * repositories to a token; the asset request redirects to a storage host, and
- * the gate drops `Authorization` on that cross-origin hop.
- */
+/** Tokenized release requests strip Authorization before cross-origin storage redirects. */
 async function githubReleaseAsset(repo: string, tag: string, asset: string, token: string, plan: PluginInstallPlan, deps: LadderDeps, hops: HopTransport): Promise<Buffer> {
-  // The request goes to api.github.com; the repository's own rules still apply.
   await deps.gate.checkDownloadPolicy(
     `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
     { official: plan.sourceOrigin === "official" },
@@ -299,17 +237,12 @@ async function githubReleaseAsset(repo: string, tag: string, asset: string, toke
   return downloadBounded(`https://api.github.com/repos/${repo}/releases/assets/${found.id}`, downloadOptions(deps, plan, hops, { ...auth, accept: "application/octet-stream" }));
 }
 
-/**
- * The web origin release assets are served from. An http(s) source serves
- * them from its own origin; an ssh source's host serves them over https on
- * the default port (its ssh port says nothing about the web server).
- */
+/** HTTP sources retain their origin; SSH sources use HTTPS without inheriting the SSH port. */
 function releaseOrigin(url: NormalizedSourceUrl): string {
   if (url.scheme === "ssh") return `https://${url.host}`;
   return `${url.scheme}://${url.port === null ? url.host : `${url.host}:${url.port}`}`;
 }
 
-/** A release or archive URL the catalog declared, or the derived release URL, is plain http. */
 function declaredPlainHttp(plan: PluginInstallPlan, deps: LadderDeps, rung: "release" | "archive"): boolean {
   const url = rung === "archive" ? plan.artifact.archive!.url : plan.artifact.release!.url ?? releaseOrigin(deps.sourceUrl);
   return url.startsWith("http://");
@@ -321,7 +254,7 @@ async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps, pin: strin
   if (release.url) {
     return verifyPinned(await downloadBounded(release.url, downloadOptions(deps, plan, hops)), pin, "the release asset", hops);
   }
-  // Validation allows an absent repo only for a direct source: the source repository itself.
+  // Only direct sources may default the release repository to their own repository.
   const repo = release.repo ?? deps.sourceUrl.path.replace(/^\//u, "").replace(/\.git$/u, "");
   if (!RELEASE_REPO.test(repo)) throw new VerificationFailure("SOURCE_INDEX_INVALID", `release repository "${repo}" is not owner/name`);
   const tag = release.tag ?? `v${plan.version}`;
@@ -345,7 +278,6 @@ function treePath(plan: PluginInstallPlan): string {
   return plan.artifact.tree ?? plan.packagePath;
 }
 
-/** The tree rung is declared by `artifact.tree`, or by a plugin.json in the package directory (its default). */
 async function treeDeclared(plan: PluginInstallPlan, deps: LadderDeps): Promise<boolean> {
   if (plan.artifact.tree !== undefined) return true;
   const manifest = repoPath(plan.packagePath, "plugin.json");
@@ -360,8 +292,7 @@ function treeLayoutProblem(path: string): string | null {
 }
 
 async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<RungBytes> {
-  // The layout is known from the tree alone: refuse it before any blob is
-  // downloaded (a direct source at the repository root exports every file).
+  // Reject invalid tree layout before downloading any blob.
   const root = treePath(plan);
   for (const entry of await deps.repo.lsTree(plan.versionCommit, root === "" ? null : root, true)) {
     if (entry.type !== "blob") continue;
@@ -387,7 +318,6 @@ async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<Rung
     }
     const zip = new AdmZip();
     for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
-    // Read over the source's own git transport, which the source's badge describes.
     return { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files), unencrypted: false };
   } finally {
     await rm(dest, { recursive: true, force: true });
@@ -400,12 +330,11 @@ function failureCode(error: unknown): MarketplaceErrorCode {
   return "SOURCE_UNREACHABLE";
 }
 
-/** Run the ladder for `plan`: the first rung that yields a verified, matching artifact wins. */
 export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps): Promise<StagedPluginArtifact> {
   if (isFolderRevision(plan.versionCommit)) throw new Error(`${plan.name}@${plan.version} is a folder package; it installs through the folder rung`);
   await assertDescriptorAtVersion(plan, deps);
   const rungs: RungOutcome[] = [];
-  /** The first rung that failed for want of a confirmation the source can give (*Allow…*, §18.2.3). */
+  /** Preserve the first actionable missing-confirmation failure. */
   let confirmation: MarketplaceError | null = null;
   for (const rung of ARTIFACT_RUNGS) {
     deps.signal?.throwIfAborted();
@@ -462,26 +391,20 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, unencrypted: bytes.unencrypted, manifestDocument, notInstalled: [] };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);
-  // A download that needs the source's confirmation is the failure the user can act on: *Allow…* and install again.
+  // Prefer an actionable source-confirmation failure so the user can authorize and retry.
   if (confirmation !== null) {
     throw new LadderError("SOURCE_CONFIRMATION_REQUIRED", `${plan.name}@${plan.version}: ${confirmation.message} — ${summary.join("; ")}`, rungs, {
       cause: confirmation,
       ...(confirmation.detail ? { detail: confirmation.detail } : {}),
     });
   }
-  // Every rung that was tried wanted sign-in: that, not a missing artifact, is what to fix.
+  // All rungs requesting sign-in must report authentication, not a missing artifact.
   const failed = rungs.filter((item) => item.outcome === "failed");
   const code = failed.length > 0 && failed.every((item) => item.code === "SOURCE_AUTH_REQUIRED") ? "SOURCE_AUTH_REQUIRED" : "NO_INSTALLABLE_ARTIFACT";
   throw new LadderError(code, `${plan.name}@${plan.version}: no rung produced an installable artifact — ${summary.join("; ")}`, rungs);
 }
 
-/**
- * The folder rung (§18.4.2): the plugin's built tree — `plugin.json`,
- * `dist/**` and `assets/**` — from the copy the plan captured. Declared
- * `release` and `archive` rungs are not tried, nothing is downloaded, and
- * other top-level entries are listed as not installed. A folder with no
- * `plugin.json` has nothing built to install.
- */
+/** Use only captured plugin.json, dist and assets; skip declared downloads and list excluded entries. */
 export async function runFolderRung(plan: PluginInstallPlan, deps: FolderLadderDeps, notInstalled: readonly string[]): Promise<StagedPluginArtifact> {
   if (!isFolderRevision(plan.versionCommit)) throw new Error(`${plan.name}@${plan.version} is not a folder package`);
   await assertDescriptorAtVersion(plan, deps);

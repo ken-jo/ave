@@ -1,8 +1,4 @@
-/**
- * The Suggestions conversation is named from the catalog by its reserved id,
- * in the language in use now. A stored title — written by an earlier build or
- * a rename — is ignored for that id; every other conversation keeps its own.
- */
+/** Resolve the reserved Suggestions title from the active locale; ignore its persisted or renamed title. */
 import { describe, expect, it } from "vitest";
 import {
   SUGGESTIONS_SESSION_ID,

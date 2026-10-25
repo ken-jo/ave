@@ -15,13 +15,7 @@ export interface InstallReceiptFile {
   sha256: string;
 }
 
-/**
- * Which signed admission catalog authorised a server-marketplace install.
- *
- * The server marketplace and its admission catalog are gone (design §16.2);
- * nothing writes this any more. A receipt written before the switch may carry
- * it, and it parses so that receipt keeps verifying.
- */
+/** Legacy receipts retain signed-catalog admission metadata so their integrity still verifies. */
 export interface PluginAdmissionRecord {
   /** `issuedAt` of the authorising catalog document. */
   issuedAt: string;
@@ -31,15 +25,11 @@ export interface PluginAdmissionRecord {
   publisher: string;
 }
 
-/** The rungs of the git plugin artifact ladder (design §6.2), in the order tried. */
+/** Git artifact ladder rungs in attempted order. */
 export const ARTIFACT_RUNGS = ["release", "archive", "tree"] as const;
 export type ArtifactRung = (typeof ARTIFACT_RUNGS)[number];
 
-/**
- * A folder source's one rung (§18.4.2): the built tree in the folder. It
- * never downloads, and an install through it never qualifies for a
- * host-secret grant or a `process` entry.
- */
+/** Folder artifacts grant neither process entry nor host-secret access. */
 export const FOLDER_RUNG = "folder";
 export type PluginRung = ArtifactRung | typeof FOLDER_RUNG;
 
@@ -49,11 +39,7 @@ export type RungOutcome =
   | { rung: PluginRung; outcome: "skipped"; reason: "NOT_DECLARED" | "ARTIFACT_NOT_PINNED" }
   | { rung: PluginRung; outcome: "failed"; code: string; message: string };
 
-/**
- * Where a git install came from: the source, the two commits the plan was
- * bound to, and the ladder's outcome. The registry's `origin` names the same
- * install for lookups; the receipt is what proves the bytes.
- */
+/** Receipt provenance proves source, bound commits and rung outcomes; registry origin supports lookups. */
 export interface GitInstallRecord {
   sourceId: string;
   sourceOrigin: "official" | "managed" | "custom" | "direct";
@@ -65,39 +51,29 @@ export interface GitInstallRecord {
   rungs: RungOutcome[];
   /** Hash of the authority reviewed when this artifact was installed. */
   authoritySha256?: string;
-  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  /** Optional accepted consent baseline; older receipts may omit it. */
   consent?: ConsentFingerprint;
 }
 
-/**
- * Where a folder install came from (§18.4.2): the source, the folder's
- * revision the plan captured, the package path, and the digests of what was
- * installed and of the authority reviewed. Its bytes came from no pinned
- * release, so it is categorically ineligible for a `process` entry or a
- * host-secret grant.
- */
+/** Folder provenance pins the installed tree, never a release artifact; it grants neither process entry nor host secrets. */
 export interface FolderInstallRecord {
   sourceId: string;
   /** Folder sources are added by the user or provisioned by the policy; the official source is never a folder. */
   sourceOrigin: "managed" | "custom" | "direct";
-  /** `local-<sha256>` (§18.4.3). */
+  /** Folder revisions use local-<sha256>. */
   revision: string;
   /** Package directory in the folder; "" is the root of a direct source. */
   packagePath: string;
-  /** Tree digest (§6.4) of the installed files; equal to the receipt's `artifactSha256`. */
+  /** Installed tree digest, equal to artifactSha256. */
   treeSha256: string;
   /** Hash of the authority reviewed when this artifact was installed. */
   authoritySha256: string;
-  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  /** Optional accepted consent baseline; older receipts may omit it. */
   consent?: ConsentFingerprint;
 }
 
-/**
- * Schema v3 — written by local-dev installs, which have no artifact, signer or
- * admission. A server-marketplace install from before the git marketplace kept
- * its v3 receipt (`installSource: "marketplace"`), which still verifies.
- * installSource is the authoritative trust signal.
- */
+// v3 local-dev receipts have no signer or admission; legacy signed receipts retain their verified bytes.
+// installSource remains the authoritative trust signal.
 export interface SignedOrLocalInstallReceipt {
   schemaVersion: 3;
   pluginId: string;
@@ -111,12 +87,7 @@ export interface SignedOrLocalInstallReceipt {
   files: InstallReceiptFile[];
 }
 
-/**
- * Schema v4 — written by git installs only (design §6.2), so a receipt of a
- * signed or local install keeps its v3 bytes. There is no signer and no
- * admission: `artifactSha256` is the pinned zip hash (release, archive) or
- * the tree digest (§6.4), and `git` records the plan and the ladder.
- */
+/** v4 git receipts record pinned artifact or tree hashes and ladder provenance without signer or admission. */
 export interface GitInstallReceipt {
   schemaVersion: 4;
   pluginId: string;
@@ -131,7 +102,7 @@ export interface GitInstallReceipt {
   files: InstallReceiptFile[];
 }
 
-/** Schema v4 for a folder install (§18.4.2): no signer, no admission, the tree digest, and the `folder` record. */
+/** v4 folder receipts record the tree digest and folder provenance without signer or admission. */
 export interface FolderInstallReceipt {
   schemaVersion: 4;
   pluginId: string;
@@ -148,10 +119,7 @@ export interface FolderInstallReceipt {
 
 export type PluginInstallReceipt = SignedOrLocalInstallReceipt | GitInstallReceipt | FolderInstallReceipt;
 
-/**
- * On-disk shape of receipts written before schema v3. Normalised by
- * `verifyInstallReceiptRaw`; the only difference is the absent `admission`.
- */
+/** Pre-v3 receipts omit admission and are normalized during raw verification. */
 interface PluginInstallReceiptV2 {
   schemaVersion: 2;
   pluginId: string;
@@ -163,10 +131,7 @@ interface PluginInstallReceiptV2 {
   files: InstallReceiptFile[];
 }
 
-/**
- * On-disk shape of receipts written before schema v2.
- * verifyInstallReceipt normalises these to PluginInstallReceipt internally.
- */
+/** Pre-v2 receipts normalize to PluginInstallReceipt during verification. */
 interface PluginInstallReceiptV1 {
   schemaVersion: 1;
   pluginId: string;
@@ -309,7 +274,6 @@ const FOLDER_REVISION = /^local-[a-f0-9]{64}$/;
 const SOURCE_ORIGINS = new Set(["official", "managed", "custom", "direct"]);
 const FOLDER_SOURCE_ORIGINS = new Set(["managed", "custom", "direct"]);
 
-/** Why a folder install record is malformed, or null when it is well formed. */
 function folderInstallRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "folder record is not an object";
   if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256", "consent"])) {
@@ -319,7 +283,7 @@ function folderInstallRecordProblem(value: unknown): string | null {
   if (consent) return consent;
   if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "folder record sourceId is invalid";
   if (typeof value.sourceOrigin !== "string" || !FOLDER_SOURCE_ORIGINS.has(value.sourceOrigin)) return "folder record sourceOrigin is invalid";
-  // A folder's pin is its revision; a 40-hex commit here is not one (§18.4.3).
+  // Folder pins use local revisions, never commit hashes.
   if (typeof value.revision !== "string" || !FOLDER_REVISION.test(value.revision)) return "folder record revision is invalid";
   if (typeof value.packagePath !== "string") return "folder record packagePath is invalid";
   if (typeof value.treeSha256 !== "string" || !SHA256_HEX.test(value.treeSha256)) return "folder record treeSha256 is invalid";
@@ -328,7 +292,7 @@ function folderInstallRecordProblem(value: unknown): string | null {
 }
 const RUNG_SKIP_REASONS = new Set(["NOT_DECLARED", "ARTIFACT_NOT_PINNED"]);
 
-/** Why a record's optional consent baseline is malformed: it must be an extension's fingerprint (§18.7.3). */
+/** Consent baselines must have the extension fingerprint shape. */
 function consentProblem(value: unknown, record: "git" | "folder"): string | null {
   if (value === undefined) return null;
   try {
@@ -343,7 +307,6 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return Object.keys(value).every((key) => keys.includes(key));
 }
 
-/** Why a git install record is malformed, or null when it is well formed. */
 export function gitInstallRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "git record is not an object";
   if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256", "consent"])) {
@@ -453,16 +416,13 @@ export async function verifyInstallReceiptRaw(
     }
   }
 
-  // Normalise v1 → v2.
-  // v1 receipts with signerKeyId starting with "dev:" were written by the
-  // old installLocal sentinel — treat them as local-dev installs.
+  // Normalize dev:-prefixed v1 signers to local-dev source.
   let receipt: PluginInstallReceipt;
   if (candidate.schemaVersion === 1) {
     const v1 = candidate as unknown as PluginInstallReceiptV1;
     if (typeof v1.artifactSha256 !== "string") {
       return { ok: false, reason: "legacy install receipt has invalid artifactSha256" };
     }
-    // Guard against corrupted receipts where signerKeyId is missing at runtime.
     const rawSigner = (v1 as { signerKeyId?: unknown }).signerKeyId;
     const installSource: "marketplace" | "local-dev" =
       typeof rawSigner === "string" && rawSigner.startsWith("dev:") ? "local-dev" : "marketplace";
@@ -479,13 +439,11 @@ export async function verifyInstallReceiptRaw(
     };
   } else if (candidate.schemaVersion === 2 || candidate.schemaVersion === 3) {
     const stored = candidate as unknown as PluginInstallReceiptV2 | PluginInstallReceipt;
-    // Runtime enum validation — JSON.parse+as-cast cannot enforce union literals.
+    // Runtime JSON validation must enforce union literals.
     if (stored.installSource !== "marketplace" && stored.installSource !== "local-dev") {
       return { ok: false, reason: `invalid receipt installSource: ${String(stored.installSource)}` };
     }
-    // v2 → v3: the absence of an admission record means no catalog authorised
-    // this install, which is exactly what it says. Not a default that papers
-    // over a missing value.
+    // Absent admission means no catalog authorized the install; normalize it to null.
     receipt = {
       ...stored,
       schemaVersion: 3,
@@ -531,10 +489,7 @@ export async function verifyInstallReceiptRaw(
     || !isSemver(receipt.reviewedAppVersion)
   )) return { ok: false, reason: "invalid reviewed app version in install receipt" };
 
-  // marketplace receipts must carry a real signerKeyId.
-  // The packaged-build gate for local-dev receipts lives in the caller
-  // (runtime/index.ts verifyReceiptAndDevGuard) to keep this function a
-  // pure integrity verifier — policy enforcement stays in the runtime layer.
+  // Signed marketplace receipts require a signer; packaged local-dev policy stays in runtime, not integrity verification.
   if (receipt.installSource === "marketplace") {
     if (typeof receipt.signerKeyId !== "string" || receipt.signerKeyId.length === 0) {
       return { ok: false, reason: "marketplace receipt missing or empty signerKeyId" };
@@ -571,15 +526,7 @@ export async function verifyInstallReceiptRaw(
   }
   let actualPaths: string[];
   try {
-    // Validate the INSTALLED PAYLOAD only. A plugin's writable data directory
-    // (`<pluginRoot>/data`, created by ensurePluginDataDir — under the Ave
-    // home, the sole writable area the sandbox grants the plugin inside its
-    // root) holds runtime state the plugin legitimately creates/mutates at
-    // runtime (index DBs, migration markers, workspace), and `<pluginRoot>/run`
-    // holds host-allocated worker control sockets. Neither is part of the
-    // signed install artifact, so scanning them makes the receipt fail the
-    // moment the plugin runs. Skip them at the TOP level only — a nested
-    // `dist/data/` would be shipped payload and stays validated.
+    // Validate payload only, excluding runtime directories at the root but retaining nested same-named payload.
     actualPaths = await listFilesRecursive(pluginRoot, PLUGIN_RUNTIME_DIR_NAMES);
   } catch (err) {
     return { ok: false, reason: `installed payload unreadable: ${(err as Error).message}` };
@@ -594,7 +541,6 @@ export async function verifyInstallReceiptRaw(
   return { ok: true, receipt };
 }
 
-
 export async function listFilesRecursive(
   root: string,
   skipTopLevel?: ReadonlySet<string>,
@@ -602,8 +548,7 @@ export async function listFilesRecursive(
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
-      // Skip named directories at the ROOT level only (e.g. runtime `data/`);
-      // deeper directories with the same name stay part of the scan.
+      // Runtime exclusions apply only at the root.
       if (dir === root && entry.isDirectory() && skipTopLevel?.has(entry.name as string)) {
         continue;
       }
@@ -619,17 +564,7 @@ export async function listFilesRecursive(
         if (info.nlink > 1) {
           throw new Error(`installed payload contains hard link: ${rel}`);
         }
-        // Python bytecode cache (`**​/__pycache__/<name>.pyc|pyo`) is compiled
-        // in-place by the interpreter from the validated `.py` sources, is never
-        // part of the signed install artifact, and regenerates whenever the
-        // plugin's Python runtime runs. Exclude it at ANY depth so a
-        // Python-backed plugin's payload stays receipt-valid across runs. The
-        // scope is deliberately tight — only `.pyc`/`.pyo` *inside* a
-        // `__pycache__/` segment — so a non-bytecode file smuggled into a
-        // `__pycache__/` directory is still listed and rejected as unlisted.
-        // Tamper-safety: Python ignores a `.pyc` whose source hash/mtime does
-        // not match, so an altered cache file is never executed while the
-        // covered `.py` remains validated.
+        // Ignore interpreter-generated bytecode caches only because execution rechecks covered source freshness.
         if (isPythonBytecodeCacheFile(rel)) continue;
         out.push(rel);
       } else {
@@ -641,13 +576,7 @@ export async function listFilesRecursive(
   return out.sort();
 }
 
-/**
- * True for Python bytecode cache files — `**​/__pycache__/<name>.pyc` (or
- * `.pyo`). These are compiled in-place from validated `.py` sources, never
- * shipped in the signed artifact, and regenerate at runtime; excluding them
- * from payload validation keeps Python-backed plugins receipt-valid without
- * weakening tamper detection of executed code (see `listFilesRecursive`).
- */
+/** Interpreter-generated bytecode caches are not shipped payload; exclusion relies on source freshness checks. */
 function isPythonBytecodeCacheFile(relPath: string): boolean {
   return /(?:^|\/)__pycache__\/[^/]+\.(?:pyc|pyo)$/.test(relPath);
 }

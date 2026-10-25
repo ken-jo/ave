@@ -1,8 +1,4 @@
-// #811 milestone-2 lifecycle fixture: echoes the received lifecycle payload.
-// Reads the wire-shape JSON on stdin and reflects the event + a few payload
-// fields into the `reason` so a test can assert the right payload reached the
-// hook. Always `allow` — the observe-only semantics mean the decision is
-// ignored by the caller anyway; the reason is the verification surface.
+// Echo lifecycle fields to prove payload delivery; observe-only decisions do not affect control flow.
 let raw = "";
 process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (c) => { raw += c; });
@@ -14,8 +10,7 @@ process.stdin.on("end", () => {
     process.stdout.write(JSON.stringify({ action: "deny", reason: "bad stdin" }));
     return;
   }
-  // Reflect the discriminating fields. JSON.stringify(undefined) → omitted, so
-  // only the fields present for THIS event show up.
+  // Missing payload fields stay omitted by serialization.
   const parts = [
     "event=" + p.event,
     "session=" + p.sessionId,
@@ -35,7 +30,6 @@ process.stdin.on("end", () => {
     p.agentId !== undefined ? "agent=" + p.agentId : null,
     p.agentType !== undefined ? "agentType=" + p.agentType : null,
     p.message !== undefined ? "msg=" + p.message : null,
-    // #811 m2 — UserPromptSubmit (blocking) fields.
     p.inputText !== undefined ? "text=" + p.inputText : null,
     p.inputOrigin !== undefined ? "origin=" + p.inputOrigin : null,
     p.route !== undefined ? "route=" + p.route : null,

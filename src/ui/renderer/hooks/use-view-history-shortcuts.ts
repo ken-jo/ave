@@ -1,19 +1,7 @@
 import { useEffect, useRef } from "react";
 import { isDarwin } from "../api-client.js";
 
-/**
- * Keyboard bindings for visit history.
- *
- * The chord is platform-dependent for a concrete reason, not for taste: on
- * macOS `Option`+←/→ is word-wise caret movement inside text fields, so
- * binding it globally would break editing in the composer. macOS therefore
- * gets its conventional `Cmd`+`[` / `Cmd`+`]`; Windows and Linux get the
- * `Alt`+←/→ they expect.
- *
- * Either way the chord is ignored while an editable element has focus. That
- * guard is new here — the existing global shortcuts do not have one — because
- * navigating away mid-sentence is the worst outcome this feature can produce.
- */
+/** Use Cmd+[ / ] on macOS to avoid Option-arrow word navigation; ignore history chords while editable elements have focus. */
 export interface ViewHistoryShortcutHandlers {
   canGoBack: boolean;
   canGoForward: boolean;
@@ -30,10 +18,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   return el.isContentEditable === true;
 }
 
-/**
- * Which navigation a keystroke asks for, or null. Exported so the decision can
- * be tested directly on both platforms without synthesizing a whole app.
- */
+/** Which navigation a keystroke asks for, or null. Exported so the decision can be tested directly on both platforms
+ * without synthesizing a whole app. */
 export function viewHistoryIntent(
   event: Pick<KeyboardEvent, "key" | "altKey" | "metaKey" | "ctrlKey" | "shiftKey">,
   darwin: boolean,
@@ -52,8 +38,8 @@ export function viewHistoryIntent(
 }
 
 export function useViewHistoryShortcuts(handlers: ViewHistoryShortcutHandlers): void {
-  // Stable ref so the listener attaches once instead of re-binding on every
-  // navigation (the handlers change identity whenever history moves).
+  // Stable ref so the listener attaches once instead of re-binding on every navigation (the handlers change identity
+  // whenever history moves).
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 

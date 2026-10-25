@@ -4,14 +4,19 @@ export const CLAUDE_CODE_MCP_SERVER_NAME = "ave-host-tools";
 export const CLAUDE_CODE_MAX_PROMPT_BYTES = 512 * 1024;
 export const CLAUDE_CODE_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-/** The CLI's tool list covers built-ins; MCP approval is a separate option. */
-export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly string[]): string[] {
+// Model IDs must begin with a letter or digit so they cannot be interpreted as CLI flags.
+const CLAUDE_CODE_MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/iu;
+
+// Built-in tool selection and MCP approval use separate CLI options; omitting model selects the CLI default.
+export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly string[], model?: string): string[] {
+  if (model !== undefined && !CLAUDE_CODE_MODEL_ID.test(model)) invalid();
   return [
     "-p", "--output-format", "stream-json", "--verbose",
     "--tools", "", "--permission-mode", "default",
     "--strict-mcp-config", "--mcp-config", mcpConfigPath,
     "--setting-sources", "", "--settings", JSON.stringify({ disableAllHooks: true }),
     "--disable-slash-commands", "--no-chrome", "--no-session-persistence",
+    ...(model !== undefined ? ["--model", model] : []),
     ...(toolNames.length ? ["--allowedTools", toolNames.join(",")] : []),
   ];
 }
@@ -20,11 +25,8 @@ function invalid(): never {
   throw new Error("claude-code-operation-failed");
 }
 
-/**
- * Validates each user-requested print stream. Tool announcements
- * never authorize a host call. Ave supplies complete history on every round,
- * so native session ids are checked but never resumed.
- */
+// Validates each user-requested print stream. Tool announcements never authorize a host call. Ave supplies complete history on every round, so native
+// session ids are checked but never resumed.
 export class ClaudeCodeStream {
   private sessionId: string | null = null;
   private result = false;
@@ -92,12 +94,10 @@ export class ClaudeCodeStream {
           && (!Array.isArray(event.permission_denials) || event.permission_denials.length > 0))) invalid();
       this.result = true;
       if (event.stop_reason === "max_tokens") this.stopReason = "max_tokens";
-      // The result also carries the actual answer. Project it when no
-      // assistant text was reported, without duplicating preceding text.
+      // The result also carries the actual answer. Project it when no assistant text was reported, without duplicating preceding text.
       return !this.hasText && event.result ? [event.result] : [];
     }
-    // Metadata carries no execution authority. Unexpected hooks, native tasks,
-    // and unknown wire records are errors, not evidence of a successful turn.
+    // Metadata carries no execution authority. Unexpected hooks, native tasks, and unknown wire records are errors, not evidence of a successful turn.
     if (event.type === "system" && ["api_retry", "status"].includes(String(event.subtype))) return [];
     if (event.type === "rate_limit_event") return [];
     if (event.type === "user" && isRecord(event.message)
@@ -111,8 +111,7 @@ export class ClaudeCodeStream {
   }
 
   private isAllowedTool(name: string): boolean {
-    // This termination control cannot be removed while MCP tools remain.
-    // It grants no filesystem or process capability.
+    // This termination control cannot be removed while MCP tools remain. It grants no filesystem or process capability.
     return this.allowedTools.has(name) || (this.allowedTools.size > 0 && name === "EndConversation");
   }
 }

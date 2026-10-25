@@ -2,21 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * This repository's GitHub identity.
- *
- * The standard `package.json` `repository` field is the one place that names
- * it. It does not depend on the update feed: installed apps update from the
- * `generic` feed in `build.publish` (see lib/release-channel.mjs), and the
- * GitHub Release that the tag workflow drafts is a secondary record kept in
- * this repository. Anything else that must name this repository reads it here
- * or is held to it by `test/scripts/repository-identity.test.ts`.
- *
- * The rule is strict: exactly the object form
- * `{ "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }`.
- * The npm shorthand forms (`"owner/repo"`, `"github:owner/repo"`) and other
- * hosts are refused rather than interpreted, so there is one spelling to check.
- */
+// Package repository metadata is the authority for release identity; the update feed is separate.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/u;
@@ -55,12 +41,7 @@ export function readRepositoryIdentity(root = ROOT) {
   return repositoryIdentity(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")));
 }
 
-/**
- * Release gate (scripts/check-release-repository.mjs): the repository a tag
- * build releases from must be the one `package.json` `repository` names,
- * exactly. An unset `GITHUB_REPOSITORY` and a difference in letter case both
- * fail.
- */
+// Require an exact repository identity; missing values and case differences fail.
 export function assertReleaseRepository({ identity, repository }) {
   if (typeof repository !== "string" || repository.length === 0) {
     throw new Error("[release-repository] GITHUB_REPOSITORY is not set");

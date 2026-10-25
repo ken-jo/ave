@@ -203,15 +203,7 @@ describe("genericToModelMessages — tool_result image (view_image)", () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────
-// Malformed tool-call arguments must be contained, not replayed.
-//
-// The AI SDK returns the argument text verbatim when JSON.parse fails on it
-// (`parseToolCall`'s outer catch keeps `toolCall.input`, a string, and marks
-// the part `invalid: true`). A string that reaches history is replayed on
-// every later round, and a provider whose chat template iterates the argument
-// object rejects the WHOLE request — one malformed call would end the turn.
-// ────────────────────────────────────────────────────────────────
+// Contain malformed argument strings so they cannot invalidate later whole-request replay.
 
 describe("fullStreamToStreamEvent — tool-call input normalisation", () => {
   const finish = { type: "finish", finishReason: "tool-calls" };
@@ -274,9 +266,7 @@ describe("fullStreamToStreamEvent — tool-call input normalisation", () => {
     expect(call.invalidInput).toBeUndefined();
   });
 
-  // A no-argument call is how a zero-parameter tool is invoked. Answering it
-  // with a parse error would break a working call, so blank argument text has
-  // to read the same as no argument text — which is how the SDK reads it too.
+  // Blank arguments are valid for zero-parameter tools and must parse as an empty object.
   it.each([
     ["", "empty"],
     ["   ", "spaces"],
@@ -310,7 +300,6 @@ describe("genericToModelMessages — tool-call input never leaves as a non-objec
 
   it("sends a persisted string input as an empty object", () => {
     const part = toolCallPart('{"command":"echo hel');
-    // Strict: a string here is what the provider rejects the whole request over.
     expect(typeof part.input).toBe("object");
     expect(part.input).toEqual({});
   });

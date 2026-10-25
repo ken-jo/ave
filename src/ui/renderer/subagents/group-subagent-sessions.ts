@@ -1,20 +1,5 @@
-/**
- * groupSubAgentSessions — unify a flat `SubAgentSpawn[]` into one entry per
- * logical sub-agent, concatenating a spawn and its resume(s) into a single
- * transcript.
- *
- * Why: a resume is a SEPARATE `agent_spawn` call — its own `spawnId` and
- * `toolUseId` — so the flat live event list renders a spawn and each of its
- * resumes as distinct cards/rows. The user's requirement is a UNIFIED
- * transcript. The JOIN KEY is `childSessionId`: a resume shares the
- * original spawn's `childSessionId` (it IS the `resumeId` it was called with),
- * so all segments of one logical agent carry the same value.
- *
- * Grouping is keyed on `childSessionId ?? "solo:" + spawnId`: a spawn without a
- * `childSessionId` forms its own singleton group and renders exactly as today.
- * First-seen order is preserved so the event-stream input order (which is transcript
- * order: original, then resume1, then resume2) is the concat order.
- */
+/** Join spawn/resume segments by childSessionId, falling back to a spawn singleton; preserve first-seen order for
+ * transcript concatenation. */
 import type { SubAgentSpawn } from "./types.js";
 
 export function groupSubAgentSessions(spawns: SubAgentSpawn[]): SubAgentSpawn[] {
@@ -32,8 +17,8 @@ export function groupSubAgentSessions(spawns: SubAgentSpawn[]): SubAgentSpawn[] 
   }
   return order.map((key) => {
     const segments = buckets.get(key)!;
-    // A singleton group is returned verbatim — no allocation, and reference
-    // identity is preserved so React can bail out of re-rendering unchanged rows.
+    // A singleton group is returned verbatim — no allocation, and reference identity is preserved so React can bail out of
+    // re-rendering unchanged rows.
     if (segments.length === 1) return segments[0];
     const first = segments[0];
     const last = segments[segments.length - 1];

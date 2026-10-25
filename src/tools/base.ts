@@ -30,8 +30,7 @@ interface PluginToolGenerationOwner {
   readonly generationId: string;
 }
 
-// Re-export governance types so downstream modules can grab the full
-// tool surface from a single import path (tools/base.js).
+// Re-export governance types so downstream modules can grab the full tool surface from a single import path (tools/base.js).
 export type {
   ToolSource,
   ToolCategory,
@@ -69,111 +68,42 @@ export interface Tool {
   readonly source: ToolSource;
   readonly category: ToolCategory;
   readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
-  /**
-   * Permission policy — declared only on `category === "meta"` tools. Tells the executor
-   * to take the explicit short-circuit path rather than the standard Layer 3
-   * decision matrix. See {@link ToolDecisionOverride} for semantics.
-   */
+  /** Permission policy; declared only on `category === "meta"` tools. Tells the executor to take the explicit
+   * short-circuit path rather than the standard Layer 3 decision matrix. See {@link ToolDecisionOverride} for semantics. */
   readonly decisionOverride?: ToolDecisionOverride;
-  /**
-   * Executor opt-in for tools whose adjacent invocations can safely run
-   * concurrently. The default is strict ordered execution.
-   */
+  /** Executor opt-in for tools whose adjacent invocations can safely run concurrently. The default is strict ordered execution. */
   readonly parallelSafe?: boolean;
-  /**
-   * Host-only builtin opt-in: wait for interrupted work and its cleanup to
-   * settle before publishing the interruption result. Settlement does not
-   * change the original timeout or cancellation into success.
-   * The builtin must stop new work on abort and settle after cleanup; a stuck
-   * in-process operation can therefore delay the result indefinitely.
-   */
+  /** Host-only builtin opt-in: wait for interrupted work and its cleanup to settle before publishing the interruption result. Settlement does not change the original timeout
+   * or cancellation into success. The builtin must stop new work on abort and settle after cleanup; a stuck in-process operation can therefore delay the result indefinitely. */
   readonly awaitCancellationSettlement?: true;
-  /**
-   * Declares that this BUILTIN surfaces MCP-server data, so the turn scope's
-   * `includeMcp` switch applies to it as it does to `source: "mcp"` tools.
-   *
-   * Builtins are otherwise always eager and never scope-filtered, which is right
-   * for host-owned capabilities — but a builtin that hands the model untrusted
-   * server content is an MCP surface wearing a builtin's badge. Headless loops
-   * (routines) deliberately run with no MCP tools; without this flag such a tool
-   * would route around that decision.
-   */
+  /** Declares that this BUILTIN surfaces MCP-server data, so the turn scope's `includeMcp` switch applies to it as it does to `source: "mcp"` tools. Builtins are otherwise always eager and never scope-filtered, which is right for host-owned
+   * capabilities; but a builtin that hands the model untrusted server content is an MCP surface wearing a builtin's badge. Headless loops (routines) deliberately run with no MCP tools; without this flag such a tool would route around that decision. */
   readonly requiresMcpScope?: boolean;
-  /**
-   * BUILTIN-only: this tool can reach an arbitrary, model-chosen external URL.
-   *
-   * Such a tool is an EGRESS primitive, not a read: paired with any tool that
-   * can reach private data it completes the exfiltration path, and the model
-   * picks the destination. Unattended lanes (routines) have no human to notice
-   * an unexpected destination, so they withhold it the same way they withhold
-   * MCP — at the registry, before the schema is ever shown, so an injected
-   * instruction cannot even name the tool.
-   */
+  /** BUILTIN-only: this tool can reach an arbitrary, model-chosen external URL. Such a tool is an EGRESS primitive, not a read: paired with any tool that can reach private data it completes the exfiltration path, and the model picks the
+   * destination. Unattended lanes (routines) have no human to notice an unexpected destination, so they withhold it the same way they withhold MCP; at the registry, before the schema is ever shown, so an injected instruction cannot even name the tool. */
   readonly arbitraryEgress?: boolean;
-  /**
-   * BUILTIN-only: this tool runs a bounded loop of its OWN whose length the
-   * user configures, so a fixed executor ceiling would silently re-impose the
-   * cap that setting exists to remove. Returns the wall-clock ceiling in ms
-   * for the next invocation; `resolveEffectiveCeilingMs` consults it in place
-   * of `globalCeilingMs`.
-   *
-   * `source: "builtin"` is checked at the read site, so a plugin or MCP tool
-   * cannot grant itself more wall clock — neither adapter copies anything
-   * from the wire into this field, and neither can produce a builtin `Tool`.
-   * Implementations must return a finite host-derived bound, never a value
-   * taken from tool input: model input choosing its own deadline is exactly
-   * what the ceiling exists to bound.
-   */
+  /** BUILTIN-only: this tool runs a bounded loop of its OWN whose length the user configures, so a fixed executor ceiling would silently re-impose the cap that setting exists to remove. Returns the wall-clock ceiling in ms for the next invocation; `resolveEffectiveCeilingMs` consults it in place of `globalCeilingMs`. `source: "builtin"` is checked at the
+   * read site, so a plugin or MCP tool cannot grant itself more wall clock; neither adapter copies anything from the wire into this field, and neither can produce a builtin `Tool`. Implementations must return a finite host-derived bound, never a value taken from tool input: model input choosing its own deadline is exactly what the ceiling exists to bound. */
   readonly resolveHostCeilingMs?: () => number;
   readonly pluginId?: string;
   /** Exact immutable plugin generation that produced this registry entry. */
   readonly pluginGeneration?: PluginToolGenerationOwner;
-  /**
-   * Host-owned plugin worker identity for plugin tools whose side effects are
-   * actually routed through a long-lived worker. Paired with `pluginId` so the
-   * permission reviewer can resolve the real ASRT substrate for that specific
-   * worker. Manifest `_meta.workerId` alone must not populate this field; it is
-   * only safe when the host controls the invocation path into that worker.
-   */
+  /** Host-owned plugin worker identity for plugin tools whose side effects are actually routed through a long-lived worker. Paired with `pluginId` so the permission reviewer can resolve the
+   * real ASRT substrate for that specific worker. Manifest `_meta.workerId` alone must not populate this field; it is only safe when the host controls the invocation path into that worker. */
   readonly workerId?: string;
   readonly mcpServerId?: string;
+  /** Original server tool identity and conservative annotation summary, set by the host adapter. */
+  readonly mcpRuleIdentity?: { tool: string; nonDestructive: boolean };
   /** Host-only policy sidecar. It is never serialized onto MCP or passed to plugin input. */
   readonly operationPolicy?: PluginToolOperationPolicy;
-  /**
-   * MCP Apps — may this tool's OWN app call it (`_meta.ui.visibility` ∋ `"app"`)?
-   *
-   * The spec's MUST for an app-initiated `tools/call`, materialized ONCE per tool
-   * at ingestion (`mcp-tool-adapter.ts` for external MCP servers, which applies the
-   * spec default `["model","app"]` when the server declares nothing). The
-   * `oncalltool` external backend is the SOLE reader and fails closed on
-   * `undefined` — builtin/plugin registry tools leave this unset, and the plugin
-   * loopback path enforces the same MUST through `assertAppVisibleToolInvokable`
-   * instead (its own manifest-declared visibility), never through this field.
-   */
+  /** MCP Apps; may this tool's OWN app call it (`_meta.ui.visibility` ∋ `"app"`)? The spec's MUST for an app-initiated `tools/call`, materialized ONCE per tool at ingestion (`mcp-tool-adapter.ts` for external MCP servers, which applies the spec default `["model","app"]` when the server declares nothing).
+   * The `oncalltool` external backend is the SOLE reader and fails closed on `undefined`; builtin/plugin registry tools leave this unset, and the plugin loopback path enforces the same MUST through `assertAppVisibleToolInvokable` instead (its own manifest-declared visibility), never through this field. */
   readonly appInvokable?: boolean;
-  /**
-   * MCP Apps — is this tool shown to the MODEL (`_meta.ui.visibility` ∋ `"model"`)?
-   *
-   * The OTHER half of the same one declaration, and the reason the two are separate
-   * bits rather than one: an app-only tool (`["app"]`) MUST still be a registry
-   * `Tool` — that is the only way it can run under `inspectHostRisk` → reviewer /
-   * approval → audit when its card calls it — while being ABSENT from the tool list
-   * handed to the LLM. Registry membership answers "what may execute under the
-   * gate"; THIS bit answers "what the model is shown". Conflating them is what made
-   * `["app"]` behave differently on the two arms.
-   *
-   * Materialized at the same two ingestion sites as {@link appInvokable}
-   * (`mcp-tool-adapter.ts` external, `plugin-tool-from-mcp.ts` loopback). Read in
-   * exactly ONE place — {@link isModelExposedTool}, behind the registry's
-   * model-facing listings. `undefined` ⇒ model-visible: a builtin never declares an
-   * MCP visibility and must not vanish from the model's tools.
-   */
+  /** Registry membership enables governed app execution; model visibility separately controls what the model may call.
+   * Derive both at ingestion, enforce exposure centrally, and treat undefined as visible for builtin tools. */
   readonly modelVisible?: boolean;
-  /**
-   * Manifest-declared filesystem path fields. Used by the executor's
-   * Layer 0/1 path policy for dynamic plugin/MCP tools whose argument names
-   * are not the built-in `path | file_path | filePath` convention.
-   */
+  /** Manifest-declared filesystem path fields. Used by the executor's Layer 0/1 path policy for dynamic
+   * plugin/MCP tools whose argument names are not the built-in `path | file_path | filePath` convention. */
   readonly pathFields?: readonly string[];
   /**
    * §6.4 Tool versioning — semver string (e.g. "1.0.0"). Required so the
@@ -182,52 +112,24 @@ export interface Tool {
    * {@link ZodTool}.
    */
   readonly version: string;
-  /**
-   * Optional user-approval cache identity for authority-sensitive tools.
-   *
-   * The executor prefixes this with `tool.name:` before handing it to the
-   * permission manager. Tools that declare this opt out of bare tool-name
-   * "allow always" reuse because their arguments carry permission scope.
-   *
-   * This key scopes policy (deny rules, reviewer cache). It never widens a
-   * remembered user decision: those stay on exact-argument identity unless
-   * the tool ALSO opts in through {@link approvalMemoryScope}.
-   */
+  /** Optional user-approval cache identity for authority-sensitive tools. The executor prefixes this with `tool.name:` before handing it to the permission manager. Tools that declare this opt out of bare tool-name "allow always" reuse because
+   * their arguments carry permission scope. This key scopes policy (deny rules, reviewer cache). It never widens a remembered user decision: those stay on exact-argument identity unless the tool ALSO opts in through {@link approvalMemoryScope}. */
   approvalCacheKey?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string | undefined;
-  /**
-   * Opt-in to target-wide remembered decisions. Return the target a
-   * remembered allow/deny should cover for this input, or `undefined` to keep
-   * exact-argument identity. Return a scope only when nothing outside it
-   * changes what the user consented to; arguments that differ inside the
-   * scope are still re-reviewed before a remembered allow is reused.
-   * May await target observation before sealing the invocation's identity.
-   */
+  /** Opt-in to target-wide remembered decisions. Return the target a remembered allow/deny should cover for this input, or `undefined` to keep exact-argument identity. Return a scope only when nothing outside it
+   * changes what the user consented to; arguments that differ inside the scope are still re-reviewed before a remembered allow is reused. May await target observation before sealing the invocation's identity. */
   approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext): ApprovalMemoryScope | undefined | Promise<ApprovalMemoryScope | undefined>;
-  /**
-   * BUILTIN-only: this input must be decided by a person, once, every time it
-   * is asked. When it returns true and the policy outcome is an ask, the
-   * executor drops the foreground reviewer and the remembered-approval lanes,
-   * and the prompt is an explicit allow-once / deny-once that records
-   * nothing. A deny or a standing allow (allow mode, an allow rule) is left
-   * as the policy decided it: this only tightens an ask.
-   *
-   * Used where the target belongs to the user rather than to the agent's own
-   * work — a browser tab the user opened.
-   */
+  /** BUILTIN-only: this input must be decided by a person, once, every time it is asked. When it returns true and the policy outcome is an ask, the executor drops the foreground reviewer and the remembered-approval lanes, and the prompt is an explicit allow-once /
+   * deny-once that records nothing. A deny or a standing allow (allow mode, an allow rule) is left as the policy decided it: this only tightens an ask. Used where the target belongs to the user rather than to the agent's own work; a browser tab the user opened. */
   requiresPerActionApproval?(input: unknown, ctx?: ToolPolicyContext): boolean;
 
-  /** JSON Schema describing the input shape — sent to LLM providers. */
+  /** JSON Schema describing the input shape; sent to LLM providers. */
   toJsonSchema(): unknown;
 
-  /** Per-invocation read-only check — false = mutating. */
+  /** Per-invocation read-only check; false = mutating. */
   isReadOnly(input: unknown): boolean;
 
-  /**
-   * Validate + execute. Implementations parse `rawInput` to whatever
-   * typed shape they need. Returns a {@link ToolExecutionResult} (with isError
-   * for downstream pipeline steps) instead of throwing for normal
-   * failures.
-   */
+  /** Validate + execute. Implementations parse `rawInput` to whatever typed shape they need. Returns a {@link
+   * ToolExecutionResult} (with isError for downstream pipeline steps) instead of throwing for normal failures. */
   execute(rawInput: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult>;
 }
 
@@ -246,14 +148,8 @@ export function isModelExposedTool(tool: Pick<Tool, "modelVisible">): boolean {
   return tool.modelVisible !== false;
 }
 
-/**
- * Ergonomic abstract base for hand-written tools backed by a Zod schema.
- * Subclasses implement {@link executeTyped}; {@link execute} parses
- * `rawInput` via the schema first then dispatches typed.
- *
- * Override `source` / `category` with `override readonly` for plugin or
- * dangerous tools — see {@link BashTool} for a complete example.
- */
+/** Ergonomic abstract base for hand-written tools backed by a Zod schema. Subclasses implement {@link executeTyped}; {@link execute} parses `rawInput` via the schema
+ * first then dispatches typed. Override `source` / `category` with `override readonly` for plugin or dangerous tools; see {@link BashTool} for a complete example. */
 export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
   implements Tool
 {
@@ -269,7 +165,7 @@ export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
   readonly pluginId?: string;
   readonly workerId?: string;
   readonly mcpServerId?: string;
-  /** §6.4 — default version for hand-written builtins. Override via `override readonly version = "2.0.0"`. */
+  /** §6.4; default version for hand-written builtins. Override via `override readonly version = "2.0.0"`. */
   readonly version: string = "1.0.0";
 
   toJsonSchema(): unknown {
@@ -289,22 +185,15 @@ export abstract class ZodTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny>
     return this.executeTyped(parsed, ctx);
   }
 
-  /**
-   * Typed execution after Zod parsing. Subclasses implement this — the
-   * public {@link execute} entry point threads raw LLM-supplied input
-   * through the zod schema before dispatching.
-   */
+  /** Typed execution after Zod parsing. Subclasses implement this; the public {@link execute} entry point threads raw LLM-supplied input through the zod schema before dispatching. */
   protected abstract executeTyped(
     input: z.infer<TSchema>,
     ctx: ToolExecutionContext,
   ): Promise<ToolExecutionResult>;
 }
 
-/**
- * Specification consumed by {@link createDynamicTool}. Runtime-built
- * tools (plugin manifest registration, MCP discovery) supply a raw JSON
- * Schema and an execute callback rather than a Zod schema + subclass.
- */
+/** Specification consumed by {@link createDynamicTool}. Runtime-built tools (plugin manifest
+ * registration, MCP discovery) supply a raw JSON Schema and an execute callback rather than a Zod schema + subclass. */
 export interface DynamicToolSpec {
   name: string;
   description: string;
@@ -317,27 +206,28 @@ export interface DynamicToolSpec {
   pluginGeneration?: PluginToolGenerationOwner;
   workerId?: string;
   mcpServerId?: string;
+  mcpRuleIdentity?: Tool["mcpRuleIdentity"];
   operationPolicy?: PluginToolOperationPolicy;
-  /** MCP Apps app→server `tools/call` gate — see {@link Tool.appInvokable}. */
+  /** MCP Apps app→server `tools/call` gate; see {@link Tool.appInvokable}. */
   appInvokable?: boolean;
-  /** MCP-scoped builtin bit — see {@link Tool.requiresMcpScope}. */
+  /** MCP-scoped builtin bit; see {@link Tool.requiresMcpScope}. */
   requiresMcpScope?: boolean;
-  /** Arbitrary-egress builtin bit — see {@link Tool.arbitraryEgress}. */
+  /** Arbitrary-egress builtin bit; see {@link Tool.arbitraryEgress}. */
   arbitraryEgress?: boolean;
-  /** Builtin self-declared wall clock — see {@link Tool.resolveHostCeilingMs}. */
+  /** Builtin self-declared wall clock; see {@link Tool.resolveHostCeilingMs}. */
   resolveHostCeilingMs?: () => number;
-  /** MCP Apps model-exposure bit — see {@link Tool.modelVisible}. */
+  /** MCP Apps model-exposure bit; see {@link Tool.modelVisible}. */
   modelVisible?: boolean;
   pathFields?: readonly string[];
-  /** §6.4 — semver. Defaults to "1.0.0" when omitted. */
+  /** §6.4; semver. Defaults to "1.0.0" when omitted. */
   version?: string;
-  /** Permission policy #634 — per-tool approval cache identity. */
+  /** Permission policy #634; per-tool approval cache identity. */
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
   /** See {@link Tool.approvalMemoryScope}. */
   approvalMemoryScope?: Tool["approvalMemoryScope"];
   /** See {@link Tool.requiresPerActionApproval}. */
   requiresPerActionApproval?: (input: unknown, ctx?: ToolPolicyContext) => boolean;
-  /** Raw JSON Schema — used when no Zod schema is available (plugin/MCP). */
+  /** Raw JSON Schema; used when no Zod schema is available (plugin/MCP). */
   jsonSchema: object;
   execute: (
     rawInput: unknown,
@@ -346,12 +236,8 @@ export interface DynamicToolSpec {
   isReadOnly?: (input: unknown) => boolean;
 }
 
-/**
- * Factory for runtime-built tools. Plugin manifest registration and MCP
- * discovery call this to skip the abstract subclass ceremony and pass a
- * spec object — the returned value is a fully-fledged {@link Tool} ready
- * for {@link ToolRegistry.register}.
- */
+/** Factory for runtime-built tools. Plugin manifest registration and MCP discovery call this to skip the abstract subclass
+ * ceremony and pass a spec object; the returned value is a fully-fledged {@link Tool} ready for {@link ToolRegistry.register}. */
 export function createDynamicTool(spec: DynamicToolSpec): Tool {
   return {
     name: spec.name,
@@ -365,6 +251,7 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     pluginGeneration: spec.pluginGeneration,
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
+    mcpRuleIdentity: spec.mcpRuleIdentity,
     operationPolicy: spec.operationPolicy,
     appInvokable: spec.appInvokable,
     ...(spec.requiresMcpScope ? { requiresMcpScope: true } : {}),

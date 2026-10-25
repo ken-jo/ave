@@ -26,9 +26,8 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
 }
 
 describe("StatusBar", () => {
-  // wb-final removed the Ave brand mark from app chrome. The empty status bar
-  // renders no brand logo/text — only a zero-footprint spacer that keeps the
-  // flex layout stable until the first persistent item arrives.
+  // wb-final removed the Ave brand mark from app chrome. The empty status bar renders no brand logo/text — only a
+  // zero-footprint spacer that keeps the flex layout stable until the first persistent item arrives.
   it("renders no Ave brand placeholder when there are no persistent items", () => {
     render(<StatusBar persistent={[]} visibleToast={null} />);
     expect(screen.queryByText("Ave")).toBeNull();

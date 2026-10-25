@@ -1,32 +1,9 @@
-/**
- * Chokepoint effect vocabulary — the SINGLE SOURCE OF TRUTH for the
- * `kind → read/write` mapping that the effect-boundary model is built on.
- *
- * The observability stage (this PR) RECORDS host-mediated effects; a later
- * enforcement stage will ENFORCE on them. Both stages must agree on which host
- * chokepoint produces a read vs a write, so the mapping lives in ONE place
- * (CLAUDE.md Field-Addition Sweep): adding a chokepoint = add the union member +
- * its {@link CHOKEPOINT_EFFECT} entry, and the compiler enforces exhaustiveness.
- *
- * `EffectEntry.kind` is the {@link ChokepointKind} union (not a free-form
- * string) so a typo at a recording call-site is a type error, and the later
- * enforcement stage can switch on the union with exhaustiveness checking.
- */
+// Recording and enforcement share one exhaustive effect mapping; every new chokepoint needs a union member and table entry.
 
-/** Whether an observed host-mediated effect mutated state or only read it. */
+// Whether an observed host-mediated effect mutated state or only read it.
 export type Effect = "read" | "write";
 
-/**
- * The closed set of host chokepoints whose effects the EffectLedger records.
- * Each member maps to a single read/write class via {@link CHOKEPOINT_EFFECT},
- * EXCEPT `hostFetch`, whose effect is derived from the HTTP verb the host owns
- * at the egress chokepoint (see {@link methodEffect}).
- *
- * `callTool-child` is the propagation marker the executor records on the OUTER
- * (wrapper) ledger when a re-entrant `callTool` delegates a MUTATING inner tool,
- * so a read-declared wrapper that mutates via delegation surfaces as a write on
- * its own ledger.
- */
+// The closed set of host chokepoints whose effects the EffectLedger records. Each member maps to a single read/write class via CHOKEPOINT_EFFECT, EXCEPT `hostFetch`, whose effect is derived from the HTTP verb the host owns at the egress chokepoint (see methodEffect). `callTool-child` is the propagation marker the executor records on the OUTER (wrapper) ledger when a re-entrant `callTool` delegates a MUTATING inner tool, so a read-declared wrapper that mutates via delegation surfaces as a write on its own ledger.
 export type ChokepointKind =
   | "config.get"
   | "config.set"
@@ -37,73 +14,32 @@ export type ChokepointKind =
   | "hostFetch"
   | "spawnWorker"
   | "openExternalUrl"
-  // ─── PluginStorage (~/.ave/plugins/<id>/) — the PRIMARY plugin persistence
-  // path. A read records the host-observed ABSENCE of a mutation (dataset
-  // completeness); the three write variants are what flip `hasMutatingEffect`.
-  // Every host-mediated MUTATION chokepoint must record, else the executor's
-  // `hostObservable:true` for an in-process plugin tool would be a lie — a
-  // storage-only mutation would otherwise look like a confirmed host-observed
-  // read (a fail-open seed for the future read-recognition gate).
+  // Storage reads record the absence of mutation; every write records so storage-only mutations cannot masquerade as empty/read-only ledgers.
   | "storageRead"
   | "storageWrite"
   | "storageRm"
   | "storageMkdir"
-  // ─── Other host-mediated mutating chokepoints reached only via hostApi.
-  // `clearAuthPartition` destructively wipes an Electron session partition;
-  // `openAuthWindow` persists auth cookies/session; `triggerConversation`
-  // stages an overlay prompt; `agentApprovalRespond` resolves a pending
-  // approval. All mutate host-owned state, so all must record (see above).
+  // Auth partition changes, conversation triggers and approval responses mutate host state and must record effects.
   | "clearAuthPartition"
-  // Reads the host's auth-partition jar for the caller's own plugin. A read:
-  // it returns state, changes none.
+  // Reads the host's auth-partition jar for the caller's own plugin. A read: it returns state, changes none.
   | "getAuthPartitionCookies"
   | "openAuthWindow"
-  // ─── authRedirect.* ─────────────────────────────────────────────────────
-  // A host-owned loopback listener for one OAuth redirect. `open` and `close`
-  // both mutate host-owned state — a bound port is host state, and so is its
-  // release. `wait` returns what arrived and changes nothing, so it is a read;
-  // it is still recorded, because the moment a credential redirect lands is
-  // exactly the moment an audit trail is worth having.
+  // authRedirect.* A host-owned loopback listener for one OAuth redirect. `open` and `close` both mutate host-owned state — a bound port is host state, and so is its release. `wait` returns what arrived and changes nothing, so it is a read; it is still recorded, because the moment a credential redirect lands is exactly the moment an audit trail is worth having.
   | "authRedirectOpen"
   | "authRedirectWait"
   | "authRedirectClose"
-  // ─── pickFolders ────────────────────────────────────────────────────────
-  // Shows the user a native folder chooser and returns what they named. It
-  // returns state and mutates none — a picked path carries no new reach,
-  // because the child's read confinement is deny-only and the directory was
-  // already readable. A READ, and still recorded: the moment a plugin puts a
-  // modal in front of the user is worth having in the trail.
+  // pickFolders Shows the user a native folder chooser and returns what they named. It returns state and mutates none — a picked path carries no new reach, because the child's read confinement is deny-only and the directory was already readable. A READ, and still recorded: the moment a plugin puts a modal in front of the user is worth having in the trail.
   | "pickFolders"
-  // ─── resolveMappedDriveRoot ─────────────────────────────────────────────
-  // Answers what UNC path backs a Windows mapped drive. Returns state and
-  // mutates none; the host runs the lookup, so the plugin gains no ability to
-  // execute anything. A READ, recorded because the host running a command on a
-  // plugin's behalf is worth having in the trail even when the command is
-  // fixed.
+  // resolveMappedDriveRoot Answers what UNC path backs a Windows mapped drive. Returns state and mutates none; the host runs the lookup, so the plugin gains no ability to execute anything. A READ, recorded because the host running a command on a plugin's behalf is worth having in the trail even when the command is fixed.
   | "resolveMappedDriveRoot"
-  // ─── audio capture ──────────────────────────────────────────────────────
-  // Enumerating microphones returns state and changes none: a READ. Starting a
-  // capture opens a physical input — about as far from "mutates nothing" as
-  // this surface goes — so it is a WRITE, and the entry in the trail that says
-  // a recording began. The capture's END needs no kind of its own: it happens
-  // through the handle's release, which the subscription ledger already
-  // records.
+  // audio capture Enumerating microphones returns state and changes none: a READ. Starting a capture opens a physical input — about as far from "mutates nothing" as this surface goes — so it is a WRITE, and the entry in the trail that says a recording began. The capture's END needs no kind of its own: it happens through the handle's release, which the subscription ledger already records.
   | "listAudioInputDevices"
   | "startAudioCapture"
   | "attachFloatingPanel"
   | "resizeFloatingPanel"
   | "triggerConversation"
   | "agentApprovalRespond"
-  // ─── Structural-completeness vocabulary ────────────────────────────────
-  // The full hostApi surface is now recorded STRUCTURALLY by a single
-  // recording wrapper ({@link instrumentEffectsByPath}) that looks each method
-  // PATH up in {@link HOSTAPI_EFFECT_BY_PATH}. Every function-valued hostApi
-  // method maps to one of these kinds so no method can be silently
-  // un-instrumented; the completeness test ({@link
-  // ../__tests__/hostapi-effect-completeness.test.ts}) mechanically asserts the
-  // mapping is total against the REAL hostApi object.
-  //
-  // WRITES — egress / persist / session mutations:
+  // Structural-completeness vocabulary The full hostApi surface is now recorded STRUCTURALLY by a single recording wrapper (instrumentEffectsByPath) that looks each method PATH up in HOSTAPI_EFFECT_BY_PATH. Every function-valued hostApi method maps to one of these kinds so no method can be silently un-instrumented; the completeness test ({@link../__tests__/hostapi-effect-completeness.test.ts}) mechanically asserts the mapping is total against the REAL hostApi object. WRITES — egress / persist / session mutations:
   | "callLlm" // body-bearing external LLM egress
   | "openAuthPartitionViewer" // silent-SSO load refreshes/persists partition cookies
   | "agentApprovalRequest" // registers an issuer entry + creates a pending gate entry
@@ -128,34 +64,23 @@ export type ChokepointKind =
   // the method into the SOT, the sentinel is the runtime backstop until then.
   | "unclassifiedHostApiMethod";
 
-/**
- * Chokepoints whose effect class is fixed (everything except `hostFetch`,
- * whose effect is verb-derived). Recording call-sites read the effect from this
- * map via {@link recordChokepoint} rather than repeating a string literal, so
- * the read/write classification has exactly one definition.
- */
+// Chokepoints whose effect class is fixed (everything except `hostFetch`, whose effect is verb-derived). Recording call-sites read the effect from this map via recordChokepoint rather than repeating a string literal, so the read/write classification has exactly one definition.
 export type StaticChokepointKind = Exclude<ChokepointKind, "hostFetch">;
 
-/**
- * Static `kind → effect` mapping — the authoritative read/write classification
- * for the host chokepoints whose effect does not depend on a runtime argument.
- */
+// Static `kind → effect` mapping — the authoritative read/write classification for the host chokepoints whose effect does not depend on a runtime argument.
 export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   "config.get": "read",
   "config.set": "write",
   getSecret: "read",
   // An emitted event is an in-memory bus signal that persists nothing on its own.
   emitEvent: "read",
-  // Re-entering the executor opens a FRESH inner ledger; the inner tool's own
-  // mutations are counted there. The outer ledger records only a nested READ
-  // marker to avoid double-counting the same mutation.
+  // Re-entering the executor opens a FRESH inner ledger; the inner tool's own mutations are counted there. The outer ledger records only a nested READ marker to avoid double-counting the same mutation.
   callTool: "read",
   // Propagation marker: an inner callTool whose inner ledger was MUTATING.
   "callTool-child": "write",
   spawnWorker: "write",
   openExternalUrl: "write",
-  // PluginStorage — reads recorded for dataset completeness (positive read
-  // evidence); writes/rm/mkdir mutate the plugin's persisted data.
+  // PluginStorage — reads recorded for dataset completeness (positive read evidence); writes/rm/mkdir mutate the plugin's persisted data.
   storageRead: "read",
   storageWrite: "write",
   storageRm: "write",
@@ -171,35 +96,23 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   resolveMappedDriveRoot: "read",
   listAudioInputDevices: "read",
   startAudioCapture: "write",
-  // A WRITE: it puts pixels on top of every other application on the machine.
-  // Nothing is read and nothing is stored, but "did something the user can
-  // see and did not initiate" is the boundary the effect gate exists for, and
-  // treating it as a read would take an always-on-top surface outside it.
+  // A WRITE: it puts pixels on top of every other application on the machine. Nothing is read and nothing is stored, but "did something the user can see and did not initiate" is the boundary the effect gate exists for, and treating it as a read would take an always-on-top surface outside it.
   attachFloatingPanel: "write",
-  // Also a write: it changes what the always-on-top surface covers. Smaller
-  // than opening one, but the same kind of thing, and classifying it as a read
-  // would put growing a panel outside the gate that admitting it went through.
+  // Also a write: it changes what the always-on-top surface covers. Smaller than opening one, but the same kind of thing, and classifying it as a read would put growing a panel outside the gate that admitting it went through.
   resizeFloatingPanel: "write",
   triggerConversation: "write",
   agentApprovalRespond: "write",
-  // Both WRITE: one persists a card the host will show the user under its own
-  // board, the other deletes it. Nothing is executed either way, but "put
-  // something in front of the user that they did not initiate" is exactly the
-  // boundary the effect gate exists for.
+  // Both WRITE: one persists a card the host will show the user under its own board, the other deletes it. Nothing is executed either way, but "put something in front of the user that they did not initiate" is exactly the boundary the effect gate exists for.
   proposeWork: "write",
   withdrawWorkProposal: "write",
-  // WRITE for the same reason: an alert puts a card or a notification in
-  // front of the user that they did not initiate.
+  // WRITE for the same reason: an alert puts a card or a notification in front of the user that they did not initiate.
   raiseAlert: "write",
   withdrawAlert: "write",
   // Structural-completeness vocabulary — writes (egress / persist / session).
   callLlm: "write",
   openAuthPartitionViewer: "write",
   agentApprovalRequest: "write",
-  // Structural-completeness vocabulary — reads (pure reads / self-subscriptions
-  // / host telemetry). A subscription registers the plugin to OBSERVE and is
-  // auto-disposed on plugin disable, so it does not flip a tool to mutating;
-  // `logEvent` is the host's own audit channel, not a plugin-domain mutation.
+  // Structural-completeness vocabulary — reads (pure reads / self-subscriptions / host telemetry). A subscription registers the plugin to OBSERVE and is auto-disposed on plugin disable, so it does not flip a tool to mutating; `logEvent` is the host's own audit channel, not a plugin-domain mutation.
   "config.onChange": "read",
   onEvent: "read",
   onPluginsChanged: "read",
@@ -214,82 +127,36 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   unclassifiedHostApiMethod: "write",
 };
 
-/** Method-safe verbs whose host-observed effect is a read. */
+// Method-safe verbs whose host-observed effect is a read.
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-/**
- * Host-observed effect for a hostFetch egress, derived from the HTTP verb the
- * host holds at the chokepoint (NON-FORGEABLE — not from anything the plugin
- * self-declares). Safe verbs (GET/HEAD/OPTIONS) are reads; everything else is a
- * write. Observability only: this changes NO egress decision.
- */
+// Host-observed effect for a hostFetch egress, derived from the HTTP verb the host holds at the chokepoint (NON-FORGEABLE — not from anything the plugin self-declares). Safe verbs (GET/HEAD/OPTIONS) are reads; everything else is a write. Observability only: this changes NO egress decision.
 export function methodEffect(method: string): Effect {
   return READ_METHODS.has(method.toUpperCase()) ? "read" : "write";
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Structural completeness — hostApi method PATH → effect classification SOT.
-//
-// The host asserts `hostObservable:true` for every in-process plugin tool, so
-// EVERY function-valued hostApi method a plugin can call must record its
-// host-observed effect — otherwise a mutation reached through an
-// un-instrumented method yields an empty ledger and is recorded as a confirmed
-// READ (a fail-open seed for the future read-recognition gate). Three rounds of
-// per-closure manual instrumentation kept missing methods. This map makes the
-// classification TOTAL: a single recording wrapper looks each invoked method up
-// here by its dotted PATH (e.g. `"storage.writeJson"`, `"agentApproval.request"`,
-// `"callLlm"`), and a completeness test mechanically asserts every real hostApi
-// leaf is present here. The read/write CLASS still has exactly one definition
-// ({@link CHOKEPOINT_EFFECT} / {@link methodEffect}); this map only assigns each
-// method a {@link ChokepointKind}.
-// ───────────────────────────────────────────────────────────────────────────
+// Every host API leaf must map to an effect; otherwise an unobserved mutation can appear read-only. Completeness pins paths while CHOKEPOINT_EFFECT alone defines read/write.
 
-/**
- * How the recording wrapper classifies one hostApi method PATH.
- *
- * `kind` is the recorded {@link ChokepointKind} (whose read/write class comes
- * from {@link CHOKEPOINT_EFFECT}). `targetFromArgs` extracts a coarse,
- * NON-SECRET forensic descriptor (origin, config key, scope) — never a secret
- * value, body, or token.
- *
- * `selfRecorded` marks a chokepoint whose effect the GENERIC recorder must NOT
- * derive — the only one is `hostFetch`, the lone VERB-derived egress. Its
- * read/write class depends on a plugin-controlled arg VALUE (the HTTP method),
- * so deriving it in the recorder would read that value INDEPENDENTLY of the
- * wire: a stateful getter could return a safe verb to the recorder and a
- * mutating verb to the wire (a value-divergence forgery — a write recorded as a
- * confirmed read). A `selfRecorded` chokepoint instead snapshots the verb to a
- * primitive EXACTLY ONCE in its host closure and records the effect + pins the
- * wire from that single read, so the recorded effect == the wire verb by
- * construction. The generic recorder skips it (no second read, no double-record).
- */
+// Forensic targets must stay coarse and non-secret. hostFetch self-records from one verb snapshot shared with the wire; generic recording must not reread a stateful getter or double-record it.
 export interface HostApiEffectSpec {
   kind: ChokepointKind;
   selfRecorded?: boolean;
-  /**
-   * DECLARED async-ness of the hostApi method at this path (it returns a
-   * Promise). This is a CONTRACT property of the method, not a runtime guess —
-   * the effect-boundary ENFORCEMENT layer awaits a user prompt, which is only
-   * possible at an ALREADY-async chokepoint, so it derives its gated set
-   * MECHANICALLY from the write-classified paths that declare `async: true`
-   * (see {@link writeClassifiedPaths} + `GATED_EFFECT_PATHS` in
-   * effect-enforcement.ts). The recorder ignores this field.
-   */
+  // DECLARED async-ness of the hostApi method at this path (it returns a Promise). This is a CONTRACT property of the method, not a runtime guess — the effect-boundary ENFORCEMENT layer awaits a user prompt, which is only possible at an ALREADY-async chokepoint, so it derives its gated set MECHANICALLY from the write-classified paths that declare `async: true` (see writeClassifiedPaths + `GATED_EFFECT_PATHS` in effect-enforcement.ts). The recorder ignores this field.
   async?: boolean;
   targetFromArgs?: (args: readonly unknown[]) => string | undefined;
 }
 
-/** First positional arg, when it is a string (config key, storage rel path). */
+// First positional arg, when it is a string (config key, storage rel path).
 function firstStringArg(args: readonly unknown[]): string | undefined {
   return typeof args[0] === "string" ? args[0] : undefined;
 }
 
-/** Capped key NAME (never the value) for secret reads — mirrors the audit cap. */
+// Capped key NAME (never the value) for secret reads — mirrors the audit cap.
 function cappedKeyArg(args: readonly unknown[]): string | undefined {
   return typeof args[0] === "string" ? args[0].slice(0, 64) : undefined;
 }
 
-/** ORIGIN-ONLY of a URL string arg — drops path/query that can carry tokens. */
+// ORIGIN-ONLY of a URL string arg — drops path/query that can carry tokens.
 function urlOriginArg(args: readonly unknown[]): string | undefined {
   if (typeof args[0] !== "string") return undefined;
   try {
@@ -299,7 +166,7 @@ function urlOriginArg(args: readonly unknown[]): string | undefined {
   }
 }
 
-/** ORIGIN-ONLY of `args[0].url` (openAuthWindow / openAuthPartitionViewer). */
+// ORIGIN-ONLY of `args[0].url` (openAuthWindow / openAuthPartitionViewer).
 function urlOriginFromOpts(args: readonly unknown[]): string | undefined {
   const url = (args[0] as { url?: unknown } | undefined)?.url;
   if (typeof url !== "string") return undefined;
@@ -310,7 +177,7 @@ function urlOriginFromOpts(args: readonly unknown[]): string | undefined {
   }
 }
 
-/** A named string field of `args[0]` (e.g. trigger spec `source`, approval `scope`). */
+// A named string field of `args[0]` (e.g. trigger spec `source`, approval `scope`).
 function objectStringField(field: string) {
   return (args: readonly unknown[]): string | undefined => {
     const value = (args[0] as Record<string, unknown> | undefined)?.[field];
@@ -345,28 +212,9 @@ function spawnWorkerTargetFromArgs(args: readonly unknown[],
   return JSON.stringify({ workerId, command, allowRead, allowWrite });
 }
 
-/**
- * COMPLETE classification SOT — every function-valued hostApi method PATH.
- *
- * Audited against `PluginHostApi` (`src/plugins/types.ts`) and the runtime
- * object built in `src/boot/steps/plugin-runtime.ts` + `src/plugins/storage.ts`.
- * Keys are the dotted leaf paths a plugin can invoke; nested namespaces
- * (`storage.*`, `config.*`, `agentApproval.*`) are flattened. The completeness
- * test fails if ANY real hostApi leaf is missing here; the wrapper's
- * fail-closed default (`unclassifiedHostApiMethod` = write) is the runtime
- * backstop for a method added before its SOT entry.
- *
- * `callTool` is deliberately ABSENT. Cross-plugin `hostApi.callTool` was removed
- * with cross-plugin tool invocation; the surviving `callTool` is the plugin UI
- * webview bridge (`src/plugin-preload.ts` → `CHANNELS.pluginBridge.callTool` →
- * `PluginRuntime.callDeclaredAppOnlyTool`), a renderer→main IPC whose effect is
- * recorded on the executor path it actually takes. Keying it here would claim a
- * plugin-JS→host method that neither `PluginHostApi` nor `createHostApi` has.
- */
+// Missing real host API leaves fail completeness and record conservative writes at runtime. The renderer callTool bridge is not a plugin-JS host method and records effects on its executor path instead.
 export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
-  // ─── storage.* (PluginStorage) ───────────────────────────────────────────
-  // resolve is a pure lexical path resolve (no IO) — recorded as a read for
-  // total coverage; reads never flip `hasMutatingEffect`.
+  // storage.* (PluginStorage) resolve is a pure lexical path resolve (no IO) — recorded as a read for total coverage; reads never flip `hasMutatingEffect`.
   "storage.resolve": { kind: "storageRead", targetFromArgs: firstStringArg },
   "storage.read": { kind: "storageRead", targetFromArgs: firstStringArg },
   "storage.readText": { kind: "storageRead", targetFromArgs: firstStringArg },
@@ -381,41 +229,36 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   },
   "storage.mkdir": { kind: "storageMkdir", async: true, targetFromArgs: firstStringArg,
   },
-  // Encrypted-at-rest variants — same read/write classes as the plaintext
-  // methods. writeEncrypted is an async write so it auto-joins GATED_EFFECT_PATHS
-  // (effect-boundary approval, identical to storage.write); readEncrypted is a read.
+  // Encrypted-at-rest variants — same read/write classes as the plaintext methods. writeEncrypted is an async write so it auto-joins GATED_EFFECT_PATHS (effect-boundary approval, identical to storage.write); readEncrypted is a read.
   "storage.writeEncrypted": { kind: "storageWrite", async: true, targetFromArgs: firstStringArg,
   },
   "storage.readEncrypted": { kind: "storageRead", targetFromArgs: firstStringArg,
   },
-  // ─── config.* ─────────────────────────────────────────────────────────────
+  // config.*
   "config.get": { kind: "config.get", targetFromArgs: firstStringArg },
   "config.set": { kind: "config.set", async: true, targetFromArgs: firstStringArg,
   },
   "config.onChange": { kind: "config.onChange", targetFromArgs: firstStringArg,
   },
-  // ─── top-level reads / non-persisting signals ─────────────────────────────
+  // top-level reads / non-persisting signals
   getSecret: { kind: "getSecret", targetFromArgs: cappedKeyArg },
   getInstalledPluginIds: { kind: "getInstalledPluginIds" },
   // Idempotency SOT probe — `source` arg is a non-secret forensic descriptor.
   hasRoutineBySource: { kind: "hasRoutineBySource", targetFromArgs: firstStringArg,
   },
-  // The declared kind is the forensic pivot — a non-secret slot name the user
-  // approved by label. The proposal's own text is deliberately NOT recorded.
+  // The declared kind is the forensic pivot — a non-secret slot name the user approved by label. The proposal's own text is deliberately NOT recorded.
   proposeWork: { kind: "proposeWork", async: true, targetFromArgs: objectStringField("kind"),
   },
   withdrawWorkProposal: { kind: "withdrawWorkProposal", async: true, targetFromArgs: firstStringArg,
   },
-  // The declared kind is the pivot here too; the key and slot values are not
-  // recorded.
+  // The declared kind is the pivot here too; the key and slot values are not recorded.
   raiseAlert: { kind: "raiseAlert", async: true, targetFromArgs: objectStringField("kind"),
   },
   withdrawAlert: { kind: "withdrawAlert", async: true, targetFromArgs: firstStringArg,
   },
   getAppPreference: { kind: "getAppPreference", targetFromArgs: firstStringArg,
   },
-  // Corp-network DNS presence probe — a read (no persistence / no egress body);
-  // the bare hostname is a non-secret forensic descriptor.
+  // Corp-network DNS presence probe — a read (no persistence / no egress body); the bare hostname is a non-secret forensic descriptor.
   probePrivateHost: { kind: "probePrivateHost", targetFromArgs: firstStringArg,
   },
   resolveApiKey: { kind: "resolveApiKey", targetFromArgs: objectStringField("purpose"),
@@ -425,17 +268,9 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   onPluginsChanged: { kind: "onPluginsChanged" },
   onShutdown: { kind: "onShutdown" },
   logEvent: { kind: "logEvent", targetFromArgs: firstStringArg },
-  // ─── top-level writes (egress / persist / session) ────────────────────────
-  // callLlm carries the prompt BODY to an external provider; target stays
-  // undefined (the provider is not in args and the prompt is never a target).
+  // top-level writes (egress / persist / session) callLlm carries the prompt BODY to an external provider; target stays undefined (the provider is not in args and the prompt is never a target).
   callLlm: { kind: "callLlm", async: true },
-  // hostFetch is the ONLY verb-derived chokepoint: its read/write class comes
-  // from the HTTP method, a plugin-controlled arg VALUE. `selfRecorded` keeps the
-  // generic recorder from re-reading that value (which would diverge from the
-  // wire); the hostFetch host closure snapshots the verb ONCE and records the
-  // effect + target + pins the wire from that single read (plugin-runtime.ts).
-  // It is async but `selfRecorded`, so enforcement gates it INLINE in that same
-  // closure (an enforcement exclusion for the generic wrapper).
+  // hostFetch is the ONLY verb-derived chokepoint: its read/write class comes from the HTTP method, a plugin-controlled arg VALUE. `selfRecorded` keeps the generic recorder from re-reading that value (which would diverge from the wire); the hostFetch host closure snapshots the verb ONCE and records the effect + target + pins the wire from that single read (plugin-runtime.ts). It is async but `selfRecorded`, so enforcement gates it INLINE in that same closure (an enforcement exclusion for the generic wrapper).
   hostFetch: { kind: "hostFetch", selfRecorded: true, async: true },
   spawnWorker: { kind: "spawnWorker", async: true, targetFromArgs: spawnWorkerTargetFromArgs,
   },
@@ -460,20 +295,14 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
     kind: "authRedirectClose", async: true,
     targetFromArgs: objectStringField("handle"),
   },
-  // No target: the chooser takes no arguments, and the paths it returns are the
-  // ANSWER rather than a pivot the call was aimed at.
+  // No target: the chooser takes no arguments, and the paths it returns are the ANSWER rather than a pivot the call was aimed at.
   pickFolders: { kind: "pickFolders", async: true },
   resolveMappedDriveRoot: { kind: "resolveMappedDriveRoot", targetFromArgs: firstStringArg,
     async: true },
-  // No target on either: the enumeration takes no arguments, and a capture
-  // request is a description of what to open rather than a thing the call is
-  // aimed at — there is no path or id in it to name.
+  // No target on either: the enumeration takes no arguments, and a capture request is a description of what to open rather than a thing the call is aimed at — there is no path or id in it to name.
   listAudioInputDevices: { kind: "listAudioInputDevices", async: true },
   startAudioCapture: { kind: "startAudioCapture", async: true },
-  // The target IS the surface id: it is the only thing a plugin names, and it
-  // is what an audit reader needs to know which of the plugin's own cards went
-  // on top of everything. The height is not a target — it is a request the
-  // host clamps, and recording it would suggest the host honoured it.
+  // The target IS the surface id: it is the only thing a plugin names, and it is what an audit reader needs to know which of the plugin's own cards went on top of everything. The height is not a target — it is a request the host clamps, and recording it would suggest the host honoured it.
   attachFloatingPanel: {
     kind: "attachFloatingPanel",
     async: true,
@@ -483,7 +312,7 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   resizeFloatingPanel: { kind: "resizeFloatingPanel", async: true },
   triggerConversation: { kind: "triggerConversation", async: true, targetFromArgs: objectStringField("source"),
   },
-  // ─── agentApproval.* ──────────────────────────────────────────────────────
+  // agentApproval.*
   "agentApproval.request": {
     kind: "agentApprovalRequest",
     async: true,
@@ -493,36 +322,17 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   "agentApproval.respond": { kind: "agentApprovalRespond", async: true },
 };
 
-/**
- * The host-observed effect CLASS for one hostApi method PATH, resolved from the
- * SOT — `"verb-derived"` for the lone `selfRecorded` chokepoint (hostFetch,
- * whose read/write depends on the HTTP verb at the wire), `undefined` for a path
- * absent from the SOT. The read/write class for a static chokepoint comes from
- * {@link CHOKEPOINT_EFFECT} (fail-closed `"write"` if a kind is somehow unmapped,
- * mirroring the recorder), never from a plugin-controlled arg.
- */
+// The host-observed effect CLASS for one hostApi method PATH, resolved from the SOT — `"verb-derived"` for the lone `selfRecorded` chokepoint (hostFetch, whose read/write depends on the HTTP verb at the wire), `undefined` for a path absent from the SOT. The read/write class for a static chokepoint comes from CHOKEPOINT_EFFECT (fail-closed `"write"` if a kind is somehow unmapped, mirroring the recorder), never from a plugin-controlled arg.
 export function pathEffectClass(path: string,
 ): Effect | "verb-derived" | undefined {
   const spec = HOSTAPI_EFFECT_BY_PATH[path];
   if (!spec) return undefined;
-  // hostFetch — verb-derived: it CAN be a write (any non GET/HEAD/OPTIONS), so
-  // it is treated as write-classified for completeness (it is enforcement-gated
-  // inline, not by the generic wrapper).
+  // hostFetch — verb-derived: it CAN be a write (any non GET/HEAD/OPTIONS), so it is treated as write-classified for completeness (it is enforcement-gated inline, not by the generic wrapper).
   if (spec.selfRecorded) return "verb-derived";
   return CHOKEPOINT_EFFECT[spec.kind as StaticChokepointKind] ?? "write";
 }
 
-/**
- * MECHANICALLY-derived set of every hostApi method PATH whose host-observed
- * effect is (or can be) a WRITE — the universe the effect-boundary ENFORCEMENT
- * layer must account for. Every member must be either effect-gated
- * (`GATED_EFFECT_PATHS`) or an explicit, documented enforcement exclusion
- * (`ENFORCEMENT_EXCLUSIONS`); the enforcement completeness test asserts that
- * partition is total, so a future write chokepoint added to
- * {@link HOSTAPI_EFFECT_BY_PATH} can never silently ship UN-enforced (fail-closed
- * by construction). Derived from {@link CHOKEPOINT_EFFECT} / verb-derived, never
- * hand-maintained.
- */
+// MECHANICALLY-derived set of every hostApi method PATH whose host-observed effect is (or can be) a WRITE — the universe the effect-boundary ENFORCEMENT layer must account for. Every member must be either effect-gated (`GATED_EFFECT_PATHS`) or an explicit, documented enforcement exclusion (`ENFORCEMENT_EXCLUSIONS`); the enforcement completeness test asserts that partition is total, so a future write chokepoint added to HOSTAPI_EFFECT_BY_PATH can never silently ship UN-enforced (fail-closed by construction). Derived from CHOKEPOINT_EFFECT / verb-derived, never hand-maintained.
 export function writeClassifiedPaths(): ReadonlySet<string> {
   const out = new Set<string>();
   for (const path of Object.keys(HOSTAPI_EFFECT_BY_PATH)) {

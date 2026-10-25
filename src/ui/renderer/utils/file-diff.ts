@@ -1,7 +1,7 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { isRecord } from "../../../shared/is-record.js";
 
-export type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
+type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
 
 export interface FileEditHunk {
   oldText: string;
@@ -58,10 +58,7 @@ function extractMultiEdit(tool: ToolItem): FileEditDiffData | null {
 }
 
 function extractWriteFile(tool: ToolItem): FileEditDiffData | null {
-  // write_file embeds before/after in its JSON result via the `ave.write_file`
-  // kind sentinel — see WriteFileTool. Older result shapes without the sentinel
-  // (back-compat with pre-PR sessions) yield null so the raw payload still
-  // renders through the default ToolPayloadBlock path.
+  // Recognize ave.write_file before/after results; shapes without the sentinel fall back to raw payload rendering.
   if (typeof tool.result !== "string") return null;
   let parsed: unknown;
   try {

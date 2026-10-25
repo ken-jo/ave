@@ -1,35 +1,5 @@
-/**
- * What the user entered as a source (design §18.4.1): a git address, which
- * `normalizeSourceUrl` keeps (§7.1), or a local folder, which goes through
- * four stages before anything reads it:
- *
- *   1. lexical parse — pure string work: a `file:` URL, `~`, a drive, a UNC
- *      path, `\\?\` forms; `.` and `..` removed; refusals with a reason;
- *   2. network classification — still no file access: a UNC path is
- *      `network`, a drive letter is classified from its MS-DOS device
- *      mapping (`QueryDosDeviceW`, which opens nothing on the drive), an
- *      automount path is `network` lexically (folded on macOS, whose
- *      volumes ignore case), and so is `/`, which holds the automount roots;
- *   3. policy, then consent — the caller's (the gate, §18.6, §18.5): a
- *      block ends here, and a network folder without `network-folder`
- *      answers `confirm` before any filesystem call on the path;
- *   4. resolution — only after stage 3 passes: the path is walked component
- *      by component with `lstat`, never `realpath`. A link among the
- *      entered path's own components is followed by its text after the
- *      same network check a link inside the folder gets (§18.4.5 rule 1);
- *      no containment applies, since the user consented to this path. The
- *      walk records each component's spelling on disk.
- *
- * Stages 1–3 make no filesystem call on the path: contacting a UNC server is
- * exactly what consent and policy must come before. The only call stage 2
- * makes is `queryDosDevice`, on the drive letter, never on the path.
- *
- * Stage 4 and the folder reader call the filesystem only through
- * {@link fenceFolderFs}: every path is classified before the call, so a
- * spelling recovered from disk, a component reached after a local link, or
- * an entry beneath the root that lies on another computer stops the read
- * with the `network-folder` confirmation instead of contacting it.
- */
+/** Lexical parsing, classification and consent precede all folder access.
+ * Resolution fences every filesystem call, including canonical spellings and paths reached through links. */
 import { fileURLToPath } from "node:url";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -40,10 +10,8 @@ import { MARKETPLACE_INDEX_FILE } from "../catalog/types.js";
 
 export type SourceInput =
   | { kind: "git"; url: NormalizedSourceUrl }
-  /** `path` is absolute and lexically normal for the platform; `input` is what was typed, for "resolved from". */
   | { kind: "folder"; path: string; input: string };
 
-/** Where a folder lives as stage 2 sees it; `server` is null when a drive's mapping names none. */
 export type FolderNetwork = { network: false } | { network: true; server: string | null };
 
 /** A directory's identity: `dev` and `ino`, zero where the filesystem reports none. */
@@ -52,18 +20,12 @@ export interface FolderIdentity {
   ino: bigint;
 }
 
-/**
- * The canonical root stage 4 found: on-disk spelling, no link among its
- * components, its identity, and the identities of the directories above it
- * (from the volume root down to its parent), which tell a source nested in
- * another through an alias (§18.4.4).
- */
+/** Ancestor identities detect nested sources through aliases, not just lexical paths. */
 export interface FolderRoot extends FolderIdentity {
   path: string;
   ancestors: FolderIdentity[];
 }
 
-/** More links than this in one resolution is a loop (§18.4.5 rule 4). */
 export const MAX_LINKS_PER_RESOLUTION = 40;
 
 const DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/u;
@@ -76,16 +38,12 @@ function refuse(input: string, reason: UrlReason, why: string): never {
   throw new MarketplaceError("SOURCE_URL_REJECTED", `folder path rejected (${why}): ${scrubDiagnosticSecrets(input)}`, { detail: { reason } as MarketplaceErrorDetail<"SOURCE_URL_REJECTED"> });
 }
 
-// ─── stage 1 ────────────────────────────────────────────────────────────────
-
-/** A git address or a folder (§18.4.1 stage 1). `home` is the user's home directory, supplied by the caller; `~` expands to it. */
 export function normalizeSourceInput(input: string, platform: NodeJS.Platform, home: string): SourceInput {
   const text = input.trim();
   if (!isFolderPathInput(text)) return { kind: "git", url: normalizeSourceUrl(input) };
   return { kind: "folder", path: normalizeFolderPath(text, platform, home), input: text };
 }
 
-/** Stage 1 for text already known to name a folder: the absolute, lexically normal path, or a refusal with its reason. */
 export function normalizeFolderPath(text: string, platform: NodeJS.Platform, home: string): string {
   if (CONTROL.test(text)) refuse(text, "format", "control character");
   let path = text;
@@ -118,12 +76,11 @@ function fromFileUrl(text: string, platform: NodeJS.Platform): string {
 function expandHome(text: string, platform: NodeJS.Platform, home: string): string {
   if (text === "~") return home;
   const separated = platform === "win32" ? /^~[\\/]/u : /^~\//u;
-  // `~user` names another account's home, which is no path Ave resolves.
   if (!separated.test(text)) refuse(text, "relative-path", "~ followed by a name");
   return `${home}${platform === "win32" ? "\\" : "/"}${text.slice(2)}`;
 }
 
-/** `.` and empty segments dropped, `..` applied; a `..` above the root is refused (input) or stops there (a link's text, as the OS does). */
+/** Input traversal above root is refused; link text clamps at root as the OS does. */
 function lexicalSegments(raw: readonly string[], input: string | null): string[] {
   const out: string[] = [];
   for (const segment of raw) {
@@ -155,17 +112,16 @@ function normalizeWindows(raw: string, input: string): string {
     const segments = lexicalSegments(path.slice(3).split(/[\\/]+/u), input);
     return `${path[0]!.toUpperCase()}:\\${segments.join("\\")}`;
   }
-  // `C:foo` and `C:` (drive-relative), `\foo` (the current drive's root), `./x`, `..`.
   return refuse(input, "relative-path", "a relative path");
 }
 
-/** WebDAV's spellings of a server with TLS or a port (`server@SSL`, `server@8080`, `server@SSL@8080`): the only `@` a UNC server holds. */
+/** WebDAV TLS and port spellings are the only allowed @ forms in a UNC server. */
 const WEBDAV_SERVER = /^[^@]+@(?:SSL(?:@\d+)?|\d+)$/iu;
 
 function normalizeUnc(path: string, input: string): string {
   const [server, share, ...rest] = path.slice(2).split(/[\\/]+/u);
   if (!server || !share) refuse(input, "unc-without-share", "a network path without a share");
-  // A server is a name or an address, never an account: `user:secret@server` is refused here, not carried on as a path (§18.4.1).
+  // Reject credentials in server text before carrying it as a path.
   if (server.includes(":") || (server.includes("@") && !WEBDAV_SERVER.test(server))) {
     refuse(input, "unc-credentials", "a user name or password in a network path");
   }
@@ -182,9 +138,6 @@ function normalizePosix(path: string, input: string): string {
   return `/${lexicalSegments(path.slice(1).split("/"), input).join("/")}`;
 }
 
-// ─── paths as root plus segments ────────────────────────────────────────────
-
-/** A normal absolute path split into its root (`/`, `C:\`, `\\server\share\`) and its components. */
 interface SplitPath {
   root: string;
   segments: string[];
@@ -209,18 +162,11 @@ export function joinFolderPath(split: SplitPath, platform: NodeJS.Platform): str
   return `${split.root}${split.segments.join(platform === "win32" ? "\\" : "/")}`;
 }
 
-// ─── stage 2 ────────────────────────────────────────────────────────────────
-
-/** How deep a chain of `subst` drives is followed before the drive counts as `network` (a wrong guess only warns). */
+/** Unresolved subst chains count as network folders rather than guessing local. */
 const MAX_SUBST_DEPTH = 8;
 
-/**
- * Stage 2 (§18.4.1): whether reading the folder `path` contacts another
- * computer. On Windows the only call is `queryDosDevice` on the drive
- * letter; anything but a local volume's mapping, a drive the OS has no
- * mapping for included, is `network`. On macOS and Linux `/` is `network`
- * too: reading it reaches the automount roots beneath it.
- */
+/** Query only drive mappings on Windows; unknown devices count as network.
+ * Unix root counts as network because it contains automount roots. */
 export async function classifyFolder(path: string, platform: NodeJS.Platform, fs: FolderFs): Promise<FolderNetwork> {
   const at = await networkLocation(path, platform, fs);
   if (at !== null) return { network: true, server: at.server };
@@ -228,17 +174,11 @@ export async function classifyFolder(path: string, platform: NodeJS.Platform, fs
   return { network: false };
 }
 
-/**
- * A network location a path lies on: `key` is equal for two paths on the
- * same share, drive or automounted server, and `server` names the computer
- * when the path or the drive's mapping does.
- */
 interface NetworkLocation {
   key: string;
   server: string | null;
 }
 
-/** Where reading `path` itself contacts another computer, or null when it does not. */
 async function networkLocation(path: string, platform: NodeJS.Platform, fs: FolderFs): Promise<NetworkLocation | null> {
   if (platform === "win32") {
     if (path.startsWith("\\\\")) {
@@ -252,14 +192,7 @@ async function networkLocation(path: string, platform: NodeJS.Platform, fs: Fold
   return automountLocation(path, platform);
 }
 
-/**
- * A drive letter's class from its mapping, for `subject` (the path or link
- * text being judged). The helper answers null when the OS has no mapping for
- * the drive, which is `network` (a wrong guess only warns). A helper that
- * cannot run or answers outside its protocol is never a classification: it
- * is SOURCE_LOCAL_UNREADABLE `classifier-unavailable`, whose sentence says to
- * reinstall Ave; the helper's own words stay in the message.
- */
+/** Unknown mappings count as network; helper failure is an error, never a guessed classification. */
 async function classifyDrive(drive: string, fs: FolderFs, depth: number, subject: string): Promise<FolderNetwork> {
   let mapping: string | null;
   try {
@@ -274,12 +207,7 @@ async function classifyDrive(drive: string, fs: FolderFs, depth: number, subject
   return classifyDosDeviceMapping(mapping, fs, depth, subject);
 }
 
-/**
- * A drive letter's mapping: local only for a volume, a CD drive, a floppy,
- * or a `subst` drive (`\??\C:\…`) whose own drive is local by this rule.
- * Everything else names a redirector or an unknown device and is `network`,
- * with the server when the mapping names one.
- */
+/** Only known local devices and subst chains ending at one count as local. */
 export async function classifyDosDeviceMapping(mapping: string, fs: FolderFs, depth: number, subject: string): Promise<FolderNetwork> {
   if (/^\\Device\\(?:HarddiskVolume|CdRom|Floppy)\d+$/iu.test(mapping)) return { network: false };
   const subst = /^\\\?\?\\([A-Za-z]:)(?:\\.*)?$/su.exec(mapping);
@@ -287,7 +215,6 @@ export async function classifyDosDeviceMapping(mapping: string, fs: FolderFs, de
   return { network: true, server: serverOfMapping(mapping) };
 }
 
-/** The server a redirector mapping names: `\??\UNC\server\…`, `\Device\Mup\[;…\]server\…`, WebDAV's `server@SSL`. */
 function serverOfMapping(mapping: string): string | null {
   const unc = /^\\\?\?\\UNC\\([^\\]+)/iu.exec(mapping);
   if (unc) return unc[1]!;
@@ -298,12 +225,7 @@ function serverOfMapping(mapping: string): string | null {
   return server ? server.replace(/@(?:SSL)?(?:@?\d+)?$/iu, "") || null : null;
 }
 
-/**
- * macOS and Linux: a path under an automount root (`/net`, and `/Network` on
- * macOS) reaches another computer; a mounted share was authenticated when
- * mounted. macOS volumes ignore case by default, so its names are compared
- * folded: `/network/…` reaches `/Network/…`.
- */
+/** Classify automount paths lexically; fold case on macOS to catch equivalent spellings. */
 function automountLocation(path: string, platform: NodeJS.Platform): NetworkLocation | null {
   const fold = (name: string) => (platform === "darwin" ? folded(name) : name);
   const [first, second, third] = path.split("/").filter(Boolean);
@@ -316,11 +238,7 @@ function automountLocation(path: string, platform: NodeJS.Platform): NetworkLoca
   return second === undefined ? { key: "/net", server: null } : { key: `/net/${fold(second)}`, server: second };
 }
 
-/**
- * §18.4.5 rule 1: a link's text that names a network location, judged from
- * the text alone (and a drive letter's mapping): `\\…`, `//…`, the NT and
- * extended UNC forms, a device path, a network drive, an automount path.
- */
+/** Reject network link text before dereferencing it, including device and automount forms. */
 export async function isNetworkLinkText(text: string, platform: NodeJS.Platform, fs: FolderFs): Promise<boolean> {
   const extendedDrive = /^(?:[\\/]{2}\?|\\\?\?)[\\/]([A-Za-z]:)(?:[\\/]|$)/u.exec(text);
   if (extendedDrive) return platform === "win32" ? (await classifyDrive(extendedDrive[1]!.toUpperCase(), fs, 0, text)).network : true;
@@ -329,13 +247,7 @@ export async function isNetworkLinkText(text: string, platform: NodeJS.Platform,
   return text.startsWith("/") && automountLocation(text, platform) !== null;
 }
 
-/**
- * §18.4.5 rule 1 for a link whose text passed {@link isNetworkLinkText}:
- * whether its resolved `target` lies on a network location other than the
- * link's own directory. Relative text can name one (`Network/Servers/…`
- * from `/`, `../../other` under `/net/host`); a link that stays on its own
- * share or drive does not leave.
- */
+/** Relative links may leave their share; links remaining on the same network location do not. */
 export async function linkLeavesForNetwork(linkDir: string, target: string, platform: NodeJS.Platform, fs: FolderFs): Promise<boolean> {
   const to = await networkLocation(target, platform, fs);
   if (to === null) return false;
@@ -343,16 +255,8 @@ export async function linkLeavesForNetwork(linkDir: string, target: string, plat
   return from === null || from.key !== to.key;
 }
 
-/**
- * `fs` with every call on a path judged first (§18.4.1 stage 4, §18.4.5): a
- * path on another computer, without the `network-folder` confirmation for
- * `address` (the folder being read), is SOURCE_CONFIRMATION_REQUIRED before
- * the call. Whatever leads there — a spelling recovered from disk, a
- * component after a local link, an entry beneath the root — stops here.
- * With the confirmation `fs` is returned as it is; links to other network
- * locations are still refused by rule 1. A drive's class is asked once per
- * fence.
- */
+/** Classify every filesystem path before access and require network-folder consent.
+ * Cache drive classification per fence; cross-network links remain forbidden even with consent. */
 export function fenceFolderFs(fs: FolderFs, platform: NodeJS.Platform, consent: { consented: boolean; address: string }): FolderFs {
   if (consent.consented) return fs;
   const drives = new Map<string, Promise<string | null>>();
@@ -386,12 +290,7 @@ export function fenceFolderFs(fs: FolderFs, platform: NodeJS.Platform, consent: 
   };
 }
 
-/**
- * The absolute path a link's text names, resolved lexically against the
- * link's own directory (§18.4.5 rule 2), or null when the text cannot name
- * a path here (Windows drive-relative text). `..` stops at the root, as the
- * OS resolves it. Only called on text {@link isNetworkLinkText} passed.
- */
+/** Resolve link text lexically with root clamping; drive-relative text cannot name a target. */
 export function resolveLinkText(linkDir: string, text: string, platform: NodeJS.Platform): string | null {
   if (platform === "win32") {
     const stripped = text.replace(/^(?:[\\/]{2}\?|\\\?\?)[\\/](?=[A-Za-z]:)/u, "");
@@ -409,11 +308,8 @@ export function resolveLinkText(linkDir: string, text: string, platform: NodeJS.
   return joinFolderPath({ root: "/", segments: lexicalSegments([...base.segments, ...text.split("/")], null) }, platform);
 }
 
-// ─── stage 4 ────────────────────────────────────────────────────────────────
-
 type UnreadableReason = MarketplaceErrorDetail<"SOURCE_LOCAL_UNREADABLE">["reason"];
 
-/** SOURCE_LOCAL_UNREADABLE for `path` (the folder as entered or stored) from a failed filesystem call. */
 export function folderUnreadable(path: string, error: unknown): MarketplaceError {
   if (error instanceof MarketplaceError) return error;
   const code = (error as NodeJS.ErrnoException | null)?.code;
@@ -435,30 +331,18 @@ export function unreadable(reason: UnreadableReason, path: string, message: stri
   return new MarketplaceError("SOURCE_LOCAL_UNREADABLE", `${path}: ${message}`, { detail });
 }
 
-/**
- * A stored folder whose walk no longer ends at the directory that was added
- * (§18.4.4): a component replaced by a link, or another directory at the
- * same path. `target` is where the walk ended; the folder there is never read.
- */
+/** A changed directory identity is moved; never read the replacement at the stored path. */
 export function folderMoved(path: string, target: string): MarketplaceError {
   return new MarketplaceError("SOURCE_LOCAL_UNREADABLE", `${path} now leads to ${target}, not the folder that was added`, {
     detail: { reason: "moved", path, target },
   });
 }
 
-/** NFC and case folded, for matching a typed name against the directory's own spelling. */
 function folded(name: string): string {
   return name.normalize("NFC").toLowerCase();
 }
 
-/**
- * The entry of `entries` that `name` names: the one equal in bytes, else —
- * when the volume itself resolves the typed spelling — the single one equal
- * after NFC and case folding. Several such entries are `ambiguous-case`; none
- * is `not-found`. A spelling the volume does not resolve is `not-found` on
- * its own: on a case-sensitive volume `MARKET` is not `Market`, and folding
- * it would read a directory other than the one typed.
- */
+/** Prefer exact spelling; fold only when the volume resolves that spelling, rejecting ambiguous matches. */
 async function onDiskSpelling(entries: readonly string[], name: string, at: string, folder: string, platform: NodeJS.Platform, fs: FolderFs): Promise<string> {
   if (entries.includes(name)) return name;
   try {
@@ -479,12 +363,7 @@ async function onDiskSpelling(entries: readonly string[], name: string, at: stri
   throw unreadable("not-found", folder, `${at} does not exist`);
 }
 
-/**
- * A Windows 8.3 short name (`PROGRA~1`) is not listed by `readdir`, yet
- * names an entry that is: the one with the same `dev` and `ino`. Its long
- * name is the on-disk spelling. Only a name with `~` on Windows is looked up,
- * and an entry that cannot be read is not that entry.
- */
+/** Windows short names are absent from readdir; match dev and ino to recover the long spelling. */
 async function shortNameSpelling(entries: readonly string[], name: string, at: string, platform: NodeJS.Platform, fs: FolderFs): Promise<string | null> {
   if (platform !== "win32" || !name.includes("~")) return null;
   let alias: FolderStat;
@@ -511,19 +390,8 @@ async function shortNameSpelling(entries: readonly string[], name: string, at: s
 }
 
 
-/**
- * Stage 4 (§18.4.1): walk `path` (stage 1's output, after stage 3 passed)
- * with `lstat` from its root, reading each directory to learn the
- * component's spelling on disk. Every call goes through
- * {@link fenceFolderFs}: without `networkConsented`, a path on another
- * computer is the `network-folder` confirmation before it is touched. A
- * link among the components is root resolution: its text, and the target
- * it resolves to against the link's directory, are checked for a network
- * location (refused as `link-to-network`, the target never touched), and
- * the walk continues at the target. The result is a directory; a regular
- * `marketplace.json` resolves to the directory holding it, and any other
- * file is not a folder.
- */
+/** Walk with fenced lstat calls to recover spelling and identity without ungated realpath access.
+ * Network link targets are rejected before access; marketplace.json selects its parent directory. */
 export async function resolveFolderRoot(path: string, platform: NodeJS.Platform, unfenced: FolderFs, networkConsented: boolean): Promise<FolderRoot> {
   const fs = fenceFolderFs(unfenced, platform, { consented: networkConsented, address: path });
   const start = splitFolderPath(path, platform);
@@ -539,7 +407,6 @@ export async function resolveFolderRoot(path: string, platform: NodeJS.Platform,
   };
   let last = await lstatAt(joinFolderPath(current, platform));
   if (last.kind !== "directory") throw unreadable("not-a-directory", path, `${current.root} is not a directory`);
-  /** The identities of `current` and every directory above it, from its root down. */
   let chain: FolderIdentity[] = [last];
   while (queue.length > 0) {
     const name = queue.shift()!;

@@ -1,25 +1,3 @@
-/**
- * Workspace file-browser domain IPC handlers.
- * Covers: ave:workspace:pick-root, ave:workspace:list-roots,
- *         ave:workspace:list-dir, ave:workspace:remove-root,
- *         ave:workspace:reveal
- *
- * Renderer reaches these via window.ave.workspace.*.
- *
- * Project-root SOT: there is NO new root store. A picked project folder is
- * persisted to `permissions.additionalDirectories` (~/.ave/settings.json) —
- * the SAME list the executor's Layer 1 allow-list consumes — so a folder that
- * shows up in the browser is automatically readable by `read_file` and the
- * preview IPC, and vice-versa. Adding a separate store would create a
- * "visible but not readable" divergence (No-Fallback).
- *
- * The default root is process.cwd() (anchored to ~/.ave/workspace by
- * ensureWorkspaceCwd) — deterministic across dev/packaged, unlike the bare
- * `process.cwd()` a Finder-launched app used to inherit.
- *
- * listDir re-validates every requested path against the same scope guard so a
- * compromised renderer cannot list outside the selected roots.
- */
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
@@ -67,52 +45,23 @@ import {
 
 const log = createLogger("ave");
 
-/** Max directory entries returned per lazy listing (bounds huge dirs). */
 const MAX_DIR_ENTRIES = 1_000;
 
-/** A minted acknowledgement token is valid for this window before it expires. */
 const ACK_TOKEN_TTL_MS = 60_000;
 
-/**
- * Main-process-held pending picks awaiting adjacency acknowledgement.
- *
- * Keyed by a one-time token minted only AFTER a real `showOpenDialog` returned a
- * warned path. The stored `path` is the MAIN-OWNED dialog result — never a
- * renderer-supplied string — so the acknowledgement pass can only ever persist a
- * directory the user actually chose in the native picker. Without this binding a
- * compromised renderer could hand back an arbitrary path with `acknowledge=true`
- * and silently widen the Layer-1 read allow-list.
- */
+// Keep warned picks in main behind one-time tokens; acknowledgment never accepts a renderer path.
 const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture }>();
 
-/**
- * How the pending path entered the ack flow — recorded in the widening audit so
- * a native-picker widening (`dialog`) and a drag-drop widening (`drop`) are
- * distinguishable in the log. A dropped path is renderer-NAMED, so its audit
- * trail matters more than a native `showOpenDialog` result the OS vouched for.
- */
+// Record picker versus drop provenance in widening audits; dropped paths have no native-picker authority.
 type PickGesture = "dialog" | "drop";
 
-/** Drop expired tokens so a stream of un-acknowledged picks can't grow the map. */
 function prunePendingPicks(now: number): void {
   for (const [token, pending] of pendingPicks) {
     if (now > pending.expires) pendingPicks.delete(token);
   }
 }
 
-/**
- * Map a {@link validateDirectoryAddition} hard-deny `reason` (raw English prose)
- * to a STABLE renderer error code. The IPC boundary emits English, but only a
- * discrete code — never the prose — must reach the UI, which maps it to Korean
- * (CLAUDE.md "IPC Error Message Language Convention"). Returning `verdict.reason`
- * verbatim leaked untranslated English into the ChatSidePanel drop toast; these
- * codes route through the renderer's existing formatOpError code map instead.
- *
- * The prose is a closed set produced by `validateDirectoryAddition`:
- *   - "directory path is empty"          → `invalid-path`
- *   - "filesystem root is not allowed"   → `path-not-allowed`
- *   - "path matches sensitive pattern …" → `sensitive-path`
- */
+// Map validator prose to stable localized error codes before crossing IPC.
 function directoryDenyCode(reason: string): "invalid-path" | "path-not-allowed" | "sensitive-path" {
   if (reason.startsWith("path matches sensitive pattern")) return "sensitive-path";
   if (reason === "filesystem root is not allowed") return "path-not-allowed";
@@ -121,7 +70,6 @@ function directoryDenyCode(reason: string): "invalid-path" | "path-not-allowed" 
 
 export interface WorkspaceRoot {
   path: string;
-  /** The default workspace root (`process.cwd()`), badged in the UI. */
   isDefault: boolean;
 }
 
@@ -130,16 +78,7 @@ export interface WorkspaceListRootsResult {
   defaultRoot?: string;
   roots?: WorkspaceRoot[];
   cleanupPending?: number;
-  /**
-   * The settings file was read, and the roots below ARE the user's — but part
-   * of it could not be interpreted and stays unacted on. Reported alongside a
-   * successful list because the list is trustworthy and the condition is not
-   * self-announcing: nothing else in the app would ever mention it.
-   *
-   * A file that could not be read at all is not this — it fails the call with
-   * `settings-unreadable`, because a roots array assembled without the user's
-   * directories is not a shorter list, it is a wrong one.
-   */
+  // Return trustworthy roots alongside a warning when only part of persisted settings is interpretable.
   settingsFault?: "pending-removals-malformed";
   error?: string;
 }
@@ -149,54 +88,22 @@ export interface WorkspacePickRootResult {
   canceled?: boolean;
   added?: string;
   roots?: WorkspaceRoot[];
-  /** Adjacency warnings (`.env`/`.git`/…) surfaced to the renderer. */
   warnings?: string[];
-  /**
-   * The pick had adjacency warnings and was NOT persisted — the renderer must
-   * surface {@link warnings} and re-invoke `pickRoot({ ackToken })` with the
-   * one-time {@link ackToken} to confirm. Mirrors the two-step
-   * `/permission dir allow … --ack-warnings` gate in permission-slash.ts, so a
-   * folder pick can never silently widen the Layer-1 read allow-list.
-   */
+  // Warned picks remain unpersisted until the renderer returns the acknowledgment token.
   requiresAcknowledgement?: boolean;
-  /** Picked path awaiting acknowledgement — display only (never sent back). */
   pendingPath?: string;
-  /**
-   * One-time token that binds an acknowledgement to the exact dialog-picked path
-   * the main process holds. The renderer confirms by presenting THIS token (not
-   * a path), so it can never persist a directory the native picker did not
-   * return. Expires after {@link ACK_TOKEN_TTL_MS}; consumed on first use.
-   */
+  // Bind acknowledgment to the exact main-owned path; tokens expire and are single-use.
   ackToken?: string;
   error?: string;
 }
 
-/**
- * Result of the drag-drop add-root prepare step (#1458). A dropped folder path
- * is renderer-NAMED (resolved in preload via webUtils.getPathForFile), so unlike
- * a native picker it is NEVER persisted immediately: this step re-validates the
- * path and — on success — hands back a one-time ack token bound to the path the
- * MAIN process now owns. The renderer confirms via `pickRoot({ ackToken })`,
- * echoing the token (never a path), so it can never widen the Layer-1 read
- * allow-list to a directory of its own choosing without an explicit user ack.
- */
+// Dropped paths require validation and acknowledgment even without warnings; preparation grants no scope.
 export interface WorkspaceDropPrepareResult {
   ok: boolean;
-  /**
-   * A hard deny (Layer-0 sensitive/root path) OR the dropped entry is not a
-   * directory (`not-a-dir` — a dropped file is rejected; the renderer never
-   * guesses a parent dir). Present only when `ok` is false.
-   */
+  // Reject sensitive paths and non-directories; never infer a dropped file's parent.
   error?: string;
-  /** Adjacency warnings (`.env`/`.git`/…) to surface alongside the ack prompt. */
   warnings?: string[];
-  /** The validated, MAIN-OWNED path awaiting acknowledgement — display only. */
   pendingPath?: string;
-  /**
-   * One-time token bound to {@link pendingPath}. The renderer confirms the add
-   * by presenting THIS token to `pickRoot`, never a path — mirroring the native
-   * warned-pick ack so the drop trust tier equals the #1448 ack tier.
-   */
   ackToken?: string;
 }
 
@@ -219,15 +126,8 @@ export interface WorkspaceRemoveRootResult {
   ok: boolean;
   removed?: string;
   roots?: WorkspaceRoot[];
-  /**
-   * #1493 — count of orphaned path-scoped "Allow always" grants pruned because
-   * they targeted a path strictly under the removed root (`rules[].tier` is an
-   * independent grant surface from `additionalDirectories`; without this they
-   * would silently revive on re-add). 0 when none matched. The renderer mentions
-   * a non-zero count in its removal toast (Korean via i18n).
-   */
+  // Report pruned path grants; directory removal alone cannot revoke the separate rule-tier authority.
   prunedGrants?: number;
-  /** Durable cleanup remains journaled, while the root is already inactive. */
   cleanupPending?: boolean;
   error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
   message?: string;
@@ -412,9 +312,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       deps.sideChatConversationLoop,
       ...(deps.paneChatLoops?.all() ?? []),
       deps.routineEngine,
-      // The plugin-surface permission scope holds session grants keyed by plugin
-      // subject. It is a live scope owner exactly like the loops above; leaving
-      // it out let a plugin's session grant outlive the removed root.
+      // Revoke plugin session grants too; they are independent live scope owners.
       getActivePluginSurfacePermissionScope(),
     ];
     try {
@@ -576,10 +474,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
   async function allowPersistedWorkspaceRoot(root: string, source: string): Promise<string[]> {
     const runtimeRoot = canonicalizePathForMatch(resolvePath(root));
     return withWorkspaceRootLifecycleLock(runtimeRoot, async () => {
-      // Every persistent add path (picker, slash command, and Settings) reaches
-      // this choke point. Validate inside the same-root lifecycle lock so a
-      // non-existent path or regular file can never enter the durable registry,
-      // even when the caller did not originate from the native picker.
+      // Validate persistent additions under the same-root lifecycle lock so all entrypoints reject vanished or non-directory paths.
       const stat = await fs.stat(runtimeRoot).catch(() => null);
       if (!stat) {
         throw new Error("workspace-root-not-found");
@@ -597,8 +492,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       const preserveRoots = retainedDescendantWorkspaceRoots(runtimeRoot, current);
       await pruneWorkspaceRootGrants(runtimeRoot, source, preserveRoots);
       try {
-        // Re-add must not persist until stale durable routine scopes are gone.
-        // Otherwise a restart could lose an in-memory deny and revive them.
+        // Finish stale routine-scope cleanup before re-add or restart could revive denied grants.
         await pruneWorkspaceRootRoutineScopes(runtimeRoot, source, preserveRoots);
       } catch (error: unknown) {
         try {
@@ -672,34 +566,12 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       (await removePersistedWorkspaceRoot(root, source))?.persisted ??
         readPermissionSettings().permissions.additionalDirectories,
   };
-  // Publish the ONE lifecycle instance. Every consumer (permission IPC, chat /
-  // side-chat / routine / sub-agent loops, the plugin-surface executor) resolves
-  // it lazily through `getWorkspaceRootLifecycle`, so none of them needs a
-  // hand-written assignment here — which is what used to leave sub-agent child
-  // loops and routine loops permanently unwired.
+  // Publish one lifecycle instance and resolve it lazily from every loop and permission consumer.
   setWorkspaceRootLifecycle(permissionDirectoryLifecycle);
 
 
 
-  /**
-   * Persist a MAIN-OWNED directory path into `permissions.additionalDirectories`
-   * (the executor's Layer-1 read allow-list SOT) after re-validating it. This is
-   * the single choke point through which a folder pick widens the read scope.
-   *
-   *   1. `validateDirectoryAddition` — hard-refuses filesystem root / Layer 0
-   *      sensitive dirs. Re-run even on the acknowledgement pass: a valid token
-   *      clears adjacency warnings, NEVER a hard deny.
-   *   2. `fs.stat` is-a-directory — re-run at THIS (ack/persist) pass, not only
-   *      at prepare time. `dropPrepare` verified is-a-dir when it minted the
-   *      token, but the entry could be swapped for a file/symlink between prepare
-   *      and ack (a narrow TOCTOU). Re-checking here — the single choke point —
-   *      also covers a native warned-pick whose target changed after the dialog.
-   *   3. Persist, then audit the widening (redacted path) — the read scope grew,
-   *      so the WRITE is recorded, mirroring the preview-read audit.
-   *
-   * `picked` is ALWAYS a path the main process owns (a `showOpenDialog` result or
-   * the token-bound pending path) — never a raw renderer string.
-   */
+  // Revalidate main-owned paths at the single durable scope-widening boundary before persistence and audit.
   async function persistValidatedRoot(
     picked: string,
     gesture: PickGesture,
@@ -709,51 +581,35 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     if (!verdict.ok) {
       return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
     }
-    // Re-verify the path is STILL an existing directory at the moment of persist.
-    // The is-a-dir check at prepare time can be invalidated by a swap-to-file /
-    // swap-to-symlink race before the ack lands; a non-directory must never enter
-    // the Layer-1 read allow-list.
+    // Re-stat at acknowledgment because a prepared directory may have become a file or symlink.
     try {
       const stat = await fs.stat(canonicalPicked);
       if (!stat.isDirectory()) {
         return { ok: false, error: "not-a-dir", warnings: verdict.adjacencyWarnings };
       }
     } catch (error: unknown) {
-      // The code alone cannot distinguish a folder that vanished from a
-      // canonical form the OS cannot resolve, and the renderer only ever sees
-      // the code — so the cause is logged here or it is lost. The path is not:
-      // it goes through the same redaction the success audit below uses.
+      // Log the redacted resolution failure in main; the renderer's stable code cannot distinguish its cause.
       log.warn(
         { err: error, path: opaqueWorkspaceRootAuditRef(picked), gesture },
         "workspace root stat failed; pick refused",
       );
       return { ok: false, error: "not-found", warnings: verdict.adjacencyWarnings };
     }
-    // Persist the identity that passed validation, freezing symlink aliases.
     try {
       await allowPersistedWorkspaceRoot(canonicalPicked, CHANNELS.workspace.pickRoot);
     } catch (error: unknown) {
-      // `persist-failed` covers a settings write the OS refused, a pending
-      // removal for the same root, and a lifecycle dependency that boot never
-      // constructed. Which one it was decides what the user should do, and only
-      // this log carries it.
+      // Log the cause behind persist-failed so settings, lifecycle, and pending-removal faults remain diagnosable.
       log.error(
         { err: error, path: opaqueWorkspaceRootAuditRef(picked), gesture },
         "workspace root persist failed; pick refused",
       );
-      // One cause is neither transient nor about this folder: the settings file
-      // itself cannot be parsed, so no add will ever land until it is repaired.
-      // "Failed to save settings" would send the user to retry the pick forever.
+      // Unparseable settings require repair; retrying the folder pick cannot fix them.
       if (error instanceof PermissionSettingsUnreadableError) {
         return { ok: false, error: "settings-unreadable", warnings: verdict.adjacencyWarnings };
       }
       return { ok: false, error: "persist-failed", warnings: verdict.adjacencyWarnings };
     }
-    // Audit the allow-list widening: the permission SOT just grew the executor's
-    // Layer-1 read scope. Mirrors the preview-read audit (redacted path via the
-    // shared DLP filter) so a read-scope WRITE is recorded, not only READS. The
-    // `gesture` marker distinguishes a native-picker widening from a drag-drop
-    // widening (a renderer-named path) in the audit trail.
+    // Audit scope widening with a redacted path and picker/drop gesture provenance.
     auditLogger.log({
       timestamp: new Date().toISOString(),
       sessionId: "workspace-pick-root",
@@ -827,15 +683,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.workspace.pickRoot, e);
         return { ok: false, error: "unauthorized" };
       }
-      // Acknowledgement pass — the renderer presents the one-time token it was
-      // handed on the initial warned pick (NOT an arbitrary path). We look the
-      // token up, consume it (one-time — no replay), and persist the MAIN-OWNED
-      // path it was bound to. A token the main process never minted (forged),
-      // already spent, or past its TTL is refused — so a compromised renderer
-      // cannot self-clear adjacency warnings for a directory of its own choosing
-      // and silently widen the Layer-1 read allow-list. The re-validation inside
-      // persistValidatedRoot still hard-refuses a Layer 0 / root path even with a
-      // valid token (acknowledgement clears warnings, never a hard deny).
+      // Consume the acknowledgment token before validation and persist only its main-owned bound path.
       const ackToken =
         typeof opts?.ackToken === "string" && opts.ackToken.length > 0 ? opts.ackToken : null;
       if (ackToken) {
@@ -847,7 +695,6 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return persistValidatedRoot(pending.path, pending.gesture);
       }
 
-      // Initial pick — the native folder picker IS the user gesture.
       const win = getMainWindow();
       const { filePaths, canceled } = win
         ? await dialog.showOpenDialog(win, {
@@ -866,9 +713,6 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
       }
       if (verdict.adjacencyWarnings.length > 0) {
-        // Withhold the pick: mint a one-time token bound to the MAIN-OWNED dialog
-        // path and require the renderer to confirm by presenting the token. The
-        // renderer never names the path that will ultimately be persisted.
         const now = Date.now();
         prunePendingPicks(now);
         const token = randomBytes(32).toString("base64url");
@@ -886,7 +730,6 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           roots: computeRoots(),
         };
       }
-      // No adjacency warnings — persist immediately (still audited).
       return persistValidatedRoot(dialogPath, "dialog");
     },
   );
@@ -922,13 +765,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             break;
           }
           const full = join(dir, ent.name);
-          // Layer 0 filtering, identical to the read/list tools (file-tools.ts
-          // walk): a `.env`/`.ssh`/`secrets`/… entry inside an allowed root is
-          // never enumerated, so the browser can't surface a path the preview /
-          // read_file guard would then hard-block.
+          // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
           if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(full)))) continue;
-          // Only surface plain files and directories; skip symlinks/sockets/etc
-          // so a symlink can't advertise an out-of-scope target as an entry.
+          // List only plain files and directories; symlink entries could advertise out-of-scope targets.
           if (ent.isFile()) entries.push({ name: ent.name, path: full, type: "file" });
           else if (ent.isDirectory()) entries.push({ name: ent.name, path: full, type: "directory" });
         }
@@ -948,13 +787,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  /**
-   * Composer `@file` autocomplete. The query is the only renderer input; the
-   * roots are the CURRENT workspace roots (`computeRoots`, the same set the
-   * file browser and read tools use), and every returned path passed the
-   * read-scope + Layer-0 guard. A selected row becomes a path reference the
-   * model reads through `read_file` — nothing is read here.
-   */
+  // Autocomplete accepts only a query; derive current roots in main and read-guard every returned path.
   ipcMain.handle(
     CHANNELS.workspace.searchFiles,
     async (e, rawQuery: unknown): Promise<WorkspaceSearchFilesResult> => {
@@ -986,16 +819,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  /**
-   * Remove a project root from `permissions.additionalDirectories` (the
-   * executor's Layer-1 read allow-list SOT). Security: a removal can ONLY target
-   * a path already present in that list — never an arbitrary renderer-supplied
-   * path — and the default root (`process.cwd()`, which is not stored in the
-   * list) can never be removed. Matching is canonical/case-folded so a trailing
-   * slash or case variant of a stored path still resolves to its entry. The
-   * shrink is audited, mirroring the widening audit in persistValidatedRoot: the
-   * read scope narrowed, so the WRITE is recorded.
-   */
+  // Removal may target only an existing additional root; the default root is not removable.
   ipcMain.handle(
     CHANNELS.workspace.removeRoot,
     async (e, rawPath: string): Promise<WorkspaceRemoveRootResult> => {
@@ -1024,20 +848,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (!removal) {
         return { ok: false, error: "not-an-additional-root", message: "path is not a removable project root" };
       }
-      // #1493 — the read allow-list just shrank, but path-scoped #1481 tier
-      // grants (`rules[].tier` patterns of the form `<tool>:path:<absPath>`) for
-      // files UNDER the removed root are a SEPARATE grant surface: without this
-      // they stay orphaned and silently revive if the same root is re-added.
-      // The active→pending cutover already made the root inaccessible; cleanup
-      // failures remain journaled and do not re-add it to the UI/runtime.
+      // Revoke path-tier grants under removed roots or re-add would silently revive them.
       const prunedGrants = removal.prunedGrants;
-      // #1494 item-4 — redacted per-pattern provenance for the success audit.
-      // prunePathGrantsUnderRoot returns the pruned grant tuples; we keep the
-      // count derivable (`.length`) for the IPC response + renderer toast, but
-      // ALSO record which grants were revoked (tool name, tier, redacted path)
-      // so forensics can see exactly what a root removal disowned. The pattern
-      // list is audit-only — the IPC response still carries a bare number, so the
-      // renderer is unchanged (No-Fallback: no renderer-side type widening).
+      // Audit redacted grant tuples but expose only their count over IPC.
       const prunedAudit = removal.prunedAudit;
       auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1051,8 +864,6 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           prunedGrants,
           detachedSessions: removal.detachedSessions,
           liveScopesRevoked: removal.liveScopesRevoked,
-          // Redacted per-pattern tuples (empty when nothing pruned). Audit-only;
-          // never returned to the renderer.
           ...(prunedAudit.length > 0 ? { prunedPatterns: prunedAudit } : {}),
         }),
       });
@@ -1066,20 +877,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  /**
-   * Reveal a file/folder in the OS file manager (Finder / Explorer). This is a
-   * strictly WEAKER capability than "open": `showItemInFolder` only selects the
-   * item's location, it never launches/executes it — consistent with the
-   * `canOpenExternal:false` policy that deliberately disables the OS "open"
-   * button in the preview pane.
-   *
-   * Trust boundary (identical to listDir): the renderer-supplied `rawPath` is
-   * NOT trusted. `assertReadableFilePath` re-validates it against the SAME scope
-   * (cwd + additionalDirectories), rejecting globs, Layer 0 sensitive paths, and
-   * anything outside the allowed roots. Only `verdict.resolved` — the main-owned,
-   * realpath'd, scope-checked absolute path — is ever handed to the shell, never
-   * the raw renderer string.
-   */
+  // Reveal selects an item's location without executing it; do not substitute open semantics.
   ipcMain.handle(
     CHANNELS.workspace.reveal,
     async (e, rawPath: string): Promise<WorkspaceRevealResult> => {
@@ -1107,37 +905,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  /**
-   * Drag-drop add-root, step 1 (#1458). A dropped folder path is renderer-NAMED
-   * — the preload webUtils bridge turned a dropped `File` into a candidate path,
-   * which carries no capability on its own. This handler is the trust gate that
-   * gives the drop the SAME defense as the #1448 native warned-pick:
-   *
-   *   1. `validateHostRendererSender` — a plugin-ui-shell / external frame is
-   *      refused (the base `validateSender` accepts any `file:` frame, so it
-   *      never delivered the plugin-shell rejection this step describes).
-   *   2. `validateDirectoryAddition` — Layer-0 HARD-DENY (filesystem root /
-   *      sensitive dir). An ack can NEVER clear a hard deny, so a dropped
-   *      `~/.ave/secrets` is rejected here and never reaches persistence.
-   *   3. `fs.stat` is-a-directory — a dropped FILE is rejected (`not-a-dir`);
-   *      the renderer never guesses a parent dir (No-Fallback).
-   *
-   * On success it mints a one-time ack token and stores it in `pendingPicks`
-   * bound to the (renderer-NAMED) validated path. A drop ALWAYS requires
-   * acknowledgement (even with zero adjacency warnings): unlike a native picker,
-   * the OS dialog never vouched for the path, so the explicit user ack is that
-   * missing vouch. The renderer confirms via `pickRoot({ ackToken })`, echoing
-   * the MAIN-OWNED token — never a path. That is the actual trust model: the
-   * path string is renderer-originated (the renderer chose which directory to
-   * name), but the deny/persist decision is made entirely in main — Layer-0
-   * hard-deny before any token is minted, an always-explicit user ack, and a
-   * one-time main-owned token that binds the ack to the exact string validated
-   * here. The renderer can never hand back an arbitrary path with
-   * `acknowledge=true`: on the ack pass it presents the token, and main persists
-   * the string the token was bound to (re-validated + re-stat'd), so the renderer
-   * cannot substitute a different directory after the fact. The widening is
-   * audited (`gesture:"drop"`).
-   */
+  // A dropped path grants no authority; prepare validates it and mints a confirmation token.
   ipcMain.handle(
     CHANNELS.workspace.dropPrepare,
     async (e, rawPath: string): Promise<WorkspaceDropPrepareResult> => {
@@ -1148,23 +916,17 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (typeof rawPath !== "string" || rawPath.length === 0) {
         return { ok: false, error: "invalid-path" };
       }
-      // Layer-0 hard-deny FIRST — a sensitive/root path is refused outright and
-      // no token is ever minted, so it can never be acknowledged into scope. The
-      // deny surfaces a STABLE code (not the validator's English prose) so the
-      // renderer can map it to Korean.
+      // Reject sensitive paths before minting tokens and return stable localized refusal codes.
       const verdict = validateDirectoryAddition(rawPath);
       if (!verdict.ok) {
         return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
       }
-      // A dropped FILE is not a root — reject rather than inferring its parent.
       try {
         const stat = await fs.stat(rawPath);
         if (!stat.isDirectory()) return { ok: false, error: "not-a-dir" };
       } catch {
         return { ok: false, error: "not-found" };
       }
-      // Mint a MAIN-OWNED ack token bound to the validated path. The path is now
-      // owned by the main process; the renderer can only echo the token back.
       const now = Date.now();
       prunePendingPicks(now);
       const token = randomBytes(32).toString("base64url");

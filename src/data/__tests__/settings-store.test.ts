@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +40,75 @@ import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../shared/llm
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH } from "../../shared/subscription-runtime.js";
 import { routeExternalUrl } from "../../boot/steps/plugin-runtime/external-url.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+
+let currentSettingsPath: string;
+let currentMigrations: readonly string[];
+
+beforeAll(() => {
+  currentSettingsPath = mkdtempSync(join(tmpdir(), "settings-store-current-"));
+  const settings = new SettingsService({
+    encryption: mockedElectron.safeStorage,
+    userDataPath: currentSettingsPath,
+  }).getAll();
+  expect(settings.appliedMigrations).toBeDefined();
+  currentMigrations = Object.freeze(settings.appliedMigrations!);
+});
+
+afterAll(async () => {
+  await cleanupTmpDir(currentSettingsPath);
+});
+
+/** Current-format normalization fixtures do not need unrelated migration writes. */
+function currentSettingsJson(settings: Record<string, unknown>): string {
+  return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
+}
+
+describe("SettingsService upstream proxy (main-owned)", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-upstream-proxy-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("defaults to the system settings and is not written by patch()", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("upstreamProxy")).toEqual({ mode: "system", manualUrl: "", bypass: "", resolvesNames: false });
+    await service.patch({ upstreamProxy: { mode: "manual", manualUrl: "http://p.test:1" } } as never);
+    expect(service.get("upstreamProxy").mode).toBe("system");
+  });
+
+  it("normalizes a hand-edited file: credentials dropped from the URL, wrong types back to defaults", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+      upstreamProxy: { mode: "manual", manualUrl: " http://user:secret@proxy.test:3128 ", bypass: 7, resolvesNames: "yes" },
+    }), "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("upstreamProxy")).toEqual({ mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false });
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ upstreamProxy: { mode: "pac" } }), "utf-8");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("upstreamProxy").mode).toBe("system");
+  });
+
+  it("notifies a change written through set()", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const changed = vi.fn();
+    service.onChanged("upstreamProxy", changed);
+    await service.set("upstreamProxy", { mode: "off", manualUrl: "", bypass: "", resolvesNames: false });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(service.get("upstreamProxy").mode).toBe("off");
+  });
+
+  it.each([" * ", "\t* ", " ", "*"])("preserves bypass text %j across save and reload", async (bypass) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.set("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:80", bypass, resolvesNames: false });
+    expect(service.get("upstreamProxy").bypass).toBe(bypass);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("upstreamProxy").bypass).toBe(bypass);
+  });
+});
 
 describe("SettingsService remote A2A canonical route-control origin", () => {
   let userDataPath: string;
@@ -130,7 +199,7 @@ describe("SettingsService marketplace defaults", () => {
 
   it("normalizes the automatic-update switches, dropping invalid entries, and leaves the discovery interval as stored (design §18.9)", async () => {
     const load = (marketplace: unknown) => {
-      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace }), "utf-8");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace }), "utf-8");
       return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace");
     };
     const read = load({
@@ -164,7 +233,7 @@ describe("SettingsService marketplace defaults", () => {
 
   it("keeps a valid git runtime mode and drops anything else", () => {
     const load = (git: unknown) => {
-      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ marketplace: { git } }), "utf-8");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace: { git } }), "utf-8");
       return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace").git;
     };
     expect(load({ mode: "managed" })).toEqual({ mode: "managed" });
@@ -321,8 +390,7 @@ describe("SettingsService marketplace defaults", () => {
         vendors: {
           "openai-compatible": {
             model: "future/free",
-            // The GENERIC custom-provider row's own endpoint — a different row
-            // from the preset, and no longer overwritten by it.
+            // The GENERIC custom-provider row's own endpoint; a different row from the preset, and no longer overwritten by it.
             baseUrl: "https://generic.example/v1",
           },
         },
@@ -360,8 +428,7 @@ describe("SettingsService marketplace defaults", () => {
     const llm = service.get("llm");
     expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
     expect(llm.marketplaceProviderPresetId).toBeUndefined();
-    // The generic row keeps what the user saved: it was never the preset's
-    // block to scrub, and scrubbing it threw away another row's endpoint.
+    // The generic row keeps what the user saved: it was never the preset's block to scrub, and scrubbing it threw away another row's endpoint.
     expect(getLlmVendorSettings(llm.vendors, "openai-compatible").baseUrl)
       .toBe("https://generic.example/v1");
     expect(Object.values(llm.modelListCache)).not.toContainEqual(
@@ -401,13 +468,11 @@ describe("SettingsService marketplace defaults", () => {
 
     const llm = service.get("llm");
     expect(llm.marketplaceProviderPresetId).toBe("future-router");
-    // The generic custom-provider row's endpoint is its own and is persisted
-    // as written. It used to be overwritten with the active preset's address,
-    // which silently reverted every save from that card.
+    // The generic custom-provider row's endpoint is its own and is persisted as written. It used to be
+    // overwritten with the active preset's address, which silently reverted every save from that card.
     expect(getLlmVendorSettings(llm.vendors, "openai-compatible").baseUrl)
       .toBe("https://stale.example/v1");
-    // And the preset route still resolves from the registry, so the patch
-    // cannot move where the active preset actually points.
+    // And the preset route still resolves from the registry, so the patch cannot move where the active preset actually points.
     expect(service.get("marketplace").installedProviderPresets?.[0]?.baseUrl)
       .toBe("https://future.example/v1");
   });
@@ -458,8 +523,7 @@ describe("SettingsService marketplace defaults", () => {
     });
 
     const marketplace = service.get("marketplace");
-    // The preset registry owns the route's address, so refusing the mutation
-    // HERE is what keeps the active route on the installed endpoint.
+    // The preset registry owns the route's address, so refusing the mutation HERE is what keeps the active route on the installed endpoint.
     expect(marketplace.installedProviderPresets).toEqual([preset]);
     const llm = service.get("llm");
     expect(llm.fallbackChain).toEqual([]);
@@ -698,8 +762,7 @@ describe("SettingsService marketplace defaults", () => {
       await firstRejected;
     }
 
-    // Neither the second address (never the key's) nor any other is paired
-    // with the key: it is withheld wherever the preset points.
+    // Neither the second address (never the key's) nor any other is paired with the key: it is withheld wherever the preset points.
     expect(service.getSecret(key)).toBeNull();
     expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).not.toBe("https://second.example/v1");
     deleteMany.mockRestore();
@@ -803,18 +866,23 @@ describe("SettingsService marketplace defaults", () => {
       secretStore: { set(key: string, value: string): Promise<void>; deleteMany(keys: string[]): Promise<number> };
     }).secretStore;
     const realSet = secrets.set.bind(secrets);
-    vi.spyOn(secrets, "set").mockImplementationOnce((k, v) => new Promise((resolve, reject) => {
-      setTimeout(() => realSet(k, v).then(resolve, reject), 20);
-    }));
+    const entryMayCommit = deferred<void>();
+    vi.spyOn(secrets, "set").mockImplementationOnce(async (k, v) => {
+      await entryMayCommit.promise;
+      await realSet(k, v);
+    });
     let entry: Promise<void> | undefined;
     vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
-      // The user starts entering a key for the new address; the deletion
-      // fails before that write lands.
+      // The user starts entering a key for the new address; the deletion fails before that write lands.
       entry = service.setSecret(key, "entered-for-elsewhere");
       throw new Error("keychain locked");
     });
 
-    await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+    try {
+      await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
+    } finally {
+      entryMayCommit.resolve();
+    }
     await entry;
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
@@ -888,8 +956,9 @@ describe("SettingsService marketplace defaults", () => {
     lease.onClosed(closed);
     const secrets = (service as unknown as { secretStore: { set(key: string, value: string): Promise<void> } }).secretStore;
     // The entry's write fails only after the move's deletion has run.
+    let rejectEntry!: (error: Error) => void;
     vi.spyOn(secrets, "set").mockImplementationOnce(
-      () => new Promise((_, reject) => setTimeout(() => reject(new Error("keychain locked")), 30)),
+      () => new Promise((_, reject) => { rejectEntry = reject; }),
     );
     type Internals = { saveSettings(settings: unknown): Promise<void> };
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
@@ -918,6 +987,7 @@ describe("SettingsService marketplace defaults", () => {
       releaseSave();
     }
     await moving;
+    rejectEntry(new Error("keychain locked"));
     await expect(entry).rejects.toThrow("keychain locked");
 
     // The key kept for the entry is the old address's: it is not handed out.
@@ -954,8 +1024,7 @@ describe("SettingsService marketplace defaults", () => {
     const realSave = (settings: unknown) => (SettingsService.prototype as unknown as Internals).saveSettings.call(service, settings);
     let second: Promise<unknown> | undefined;
     vi.spyOn(service as unknown as Internals, "saveSettings").mockImplementationOnce(async (settings) => {
-      // During the first move, a key is entered next to its address, and a
-      // second move starts before the first finishes.
+      // During the first move, a key is entered next to its address, and a second move starts before the first finishes.
       await service.setSecret(key, "entered-for-second");
       second = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://third.example/v1" });
       await realSave(settings);
@@ -1064,10 +1133,8 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("unmirrors a preset endpoint that an older install left in the generic block", () => {
-    // Before the preset registry became the only owner of a preset's address,
-    // that address was copied into the generic openai-compatible block. On this
-    // install it would now read as the generic custom-provider row's OWN saved
-    // endpoint, and saving that card would write it back as if typed.
+    // Before the preset registry became the only owner of a preset's address, that address was copied into the generic openai-compatible block. On
+    // this install it would now read as the generic custom-provider row's OWN saved endpoint, and saving that card would write it back as if typed.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1096,7 +1163,7 @@ describe("SettingsService marketplace defaults", () => {
 
     expect(getLlmVendorSettings(llm.vendors, "openai-compatible").baseUrl)
       .toBeUndefined();
-    // The route itself is untouched — the preset still owns its address.
+    // The route itself is untouched; the preset still owns its address.
     expect(llm.marketplaceProviderPresetId).toBe("future-router");
   });
 
@@ -1131,9 +1198,8 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("leaves an installed preset's address alone when that preset is not the selected one", () => {
-    // Only the SELECTED preset's address can be a mirror — that is the only
-    // one the old code ever wrote here. This block holds another installed
-    // preset's URL, which nothing but the user could have typed.
+    // Only the SELECTED preset's address can be a mirror; that is the only one the old code ever wrote
+    // here. This block holds another installed preset's URL, which nothing but the user could have typed.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1175,9 +1241,8 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("gives the selected preset the shared model slot it used to fight over", () => {
-    // One `model` served the generic custom-provider row and every preset
-    // reached through the same vendor, so the row picked last overwrote the
-    // rest. The stored value belongs to the row this install is actually on.
+    // One `model` served the generic custom-provider row and every preset reached through the same vendor, so the row picked last overwrote the
+    // rest. The stored value belongs to the row this install is actually on. Use an explicit alternative so default cleanup does not clear this slot.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1185,7 +1250,7 @@ describe("SettingsService marketplace defaults", () => {
           provider: "openai-compatible",
           marketplaceProviderPresetId: "future-router",
           vendors: {
-            "openai-compatible": { model: "future/free", baseUrl: "http://localhost:8001/v1" },
+            "openai-compatible": { model: "future/chosen", baseUrl: "http://localhost:8001/v1" },
           },
         },
         marketplace: {
@@ -1205,9 +1270,8 @@ describe("SettingsService marketplace defaults", () => {
     const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
     const block = getLlmVendorSettings(llm.vendors, "openai-compatible");
 
-    expect(block.presetModels).toEqual({ "future-router": "future/free" });
-    // The generic row starts empty, so its chooser shows what its OWN endpoint
-    // answers rather than a model borrowed from a gateway.
+    expect(block.presetModels).toEqual({ "future-router": "future/chosen" });
+    // The generic row starts empty, so its chooser shows what its OWN endpoint answers rather than a model borrowed from a gateway.
     expect(block.model).toBe("");
     expect(block.baseUrl).toBe("http://localhost:8001/v1");
   });
@@ -1226,25 +1290,27 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("retains an inactive optional provider customized only by image input across pruning and reload", async () => {
-    const model = getLlmVendorSettings(undefined, "groq").model;
+    const model = "llama-3.3-70b-versatile";
     const key = llmImageInputKey(model);
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
       llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("llm").vendors.groq?.model).toBe("");
     expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").provider).toBe("openai");
+    expect(reloaded.get("marketplace").installedProviderIds).toContain("groq");
+    expect(reloaded.get("llm").vendors.groq?.model).toBe("");
     expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
   });
 
   it("merges one preset's model into the map instead of replacing it", async () => {
-    // The renderer sends the key it just chose and nothing else, so the store
-    // has to merge: replacing the map would delete every other preset's model
-    // on every pick — including one another window chose a moment ago.
+    // The renderer sends the key it just chose and nothing else, so the store has to merge: replacing the map
+    // would delete every other preset's model on every pick; including one another window chose a moment ago.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1273,10 +1339,8 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("clears one preset's model when its route is saved with none", async () => {
-    // An empty model is what "not configured yet" looks like for this family
-    // (the openai-compatible default model is ""), and the provider builder
-    // reads an empty model as not-configured. So the key goes away rather than
-    // keeping a value the user has moved off.
+    // An empty model is what "not configured yet" looks like for this family (the openai-compatible default model is ""), and the
+    // provider builder reads an empty model as not-configured. So the key goes away rather than keeping a value the user has moved off.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({
@@ -1372,11 +1436,8 @@ describe("SettingsService removed manual host-resolver map", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  // The manual host-resolver map was removed with the private-endpoint access
-  // path. A value written by an older build is inert, but it is a user-authored
-  // internal-hostname mapping — the load path must drop it so the next write
-  // erases it from disk rather than leaving it persisted with nothing acting
-  // on it.
+  // The manual host-resolver map was removed with the private-endpoint access path. A value written by an older build is inert, but it is a user-authored
+  // internal-hostname mapping; the load path must drop it so the next write erases it from disk rather than leaving it persisted with nothing acting on it.
   it("drops a persisted llm.hostResolverMap on load and on the next write", async () => {
     const settingsPath = join(userDataPath, "ave-settings.json");
     writeFileSync(
@@ -1391,7 +1452,7 @@ describe("SettingsService removed manual host-resolver map", () => {
     );
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // Sibling llm fields still load — the drop is selective, not the whole block.
+    // Sibling llm fields still load; the drop is selective, not the whole block.
     expect(service.get("llm").provider).toBe("openai");
     expect(service.get("llm")).not.toHaveProperty("hostResolverMap");
 
@@ -1403,8 +1464,7 @@ describe("SettingsService removed manual host-resolver map", () => {
     expect(JSON.stringify(onDisk)).not.toContain("internal-endpoint.example.com");
   });
 
-  // A patch cannot reintroduce the key either — `llm` is rebuilt field by field
-  // from a fixed literal, so an unknown key never survives normalization.
+  // A patch cannot reintroduce the key either; `llm` is rebuilt field by field from a fixed literal, so an unknown key never survives normalization.
   it("ignores an attempt to write llm.hostResolverMap back", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
@@ -1485,7 +1545,7 @@ describe("SettingsService role presets", () => {
   it("ignores unknown on-disk sections without resetting unrelated sections", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         unknownSection: { foo: "bar" },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
       }),
@@ -1504,8 +1564,7 @@ describe("SettingsService role presets", () => {
     await service.patch({ features: { idlePreferenceRefresh: false } });
     expect(service.get("features")?.idlePreferenceRefresh).toBe(false);
 
-    // A non-boolean patch is rejected — the value stays at its current `false`
-    // instead of silently changing the user's opt-in choice.
+    // A non-boolean patch is rejected; the value stays at its current `false` instead of silently changing the user's opt-in choice.
     await service.patch({ features: { idlePreferenceRefresh: "yes" } as never });
     expect(service.get("features")?.idlePreferenceRefresh).toBe(false);
 
@@ -1546,7 +1605,7 @@ describe("SettingsService role presets", () => {
     try {
       writeFileSync(
         join(corruptPath, "ave-settings.json"),
-        JSON.stringify({ features: { memoryCaptureMode: "always" } }),
+        currentSettingsJson({ features: { memoryCaptureMode: "always" } }),
         "utf-8",
       );
       expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: corruptPath }).get("features")?.memoryCaptureMode).toBe("off");
@@ -1569,35 +1628,31 @@ describe("SettingsService role presets", () => {
     expect(reloaded.get("features")?.a2aLoopbackServer).toBe(true);
   });
 
-  it("ships hostClassifiesRisk ON and osToolSandbox OFF, on every platform", () => {
-    // hostClassifiesRisk ships ON on EVERY platform (shadow-mode reconciliation
-    // completed). It is safe to ship on non-sandbox / network-only platforms
-    // because the foreground read-relaxation is coupled to the active sandbox
-    // FILESYSTEM-CONTAINING the host — where it is not filesystem-contained it
-    // falls back to the pre-exec ask.
-    //
-    // osToolSandbox ships OFF everywhere. One setting governs the host, its
-    // workers and its plugin children alike, so a platform-specific default
-    // here would be a platform-specific plugin-isolation policy — which is what
-    // the former darwin-only default was, and it left Windows and Linux with a
-    // plugin path that required a sandbox the host never asked for.
+  it("keeps host risk classification enabled and plugin-worker confinement opt-in", () => {
+    // pluginWorkerConfinement (workers, plugin children, plugin hooks, MCP servers) ships OFF
+    // everywhere. It is separate from osToolSandbox so the shell default cannot confine workers on its own.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.hostClassifiesRisk ?? false).toBe(true);
-    expect(service.get("features")?.osToolSandbox ?? false).toBe(false);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
   });
 
-  // Per-platform TRUTH-TABLE — asserts the default EXPLICITLY on each platform
-  // rather than by mirroring the impl expression, so a platform branch creeping
-  // back into settings-defaults fails here by name. The default is evaluated at
-  // module-load, so each case stubs `process.platform` and re-imports the store
-  // with `vi.resetModules()`, then reads the default through a fresh
-  // SettingsService (empty userDataPath → defaults).
+  it("ships shell egress asks ON and keeps a stored opt-out", async () => {
+    // With asks on, a sandboxed shell that reaches an ungranted host gets an approval card; off, it is refused and only granted hosts work.
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.shellEgressAsk)
+      .toBe(true);
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ features: { shellEgressAsk: false } }), "utf-8");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.shellEgressAsk)
+      .toBe(false);
+  });
+
+  // Re-import after replacing the host platform: defaults are evaluated once.
   it.each([
-    ["darwin", false],
-    ["linux", false],
+    ["darwin", true],
+    ["linux", true],
     ["win32", false],
+    ["freebsd", false],
   ] as const)(
-    "osToolSandbox default on %s = %s (one policy, no platform branch)",
+    "osToolSandbox default on %s = %s",
     async (platform, expected) => {
       const original = process.platform;
       const dir = mkdtempSync(join(tmpdir(), "settings-store-truthtable-"));
@@ -1616,6 +1671,13 @@ describe("SettingsService role presets", () => {
       }
     },
   );
+
+  it.each([true, false])("preserves an explicit sandbox setting of %s across reload", async (enabled) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { osToolSandbox: enabled } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("features")?.osToolSandbox).toBe(enabled);
+  });
 });
 
 describe("SettingsService LLM per-vendor patching", () => {
@@ -1654,8 +1716,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     await service.patch({});
     expect(JSON.parse(readFileSync(settingsFile, "utf-8")).llm.vendors.baseten.baseUrl).toBe("https://inference.baseten.co/v1");
 
-    // An older build reinstalled over this one writes the retired default
-    // back; the next load rewrites it again, with no marker to stop it.
+    // An older build reinstalled over this one writes the retired default back; the next load rewrites it again, with no marker to stop it.
     const applied = JSON.parse(readFileSync(settingsFile, "utf-8")).appliedMigrations as string[];
     writeFileSync(settingsFile, JSON.stringify({
       appliedMigrations: applied,
@@ -1691,8 +1752,7 @@ describe("SettingsService LLM per-vendor patching", () => {
       },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // The stored 32000 is the old materialized default (no migration marker),
-    // so it becomes the host default; the budget is bounded against the same 32000.
+    // The stored 32000 is the old materialized default (no migration marker), so it becomes the host default; the budget is bounded against the same 32000.
     expect(service.get("llm").vendors.openai).toMatchObject({
       model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000,
     });
@@ -1740,9 +1800,8 @@ describe("SettingsService LLM per-vendor patching", () => {
   });
 
   it("round-trips a per-vendor output ceiling through patch", async () => {
-    // The ceiling is the only brake on a runaway round, and it is configured
-    // rather than assumed — so it has to survive the write path a caller
-    // actually uses, not just the block normalizer.
+    // The ceiling is the only brake on a runaway round, and it is configured rather than assumed;
+    // so it has to survive the write path a caller actually uses, not just the block normalizer.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({
       llm: { vendors: { "openai-compatible": { outputTokenLimit: 16_384 } } },
@@ -1764,9 +1823,7 @@ describe("SettingsService LLM per-vendor patching", () => {
       "openrouter",
     ]);
     expect(llm.vendors["azure-foundry"]).toBeUndefined();
-    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe(
-      "gpt-5.4-mini",
-    );
+    expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe("");
   });
 
   it("migrates legacy API provider/model settings to the API chat runtime", () => {
@@ -2137,19 +2194,12 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(settings.marketplace.installedProviderIds).toEqual([]);
   });
 
-  // Regression for the bug shipped + reverted between #279 and the per-vendor
-  // refactor: switching the active provider used to carry the previous
-  // vendor's model into the new vendor's persisted block. With per-vendor
-  // lazy blocks, a patch touching only `azure-foundry` MUST leave every other
-  // materialized vendor's settings intact.
-  //
-  // CTRL simplification: test rewritten to use `model` instead of the
-  // removed `maxOutputTokens` field.
+  // Regression for the bug shipped + reverted between #279 and the per-vendor refactor: switching the active provider used to carry the previous vendor's model into the new vendor's persisted block. With per-vendor
+  // lazy blocks, a patch touching only `azure-foundry` MUST leave every other materialized vendor's settings intact. CTRL simplification: test rewritten to use `model` instead of the removed `maxOutputTokens` field.
   it("vendor switch + save does not leak model across vendors", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
-    // Establish a non-default OpenAI model (simulating a user who switched to
-    // a specific model for OpenAI).
+    // Establish a non-default OpenAI model (simulating a user who switched to a specific model for OpenAI).
     await service.patch({
       llm: {
         provider: "openai",
@@ -2161,9 +2211,7 @@ describe("SettingsService LLM per-vendor patching", () => {
       marketplace: { installedProviderIds: ["azure-foundry"] },
     });
 
-    // User switches to azure-foundry and saves a deployment name. The id is
-    // kept as saved (no name list rewrites it), and the patch must not leak
-    // across vendor blocks.
+    // User switches to azure-foundry and saves a deployment name. The id is kept as saved (no name list rewrites it), and the patch must not leak across vendor blocks.
     await service.patch({
       llm: {
         provider: "azure-foundry",
@@ -2174,8 +2222,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     const llm = service.get("llm");
     expect(llm.provider).toBe("azure-foundry");
     expect(getLlmVendorSettings(llm.vendors, "azure-foundry").model).toBe("gpt-4o");
-    // The OpenAI block must still hold the user-tuned value, not be
-    // overwritten by the Foundry save.
+    // The OpenAI block must still hold the user-tuned value, not be overwritten by the Foundry save.
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5-turbo");
   });
 
@@ -2205,9 +2252,8 @@ describe("SettingsService LLM per-vendor patching", () => {
   });
 
   it("coerces a stale unknown provider on disk to the default", () => {
-    // Simulate an old install where the user had a since-removed vendor
-    // selected. Without coercion, `llm.vendors[llm.provider]` would be
-    // undefined and crash refreshProvider at first turn.
+    // Simulate an old install where the user had a since-removed vendor selected. Without
+    // coercion, `llm.vendors[llm.provider]` would be undefined and crash refreshProvider at first turn.
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
       JSON.stringify({ llm: { provider: "unknown-vendor" } }),
@@ -2259,8 +2305,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     expect(reloaded.get("webView")).toEqual({ preferredFlow: "system-browser" });
   });
 
-  // Critic F4 mitigation: schema-invalid value falls back to default for THIS
-  // field only — other settings sections must remain intact.
+  // Critic F4 mitigation: schema-invalid value falls back to default for THIS field only; other settings sections must remain intact.
   it.each([
     ["string-not-in-enum", "yes"],
     ["null", null],
@@ -2269,7 +2314,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   ])("falls back to default when preferredFlow is invalid (%s) without resetting unrelated settings", (_label, badValue) => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         webView: { preferredFlow: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
         marketplace: { updateCheckEnabled: false },
@@ -2287,17 +2332,15 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   it("falls back to default when webView block is not an object", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ webView: "garbage" }),
+      currentSettingsJson({ webView: "garbage" }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
   });
 
-  // The patch path is the trust boundary: `CHANNELS.settings.update` forwards
-  // the renderer payload to `patch()` without a schema check, so an out-of-enum
-  // `preferredFlow` used to be spread straight into settings.json and was only
-  // dropped on the NEXT load. Both paths now share `isWebViewPreferredFlow`.
+  // The patch path is the trust boundary: `CHANNELS.settings.update` forwards the renderer payload to `patch()` without a schema check, so an out-of-enum
+  // `preferredFlow` used to be spread straight into settings.json and was only dropped on the NEXT load. Both paths now share `isWebViewPreferredFlow`.
   it.each([
     ["string-not-in-enum", "yes"],
     ["null", null],
@@ -2313,8 +2356,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     });
 
     expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
-    // The rejected value must not reach disk either — otherwise the next load
-    // would silently reset the user's choice to the default.
+    // The rejected value must not reach disk either; otherwise the next load would silently reset the user's choice to the default.
     const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
       webView: { preferredFlow: unknown };
     };
@@ -2332,12 +2374,8 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
   });
 
-  // Consumer-side proof, driven by the REAL producer (SettingsService.patch),
-  // not a hand-built settings object: `routeExternalUrl` reads the live
-  // preferredFlow and treats anything that is not exactly "system-browser" as
-  // "in-app". A hostile/malformed patch therefore used to silently move a
-  // "system-browser" user back into the in-app viewer for the rest of the
-  // session — the validated patch keeps the routing on the user's choice.
+  // Consumer-side proof, driven by the REAL producer (SettingsService.patch), not a hand-built settings object: `routeExternalUrl` reads the live preferredFlow and treats anything that is not exactly "system-browser"
+  // as "in-app". A hostile/malformed patch therefore used to silently move a "system-browser" user back into the in-app viewer for the rest of the session; the validated patch keeps the routing on the user's choice.
   it("keeps routeExternalUrl on system-browser after an invalid preferredFlow patch", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ webView: { preferredFlow: "system-browser" } });
@@ -2359,7 +2397,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
   });
 });
 
-describe("SettingsService system — close behavior (PR #1032)", () => {
+describe("SettingsService system preferences", () => {
   let userDataPath: string;
 
   beforeEach(() => {
@@ -2372,9 +2410,22 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("defaults completion sound on for older profiles and persists a strict boolean switch", async () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { closeBehavior: "quit" } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").turnCompletionSoundEnabled).toBe(true);
+    await service.patch({ system: { turnCompletionSoundEnabled: false } as SystemSettings });
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").turnCompletionSoundEnabled).toBe(false);
+    await service.patch({ system: { turnCompletionSoundEnabled: "yes" } } as never);
+    expect(service.get("system").turnCompletionSoundEnabled).toBe(false);
+    expect(service.get("system").closeBehavior).toBe("quit");
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { turnCompletionSoundEnabled: "no" } }));
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").turnCompletionSoundEnabled).toBe(true);
+  });
+
   it("defaults closeBehavior to 'hide-to-tray' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
@@ -2384,20 +2435,19 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a 'quit' preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
-    expect(service.get("system")).toEqual({ closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system")).toEqual({ closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
-  // Critic M1 — schema-invalid value on disk falls back to default for THIS
-  // field only; other settings sections must remain intact.
+  // Critic M1; schema-invalid value on disk falls back to default for THIS field only; other settings sections must remain intact.
   it.each([
     ["string-not-in-enum", "yes"],
     ["null", null],
@@ -2406,7 +2456,7 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
   ])("falls back to default when closeBehavior is invalid on disk (%s) without resetting unrelated settings", (_label, badValue) => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         system: { closeBehavior: badValue },
         chat: { systemPrompt: "preserved-prompt", autoCompact: false },
         marketplace: { updateCheckEnabled: false },
@@ -2414,7 +2464,7 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
     expect(service.get("marketplace").updateCheckEnabled).toBe(false);
@@ -2423,28 +2473,25 @@ describe("SettingsService system — close behavior (PR #1032)", () => {
   it("falls back to default when system block is not an object", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: "garbage" }),
+      currentSettingsJson({ system: "garbage" }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
-  // Critic N1 — patch-merge must NOT clobber a valid prior preference when
-  // an invalid value arrives via the renderer/IPC layer. Field-level guard
-  // mirrors the `appearance` block's behavior.
+  // Critic N1; patch-merge must NOT clobber a valid prior preference when an invalid value
+  // arrives via the renderer/IPC layer. Field-level guard mirrors the `appearance` block's behavior.
   it("ignores invalid closeBehavior patch and preserves prior 'quit' preference", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
     expect(service.get("system").closeBehavior).toBe("quit");
 
-    // Patch with garbage — should be a no-op on the closeBehavior field.
+    // Patch with garbage; should be a no-op on the closeBehavior field.
     await service.patch({ system: { closeBehavior: "invalid-value" as never } });
     expect(service.get("system").closeBehavior).toBe("quit");
   });
 });
-
-// ─── System — pinned project roots (cluster review MINOR-2) ──────────────────
 
 describe("SettingsService system — pinned project roots", () => {
   let userDataPath: string;
@@ -2489,8 +2536,6 @@ describe("SettingsService system — pinned project roots", () => {
   });
 });
 
-// ─── System — workspace appMode persistence ───────────────────────────────────
-
 describe("SettingsService system — workspace appMode", () => {
   let userDataPath: string;
 
@@ -2521,12 +2566,12 @@ describe("SettingsService system — workspace appMode", () => {
   it("normalizes appMode and closeBehavior independently (one invalid, one valid)", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
+      currentSettingsJson({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // closeBehavior preserved; appMode falls back to default — neither clobbers the other.
-    expect(service.get("system")).toEqual({ closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    // closeBehavior preserved; appMode falls back to default; neither clobbers the other.
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("normalizes legacy 'action' appMode on disk to 'work'", () => {
@@ -2536,7 +2581,7 @@ describe("SettingsService system — workspace appMode", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("normalizes a legacy 'action' appMode patch to 'work'", async () => {
@@ -2558,13 +2603,13 @@ describe("SettingsService system — workspace appMode", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
     await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system")).toEqual({ closeBehavior: "quit", appMode: "chat", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "chat", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a localApiServer=true preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { localApiServer: true } });
-    expect(service.get("system")).toEqual({ closeBehavior: "hide-to-tray", appMode: "work", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").localApiServer).toBe(true);
@@ -2636,8 +2681,6 @@ describe("SettingsService system — workspace appMode", () => {
   });
 });
 
-// ─── Appearance v2 schema ────────────────────────────────────────────────────
-
 describe("SettingsService appearance v2 — fresh install defaults", () => {
   let userDataPath: string;
 
@@ -2673,30 +2716,26 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   it("malformed bundleId coerces to DEFAULT_BUNDLE_ID", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
   });
 
-  // The content ledger is read after settings: an installed theme or language
-  // the user selected must survive the settings load.
+  // The content ledger is read after settings: an installed theme or language the user selected must survive the settings load.
   it("keeps a well-formed installed theme id and language tag it cannot resolve yet", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("appearance")).toMatchObject({ language: "fr", bundleId: "harbor-night" });
   });
 
-  // ─── patch-path validation (the load path has always validated these) ───
-  // `CHANNELS.settings.update` hands the renderer payload to `patch()` unchecked,
-  // so patch() is the trust boundary. `language` and `font` are already validated
-  // there; `bundleId`, `schemaVersion` and `followSystem` used to ride the plain
-  // outer spread straight onto disk.
+  // `CHANNELS.settings.update` hands the renderer payload to `patch()` unchecked, so patch() is the trust boundary. `language` and `font`
+  // are already validated there; `bundleId`, `schemaVersion` and `followSystem` used to ride the plain outer spread straight onto disk.
 
   it("ignores a malformed bundleId patch and keeps the stored theme", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2712,10 +2751,8 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").bundleId).toBe("midnight");
   });
 
-  // The sharpest consequence: a non-2 schemaVersion on disk sends the next load
-  // down the v1 branch, which finds no legacy `theme`/`chatTheme`/`codeTheme`
-  // keys and therefore returns DEFAULT_SETTINGS.appearance — silently discarding
-  // the user's bundle, language AND font in one go.
+  // The sharpest consequence: a non-2 schemaVersion on disk sends the next load down the v1 branch, which finds no legacy
+  // `theme`/`chatTheme`/`codeTheme` keys and therefore returns DEFAULT_SETTINGS.appearance; silently discarding the user's bundle, language AND font in one go.
   it.each([
     ["v1", 1],
     ["string", "2"],
@@ -2777,8 +2814,6 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
   });
 });
 
-// ─── System locale auto-detection — fresh install ────────────────────────────
-
 describe("SettingsService system locale detection", () => {
   let userDataPath: string;
 
@@ -2815,10 +2850,10 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID } }),
       "utf-8",
     );
-    // Even if OS is Korean, the stored "en" is the user's explicit choice — respect it.
+    // Even if OS is Korean, the stored "en" is the user's explicit choice; respect it.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "ko-KR" });
     expect(service.get("appearance").language).toBe("en");
   });
@@ -2826,7 +2861,7 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with language='ko' is preserved regardless of systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "ko", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "ko", bundleId: DEFAULT_BUNDLE_ID } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "en-US" });
@@ -2834,32 +2869,61 @@ describe("SettingsService system locale detection", () => {
   });
 });
 
-// ─── Appearance v1 → v2 migration matrix ────────────────────────────────────
-
 describe("SettingsService appearance v1 → v2 migration", () => {
   let userDataPath: string;
+  let migrationWrites: Array<{ promise: Promise<void>; settled: boolean }>;
+  let restoreWriteObserver: () => void;
 
   async function waitForV2WriteBack(): Promise<void> {
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-        appearance?: { schemaVersion?: unknown };
-      };
-      if (onDisk.appearance?.schemaVersion === 2) return;
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50));
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(migrationWrites.map((writing) => writing.promise)),
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("Settings migration write-back did not settle before teardown")), 1_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
     }
-    throw new Error("Settings migration write-back did not settle before teardown");
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      appearance?: { schemaVersion?: unknown };
+    };
+    expect(onDisk.appearance?.schemaVersion).toBe(2);
   }
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-migration-"));
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    migrationWrites = [];
+    type SettingsWriter = { saveSettings(settings: unknown): Promise<void> };
+    const prototype = SettingsService.prototype as unknown as SettingsWriter;
+    const realSave = prototype.saveSettings;
+    const observer = vi.spyOn(prototype, "saveSettings").mockImplementation(function (this: SettingsWriter, settings) {
+      const writing = realSave.call(this, settings);
+      const tracked = { promise: writing, settled: false };
+      migrationWrites.push(tracked);
+      const markSettled = () => { tracked.settled = true; };
+      void writing.then(markSettled, markSettled);
+      return writing;
+    });
+    restoreWriteObserver = () => observer.mockRestore();
   });
 
   afterEach(async () => {
-    await waitForV2WriteBack();
-    vi.clearAllMocks();
-    await cleanupTmpDir(userDataPath);
+    try {
+      await waitForV2WriteBack();
+    } finally {
+      restoreWriteObserver();
+      vi.clearAllMocks();
+      if (migrationWrites.every((writing) => writing.settled)) {
+        await cleanupTmpDir(userDataPath);
+      } else {
+        // A timed-out write still owns this root until its real I/O settles.
+        console.warn("Settings migration writes are pending; retained temporary directory: %s", userDataPath);
+      }
+    }
   });
 
   function writeV1(appearance: Record<string, unknown>): void {
@@ -2939,18 +3003,36 @@ describe("SettingsService appearance v1 → v2 migration", () => {
   it("v1 write-back: migrated appearance is written to disk as v2", async () => {
     writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // The constructor triggers async write-back — poll until disk reflects v2
-    let onDisk: Record<string, unknown> = {};
-    for (let i = 0; i < 20; i++) {
-      await new Promise<void>((res) => setTimeout(res, 50));
-      onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-      if ((onDisk.appearance as Record<string, unknown>).schemaVersion === 2) break;
-    }
+    // Await the constructor's actual atomic write, including lock release.
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
     expect(onDisk.appearance).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
     // No legacy keys remain after write-back
     expect(onDisk.appearance.theme).toBeUndefined();
     expect(onDisk.appearance.chatTheme).toBeUndefined();
     expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
+  });
+
+  it("persists migrations and normalized fields from an unmarked legacy file", async () => {
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    writeFileSync(settingsPath, JSON.stringify({
+      appearance: { theme: "dark", chatTheme: "lg", codeTheme: "auto" },
+      features: { subAgentAutonomousWake: false },
+      shortcuts: { toggleWindow: 42, enabled: "nope" },
+    }), "utf-8");
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("appliedMigrations");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
+    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
+    expect(service.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+    expect(onDisk.appearance).toEqual(service.get("appearance"));
+    expect(onDisk.features).toMatchObject({ subAgentAutonomousWake: true });
+    expect(onDisk.shortcuts).toEqual({ toggleWindow: null, enabled: false });
+    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
   });
 
   it("v2 file loads without re-migration", () => {
@@ -2963,8 +3045,7 @@ describe("SettingsService appearance v1 → v2 migration", () => {
     expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
   });
 
-  // Main process has no window.matchMedia — system theme must not crash and must
-  // produce a deterministic DEFAULT_BUNDLE_ID result (no silent OS-scheme access).
+  // Main process has no window.matchMedia; system theme must not crash and must produce a deterministic DEFAULT_BUNDLE_ID result (no silent OS-scheme access).
   it("system + default → DEFAULT_BUNDLE_ID (main process: no matchMedia needed)", () => {
     writeV1({ theme: "system", chatTheme: "default", codeTheme: "auto" });
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2980,12 +3061,8 @@ describe("SettingsService appearance v1 → v2 migration", () => {
   it("codeTheme-only v1 triggers write-back (needsV2WriteBack includes codeTheme)", async () => {
     writeV1({ codeTheme: "light" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    let onDisk: Record<string, unknown> = {};
-    for (let i = 0; i < 20; i++) {
-      await new Promise<void>((res) => setTimeout(res, 50));
-      onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-      if ((onDisk.appearance as Record<string, unknown>).schemaVersion === 2) break;
-    }
+    await waitForV2WriteBack();
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
     expect((onDisk.appearance as Record<string, unknown>).codeTheme).toBeUndefined();
     expect(service.get("appearance")).toMatchObject({ schemaVersion: 2 });
   });
@@ -3004,7 +3081,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
   function writeAppearance(font: unknown): void {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font } }),
+      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font } }),
     );
   }
 
@@ -3048,7 +3125,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
       try {
         writeFileSync(
           join(dir, "ave-settings.json"),
-          JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: value } } }),
+          currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: value } } }),
         );
         const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: dir });
         expect(s.get("appearance")).toMatchObject({ font: { sizeScale: value } });
@@ -3129,9 +3206,8 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
   it("patch with `font: null` is a no-op — does not crash on null deref (PR #672 2차 critic N3)", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: 1.125 } } });
-    // Caller deliberately sends `font: null` (some defensive call sites do this
-    // to "clear" without specifying subfields). Must not throw, must preserve
-    // the previously-patched font block.
+    // Caller deliberately sends `font: null` (some defensive call sites do this to "clear"
+    // without specifying subfields). Must not throw, must preserve the previously-patched font block.
     await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: null as unknown as { sizeScale: 1 | 1.125 } } });
     expect(s.get("appearance").font?.sizeScale).toBe(1.125);
   });
@@ -3173,7 +3249,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
   it("drops an invalid accelerator (lone modifier) but keeps the previous value", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
-    // Invalid: lone modifier — must be ignored, prior value preserved.
+    // Invalid: lone modifier; must be ignored, prior value preserved.
     await s.patch({ shortcuts: { toggleWindow: "Shift" } });
     expect(s.get("shortcuts").toggleWindow).toBe("Alt+F1");
     // enabled sibling still patchable.
@@ -3208,7 +3284,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
   it("normalizes a corrupt shortcuts block on load", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ shortcuts: { toggleWindow: 42, enabled: "nope" } }),
+      currentSettingsJson({ shortcuts: { toggleWindow: 42, enabled: "nope" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3253,7 +3329,7 @@ describe("SettingsService diagnostics (#1499 E2)", () => {
   it("corrupt on-disk diagnostics falls back to defaults", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ diagnostics: { includeCrashDumps: 1, logRetentionDays: "seven" } }),
+      currentSettingsJson({ diagnostics: { includeCrashDumps: 1, logRetentionDays: "seven" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3311,7 +3387,7 @@ describe("SettingsService telemetry normalization", () => {
   it("corrupt on-disk telemetry falls back to defaults field by field", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         telemetry: {
           enabled: "true",
           crashReportingEnabled: true,
@@ -3356,7 +3432,7 @@ describe("SettingsService chat normalization", () => {
   it("falls back to full for a malformed processing detail value", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ chat: { processingDisplayLevel: "everything" } }),
+      currentSettingsJson({ chat: { processingDisplayLevel: "everything" } }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3419,9 +3495,8 @@ describe("SettingsService chat normalization", () => {
   });
 
   it("keeps a very large round budget — the budget has no upper clamp", async () => {
-    // Deliberate: an absolute ceiling above the configured budget can only
-    // surface as an agent that stops mid-task. The 32-bit timer bound this
-    // could once overflow is enforced where the timer is armed instead.
+    // Deliberate: an absolute ceiling above the configured budget can only surface as an agent that stops
+    // mid-task. The 32-bit timer bound this could once overflow is enforced where the timer is armed instead.
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 300_000 } });
     expect(s.get("chat").subAgentMaxRounds).toBe(300_000);
@@ -3430,7 +3505,7 @@ describe("SettingsService chat normalization", () => {
   it("corrupt on-disk chat falls back to defaults", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
+      currentSettingsJson({
         chat: { subAgentMaxRounds: "many", autoCompact: 1, systemPrompt: [] },
       }),
       "utf-8",
@@ -3448,8 +3523,7 @@ describe("SettingsService chat normalization", () => {
   });
 
   it("keeps 0 as the off value for the progress-notification cadence", async () => {
-    // Unlike the round budget above, 0 is meaningful here: it is how the
-    // notification is turned off, so it must not be raised to a minimum.
+    // Unlike the round budget above, 0 is meaningful here: it is how the notification is turned off, so it must not be raised to a minimum.
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({ chat: { ...s.get("chat"), progressNudgeRounds: 0 } });
     expect(s.get("chat").progressNudgeRounds).toBe(0);
@@ -3532,8 +3606,7 @@ describe("SettingsService — persisted main-window location", () => {
 
   it("folds a retired settings tab id onto its replacement", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // "general" was split up; a value persisted by an older build must still
-    // land somewhere real rather than on a tab that no longer exists.
+    // "general" was split up; a value persisted by an older build must still land somewhere real rather than on a tab that no longer exists.
     await service.patch({ system: { settingsTab: "general" } as unknown as SystemSettings });
     expect(service.get("system").settingsTab).toBe("llm");
 
@@ -3554,9 +3627,8 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
   });
 
   it("drops a pre-flip fossil false once so the flipped default reaches the install", async () => {
-    // saveSettings() materializes merged defaults, so installs from the era
-    // when the flag defaulted to false carry an explicit false the user never
-    // chose — and the default flip to true could never reach them.
+    // saveSettings() materializes merged defaults, so installs from the era when the flag defaulted to
+    // false carry an explicit false the user never chose; and the default flip to true could never reach them.
     const path = join(userDataPath, "ave-settings.json");
     writeFileSync(path, JSON.stringify({ features: { subAgentAutonomousWake: false } }), "utf-8");
 
@@ -3572,9 +3644,8 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
   });
 
   it("keeps a fresh install's first-session opt-out across the next boot", async () => {
-    // Fresh installs have no settings file; loadSettings seeds KNOWN_MIGRATIONS
-    // so a user opt-out saved in the very first session (before any migration
-    // marker could exist on disk) is not treated as a fossil on the next load.
+    // Fresh installs have no settings file; loadSettings seeds KNOWN_MIGRATIONS so a user opt-out saved in the very
+    // first session (before any migration marker could exist on disk) is not treated as a fossil on the next load.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ features: { subAgentAutonomousWake: false } } as never);
 
@@ -3591,6 +3662,103 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.subAgentAutonomousWake).toBe(false);
+  });
+});
+
+describe("plugin-worker confinement split migration", () => {
+  let userDataPath: string;
+  let path: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-worker-split-"));
+    path = join(userDataPath, "ave-settings.json");
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  const onDisk = () => JSON.parse(readFileSync(path, "utf-8")) as {
+    appliedMigrations?: string[];
+    features?: { osToolSandbox?: boolean; pluginWorkerConfinement?: boolean };
+  };
+
+  it("keeps an existing sandbox opt-in on for both shells and workers, and persists it", async () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: true } }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(true);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
+
+    await service.patch({} as never);
+    expect(onDisk().features).toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
+  });
+
+  it.each([
+    ["an explicit false", { osToolSandbox: false }, false],
+    // A file without the shell value takes the platform shell default; that default is not the user's opt-in, so workers stay unconfined.
+    ["no stored value", {}, DEFAULT_SETTINGS.features!.osToolSandbox],
+  ])("keeps workers off for a default install (%s)", async (_label, features, shell) => {
+    writeFileSync(path, JSON.stringify({ features }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(shell);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+
+    await service.patch({} as never);
+    // Written as the user's own value, so a later shell default cannot reach it.
+    expect(onDisk().features?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("keeps a worker value already on disk", () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: true, pluginWorkerConfinement: false } }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(true);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("does not re-derive after it ran: turning the shell sandbox on later leaves workers alone", async () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: false } }), "utf-8");
+    const first = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await first.patch({ features: { osToolSandbox: true } });
+
+    const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(rebooted.get("features")?.osToolSandbox).toBe(true);
+    expect(rebooted.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("each setting changes only itself", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { pluginWorkerConfinement: true } });
+    expect(service.get("features")?.osToolSandbox).toBe(DEFAULT_SETTINGS.features!.osToolSandbox);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
+
+    await service.patch({ features: { osToolSandbox: true, pluginWorkerConfinement: false } });
+    await service.patch({ features: { osToolSandbox: false } });
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")).toMatchObject({ osToolSandbox: false, pluginWorkerConfinement: false });
+  });
+
+  it("does not rewrite a fresh install's first-session shell opt-in into worker confinement", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { osToolSandbox: true } });
+    expect(onDisk().features?.pluginWorkerConfinement).toBe(false);
+
+    const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(rebooted.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("re-derives after a downgrade dropped the worker key, even when a marker survived", () => {
+    // An older build keeps unknown `appliedMigrations` entries but drops the unknown
+    // `pluginWorkerConfinement` key on save; the shell opt-in it kept must still confine workers after the re-upgrade.
+    writeFileSync(path, JSON.stringify({
+      appliedMigrations: ["plugin-worker-confinement-split"],
+      features: { osToolSandbox: true },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")).toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
   });
 });
 
@@ -3645,9 +3813,8 @@ describe("output token limit: the stored old default becomes the host default", 
   });
 
   it("drops the 32000 an older build writes back after a downgrade, even once the old marker is on disk", () => {
-    // The updater can offer an older build. It writes 32000 into every block
-    // and keeps the marker an earlier version of this migration recorded; a
-    // one-time migration would then read those values as the user's.
+    // The updater can offer an older build. It writes 32000 into every block and keeps the marker an earlier
+    // version of this migration recorded; a one-time migration would then read those values as the user's.
     writeStored({
       appliedMigrations: ["llm-output-token-limit-default"],
       llm: {
@@ -3664,8 +3831,7 @@ describe("output token limit: the stored old default becomes the host default", 
   });
 
   it("does not write the default into any vendor block a save persists", async () => {
-    // Before, every saved block carried the materialized default, which is how
-    // 32000 came to stand for "never chosen".
+    // Before, every saved block carried the materialized default, which is how 32000 came to stand for "never chosen".
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ llm: { vendors: { openai: { model: "gpt-5.4" } } } } as never);
     const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as OnDisk;
@@ -3686,7 +3852,7 @@ function writePlainSecrets(secretsPath: string, entries: Record<string, string>)
 
 describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   const MARKER = "llm-vendor-id-package-names";
-  const MODEL = "DeepHermes-3-Llama-3-3-70B-Preview";
+  const MODEL = "selected-model";
   const BASE_URL = "https://inference-api.nousresearch.com/v1";
   let userDataPath: string;
   let settingsPath: string;
@@ -3742,8 +3908,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     ]);
     expect(service.get("marketplace").installedProviderIds).toEqual(["nous-research"]);
 
-    // The load writes the result back with the marker; nothing on disk still
-    // names the old id.
+    // The load writes the result back with the marker; nothing on disk still names the old id.
     await vi.waitFor(() => {
       expect(JSON.parse(readFileSync(settingsPath, "utf-8")).appliedMigrations).toContain(MARKER);
     });
@@ -3754,10 +3919,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     writeFileSync(settingsPath, JSON.stringify({
       llm: {
         provider: "v0",
-        vendors: { v0: { model: "v0-1.5-md" } },
+        vendors: { v0: { model: "selected-model" } },
         fallbackChain: [
           { provider: "nousResearch", model: MODEL },
-          { provider: "v0", model: "v0-1.5-md" },
+          { provider: "v0", model: "selected-model" },
         ],
       },
       marketplace: { installedProviderIds: ["v0", "nousResearch"] },
@@ -3766,10 +3931,10 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const llm = service.get("llm");
     expect(llm.provider).toBe("vercel-v0");
-    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("v0-1.5-md");
+    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("selected-model");
     expect(llm.fallbackChain).toEqual([
       { provider: "nous-research", model: MODEL },
-      { provider: "vercel-v0", model: "v0-1.5-md" },
+      { provider: "vercel-v0", model: "selected-model" },
     ]);
     expect(service.get("marketplace").installedProviderIds).toEqual(["vercel-v0", "nous-research"]);
   });
@@ -3916,10 +4081,10 @@ describe("retired vendor profile migration", () => {
         provider: "copilot",
         vendors: {
           copilot: { model: "gpt-5.4-mini" },
-          claude: { model: "claude-sonnet-4-6" },
+          claude: { model: "selected-model" },
           openai: { model: "gpt-5.4" },
         },
-        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "claude-sonnet-4-6" }],
+        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "selected-model" }],
       },
     }), "utf-8");
   }
@@ -3944,12 +4109,11 @@ describe("retired vendor profile migration", () => {
     expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
     expect(llm.retiredProvider).toBe("copilot");
     expect(Object.keys(llm.vendors)).not.toContain("copilot");
-    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("claude-sonnet-4-6");
+    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("selected-model");
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5.4");
-    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "claude-sonnet-4-6" }]);
+    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "selected-model" }]);
 
-    // Written back: the file no longer selects copilot, and the marker survives
-    // a restart until the user picks a provider.
+    // Written back: the file no longer selects copilot, and the marker survives a restart until the user picks a provider.
     await vi.waitFor(() => {
       const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
       expect(onDisk.llm.provider).toBe(DEFAULT_LLM_VENDOR);
@@ -4220,7 +4384,7 @@ describe("SettingsService llm.modelCatalogRefresh", () => {
   });
 
   const stored = (llm: Record<string, unknown>) => {
-    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ llm }), "utf-8");
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm }), "utf-8");
     return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
   };
 
@@ -4245,8 +4409,6 @@ describe("SettingsService llm.modelCatalogRefresh", () => {
   });
 });
 
-// ─── System — saved main-window layout ────────────────────────────────────────
-
 describe("SettingsService system — main window layout", () => {
   let userDataPath: string;
   const layout = {
@@ -4260,6 +4422,7 @@ describe("SettingsService system — main window layout", () => {
     focusedId: "group-2",
     surfaces: { "group-2": { kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null } },
     panelOpenIds: ["main"],
+    thumbnailOpenIds: ["group-2"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-4", ordinal: 1, cwd: null, url: "https://example.com/" }] },
   } as const;
 
@@ -4291,7 +4454,7 @@ describe("SettingsService system — main window layout", () => {
   it("drops a corrupt layout on disk whole, leaving the rest of system intact", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", mainLayout: { ...layout, version: 99 } } }),
+      currentSettingsJson({ system: { closeBehavior: "quit", mainLayout: { ...layout, version: 99 } } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });

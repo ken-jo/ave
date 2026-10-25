@@ -65,9 +65,7 @@ describe("env-surface scan", () => {
   });
 
   it("ignores a name that is a constant rather than an environment read", () => {
-    // The reason the scan is not a bare `AVE_[A-Z_]+` grep: these are ordinary
-    // exported constants, and demanding they be classified as configuration
-    // would be asking the author for nonsense.
+    // Bare constants are not environment accesses.
     write("c.ts", `
       export const AVE_TOKEN_NAMES = ["a"];
       import { AVE_LOGO_PATH } from "./logo.js";
@@ -89,8 +87,7 @@ describe("env-surface scan", () => {
   });
 
   it("finds the names a table-driven resolver looks up through a key map", () => {
-    // The shape that made the tailnet group invisible to the first version of
-    // this gate: no variable name ever appears at the lookup site.
+    // Resolve dynamic table lookups to their declared names.
     write("table.ts", `
       const ENV_KEY = { enabled: "AVE_TABLE_ONE", port: "AVE_TABLE_TWO" };
       export function layer(env: NodeJS.ProcessEnv, key: "enabled" | "port") {
@@ -105,8 +102,7 @@ describe("env-surface scan", () => {
   });
 
   it("does not mistake a quoted prefix for a variable of that name", () => {
-    // `AVE_DEMO_` names a family the packaged-env scrub matches by prefix.
-    // Demanding a control for it would be demanding one for nothing.
+    // A trailing underscore denotes a variable family, not one setting.
     write("scrub.ts", `
       const PREFIXES = ["AVE_DEMO_"];
       export function scrub(env: NodeJS.ProcessEnv, name: string) {
@@ -131,12 +127,67 @@ describe("env-surface scan", () => {
 
     expect(scanEnvReads(dir).size).toBe(0);
   });
+
+  it("finds both halves of a host-to-child protocol variable", () => {
+    // Include host writes consumed by embedded child scripts.
+    write("child.ts", `
+      const TARGET_ENV = "AVE_INTERPOLATED_TARGET";
+      const SCRIPT = [
+        "$request = ConvertFrom-Json $env:AVE_PS_READ",
+        "$braced = \${env:AVE_PS_BRACED}",
+        "$x = [Environment]::GetEnvironmentVariable('AVE_DOTNET_READ', 'Process')",
+        \`$t = [Environment]::GetEnvironmentVariable('\${TARGET_ENV}', 'Process')\`,
+      ].join("; ");
+      const SHELL = 'printf "%s" "$AVE_POSIX_READ"';
+      execFileSync("child", [SCRIPT, SHELL], { env: { ...process.env, AVE_ENV_WRITE_ONLY: "1", "AVE_QUOTED_WRITE": "2" } });
+    `);
+    write("computed.ts", `
+      spawn("child", [], { env: { ["AVE_COMPUTED_WRITE"]: "1", [ 'AVE_COMPUTED_SPACED' ] : "2" } });
+    `);
+
+    expect([...scanEnvReads(dir).keys()].sort()).toEqual([
+      "AVE_COMPUTED_SPACED",
+      "AVE_COMPUTED_WRITE",
+      "AVE_DOTNET_READ",
+      "AVE_ENV_WRITE_ONLY",
+      "AVE_INTERPOLATED_TARGET",
+      "AVE_POSIX_READ",
+      "AVE_PS_BRACED",
+      "AVE_PS_READ",
+      "AVE_QUOTED_WRITE",
+    ]);
+  });
+
+  it("does not take a constant's annotation, ternary or interpolation for a protocol variable", () => {
+    write("constants.ts", `
+      export const AVE_ANNOTATED: string = "x";
+      let AVE_LET_ANNOTATED: number;
+      const label = flag ? AVE_TERNARY_BRANCH : other;
+      const svg = \`<path d="\${AVE_LOGO_PATH}" />\`;
+      const extension = extensions[AVE_EXTENSION_NAMESPACE];
+    `);
+
+    expect(scanEnvReads(dir).size).toBe(0);
+  });
+
+  it("does not count a child-protocol fixture a test sets for its own child", () => {
+    mkdirSync(join(dir, "__tests__"));
+    writeFileSync(
+      join(dir, "__tests__", "child.test.ts"),
+      `
+        const script = "$x = $env:AVE_TEST_CHILD_READ";
+        spawn("pwsh", [script], { env: { AVE_TEST_CHILD_WRITE: "1" } });
+      `,
+      "utf-8",
+    );
+
+    expect(scanEnvReads(dir).size).toBe(0);
+  });
 });
 
 describe("renderer settings-path scan", () => {
   it("finds both spellings a surface uses to name a path", () => {
-    // The notice prop, and the row list of the one table-driven tab whose
-    // notice is passed `settingsPath={row.path}`.
+    // Actionable settings notices need both a control and a table path.
     write("Tab.tsx", `
       const ROWS = [{ path: "system.localApiServer", label: "x" }];
       export function Tab() {
@@ -150,9 +201,7 @@ describe("renderer settings-path scan", () => {
   });
 
   it("does not count a path quoted in a test", () => {
-    // Otherwise a test for a control that was never built would satisfy the
-    // gate — which is the one way this check could certify the thing it exists
-    // to catch.
+    // A test mentioning a nonexistent control does not prove UI coverage.
     mkdirSync(join(dir, "__tests__"));
     writeFileSync(
       join(dir, "__tests__", "Tab.test.tsx"),
@@ -173,8 +222,10 @@ describe("env-surface policy", () => {
       ["pending", over["pending"] ?? []],
     ] as ReadonlyArray<readonly [string, readonly string[]]>);
 
-  it("classifies access-rule query paths as host-to-child protocol data", () => {
-    expect(BUCKETS.find(([bucket]) => bucket === "internal")?.[1]).toContain("AVE_EXECUTABLE_ACL_PATHS");
+  it("keeps no bucket entry for the access-rule query, whose inputs travel in request lines", () => {
+    for (const name of ["AVE_EXECUTABLE_ACL_PATHS", "AVE_ACL_DESKTOP_PACKAGE", "AVE_ACL_CAP_SIDS"]) {
+      expect(BUCKETS.some(([, names]) => names.includes(name))).toBe(false);
+    }
   });
 
   it("derives the development bucket from the packaged scrub inventory", () => {
@@ -217,8 +268,7 @@ describe("env-surface policy", () => {
 
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain("AVE_NEW");
-    // The message has to say what to do, or the next author lists it as pending
-    // because that is the cheapest square to tick.
+    // A new pending setting needs an actionable notice.
     expect(failures[0]).toContain("build the control");
   });
 
@@ -251,9 +301,7 @@ describe("env-surface policy", () => {
   });
 
   it("fails on a registry entry no renderer surface names", () => {
-    // The registry is what puts a variable in the "settings" bucket, so an
-    // entry with no control would otherwise be a variable the gate certifies
-    // as reachable while nobody can reach it.
+    // A registry entry alone does not prove that a control exists.
     const entry = ENV_BACKED_SETTINGS[0]!;
     const failures = evaluate(new Map(), buckets(), [], 0, new Set());
 

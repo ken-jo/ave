@@ -45,9 +45,9 @@ export type WorkspaceRootRetentionReason =
   | "unprobed";
 
 export interface RemovedWorkspaceRoot {
-  /** Exact value removed from permissions.additionalDirectories. */
+  // Exact value removed from permissions.additionalDirectories.
   storedPath: string;
-  /** Canonical, case-preserving path used by the runtime and filesystem probe. */
+  // Canonical, case-preserving path used by the runtime and filesystem probe.
   runtimePath: string;
   reason: WorkspaceRootRemovalReason;
   prunedGrants: number;
@@ -57,16 +57,16 @@ export interface RetainedWorkspaceRoot {
   storedPath: string;
   runtimePath?: string;
   reason: WorkspaceRootRetentionReason;
-  /** Stable filesystem/error code only; never an exception message. */
+  // Stable filesystem/error code only; never an exception message.
   code?: string;
 }
 
 export interface WorkspaceRootReconcileResult {
   removed: RemovedWorkspaceRoot[];
   retained: RetainedWorkspaceRoot[];
-  /** Roots already inactive whose durable cleanup will be retried. */
+  // Roots already inactive whose durable cleanup will be retried.
   pending?: PendingWorkspaceRootCleanup[];
-  /** Every root kept out of runtime scope during this reconciliation. */
+  // Every root kept out of runtime scope during this reconciliation.
   inactiveRoots?: string[];
 }
 
@@ -82,35 +82,35 @@ export interface ReconcileWorkspaceRootsOptions {
   auditLogger?: WorkspaceRootAuditLogger;
   permissionManager?: WorkspaceRootGrantPruner;
   source: "boot" | "list-roots" | string;
-  /** Test-only settings file override. */
+  // Test-only settings file override.
   settingsPath?: string;
-  /** Test seam for filesystem outcomes. */
+  // Test seam for filesystem outcomes.
   statFn?: StatFn;
   timeoutMs?: number;
   concurrency?: number;
-  /** Durable fail-closed cleanup that must succeed before settings shrink. */
+  // Durable fail-closed cleanup that must succeed before settings shrink.
   beforeRemove?: (
     runtimeRoot: string,
     context: WorkspaceRootRemovalContext,
   ) => Promise<number | void>;
-  /** Session detach/index repair after durable scope pruning, before completion. */
+  // Session detach/index repair after durable scope pruning, before completion.
   beforeComplete?: (
     runtimeRoot: string,
     context: WorkspaceRootRemovalContext,
   ) => Promise<void>;
-  /** Runs immediately after active→pending cutover, before durable cleanup. */
+  // Runs immediately after active→pending cutover, before durable cleanup.
   onInactive?: (
     intent: PendingWorkspaceRootRemoval,
     context: WorkspaceRootRemovalContext,
   ) => Promise<void>;
-  /** Runs after persistence/grant cleanup while the canonical root lock is held. */
+  // Runs after persistence/grant cleanup while the canonical root lock is held.
   onRemoved?: (
     removed: RemovedWorkspaceRoot,
     context: WorkspaceRootRemovalContext,
   ) => Promise<void>;
 }
 
-/** Stable, opaque audit identity that never reveals `/tmp` or another root. */
+// Stable, opaque audit identity that never reveals `/tmp` or another root.
 export function opaqueWorkspaceRootAuditRef(root: string): string {
   const digest = sha256Hex(root).slice(0, 16);
   return `<workspace-root:${digest}>`;
@@ -205,11 +205,7 @@ async function probeRootsBounded(
   return probes;
 }
 
-/**
- * Return separately registered roots strictly below `removedRoot`. Removing a
- * parent workspace must not revoke grants or routine scope owned by one of
- * these still-registered child projects.
- */
+// Return separately registered roots strictly below `removedRoot`. Removing a parent workspace must not revoke grants or routine scope owned by one of these still-registered child projects.
 export function retainedDescendantWorkspaceRoots(
   removedRoot: string,
   candidates: readonly string[],
@@ -319,11 +315,7 @@ async function finishCommittedWorkspaceRootRemoval(
   }
 }
 
-/**
- * User/slash removal entry point. The active→pending cutover commits before
- * live revocation and idempotent durable cleanup, so every post-commit failure
- * is reported as pending rather than rolling the root back into active scope.
- */
+// User/slash removal entry point. The active→pending cutover commits before live revocation and idempotent durable cleanup, so every post-commit failure is reported as pending rather than rolling the root back into active scope.
 export async function removeWorkspaceRootWithIntent(
   root: string,
   options: ReconcileWorkspaceRootsOptions,
@@ -360,14 +352,7 @@ async function resumePendingWorkspaceRootRemovals(
   return results;
 }
 
-/**
- * Reconcile persisted additional workspace roots with current filesystem state.
- *
- * Only confirmed absence and confirmed non-directories are destructive. Access,
- * network, busy, unknown, and timeout failures retain the user's setting. Probes
- * are bounded and concurrent, while settings mutations remain serial so the
- * read-modify-write persistence helper cannot race with itself.
- */
+// Reconcile persisted additional workspace roots with current filesystem state. Only confirmed absence and confirmed non-directories are destructive. Access, network, busy, unknown, and timeout failures retain the user's setting. Probes are bounded and concurrent, while settings mutations remain serial so the read-modify-write persistence helper cannot race with itself.
 export async function reconcileWorkspaceRoots(
   options: ReconcileWorkspaceRootsOptions,
 ): Promise<WorkspaceRootReconcileResult> {
@@ -482,9 +467,7 @@ export async function reconcileWorkspaceRoots(
     }
 
     await withWorkspaceRootLifecycleLock(probe.runtimePath, async () => {
-      // A root may have been recreated/re-added after the snapshot probe. Confirm
-      // the destructive result again while holding the same lifecycle lock used
-      // by add/remove so a stale ENOENT can never delete a newer registration.
+      // A root may have been recreated/re-added after the snapshot probe. Confirm the destructive result again while holding the same lifecycle lock used by add/remove so a stale ENOENT can never delete a newer registration.
       const current = readPermissionSettings(options.settingsPath).permissions.additionalDirectories;
       const stillRegistered = current.find(
         (candidate) =>

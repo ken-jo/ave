@@ -1,19 +1,4 @@
-/**
- * Labels built from server-supplied strings.
- *
- * The property is not "no dangerous characters" — the value is never executed. It is
- * that a label CANNOT LIE: two different resources must not render identically, and a
- * name must not render in an order other than the one it is stored in. Both are how a
- * user picks the wrong resource while believing they picked the right one.
- *
- * Every hostile character is written as a `String.fromCodePoint` ESCAPE rather than as a
- * literal, so a reader can see WHICH character each case is about. Note what does NOT
- * enforce that: `check-source-text-safe.mjs` tests raw BYTES below 0x20, so U+200B
- * (`E2 80 8B`) is structurally invisible to it. The discipline here is the author's, and
- * an earlier version of this file claimed the gate as its enforcement while carrying six
- * literal invisibles — which is exactly the unreviewable diff the discipline exists to
- * prevent.
- */
+/** Labels must preserve visible resource distinctions and stored order; write hostile characters as explicit escapes. */
 import { describe, expect, it } from "vitest";
 import { displaySafeLabel, hasControlChars, hasInvisibleOrReorderingChars, hasNonWhitespaceControlChars } from "../display-safe-text.js";
 
@@ -26,9 +11,7 @@ const LRI = cp(0x2066);
 const PDI = cp(0x2069);
 describe("displaySafeLabel", () => {
   it("makes two names that render alike render differently", () => {
-    // A zero-width space between characters is invisible in a picker row, so a hostile
-    // `poli<ZWSP>cy.md` sits under the real `policy.md` looking identical. Removing it
-    // is what puts the difference back on screen.
+    // Strip invisible characters so spoofed names cannot masquerade as another resource.
     const spoof = `poli${ZWSP}cy.md`;
     expect(spoof).not.toBe("policy.md");
     expect(displaySafeLabel(spoof, 128)).toBe("policy.md");
@@ -44,25 +27,19 @@ describe("displaySafeLabel", () => {
   it("removes controls that could forge a row or truncate one", () => {
     expect(displaySafeLabel("policy\u0000.md", 128)).toBe("policy.md");
     expect(displaySafeLabel("line\u001fbreak", 128)).toBe("linebreak");
-    // Real whitespace collapses rather than vanishing — the name stays readable.
     expect(displaySafeLabel("  annual   report .md  ", 128)).toBe("annual report .md");
-    // A newline is whitespace, so it collapses to a space instead of splitting the row.
     expect(displaySafeLabel("two\nlines", 128)).toBe("two lines");
   });
 
   it("bounds the label and reports nothing for nothing", () => {
     expect(displaySafeLabel("x".repeat(500), 64)).toHaveLength(64);
-    // An all-invisible name returns empty so the caller can fall back to the URI rather
-    // than render a row the user cannot see or click with confidence.
+    // All-invisible names return empty so callers can show a visible URI fallback.
     expect(displaySafeLabel(ZWSP.repeat(4), 128)).toBe("");
     expect(displaySafeLabel(42, 128)).toBe("");
     expect(displaySafeLabel(undefined, 128)).toBe("");
   });
 
-  // The test that the hand-listed version passed while sixteen other invisibles walked
-  // through it. Enumerating cases here would repeat that mistake with a longer list, so
-  // this asserts over a SAMPLE OF THE CLASS instead — one representative per family a
-  // reviewer found, plus two astral ones that only match under the `u` flag.
+  // Sample default-ignorable families, including astral code points that require Unicode regex mode.
   it("removes the whole default-ignorable class, not a list of remembered characters", () => {
     const invisibles = [
       0x00ad, // soft hyphen
@@ -82,26 +59,21 @@ describe("displaySafeLabel", () => {
     ];
     for (const codePoint of invisibles) {
       const spoof = `poli${String.fromCodePoint(codePoint)}cy.md`;
-      // The premise: it is a DIFFERENT string that renders the same. If this ever fails,
-      // the case is measuring nothing.
+      // Assert distinct strings actually render identically before testing the spoof.
       expect(spoof, codePoint.toString(16)).not.toBe("policy.md");
       expect(displaySafeLabel(spoof, 128), codePoint.toString(16)).toBe("policy.md");
     }
   });
 
   it("leaves legitimate non-ASCII names alone", () => {
-    // The counterweight: the rule must not become "strip anything unfamiliar". A server
-    // publishing Hangul or CJK names is honest and common, and a picker that mangles them
-    // is a worse outcome than the spoof it was defending against.
+    // Preserve ordinary Hangul and CJK; unfamiliar characters are not inherently deceptive.
     expect(displaySafeLabel("정상-보고서.md", 128)).toBe("정상-보고서.md");
     expect(displaySafeLabel("年度報告.pdf", 128)).toBe("年度報告.pdf");
     expect(displaySafeLabel("café-résumé.txt", 128)).toBe("café-résumé.txt");
   });
 
   it("strips a variation selector, which is a deliberate cost", () => {
-    // Pinned so it reads as a decision. The emoji loses its colour presentation in a
-    // label; the same character after a non-emoji character is invisible, which is why
-    // the shared class refuses it for identifiers. See the module comment.
+    // Display labels may lose emoji presentation; identifier validation rejects the invisible selector.
     const VS16 = String.fromCodePoint(0xfe0f);
     expect(displaySafeLabel(`⚠${VS16} alert.md`, 128)).toBe("⚠ alert.md");
   });
@@ -109,10 +81,7 @@ describe("displaySafeLabel", () => {
 
 describe("hasControlChars / hasNonWhitespaceControlChars", () => {
   it("catches the C1 controls that only one of twelve hand-written copies had", () => {
-    // U+0085 is NEL, a line terminator. U+009B is CSI, the 8-bit form of the
-    // `ESC [` that opens an ANSI escape sequence. A validator that refuses
-    // U+001B (which every copy did) and admits U+009B is missing a case, not
-    // expressing a policy.
+    // C1 controls include line and ANSI terminators and must be checked alongside C0.
     expect(hasControlChars(`a${"\u001b"}b`)).toBe(true);
     expect(hasControlChars(`a${"\u009b"}b`)).toBe(true);
     expect(hasControlChars(`a${"\u0085"}b`)).toBe(true);
@@ -136,10 +105,7 @@ describe("hasControlChars / hasNonWhitespaceControlChars", () => {
   });
 
   it("leaves bidi, zero-width and variation selectors to the display class", () => {
-    // Stated so the omission reads as a decision. These classes are applied by
-    // different operations: the display one DELETES, so losing a variation
-    // selector costs a monochrome glyph; these two REFUSE, so folding the same
-    // members in would drop a user's emoji-bearing message outright.
+    // Display cleanup deletes characters; validators must not reject whole emoji-bearing messages for the same class.
     expect(hasControlChars(`a${"\u202e"}b`)).toBe(false);
     expect(hasControlChars(`a${"\u200b"}b`)).toBe(false);
     expect(hasControlChars(`ok${"\ufe0f"}`)).toBe(false);

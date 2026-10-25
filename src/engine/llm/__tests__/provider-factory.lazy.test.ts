@@ -1,12 +1,4 @@
-/**
- * Lazy-load semantics for `createProvider` (PR #705).
- *
- * The factory must:
- * 1. Return a proxy without evaluating `./vercel/adapter.js`.
- * 2. Trigger the adapter import only on the first `streamTurn` call.
- * 3. Reset the inner promise on transient construction failure so the
- *    next call retries rather than reusing a rejected promise.
- */
+// Defer adapter evaluation until first stream; reset failed construction promises so retries can recover.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { StreamTurnParams } from "../types.js";
 import { collectAsyncIterable } from "../../../__tests__/test-helpers.js";
@@ -16,7 +8,6 @@ const TURN: StreamTurnParams = {
   systemPrompt: "",
   messages: [],
 };
-
 
 describe("createProvider lazy adapter (PR #705)", () => {
   beforeEach(() => {

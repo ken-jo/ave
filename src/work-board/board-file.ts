@@ -1,17 +1,4 @@
-/**
- * The `board.json` file: its on-disk shape, its schema version, and the
- * read-time projection applied to every item loaded from it.
- *
- * Pure and side-effect-free — the CRUD implementation that reads and writes
- * the file lives in `src/main/work-board-store.ts`. Keeping the shape and the
- * projection rule here (rather than re-deriving them per consumer) means
- * `status_resolved` has exactly one definition.
- *
- * `status_resolved` (the `overdue` projection) is computed on every read so
- * consumers never re-derive it: an item is `overdue` when its stored status is
- * `planned` or `in_progress` AND its `due_at` is strictly in the past. It is a
- * read-time projection only — `overdue` is never persisted.
- */
+/** Compute overdue on read for planned or in-progress items with past deadlines; never persist the projection. */
 import { createHash } from "node:crypto";
 import type {
   WorkItem,
@@ -40,20 +27,14 @@ import {
 } from "../shared/work-board-types.js";
 import { localDayStart, utcDateKey } from "../shared/local-date.js";
 
-/** On-disk shape of `board.json`. */
 export interface BoardFile {
   version: number;
   nextId: number;
   items: WorkItem[];
 }
 
-/** Current `board.json` schema version. */
 export const BOARD_VERSION = 1;
 
-/**
- * Compute the resolved status for a single item against a reference instant.
- * `overdue` applies only to not-yet-completed items with a past `due_at`.
- */
 export function resolveWorkItemStatus(
   item: WorkItem,
   nowMs: number,
@@ -68,7 +49,6 @@ export function resolveWorkItemStatus(
   return item.status;
 }
 
-/** `Z` or `±HH:MM` at the end of an ISO instant, in minutes. `null` if absent. */
 function explicitOffsetMinutes(iso: string): number | null {
   const match = /(?:(Z)|([+-])(\d{2}):(\d{2}))$/.exec(iso);
   if (!match) return null;
@@ -77,43 +57,11 @@ function explicitOffsetMinutes(iso: string): number | null {
   return match[2] === "-" ? -magnitude : magnitude;
 }
 
-/**
- * Re-anchor a due date that was stamped as midnight in some other zone.
- *
- * Until the board moved to the host calendar, the panel wrote a picked day as
- * `${day}T00:00:00+09:00` — midnight in Seoul. That is an absolute instant, so
- * its meaning did not change, but the day it now DISPLAYS under is the host's
- * day for that instant: on any host west of Seoul, an item the user set for the
- * 16th reads as the 15th. The user picked a day, not a moment, so the day is
- * what has to survive.
- *
- * Only a value that is unambiguously "midnight somewhere else" is touched:
- *
- *   - it must carry an explicit offset (no offset means we cannot tell what the
- *     writer meant, so we leave it alone);
- *   - that offset must not be `Z`, which is this code's own output rather than
- *     the legacy stamp;
- *   - that offset must differ from the host's offset at that instant (otherwise
- *     it is already host-local midnight, or a value we have already converted);
- *   - and its time of day IN ITS OWN OFFSET must be exactly 00:00:00.000.
- *
- * A due date with a real time on it was never a day-picker value and keeps its
- * instant exactly.
- *
- * Idempotent, and stable across hosts rather than merely across repeat loads on
- * one host: what it writes back is serialized with a `Z`, which the second rule
- * above excludes from ever being touched again — by this host or any other.
- */
+/** Re-anchor only exact midnight values with explicit non-Z offsets differing from the host; preserve real times and ambiguous stamps. */
 export function normalizeDueAt(dueAt: string): string {
   const offsetMinutes = explicitOffsetMinutes(dueAt);
   if (offsetMinutes === null) return dueAt;
-  // `Z` is what THIS code writes (`localDayStart(day).toISOString()`), never the
-  // legacy `+09:00` stamp — so a `Z` value is already anchored to the day its
-  // author picked and has nothing to migrate. Re-anchoring it would make the
-  // value follow whichever host opened the board last: written on a UTC host as
-  // the 16th, re-stamped by a Seoul host, it reads as the 15th back on the
-  // original host. A one-time fix-up of historical data must not become a
-  // rewrite that ping-pongs between machines.
+  // Never migrate Z output again; that would make dates move between hosts.
   if (offsetMinutes === 0) return dueAt;
 
   const instant = new Date(dueAt);
@@ -121,8 +69,6 @@ export function normalizeDueAt(dueAt: string): string {
 
   if (offsetMinutes === -instant.getTimezoneOffset()) return dueAt;
 
-  // Read the wall clock the writer saw, by shifting into their offset and using
-  // the UTC getters as a plain calendar reader.
   const asWritten = new Date(instant.getTime() + offsetMinutes * 60_000);
   const isMidnightThere =
     asWritten.getUTCHours() === 0
@@ -135,10 +81,6 @@ export function normalizeDueAt(dueAt: string): string {
   return localDayStart(pickedDay)?.toISOString() ?? dueAt;
 }
 
-/**
- * Apply {@link normalizeDueAt} across a board, reporting whether anything moved
- * so the caller can say so once instead of per item.
- */
 export function normalizeBoardDueDates(
   items: readonly WorkItem[],
 ): { items: WorkItem[]; changed: number } {
@@ -153,45 +95,24 @@ export function normalizeBoardDueDates(
   return { items: next, changed };
 }
 
-// ── `proposals.json` — the recommended-work file ─────────────────────────────
-//
-// Proposals sit BESIDE `board.json` in the same `~/.ave/work-board/` feature
-// directory rather than inside it. They are machine-authored and
-// author-revocable; work items are user-owned and never silently deleted. One
-// file per ownership model keeps the plugin write path off the rows the user
-// owns, and keeps machine rows out of the user's MAX_ITEMS budget.
+// Keep machine-authored revocable proposals separate from user-owned items and their capacity budget.
 
-/** File name of the proposals file, relative to the work-board feature dir. */
 export const PROPOSALS_FILE = "proposals.json";
 
-/** On-disk shape of `proposals.json`. */
 export interface ProposalsFile {
   version: number;
   proposals: WorkProposal[];
 }
 
-/** Current `proposals.json` schema version. */
 export const PROPOSALS_VERSION = 1;
 
-/**
- * The host-derived proposal id: `<pluginId>:<kind>:<sha256(key)[0..15]>`.
- *
- * The key is hashed rather than embedded so an arbitrary plugin-authored
- * string never becomes part of an identifier the host compares, logs, or puts
- * in a DOM attribute. The `pluginId` prefix is what makes one plugin's
- * proposals unreachable from another — the same prefix-scoping
- * `hasRoutineBySource` uses.
- */
+/** Hash arbitrary plugin keys and prefix ids by plugin ownership so identifiers are safe and cross-plugin proposals stay unreachable. */
 export function proposalId(pluginId: string, kind: string, key: string): string {
   const digest = createHash("sha256").update(key, "utf8").digest("hex");
   return `${pluginId}:${kind}:${digest.slice(0, 16)}`;
 }
 
-/**
- * Is this proposal still showable at `nowMs`? A dismissed or expired proposal
- * stays on disk (dismissal is sticky per id, and a re-post must not resurrect
- * a card the user closed) but never renders.
- */
+/** Dismissal and expiry hide cards without deleting their sticky identity; reposting must not resurrect them. */
 export function isLiveProposal(proposal: WorkProposal, nowMs: number): boolean {
   if (proposal.dismissedAt !== undefined) return false;
   if (proposal.acceptedItemId !== undefined) return false;
@@ -199,7 +120,6 @@ export function isLiveProposal(proposal: WorkProposal, nowMs: number): boolean {
   return Number.isNaN(expiry) ? false : expiry > nowMs;
 }
 
-/** Trim a plugin-authored string to its cap. Returns null when unusable. */
 function boundedText(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -207,14 +127,7 @@ function boundedText(value: unknown, max: number): string | null {
   return trimmed.slice(0, max);
 }
 
-/**
- * Outcome of {@link normalizeProposalInput}: either the normalized untrusted
- * envelope plus its scheduling fields, or the NAME OF THE FIELD that failed.
- *
- * A rejected proposal is refused with that field name — never coerced into a
- * default. A default here would be the host inventing text and attributing it
- * to a plugin, and the user reading it as the plugin's claim.
- */
+/** Reject malformed fields by name; defaults would invent plugin-authored claims. */
 export type NormalizedProposal =
   | {
       ok: true;
@@ -227,12 +140,7 @@ export type NormalizedProposal =
 
 const VALID_PROPOSAL_PRIORITIES: readonly WorkItemPriority[] = ["high", "medium", "low"];
 
-/**
- * Validate and bound one `proposeWork` payload.
- *
- * Pure: it decides nothing about authorization or slots, so the store and its
- * tests share exactly this definition of "a well-formed proposal".
- */
+/** Shape validation decides neither authorization nor capacity. */
 export function normalizeProposalInput(input: WorkProposalInput): NormalizedProposal {
   if (typeof input?.kind !== "string" || !PROPOSAL_KIND_PATTERN.test(input.kind)) {
     return { ok: false, field: "kind" };
@@ -305,16 +213,7 @@ export function normalizeProposalInput(input: WorkProposalInput): NormalizedProp
   };
 }
 
-/**
- * Compose the stored proposal row from a normalized payload plus whatever the
- * prior row under the same id carried.
- *
- * Two write paths reach this: a plugin's `proposeWork`, and the host's own
- * briefing. They must not drift on the part that decides what the user sees —
- * `dismissedAt` and `acceptedItemId` are STICKY across a re-post, so re-filing
- * is a refresh and never a way to put a card the user already closed, or
- * already turned into a work item, back in front of them.
- */
+/** Keep dismissal and accepted-item identity sticky across both plugin reposts and host briefing refreshes. */
 export function composeProposal(args: {
   id: string;
   kind: string;
@@ -344,14 +243,7 @@ export function composeProposal(args: {
   };
 }
 
-/**
- * Compose the work item a proposal becomes when the user accepts it.
- *
- * The HOST writes the detail — `state`, then the evidence rows, then the
- * blockers — so the shape of an accepted item does not depend on how each
- * plugin happened to lay its text out. `taskBrief` is deliberately NOT part of
- * the detail: it is instruction text for the run, not something to render.
- */
+/** The host formats accepted detail from state, evidence, and blockers; taskBrief is run instruction, never display text. */
 export function proposalToWorkItemInput(
   proposal: WorkProposal,
   project?: { projectRoot?: string; projectName?: string },

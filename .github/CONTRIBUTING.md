@@ -17,7 +17,7 @@ language should not be a barrier to participation.
 ## Development setup
 
 ```bash
-# Prerequisites: Node.js >= 22.4 and bun (https://bun.sh)
+# Prerequisites: Node.js >= 22.12 and bun (https://bun.sh)
 git clone https://github.com/ken-jo/ave.git
 cd ave
 bun install            # uv binary fetch + protocol/hook install (no native rebuild)
@@ -62,21 +62,28 @@ consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
-CI's `build-and-test` always runs typecheck and the build. A category merge
-(a pull request from `integration/*` into `main`) runs the full suite with
-coverage, as the multi-stage flow requires. Any other pull request to `main`
-or to an `integration/*` branch runs only the affected Vitest
-tests (`bun run test:ci`, `scripts/run-ci-suite.mjs`): the changed tests, every
-test `vitest related` reaches from a changed module, the triggered lock suites,
-and the must-run set in `config/ci-must-run-tests.json` (security, permissions,
-sandbox, contract, IPC, naming, and every test that runs repository code in a
-tsx child process or an esbuild bundle). It runs the full suite whenever that
-selection cannot be trusted: the hook's global inputs, message catalogs,
-deleted or renamed modules, a module that computes its imports, a module no
-test reaches, failed discovery, or more than 600 selected files. An affected
-run skips coverage. Global coverage thresholds describe the whole suite, so
-they are enforced on full runs only: every push to `main`, every `v*` tag, and
-the nightly schedule. A red full run there fails the check on that commit. Do not duplicate
+CI's build job keeps typecheck, the test-typecheck ratchet and the build for
+every non-documentation run, and plans the Vitest run once; the Vitest shard
+jobs run that plan and the required `build-and-test` check aggregates them and
+runs the hygiene gates. `scripts/run-ci-suite.mjs` owns test selection:
+a test-only diff (collected Vitest files and fixture assets only) on every PR
+base and main push runs changed tests, fixture readers, triggered locks and the
+must-run set, never the full suite. Deleted tests drop. Test helper and setup
+modules, the Vitest config, `config/`, `scripts/` (the selection itself) and
+`.github/` are never test-only: they run the full suite on every base except
+`integration/*`, whose full run is the category merge. Failed test-only
+discovery fails CI.
+A non-test-only category PR (`integration/*` into `main`) runs the full suite.
+Main pushes use the push's whole `before..HEAD` diff (full when `before` is
+missing, zero or not an ancestor) with the same trusted-selection rule
+as other non-integration PRs: uncertainty falls back to full. Integration-base
+PRs retain the best traced selection, including uncertainty and wide fan-out;
+an unresolved merge-commit diff fails CI. Release tags, nightly schedules and
+manual dispatches run the full suite. Local pre-push policy is unchanged. Coverage is
+periodic: instrumentation and the global thresholds (`check:test-coverage`)
+run only on the nightly schedule and a manual dispatch. Every other run, full
+or affected, skips coverage. A change that lowers coverage turns the next
+nightly run on `main` red. Do not duplicate
 the trio around a successful push. If a check fails, fix it and rerun
 only the failed or invalidated checks before pushing again. No CI workflow and no release
 gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and self-contained:

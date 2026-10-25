@@ -2,35 +2,20 @@ import type { PluginAccessSpec } from "./public-contract.js";
 
 export * from "./public-contract.js";
 
-/**
- * Host-private persistence and marketplace DTOs. These are intentionally kept
- * outside `public-contract.ts` so they cannot enter the vendored public surface.
- */
+/** Keep host-private persisted and marketplace shapes outside the vendored public contract. */
 
-/**
- * `"admin"` is read only from registries written before the git marketplace:
- * the first-boot migration turns it into `"user"` (design §16.3), and it
- * grants nothing.
- */
+/** Legacy admin source migrates to user and grants no authority. */
 export type PluginRegistryEntryInstallSource = "admin" | "user" | "local-dev";
 
-/**
- * Where a git or folder install came from (design §2.3, §18.4.2). `commit`
- * is the snapshot commit the plan was bound to — a folder source's revision
- * `local-<sha256>` (§18.4.3) — so the source keeps that snapshot while the
- * install references it. Only a marketplace install writes this; every other
- * install path removes it, because it would otherwise describe bytes it did
- * not install.
- */
+/** Origin binds installed bytes to a source snapshot or folder revision; local replacement removes stale provenance. */
 export interface PluginRegistryEntryOrigin {
   sourceId: string;
   sourceOrigin: "official" | "managed" | "custom" | "direct";
   commit: string;
   packagePath: string;
   version: string;
-  /** `legacy`: bound by the §16.3 migration, no digest yet. `folder`: a folder source's one rung. */
+  /** Legacy migration bindings may lack digests; folder sources have their own rung. */
   rung: "release" | "archive" | "tree" | "folder" | "legacy";
-  /** Zip sha256 (release, archive), tree digest (tree, folder), null for legacy. */
   artifactSha256: string | null;
   installedAt: string;
 }
@@ -38,11 +23,7 @@ export interface PluginRegistryEntryOrigin {
 export interface PluginRegistryEntry {
   id: string;
   manifestPath: string;
-  /**
-   * Canonical JSON SHA-256 of the plugin.json document recorded at install
-   * time. The host-secret grant (design §10.3 condition 2) compares the running
-   * document's digest against this host-owned value.
-   */
+  /** Pin the authored plugin document so running host-secret requests can be compared to install-time evidence. */
   manifestSha256?: string;
   enabled?: boolean;
   bundleRefs?: string[];
@@ -64,13 +45,7 @@ export interface PluginRegistryEntry {
   }>;
 }
 
-/**
- * The host-owned registry fields a running plugin's HostApi trusts: the
- * install source, the manifest pin taken at install, and where the install
- * came from. The host-secret gate (`plugins/secret-access/`) reads them;
- * `plugin.json` sits inside the plugin's writable surface and is never
- * trusted for any of them.
- */
+/** Trust provenance only from host-owned registry fields, never writable plugin.json. */
 export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "manifestSha256" | "origin">;
 
 export interface PluginRegistry {

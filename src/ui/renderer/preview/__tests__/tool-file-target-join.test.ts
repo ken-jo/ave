@@ -1,23 +1,6 @@
-/**
- * THE JOIN INVARIANT between the two renderer file-target derivations.
- *
- * `ChatView.routeActivity` resolves an tool-activity row back against the chat
- * preview model by EXACT STRING EQUALITY:
- *
- *   previewModel.targets.find(c => "path" in c && c.path === target)
- *
- * where `target` is `computeToolActivity(entries)`'s string and
- * `previewModel` is `collectChatPreviewModel({entries, attachments})`. The two
- * derivations are therefore not independent summaries — a string one side emits
- * and the other does not is by construction a lookup miss, and the click falls
- * to the dead-end `workspaceTabs.addTab("file-browser")` branch that opens an
- * unrelated file tree.
- *
- * These cases run BOTH REAL derivations over the SAME entries and assert the
- * invariant directly, rather than asserting each side's output in isolation
- * (which is how the two drifted apart while both sides' own tests stayed green).
- */
+/** Activity paths must exactly match preview-target paths or clicks cannot resolve a preview. */
 import { describe, expect, it } from "vitest";
+import { toolGroup } from "./support/tool-group.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 import { collectChatPreviewModel } from "../preview-targets.js";
 import {
@@ -36,16 +19,6 @@ function activityFileTargets(entries: ChatEntry[]): string[] {
   return [...activity.readFiles, ...activity.changedFiles]
     .map((item) => item.target)
     .filter((target): target is string => typeof target === "string");
-}
-
-function toolGroup(tools: Array<Record<string, unknown>>): ChatEntry {
-  return {
-    kind: "tool_group",
-    groupId: "g1",
-    groupIds: ["g1"],
-    status: "done",
-    tools: tools as never,
-  } as ChatEntry;
 }
 
 /** Assert the invariant, and that the case is non-vacuous (it produced rows). */
@@ -76,8 +49,8 @@ describe("action panel <-> preview file-target join", () => {
   });
 
   it("holds for apply_patch — the patched paths live only in the patch body", () => {
-    // Divergence (2) in the survey: the action panel extracted these paths and
-    // the preview side did not, so every apply_patch row dead-ended.
+    // Divergence (2) in the survey: the action panel extracted these paths and the preview side did not, so every apply_patch
+    // row dead-ended.
     expectJoinHolds(
       [toolGroup([{
         toolUseId: "patch-1",
@@ -98,9 +71,8 @@ describe("action panel <-> preview file-target join", () => {
   });
 
   it("holds for glob_files — a glob is an argument, so NEITHER side emits it", () => {
-    // Divergence (1): the action panel rendered `src/**/*.ts` as a touched file
-    // and the preview side never did, so that row dead-ended too. The rule the
-    // preview side already had (stricter) is the one adopted.
+    // Divergence (1): the action panel rendered `src/**/*.ts` as a touched file and the preview side never did, so that row
+    // dead-ended too. The rule the preview side already had (stricter) is the one adopted.
     const entries = [toolGroup([{
       toolUseId: "glob-1",
       name: "glob_files",
@@ -196,8 +168,7 @@ describe("action panel <-> preview web-target join", () => {
         status: "done",
         category: "network",
         input: { query: "ave" },
-        // A search names its hits ONLY in the result — the arguments carry a
-        // query string and nothing else.
+        // A search names its hits ONLY in the result — the arguments carry a query string and nothing else.
         result: JSON.stringify({
           results: [
             { url: "https://a.example/one", title: "One" },
@@ -211,8 +182,7 @@ describe("action panel <-> preview web-target join", () => {
         displayOrder: 1,
         status: "done",
         category: "network",
-        // The follow-up fetch of a page the search already surfaced is the
-        // same artifact, not a second one.
+        // The follow-up fetch of a page the search already surfaced is the same artifact, not a second one.
         input: { url: "https://a.example/one" },
         result: "<html></html>",
       },
@@ -222,8 +192,8 @@ describe("action panel <-> preview web-target join", () => {
     expect([...new Set(activityWebTargets(entries))].sort()).toEqual(expected);
     expect(browserTabUrls(entries).sort()).toEqual(expected);
 
-    // The page is credited to the call that FETCHED it, not to the search that
-    // merely listed it, and each row says which of the two it was.
+    // The page is credited to the call that FETCHED it, not to the search that merely listed it, and each row says which of
+    // the two it was.
     const targets = urlTargets(entries);
     expect(targets).toEqual(
       expect.arrayContaining([
@@ -262,9 +232,8 @@ describe("action panel <-> preview web-target join", () => {
     ])];
 
     const tabUrls = browserTabUrls(entries);
-    // The cap bounds the MENTIONED links only; the page the fetch asked for is
-    // listed on top of them. Both sides keep the same end of the list: the most
-    // recent mentions are in, and both stop at the shared limit.
+    // The cap bounds the MENTIONED links only; the page the fetch asked for is listed on top of them. Both sides keep the same
+    // end of the list: the most recent mentions are in, and both stop at the shared limit.
     expect(tabUrls).toHaveLength(TOOL_ACTIVITY_MENTIONED_URL_LIMIT + 1);
     expect(tabUrls).toContain("https://newest.example/page");
     expect([...new Set(activityWebTargets(entries))]).toHaveLength(TOOL_ACTIVITY_MENTIONED_URL_LIMIT + 1);

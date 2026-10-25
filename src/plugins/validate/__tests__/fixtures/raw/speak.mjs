@@ -1,21 +1,10 @@
-/**
- * Just enough of the plugin-child protocol, spoken by hand on this process's
- * own stdin and stdout, for a raw fixture to reach the case it exists for.
- *
- * The reference runtime cannot misbehave on purpose — it takes stdout away
- * from plugin code and exits when stdin ends — so each raw fixture is a plain
- * script that answers the host itself and departs from the protocol at one
- * place. `answers` replaces the answer to a method: a value is the `result`,
- * `WITHHOLD` sends nothing, and a function receives the request and returns
- * either.
- */
+/** Speak the raw child protocol for failure fixtures; WITHHOLD intentionally sends no reply. */
 import { createInterface } from "node:readline";
 
 export const WITHHOLD = Symbol("withhold");
 
 const RPC_METHOD_NOT_FOUND = -32601;
 
-/** Write one frame as the protocol frames it: one JSON object, one `0x0A`. */
 export function send(frame) {
   process.stdout.write(`${JSON.stringify(frame)}\n`);
 }
@@ -24,7 +13,6 @@ export function reply(id, result) {
   send({ jsonrpc: "2.0", id, result });
 }
 
-/** What a plugin that implements every declared tool, and the given hooks, answers. */
 export function constructed(params, lifecycleHooks = [], requires = []) {
   return {
     implementedToolNames: params.declaredToolNames,
@@ -52,10 +40,7 @@ const DEFAULT_ANSWERS = {
 
 let manifestTools = [];
 
-/**
- * Answer every request on stdin. With `exitOnEnd` false the process does not
- * leave when its input ends — whatever else keeps it alive decides.
- */
+/** With exitOnEnd false, input closure leaves process lifetime to the fixture. */
 export function speak(answers = {}, { exitOnEnd = true } = {}) {
   const table = { ...DEFAULT_ANSWERS, ...answers };
   const lines = createInterface({ input: process.stdin });

@@ -379,6 +379,7 @@ export const CHANNELS = {
   mcp: {
     servers: "ave:mcp:servers",
     kill: "ave:mcp:kill",
+    authenticate: "ave:mcp:authenticate",
     configGet: "ave:mcp:config:get",
     configPath: "ave:mcp:config:path",
     configAdd: "ave:mcp:config:add",
@@ -728,6 +729,10 @@ export const CHANNELS = {
   },
   preview: {
     readFile: "ave:preview:read-file",
+    // Table documents (csv/tsv/xlsx/xls/ods): main parses with the same read
+    // guard as readFile and returns a bounded grid of display strings — never
+    // the file bytes. INTERNAL: absent from PUBLIC_CHANNELS.
+    readDocument: "ave:preview:read-document",
   },
   workspace: {
     pickRoot: "ave:workspace:pick-root",
@@ -775,9 +780,29 @@ export const CHANNELS = {
   // main). Wire types: shared/browser-surface.ts.
   browser: {
     bindTab: "ave:browser:bind-tab", // invoke renderer→main  tab id ↔ guest webContents id
-    stop: "ave:browser:stop", // invoke renderer→main  badge stop: cancel and release an agent tab
+    stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
+    pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
+    resume: "ave:browser:resume", // invoke renderer→main  explicit new agent control generation
+    pausePopup: "ave:browser:pause-popup", // invoke renderer→main  main-issued native popup handle
+    resumePopup: "ave:browser:resume-popup", // invoke renderer→main  main-issued native popup handle
+    getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
+    getSessionBindings: "ave:browser:get-session-bindings",
+    sessionBindingsChanged: "ave:browser:session-bindings-changed",
     tabOp: "ave:browser:tab-op", // event  main→renderer  new / select / close a tab
     control: "ave:browser:control", // event  main→renderer  which tabs the agent controls
+  },
+  // Host-renderer-only browser chrome. Remote pages and plugin frames cannot
+  // read the library, choose site capabilities, or capture a guest preview.
+  browserWorkspace: {
+    getState: "ave:browser-workspace:get-state",
+    setBookmark: "ave:browser-workspace:set-bookmark",
+    clearHistory: "ave:browser-workspace:clear-history",
+    setSitePermission: "ave:browser-workspace:set-site-permission",
+    find: "ave:browser-workspace:find",
+    stopFind: "ave:browser-workspace:stop-find",
+    zoom: "ave:browser-workspace:zoom",
+    preview: "ave:browser-workspace:preview",
+    changed: "ave:browser-workspace:changed",
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────
   // INTERNAL. The renderer reports which browser/terminal tab the user is
@@ -873,14 +898,17 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.setMode]: "required",
   [PERMISSIONS.addRule]: "required",
   [PERMISSIONS.removeRule]: "required",
+  [PERMISSIONS.removeScopedRule]: "required",
   [PERMISSIONS.policySet]: "required",
   [PERMISSIONS.dirDispatch]: "required",
   [PERMISSIONS.reviewerDispatch]: "required",
+  [PERMISSIONS.judgeSet]: "required",
   [PERMISSIONS.deferredResolve]: "required",
   [PERMISSIONS.approvalSentenceSelect]: "required",
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
+  [PERMISSIONS.approveExtensionsWithoutIsolation]: "required",
   // Local-owner Tailnet sharing: all mutations are host-renderer-only and
   // require a current keyboard intent. The snapshot and change hint carry no
   // externally callable mutation capability, so they are deliberately omitted.

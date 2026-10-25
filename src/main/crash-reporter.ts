@@ -1,19 +1,5 @@
-/**
- * Production release prep — crash reporting.
- *
- * Two layers:
- *   1. Electron built-in crashReporter — always collects local minidumps to
- *      `~/.ave/crash-dumps/`. Upload to a remote URL is OFF by default; the
- *      user may enable via settings.telemetry.crashReportingEnabled + a
- *      configurable URL.
- *   2. Optional @sentry/electron integration — loaded via dynamic require()
- *      guard. If the dep is absent OR no DSN is configured, this is a no-op.
- *      DSN may come from `AVE_SENTRY_DSN` env or `settings.telemetry.sentryDsn`,
- *      in that order — the pair is registered in ENV_BACKED_SETTINGS so the
- *      settings control names the variable when it is the one deciding.
- *
- * No secrets are shipped in-code; the user provides DSN / endpoint at runtime.
- */
+// Local minidumps are collected without upload; remote reporting requires user configuration. Optional reporting is inert without its dependency or DSN;
+// environment configuration takes precedence over settings.
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { TelemetrySettings } from "../data/settings-store.js";
@@ -22,20 +8,11 @@ import { envForcedStringForSettingsPath } from "../shared/env-backed-settings.js
 const log = createLogger("crash-reporter");
 
 export interface CrashReporterDeps {
-  /**
-   * Base path for crash dumps. We pass this through `app.setPath("crashDumps", …)`
-   * before `crashReporter.start()` so Electron writes minidumps into an Ave-owned
-   * directory (consistent across OSes + easy to locate during triage).
-   */
+  // Base path for crash dumps. We pass this through `app.setPath("crashDumps", …)` before `crashReporter.start()` so Electron writes minidumps into an
+  // Ave-owned directory (consistent across OSes + easy to locate during triage).
   userDataPath: string;
   telemetry: TelemetrySettings;
-  /**
-   * Whether this launch may send a crash off the machine. A headless one-shot
-   * run passes `false`: local minidumps are still collected into the same
-   * Ave-owned directory, but the upload endpoint and Sentry are discretionary
-   * egress a single unattended turn never asked for. It only ever subtracts —
-   * `true` leaves the user's own settings deciding, exactly as before.
-   */
+  // Headless one-shot runs collect local dumps but cannot enable discretionary crash uploads; true still defers to user settings.
   remoteReporting: boolean;
   crashReporter?: {
     start: (opts: {
@@ -45,12 +22,12 @@ export interface CrashReporterDeps {
       ignoreSystemCrashHandler?: boolean;
     }) => void;
   };
-  /** Optional hook to override Electron's crashDumps path (test seam). */
+  // Optional hook to override Electron's crashDumps path (test seam).
   setCrashDumpsPath?: (path: string) => void;
   sentryLoader?: () => SentryLike | null;
 }
 
-export interface SentryLike {
+interface SentryLike {
   init(opts: { dsn: string }): void;
 }
 
@@ -68,8 +45,7 @@ export function startCrashReporter(deps: CrashReporterDeps): CrashReporterHandle
     log.warn("mkdir dumpDir failed: %s", (err as Error).message);
   }
 
-  // Override Electron's crashDumps location BEFORE crashReporter.start() so
-  // native minidumps land next to our userData (not the OS default).
+  // Override Electron's crashDumps location BEFORE crashReporter.start() so native minidumps land next to our userData (not the OS default).
   const setPath = deps.setCrashDumpsPath ?? loadElectronSetCrashDumpsPath();
   if (setPath) {
     try {
@@ -101,9 +77,8 @@ export function startCrashReporter(deps: CrashReporterDeps): CrashReporterHandle
     }
   }
 
-  // Precedence through the registry rather than a local `env ?? setting`, so
-  // the Settings control can tell the user the environment is deciding using
-  // the same rule that decides it.
+  // Precedence through the registry rather than a local `env ?? setting`, so the Settings control can tell the user the environment is deciding using the
+  // same rule that decides it.
   const dsn = envForcedStringForSettingsPath("telemetry.sentryDsn")
     ?? deps.telemetry.sentryDsn
     ?? "";

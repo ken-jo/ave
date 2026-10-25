@@ -1,12 +1,4 @@
-/**
- * Test fixture: an official marketplace no test can reach.
- *
- * A registry opened without `official` uses the live public repository
- * (`OFFICIAL_MARKETPLACE`), so a test's outcome would follow whatever that
- * repository publishes and would need the network. This stand-in keeps the id
- * and auth of the real one but points at a closed loopback port (9, discard),
- * so every fetch of it fails at once, offline or not.
- */
+/** A closed loopback endpoint prevents tests from contacting the live official repository. */
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 
 export const UNREACHABLE_OFFICIAL: OfficialMarketplace = Object.freeze({

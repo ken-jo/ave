@@ -1,12 +1,6 @@
-/**
- * Tests for withFileLock:
- * - Concurrent writes are serialised (no interleaving).
- * - Stale lock recovery: a leftover .lock dir is cleaned up automatically.
- * - Reads during an active write see the pre-write value (lock excludes them
- *   from the critical section, not from plain reads — this is by design).
- */
+/** Locks serialize writes; plain reads may still observe the pre-write value. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -29,16 +23,13 @@ afterEach(async () => {
   await cleanupTmpDir(tmpDir);
 });
 
-// Helper: read counter from testFile
 function readCounter(): number {
   return (JSON.parse(readFileSync(testFile, "utf-8")) as { counter: number }).counter;
 }
 
-// Helper: increment counter inside lock
 async function incrementUnderLock(): Promise<void> {
   await withFileLock(testFile, async () => {
     const current = readCounter();
-    // Yield so that other concurrent tasks can interleave (they must not).
     await new Promise((r) => setTimeout(r, 5));
     writeFileSync(testFile, JSON.stringify({ counter: current + 1 }), "utf-8");
   }, { retries: 20 });
@@ -59,9 +50,22 @@ describe("withFileLock", () => {
     expect(existsSync(newFile)).toBe(true);
   });
 
+  it("a waiting caller does not open the target before it holds the lock", async () => {
+    // A waiting caller must not hold the target open or recreate a holder-removed file before acquiring the lock.
+    let waiter: Promise<void> | undefined;
+    await withFileLock(testFile, async () => {
+      rmSync(testFile);
+      waiter = withFileLock(testFile, async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(testFile)).toBe(false);
+      writeFileSync(testFile, "{}", "utf-8");
+    });
+    await waiter;
+    expect(readFileSync(testFile, "utf-8")).toBe("{}");
+  });
+
   it("stale lock recovery — removes leftover .lock dir and acquires fresh lock", async () => {
-    // Simulate a stale lock: proper-lockfile uses a .lock *directory* next to the file.
-    // We must backdate mtime so proper-lockfile considers it stale.
+    // Backdate the lock-directory mtime to exercise stale recovery.
     const staleLockDir = `${testFile}.lock`;
     mkdirSync(staleLockDir);
     const pastSec = (Date.now() - 2000) / 1000;
@@ -69,7 +73,6 @@ describe("withFileLock", () => {
     utimesSync(staleLockDir, pastSec, pastSec);
 
     let executed = false;
-    // stale: 500 ms — the lock dir is 2s old, so it will be considered stale
     await withFileLock(
       testFile,
       async () => {
@@ -87,7 +90,6 @@ describe("withFileLock", () => {
       }),
     ).rejects.toThrow("test-error");
 
-    // Lock should be released — a subsequent lock attempt must succeed.
     let ran = false;
     await withFileLock(testFile, async () => {
       ran = true;
@@ -115,14 +117,7 @@ describe("withFileLock", () => {
     );
   });
 
-  /**
-   * proper-lockfile refreshes a held lock on a timer: it stats the lock dir and
-   * reports ENOENT as a compromised lock, by default by throwing from inside
-   * the fs callback — an uncaught exception. The stat is issued before release
-   * marks the lock released, so one that returns after release removed the
-   * dir is the teardown race CI hit. Holding that stat's callback makes the
-   * race deterministic.
-   */
+  /** Hold the lock-refresh stat callback until after release to reproduce a late ENOENT race. */
   function holdLockRefreshStat(): { arm: () => void; held: () => ((error: Error) => void) | undefined } {
     const lockfileFs = createRequire(createRequire(import.meta.url).resolve("proper-lockfile"))("graceful-fs") as {
       stat: (...args: unknown[]) => void;
@@ -184,8 +179,7 @@ describe("withFileLock", () => {
 
 describe("withInProcessFileQueue", () => {
   it("serializes read-modify-write against the same path", async () => {
-    // The property the five copied queues existed for: two interleaved
-    // read-modify-writes must not both read 0 and both write 1.
+    // Interleaved read-modify-write operations must not lose increments.
     const order: string[] = [];
     const bump = (tag: string) => withInProcessFileQueue(testFile, async () => {
       const current = JSON.parse(readFileSync(testFile, "utf-8")) as { counter: number };
@@ -216,9 +210,7 @@ describe("withInProcessFileQueue", () => {
   });
 
   it("keeps the queue moving after a rejected callback", async () => {
-    // A poisoned entry that wedged the chain would take the store offline for
-    // the rest of the session, so the stored link swallows both settlements
-    // while the rejection still reaches the caller that caused it.
+    // Keep caller rejections visible while swallowing the stored chain link so later operations still run.
     await expect(
       withInProcessFileQueue(testFile, async () => {
         throw new Error("boom");
@@ -228,8 +220,6 @@ describe("withInProcessFileQueue", () => {
   });
 
   it("is not the cross-process lock and creates no lockfile", async () => {
-    // The three stores that named this `withFileLock` sat next to thirteen
-    // modules importing the real one. Nothing here touches proper-lockfile.
     await withInProcessFileQueue(testFile, async () => undefined);
     expect(existsSync(`${testFile}.lock`)).toBe(false);
     await withFileLock(testFile, async () => undefined);

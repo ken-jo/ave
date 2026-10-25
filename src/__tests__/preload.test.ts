@@ -1,11 +1,4 @@
-/**
- * Host preload — deterministic plugin webview asset URLs
- *
- * Verifies that `src/preload.ts` exposes `pluginPreloadUrl` and
- * `pluginShellUrl` on `window.aveApi` as `file://` strings rooted under
- * `dist/src/`. These power the plugin UI host's <webview> wiring without
- * relying on `window.location.href`, which can be a splash-phase data: URL.
- */
+/** Preload asset URLs must not depend on a splash-phase data: location. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
@@ -23,9 +16,6 @@ const originalAveDevEnv = process.env.AVE_DEV;
 const originalAveE2eEnv = process.env.AVE_E2E;
 const originalAveDevConsoleEnv = process.env.AVE_DEV_CONSOLE;
 
-// Named exports only — mirrors the named-import shape in preload.ts.
-// A regression to `import electron from "electron"` will fail here because
-// the mock no longer supplies a `.default` object.
 vi.mock("electron", () => ({
   contextBridge: {
     exposeInMainWorld: vi.fn((key: string, value: unknown) => {
@@ -40,10 +30,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-// Node/bun runtimes differ on whether `globalThis.navigator` exists: some
-// (e.g. older bun, plain node before the Navigator global) leave it undefined,
-// which makes `defineProperty` throw "called on non-object". Define a stub
-// first so the test does not assume the host runtime already provides one.
+// Define navigator when absent so defineProperty works across test runtimes.
 if (typeof globalThis.navigator !== "object" || globalThis.navigator === null) {
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
 }
@@ -120,9 +107,6 @@ describe("preload — plugin webview asset URLs", () => {
 
     expect(typeof url).toBe("string");
     expect(url as string).toMatch(/^file:\/\//);
-    // Anchor on the filename so the assertion catches regressions where the
-    // path points to a wrong directory (e.g. dist/main/ instead of dist/src/).
-    // __dirname is `src/` at test-time or `dist/src/` in production builds.
     expect(url as string).toMatch(/\/(dist\/)?src\/plugin-preload\.cjs$/i);
   });
 
@@ -243,6 +227,15 @@ describe("preload — plugin webview asset URLs", () => {
     expect(result).toEqual(response);
     expect(mockInvoke.mock.calls).toEqual([[CHANNELS.chat.getSubAgentTranscript, request, chatGroupId]]);
     expect("sideChat" in surface).toBe(false);
+  });
+
+  it.each([MAIN_CHAT_GROUP_ID, "tile-2"])("preserves rewind group and restore choice for %s", async (chatGroupId) => {
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const api = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? api : api.chatGroup(chatGroupId);
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
+    expect(await surface.chatRewindTo("user-row", "both")).toEqual({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.chat.rewindTo, "user-row", chatGroupId, "both");
   });
 
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
@@ -460,6 +453,14 @@ describe("preload — plugin webview asset URLs", () => {
     );
   });
 
+  it("forwards only the server id for remote authentication", async () => {
+    const api = await loadAveApi();
+    const mcp = api["mcp"] as { authenticate(id: string): Promise<unknown> };
+    mockInvoke.mockResolvedValueOnce({ connected: false, errorCode: "mcp-auth-required" });
+    await expect(mcp.authenticate("remote-a")).resolves.toEqual({ connected: false, errorCode: "mcp-auth-required" });
+    expect(mockInvoke).toHaveBeenCalledWith("ave:mcp:authenticate", "remote-a");
+  });
+
   it("pins MCP app resource and tool calls to the supplied generation", async () => {
     const api = await loadAveApi();
     const mcp = api["mcp"] as {
@@ -515,8 +516,7 @@ describe("preload — plugin webview asset URLs", () => {
     mockUserActivation.isActive = false;
     await chatSend("second", undefined, "user-keyboard", token);
 
-    // The group id rides on every send: a turn that forgets which tile it came
-    // from is exactly the defect the required (never defaulted) id prevents.
+    // A required group id prevents turns from losing their originating tile.
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "ave:chat:send", expect.objectContaining({
       input: "first",
       userActivation: true,
@@ -668,8 +668,7 @@ describe("preload — per-tile chat push filtering", () => {
     return { listener: call?.[1] as (event: unknown, payload: unknown) => void, unsubscribe };
   }
 
-  // The fallback banner and the token stream ride one labelled adapter, so
-  // both must answer the same question: is this frame addressed to my tile?
+  // Fallback banners and token streams must use the same tile filter.
   it.each([
     ["ave:chat:stream", "onChatStream"],
     ["ave:chat:fallback", "onChatFallback"],
@@ -692,9 +691,7 @@ describe("preload — per-tile chat push filtering", () => {
     expect(mockRemoveListener).toHaveBeenCalledWith(channel, listener);
   });
 
-  // These channels have ONE producer and it labels every frame it sends, so an
-  // unlabelled one is a producer bug. Fanning it out would answer that bug by
-  // putting one conversation's frames in every open tile at once.
+  // Unlabelled frames are producer errors; broadcasting them would leak conversations across tiles.
   it.each([
     ["ave:chat:stream", "onChatStream"],
     ["ave:chat:fallback", "onChatFallback"],
@@ -713,8 +710,7 @@ describe("preload — per-tile chat push filtering", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  // The window's own surface is the primary tile's, not a wildcard: it takes
-  // the frames addressed to `main` and no others.
+  // The window surface receives only frames addressed to main.
   it.each([
     ["ave:chat:stream", "onChatStream"],
     ["ave:chat:fallback", "onChatFallback"],

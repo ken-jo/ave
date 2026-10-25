@@ -1,19 +1,4 @@
-/**
- * Recursive source-file listing for the `check-*.mjs` gates.
- *
- * WHY THIS IS A LEAF. Every `check-*.mjs` runs its scan at import time, so a
- * gate cannot borrow another gate's walker without also running that gate.
- * Five scripts had therefore grown five walkers — `check-color-tokens`,
- * `check-opacity-tokens`, `check-no-tls-bypass`, `check-source-text-safe`,
- * `check-test-duplicates` — that agreed on the recursion and disagreed on the
- * skip set, the error handling, and which of them carried the CodeQL note.
- * One walker, one option surface, one note.
- *
- * `withFileTypes` carries the entry type on the dirent itself. That avoids a
- * separate `statSync(path)` between the directory listing and the read, which
- * CodeQL flags as a file-system race: the path could be swapped for a symlink
- * or another inode in that window.
- */
+// Shared walkers must be import-safe; importing a gate would also execute its scan.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -46,15 +31,7 @@ export function walkSourceFiles(dir, options = {}, out) {
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch (error) {
-    // A directory listed by its parent a moment ago and gone by the time we
-    // descend was removed by something else running at the same time — a test
-    // clearing its scratch directory while a repo-wide walk is in flight. There
-    // is nothing left to walk, and failing the walk over it turns another
-    // suite's cleanup into this one's error.
-    //
-    // The root is not the same case: a caller naming a directory that does not
-    // exist has made a mistake, and it stays an error unless the caller opted
-    // out with `tolerateUnreadableDirs`.
+    // Ignore nested directories removed concurrently; a missing root still fails unless explicitly tolerated.
     if (!isRoot && error?.code === "ENOENT") return found;
     if (tolerateUnreadableDirs) return found;
     throw error;

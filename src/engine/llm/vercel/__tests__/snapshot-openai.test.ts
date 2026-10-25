@@ -1,26 +1,12 @@
-/**
- * L1–L3 snapshot parity tests for VercelUnifiedProvider (OpenAI paths).
- *
- * Per docs/references/vercel-ai-sdk-migration.md §11:
- *   L1 — Structural: StreamEvent type sequence matches expectation
- *   L2 — Content:    concatenated text_delta + reasoning_delta matches
- *   L3 — Tool:       tool_call payload (id/name/input) matches
- *
- * Also exercises:
- *   - Reasoning-effort mapping (4 cases).
- *   - Responses API tool turns keep reasoning_effort (the Chat Completions
- *     tool-turn guard is pinned in catalog-request-fields.test.ts).
- *   - OpenAI gpt-5.x → /v1/responses routing (Responses API).
- */
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import { mapReasoningEffort } from "../../reasoning-plan.js";
-import { usesOpenAIResponsesWire } from "../../../../shared/model-host-policy.js";
+import { usesOpenAIResponsesWire } from "../../reasoning-plan.js";
+import { resolveReasoningSupport } from "../../../../shared/context-budget.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
-
 
 describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
   it("maps 4 budget bands: none / low / medium / high", () => {
@@ -35,13 +21,24 @@ describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
     expect(mapReasoningEffort(32_000)).toBe("high");
   });
 
-  it("routes OpenAI reasoning families and every Azure request to the Responses wire", () => {
-    for (const model of ["gpt-5.4-mini", "gpt-5", "o1", "o3-mini", "o4-mini"]) {
-      expect(usesOpenAIResponsesWire("openai", model)).toBe(true);
+  it("selects the response protocol from catalog reasoning or a deployment route", () => {
+    const wireFor = (vendor: string, model: string) =>
+      usesOpenAIResponsesWire(vendor, model, resolveReasoningSupport({ vendor, model }));
+    // Catalog reasoning routes must not fall back to a chat protocol that rejects their tool turns.
+    for (const model of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5", "o1", "o3-mini", "o4-mini"]) {
+      expect(wireFor("openai", model)).toBe(true);
     }
-    expect(usesOpenAIResponsesWire("openai", "gpt-4.1")).toBe(false);
-    expect(usesOpenAIResponsesWire("openai", "gpt-4o")).toBe(false);
-    expect(usesOpenAIResponsesWire("azure-foundry", "gpt-4o")).toBe(true);
+    expect(wireFor("openai", "gpt-4.1")).toBe(false);
+    expect(wireFor("openai", "gpt-4o")).toBe(false);
+    expect(wireFor("azure-foundry", "gpt-4o")).toBe(true);
+    expect(wireFor("openai", "acme-unlisted-model")).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "acme-unlisted-model", { supported: true, source: "endpoint-report", control: "reasoning" })).toBe(true);
+    expect(usesOpenAIResponsesWire("openai", "acme-unlisted-model", { supported: true, source: "endpoint-report", control: "reasoning_effort" })).toBe(false);
+    // Catalog identity cannot establish a custom endpoint protocol.
+    const custom = "https://gateway.invalid/v1";
+    expect(usesOpenAIResponsesWire("openai", "gpt-6.1-sol", undefined, custom)).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "gpt-6.1-sol", resolveReasoningSupport({ vendor: "openai", model: "gpt-6.1-sol" }), custom)).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "opaque-model", { supported: true, source: "endpoint-report", control: "reasoning" }, custom)).toBe(true);
   });
 });
 
@@ -74,7 +71,6 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    // OpenAI (non-tool) passes reasoning_effort through.
     const provider = new VercelUnifiedProvider("openai", "test-key");
     await collect(
       provider.streamTurn({
@@ -95,7 +91,6 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   };
 
   it("sends the lowest level a listed model accepts when it cannot take 'none'", async () => {
-    // budget 100 → mapReasoningEffort "none"; gpt-5-mini accepts minimal..high.
     const openai = await captureProviderOptions("gpt-5-mini", 100);
     expect(openai?.reasoningEffort).toBe("minimal");
   });
@@ -106,9 +101,51 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   });
 
   it("sends no effort when nobody states the levels the model accepts", async () => {
-    // The catalog does not list these ids. The level is not guessed from the name.
+    // Unknown catalog IDs must not receive effort guessed from their names.
     expect(await captureProviderOptions("gpt-5.2-unlisted-fixture", 100)).toBeUndefined();
     expect(await captureProviderOptions("gpt-5-mini-unlisted-fixture", 10_000)).toBeUndefined();
+  });
+});
+
+describe("provider protocol for a reasoning model on a tool turn", () => {
+  it("sends gpt-6.1-sol over Responses with its effort, not over Chat Completions without it", async () => {
+    vi.resetModules();
+    const streamTextSpy = vi.fn((_options: unknown) => ({
+      stream: (async function* () {
+        yield { type: "finish", finishReason: "stop", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+      })(),
+    }));
+    vi.doMock("ai", async () => {
+      const actual = await vi.importActual<typeof import("ai")>("ai");
+      return { ...actual, streamText: streamTextSpy };
+    });
+    vi.doMock("@ai-sdk/openai", () => ({
+      createOpenAI: () => ({
+        responses: vi.fn(() => ({ __mock: "responses" })),
+        chat: vi.fn(() => ({ __mock: "chat" })),
+      }),
+    }));
+    try {
+      const { VercelUnifiedProvider } = await import("../adapter.js");
+      const provider = new VercelUnifiedProvider("openai", "test-key");
+      await collect(provider.streamTurn({
+        model: "gpt-6.1-sol",
+        systemPrompt: "sys",
+        messages: [{ role: "user", content: "use tool" }],
+        enableThinking: true,
+        thinkingBudgetTokens: 10_000,
+        tools: [{ name: "index_scan", description: "scan", inputSchema: { type: "object", properties: { q: { type: "string" } } } }],
+      }));
+      const callArg = streamTextSpy.mock.calls[0]![0] as {
+        model: { __mock: string };
+        providerOptions?: { openai?: { reasoningEffort?: string } };
+      };
+      expect(callArg.model.__mock).toBe("responses");
+      expect(callArg.providerOptions?.openai?.reasoningEffort).toBe("high");
+    } finally {
+      vi.doUnmock("ai");
+      vi.doUnmock("@ai-sdk/openai");
+    }
   });
 });
 
@@ -124,7 +161,7 @@ describe("VercelUnifiedProvider — stream idle ceiling (#1574)", () => {
           (opts: { abortSignal?: AbortSignal }) => ({
             stream: (async function* () {
               yield { type: "text-delta", id: "t1", text: "partial" };
-              // Stall until the composed abortSignal (idle ceiling) fires.
+              // Stall until the composed idle-ceiling signal aborts.
               await new Promise((_resolve, reject) => {
                 const s = opts.abortSignal;
                 if (s?.aborted) {
@@ -163,7 +200,7 @@ describe("VercelUnifiedProvider — stream idle ceiling (#1574)", () => {
       }
     })();
 
-    // Flush the first delta (arms the idle timer), then jump past the ceiling.
+    // Flush the first delta to arm the idle timer before advancing fake time.
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(300_001);
     await drain;
@@ -291,7 +328,6 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
       }),
     );
 
-    // Route MUST be the Responses API for gpt-5.x.
     expect(responsesSpy).toHaveBeenCalledWith("gpt-5.4-mini");
     expect(chatSpy).not.toHaveBeenCalled();
 
@@ -587,7 +623,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.providerOptions).toEqual({
-      openai: { reasoningEffort: "high", reasoningSummary: "detailed" },
+      openai: { reasoningEffort: "high", reasoningSummary: "detailed", forceReasoning: true },
     });
 
     vi.doUnmock("ai");
@@ -797,8 +833,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       "https://example.test/v1",
     );
 
-    // The flag travels in each request body, so two concurrent users with
-    // opposite settings hit the same stateless server without interfering.
+    // Per-request toggles isolate concurrent users with opposite settings.
     for (const enableThinking of [true, false]) {
       streamTextSpy.mockClear();
       await collect(
@@ -814,10 +849,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
           providerOptions: expect.objectContaining({
             aveCompat: {
               chat_template_kwargs: { enable_thinking: enableThinking },
-              // A budget only means something while thinking is on; with the
-              // switch off there are no reasoning tokens to limit.
-              // Both spellings travel: vLLM reads the first, llama.cpp (and
-              // ollama and LM Studio on top of it) reads the second.
+              // Send budgets only while thinking is on, using both supported backend parameter spellings.
               ...(enableThinking
                 ? {
                     thinking_token_budget: 10_000,
@@ -835,9 +867,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
   });
 
   it("forwards the configured reasoning budget, not just the on/off switch", async () => {
-    // Without this the reasoning control has two positions — none and
-    // unlimited — and a model that reasons by default can spend an entire
-    // generation deliberating and return an empty answer.
+    // A default-reasoning model still needs a finite budget to leave room for its answer.
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -879,13 +909,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
           providerOptions: expect.objectContaining({
             aveCompat: expect.objectContaining({
               thinking_token_budget: thinkingBudgetTokens,
-              // The same vendor class fronts two servers that spell the budget
-              // differently. llama.cpp -- and so ollama and LM Studio, which
-              // are built on it -- reads `thinking_budget_tokens`; vLLM reads
-              // the transposition above. Neither errors on the other's key, so
-              // sending only one spelling means the user's configured budget
-              // silently reaches nothing on half the backends this vendor
-              // covers, and nothing in the config distinguishes them.
+              // Send both budget spellings because compatible servers silently ignore the unsupported key.
               thinking_budget_tokens: thinkingBudgetTokens,
             }),
           }),
@@ -898,11 +922,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
   });
 
   it("spells the passthrough key the way the SDK looks it up", async () => {
-    // The SDK resolves providerOptions by the camelCase form of the provider
-    // name and only falls back to the hyphenated name, warning as deprecated
-    // when it does. The fallback worked, so nothing broke -- it just warned on
-    // every single request, and the day the fallback goes away it takes the
-    // thinking toggle and the reasoning budget with it, silently.
+    // Use the canonical camelCase provider-options key; deprecated aliases warn on every request.
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -936,8 +956,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       }),
     );
 
-    // The spy is declared with no parameters, so its recorded call is typed as
-    // an empty tuple; go through `unknown` to read the argument it did receive.
+    // The parameterless spy records an empty tuple type despite receiving a runtime argument.
     const [callArg] = streamTextSpy.mock.calls[0] as unknown as [
       { providerOptions: Record<string, unknown> },
     ];
@@ -950,10 +969,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
   });
 
   it("does NOT forward chat_template_kwargs to commercial gateways (openrouter/groq)", async () => {
-    // Commercial OpenAI-compatible gateways route through createOpenAICompatible
-    // but do not run a vLLM chat template. A top-level chat_template_kwargs field
-    // 400/422s the strict ones and no-ops the lenient ones — the OpenRouter
-    // breakage. providerOptions.aveCompat must be absent entirely.
+    // Hosted compatible gateways must not receive self-hosted chat-template options.
     for (const vendor of ["openrouter", "groq"] as const) {
       vi.resetModules();
       const streamTextSpy = vi.fn(() => ({
@@ -985,7 +1001,6 @@ describe("VercelUnifiedProvider openai-compatible", () => {
           model: "some/model",
           systemPrompt: "sys",
           messages: [{ role: "user", content: "hi" }],
-          // Even with thinking ON the toggle must not leak to the gateway.
           enableThinking: true,
         }),
       );
@@ -1045,7 +1060,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
       continue_final_message: true,
       add_generation_prompt: false,
     });
-    // continue_final_message precondition: the LAST wire message is assistant.
+    // Assistant-prefill continuation requires the last wire message to be assistant.
     expect(callArg.messages.at(-1)?.role).toBe("assistant");
 
     vi.doUnmock("ai");
@@ -1140,14 +1155,14 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     const { createGuardedModelProviderFetch } = await import("../../marketplace-provider-fetch.js");
     const trustedFetch = createGuardedModelProviderFetch(
-      "http://10.232.178.100:30000/v1",
+      "http://10.10.2.100:30000/v1",
       unusedNetworkFetch,
     );
     const { VercelUnifiedProvider } = await import("../adapter.js");
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "internal-key",
-      "http://10.232.178.100:30000/v1",
+      "http://10.10.2.100:30000/v1",
       trustedFetch,
     );
 
@@ -1161,7 +1176,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     expect(createCompatSpy).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: "internal-key",
-      baseURL: "http://10.232.178.100:30000/v1",
+      baseURL: "http://10.10.2.100:30000/v1",
     }));
 
     vi.doUnmock("@ai-sdk/openai-compatible");
@@ -1169,7 +1184,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 });
 
 describe("custom endpoint request protocol", () => {
-  it("retains effort with tools on the responses wire at a custom endpoint", async () => {
+  it("retains effort with tools without inferring a custom endpoint's protocol from catalog identity", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -1212,7 +1227,7 @@ describe("custom endpoint request protocol", () => {
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens: 10_000,
-        // A custom host does not establish the model; the user names the entry.
+        // The user named entry establishes the model; the custom host does not.
         catalogModel: "openai/gpt-5.4-mini",
         tools: [
           {
@@ -1225,7 +1240,7 @@ describe("custom endpoint request protocol", () => {
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.model).toMatchObject({ __mock: "responses" });
+    expect(callArg.model).toMatchObject({ __mock: "chat" });
     expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "high", reasoningSummary: "detailed" } });
 
     vi.doUnmock("ai");
@@ -1234,14 +1249,7 @@ describe("custom endpoint request protocol", () => {
 });
 
 describe("VercelUnifiedProvider — sampling params removed (CTRL simplification)", () => {
-  // PR #342 (CTRL) removed temperature / seed / maxOutputTokens from
-  // LLMVendorSettings and StreamTurnParams. Modern frontier models (GPT-5+,
-  // Claude 4+) deprecate fine-grained sampling — vendor SDK defaults govern.
-  // These tests lock down the removal: the streamText call MUST NOT carry
-  // temperature or seed for ANY vendor/model combination, so re-introduction
-  // would surface here immediately.
-  // A host-owned `outputTokenLimit` is intentionally distinct from those
-  // removed user controls and is covered by a dedicated bounded-call case.
+  // Sampling defaults belong to vendor SDKs; host output ceilings remain separate request controls.
   const runAndCaptureStreamTextArgs = async (
     vendor: "openai",
     model: string,
@@ -1307,9 +1315,7 @@ describe("VercelUnifiedProvider — sampling params removed (CTRL simplification
   });
 
   it("maps a host-owned outputTokenLimit to AI SDK maxOutputTokens verbatim", async () => {
-    // No transport ceiling: the transport cannot tell a user-configured chat
-    // ceiling from a plugin's, so a bound here would impose the plugin-sized
-    // one on chat. The background bound is applied by the caller that owns it.
+    // Apply background ceilings at their caller; transport-wide clamping would also restrict user chat.
     const args = await runAndCaptureStreamTextArgs(
       "openai", "gpt-4.1", MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT * 2,
     );
@@ -1317,5 +1323,3 @@ describe("VercelUnifiedProvider — sampling params removed (CTRL simplification
     expect("outputTokenLimit" in args).toBe(false);
   });
 });
-
-// Claude path now implemented — see snapshot-claude.test.ts for full coverage.

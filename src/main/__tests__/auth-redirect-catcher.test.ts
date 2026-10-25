@@ -1,13 +1,5 @@
-/**
- * The host-owned loopback redirect catcher, driven against a REAL listener.
- *
- * These cases open actual sockets and speak actual HTTP to them, because every
- * property worth having here is a property of the socket: which interface it
- * binds, what it answers a forged request, whether a second open can steal the
- * first one's port. A mock of `node:http` would assert the shape of the calls
- * this module makes and none of that.
- */
-import { describe, expect, it, afterEach } from "vitest";
+// Real sockets exercise interface binding, forged requests, and port ownership.
+import { describe, expect, it, afterEach, vi } from "vitest";
 import { request as httpRequest } from "node:http";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
 
@@ -32,7 +24,7 @@ async function open(
   return result;
 }
 
-/** One request to the catcher, with full control over the line the server sees. */
+// One request to the catcher, with full control over the line the server sees.
 function hit(
   redirectUri: string,
   path: string,
@@ -48,8 +40,7 @@ function hit(
         method: options.method ?? "GET",
         headers:
           options.hostHeader === undefined ? {} : { host: options.hostHeader },
-        // The catcher answers the redirect with a 303 to itself; following it
-        // here would collapse the two responses this suite wants to tell apart.
+        // The catcher answers the redirect with a 303 to itself; following it here would collapse the two responses this suite wants to tell apart.
         setHost: options.hostHeader === undefined,
       },
       (res) => {
@@ -76,21 +67,29 @@ describe("the listener it binds", () => {
   it("binds loopback and reports the URI by HOST NAME, not by address", async () => {
     const catchers = new AuthRedirectCatchers();
     const { redirectUri } = await open(catchers);
-    // `localhost`, not `127.0.0.1`. Identity providers register loopback
-    // redirect URIs by host and allow any port; the other spelling is a
-    // DIFFERENT redirect URI and the provider rejects it. This is the one
-    // detail that decides whether a real sign-in works at all.
+    // `localhost`, not `127.0.0.1`. Identity providers register loopback redirect URIs by host and allow any port; the other spelling is a DIFFERENT
+    // redirect URI and the provider rejects it. This is the one detail that decides whether a real sign-in works at all.
     expect(redirectUri).toMatch(/^http:\/\/localhost:\d+$/u);
     expect(Number(new URL(redirectUri).port)).toBeGreaterThan(0);
+  });
+
+  it("can name the listener by the RFC 8252 loopback IP literal and still catch the redirect there", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const result = await catchers.open(OWNER, { redirectHost: "127.0.0.1" });
+    openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
+    expect(result.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+    const waiting = catchers.wait(OWNER, result.handle);
+    const response = await hit(result.redirectUri, "/?code=abc123&state=xyz");
+    expect(response.location).toBe(result.redirectUri);
+    await expect(waiting).resolves.toEqual({ code: "abc123", state: "xyz" });
   });
 
   it("refuses a second open for the same plugin rather than replacing the first", async () => {
     const catchers = new AuthRedirectCatchers();
     const first = await open(catchers);
     await expect(catchers.open(OWNER)).rejects.toThrow(/already open/u);
-    // The first is still live: replacing it would have stranded a sign-in
-    // already in flight, whose redirect would then arrive at a closed port
-    // AFTER the user had typed their password.
+    // The first is still live: replacing it would have stranded a sign-in already in flight, whose redirect would then arrive at a closed port AFTER the
+    // user had typed their password.
     await expect(hit(first.redirectUri, "/")).resolves.toMatchObject({ status: 200 });
   });
 
@@ -112,9 +111,8 @@ describe("what it accepts", () => {
   });
 
   it("resolves a wait that arrives AFTER the redirect did", async () => {
-    // The browser can land before the caller gets around to waiting. A wait
-    // that only ever watched for a future arrival would hang on exactly the
-    // fast path, and the hang would look like a user who never signed in.
+    // The browser can land before the caller gets around to waiting. A wait that only ever watched for a future arrival would hang on exactly the fast path,
+    // and the hang would look like a user who never signed in.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     await hit(redirectUri, "/?code=early");
@@ -122,8 +120,7 @@ describe("what it accepts", () => {
   });
 
   it("sends the browser away from the URL that carries the code", async () => {
-    // A 303 back to the bare URI, so the authorization code does not sit in
-    // the user's history. The page they end up looking at is the landing page.
+    // A 303 back to the bare URI, so the authorization code does not sit in the user's history. The page they end up looking at is the landing page.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     const waiting = catchers.wait(OWNER, handle);
@@ -140,15 +137,13 @@ describe("what it accepts", () => {
     const landing = await hit(redirectUri, "/");
     expect(landing.status).toBe(200);
     expect(landing.body).toContain("Sign-in complete");
-    // There is no parameter through which a caller could reach this body. The
-    // absence is the point: a caller-supplied template would be plugin markup
+    // There is no parameter through which a caller could reach this body. The absence is the point: a caller-supplied template would be plugin markup
     // rendered by the user's browser on a loopback origin.
   });
 
   it("tells the user the sign-in FAILED when the provider refused", async () => {
-    // The refusal arrives at the same URI as the success — `?error=` instead of
-    // `?code=`. A landing page that said "complete" for that would be telling
-    // the user something the app is about to contradict.
+    // The refusal arrives at the same URI as the success — `?error=` instead of `?code=`. A landing page that said "complete" for that would be telling the
+    // user something the app is about to contradict.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     const waiting = catchers.wait(OWNER, handle);
@@ -170,10 +165,7 @@ describe("what it refuses", () => {
   });
 
   it("refuses a request whose Host header is not loopback", async () => {
-    // The listener is bound to 127.0.0.1, so a remote host cannot reach it —
-    // but a page in the user's own browser can, and DNS rebinding makes a name
-    // that resolves to 127.0.0.1 look same-origin. The `state` check downstream
-    // is what actually defeats a forged code; this is the cheap half.
+    // Loopback binding cannot prevent browser or DNS-rebinding requests; the downstream state check must reject forged codes.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     let settled = false;
@@ -189,16 +181,13 @@ describe("what it refuses", () => {
       hostHeader: "attacker.example.com",
     });
     expect(response.status).toBe(400);
-    // And it did not resolve the wait, which is the part that would have
-    // mattered: a 400 that still handed the code to the plugin would be worse
-    // than no check at all.
+    // And it did not resolve the wait, which is the part that would have mattered: a 400 that still handed the code to the plugin would be worse than no check at all.
     await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
   });
 
   it("reports another plugin's handle as unknown rather than as forbidden", async () => {
-    // Telling the two apart would let a plugin probe for another plugin's live
-    // sign-in — a side channel opened by an error message.
+    // Telling the two apart would let a plugin probe for another plugin's live sign-in — a side channel opened by an error message.
     const catchers = new AuthRedirectCatchers();
     const { handle } = await open(catchers, OWNER);
     await expect(catchers.wait(OTHER_OWNER, handle)).rejects.toThrow(
@@ -217,17 +206,28 @@ describe("what it refuses", () => {
   });
 
   it("closes the listener when the wait times out", async () => {
-    // A port left bound after the caller stopped waiting is a listener nobody
-    // owns, and the owner slot it holds would refuse the user's next attempt.
+    // A port left bound after the caller stopped waiting is a listener nobody owns, and the owner slot it holds would refuse the user's next attempt.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
-    await expect(catchers.wait(OWNER, handle, 5_000 /* min */)).rejects.toThrow(
-      /no redirect received/u,
-    );
+    // Only the wait's own timer is faked; the listener stays on real sockets.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let timedOut: Promise<void> | undefined;
+    try {
+      let settled = false;
+      const waiting = catchers.wait(OWNER, handle, 5_000 /* min */);
+      timedOut = expect(waiting).rejects.toThrow(/no redirect received/u);
+      void waiting.catch(() => undefined).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    await timedOut;
     await expect(hit(redirectUri, "/")).rejects.toThrow();
     // ...and the slot is free again.
     await expect(open(catchers)).resolves.toBeDefined();
-  }, 15_000);
+  });
 });
 
 describe("closing", () => {

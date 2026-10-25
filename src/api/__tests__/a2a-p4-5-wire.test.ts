@@ -26,7 +26,6 @@ const SPEC_DIGEST = createHash("sha256")
   .update(readFileSync(resolve(process.cwd(), "docs/protocols/ave-a2a-exact-send-replay.md")))
   .digest("hex");
 
-/** One named wire vector: the receiver's observable contract over real HTTP. */
 function vector(id: string, run: () => Promise<void> | void): void {
   it(id, run);
 }

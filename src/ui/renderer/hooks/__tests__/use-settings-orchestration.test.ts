@@ -38,16 +38,22 @@ function withProcessingDisplayLevel(
   return updated;
 }
 
-function settingsOrchestrationApi(updateResult: Awaited<ReturnType<AveApi["updateSettings"]>>): AveApi {
-  const settings = makeSettings();
-  const { api } = makeMockAveApi({
-    settings,
-    hasApiKey: false,
-  });
+function makeSettingsApi(
+  options: Parameters<typeof makeMockAveApi>[0],
+  overrides: ReturnType<typeof makeMockAveApi>["api"] = {},
+) {
+  const { api } = makeMockAveApi(options);
   Object.assign(api, {
-    updateSettings: vi.fn(async () => updateResult),
     hasWebApiKey: vi.fn(async () => false),
     hasMarketplaceApiKey: vi.fn(async () => false),
+    ...overrides,
+  });
+  return api;
+}
+
+function settingsOrchestrationApi(updateResult: Awaited<ReturnType<AveApi["updateSettings"]>>): AveApi {
+  const api = makeSettingsApi({ settings: makeSettings(), hasApiKey: false }, {
+    updateSettings: vi.fn(async () => updateResult),
   });
   return api as unknown as AveApi;
 }
@@ -72,6 +78,19 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("saves an empty model as an explicit unselected route", async () => {
+    const settings = makeSettings();
+    settings.llm.vendors.openai!.model = "";
+    const api = makeSettingsApi({ settings, hasApiKey: true });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    expect(result.current.model).toBe("");
+    await act(async () => result.current.save("llm"));
+    expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      llm: expect.objectContaining({ vendors: expect.objectContaining({ openai: expect.objectContaining({ model: "" }) }) }),
+    }));
+  });
+
   it.each(["chat", "web", "llm"])("keeps retirement pending when %s settings are saved without a provider choice", async (tab) => {
     let settings = makeSettings();
     settings.llm.retiredProvider = "copilot";
@@ -125,11 +144,8 @@ describe("useSettingsOrchestration", () => {
     const settings = makeSettings();
     settings.chat.processingDisplayLevel = "reasoning";
     const saved = withProcessingDisplayLevel(settings, "tools");
-    const { api } = makeMockAveApi({ settings });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings }, {
       updateSettings: vi.fn(async () => saved),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
@@ -152,11 +168,8 @@ describe("useSettingsOrchestration", () => {
     const settings = makeSettings();
     settings.chat.processingDisplayLevel = "full";
     const saved = withProcessingDisplayLevel(settings, "tools");
-    const { api } = makeMockAveApi({ settings });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings }, {
       updateSettings: vi.fn(async () => saved),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
@@ -194,11 +207,8 @@ describe("useSettingsOrchestration", () => {
     const updateSettings = vi.fn(() => new Promise<AppSettings>((resolve) => {
       resolveFirstSave = resolve;
     }));
-    const { api } = makeMockAveApi({ settings });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings }, {
       updateSettings,
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
@@ -234,11 +244,8 @@ describe("useSettingsOrchestration", () => {
         resolveFirstSave = resolve;
       }))
       .mockResolvedValue(secondSaveResult);
-    const { api } = makeMockAveApi({ settings });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings }, {
       updateSettings,
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
@@ -283,11 +290,8 @@ describe("useSettingsOrchestration", () => {
     settings.llm.vendors.openai = {
       ...settings.llm.vendors.openai!, thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000,
     };
-    const { api } = makeMockAveApi({ settings });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings }, {
       updateSettings: vi.fn(async () => settings),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
@@ -315,10 +319,7 @@ describe("useSettingsOrchestration", () => {
     expect(result.current.thinkingBudget).toBe(8_000);
   });
 
-  // (B) Vendor default-selection fix: the hook now initialises vendor to ""
-  // (empty string) instead of "claude", preventing a stale "claude" label
-  // from flashing in the UI before the settings load effect hydrates the
-  // persisted value. After hydration the vendor must match what was stored.
+  // Start with no selected provider so the pre-hydration UI cannot flash a stale default.
   it("initialises vendor to empty string before settings load (no stale 'claude' flash)", () => {
     const { api } = makeMockAveApi({ settings: makeSettingsWithVendor("openai") });
     // Pause getSettings so we can inspect the pre-hydration state.
@@ -337,11 +338,7 @@ describe("useSettingsOrchestration", () => {
 
   it("hydrates vendor from persisted settings on mount (not the old 'claude' default)", async () => {
     const settings = makeSettingsWithVendor("openai");
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
-    });
+    const api = makeSettingsApi({ settings, hasApiKey: false });
 
     const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
@@ -378,19 +375,14 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("queues a card's save behind an in-flight one instead of dropping it", async () => {
-    // A debounced llm save can be mid-flight when the user presses Save on a
-    // provider card. The credential save used to return false on the spot and
-    // say nothing, leaving the card looking committed with nothing written.
+    // Queue credential saves behind debounced tab saves instead of silently refusing them.
     let releaseFirstSave: (() => void) | undefined;
     const settings = makeSettings();
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => {
         await new Promise<void>((resolve) => { releaseFirstSave = resolve; });
         return settings;
       }),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
       setApiKey: vi.fn(async () => ({ ok: true })),
     });
     const { result } = renderHook(() =>
@@ -419,11 +411,8 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("writes a card's own block and secret without touching the active provider", async () => {
-    const { api } = makeMockAveApi({ settings: makeSettings(), hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings: makeSettings(), hasApiKey: false }, {
       updateSettings: vi.fn(async () => ({ ok: true })),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
       setApiKey: vi.fn(async () => ({ ok: true })),
     });
     const { result } = renderHook(() =>
@@ -441,8 +430,7 @@ describe("useSettingsOrchestration", () => {
     });
 
     expect(api.setApiKey).toHaveBeenCalledWith("claude", "sk-ant-1");
-    // No settings write at all: a fixed-endpoint vendor owns no field here,
-    // and `llm.provider` is not this call's to move.
+    // No settings write at all: a fixed-endpoint vendor owns no field here, and `llm.provider` is not this call's to move.
     expect(api.updateSettings).not.toHaveBeenCalled();
     expect(result.current.vendor).toBe("openai");
   });
@@ -461,11 +449,8 @@ describe("useSettingsOrchestration", () => {
       ...settings.marketplace,
       installedProviderPresets: [futureRouter],
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => settings),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
       setApiKey: vi.fn(async () => ({ ok: true })),
     });
     const onSaved = vi.fn();
@@ -478,6 +463,7 @@ describe("useSettingsOrchestration", () => {
       result.current.selectMarketplaceProviderPreset(futureRouter);
     });
     await waitFor(() => expect(result.current.vendor).toBe("openai-compatible"));
+    expect(result.current.model).toBe("");
 
     let saved = false;
     await act(async () => {
@@ -495,11 +481,9 @@ describe("useSettingsOrchestration", () => {
         provider: "openai-compatible",
         marketplaceProviderPresetId: "future-router",
         vendors: {
-          // The preset's own slot, and NOT the block's `model` — that one is
-          // the generic custom-provider row's, and a preset writing it is how
-          // the two rows used to overwrite each other.
+          // Write the preset's own model slot; the vendor block belongs to the generic provider row.
           "openai-compatible": expect.objectContaining({
-            presetModels: { "future-router": "future/free" },
+            presetModels: { "future-router": "" },
           }),
         },
       }),
@@ -509,8 +493,7 @@ describe("useSettingsOrchestration", () => {
       .filter((call) => Boolean(call.llm?.vendors))
       .at(-1)?.llm?.vendors?.["openai-compatible"];
     expect(savedBlock).not.toHaveProperty("model");
-    // The preset's address is the registry's, never the generic row's block:
-    // writing it here is what used to revert the generic card's own endpoint.
+    // Read preset endpoints from the registry; never overwrite the generic row's stored endpoint.
     const presetSave = (api.updateSettings as ReturnType<typeof vi.fn>).mock.calls
       .map((call) => call[0] as { llm?: { vendors?: Record<string, { baseUrl?: string }> } })
       .filter((call) => Boolean(call.llm?.vendors))
@@ -538,11 +521,8 @@ describe("useSettingsOrchestration", () => {
       ...settings.marketplace,
       installedProviderPresets: [futureRouter],
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => settings),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
       setApiKey: vi.fn(async () => ({ ok: true })),
     });
     settings.llm.vendors["openai-compatible"] = {
@@ -560,15 +540,14 @@ describe("useSettingsOrchestration", () => {
       result.current.selectMarketplaceProviderPreset(futureRouter);
     });
     await waitFor(() => expect(result.current.vendor).toBe("openai-compatible"));
-    // Selecting a preset must not park the preset's address in the generic
-    // row's endpoint: that field is written back on every save.
+    // Selecting a preset must not park the preset's address in the generic row's endpoint: that field is written back on every
+    // save.
     expect(result.current.baseUrl).toBe("http://localhost:8001/v1");
 
     act(() => {
       result.current.clearMarketplaceProviderPreset();
     });
-    // And switching back restores the generic row's own endpoint rather than
-    // resetting it to defaults.
+    // And switching back restores the generic row's own endpoint rather than resetting it to defaults.
     await waitFor(() => expect(result.current.baseUrl).toBe("http://localhost:8001/v1"));
 
     await act(async () => {
@@ -592,11 +571,8 @@ describe("useSettingsOrchestration", () => {
       ...settings,
       features: { idleMemoryConsolidation: true },
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => updated),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const onSaved = vi.fn();
     const { result } = renderHook(() =>
@@ -623,11 +599,8 @@ describe("useSettingsOrchestration", () => {
       ...settings,
       features: { memoryCaptureMode: "review" },
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => updated),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const onSaved = vi.fn();
     const { result } = renderHook(() =>
@@ -655,11 +628,8 @@ describe("useSettingsOrchestration", () => {
       ...settings,
       features: { subAgentAutonomousWake: true },
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => updated),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const onSaved = vi.fn();
     const { result } = renderHook(() =>
@@ -683,11 +653,7 @@ describe("useSettingsOrchestration", () => {
   it("hydrates autonomous sub-agent wake from persisted settings", async () => {
     const settings = makeSettings();
     settings.features = { subAgentAutonomousWake: true };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
-    });
+    const api = makeSettingsApi({ settings, hasApiKey: false });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn())
     );
@@ -697,10 +663,7 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("keeps every openai-compatible row's model to itself", async () => {
-    // Three rows are reached through one vendor — the generic custom provider
-    // and two marketplace presets — and each has its own model. They used to
-    // share the block's single `model`, so choosing on one row silently
-    // rewrote the others.
+    // Keep model choices independent for rows sharing the same underlying vendor.
     const alpha = {
       providerId: "alpha-gw",
       label: "Alpha Gateway",
@@ -722,11 +685,8 @@ describe("useSettingsOrchestration", () => {
       ...settings.marketplace,
       installedProviderPresets: [alpha, beta],
     };
-    const { api } = makeMockAveApi({ settings, hasApiKey: false });
-    Object.assign(api, {
+    const api = makeSettingsApi({ settings, hasApiKey: false }, {
       updateSettings: vi.fn(async () => settings),
-      hasWebApiKey: vi.fn(async () => false),
-      hasMarketplaceApiKey: vi.fn(async () => false),
     });
     const { result } = renderHook(() =>
       useSettingsOrchestration(api as unknown as AveApi, vi.fn())
@@ -735,6 +695,7 @@ describe("useSettingsOrchestration", () => {
 
     act(() => { result.current.selectMarketplaceProviderPreset(alpha); });
     await waitFor(() => expect(result.current.marketplaceProviderPresetId).toBe("alpha-gw"));
+    expect(result.current.model).toBe("");
     act(() => { result.current.setModel("alpha/chosen"); });
     await act(async () => { await result.current.save("llm"); });
 
@@ -744,9 +705,8 @@ describe("useSettingsOrchestration", () => {
       }> } })
       .filter((call) => Boolean(call.llm?.vendors))
       .at(-1)?.llm?.vendors?.["openai-compatible"];
-    // Alpha's key ALONE — the stored map is merged on the main side, so this
-    // save cannot carry a stale copy of beta's model back over a newer one.
-    // The generic row's `model` is not written at all, so it survives too.
+    // Alpha's key ALONE — the stored map is merged on the main side, so this save cannot carry a stale copy of beta's model
+    // back over a newer one. The generic row's `model` is not written at all, so it survives too.
     expect(block?.presetModels).toEqual({ "alpha-gw": "alpha/chosen" });
     expect(block).not.toHaveProperty("model");
 

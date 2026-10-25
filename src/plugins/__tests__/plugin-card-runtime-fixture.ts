@@ -1,16 +1,4 @@
-/**
- * Test-only helper: a REAL {@link PluginRuntime} that knows two plugins'
- * manifests, so `listPluginCards(registry)` runs its production projection
- * (`getModelVisibleTools()` -> `visibleNames` -> `buildPluginCard`) over
- * whichever registry the caller passes.
- *
- * The one seam is `isPluginGenerationActive`: a card is `active:false` (and so
- * carries no `sampleTools`) until a generation has published, and publishing one
- * needs on-disk fixtures. Everything the registry argument decides is left to
- * production code.
- *
- * NOT a `*.test.ts` file → vitest does not execute it as a suite.
- */
+/** Cards use the real runtime projection; only generation activation is replaced to avoid on-disk fixtures. */
 import { TestPluginRuntime } from "./test-helpers.js";
 import type { PluginRuntime } from "../runtime.js";
 

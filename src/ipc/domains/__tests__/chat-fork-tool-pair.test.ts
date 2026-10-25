@@ -1,14 +1,4 @@
-/**
- * `ave:chat:fork` tool-pair invariant repair.
- *
- * The forked slice is written to a BRAND-NEW session file. If it carries an
- * assistant `toolCalls` entry whose `tool_result` was cut off by the slice, the
- * file on disk violates the provider pairing invariant for every reader that is
- * not `loadSession`.
- *
- * These tests drive the real registered IPC handler (not the repair function),
- * so they fail if the handler stops calling the repair authority at all.
- */
+// Forked files must preserve tool-call/result pairing before any reader loads them.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import type { GenericMessage } from "../../../engine/llm/types.js";
@@ -36,7 +26,6 @@ function historyWithOrphanToolCall(): GenericMessage[] {
     { role: "user", content: "please read the file" },
     { role: "assistant", content: "reading", toolCalls: [{ id: "tu-paired", name: "read_file", input: {} }] },
     { role: "tool_result", toolUseId: "tu-paired", content: "file body" },
-    // The tool_result for `tu-orphan` never arrived (or was cut by the slice).
     { role: "assistant", content: "one more look", toolCalls: [{ id: "tu-orphan", name: "read_file", input: {} }] },
   ];
 }
@@ -71,7 +60,6 @@ async function setup(history: GenericMessage[]) {
   return deps;
 }
 
-/** The messages written to the NEW (forked) session, not the active one. */
 function forkedMessages(deps: ReturnType<typeof makeDeps>): GenericMessage[] {
   const call = deps.memoryManager.saveSession.mock.calls.find(
     ([sessionId]: [string]) => sessionId !== ACTIVE_SESSION,
@@ -109,7 +97,6 @@ describe("ave:chat:fork — tool-pair invariant", () => {
   it("drops a tool_result whose assistant toolCalls entry is not in the slice", async () => {
     const deps = await setup([
       { role: "user", content: "hi" },
-      // Assistant message carrying the call was lost; only the result survives.
       { role: "tool_result", toolUseId: "tu-dangling", content: "orphan result" },
     ]);
     await invokeRegisteredHandler<Promise<unknown>>(handlers, CHANNEL, -1, "main");

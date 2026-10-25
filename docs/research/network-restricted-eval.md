@@ -53,11 +53,11 @@ Both run `confined-plugin-child.test.ts`, `adversarial-escapes.test.ts` (includi
 
 Configured at boot in `src/boot/steps/sandbox-init.ts` and built in `src/permissions/asrt-sandbox.ts`:
 
-- One shared config with `strictAllowlist: true`. Any host off the list is refused, with no interactive fallback, for host tools and plugin workers alike.
-- The list is the union of every loaded plugin manifest's `networkAccess.allowedDomains` (`computeUnionAllowedDomains`) and the host names of configured model-provider endpoints (`computeDynamicEndpointHosts`). The trusted host baseline is empty by default. The list is refreshed when plugins or provider settings change (`updateAsrtSandboxConfig`).
-- `normalizeUnionForAsrt` emits both `d` and `*.d` for each bare domain, so the sandbox allows the same hosts as the host-fetch allow-list's dot-boundary match.
+- One shared config with `strictAllowlist: false` and an empty `allowedDomains`; the ask callback (`src/permissions/egress-ask.ts`) decides every connection by the invocation that opened it, identified by its own proxy listener (macOS port, Linux socket path), not by the proxy username.
+- A plugin worker reaches its own extension's `networkAccess.allowedDomains` plus the host names of configured model-provider endpoints (`computeDynamicEndpointHosts`), recomputed when plugins or provider settings change (`refreshSandboxNetworkConfig` → `setWorkerEgressAllowlists`); any other host is refused without asking.
+- A Bash or PowerShell call reaches a host a grant covers; otherwise the person is asked (Allow once, This conversation, This workspace, Always). A background call, asks turned off, or no approval surface is a refusal. A workspace terminal tab is asked in a banner in that tab (Allow once for that one connection, This tab, Always), denied after 120 s without an answer. Workspace and always grants record their origin (shell call or terminal) and cover only that origin.
+- `normalizeUnionForAsrt` emits both `d` and `*.d` for each bare domain, so a worker reaches the same hosts as the host-fetch allow-list's dot-boundary match.
 - The upstream proxy is set explicitly. With no trusted proxy configured it is empty, so confined processes never inherit an ambient proxy from the environment.
-- Trade-off: this is a union, not per-process isolation. A confined process can reach any domain that any loaded plugin declared.
 
 In-process requests have their own guards:
 

@@ -21,7 +21,7 @@ export interface BundledUvRuntimeOptions {
   arch?: string;
 }
 
-export function isPackagedUvRuntime(options: BundledUvRuntimeOptions = {}): boolean {
+function isPackagedUvRuntime(options: BundledUvRuntimeOptions = {}): boolean {
   if (options.defaultApp !== undefined) return !options.defaultApp && !!options.resourcesPath;
   if (options.resourcesPath !== undefined) return true;
   return getHostResources().isPackaged;
@@ -40,9 +40,8 @@ export function resolveBundledUvBinaryPath(options: BundledUvRuntimeOptions = {}
 }
 
 function resolveDevUvBinaryPath(uvTarget: UvTarget, options: BundledUvRuntimeOptions): string {
-  // The emitted main module may be an esbuild chunk. Its own directory is
-  // therefore not a stable route to repository resources; use the canonical
-  // app root unless a caller explicitly supplies the legacy module-dir seam.
+  // The emitted main module may be an esbuild chunk. Its own directory is therefore not a stable route to repository resources; use the canonical app root
+  // unless a caller explicitly supplies the legacy module-dir seam.
   const candidates = options.moduleDir
     ? [
       path.join(options.moduleDir, "..", "..", "..", "resources", "uv", uvTarget.dir, uvTarget.bin),

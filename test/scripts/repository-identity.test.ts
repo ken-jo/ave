@@ -12,41 +12,13 @@ import {
 import { workflowJobs } from "../../src/__tests__/support/workflow-source.js";
 import { HOST_PROTOCOL_NOTIFICATIONS, isHostApiMethod } from "../../src/plugins/isolation/host-api-wire.js";
 
-/**
- * `package.json` `repository` names this repository once (installed apps
- * update from the R2 feed in `build.publish`, which
- * `test/scripts/release-channel.test.ts` owns). What this file holds to the
- * `repository` entry, exactly:
- *
- * - every `<owner>/<repo>` reference to this repository, in the URL, API-path,
- *   `gh -R`/`--repo`, `repository:` and quoted-string forms, in every tracked
- *   text file that is not prose documentation, plus the documents in the
- *   consumed inventory (`scripts/hooks/documentation-references.json`),
- *   except the paths in {@link NOT_CHECKED};
- * - every `github.repository`-style comparison in `.github/workflows/`, and the
- *   guard on both `web-deploy.yml` jobs;
- * - the deprecation-owner text ("owner role of `<owner>`", optionally "organization owner role");
- * - the `gh -R <owner>/` owner in the packaged `resources/AGENTS.md`;
- * - the replaceable-hash list for the seeded `resources/AGENTS.md`, which must
- *   carry the current copy and every shipped release tag's copy (editing that
- *   file for a move needs it).
- *
- * Changing the owner or name therefore fails here, with every disagreeing site
- * listed, until each one agrees.
- *
- * Prose documentation outside the consumed inventory is not read. A
- * documentation-only change skips this suite in CI, so the suite may depend
- * only on documents whose edits run it, and the document-consumer guard
- * enforces that. A document that must agree is added to the inventory, as
- * `docs/ko/guides/windows-setup.md` and `docs/development/knip-baseline.md` are.
- */
+// Repository references and shipped-agent hashes derive from package.json repository.
+// Read prose only through the consumed-document inventory so edits trigger this suite.
 
 const root = process.cwd();
 const identity = readRepositoryIdentity(root);
 
-/** Tracked paths this file does not check, each with its reason. A prefix ends
- *  in `/`. Every entry must still match a tracked path, so the list cannot
- *  silently outlive what it names. */
+// Exclusions must match tracked paths; a trailing slash denotes a prefix.
 const NOT_CHECKED: ReadonlyArray<readonly [string, string]> = [
   ["CHANGELOG.md", "release history"],
   ["docs/architecture/", "historical design records, including consumed ones"],
@@ -65,7 +37,6 @@ function matchesEntry(path: string, entry: string): boolean {
 }
 
 function notChecked(path: string): boolean {
-  // isDocumentationPath is false for consumed documents, so those are read.
   return isDocumentationPath(path) || NOT_CHECKED.some(([entry]) => matchesEntry(path, entry));
 }
 
@@ -84,8 +55,7 @@ function gitText(...args: string[]): string {
   return result.stdout.toString("utf8");
 }
 
-/** The oldest release tag whose resources/AGENTS.md still holds the bytes it
- *  shipped with; the 2026-10-17 history rewrite changed every earlier copy. */
+// Earliest tag that still contains the exact agent guidance bytes it shipped.
 const FIRST_TAG_WITH_SHIPPED_AGENTS_MD = "v0.14.0";
 
 function compareReleaseTags(left: string, right: string): number {
@@ -131,16 +101,13 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** `<owner>/<repo>`: the owner, then this repository's name or `ave` so
- *  that a rename still catches the old. */
+// Include the current name and ave so a rename still detects stale references.
 const REPOSITORY_SLUG =
   String.raw`([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/(` +
   [...new Set([identity.repo, "ave"])].map(escapeRegExp).join("|") +
   String.raw`)(?:\.git)?`;
 
-/** The forms that name a GitHub repository. A quoted slug may continue into a
- *  path (`"owner/repo/releases/..."`), unless the quoted token is a plugin host
- *  protocol name (see {@link isProtocolName}). */
+// Quoted repository slugs may continue into paths, except protocol names.
 const REPOSITORY_REFERENCES = [
   new RegExp(
     String.raw`(?:github\.com[/:]|repos/|-R\s+|--repo[ =]|repository:\s*["']?)` + REPOSITORY_SLUG + String.raw`(?![\w.-])`,
@@ -149,8 +116,7 @@ const REPOSITORY_REFERENCES = [
   new RegExp(String.raw`(["'\x60])` + REPOSITORY_SLUG + String.raw`(?![\w.-])`, "gu"),
 ];
 
-/** Notification namespaces (`notifications/ave/`), derived from the protocol's
- *  own names so a namespace change moves this list with it. */
+// Derive notification namespaces from protocol names.
 const NOTIFICATION_NAMESPACES = [
   ...new Set(
     Object.values(HOST_PROTOCOL_NOTIFICATIONS)
@@ -160,21 +126,14 @@ const NOTIFICATION_NAMESPACES = [
   ),
 ];
 
-/** The golden fixtures keep each method's frames at `methods/<method>.json`. */
 const GOLDEN_METHOD_DIRECTORY = "methods/";
 
-/**
- * Whether a quoted token is a plugin host protocol name rather than a
- * repository path: `"notifications/ave/log"` reads as the slug
- * `notifications/ave` but is a notification, and
- * `"methods/ave/host/storage/read.json"` is a method's golden fixture.
- */
+// Protocol notification names and method-fixture paths resemble repository slugs.
 function isProtocolName(token: string): boolean {
   if (NOTIFICATION_NAMESPACES.some((namespace) => token.startsWith(namespace))) return true;
   return token.startsWith(GOLDEN_METHOD_DIRECTORY) && isHostApiMethod(token.slice(GOLDEN_METHOD_DIRECTORY.length));
 }
 
-/** Every repository reference in `source`, as `owner/repo` with its offset. */
 function repositoryReferences(source: string): Array<{ named: string; index: number }> {
   const found: Array<{ named: string; index: number }> = [];
   for (const [form, reference] of REPOSITORY_REFERENCES.entries()) {
@@ -183,7 +142,7 @@ function repositoryReferences(source: string): Array<{ named: string; index: num
       const [owner, repo] = quoted ? [match[2], match[3]] : [match[1], match[2]];
       const index = match.index ?? 0;
       if (quoted && isProtocolName(source.slice(index + 1))) continue;
-      // A git ref namespace (`refs/ave/<name>`) shares the slug shape but never names a repository.
+      // Git ref namespaces share the slug shape but do not identify repositories.
       if (quoted && owner === "refs") continue;
       found.push({ named: `${owner}/${repo}`, index });
     }
@@ -211,8 +170,7 @@ describe("repository identity source of truth", () => {
   });
 
   it("does not read the update feed", () => {
-    // The identity is the repository even when build.publish names no GitHub
-    // entry at all, as the R2 channel does.
+    // Repository identity is independent of the release feed provider.
     expect(
       repositoryIdentity({
         ...gitRepository("git+https://github.com/some-owner/some-repo.git"),
@@ -250,7 +208,7 @@ describe("repository identity source of truth", () => {
     expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.log}"`)).toEqual([]);
     expect(repositoryReferences("const target = `refs/ave/${localRef}`;")).toEqual([]);
     expect(repositoryReferences(`join(ROOT, "methods/ave/host/storage/read.json")`)).toEqual([]);
-    // A golden-directory prefix alone does not excuse a non-method path.
+    // A golden-directory prefix does not exempt paths outside method fixtures.
     expect(repositoryReferences(`"methods/ave/releases"`)).toEqual([{ named: "methods/ave", index: 0 }]);
   });
 
@@ -271,7 +229,6 @@ describe("repository identity source of truth", () => {
       }
     }
     expect(mismatches).toEqual([]);
-    // The live sites a move must change are among the references read.
     const missed = [
       ".github/CONTRIBUTING.md",
       ".github/workflows/ci.yml",
@@ -302,7 +259,6 @@ describe("repository identity source of truth", () => {
   it("names this repository in every workflow repository comparison", () => {
     const subject = String.raw`(github\.(?:repository_owner|repository|event\.repository\.owner\.login|event\.repository\.full_name))`;
     const literal = String.raw`(?:'([^']*)'|"([^"]*)")`;
-    // Each form: its pattern, then whether it holds for the expected value.
     const forms: ReadonlyArray<[RegExp, (value: string, expected: string) => boolean]> = [
       [new RegExp(String.raw`${subject}\s*[!=]=\s*${literal}`, "gu"), (value, expected) => value === expected],
       [new RegExp(String.raw`${literal}\s*[!=]=\s*${subject}`, "gu"), (value, expected) => value === expected],
@@ -356,16 +312,11 @@ describe("repository identity source of truth", () => {
   });
 
   it("lists the current and every release tag's resources/AGENTS.md in the replaceable-hash list", () => {
-    // The seeder replaces a user's copy in place only when its bytes are a
-    // shipped version, so an edit to resources/AGENTS.md (as a move needs)
-    // must keep every shipped copy listed. CI checks out full history and tags.
+    // Seeder replacement requires exact shipped bytes; retain every shipped guidance hash.
     const listed = new Set(read("resources/AGENTS.md.replaceable-sha256").split(/\s+/u).filter(Boolean));
     const current = createHash("sha256").update(readFileSync(resolve(root, "resources/AGENTS.md"))).digest("hex");
     expect(listed.has(current), "the current resources/AGENTS.md is not in the replaceable-hash list").toBe(true);
-    // The 2026-10-17 history rewrite renamed the product in every commit before
-    // FIRST_TAG_WITH_SHIPPED_AGENTS_MD, so the older tags now hold bytes that never
-    // shipped. Their shipped hashes stay in the list as a fixed inventory that git
-    // can no longer re-derive; tags from the floor on still hold the shipped bytes.
+    // Tags below the floor no longer reproduce shipped bytes; retain their fixed hash inventory.
     const tags = gitText("tag", "--list", "v*")
       .split("\n")
       .filter((tag) => /^v\d+\.\d+\.\d+$/u.test(tag));

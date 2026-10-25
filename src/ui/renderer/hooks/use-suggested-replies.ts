@@ -1,21 +1,5 @@
-// Renderer-side consumer of the `suggested_replies` IPC event emitted by
-// `src/ipc/domains/chat.ts` (turn-end). Backend already parses and filters
-// the `<suggested_replies>` block from the LLM stream — this hook owns the
-// module-level store + IPC subscription so any view can read the current
-// suggestion snapshot via `useSyncExternalStore`.
-//
-// Spec: `docs/architecture/proposals/suggested-replies-ghost-text.md` §6.1.
-//
-// Guards and bookkeeping:
-//   • Slash-command prefix filter (`/`, `!`, `$`) — security guard so a
-//     malicious / hallucinated suggestion cannot ride straight into a host
-//     command (proposal §10 follow-up).
-//   • Turn-scoped dismiss memory — once the user dismisses, subsequent pushes
-//     within the same turn keep `isDismissed: true`. A *new user message*
-//     calls `clearDismissedReplies()` to reset the latch so the next turn's
-//     suggestion renders fresh.
-//   • Telemetry — `shown / accepted / dismissed / ignored` counters routed
-//     through `telemetry/suggested-replies-counter`.
+// Reject slash-command prefixes in suggested replies; keep dismissal latched for the turn until a new user message. See
+// docs/architecture/proposals/suggested-replies-ghost-text.md.
 import { useEffect, useSyncExternalStore } from "react";
 import { getApi } from "../api-client.js";
 import {
@@ -85,8 +69,7 @@ function sanitizeReply(reply: unknown): string | null {
 }
 
 export function pushSuggestedReply(reply: string | null): void {
-  // Command filter runs *before* the empty-check so a command-prefixed reply
-  // correctly collapses to "no suggestion".
+  // Command filter runs *before* the empty-check so a command-prefixed reply correctly collapses to "no suggestion".
   const text = sanitizeReply(reply);
 
   // Telemetry: if the previous snapshot was still active + unaccepted when a
@@ -105,15 +88,13 @@ export function pushSuggestedReply(reply: string | null): void {
     return;
   }
 
-  // Dismiss-memory: if the latch is set, the new push remains dismissed so
-  // the user's prior Escape decision is honored across the (rare) intra-turn
-  // re-push. `clearDismissedReplies()` releases the latch.
+  // Dismiss-memory: if the latch is set, the new push remains dismissed so the user's prior Escape decision is honored
+  // across the (rare) intra-turn re-push. `clearDismissedReplies()` releases the latch.
   snapshot = {
     text,
     isDismissed: dismissLatch,
   };
-  // Only count as "shown" when the snapshot is actually visible (not latched
-  // into dismissed state).
+  // Only count as "shown" when the snapshot is actually visible (not latched into dismissed state).
   if (!dismissLatch) {
     recordSuggestedRepliesEvent("shown");
     priorActiveUnused = true;
@@ -142,9 +123,8 @@ export function dismissSuggestedReplies(): void {
  */
 export function clearDismissedReplies(): void {
   dismissLatch = false;
-  // Also clear `priorActiveUnused` — sending the message means the user
-  // engaged with the turn, so any prior suggestion that's about to be
-  // replaced shouldn't count as "ignored".
+  // Also clear `priorActiveUnused` — sending the message means the user engaged with the turn, so any prior suggestion
+  // that's about to be replaced shouldn't count as "ignored".
   priorActiveUnused = false;
 }
 
@@ -152,31 +132,14 @@ export function acceptSuggestedReply(): void {
   if (snapshot === EMPTY_SNAPSHOT) return;
   recordSuggestedRepliesEvent("accepted");
   snapshot = EMPTY_SNAPSHOT;
-  // Accept also releases the dismiss latch — the snapshot was consumed, so
-  // the next push should render fresh regardless of any prior Escape.
+  // Accept also releases the dismiss latch — the snapshot was consumed, so the next push should render fresh regardless of
+  // any prior Escape.
   dismissLatch = false;
   priorActiveUnused = false;
   notify();
 }
 
-/**
- * Drop the current suggestion because the conversation that produced it is
- * no longer the one on screen (new chat, session switch, transcript rewind).
- *
- * A suggestion belongs to one assistant turn of one conversation, but this
- * store is a renderer singleton that deliberately outlives view remounts so a
- * Composer remount mid-turn does not lose it (see `ensureIpcWired`). Nothing
- * else bounds its lifetime, so without this reset the previous
- * conversation's snapshot survives into the next one — where an empty
- * transcript still reads as "suggestion active" and suppresses the
- * empty-conversation affordances (the project selector and suggested tasks).
- *
- * Deliberately records no telemetry: `ignored` counts a suggestion the user
- * saw and passed over within a live turn, and abandoning the whole
- * conversation is a different act.
- *
- * Idempotent — safe to call when the store is already empty.
- */
+/** Clear singleton suggestions on session replacement or rewind without counting that abandonment as ignored telemetry. */
 export function resetSuggestedReplies(): void {
   dismissLatch = false;
   priorActiveUnused = false;
@@ -236,15 +199,7 @@ export function useSuggestedReplies(): SuggestedRepliesSnapshot {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-// HMR cleanup (dev only). Without this, Vite hot-replacing this module leaves
-// the previous IPC subscription dangling — both old + new closures fire on
-// every `suggested_replies` event, doubling `pushSuggestedReply` calls and
-// freezing the store at whichever closure ran last. Disposing on dispose
-// ensures the next module instance re-arms cleanly.
-//
-// `import.meta.hot` is a Vite-injected runtime feature; the project does not
-// pull in `vite/client` globally so we narrow it via a local structural type
-// instead of polluting tsconfig with a wider type bundle.
+// Dispose hot-reloaded IPC subscriptions so old closures cannot duplicate events; narrow import.meta.hot locally.
 const hot = (import.meta as { hot?: { dispose: (cb: () => void) => void } }).hot;
 if (hot) {
   hot.dispose(() => {

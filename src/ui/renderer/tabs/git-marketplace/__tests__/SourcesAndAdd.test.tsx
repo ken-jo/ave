@@ -1,8 +1,3 @@
-/**
- * Sources, Add and the installs without a marketplace (design §15.4, §15.5,
- * §15.7, §8.1): what each origin may do, the add flow with git as its
- * blocking first step, and the pasted server.json that connects unbound.
- */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
@@ -235,7 +230,6 @@ function addDialog(fake: ReturnType<typeof fakeMarketplace>, direct = false) {
   return { onAdded, onShowSource };
 }
 
-
 describe("AddSourceDialog", () => {
   it("previews what the repository holds before adding it under the chosen name", async () => {
     const fake = fakeMarketplace();
@@ -393,6 +387,12 @@ describe("GitRuntimeCard", () => {
   });
 });
 
+async function checkSource(input: string) {
+  fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: input } });
+  await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+  fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+}
+
 function serverJsonPreview(select: { package?: number } | undefined) {
   return {
       ok: true,
@@ -547,9 +547,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://git.corp.example/team" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://git.corp.example/team");
 
     const warnings = await screen.findByTestId("git-marketplace:add:warnings");
     expect(warnings).toHaveAttribute("data-tone", "warning");
@@ -572,9 +570,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://a.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://a.example/m");
     await screen.findByTestId("git-marketplace:add:warnings");
     fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(2));
@@ -644,9 +640,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://first.example/m");
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(1));
 
     // Edited while the first check is still on its way, then the first answer arrives.
@@ -675,9 +669,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     const { rerender } = render(dialog(true));
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://first.example/m");
     await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeDisabled());
 
     // Closed while checking, then reopened from a link with another address.
@@ -707,7 +699,6 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     expect(await screen.findByText(/git\.corp\.example 로그인 정보가 암호화되지 않은 채 전송되어/)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("git-marketplace:sources:confirm"));
     await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["token-unencrypted"]));
-    // Then the token dialog itself.
     expect(await screen.findByPlaceholderText("액세스 토큰 붙여넣기")).toBeInTheDocument();
   });
 });

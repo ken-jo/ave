@@ -1,12 +1,4 @@
-/**
- * Shell Tokenizer unit tests — pins the single-source-of-truth leaf grammar the
- * host risk inspector and the bash AST validator both consume.
- *
- * Coverage: quote-awareness (whitespace inside quotes is not a separator),
- * command/process substitution flags, output-vs-input redirect target
- * collection, compound-separator leaf boundaries, wrapper/assignment stripping,
- * and fail-closed parse errors on unbalanced quotes/parens.
- */
+/** Risk inspection and shell validation share quote-aware leaf grammar and fail-closed parse errors. */
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { tokenizeShell } from "../shell-tokenizer.js";
@@ -138,8 +130,7 @@ describe("tokenizeShell — redirects", () => {
   });
 
   it("fd-dup (>&m, n>&m) sets hasOutputRedirect but adds NO redirect target", () => {
-    // `ls 2>&1` duplicates fd 2 onto fd 1 — no file is named, so redirectTargets
-    // is empty, but hasOutputRedirect is true (output-redirect operator is present).
+    // Descriptor duplication has an output redirect operator but no filename target.
     const leaf1 = tokenizeShell("ls 2>&1").leaves[0]!;
     expect(leaf1.hasOutputRedirect).toBe(true);
     expect(leaf1.redirectTargets).toEqual([]);
@@ -222,8 +213,6 @@ describe("tokenizeShell — fail closed", () => {
   });
 });
 
-
-
 describe("tokenizeShell — heredoc bodies are not commands", () => {
   it("does not turn body lines into leaves", () => {
     const { leaves, parseError } = tokenizeShell("python3 - <<'PY'\nimport os\nos.listdir('/')\nPY");
@@ -233,14 +222,11 @@ describe("tokenizeShell — heredoc bodies are not commands", () => {
   });
 
   it("keeps the input redirect on the consuming leaf, so the read/write verdict is unchanged", () => {
-    // This is why removing the body cannot relax `isReadOnlyCommand`: the leaf
-    // that owns the heredoc already fails closed on hasInputRedirect.
+    // Heredoc ownership still sets input redirection after body elision; read-only classification must not relax.
     const { leaves } = tokenizeShell("cat <<'EOF'\nrm -rf /\nEOF");
     expect(leaves[0]!.hasInputRedirect).toBe(true);
   });
 });
-
-
 
 describe("tokenizeShell — input redirect sources", () => {
   it("reports the source of a `<` redirect", () => {
@@ -258,8 +244,7 @@ describe("tokenizeShell — input redirect sources", () => {
 
 describe("tokenizeShell — here-strings", () => {
   it("recognises `<<<` as one operator and collects no file from it", () => {
-    // Split into `<<` plus `<`, the trailing `<` looked like an ordinary input
-    // redirect and claimed the here-string's literal word as a filename.
+    // Treat here-string text as data rather than a filename from a split redirect operator.
     const { leaves } = tokenizeShell("grep x <<< 'a b'");
     expect(leaves).toHaveLength(1);
     expect(leaves[0]!.argv).toEqual(["grep", "x"]);
@@ -275,8 +260,7 @@ describe("tokenizeShell — here-strings", () => {
 
 describe("tokenizeShell — comments", () => {
   it("drops a comment and keeps reading the next line as a command", () => {
-    // The apostrophe in `don't` used to open a quoted run that swallowed the
-    // newline, so the second command never became a leaf of its own.
+    // Apostrophes inside comments must not consume the next command’s newline.
     const { leaves, parseError } = tokenizeShell("ls # don't\ncat /etc/shadow");
     expect(parseError).toBe(false);
     expect(leaves.map((l) => l.argv)).toEqual([["ls"], ["cat", "/etc/shadow"]]);

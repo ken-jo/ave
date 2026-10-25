@@ -86,7 +86,6 @@ export interface A2ARemoteExecuteInput {
   request: A2ARemoteRequestEnvelope;
   messageId?: string;
   taskHandle?: string;
-  /** Main-owned safe label shown in the foreground approval. */
   targetLabel?: string;
 }
 
@@ -108,11 +107,7 @@ export type A2ARemoteClientResult =
       record?: A2ARemoteAttemptRecord;
     };
 
-/**
- * A replay source that has cleared {@link A2ARemoteClient.bindReplaySource}: the
- * stored payload identity and messageId are all proven present, so the replay
- * body-recovery path can consume them without re-checking for undefined.
- */
+// A bound replay source has validated payload identity and messageId for body recovery.
 type BoundReplaySource = A2ARemoteAttemptRecord & {
   prepared: A2ARemoteAttemptRecord["prepared"] & {
     payloadRecordId: string;
@@ -196,9 +191,7 @@ function validateOperationMethod(input: A2ARemoteExecuteInput): void {
 function responseTaskHistoryLimit(input: Readonly<A2ARemoteExecuteInput>): number {
   if (input.operation !== "get") return A2A_REMOTE_MAX_HISTORY_LENGTH;
   const requested = input.request.params.historyLength;
-  // validateOperationMethod already rejects malformed values. Omission keeps
-  // the protocol-wide bounded maximum; an explicit value is an exact response
-  // upper bound and may intentionally be zero.
+  // Omission uses the protocol maximum; an explicit history limit is exact and may be zero.
   return requested === undefined
     ? A2A_REMOTE_MAX_HISTORY_LENGTH
     : requested as number;
@@ -383,25 +376,8 @@ export class A2ARemoteClient {
     return { ok: false, outcome: "intended-credential-revision-conflict", record };
   }
 
-  /**
-   * The replay binding predicate: a replay attempt may proceed ONLY when the
-   * recovered replay source binds to THIS call — same stored payload
-   * (payloadRecordId + payloadBodySha256 present), same messageId, same
-   * lineage, and a resolved predecessor whose credential revision matches the
-   * one this replay declares. Any mismatch fails closed.
-   *
-   * This is the single authority for that check. It was previously inlined at
-   * two callsites; the second copy had already drifted — it always reported
-   * `unknown-manual-reconciliation-required` and silently dropped the
-   * `retention-expired` signal that the first copy surfaced by inspecting the
-   * latest operation stage. Both callsites now consume this helper, so the
-   * retention-expired outcome (the STRONGER, more specific classification) is
-   * reported at both binding points, not just the first.
-   *
-   * On failure the outcome is derived from the latest operation stage:
-   * `RETENTION_EXPIRED` → `"retention-expired"` (the payload was aged out and
-   * cannot be recovered), otherwise `"unknown-manual-reconciliation-required"`.
-   */
+  // Replay requires the same payload, messageId, lineage, and a resolved predecessor with matching credential revision.
+  // Classify failures from the latest stage so expired payloads remain distinguishable from unknown outcomes.
   private async bindReplaySource(
     input: Readonly<A2ARemoteExecuteInput>,
     replaySource: A2ARemoteAttemptRecord | null,
@@ -432,10 +408,7 @@ export class A2ARemoteClient {
         ...(latest ? { record: latest } : {}),
       };
     }
-    // The guard above proved payloadRecordId, payloadBodySha256, and messageId
-    // are all present on this record; TypeScript narrows those property reads
-    // but cannot lift that into the object type, so the assertion restates an
-    // invariant just checked on the lines above — not a widening.
+    // The guard proves each required property; the assertion carries that narrowing to the object type.
     return { ok: true, source: replaySource as BoundReplaySource };
   }
 
@@ -500,9 +473,7 @@ export class A2ARemoteClient {
           targetLabel: input.targetLabel,
         });
       } catch {
-        // ApprovalGate denial, timeout-shaped rejection, and thrown failures
-        // are one fail-closed decision. Never expose the gate error or advance
-        // to journal/secret/control-plane/data-plane work.
+        // Approval denial, timeout, or failure must stop before journal, secret, or network work and never expose gate errors.
         approval = null;
       }
       const semanticStillBound = semanticDigest(input) === approvedSemanticDigestSha256;
@@ -528,18 +499,13 @@ export class A2ARemoteClient {
     }
     let replayRequestId = input.request.id;
     if (input.operation === "replay") {
-      // Re-bind against fresh store state (TOCTOU guard): the predecessor may
-      // have been resolved/retired since the first bind. Same helper, same
-      // predicate — including the retention-expired classification that this
-      // second check previously flattened to unknown-manual-reconciliation.
+      // Re-bind fresh store state after approval; the predecessor may have changed or expired.
       const binding = await this.bindReplaySource(input, replaySource);
       if (!binding.ok) {
         body.fill(0);
         return { ok: false, outcome: binding.outcome, ...(binding.record ? { record: binding.record } : {}) };
       }
-      // `source` carries the bound-source narrowing (payloadRecordId /
-      // payloadBodySha256 / messageId proven present); const narrowing survives
-      // the awaits below where a reassignable `let` would not.
+      // Keep the bound source const so required payload fields stay narrowed across awaits.
       const source = binding.source;
       replaySource = source;
       const sourceAad = createA2APayloadAad({

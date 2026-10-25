@@ -1,29 +1,7 @@
-/**
- * Permission policy — Layer 6: `hooks.json` trust unit (#811 command-hooks).
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §6.1 + §10
- * (open decision 1, recommendation adopted): **the whole `hooks.json` is a
- * single trust unit** — hashed as one file (mirroring a single `.sh`), with
- * each referenced local script's sha256 folded into the composite so that
- * editing a referenced script ALSO re-quarantines the config.
- *
- * This module is the bridge that lets `hooks.json` ride the SAME
- * `diffAgainstLockfile → quarantine-new/changed → /permission hooks accept`
- * flow as `.sh` files: it synthesizes a `DiscoveredHook` whose `fileName` is the
- * config trust-unit identity ({@link HOOKS_CONFIG_FILENAME}) and whose `sha256`
- * is the composite trust hash. Downstream trust code (`diffAgainstLockfile`,
- * `disableHook`, `persistLockfile`) treats it like any other hook — so an
- * untrusted or changed `hooks.json` is QUARANTINED (moved to `.disabled/`) and
- * its declarative command entries are NEVER loaded until the user explicitly
- * accepts it.
- *
- * SECURITY: this module is the trust gate. `wireHookSystem` must only feed the
- * parsed config entries into the runtime registry when this synthetic hook is
- * `trusted` — exactly the same gate `.sh` files pass through.
- */
+// Config bytes and referenced script hashes form one trust unit; edits re-quarantine it. Commands enter the registry only after explicit trust (docs/architecture/hook-runtime-expansion-design.md).
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve as pathResolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, join, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
   classifyCommand,
@@ -31,32 +9,42 @@ import {
   parseHookConfig,
   type HookConfigEntry,
 } from "./hook-config.js";
-import { defaultHooksDir, type DiscoveredHook } from "./hook-discovery.js";
+import { defaultHooksDir, discoverHooks, type DiscoveredHook } from "./hook-discovery.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { disabledHookOriginalName } from "./hook-disable-state.js";
 
 const log = createLogger("hook-config-trust");
 
-/**
- * The trust-unit identity for `hooks.json`. Carried as a synthetic
- * `DiscoveredHook.fileName` so the lockfile / diff / disable flow keys on it
- * identically to a `.sh` file. NOT a `.sh` name — `validateHookName` widens to
- * admit exactly this literal (and nothing else) for the config surface.
- */
+// The config uses the script trust workflow but admits only this exact non-script filename.
 export const HOOKS_CONFIG_FILENAME = "hooks.json";
 
-/** Default `hooks.json` path inside the hooks directory. */
 export function defaultHooksConfigPath(dir: string = defaultHooksDir()): string {
   return pathResolve(dir, HOOKS_CONFIG_FILENAME);
 }
 
-/**
- * Resolve the local-script token a `command` argv anchors its trust on, if any:
- *   - "local-script": argv[0] itself is the script.
- *   - "script-arg":   the first later arg that looks like a local script.
- * Returns the resolved absolute-ish path (with `~` expanded), or null for a
- * binary-only command (which `parseHookConfig` already rejects).
- */
+// Disabled review includes every stored copy; active discovery keeps exact names.
+export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false): {
+  scripts: DiscoveredHook[];
+  config: LoadedHookConfig;
+  configs: LoadedHookConfig[];
+  hooks: DiscoveredHook[];
+} {
+  const scripts = discoverHooks(dir, includeDisabledCopies);
+  const config = loadHookConfig(defaultHooksConfigPath(dir));
+  const configs = includeDisabledCopies && existsSync(dir)
+    ? readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && disabledHookOriginalName(entry.name) === HOOKS_CONFIG_FILENAME)
+      .map((entry) => loadHookConfig(join(dir, entry.name)))
+    : [config];
+  const synthetic = configs.flatMap((loaded) => {
+    const hook = syntheticConfigHook(loaded);
+    return hook ? [{ ...hook, fileName: basename(loaded.path) }] : [];
+  });
+  return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
+}
+
+// Trust anchors on argv[0] for local scripts or the first local-script argument for binaries; expand ~, and return null for rejected binary-only commands.
 export function resolveScriptAnchor(command: string[]): string | null {
   const cls = classifyCommand(command);
   if (cls === "binary-only") return null;
@@ -69,29 +57,19 @@ export function resolveScriptAnchor(command: string[]): string | null {
 }
 
 export interface LoadedHookConfig {
-  /** Absolute path to `hooks.json`. */
   path: string;
-  /** True when `hooks.json` exists on disk. */
   exists: boolean;
-  /** Parsed + normalized config entries (empty when absent / unparsable). */
+  // Empty when config is absent or unparsable.
   entries: HookConfigEntry[];
-  /** Non-fatal parser warnings (unknown events, ignored shapes). */
+  // Non-fatal parser warnings.
   warnings: string[];
-  /** Fatal per-entry parser rejections (binary-only, bad handler type). */
+  // Fatal handler or binary-only rejections.
   errors: string[];
-  /**
-   * Composite trust hash: sha256 over the raw `hooks.json` bytes plus each
-   * referenced local script's sha256. null when `hooks.json` is absent.
-   */
+  // Hash config bytes and every referenced script; null when config is absent.
   trustHash: string | null;
 }
 
-/**
- * Load + parse `hooks.json` and compute its composite trust hash. Pure-ish:
- * reads `hooks.json` and any referenced local scripts to fold their sha256 in,
- * but never executes anything. Missing config → `{ exists:false, entries:[] }`
- * (byte-identical to "no hooks.json").
- */
+// Reads config and referenced scripts for hashing; never executes them. Missing config yields no entries.
 export function loadHookConfig(
   configPath: string = defaultHooksConfigPath(),
 ): LoadedHookConfig {
@@ -111,9 +89,7 @@ export function loadHookConfig(
   try {
     parsedJson = JSON.parse(raw.toString("utf-8"));
   } catch (err) {
-    // Unparsable JSON is NOT silently ignored: surface as a fatal error so the
-    // caller can audit it. We still compute a trust hash over the bytes so a
-    // broken-then-fixed config re-diffs, but entries stay empty (fail-closed).
+    // Malformed config yields an audited fatal error and no runnable entries; hashing its bytes detects later repairs.
     log.warn("hook-config-trust: JSON parse failed %s: %s", configPath, (err as Error).message);
     return {
       path: configPath,
@@ -127,10 +103,7 @@ export function loadHookConfig(
 
   const parsed = parseHookConfig(parsedJson);
 
-  // Fold each referenced local script's sha256 into the trust hash so editing a
-  // referenced script ALSO flips the config to `changed` (re-quarantine). A
-  // referenced script that does not exist contributes a stable "missing" token
-  // (so its later appearance re-diffs).
+  // Script edits re-quarantine the config; a missing-script token also detects the script appearing later.
   const hasher = createHash("sha256");
   hasher.update(raw);
   const anchors = collectScriptAnchors(parsed.entries);
@@ -148,22 +121,14 @@ export function loadHookConfig(
   return {
     path: configPath,
     exists: true,
-    entries: parsed.entries,
+    entries: parsed.entries.map((entry) => ({ ...entry, configPath })),
     warnings: parsed.warnings,
     errors: parsed.errors,
     trustHash: hasher.digest("hex"),
   };
 }
 
-/**
- * The form of a script anchor that is folded into the trust hash.
- *
- * Separator-stable on purpose: the anchor comes back from `expandLeadingTilde`
- * through `path.resolve`, so on win32 the same script is spelled with `\`
- * where it was once spelled with `/`. The hash must name the script, not the
- * spelling, or a platform's path style — and any future change to how the
- * anchor is resolved — silently re-quarantines every `~/`-anchored hook.
- */
+// Normalize path separators before hashing so platform spelling changes do not re-quarantine the same script.
 export function trustAnchorKey(anchorPath: string): string {
   return anchorPath.replaceAll("\\", "/");
 }
@@ -172,7 +137,6 @@ function hashBytesOnly(raw: Buffer): string {
   return sha256Hex(raw);
 }
 
-/** Sorted, de-duplicated list of resolved local-script anchors across entries. */
 function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
   const set = new Set<string>();
   for (const entry of entries) {
@@ -182,12 +146,7 @@ function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
   return [...set].sort();
 }
 
-/**
- * Synthesize a `DiscoveredHook` for the `hooks.json` trust unit so the lockfile
- * diff / quarantine / accept flow treats it like any `.sh` file. `hookType` is a
- * placeholder (`pre`) and is NEVER used for dispatch — config entries carry
- * their own `event`; this synthetic hook exists ONLY to anchor trust state.
- */
+// The synthetic pre event anchors trust only; dispatch uses each config entry's event.
 export function syntheticConfigHook(loaded: LoadedHookConfig): DiscoveredHook | null {
   if (!loaded.exists || loaded.trustHash === null) return null;
   return {

@@ -1,18 +1,4 @@
-/**
- * The host end of a plugin child's pipes, on its own
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * Three things the transport owns and nothing above it can repair:
- *
- *  - It is the one producer of MCP request metadata on this channel, and
- *    `request` cannot become a second path for an MCP method.
- *  - An observed exit is not a requested termination: a child that left on
- *    its own is released and never terminated.
- *  - It starts the link's termination sequence at most once, and a fault that
- *    arrives while that sequence runs — synchronously from inside `terminate`,
- *    as a refused `kill()` reports — is recorded, never answered with a
- *    second `terminate`.
- */
+/** The transport owns framing, call settlement and one termination sequence; faults are not terminal exits. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
@@ -35,7 +21,7 @@ import {
 } from "../plugin-child-transport.js";
 import { observe, settle } from "./stream-turns.js";
 
-/** The dispatcher's own warnings, so a case can see the decision 63 record. */
+/** Capture dispatcher warnings for dropped frames. */
 const dispatcherWarn = vi.hoisted(() => vi.fn());
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -51,16 +37,12 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 
 type Frame = Record<string, unknown>;
 
-/** The link's own handlers, so a case can report an exit or a fault. */
 interface LinkHandlers {
   gone: Array<(reason: string) => void>;
   fault: Array<(reason: string) => void>;
 }
 
-/**
- * A link over two in-memory pipes whose `terminate` is recorded and whose
- * exit and faults the case fires by hand.
- */
+/** Use paired pipes with recorded termination and manually reported exits or faults. */
 function recordedLink(): {
   link: ChildLink;
   childToHost: PassThrough;
@@ -124,8 +106,7 @@ describe("the transport is the one producer of MCP request metadata", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ method: "tools/call" });
     const params = sent[0]!.params as Record<string, unknown>;
-    // A tools/call also names the host invocation it serves, by a fresh
-    // opaque token (see INVOCATION_META); every other key is the S1 metadata.
+    // tools/call carries a fresh invocation token in addition to required protocol metadata.
     const { "ave/invocation": invocation, ...s1 } = params._meta as Record<string, unknown>;
     expect(invocation).toMatch(/^[0-9a-f-]{36}$/u);
     expect(s1).toEqual({
@@ -133,7 +114,6 @@ describe("the transport is the one producer of MCP request metadata", () => {
       "io.modelcontextprotocol/clientCapabilities": {},
     });
     expect(s1).toEqual(pluginChildRequestMeta());
-    // The caller's params cross beside it, untouched.
     expect(params).toMatchObject({ name: "speak", arguments: { text: "hi" } });
     transport.close("case over");
   });
@@ -191,7 +171,6 @@ describe("an observed exit is not a requested termination", () => {
     await expect(transport.exited).resolves.toBe("child exited code=0 signal=null");
     expect(childGone).toHaveBeenCalledTimes(1);
     expect(terminated).toEqual([]);
-    // A close after the exit has nothing left to end.
     transport.close("stopped after it left");
     expect(terminated).toEqual([]);
     expect(childGone).toHaveBeenCalledTimes(1);
@@ -225,7 +204,7 @@ describe("a live child's fault", () => {
     await expect(pending).rejects.toThrow("kill EPERM");
     expect(terminated).toEqual(["kill EPERM"]);
     await settle();
-    // A fault ends the child; it is not the child's exit.
+    // A fault starts termination but does not report child exit.
     expect(exited()).toBe(false);
   });
 
@@ -242,12 +221,7 @@ describe("a live child's fault", () => {
 describe("a refused signal does not recurse", () => {
   const GRACE_MS = 3_000;
 
-  /**
-   * A link that models production's sequence: `terminate` sends SIGTERM and
-   * arms ONE escalation timer, and each signal is refused — reported as a
-   * fault synchronously, from inside the call that sent it, as Node emits a
-   * refused `kill()`'s `error`.
-   */
+  /** Model synchronous signal refusal during a single SIGTERM/escalation sequence. */
   function refusingLink(): {
     link: ChildLink;
     counts: { terminate: number; maxDepth: number; timersArmed: number; sigkill: number };
@@ -307,7 +281,6 @@ describe("a refused signal does not recurse", () => {
     await vi.advanceTimersByTimeAsync(GRACE_MS);
     await vi.advanceTimersByTimeAsync(2 * GRACE_MS);
     await rejected;
-    // Nothing else crossed once the sequence began.
     expect(framesAfterStart()).toBe(framesBefore);
     return { transport, counts, exited };
   }
@@ -331,26 +304,20 @@ describe("a refused signal does not recurse", () => {
   });
 });
 
-/** A store the host side enters around a call, standing in for the invocation's. */
 const marker = new AsyncLocalStorage<string>();
 
 interface InvocationRig {
   transport: PluginChildTransport;
   sent: Frame[];
-  /** What `raiseAlert`'s implementation saw: the marker it ran under. */
   seen: Array<string | undefined>;
-  /** The marker each `context.log` from the child was forwarded under. */
   logged: Array<string | undefined>;
-  /** Write a frame from the "child", delivered in the context the link was made in. */
+  /** Deliver frames in link-creation context, matching real pipes. */
   deliver: (frame: Frame) => void;
   fireGone: (reason: string) => void;
   fireFault: (reason: string) => void;
 }
 
-/**
- * A transport made inside a marker, as a child spawned from inside a tool
- * call is, whose frames arrive in that context, as a real pipe's do.
- */
+/** Construct inside a marker to test spawn-context isolation. */
 function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
   const seen: InvocationRig["seen"] = [];
@@ -384,7 +351,6 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
   });
 }
 
-/** Send `count` tools/calls, each under its own marker, and return their frames in order. */
 async function callTools(rig: InvocationRig, count: number, offset = 0): Promise<{ frames: Frame[]; replies: Promise<unknown>[] }> {
   const before = rig.sent.length;
   const replies = Array.from({ length: count }, (_, index) =>
@@ -396,7 +362,7 @@ async function callTools(rig: InvocationRig, count: number, offset = 0): Promise
   return { frames, replies };
 }
 
-/** Check retained references directly, including after a channel can no longer answer. */
+/** Check retained contexts even after channel closure. */
 function invocationCounts(transport: PluginChildTransport): { live: number; settled: number } {
   const tables = transport as unknown as {
     liveInvocations: Map<string, unknown>;
@@ -409,7 +375,6 @@ function tokenOf(frame: Frame): string {
   return ((frame.params as Record<string, unknown>)._meta as Record<string, string>)[INVOCATION_META]!;
 }
 
-/** The child calls `raiseAlert`, naming `token` or none, and the host's reply. */
 async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: string): Promise<Frame> {
   rig.deliver({
     jsonrpc: "2.0",
@@ -420,7 +385,8 @@ async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: strin
       ...(token === undefined ? {} : { _meta: { [INVOCATION_META]: token } }),
     },
   });
-  await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+  await settle();
+  expect(rig.sent.some((frame) => frame.id === id)).toBe(true);
   return rig.sent.find((frame) => frame.id === id)!;
 }
 

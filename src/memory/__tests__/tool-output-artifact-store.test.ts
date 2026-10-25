@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -8,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ToolOutputArtifactStore } from "../tool-output-artifact-store.js";
 import {
   MAX_SESSION_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_PENDING_BYTES, MAX_TOOL_RESULT_ARTIFACT_BYTES,
@@ -40,7 +42,7 @@ beforeEach(() => {
   store = new ToolOutputArtifactStore(sessions);
 });
 
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { await cleanupTmpDir(root); });
 
 function outputDir(sessionId = SESSION_ID): string { return join(sessions, sessionId, "tool-output"); }
 function onlyFile(suffix: string): string {
@@ -346,14 +348,19 @@ describe("session tool output artifacts", () => {
       chmodSync(data, 0o600);
     }
     unlinkSync(data);
-    symlinkSync(join(root, "missing-output"), data);
-    expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
-    unlinkSync(data);
     mkdirSync(data, { mode: 0o700 });
     expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
   });
 
-  it("rejects references when the owned directory is replaced by a symlink", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a dangling payload symlink", async () => {
+    const info = await saved("owned");
+    const data = onlyFile(".bin");
+    unlinkSync(data);
+    symlinkSync(join(root, "missing-output"), data);
+    expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
+  });
+
+  it.skipIf(!canCreateSymlinks())("rejects references when the owned directory is replaced by a symlink", async () => {
     const info = await saved("owned");
     const moved = join(sessions, SESSION_ID, "moved-output");
     renameSync(outputDir(), moved);
@@ -370,7 +377,7 @@ describe("session tool output artifacts", () => {
     expect(store.read(SESSION_ID, "tool-output", info)).toBeNull();
   });
 
-  it.each(["root", "session", "output"])("refuses a symlink at the %s directory", async (level) => {
+  it.skipIf(!canCreateSymlinks()).each(["root", "session", "output"])("refuses a symlink at the %s directory", async (level) => {
     const outside = join(root, "outside");
     mkdirSync(outside, { mode: 0o700 });
     if (level === "root") {
@@ -387,7 +394,7 @@ describe("session tool output artifacts", () => {
     expect(readdirSync(outside)).toEqual([]);
   });
 
-  it("does not follow a replaced payload during reads or pruning", async () => {
+  it.skipIf(!canCreateSymlinks())("does not follow a replaced payload during reads or pruning", async () => {
     const info = await saved("original");
     const outside = join(root, "outside.txt");
     writeFileSync(outside, "untouched", { mode: 0o600 });
@@ -462,6 +469,50 @@ describe("session tool output artifacts", () => {
     expect(() => actualFs.fstatSync(openedFd)).toThrow();
   });
 
+  it.each([
+    [".bin", "open"], [".json", "open"], [".bin", "read"], [".json", "read"],
+  ])("rejects a %s identity differing beyond number precision after descriptor %s", async (suffix, phase) => {
+    const info = await saved("original");
+    const path = onlyFile(suffix!);
+    const originalIno = 2n ** 60n;
+    const replacementIno = originalIno + 1n;
+    expect(Number(originalIno)).toBe(Number(replacementIno));
+    let openedFd = -1;
+    let targetOpen = false;
+    let replaced = phase === "open";
+    let checkedReplacement = false;
+    vi.mocked(openSync).mockImplementation((...args) => {
+      const fd = actualFs.openSync(...args);
+      targetOpen = args[0] === path;
+      if (targetOpen) openedFd = fd;
+      return fd;
+    });
+    vi.mocked(fstatSync).mockImplementation((...args) => {
+      const stat = actualFs.fstatSync(...args);
+      if (targetOpen && args[0] === openedFd) {
+        stat.ino = args[1]?.bigint ? originalIno : Number(originalIno);
+      }
+      return stat;
+    });
+    vi.mocked(lstatSync).mockImplementation((...args) => {
+      const stat = actualFs.lstatSync(...args);
+      if (args[0] === path && stat) {
+        const ino = replaced ? replacementIno : originalIno;
+        stat.ino = args[1]?.bigint ? ino : Number(ino);
+        checkedReplacement ||= replaced;
+      }
+      return stat;
+    });
+    vi.mocked(readSync).mockImplementation((...args) => {
+      const bytesRead = actualFs.readSync(...args);
+      if (targetOpen && args[0] === openedFd) replaced = true;
+      return bytesRead;
+    });
+    expect(store.read(SESSION_ID, "tool-output", info)).toBeNull();
+    expect(checkedReplacement).toBe(true);
+    expect(() => actualFs.fstatSync(openedFd)).toThrow();
+  });
+
   it.skipIf(process.platform === "win32").each([".bin", ".json"])("rejects a FIFO %s without blocking or removing it", async (suffix) => {
     const info = await saved("original");
     const data = onlyFile(suffix);
@@ -501,7 +552,8 @@ describe("session tool output artifacts", () => {
     expect(existsSync(data)).toBe(true);
   });
 
-  it("rejects directory replacement during capture without deleting the replacement", async () => {
+  // Windows cannot rename a directory containing an open file, so skip this swap race there.
+  it.skipIf(process.platform === "win32")("rejects directory replacement during capture without deleting the replacement", async () => {
     const capture = store.start(SESSION_ID, "directory-race");
     capture.append(Buffer.from("before"));
     await capture.waitForDrain();

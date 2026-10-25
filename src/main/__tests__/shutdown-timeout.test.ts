@@ -41,9 +41,8 @@ describe("shutdown cleanup hard timeout", () => {
   });
 
   it("ignores the retired AVE_SHUTDOWN_TIMEOUT_MS alias", () => {
-    // Published removal date 2026-08-01. A host still exporting it gets the
-    // default — exactly what the deprecation warning promised would happen,
-    // and NOT a silent honoring of a name that no longer exists.
+    // Published removal date 2026-08-01. A host still exporting it gets the default — exactly what the deprecation warning promised would happen, and NOT a
+    // silent honoring of a name that no longer exists.
     expect(
       resolveShutdownCleanupTimeoutMs(undefined, {
         AVE_SHUTDOWN_TIMEOUT_MS: "2345",
@@ -71,16 +70,14 @@ describe("shutdown cleanup hard timeout", () => {
   });
 
   it("lets the environment override the saved setting", () => {
-    // A launcher script or an MDM profile pinning the variable outranks the
-    // profile, which is the whole reason the pair is in ENV_BACKED_SETTINGS.
+    // A launcher script or an MDM profile pinning the variable outranks the profile, which is the whole reason the pair is in ENV_BACKED_SETTINGS.
     expect(
       resolveShutdownCleanupTimeoutMs(30_000, { AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS: "45000" }),
     ).toBe(45_000);
   });
 
   it("falls through to the setting when the env value is unusable", () => {
-    // NOT to the default: an env value that says nothing must not also erase
-    // the choice the user did make.
+    // NOT to the default: an env value that says nothing must not also erase the choice the user did make.
     expect(
       resolveShutdownCleanupTimeoutMs(30_000, { AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS: "abc" }),
     ).toBe(30_000);
@@ -95,9 +92,8 @@ describe("shutdown cleanup hard timeout", () => {
   });
 
   it("clamps a value past Node's timer ceiling instead of letting it overflow", () => {
-    // Above MAX_TIMER_DELAY_MS `setTimeout` warns and substitutes 1ms, so an
-    // operator asking for a very long grace period would get a cleanup killed
-    // almost instantly — the opposite of what they asked for.
+    // Above MAX_TIMER_DELAY_MS `setTimeout` warns and substitutes 1ms, so an operator asking for a very long grace period would get a cleanup killed almost
+    // instantly — the opposite of what they asked for.
     expect(
       resolveShutdownCleanupTimeoutMs(undefined, {
         AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS: String(MAX_TIMER_DELAY_MS + 1_000),
@@ -139,9 +135,8 @@ describe("shutdown cleanup hard timeout", () => {
   });
 
   it("does not fire timeout when realistic cleanup steps finish under the budget", async () => {
-    // Regression guard against "timeout becomes the default path" — if a
-    // future plugin's stop() blows past the budget, this test detects the
-    // drift before users hit data loss on every Quit.
+    // Regression guard against "timeout becomes the default path" — if a future plugin's stop() blows past the budget, this test detects the drift before
+    // users hit data loss on every Quit.
     const result = await runCleanupWithHardTimeout(async () => {
       await new Promise((r) => setTimeout(r, 10));
       await new Promise((r) => setTimeout(r, 10));

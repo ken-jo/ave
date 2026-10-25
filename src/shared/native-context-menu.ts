@@ -69,12 +69,7 @@ export const NATIVE_CONTEXT_MENU_COMMANDS_BY_KIND = {
     "workspace.copy-path",
     "workspace.copy-relative-path",
   ],
-  // `project.add` is the only command the Projects tab's EMPTY area offers, so
-  // it shares the `project` kind rather than earning a kind of its own: a
-  // right-click on a row and a right-click on the blank space below it are the
-  // same menu with a different subset of commands enabled. `conversation.import`
-  // is the same arrangement one tab over: it creates a NEW conversation, so it
-  // belongs to the LIST rather than to any row in it.
+  // Empty-area commands belong to the list kind because they create items rather than target a row.
   project: [
     "project.new-chat",
     "project.pin",
@@ -102,27 +97,11 @@ export const NATIVE_CONTEXT_MENU_COMMANDS_BY_KIND = {
   ],
   message: ["message.copy", "message.edit", "message.fork", "message.returnHere"],
   "command-item": ["command.activate", "command.copy"],
-  // A sidebar row that names a VIEW — a feature, a plugin panel, Settings.
-  // Where the other kinds act ON their target, both of these open it; what
-  // they differ about is WHERE. The menu is what makes the second one
-  // discoverable: the modifier chord that also performs it is invisible until
-  // someone has read it here.
+  // View commands differ by destination; the menu exposes the otherwise hidden modifier shortcut.
   "view-row": ["view.open", "view.open-in-new-pane"],
 } as const satisfies Record<NativeContextMenuKind, readonly NativeContextMenuCommand[]>;
 
-
-/**
- * A menu whose ROWS are not known ahead of time — the composer's command menu,
- * whose contents are the installed plugins, the connected MCP servers, and the
- * skills registered right now.
- *
- * This is a second contract rather than more entries in the allow-list above,
- * because the two answer different questions. The allow-list menu asks "which
- * of these fixed commands apply here?", and main owns every label. Here the
- * renderer owns the rows, so the ids it gets back are its own and mean nothing
- * to main; main's job is to draw text it did not write, which is why
- * `sanitizeNativeMenuLabel` exists.
- */
+/** Renderer-owned rows use opaque IDs; main renders sanitized labels and echoes selection IDs. */
 export interface NativeMenuItem {
   /** Opaque to main: echoed back on click and resolved by the renderer. */
   id: string;
@@ -131,16 +110,11 @@ export interface NativeMenuItem {
   sublabel?: string;
   accelerator?: string;
   enabled?: boolean;
-  /**
-   * Leaf rows only. Present, the row is drawn as a radio item — one of a set
-   * where exactly one is current, the way a persona is — and its state is
-   * this value. Absent, the row is a plain command.
-   */
+  /** A present value draws a radio item; absence draws a plain command. */
   checked?: boolean;
   submenu?: NativeMenuItem[];
 }
 
-/** Items drawn together; sections are separated by a divider. */
 interface NativeMenuSection {
   items: NativeMenuItem[];
 }
@@ -157,34 +131,21 @@ export interface DynamicNativeMenuAction {
   id: string;
 }
 
-/** One row of a menu is one line. Nothing in a label may claim to be more. */
 const NATIVE_MENU_LABEL_MAX = 120;
-/** Deep enough for category then item; a third level is not a menu, it is a tree. */
 export const NATIVE_MENU_MAX_DEPTH = 2;
 export const NATIVE_MENU_MAX_ITEMS = 400;
 
-/**
- * A plugin's name and an MCP server's tool names are third-party text, and a
- * native menu row is drawn by the OS with no markup to escape into. What such
- * text CAN reach is structure: a line separator splits one row across the menu,
- * a bidi override reorders what the OS draws, and on Windows and Linux an `&`
- * is consumed as a mnemonic marker, so a row can silently rename itself or
- * claim its neighbour's Alt key. All three are neutralised, and the result is
- * capped so one row cannot push the rest off the screen.
- */
+/** Untrusted labels must neutralize line separators, bidi controls, and mnemonic markers, then cap visible length. */
 export function sanitizeNativeMenuLabel(raw: string): string {
   const flattened = raw.replace(
     /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069]/g,
     " ",
   );
   const collapsed = flattened.replace(/\s+/g, " ").trim();
-  // Slicing by code unit can cut a surrogate pair in half and leave U+FFFD in
-  // the drawn row, so the cap counts code points. It is applied before the `&`
-  // escape below, both because the cap is about what the reader sees and
-  // because cutting a doubled `&` in half would revive the mnemonic.
+  // Count code points before escaping ampersands to avoid split surrogates or revived mnemonics.
   const capped = collapsed.length > NATIVE_MENU_LABEL_MAX
     ? `${Array.from(collapsed).slice(0, NATIVE_MENU_LABEL_MAX - 1).join("")}\u2026`
     : collapsed;
-  // Electron's own escape: a doubled `&` draws as one and binds no key.
+  // A doubled ampersand renders literally without binding a mnemonic.
   return capped.replace(/&/g, "&&");
 }

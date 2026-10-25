@@ -1,15 +1,4 @@
-/**
- * The shape gate is the whole point of this comparator, so these tests are
- * mostly about inputs that are NOT digests.
- *
- * Scope note, stated rather than implied: the two call sites that had no gate
- * (the tailnet CSRF check and the tailnet pairing-code check) are not reachable
- * with a malformed operand today — both validate shape upstream, one on the
- * request token and one when the invitation is read off disk. What follows
- * therefore bites on the primitive, not on a live exploit. That is exactly the
- * reason to put the gate in the primitive: the safety of those two rested on an
- * invariant that neither of them stated or could enforce.
- */
+/** Validate digest shape in the primitive so callers need not preserve upstream checks forever. */
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { SHA256_HEX, sha256Hex, timingSafeEqualHexDigest } from "../hex-digest-equal.js";
@@ -23,17 +12,14 @@ describe("timingSafeEqualHexDigest", () => {
   });
 
   it("refuses two wholly non-hex strings that decode to nothing", () => {
-    // Buffer.from("zz", "hex") is EMPTY, and timingSafeEqual(empty, empty) is
-    // true, so an ungated comparator answered YES here.
+    // Invalid hex can decode to empty buffers that compare equal.
     expect(timingSafeEqualHexDigest("zz", "zz")).toBe(false);
     expect(timingSafeEqualHexDigest("not-hex-at-all", "also-not-hex")).toBe(false);
     expect(timingSafeEqualHexDigest("", "")).toBe(false);
   });
 
   it("refuses two DIFFERENT strings that share a decodable prefix", () => {
-    // Buffer.from truncates at the first undecodable pair rather than failing,
-    // so both of these become the single byte 0xab. An ungated comparator
-    // reported two visibly different values as the same digest.
+    // Hex decoding truncates at invalid pairs, allowing different malformed strings to compare equal.
     expect(timingSafeEqualHexDigest("abXX", "abYY")).toBe(false);
     expect(timingSafeEqualHexDigest(`${sha256("a").slice(0, 8)}!!tail`, `${sha256("a").slice(0, 8)}??other`)).toBe(false);
   });

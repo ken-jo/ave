@@ -2,11 +2,7 @@ import { createDynamicTool, type Tool } from "./base.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { t } from "../i18n/index.js";
 
-// ─── web_search provider response shapes ────────────────────────────
-// Narrow interfaces + runtime shape guards for the external search-provider
-// responses. The provider boundary is untrusted: a response-shape change must
-// surface as an explicit `isError` diagnostic, not silently degrade to an
-// empty result array (which an untyped cast plus an `?? []` fallback hid).
+// Treat provider shapes as untrusted: mismatches must report explicit errors, never silently become empty results.
 
 interface TavilyResult {
   title?: unknown;
@@ -25,7 +21,6 @@ interface SerperResponse {
   organic?: SerperOrganic[];
 }
 
-/** A single normalized search hit emitted to the model. */
 interface NormalizedSearchResult {
   title: string;
   snippet: string;
@@ -43,11 +38,7 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-/**
- * Validates a Tavily response against the documented `{ results: [...] }`
- * shape. Throws {@link WebSearchShapeError} on a mismatch so a provider change
- * surfaces as a tool error rather than an empty result set.
- */
+// Require results-array responses; shape mismatch must surface as a tool error.
 export function parseTavilyResponse(data: unknown): NormalizedSearchResult[] {
   if (typeof data !== "object" || data === null) {
     throw new WebSearchShapeError("Tavily response was not a JSON object");
@@ -66,10 +57,7 @@ export function parseTavilyResponse(data: unknown): NormalizedSearchResult[] {
   }));
 }
 
-/**
- * Validates a Serper response against the documented `{ organic: [...] }`
- * shape. Throws {@link WebSearchShapeError} on a mismatch.
- */
+// Require organic-array responses; shape mismatch must surface as a tool error.
 export function parseSerperResponse(data: unknown): NormalizedSearchResult[] {
   if (typeof data !== "object" || data === null) {
     throw new WebSearchShapeError("Serper response was not a JSON object");
@@ -88,16 +76,7 @@ export function parseSerperResponse(data: unknown): NormalizedSearchResult[] {
   }));
 }
 
-/**
- * Builtin `web_search` tool. Three-tier provider ladder: Tavily / Serper when a
- * matching API key is configured, else a keyless DuckDuckGo HTML fallback.
- *
- * Deps are injected by the boot assembler so the definition itself stays free
- * of boot wiring:
- * - `settingsService` resolves the configured provider + its secret key.
- * - `networkFetch` is the Electron network-stack fetch (Chromium network stack:
- *   system proxy/PAC, OS certificate store) rather than the global `fetch`.
- */
+// Boot injects provider settings and host-network fetch so requests honor system proxy and certificate configuration.
 export function createWebSearchTool(
   settingsService: SettingsService,
   networkFetch: typeof fetch,
@@ -120,9 +99,7 @@ export function createWebSearchTool(
     execute: async (rawInput) => {
       const args = (rawInput ?? {}) as Record<string, unknown>;
       const query = args.query as string;
-      // Clamp count to integer in [1,10]. Non-numeric / out-of-range falls
-      // back to default 5. Prevents arbitrary large values reaching search
-      // providers or the DuckDuckGo HTML parser.
+      // Bound count to 1-10 with default 5 before sending it to a provider or HTML parser.
       const rawCount = args.count;
       let count = 5;
       if (typeof rawCount === "number" && Number.isFinite(rawCount)) {

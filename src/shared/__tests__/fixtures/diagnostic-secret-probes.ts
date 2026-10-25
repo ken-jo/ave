@@ -1,12 +1,4 @@
-/**
- * Credential spellings a marketplace diagnostic can carry, shared by the three
- * layers that must scrub them: `scrubDiagnosticSecrets` itself, the git
- * marketplace IPC envelope, and *Copy details*. One list, so a spelling added
- * for one layer is proved at all three.
- *
- * `address` probes are typed as a source address and reach IPC through the
- * URL normalizer's refusal; the rest arrive as a failure's message.
- */
+/** Share credential probes across scrubber, IPC, and copied diagnostics so every layer covers the same spellings. */
 export interface DiagnosticSecretProbe {
   id: string;
   text: string;
@@ -19,7 +11,6 @@ export interface DiagnosticSecretProbe {
 const midLine = (id: string, assignment: string): DiagnosticSecretProbe => ({ id, text: `helper failed: ${assignment}; retry`, secret: "canarypass" });
 
 export const DIAGNOSTIC_SECRET_PROBES: readonly DiagnosticSecretProbe[] = [
-  // Userinfo with a scheme.
   { id: "https-password", text: "https://alice:verifier-secret@example.com/owner/repo", secret: "verifier-secret", address: true },
   { id: "ssh-password", text: "ssh://user:canarypass@host/repo", secret: "canarypass", address: true },
   { id: "compound-scheme-token", text: "git+https://opaque-canary-value@host/repo", secret: "opaque-canary-value", address: true },
@@ -35,14 +26,12 @@ export const DIAGNOSTIC_SECRET_PROBES: readonly DiagnosticSecretProbe[] = [
   { id: "ssh-ZZ", text: "ssh://user%ZZcanarypass@host/org/repo", secret: "canarypass", address: true },
   { id: "ssh-double-encoded", text: "ssh://user%253Acanarypass@host/repo", secret: "canarypass" },
   { id: "ssh-encoded-slash", text: "ssh://user%2Fcanarypass@host/repo", secret: "canarypass" },
-  // Userinfo in scp form.
   { id: "scp-password", text: "user:canarypass@host:org/repo", secret: "canarypass", address: true },
   { id: "scp-3A", text: "user%3Acanarypass@host:org/repo", secret: "canarypass", address: true },
   { id: "scp-3a", text: "user%3acanarypass@host:org/repo", secret: "canarypass", address: true },
   { id: "scp-40", text: "user%40canarypass@host:org/repo", secret: "canarypass", address: true },
   { id: "scp-ZZ", text: "user%ZZcanarypass@host:org/repo", secret: "canarypass", address: true },
   { id: "scp-double-encoded", text: "clone of user%253Acanarypass@host:org/repo failed", secret: "canarypass" },
-  // Quoted values, escapes and JSON.
   midLine("double-quoted", 'token="canarypass"'),
   midLine("single-quoted", "token='canarypass'"),
   midLine("single-quoted-password", "password='canarypass'"),
@@ -101,7 +90,6 @@ export const DIAGNOSTIC_SECRET_PROBES: readonly DiagnosticSecretProbe[] = [
   { id: "proxy-authorization-digest", text: 'Proxy-Authorization: Digest username="u", response="6629fae4canarypass"', secret: "canarypass" },
   { id: "authorization-split-basic", text: "x: Authorization: Basic dXNlcjpj YW5hcnlwYXNz", secret: "YW5hcnlwYXNz" },
   { id: "basic-authorization", text: "Authorization: Basic YWxpY2U6Y2FuYXJ5cGFzcw==", secret: "YWxpY2U6Y2FuYXJ5cGFzcw==" },
-  // The credential-word key family, `=` and `:`.
   midLine("unquoted-token", "token=canarypass"),
   midLine("password", "password=canarypass"),
   midLine("passwd", "passwd=canarypass"),
@@ -126,7 +114,6 @@ export const DIAGNOSTIC_SECRET_PROBES: readonly DiagnosticSecretProbe[] = [
   { id: "comma-suffix", text: "helper: password=prefix,canarypass rest", secret: "canarypass" },
   { id: "ampersand-suffix", text: "helper: token=prefix&canarypass rest", secret: "canarypass" },
   { id: "comma-then-space", text: "helper: password=a,canarypass c", secret: "canarypass" },
-  // CLI flags.
   { id: "flag-space", text: "helper --password canarypass --verbose", secret: "canarypass" },
   { id: "flag-equals", text: "helper --api-key=canarypass --verbose", secret: "canarypass" },
   { id: "flag-quoted", text: 'helper --token "prefix canarypass" --verbose', secret: "canarypass" },
@@ -149,18 +136,13 @@ export const DIAGNOSTIC_KEPT: readonly string[] = [
   "remote: 'see docs': 403",
   "token:\nnext line kept",
   "remote: unauthorized for host",
-  // Ordinary JSON that once broke the scanner's own invariant.
   '{"host":"::1","port":443}',
   '{"op":"=","value":3}',
   '"a":":x"',
   `x "a 'b "c": 1' : 2" : 3`,
 ];
 
-/**
- * Makes the diagnostic scrubber fail on any text holding `sentinel`, as a
- * broken internal contract would; returns the undo. The scrubber's first
- * step is a regex replace over the text, which is where this throws.
- */
+/** Force a scrubber contract failure on the sentinel and return an undo callback. */
 export function breakDiagnosticScrubberOn(sentinel: string): () => void {
   const original = RegExp.prototype[Symbol.replace] as (this: RegExp, input: string, replacement: unknown) => string;
   const broken = function (this: RegExp, input: string, replacement: unknown): string {

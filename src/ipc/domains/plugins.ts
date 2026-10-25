@@ -1,10 +1,3 @@
-/**
- * Plugins domain IPC handlers.
- * Covers: ave:plugins:*, ave:plugin:* (webview bridge), ave:mcp:*,
- *         ave:runtime:*, ave:agents:*, ave:skills:*, ave:bootstrap:*,
- *         ave:marketplace:ping, ave:host:plugin-theme-notify,
- *         ave:notification:clicked
- */
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -62,7 +55,21 @@ import {
   createExternalToolCallSource,
   createLoopbackToolCallSource,
 } from "../../mcp/mcp-ui-tool-call.js";
-import type { McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+
+/** A settings-row id for a plugin-bundled server that is not running (see `bundledConfigId`). */
+function isBundledMcpConfigId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 1024) return false;
+  try { return parseBundledConfigId(value) !== null; }
+  catch { return false; }
+}
+
+/** Authorization outcomes the renderer may see; anything else collapses to a generic failure. */
+const MCP_AUTH_ERROR_CODES: ReadonlySet<McpAuthErrorCode> = new Set<McpAuthErrorCode>([
+  "mcp-auth-required", "mcp-auth-failed", "mcp-auth-storage-unavailable",
+  "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported", "mcp-auth-resource-mismatch",
+  "mcp-auth-index-unreadable",
+]);
 import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import { parseMcpAppDownload, type McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
@@ -79,6 +86,7 @@ import {
   MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS,
 } from "../../shared/mcp-resource-template-bounds.js";
 import { isUsableMcpServerId } from "../../shared/mcp-app-partition.js";
+import { parseBundledConfigId } from "../../mcp/bundled-credential.js";
 import { scrubShortError } from "../../shared/dlp.js";
 import {
   isUsablePromptName,
@@ -86,8 +94,7 @@ import {
   MCP_PROMPT_ARG_VALUE_MAX_CHARS,
   MCP_PROMPT_NAME_MAX_CHARS,
 } from "../../shared/mcp-prompt-bounds.js";
-// The MCP-app `ui/message` staging path reuses the plugin overlay gate's rate limiter
-// (one mechanism for "staged conversation proposals") and the same overlay push channel.
+// App-message staging shares the plugin proposal rate limiter and overlay channel.
 import {
   deriveOverlaySummaryForDisplay,
   triggerConversationRateLimiter,
@@ -133,16 +140,7 @@ function pluginConfigError(
   return { ok: false, error, message };
 }
 
-/**
- * The reply message of a config or secret save whose restart did not start.
- *
- * When the restart's replacement was refused by the child factory (an
- * unserved `hostProtocol` or a sibling refusal, decision 52), the runtime
- * recorded that attempt on the plugin's card while the incumbent kept
- * serving; the reply carries that refusal rather than a bare result string.
- * Only a refusal recorded by THIS restart counts — one at or after
- * `attemptedAt` — so an older refusal never explains a newer failure.
- */
+// Report only refusals recorded by this restart; older failures cannot explain a newer attempt.
 function runtimeReloadFailureMessage(
   pluginRuntime: Pick<IpcDeps["pluginRuntime"], "listPluginCards">,
   pluginId: string,
@@ -179,13 +177,7 @@ function sanitizeNotificationContextRef(value: unknown): NotificationContextRef 
   return Object.keys(contextRef).length > 0 ? contextRef : undefined;
 }
 
-/**
- * Normalize unknown thrown values to a string message — `instantiateAndStart`
- * / userland `createPlugin` callbacks may `throw "string"` or
- * `throw { code, … }` rather than `Error`. `(err as Error).message` would
- * print `undefined` in those cases. Used by the install rollback paths
- * where the message goes to both the renderer toast and the IPC error.
- */
+// Plugin callbacks may throw non-Error values; normalize them for logging.
 function errMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
@@ -221,26 +213,12 @@ interface PluginWebviewBinding {
 }
 const pluginWebviewRegistry = new Map<number, PluginWebviewBinding>();
 
-/**
- * Publish a host-owned theme change on the plugin event bus. Plugin webviews
- * still receive the direct IPC fanout below; host-side subscribers can consume
- * the same event through hostApi.onEvent("host.theme.changed").
- */
+// Publish one host theme event alongside direct webview delivery.
 export function publishHostThemeChanged(safe: SafeThemePayload): void {
   emitHostEvent("host.theme.changed", cloneThemePayload(safe));
 }
 
-/**
- * Push the cached theme payload to a freshly registered webview so the
- * plugin paints with the active tokens from first frame instead of the
- * plugin's `:root` fallback. Returns the payload that was sent (or null when
- * the cache is empty / wc destroyed) so callers can log lifecycle.
- *
- * Synchronous between `register-webview` returning OK and this call, so
- * `webContents.fromId` should always succeed; the catch is defensive
- * against pathological reload paths where the wc tears down between
- * registry-set and send.
- */
+// Replay cached tokens on registration so a new webview paints the active theme immediately.
 export function replayThemeToWebview(webContentsId: number): SafeThemePayload | null {
   const theme = getLastThemePayload();
   if (!theme) return null;
@@ -251,34 +229,16 @@ export function replayThemeToWebview(webContentsId: number): SafeThemePayload | 
       return theme;
     }
   } catch {
-    /* swallowed — caller logs at debug. */
   }
   return null;
 }
 
-/** @internal — test-only reset to keep cross-test state clean. */
 export function __resetLastThemePayloadForTests(): void {
   resetLastThemePayloadForTests();
 }
 
-/**
- * Wait queue for `ave:plugin:get-entry-url` invocations that arrive before
- * `ave:plugin:register-webview` lands a binding for the same webContentsId.
- *
- * Why this exists: `<webview>` in `plugin-ui-host.tsx` renders with an initial
- * `src={shellSrc || shellUrl}` because Electron only runs `<webview preload>`
- * at the *first* attach — switching from about:blank to the real shell URL
- * does NOT re-execute preload, so the avePlugin contextBridge would be lost.
- * That fallback means the shell can call `getEntryUrl()` *before* the host
- * renderer's `did-attach` → `registerPluginWebview` round-trip completes.
- * Queue holds those resolvers until the matching register lands (or the 5s
- * deadline expires, in which case the original "not-registered" sentinel is
- * returned so a truly absent registration is still surfaced).
- *
- * The wait queue is required, not belt-and-braces: register-before-attach is
- * NOT airtight. In the plugin update lifecycle (webview re-attach with a fresh
- * wcId) the shell's first paint races ahead of the host's register IPC.
- */
+// Queue entry-URL reads until registration: first attach runs preload, and shell startup can outrun host registration.
+// Return not-registered when the bounded wait expires.
 const PENDING_ENTRY_URL_DEADLINE_MS = 5_000;
 type PendingEntryUrlResolver = (
   reply: { ok: true; entryUrl: string } | { ok: false; error: "not-registered" },
@@ -322,10 +282,7 @@ export function revokePluginWebviewsForPlugin(
   }
 }
 
-/**
- * The cleanup services and install-state preparation every plugin install or
- * uninstall runs, shared by these handlers and the git marketplace's.
- */
+// Share install-state preparation and cleanup between IPC and marketplace lifecycles.
 export function pluginLifecycleServices(deps: IpcDeps) {
   const retirement = createPluginRetirementPort({
     settings: deps.settingsService,
@@ -386,6 +343,8 @@ export function pluginLifecycleServices(deps: IpcDeps) {
         drainPluginInstallLockOperations,
       refreshPluginEventBridge,
       emitHostEvent,
+      // Its MCP sign-ins go the moment the registry stops naming it, whatever is reinstalled under the same id later.
+      onRegistryRemovalCommitted: (removed) => void deps.mcpManager.reconcileBundledCredentials("plugin", { removed }),
       log,
     }, retain);
   return { ensureInstallStateReady, uninstall, retirement };
@@ -404,10 +363,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     broadcastToAppWindows(deps, channel, payload, { logger: log });
   };
   const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
-  // Late-mount sync for the bootstrap status event. On a cold boot the whole
-  // start → complete/error sequence is emitted while the window still shows
-  // the splash document, so the renderer pulls the recorded snapshot once it
-  // has a listener. `null` = this process reported nothing yet.
+  // Retain bootstrap status for windows that miss events while the splash document is loaded.
   ipcMain.handle(CHANNELS.bootstrap.statusGet, (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.bootstrap.statusGet, e);
@@ -422,11 +378,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       broadcastPluginLifecycleEvent(CHANNELS.plugins.uninstallResult, payload);
     };
     try {
-      // Lifecycle ordering lives in uninstallPluginWithLifecycle: durable
-      // marketplace removal runs inside the runtime generation barrier, then
-      // journaled config/secret/auth/cache cleanup completes or stays
-      // explicitly retryable. This preserves the Windows EBUSY defense while
-      // preventing a partial cleanup from being reported as success.
+      // Remove marketplace state inside the generation barrier before journaled config, secret, and auth cleanup.
       const result = await uninstallPlugin(pluginId);
       broadcastUninstallResult({ slug: pluginId, success: true });
       return result;
@@ -437,9 +389,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // Toggle through the immutable generation lifecycle. Disable publishes an
-  // inactive pointer and drains teardown; re-enable reverifies installed bytes
-  // before atomically publishing a new generation.
+  // Disable drains the generation; re-enable verifies installed bytes before publishing a live pointer.
   ipcMain.handle(
     CHANNELS.plugins.setEnabled,
     async (e, pluginId: unknown, enabled: unknown) => {
@@ -458,8 +408,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       } catch (err) {
         const message = errMessage(err);
         if (err instanceof PluginDeploymentDeniedError) {
-          // Deployment policy, not a failure. Log the guard's own reason for
-          // forensics; the renderer banner gets a stable user-facing line.
+          // Log deployment-policy details internally; return a stable renderer refusal.
           log.warn(`plugin enabled-state change denied (${pluginId}): %s`, message);
           return pluginConfigError(
             "disable-not-permitted",
@@ -489,9 +438,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       message: t("mainDialog.installLocalPluginMessage"),
     });
     if (canceled || !filePaths[0]) return null;
-    // Local-dev uses the same staged generation transaction as marketplace:
-    // candidate import/start happens from immutable bytes before live payload,
-    // receipt, registry, or active pointer publication.
+    // Stage immutable candidate bytes before changing live payload, receipt, registry, or generation.
     const pluginId = await pluginMarketplace.resolveLocalInstallPluginId(filePaths[0]);
     pluginRuntime.cancelPendingRestart(pluginId);
     return await withPluginInstallLock(pluginId, async () => {
@@ -526,7 +473,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     });
   });
 
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.plugins.uiList, () => pluginRuntime.listUiExtensions());
 
   ipcMain.handle(CHANNELS.plugins.uiReadModule, async (e, payload?: { pluginId?: string; viewId?: string }) => {
@@ -570,7 +516,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return readFile(resolvedEntryPath, "utf-8");
   });
 
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.plugins.cards, () => handlePluginCards(deps));
 
   ipcMain.handle(CHANNELS.plugins.contributionTrustList, (e, pluginId?: unknown) => {
@@ -607,8 +552,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-contribution-trust-request" };
     }
-    // An approval names the reviewed artifact generation and the approval digest the row showed (design §18.7.5);
-    // a revoke only narrows trust and takes neither.
+    // Approval binds the reviewed generation and digest; revocation only narrows trust.
     const generationId = value.generationId;
     const approvalDigest = value.approvalDigest;
     const sha256 = /^[a-f0-9]{64}$/u;
@@ -639,10 +583,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.runtime.counts, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.runtime.counts, e); return UNAUTHORIZED_FRAME; }
     return {
-      // The user-facing tool COUNT reflects the model's tools — getModelVisibleTools,
-      // not `size` (every registered tool). `size` now includes app-only tools + the
-      // auth trio (registry `Tool`s so their card call runs under the gate); counting
-      // them here would inflate "the model's tools" and softly disclose app-only names.
+      // Count model-visible tools; registry size also includes app-only and auth tools.
       tools: deps.toolRegistry.getModelVisibleTools().length,
       plugins: pluginRuntime.listPluginIds().length,
       mcps: deps.mcpManager.listServers().filter((s) => s.status === "connected").length,
@@ -781,11 +722,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         }
         return { manifest, savedConfig };
       });
-      // Restart policy: see `plugins/config-restart-policy.ts`. This site pins
-      // `mutatedCleartextConfig: true` (it always writes cleartext config) and
-      // `restartUnsafe: false` (host IPC caller), so the shared rule is
-      // statically "restart" — the predicate is not called because the branch
-      // could never go the other way.
+      // Host config writes may restart safely; see plugins/config-restart-policy.ts.
       if (pluginRuntime.getPluginManifest(pluginId) !== persisted.manifest) {
         throw new Error(`Plugin instance changed before config reload: ${pluginId}`);
       }
@@ -840,10 +777,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         }
         await settingsService.setSecret(`plugin.${safePluginId}.${key}`, secretValue);
         const current = settingsService.getPluginConfig(safePluginId) ?? {};
-        // A stray CLEARTEXT copy of this key can exist even with no legacy data:
-        // a plugin update that newly marks an existing plain key
-        // `format: "secret"` leaves the previously-saved plaintext value sitting
-        // in `pluginConfigs`, because `stripSecretFields` only runs on write.
+        // An update can mark an existing plaintext key secret, leaving a cleartext copy to remove.
         let mutatedCleartextConfig = false;
         if (key in current) {
           const next = { ...current };
@@ -857,11 +791,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       });
       if (!persisted.ok) return persisted;
       if (!persisted.mutatedCleartextConfig) return { ok: true as const };
-      // Deleting the cleartext copy staled `PluginRuntimeContext.config`, which
-      // would otherwise leave the plugin using the OLD plaintext secret from its
-      // start-time snapshot. Restart is safe here (host IPC caller), so the
-      // shared rule says restart. Mirrors config:set by restarting OUTSIDE the
-      // install lock — `restartPlugin` takes that lock itself.
+      // Removing a cleartext secret invalidates the plugin's start-time config snapshot.
       if (
         !shouldRestartAfterPluginConfigWrite({
           mutatedCleartextConfig: true,
@@ -913,7 +843,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.plugins.perfStats, () => pluginRuntime.getPerfStats());
 
   ipcMain.handle(CHANNELS.plugins.call, (
@@ -957,22 +886,14 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── MCP ──────────────────────────────────────
-
-  // MEDIUM: in-process token-bucket rate limiter for set-api-key (5 calls/min/serverId)
   const setApiKeyRateBucket = new Map<string, { count: number; windowStart: number }>();
   const SET_API_KEY_MAX_CALLS = 5;
   const SET_API_KEY_WINDOW_MS = 60_000;
 
   function checkSetApiKeyRateLimit(serverId: string): boolean {
-    // NOTE: Date.now() relies on wall clock; NTP adjustment or laptop sleep
-    // can cause windowStart to be > now (negative delta), locking the bucket
-    // until clock catches up. Acceptable for 5/min limits — switch to
-    // performance.now() if monotonic semantics become critical.
+    // Wall-clock rollback can leave windowStart in the future and lock the bucket until time catches up.
     const now = Date.now();
-    // Lazy GC: when Map exceeds 64 entries, evict expired windows to bound
-    // memory under serverId fuzzing (NEW-2 MEDIUM). 64 active servers is a
-    // generous real-world ceiling; anything beyond is adversarial.
+    // Above the map threshold, evict expired windows to bound abandoned rate-limit entries.
     if (setApiKeyRateBucket.size > 64) {
       for (const [k, b] of setApiKeyRateBucket) {
         if (now - b.windowStart >= SET_API_KEY_WINDOW_MS) {
@@ -992,12 +913,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return true;
   }
 
-  // ── The ONE `serverId → backend` source set (SoT) ─────────────────────────
-  // Both MCP-App IPCs — the card RENDER (`mcp.uiResource`) and the app's own
-  // `tools/call` (`mcp.callTool`) — resolve through `resolveMcpUiBackend` over THIS
-  // object, so the loopback-first rule exists in exactly one place and the two paths
-  // can never disagree about who owns a serverId. The tool-call halves come from
-  // `mcp-ui-tool-call.ts`; nothing here branches on backend kind.
+  // Rendering and tool calls share one loopback-first backend resolver so server ownership cannot diverge.
   const mcpUiSources = {
     loopback: {
       has: (serverId: string) => deps.pluginLoopbackManager.has(serverId),
@@ -1015,8 +931,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       ...createExternalToolCallSource({
         namespacedToolName: (serverId, toolName) => deps.mcpManager.namespacedToolName(serverId, toolName),
         findTool: (name) => deps.toolRegistry.findByName(name),
-        // Late binding: the plugin-surface ToolExecutor is installed by a boot step
-        // that runs AFTER IPC registration, so resolve it per call, never capture it.
+        // Resolve the tool executor per call; boot installs it after IPC registration.
         getInvoker: () => deps.getPluginToolInvoker(),
       }),
     },
@@ -1029,6 +944,20 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.mcp.kill, (e, serverId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.kill, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.killSwitch(serverId);
+  });
+  ipcMain.handle(CHANNELS.mcp.authenticate, async (e, serverId: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.authenticate, e); return UNAUTHORIZED_FRAME; }
+    if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
+    try {
+      const result = await deps.mcpManager.authenticate(serverId);
+      if (result.connected) return { connected: true };
+      const errorCode = MCP_AUTH_ERROR_CODES.has(result.errorCode as McpAuthErrorCode) ? result.errorCode : "mcp-auth-failed";
+      return { connected: false, errorCode };
+    } catch {
+      return { connected: false, errorCode: "mcp-auth-failed" };
+    }
   });
   ipcMain.handle(CHANNELS.mcp.configGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configGet, e); return UNAUTHORIZED_FRAME; }
@@ -1056,92 +985,24 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configRemove, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.removeConfig(serverId);
   });
-  // Deliberately NOT rate-limited, and this is a decision rather than an omission.
-  //
-  // Two reviewers raised it: the channel is unbounded, and each successful read mints a
-  // proxy session from a capped LRU, so a renderer looping valid `ui://` reads could evict
-  // a live card's token. Both halves are true. Rate-limiting is still the wrong fix here:
-  //
-  //   - This is the RENDER path. Every renderer-owned card passes through it, and a
-  //     conversation may legitimately mount many at once. It must not share the
-  //     user-initiated bucket with `prompts/get` and the attach channels, and a bucket
-  //     sized for user actions would starve ordinary rendering.
-  //   - The eviction concern is already bounded where it belongs. `MAX_PROXY_SESSIONS` is
-  //     4096 with dispose-on-unmount as the authoritative reclaim, and its own comment
-  //     records the bug from tightening it: a 64 cap silently revoked still-mounted cards.
-  //     Adding pressure on this path risks re-creating exactly that.
-  //   - The actor is a compromised renderer, which already holds strictly more reach than
-  //     looping this channel gives it.
-  //
-  // If this ever needs bounding, it needs its OWN budget sized for rendering plus a way to
-  // tell a mint for a live card from a mint for one already gone — not this bucket.
+  // Rendering has no user-action rate bucket; legitimate card mounts must not starve prompt or attachment requests.
+  // Proxy-session capacity and dispose-on-unmount own reclamation.
   ipcMain.handle(CHANNELS.mcp.uiResource, async (e, serverId: string, uri: string, generationId?: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.uiResource, e); return UNAUTHORIZED_FRAME; }
-    // b1 — install the per-server network gate BEFORE the resource is read. (It is
-    // the deny-by-default declared-origin gate now, not the old CDN allowlist.)
-    // This is the single chokepoint every card render passes
-    // through, and the webview only mounts after this promise resolves, so the
-    // gate is guaranteed present before the guest's first request. Fail-closed:
-    // an invalid/over-length serverId throws out of encodeMcpServerId here rather
-    // than rendering on an ungated partition (No-Fallback).
-    //
-    // This ALSO installs the sandbox-proxy protocol handler and the relay preload
-    // on the partition, so both are in place before the webview navigates.
+    // Install the server's deny-by-default network gate before reading its resource.
     installMcpAppPartitionPolicy(serverId);
 
-    // SoT resolution: a first-party plugin runs as an in-process loopback MCP
-    // server (serverId === pluginId) that is NEVER in mcpManager.clients, so try
-    // the loopback host FIRST, else the external MCP client registry. ONE
-    // resolver, shared with the oncalltool seam below — no duplicated backend
-    // branch.
+    // Resolve bundled loopback servers first; they are absent from the external client map.
     const backend = resolveMcpUiBackend(serverId, mcpUiSources, generationId);
 
-    // The resource carries its OWN `_meta.ui.csp` — main reads it here and never
-    // accepts one from the renderer. A compromised renderer must not be able to
-    // forge a permissive policy and widen the envelope that contains the untrusted
-    // app HTML. Per-resource, so one card's declared domains never leak to another.
-    // Plugin-served HTML rides the SAME sandbox-proxy + main-computed CSP path.
-    //
-    // Same for `_meta.ui.permissions`: the RESOURCE declares which powerful features it
-    // wants, and main derives BOTH the inner frame's `allow` attribute and the Electron
-    // session grant from it. The renderer never supplies either — a compromised one must
-    // not be able to hand a card the camera.
+    // Read CSP from the resource's own metadata, never from renderer input.
     const resource = await backend.readUiResource(uri);
     const proxyUrl = createMcpAppProxySession(serverId, resource.csp, resource.permissions);
     return { proxyUrl, html: resource.html } satisfies McpUiResourceBundle;
   });
 
-  // ─── MCP Apps `oncalltool` — an app calls a tool on ITS OWN server ──────────
-  //
-  // The straight line: app → bridge (`oncalltool`) → renderer (binds the CARD's
-  // serverId) → THIS channel → `resolveMcpUiBackend` → the backend's gated call
-  // path → ToolExecutor → `inspectHostRisk` → reviewer/approval → audit.
-  //
-  // Invariants, each enforced exactly ONCE:
-  //  1. Server binding — STRUCTURAL. The app never names a server: `serverId` is the
-  //     card's own `payload.serverId`, supplied by the trusted renderer, and the
-  //     resolver binds every backend method to it. Nothing downstream re-derives it.
-  //  2. Tool owner == serverId — HERE, one comparison, backend-kind agnostic
-  //     (`resolveToolOwner` is the plugin runtime's method map on the loopback arm
-  //     and the registry entry's `mcpServerId` on the external arm). A call for
-  //     another server's tool, a host builtin, or an unknown name is denied.
-  //  3. App-visibility (`_meta.ui.visibility` ∋ "app") — the SPEC MUST, enforced
-  //     inside each backend's call path: `assertAppVisibleToolInvokable` (loopback) /
-  //     the `appInvokable` check (external). NOT re-checked here: one site per path.
-  //  4. Risk + consent — the SAME ToolExecutor gate every host tool call takes, entered
-  //     under a DISTINCT `"mcp-app"` invocation origin. That origin is what makes the
-  //     claim structural rather than aspirational: the ungoverned dispatch an app-only
-  //     tool can otherwise reach (the manifest's `auth.statusTool` carve-out) is keyed
-  //     off the host's own origins, so an app-initiated call cannot enter it — only
-  //     registry tools, which are governed, are reachable from a card. No new classifier.
-  //     `userAction` is never set (see mcp-ui-tool-call.ts): a gesture claim made inside
-  //     an untrusted iframe is not verifiable.
-  //
-  // Sender: `validateHostRendererSender` — this channel RUNS A TOOL, so it takes
-  // the validator that fails closed on an empty frame URL and rejects
-  // plugin-ui-shell frames, exactly like `plugins.call` and `mcp.uiMessage`. The
-  // MCP-app <webview> itself is on the `ave-mcp-app:` scheme and could never
-  // pass either validator.
+  // Require host-renderer identity and server-owned tools; backend visibility checks precede normal risk and consent gates.
+  // Use mcp-app provenance without userAction so iframe claims cannot bypass governance.
   ipcMain.handle(CHANNELS.mcp.callTool, async (e, serverId: unknown, name: unknown, args: unknown, generationId?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.callTool, e);
@@ -1160,7 +1021,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       typeof generationId === "string" ? generationId : undefined,
     );
 
-    // Invariant 2 — the card's server must OWN the tool it asks for.
+    // The bound server must own the requested tool.
     const owner = backend.resolveToolOwner(name);
     if (owner !== serverId) {
       auditLogger.log({
@@ -1177,10 +1038,9 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
 
     try {
-      // Invariants 3 + 4 live inside this call (visibility MUST, then the gate).
+      // The backend enforces app visibility before permission and consent.
       const input = asPlainRecord(args);
-      // The authority-bearing session is minted from Host-owned IPC identity plus
-      // the already-bound server. It is never accepted from the card or renderer.
+      // Mint session authority from host IPC identity and the bound server, never renderer input.
       const appSessionId = `mcp-app:${serverId}:${e.sender?.id ?? `${e.processId}:${e.frameId}`}`;
       const grantTarget = backend.resolveOperationGrantTarget(name, input);
       const grant = grantTarget
@@ -1201,9 +1061,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       });
       return { ok: true, result } satisfies McpUiToolCallOutcome;
     } catch (err) {
-      // Every rejection — app-visibility denial, permission/consent denial, tool
-      // error — surfaces as ONE outcome the bridge renders as an MCP-style
-      // `{ isError: true }` CallToolResult. Never a raw throw across the bridge.
+      // Map visibility, permission, and execution failures to one error outcome for the app bridge.
       const message = errMessage(err);
       auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1215,50 +1073,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // ─── MCP Apps `onmessage` (`ui/message`) — the app speaks to the user or the model ──
-  //
-  // Two paths, chosen ONCE by `parseUiMessageIntent` (mcp/mcp-ui-message.ts):
-  //
-  //  A. NOTIFICATION (`_meta["ave/notification"]` on a content block) → the EXISTING
-  //     popup surface. `NotificationService.fire` already owns the focus gate, the
-  //     per-kind cooldown, title/body sanitization, and the audit row — we add none of
-  //     that here, and we let the app OVERRIDE none of it either: the app supplies text
-  //     to show, never the policy for showing it (see `notify` below). Never the
-  //     transcript; never a slash dispatch.
-  //
-  //  B. CONVERSATION. The app's text enters the ACTIVE conversation, but NEVER as if the
-  //     user typed it. Three invariants, one enforcement site each:
-  //
-  //     1. PROVENANCE — `formatAppMessageEnvelope` (shared/mcp-app-message-source.ts) is
-  //        the only builder of `<app-message source="app:<serverId>">`. Everything
-  //        downstream (turn origin, transcript marker, permission force-ask, command
-  //        bypass) reads provenance from that one envelope. It also strips a leading
-  //        slash, so app text can never dispatch a host command.
-  //     2. SESSION BINDING — HERE, one comparison. The renderer binds the card's ORIGIN
-  //        session id; if it is not the loop's current session the user has navigated
-  //        away, and we fall back to the notification path rather than inject into a
-  //        conversation they are no longer looking at. Fail-safe, one rule.
-  //     3. TURN POLICY — `queueGuidance` is the race-safe round-boundary seam and its
-  //        `no-active-turn` answer is the ATOMIC active-turn check (a separate
-  //        `hasActiveTurn()` probe would reopen the race it was written to close):
-  //          · active turn  → queued as guidance; the drain site (query-loop) sees the
-  //            app envelope and downgrades the rest of the turn to the app's origin, so
-  //            it is NOT treated as the user's own mid-stream guide.
-  //          · no active turn → USER-GATED. We stage an overlay card the user must
-  //            CLICK; confirming inserts the `imported_trigger` marker and starts the
-  //            turn with `app-emitted` origin. An app must NOT autonomously wake the
-  //            model: other MCP-Apps hosts either only *fill* the chat box without
-  //            auto-sending, or fire only from a synchronous user gesture, and the
-  //            spec's "host SHOULD add to context, MAY request consent" is trending
-  //            toward "every UI-initiated action goes through the same consent path".
-  //            Ave cannot verify a gesture claim made inside an untrusted iframe, so a
-  //            host-side gate is the only sound reading.
-  //
-  // Rate limit: the SAME `triggerConversationRateLimiter` the plugin overlay gate uses —
-  // one limiter for "staged conversation proposals", keyed by serverId (which IS the
-  // pluginId on the loopback arm, so a plugin shares one budget across both surfaces).
-  //
-  // Sender: `validateHostRendererSender` — state-mutating, exactly like `mcp.callTool`.
+  // App text retains untrusted provenance; active turns queue guidance atomically and idle turns require user confirmation.
+  // Notifications share the existing focus, cooldown, and sanitization policy.
   ipcMain.handle(CHANNELS.mcp.uiMessage, async (e, serverId: unknown, cardSessionId: unknown, params: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.uiMessage, e);
@@ -1288,21 +1104,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: false, error: intent.error, message: intent.message } satisfies McpUiMessageOutcome;
     }
 
-    // The one notification sink — used by path A and by path B's session-mismatch
-    // fallback. Title/body are UNTRUSTED app text; `fire` caps + strips them.
-    //
-    // What an app may NOT do here, by construction:
-    //  · ATTRIBUTION — the title the user sees is HOST-minted (`app:<serverId>` ahead of
-    //    the app's own words), so a card cannot dress its popup up as a host alert
-    //    ("Ave 보안 경고: 다시 로그인하세요") and phish the user.
-    //  · DELIVERY POLICY — no `bypassFocusGate`, no `urgent`. `bypassFocusGate` is an
-    //    opt-in *manifest* signal (an alerts kind's `osNotification`, src/alerts/service.ts):
-    //    reviewable ahead of time and covered by `manifestSha256`. An untrusted iframe may ask for
-    //    attention; it does not get to rule that its alert outranks the focus gate, nor
-    //    to skip the per-kind cooldown that keeps one app from starving every other
-    //    plugin's real alerts. `urgent` is not passed either, so the kind's default
-    //    (silent for `plugin`) stands. The app's declared `severity` is an audited CLAIM
-    //    and nothing more.
+    // The host owns title attribution and delivery policy; app text cannot bypass focus gates or claim urgency.
     const notify = (title: string, body: string, severity?: string): McpUiMessageOutcome => {
       const notificationService = deps.notificationService;
       if (!notificationService) {
@@ -1322,18 +1124,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: true, disposition: "notified" };
     };
 
-    // ── Path A — the app asked for the user's attention, not the model's.
     if (intent.kind === "notification") {
       const { title, body, severity } = intent.notification;
       return notify(title, body, severity);
     }
 
-    // ── Path B — invariant 2: the card's session must still be OPEN, and the
-    // guidance must reach the loop that is holding it. The window can have
-    // several conversations at once, so "the live session" is not the primary
-    // loop's — reading it there would drop every card raised in another tile
-    // and inject the ones that matched into a conversation that never asked.
-    // A session no open loop holds is a mismatch, exactly as a stale one is.
+    // Deliver only to a loop still holding the card's session; otherwise use notification delivery.
     const cardSession = typeof cardSessionId === "string" ? cardSessionId : "";
     const cardLoop = cardSession ? deps.findLoopBySessionId(cardSession) : undefined;
     if (!cardLoop) {
@@ -1344,7 +1140,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
     const envelope = formatAppMessageEnvelope(intent.text, source);
 
-    // ── Path B — invariant 3: turn policy. `queueGuidance` IS the atomic check.
+    // queueGuidance is the atomic active-turn check.
     const queued = cardLoop.queueGuidance(envelope);
     if (queued === "queued") {
       auditMcpApp("info", `[mcp-app:${serverId}] ui/message → guidance queued (active turn)`);
@@ -1355,22 +1151,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: false, error: queued, message: `guidance rejected: ${queued}` } satisfies McpUiMessageOutcome;
     }
 
-    // No active turn → stage the user-gated card. The renderer inserts the
-    // `imported_trigger` marker and starts the turn ONLY on the user's click.
-    //
-    // `summary` is what the OverlayCard SHOWS. It goes through the SAME display
-    // sanitizer the plugin overlay path uses (`deriveOverlaySummaryForDisplay` —
-    // `<untrusted-*>` strip + 2 000-char cap): one card, one rule, and the less-trusted
-    // source does not get the weaker one. The full text still rides `pendingPrompt`,
-    // where the envelope is the thing that carries provenance.
+    // Stage idle messages for confirmation; summary is bounded display text while pendingPrompt retains the full body.
     const eventId = randomUUID();
     const overlayItem = {
       id: `app:${serverId}:${eventId}`,
       source: { kind: "app" as const, serverId, eventId },
-      // The card was raised INSIDE this conversation, so the tile holding it is
-      // the one that shows the card and the one the confirm click starts a turn
-      // in. Without this the window would guess, and every tile would show a
-      // copy of a card only one of them can act on.
+      // Address the staged card to its originating conversation so only its owning tile may confirm it.
       originSessionId: cardSession,
       title: serverId,
       summary: deriveOverlaySummaryForDisplay({ prompt: intent.text }),
@@ -1387,15 +1173,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true, disposition: "staged" } satisfies McpUiMessageOutcome;
   });
 
-  // ─── MCP server prompt (`prompts/get`) — the user ran a declared prompt ─────────
-  //
-  // Returns the server's messages already wrapped in their provenance envelope.
-  // This handler does NOT start a turn: the renderer sends the returned envelope
-  // through the ordinary `chat:send` path under `mcp-prompt-emitted`, where the
-  // send gate re-checks that the envelope is present. Same guards as the
-  // neighbouring MCP-App channels — host-renderer sender only, and the shared
-  // per-server rate limiter, because this reaches out to a server on the user's
-  // behalf.
+  // Return a provenance envelope without starting a turn; ordinary send revalidates it under prompt-emitted origin.
   ipcMain.handle(CHANNELS.mcp.getPrompt, async (e, serverId: unknown, name: unknown, args: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.getPrompt, e);
@@ -1409,39 +1187,27 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         input,
       });
     };
-    // `name` is bounded and control-char-free by the same predicate the client's
-    // discovery boundary and the argument form use, so one shape reaches the audit
-    // line below, the server, and the dialog.
+    // Bound prompt names before audit and server requests using the shared discovery predicate.
     if (typeof serverId !== "string" || !isUsablePromptName(name, MCP_PROMPT_NAME_MAX_CHARS)) {
       return { ok: false, error: "invalid-request" };
     }
-    // `isUsableMcpServerId` is the authority on the id itself; the staged row below
-    // owns the ENVELOPE. Keeping them apart matters because a prompt IS a staged
-    // origin while a resource is not, and both handlers need the same id rule —
-    // tightening the envelope pattern for a provenance reason must not silently move
-    // what a server id may be.
+    // Validate server identity independently of staged-origin envelope syntax.
     if (!isUsableMcpServerId(serverId)) {
       return { ok: false, error: "invalid-server-id" };
     }
     const kind = stagedOriginFor("mcp-prompt-emitted");
     const source = `mcp-prompt:${serverId}`;
-    // Belt: an id that passes the rule above always forms a valid tag, so this can
-    // only fire if the two ever disagree — which is exactly when a silent mismatch
-    // would matter.
+    // Fail closed if server-id and staged-tag validation ever disagree.
     if (!kind.sourcePattern.test(source)) {
       return { ok: false, error: "invalid-server-id" };
     }
-    // Throttled on its OWN bucket, not the plugin/app actor bucket: this round-trip
-    // is one the user clicked for, and sharing a budget with `triggerConversation()`
-    // and `ui/message` let a chatty card starve the user's own prompt runs.
+    // User-initiated prompt requests need a separate budget from autonomous app proposals.
     if (userPromptRateLimiter.isOverCap(serverId)) {
       auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get rate limited`);
       return { ok: false, error: "rate-limited" };
     }
     userPromptRateLimiter.record(serverId);
-    // Arguments come from the user's form; keep only string values, and accept only
-    // keys the dialog could legitimately have rendered — `Object.create(null)` so a
-    // key like `__proto__` or `toString` cannot reach an inherited slot.
+    // Keep only allowed string arguments in a null-prototype object so __proto__ cannot change inheritance.
     const promptArgs: Record<string, string> = Object.create(null) as Record<string, string>;
     if (args && typeof args === "object" && !Array.isArray(args)) {
       for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
@@ -1453,8 +1219,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     try {
       const result = await deps.mcpManager.getPrompt(serverId, name, promptArgs);
       const rendered = renderMcpPrompt(result.blocks, result.description);
-      // Two independent clips: blocks the CLIENT refused to carry past its cap, and
-      // whatever the render itself bounded. The user is told if either happened.
+      // Report clipping by either the client or renderer.
       const truncated = rendered.truncated || result.droppedBlocks > 0;
       if (rendered.text.length === 0) {
         auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get '${name}' returned no text`);
@@ -1473,29 +1238,15 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         omittedBlocks: rendered.omittedBlocks,
       };
     } catch (err) {
-      // Scrubbed and bounded, like the resource path below: this is a SERVER's error
-      // text going into an audit row, so it can carry host paths, a token the server
-      // echoed back, or enough length to bury the rows around it.
+      // Scrub and bound server errors before audit storage.
       const message = scrubShortError(errorMessage(err));
       auditPrompt("error", `[mcp-prompt:${serverId}] prompts/get '${name}' failed: ${message}`);
       return { ok: false, error: "prompt-failed" };
     }
   });
 
-  // ─── MCP resources — the USER's path (`resources/read` → a fenced attachment) ────
-  //
-  // The renderer resolves a mention to (serverId, uri) and asks the host for the
-  // block to attach. The HOST builds the fence, never the renderer: server text
-  // lands beside the user's own words, so the untrusted framing has to come from the
-  // side that cannot be talked into omitting it.
-  //
-  // The turn stays the user's — this is attached DATA, not a staged origin (see the
-  // resources policy doc §2). Same guards as `getPrompt`: host-renderer sender only,
-  // and the user-initiated rate bucket, because it reaches a server on their behalf.
-  // The catalogue for the mention picker. No rate bucket: it reaches no server, it
-  // reads state the host already holds, and the projection it returns is the same one
-  // the model-facing tools use — so the picker cannot offer a resource the read path
-  // would then refuse as undeclared.
+  // The host builds untrusted resource fences; attachments remain data under the user's turn origin.
+  // Catalog reads use local declared-resource state and consume no server round-trip budget.
   ipcMain.handle(CHANNELS.mcp.listResources, (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.listResources, e);
@@ -1520,11 +1271,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (typeof serverId !== "string" || !isUsableResourceUri(uri)) {
       return { ok: false, error: "invalid-request" };
     }
-    // Shape-checked BEFORE the rate bucket and the audit line: an unbounded serverId
-    // becomes a permanent key in a shared limiter map and is interpolated into audit
-    // rows. `isUsableMcpServerId` is the authority — not the staged-origin row's
-    // envelope pattern, which exists for a different reason on a path the policy says
-    // is not a staged origin.
+    // Bound server ids before allocating rate keys or storing audit text.
     if (!isUsableMcpServerId(serverId)) {
       return { ok: false, error: "invalid-server-id" };
     }
@@ -1536,9 +1283,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     try {
       const read = await deps.mcpManager.readDeclaredResource(serverId, uri);
       const rendered = renderResourceAttachment(serverId, uri, read);
-      // The BODY, not the rendered string: an empty read still renders a full fence
-      // with its framing, so `text.length` is never zero. Attaching framing with no
-      // material behind it reads as content.
+      // Check the body, not the rendered fence; empty framing is not an attachment.
       if (rendered.bodyChars === 0) {
         auditAttach("error", `[mcp-resource:${serverId}] read returned no text`);
         return { ok: false, error: "empty-resource" };
@@ -1551,15 +1296,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       );
       return {
         ok: true,
-        // Shaped as the user-content part the send path already accepts, so the
-        // renderer attaches it verbatim rather than assembling anything itself.
+        // Return the complete host-built user-content part; renderer code must not assemble the trust fence.
         attachment: { type: "text", text: rendered.text },
         truncated: rendered.truncated,
         omittedBlocks: rendered.omittedBlocks,
       };
     } catch (err) {
-      // Scrubbed and bounded: a server's error message is unbounded and may echo a
-      // credential it was handed. The renderer gets a stable code.
+      // Scrub and bound server errors for audit; renderer callers receive a stable code.
       auditAttach(
         "error",
         `[mcp-resource:${serverId}] attach ${uri.slice(0, 256)} failed: `
@@ -1569,8 +1312,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // The templates half of the picker's catalogue. Same posture as `listResources`: no
-  // rate bucket, reaches no server, returns exactly `{serverId, templates[]}`.
+  // Template listing reads host-held state without a server request or rate charge.
   ipcMain.handle(CHANNELS.mcp.listResourceTemplates, (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.listResourceTemplates, e);
@@ -1579,8 +1321,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true as const, servers: deps.mcpManager.listDeclaredResourceTemplates() };
   });
 
-  // The template read. The renderer sends the TEMPLATE and the user's values; main
-  // produces the URI. That split is the point — see the channel comment in the contract.
+  // Main expands the template from user values; renderer input cannot supply the final resource URI.
   ipcMain.handle(
     CHANNELS.mcp.attachResourceTemplate,
     async (e, serverId: unknown, uriTemplate: unknown, values: unknown) => {
@@ -1596,46 +1337,23 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           input,
         });
       };
-      // Shape-checked with the TEMPLATE predicate, not the URI one: a template legally
-      // contains the braces a URI may not. Both refusals happen before the rate bucket
-      // and the audit line, for the reason the plain attach documents — an unbounded
-      // serverId becomes a permanent key in a shared limiter map.
+      // Validate template syntax before audit and rate limiting; legal braces differ from URI syntax.
       if (typeof serverId !== "string" || !isUsableResourceUriTemplate(uriTemplate)) {
         return { ok: false, error: "invalid-request" };
       }
       if (!isUsableMcpServerId(serverId)) {
         return { ok: false, error: "invalid-server-id" };
       }
-      // A `Map`, not a `Record`, all the way from here to the expansion. That is what
-      // makes a variable named `toString` or `__proto__` an ordinary key instead of an
-      // inherited slot — the same rule the prompt-arguments dialog states, held on the
-      // main side too, because this map is built from renderer input.
-      //
-      // Built BEFORE the rate bucket, unlike the prompt path's argument loop. The bucket
-      // protects the SERVER from round-trips made on the user's behalf, and a request
-      // refused here never reaches one — charging the user's per-server budget for it
-      // would let a renderer bug spend the budget the user needs.
+      // Use a Map through expansion so __proto__ and inherited method names remain ordinary variables.
       const templateValues = new Map<string, string>();
       if (values && typeof values === "object" && !Array.isArray(values)) {
         for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
           if (typeof value !== "string" || !isUsableTemplateVariableName(key)) continue;
-          // REFUSED, not clipped — and this is the one place the prompt path's rule does
-          // not carry over. A clipped prompt argument is a shorter question; a clipped
-          // path segment is a DIFFERENT resource, read without anyone being told. The
-          // expansion already refuses an over-long value, and slicing here is precisely
-          // what would stop that refusal from ever firing.
-          //
-          // Measured RAW here and TRIMMED in the expansion, deliberately: this bound is
-          // about what main carries, that one is about what goes into a URI. Main is
-          // therefore the stricter of the two, which is the safe direction — the pair
-          // can only ever refuse more than the expansion would, never less.
+          // Reject overlong path segments; clipping would silently read a different resource.
           if (value.length > MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS) {
             return { ok: false, error: "invalid-request" };
           }
-          // The variable cap is applied AFTER the per-value refusal, so whether an
-          // over-long value is refused does not depend on where it happens to sit in
-          // `Object.entries` order — which hoists integer-like keys, so a renderer could
-          // otherwise decide the outcome by naming its variables `0`…`7`.
+          // Validate every value before applying the variable cap so entry order cannot hide an overlong value.
           if (templateValues.size >= MCP_RESOURCE_TEMPLATE_MAX_VARIABLES) break;
           templateValues.set(key, value);
         }
@@ -1651,8 +1369,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           uriTemplate,
           templateValues,
         );
-        // Everything from here is the plain attach's path, keyed on the URI MAIN
-        // produced.
+        // Reuse attachment authorization and accounting with the host-expanded URI.
         const rendered = renderResourceAttachment(serverId, read.uri, read);
         if (rendered.bodyChars === 0) {
           auditAttach("error", `[mcp-resource:${serverId}] template read returned no text`);
@@ -1671,33 +1388,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           attachment: { type: "text", text: rendered.text },
           truncated: rendered.truncated,
           omittedBlocks: rendered.omittedBlocks,
-          // For the chip's label.
-          //
-          // Handing a URI back to the renderer grants nothing, and it has taken three
-          // attempts to say why without asserting something false, so precisely:
-          // `attachResource` is the only channel that routes a renderer-supplied URI into
-          // the CORE-capability read, and that read is gated on `state.resources` in
-          // `readDeclaredResource` — a template expansion was never listed there, so
-          // replaying one fails.
-          //
-          // NOT "no channel accepts a URI" — `attachResource` does. And note the careful
-          // word CORE: `CHANNELS.mcp.uiResource` also routes a renderer URI to a
-          // `resources/read`, but on the MCP-Apps path, which carries no listed-set check
-          // and never did. That path is now restricted by SCHEME — main refuses anything
-          // but `ui://` (`isMcpAppUiUri`, enforced in `McpClient.readResource`).
-          //
-          // …and it cannot be used to replay an expansion either, for a reason that does
-          // not depend on the scheme gate at all: `ui:` is in RESERVED_SCHEMES, so
-          // `isUsableResourceUri` refuses it and `isUsableResourceUriTemplate` refuses any
-          // template whose skeleton carries it. A `ui://` entry can therefore never reach
-          // `state.resources` or `state.resourceTemplates`, so `read.uri` is never in that
-          // namespace to begin with.
-          //
-          // A reviewer argued a server could declare `ui://cards/{id}` and make the
-          // expansion replayable, and I wrote that in. It is false — the discovery filter
-          // stops it — and they retracted it. Recorded because this comment has now been
-          // rewritten five times and the failure mode is always the same: reasoning about
-          // one gate while the deciding gate is somewhere else.
+          // Returned URIs grant no authority: core reads require declared resources, while app reads accept only ui://.
+          // Discovery rejects ui: resources and templates, so expanded core URIs cannot replay through the app path.
           uri: read.uri,
         };
       } catch (err) {
@@ -1711,27 +1403,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── MCP Apps `ondownloadfile` (`ui/download-file`) — the app saves a file ──────
-  //
-  // The straight line: app → bridge (`ondownloadfile`) → renderer (binds the CARD's
-  // serverId) → THIS channel → `parseMcpAppDownload` → `dialog.showSaveDialog` → write.
-  //
-  // The security invariant, enforced in exactly ONE place: THE HOST NEVER FETCHES A URI
-  // ON AN UNTRUSTED APP'S BEHALF. `parseMcpAppDownload` rejects `resource_link` outright
-  // (the ext-apps JSDoc's `window.open(item.uri)` would make the host a confused deputy —
-  // an egress channel with the host's network identity, reachable from a sandboxed iframe
-  // without any of the gates a tool call takes). What survives the parse is INLINE bytes
-  // the app already possessed, size-capped before decode, count-capped, with a filename
-  // that cannot pre-fill a traversal. Nothing downstream re-checks any of it.
-  //
-  // The AUTHORIZATION for the write is the user's own save dialog — the same
-  // `dialog.showSaveDialog` seam the diagnostics bundle / transcript export / usage CSV
-  // use. No new save path, no host-chosen destination, no silent write. A CANCEL is
-  // therefore a normal outcome, NOT an error (the spec's `isError` must not be raised for
-  // it), and it aborts the remaining files: the user declined.
-  //
-  // Sender: `validateHostRendererSender` — state-mutating (it writes a file), exactly
-  // like `mcp.callTool` / `mcp.uiMessage`.
+  // Save only validated inline bytes with bounded names and sizes; never fetch app-supplied resource links.
+  // The user's save dialog authorizes each write; cancellation stops the remaining files without error.
   ipcMain.handle(CHANNELS.mcp.uiDownloadFile, async (e, serverId: unknown, params: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.uiDownloadFile, e);
@@ -1754,7 +1427,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     for (const file of parsed.files) {
       const extension = file.filename.includes(".") ? file.filename.split(".").pop() ?? "" : "";
       const dialogOptions = {
-        // User-facing dialog copy — Korean per the IPC/UI language convention.
         title: "MCP 앱 파일 저장",
         defaultPath: file.filename,
         ...(extension ? { filters: [{ name: extension.toUpperCase(), extensions: [extension] }] } : {}),
@@ -1767,8 +1439,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         return { ok: true, disposition: "cancelled" } satisfies McpUiDownloadOutcome;
       }
       await writeFile(result.filePath, file.bytes);
-      // Forensic record: an app-authored file landed on the user's disk. The path is
-      // redacted (home dir / username stripped) exactly like the diagnostics export.
+      // Audit file writes with a redacted destination path.
       auditDownload(
         "info",
         `[mcp-app:${serverId}] ui/download-file saved ${JSON.stringify({
@@ -1781,27 +1452,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true, disposition: "saved" } satisfies McpUiDownloadOutcome;
   });
 
-  // ─── MCP Apps `onupdatemodelcontext` (`ui/update-model-context`) ────────────────
-  //
-  // The app OVERWRITES the context it wants the model to have on the NEXT turn. The three
-  // spec semantics are structural here, not policy:
-  //
-  //  1. OVERWRITE — the store keys one slot per (session, server, card) and re-`set`s it.
-  //     The renderer binds ALL THREE (the app names none), so a card can overwrite only
-  //     its own slot, and only in the conversation it belongs to.
-  //  2. DEFERRED to the next turn — nothing is pushed anywhere. `SystemPromptBuilder`
-  //     READS the active session's slots when it assembles the next prompt.
-  //  3. NEVER a follow-up — this handler has no path to the conversation loop. Not a rule
-  //     it obeys; a reference it does not hold. (`ui/message` is the channel that CAN
-  //     reach a turn, and only behind a user-gated card. They are separate on purpose.)
-  //
-  // The body is UNTRUSTED APP DATA. The store fences it and the prompt source labels it
-  // "data, never instructions" — the same framing `<app-message>` bodies and the skills
-  // catalog already carry. A session no OPEN conversation holds drops the update (the
-  // card belongs to a conversation the user has left): fail-safe, one lookup, mirroring
-  // `ui/message`.
-  //
-  // Sender: `validateHostRendererSender` — it mutates what the model reads next turn.
+  // Overwrite only the card's bound session/server slot with untrusted data for the next prompt; never start a turn.
+  // Drop updates unless an open loop still holds the session.
   ipcMain.handle(
     CHANNELS.mcp.uiModelContext,
     (e, serverId: unknown, cardSessionId: unknown, cardId: unknown, params: unknown) => {
@@ -1815,10 +1467,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (typeof serverId !== "string" || typeof cardId !== "string") {
         return { ok: false, error: "invalid-binding", message: "serverId and cardId must be strings" } satisfies McpUiModelContextOutcome;
       }
-      // The card's conversation must still be open SOMEWHERE — in any tile,
-      // not just the primary one. Comparing against the primary loop dropped
-      // every update from a card whose conversation had been split into
-      // another tile, permanently: this handler has no retry.
+      // Any open tile may hold the card's session; primary-only checks would drop valid secondary updates.
       if (typeof cardSessionId !== "string" || !deps.findLoopBySessionId(cardSessionId)) {
         auditContext("info", `[mcp-app:${serverId}] ui/update-model-context dropped: session mismatch`);
         return { ok: false, error: "session-mismatch", message: "the card's session is not an open conversation" } satisfies McpUiModelContextOutcome;
@@ -1832,8 +1481,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         content: record.content,
         structuredContent: record.structuredContent,
       });
-      // The app gets an EmptyResult either way (the spec gives this request no error
-      // channel), so a refusal — an over-cap body above all — is recorded HERE or nowhere.
+      // The app receives EmptyResult even on refusal, so audit rejected updates here.
       auditContext(
         outcome.ok ? "info" : "error",
         outcome.ok
@@ -1844,9 +1492,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Card unmount → free its proxy-session token promptly, so a long chat with many
-  // cards does not let the global LRU evict a STILL-MOUNTED card's token (which would
-  // 404 that card's next reload). Idempotent; a bad/absent token is a no-op.
+  // Dispose proxy tokens on unmount so reclaimed cards cannot evict still-mounted sessions.
   ipcMain.handle(CHANNELS.mcp.disposeUiSession, (e, token: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.disposeUiSession, e); return UNAUTHORIZED_FRAME; }
     if (typeof token === "string" && token.length > 0) disposeMcpAppProxySession(token);
@@ -1942,14 +1588,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ─── Plugin webview bridge (#237 Option B) ────────────────────────────────
-  // Issue #439: every reject path now logs to audit. Previously these returned
-  // silently and the shell would just see a 500ms timeout from get-entry-url
-  // with no way to tell whether registration itself had failed (and why) or
-  // simply not arrived yet.
-  // Safe-stringify: clamp to 1KB and never throw — a malicious renderer could
-  // pass a BigInt, circular ref, or throwing toJSON, which would otherwise
-  // bubble up and break the IPC sentinel return.
+  // Audit every rejected webview binding without changing its sentinel response.
   const safeStringify = (value: unknown): string => {
     try {
       const s = JSON.stringify(value);
@@ -1974,23 +1613,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       // Never let audit logging break the IPC sentinel return.
     }
   };
-  // Make a plugin's partition ready to be loaded into, before it is.
-  //
-  // The host renderer calls this and waits for it before it renders the panel's
-  // `<webview>` at all. Everything that has to be on the session at first load
-  // — the frame preload, the request gate, the `ave-plugin:` asset scheme — is
-  // installed here, and the guest cannot outrun it because the guest does not
-  // exist yet.
-  //
-  // Installing at boot is not sufficient on its own: the window is up while
-  // plugins are still starting, and a panel opened in that window attached a
-  // `<webview>` whose loader table had no `ave-plugin:` entry. Every asset
-  // request from that frame then failed with ERR_UNKNOWN_URL_SCHEME before
-  // reaching any handler, and kept failing — the frame asks a table that has no
-  // entry for the scheme, so no retry can help. The panel showed "Plugin UI
-  // failed to load" until the app was restarted, while the same URL fetched
-  // anywhere else worked. Idempotent per partition; the boot pass stays as the
-  // path that resolves install roots.
+  // Install preload, request gates, and asset schemes before creating the guest; first-load scheme tables cannot be repaired by retry.
   ipcMain.handle(CHANNELS.pluginBridge.ensurePartition, (e, payload: { pluginId?: string }) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.pluginBridge.ensurePartition, e);
@@ -2047,20 +1670,9 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       resolvedRoot = realpathSync(rawInstallRoot);
       resolvedEntry = realpathSync(entryFsPath);
     } catch (err) {
-      // Classify ENOENT separately from genuine boundary violations.
-      // ENOENT here means the install dir was deleted under us — either a
-      // half-completed uninstall left a runtime tracking entry pointing at
-      // a vanished path, or the user manually rm'd ~/.ave/plugins/<id>.
-      // Surfacing this as `entry-url-outside-install-root` is misleading
-      // (it's not a security violation) and traps the user behind a
-      // confusing error. Return `plugin-not-loaded` and trigger a runtime
-      // purge so the plugin card disappears on next refresh.
+      // Treat missing install directories separately from actual boundary violations.
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        // Auto-purge the runtime tracking entry so the plugin card disappears
-        // on next refresh. Fire-and-forget — we want to return promptly to
-        // the webview-register IPC. Concurrent uninstall in flight is OK
-        // (removePlugin is map-level idempotent + JS event-loop serialized);
-        // log on failure for forensics rather than swallowing silently.
+        // Purge missing runtime tracking asynchronously so registration returns promptly.
         void pluginRuntime.removePlugin(pluginId).catch((purgeErr) => {
           logPluginLifecycle(
             "warn",
@@ -2082,10 +1694,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "entry-url-outside-install-root" };
     }
     const assetEntryUrl = pluginAssetUrlFromRealPath(resolvedRoot, resolvedEntry);
-    // Carry the runtime-revision cache-bust query through to the asset URL so
-    // the shell's import() gets a fresh ESM cache key after plugin reload.
-    // entryUrl already parsed successfully via fileURLToPath above, so this
-    // URL construction cannot throw.
+    // Preserve the generation query so reloaded entries receive a fresh module cache key.
     const entrySearch = new URL(entryUrl).search;
     const versionedAssetEntryUrl = entrySearch ? `${assetEntryUrl}${entrySearch}` : assetEntryUrl;
     const runtimeRevision = Number(new URL(entryUrl).searchParams.get("aveRuntimeRevision"));
@@ -2114,24 +1723,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "webview-not-live" }, "webview register rejected");
       return { ok: false, error: "webview-not-live" };
     }
-    // Point the asset protocol at the SAME root this URL was just built from,
-    // on the session that is about to fetch it, before the guest can import
-    // anything.
-    //
-    // The scheme itself is already on the session — the renderer awaits
-    // `ensurePartition` before it renders the <webview> at all, precisely so a
-    // frame never binds its loader table without it. What is still open here is
-    // the ROOT: it is a per-generation directory, and a plugin that reloads —
-    // which a worker-backed one does routinely, once its runtime finishes
-    // provisioning — gets a new one while the old is deleted. Re-recording it
-    // makes the invariant local: the root the entry URL is relative to is the
-    // root the handler serves.
-    //
-    // Its own try, and non-fatal. This used to sit inside the liveness check's
-    // try, where anything it threw came back as `webview-not-live` — a wrong
-    // answer about a live webview. A handler left pointing at the previous
-    // generation is a panel that may fail to load; refusing to register is a
-    // panel that certainly will not.
+    // Serve assets from the exact generation root used to build the entry URL before guest imports.
+    // Root refresh failures are non-fatal and must not misreport a live webview as dead.
     try {
       installPluginAssetProtocolHandler(
         pluginPartitionName(pluginId),
@@ -2198,13 +1791,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (typeof senderId !== "number") {
       return { ok: false as const, error: "not-registered" };
     }
-    // Race-tolerant path: the shell can call get-entry-url before the host
-    // renderer's `did-attach → registerPluginWebview` round-trip completes
-    // (e.g. plugin update lifecycle where the plugin webview re-attaches
-    // with a fresh wcId). Queue this resolver and let the matching register
-    // call flush it. If no register lands within the deadline, fall back to
-    // the original "not-registered" sentinel so a genuinely absent
-    // registration is still surfaced.
+    // Wait for host registration when the shell requests its entry URL during first attach or reattach.
     return new Promise<{ ok: true; entryUrl: string } | { ok: false; error: "not-registered" }>(
       (resolve) => {
         let settled = false;
@@ -2245,20 +1832,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     );
   });
 
-  // Pull-on-load theme handshake. The plugin shell calls this BEFORE
-  // dynamic-importing the plugin entry, applies the returned tokens to
-  // documentElement inline style, and then loads the plugin code — so
-  // every plugin paints with correct host tokens from frame 0.
-  //
-  // This avoids the race the prior register-time replay had: `wc.send`
-  // does not buffer for late-attaching listeners, so a replay sent
-  // before the preload's `ipcRenderer.on` registration was lost. Pull
-  // is request-response and timing-safe: main answers whenever the
-  // shell asks, regardless of when preload listeners were set up.
-  //
-  // Returns `null` when the host hasn't broadcast yet (extreme cold-
-  // boot window). The plugin falls back to its CSS defaults in
-  // that case.
+  // Apply theme tokens before importing the entry module to avoid a fallback-theme first paint.
   ipcMain.handle(CHANNELS.pluginBridge.getTheme, (e) => {
     if (!validatePluginFrame(e)) {
       auditUnauthorized(auditLogger, CHANNELS.pluginBridge.getTheme, e);
@@ -2343,14 +1917,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // ─── Plugin webview config bridge (#B1 — bridge.config namespace) ─────────
-  // Plugin UI webviews call these via `bridge.config.get/set(key)` to read/
-  // write their own per-plugin config record (the same record managed by
-  // PluginConfigTab via ave:plugins:config:get/set). Cross-plugin access is
-  // refused by `resolvePluginFromSender` — a webview can only touch its own
-  // plugin's config. Secret fields are stripped before persistence (matches
-  // `ave:plugins:config:set` behaviour) so plugin UI cannot bypass the
-  // keychain-backed secret store via this surface.
+  // Bind config access to the sender's own plugin and strip secrets before plaintext persistence.
   ipcMain.handle(CHANNELS.pluginBridge.configGet, (e, key: string) => {
     const binding = resolvePluginFromSender(e);
     if (!binding) {
@@ -2391,21 +1958,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         const schema = manifest.configSchema;
         const current = settingsService.getPluginConfig(binding.pluginId) ?? {};
         const next = { ...current, [key]: value };
-        // Same secret-strip path used by `ave:plugins:config:set` — keeps
-        // declared secret fields out of the plain-config record. Plugins
-        // store secrets via the existing `setSecret` IPC.
+        // Use the shared secret-stripping path so UI writes cannot bypass encrypted storage.
         const stripped = stripSecretFields(schema, asPlainRecord(next));
         const savedConfig = await settingsService.setPluginConfig(binding.pluginId, stripped);
         pluginRuntime.setConfigOverride(binding.pluginId, savedConfig);
         emitPluginConfigChange(binding.pluginId, key, savedConfig?.[key]);
-        // Restart policy: see `plugins/config-restart-policy.ts`. This site pins
-        // `restartUnsafe: true` — the caller IS the plugin webview that a
-        // restart would tear down mid-call — so the shared rule is statically
-        // "no restart" no matter what the write touched. The plugin observes the
-        // new value through the `emitPluginConfigChange` above and through the
-        // live `hostApi.config.get`; only its start-time
-        // `PluginRuntimeContext.config` snapshot stays stale until it next
-        // restarts for other reasons.
+        // Do not restart from a webview config call; it would tear down the caller mid-request.
         return { ok: true as const };
       });
     } catch (err) {
@@ -2413,20 +1971,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // ─── Plugin webview storage bridge (#B1 — bridge.storage namespace) ───────
-  // Plugin UI webviews call these via `bridge.storage.get/set(key)`. Storage
-  // is the per-plugin sandboxed data directory (createPluginStorage) — the
-  // same root the host plugin sees via `hostApi.storage`. Each key maps to a
-  // JSON file `<pluginDataDir>/ui-storage/<sanitized-key>.json` so the bridge
-  // surface (key/value) doesn't leak the underlying filesystem layout to the
-  // webview. Path traversal in `key` is rejected at `sanitizeStorageKey`.
+  // Storage keys map to private plugin files without exposing filesystem layout; sanitize before path construction.
   function sanitizeStorageKey(key: unknown): string | null {
     if (typeof key !== "string") return null;
     const trimmed = key.trim();
     if (!trimmed || trimmed.length > 128) return null;
-    // Allowlist: alphanumerics, `-`, `_`, `.` only. Refuses `..`, slashes, and
-    // any control char a malicious renderer could embed to escape the
-    // ui-storage subdir even before the storage layer's realpath check fires.
+    // Reject traversal, separators, and controls before joining storage keys to the plugin data path.
     if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) return null;
     if (trimmed === "." || trimmed === "..") return null;
     return trimmed;
@@ -2495,13 +2045,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!manifest) {
       return { ok: false, error: "unknown-plugin-id" };
     }
-    // `canEmitEvent` is the whole decision for this lane too — it already
-    // rejects host-only namespaces (plugin.*/host.*, reserved for host-side
-    // emit via boot/types.ts) and infers gated-namespace authorization from the
-    // manifest's declared emittedEvents. HOST_ONLY_EMIT_NAMESPACES is consulted
-    // below only to LABEL the denial, because this lane's wire contract
-    // distinguishes `host-only-namespace:` from `missing-capability:` (the
-    // latter prefix is kept for renderer/preload compatibility).
+    // Use canEmitEvent for both lanes so host namespaces and undeclared events remain forbidden.
     const declaredEmittedEvents = getDeclaredEmittedEvents(manifest);
     if (!canEmitEvent(type, declaredEmittedEvents)) {
       const requiredCap = auditPluginEmitDenial({
@@ -2532,10 +2076,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // ─── Theme propagation ─────────────────────────────────────────────────
-  // Host renderer calls this when any theme axis changes; main fans out to
-  // every registered plugin webview via the existing ave:plugin:event channel
-  // and publishes the same host event for plugin host services.
+  // Fan out theme updates to registered webviews and publish the same host event.
   ipcMain.handle(CHANNELS.host.pluginThemeNotify, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.host.pluginThemeNotify, e);
@@ -2556,7 +2097,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
 
-  // ─── Notifications ──────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.notification.clicked, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.notification.clicked, e);

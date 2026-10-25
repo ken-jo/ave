@@ -1,12 +1,5 @@
-/**
- * Unit tests for lifecycle-log.ts:
- * 1. Phase constant shape consistency (all values match naming convention)
- * 2. logPluginLifecycle() forwards the correct structured object + phase field to the logger
- */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { PluginPhase, logPluginLifecycle } from "../lifecycle-log.js";
-
-// ─── Phase constant shape ─────────────────────────────────────────────────────
 
 describe("PluginPhase constants", () => {
   it("all values start with 'lifecycle:'", () => {
@@ -18,7 +11,6 @@ describe("PluginPhase constants", () => {
   it("has at least 30 distinct entries", () => {
     const values = Object.values(PluginPhase);
     expect(values.length).toBeGreaterThanOrEqual(30);
-    // All values unique
     const unique = new Set(values);
     expect(unique.size).toBe(values.length);
   });
@@ -55,23 +47,17 @@ describe("PluginPhase constants", () => {
   });
 });
 
-// ─── logPluginLifecycle() wiring ────────────────────────────────────────────────────────────
-
 describe("logPluginLifecycle()", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it("passes pluginId, phase, and message through to the logger", () => {
-    // In test mode, createLogger delegates to console — log[level](ctx, msg) →
-    // console.log(prefix + msg, ctx). Assert the context object (2nd arg) carries
-    // pluginId and phase, not just that the message appears somewhere.
+    // The test logger sends structured context as console.log argument 2.
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     logPluginLifecycle("debug", { pluginId: "test-plugin", phase: PluginPhase.LOAD_START }, "loading plugin");
     expect(consoleSpy).toHaveBeenCalled();
     const callArgs = consoleSpy.mock.calls[0];
-    // callArgs[0] = "[plugin-lifecycle] loading plugin" (prefix + msg)
-    // callArgs[1] = ctx object { pluginId, phase, ... }
     expect(callArgs[0]).toContain("loading plugin");
     const ctx = callArgs[1] as Record<string, unknown>;
     expect(ctx).toMatchObject({ pluginId: "test-plugin", phase: PluginPhase.LOAD_START });

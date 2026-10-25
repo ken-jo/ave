@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import type { AppSettings, AveApi } from "../types.js";
 import {
-  BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
   systemPairOf,
@@ -12,24 +11,12 @@ import { ensureInstalledContent, useInstalledContent } from "../installed-conten
 import type { ThemeBundle } from "./bundles/index.js";
 import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
-export { bundleToPluginTokens };
 import type { ThemeContextValue, UnvalidatedBundleId, ResolvedShell } from "./types.js";
 import type { InitialThemePrime } from "../../../shared/initial-theme.js";
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-/**
- * `window.__aveInitialTheme` is set by `src/preload.ts` when the main
- * process passes `--ave-initial-theme=...` via `webPreferences.additional
- * Arguments` (see `architecture.md` §6.7.1 "race window = 0"). The preload
- * also paints documentElement tokens for the same payload before React
- * mounts, so reading bundleId here lets ThemeProvider's first render agree
- * with what's already on screen — eliminating the async hydrate race that
- * could flash the default tokens before settings loaded.
- *
- * Type imported from `src/shared/initial-theme.ts` (single SoT shared with
- * `main.ts` + `preload.ts`).
- */
+/** Seed from the preload-painted initial theme so the first render agrees with root tokens before async settings hydration. */
 declare global {
   interface Window {
     __aveInitialTheme?: Readonly<InitialThemePrime> | null;
@@ -45,11 +32,8 @@ function readGlobalInitialBundleId(): UnvalidatedBundleId | undefined {
   return isThemeId(id) ? (id as UnvalidatedBundleId) : undefined;
 }
 
-/**
- * Extract `{ bundleId, followSystem }` from an `AppSettings` payload. Used
- * both by the initial settings hydrate and by the `SETTINGS.updated`
- * cross-window broadcast handler so the two paths share one normalizer.
- */
+/** Extract `{ bundleId, followSystem }` from an `AppSettings` payload. Used both by the initial settings hydrate and by the
+ * `SETTINGS.updated` cross-window broadcast handler so the two paths share one normalizer. */
 /** A value with every object's keys sorted, so two equal values serialize the same. */
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -72,7 +56,6 @@ function resolveAppearanceSettings(settings: AppSettings): { bundleId: Unvalidat
     followSystem: appearance?.followSystem === true,
   };
 }
-
 
 export interface ThemeProviderProps {
   api?: AveApi;
@@ -117,12 +100,11 @@ export function ThemeProvider({
     resolveBundle(initialBundleId ?? readGlobalInitialBundleId() ?? DEFAULT_BUNDLE_ID)
   );
 
-  // Track mount + user-touched state so late getSettings() doesn't clobber
-  // a user toggle that happened in the meantime.
+  // Track mount + user-touched state so late getSettings() doesn't clobber a user toggle that happened in the meantime.
   const userTouchedRef = useRef(false);
   const mountedRef = useRef(true);
-  // Set on every mount, not only at creation: StrictMode unmounts and remounts
-  // once, and a ref left false would drop the settings hydrate and broadcasts.
+  // Set on every mount, not only at creation: StrictMode unmounts and remounts once, and a ref left false would drop the
+  // settings hydrate and broadcasts.
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -172,9 +154,8 @@ export function ThemeProvider({
     return () => { cancelled = true; };
   }, [api, applySettingsAppearance]);
 
-  // Settings can be changed from the separate native settings window. Keep each
-  // renderer's provider in sync with the persisted settings broadcast so theme
-  // changes are visible without restarting the app.
+  // Settings can be changed from the separate native settings window. Keep each renderer's provider in sync with the
+  // persisted settings broadcast so theme changes are visible without restarting the app.
   useEffect(() => {
     if (!api) return;
     return api.onSettingsUpdated((settings) => {
@@ -183,8 +164,8 @@ export function ThemeProvider({
     });
   }, [api, applySettingsAppearance]);
 
-  // Tick counter — incremented by the OS media query listener below.
-  // Must be declared before effectiveBundleId so it is in scope for the dep array.
+  // Tick counter — incremented by the OS media query listener below. Must be declared before effectiveBundleId so it is in
+  // scope for the dep array.
   const [osTick, setOsTick] = useState(0);
   // Installed themes are module state; a pair is known once they have loaded.
   const installedThemes = useInstalledContent().themes;
@@ -197,9 +178,8 @@ export function ThemeProvider({
     // installedThemes: a pair installed later becomes available.
   }, [bundleId, installedThemes]);
 
-  // Derive the effective bundle — when followSystem is on and the selected
-  // theme has a pair, the one matching the OS scheme applies. osTick is
-  // included so any OS scheme change triggers a re-evaluation.
+  // Derive the effective bundle — when followSystem is on and the selected theme has a pair, the one matching the OS scheme
+  // applies. osTick is included so any OS scheme change triggers a re-evaluation.
   const effectiveBundleId: UnvalidatedBundleId = useMemo(() => {
     if (followSystem && systemPair) return resolveSystemPair(systemPair.bundle, systemPair.pair);
     return bundleId;
@@ -209,8 +189,8 @@ export function ThemeProvider({
     let cancelled = false;
     const cached = findBundle(effectiveBundleId);
     if (cached) setActiveBundle(cached);
-    // An installed theme is known only once the installed content has loaded;
-    // resolve after it so a selected installed theme is not replaced by the default.
+    // An installed theme is known only once the installed content has loaded; resolve after it so a selected installed theme
+    // is not replaced by the default.
     void ensureInstalledContent(api)
       .then(() => findBundle(effectiveBundleId))
       .then((bundle) => {
@@ -244,9 +224,8 @@ export function ThemeProvider({
     setActiveBundle((shown) => (shown.id === bundle.id && !sameBundleValues(shown, bundle) ? bundle : shown));
   }, [installedThemes, effectiveBundleId]);
 
-  // A theme installed after this window started — the first-boot migration
-  // adopting the selected theme's package (design §16.3) — was replaced by the
-  // default above; once it arrives, the persisted selection applies again.
+  // A theme installed after this window started — the first-boot migration adopting the selected theme's package (design
+  // §16.3) — was replaced by the default above; once it arrives, the persisted selection applies again.
   useEffect(() => {
     if (!api || installedThemes.length === 0) return;
     let cancelled = false;
@@ -261,9 +240,8 @@ export function ThemeProvider({
     };
   }, [api, installedThemes, applySettingsAppearance]);
 
-  // Apply bundle to DOM on every active bundle change, then tell the consumers
-  // that copy theme values: their effects run after this one has written :root.
-  // Revision 0 is the first bundle, which this effect writes in the same commit.
+  // Apply bundle to DOM on every active bundle change, then tell the consumers that copy theme values: their effects run
+  // after this one has written :root. Revision 0 is the first bundle, which this effect writes in the same commit.
   const [applied, setApplied] = useState<{ bundle: ThemeBundle; revision: number }>(() => ({ bundle: activeBundle, revision: 0 }));
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -292,8 +270,8 @@ export function ThemeProvider({
     });
   }, [api, activeBundle, effectiveBundleId]);
 
-  // Live-follow OS preference while followSystem alternates a pair.
-  // A tick counter forces effectiveBundleId to re-evaluate on OS scheme change.
+  // Live-follow OS preference while followSystem alternates a pair. A tick counter forces effectiveBundleId to re-evaluate
+  // on OS scheme change.
   const followsPair = followSystem && systemPair !== null;
   useEffect(() => {
     if (!followsPair) return;
@@ -365,10 +343,8 @@ export function ThemeProvider({
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
-/**
- * Read the current theme. Throws if used outside a ThemeProvider — that
- * would mean the App composition root forgot to mount it, which is a bug.
- */
+/** Read the current theme. Throws if used outside a ThemeProvider — that would mean the App composition root forgot to
+ * mount it, which is a bug. */
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext);
   if (!ctx) {
@@ -377,14 +353,7 @@ export function useTheme(): ThemeContextValue {
   return ctx;
 }
 
-/**
- * Test/escape hatch — returns null instead of throwing when no provider is
- * mounted. Useful for components that may render in isolated test harnesses
- * (Storybook, snapshot tests) without a full App context.
- */
+/** Return null outside a theme provider so isolated components can render without the full app context. */
 export function useOptionalTheme(): ThemeContextValue | null {
   return useContext(ThemeContext);
 }
-
-/** @internal — exported for the bundle registry */
-export { BUNDLES };

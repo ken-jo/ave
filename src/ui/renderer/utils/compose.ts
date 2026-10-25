@@ -18,23 +18,8 @@ export interface ComposedOutgoing {
   personaPromptId?: string;
 }
 
-/**
- * Compose outgoing message + multimodal attachments.
- *
- * The renderer keeps marker text (e.g. "[Image #1]", "[File #2]",
- * "[Pasted text #3 +12 lines]") in the textarea body. At send time:
- *   • Image markers stay in the body verbatim (so the assistant can refer
- *     to them by `#N`) and the corresponding payload becomes a vision part.
- *   • File markers are augmented inline so the model sees the absolute path
- *     and knows it can call the read tool. Body text stays human-readable.
- *   • Paste markers are replaced in-place with the actual pasted text wrapped
- *     in `----- Pasted text #N (M lines) -----` delimiters so the model sees
- *     the full content (no extra round-trip). Plain delimiter rather than a
- *     fenced code block so the inner content cannot accidentally close it.
- *   • Resource markers stay in the body like an image's, and the host-built fenced
- *     block becomes its own text part. NOT the paste treatment: that text is the
- *     server's, and main's per-turn bound counts fences in the parts.
- */
+/** Keep image/resource markers and separate payload parts; augment file markers with paths and inline user pastes with
+ * plain delimiters. Resource fences stay host-authored and verbatim. */
 export function composeOutgoing(params: {
   raw: string;
   activePreset: RolePreset | null;
@@ -56,15 +41,8 @@ export function composeOutgoing(params: {
     body = body.split(marker).join(augmented);
   }
 
-  // 2. Inline-replace paste markers with the actual pasted text. Now-safe
-  //    because file augmentation already ran on the original body.
-  //
-  //    The split target intentionally matches any `[Pasted text #N +X lines]`
-  //    where X is *any* digit string — `parseMarkers()` accepts the same
-  //    loose suffix so the user could have edited the line count manually.
-  //    If we used `buildMarkerText(att)` (which embeds the original `lines`
-  //    value) the split would miss the edited form, leaving the marker
-  //    text in the body and the pasted content unsubstituted.
+  // Match edited paste line-count suffixes rather than rebuilt original markers; file augmentation must already have run on
+  // the original body.
   for (const att of attachments) {
     if (att.kind !== "paste") continue;
     const re = new RegExp(`\\[Pasted text #${att.n}(?:\\s+\\+\\d+\\s+lines)?\\]`, "g");
@@ -88,20 +66,8 @@ export function composeOutgoing(params: {
       bytes: img.bytes,
     }));
 
-  // 4. Resource attachments become their OWN text parts, and the marker stays in the
-  //    body — the image rule, deliberately not the paste rule above.
-  //
-  //    A paste is the user's own words, so inlining it into the body is right. A
-  //    resource is SERVER-authored text inside the host's untrusted fence, and main
-  //    bounds how much of it one turn may carry by counting fences in the content
-  //    PARTS. Splicing it into `body` would put it in the one field that bound cannot
-  //    see, which would not be a smaller bound — it would be no bound, and the
-  //    composer is the exact place the reviewers predicted that would happen.
-  //
-  //    The renderer passes the text through untouched: the host built the fence and
-  //    framing, so changing it here would make the renderer a second author. With
-  //    PII redaction enabled, main may replace sensitive spans immediately before
-  //    the provider receives this otherwise byte-for-byte IPC payload.
+  // Keep host-built resource fences in separate content parts so main can enforce its bound; preserve text verbatim until
+  // main applies any configured PII redaction.
   const resourceParts: UserContentPart[] = attachments
     .filter((a): a is Extract<Attachment, { kind: "resource" }> => a.kind === "resource")
     .map((res) => ({ type: "text", text: res.text }));

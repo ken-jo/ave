@@ -1,18 +1,4 @@
-/**
- * Diagnostics domain IPC handlers.
- * Covers: ave:diagnostics:export, ave:diagnostics:crash-list, ave:logs:tail.
- *
- * ALL INTERNAL — none appear in PUBLIC_CHANNELS, so an external origin
- * (local-api / cli / plugin frame) can never reach them (fail-closed default).
- * Each handler additionally calls validateHostRendererSender (NOT the base
- * validateSender) — these channels expose host-wide state (settings snapshot,
- * production logs, crash metadata), so a plugin-ui-shell frame is rejected even
- * though it is also a file:// origin. On
- * rejection each emits an auditUnauthorized warn row + returns UNAUTHORIZED_FRAME.
- *
- * IPC error convention: return codes are kebab-case English; the renderer maps
- * them to Korean (see AuditTab diagnostics section).
- */
+// Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain, dialog } from "electron";
 import { readFile } from "node:fs/promises";
 import { readdirSync } from "node:fs";
@@ -34,16 +20,12 @@ import type { IpcDeps } from "../types.js";
 
 const log = createLogger("ipc-diagnostics");
 
-/** Max lines `ave:logs:tail` will ever return (clamps a hostile large N). */
 const MAX_TAIL_LINES = 2000;
-/** Default tail size when the caller passes a non-number. */
 const DEFAULT_TAIL_LINES = 200;
 
-/** Recognised production log levels for the tail viewer filter. */
 type LogLevelFilter = "all" | "error" | "warn" | "info" | "debug";
 const VALID_LEVELS: readonly LogLevelFilter[] = ["all", "error", "warn", "info", "debug"];
 
-/** pino numeric level → name (matches pino's default level map). */
 const PINO_LEVEL_NAME: Record<number, LogLevelFilter | "trace" | "fatal"> = {
   10: "trace",
   20: "debug",
@@ -53,24 +35,12 @@ const PINO_LEVEL_NAME: Record<number, LogLevelFilter | "trace" | "fatal"> = {
   60: "fatal",
 };
 
-/** Absolute path to Electron's crash-dumps dir (`<userData>/crash-dumps`). */
 async function crashDumpsDir(): Promise<string> {
   const { app } = await import("electron");
   return resolve(app.getPath("userData"), "crash-dumps");
 }
 
-/**
- * Read the last `lines` log lines from the most-recent log files, redacting each
- * with PII + credential DLP and applying the optional level filter. Newest file first;
- * reads only enough files to satisfy `lines`.
- *
- * KNOWN LIMITATION (accepted): this loads each
- * needed file fully into memory before slicing to the tail. Files are bounded by
- * the sink's LOG_MAX_BYTES (10 MB/file) and we stop reading once `lines` is
- * satisfied, so worst-case memory is small and O(files-needed). A streaming
- * reverse-read was judged not worth the complexity at this bound; revisit only
- * if per-file caps grow.
- */
+// Tail reads redact PII and credentials, loading each needed rotation-bounded file in full.
 async function tailLogs(lines: number, level: LogLevelFilter): Promise<string[]> {
   const dir = join(aveHome(), "logs");
   let files: string[];
@@ -80,7 +50,6 @@ async function tailLogs(lines: number, level: LogLevelFilter): Promise<string[]>
     return [];
   }
   const collected: string[] = [];
-  // Walk newest → oldest, prepending, until we have enough lines.
   for (let i = files.length - 1; i >= 0 && collected.length < lines; i--) {
     let raw: string;
     try {
@@ -96,7 +65,6 @@ async function tailLogs(lines: number, level: LogLevelFilter): Promise<string[]>
   return tail.map((l) => scrubSecretsForLLM(redactForLLM(l).redacted));
 }
 
-/** Does a (JSON or pretty) log line match the requested level? */
 function lineMatchesLevel(line: string, level: LogLevelFilter): boolean {
   try {
     const obj = JSON.parse(line) as { level?: number | string };
@@ -108,7 +76,6 @@ function lineMatchesLevel(line: string, level: LogLevelFilter): boolean {
           : undefined;
     return name === level;
   } catch {
-    // Pretty (dev) lines aren't JSON — match on an uppercased level token.
     return line.toUpperCase().includes(level.toUpperCase());
   }
 }
@@ -116,7 +83,6 @@ function lineMatchesLevel(line: string, level: LogLevelFilter): boolean {
 export function registerDiagnosticsHandlers(deps: IpcDeps): void {
   const { auditLogger, settingsService, getMainWindow } = deps;
 
-  // ── ave:diagnostics:export ── build redacted bundle → save dialog → write ──
   ipcMain.handle(
     CHANNELS.diagnostics.export,
     async (e, opts?: { dateFrom?: string; dateTo?: string; includeCrashDumps?: boolean }) => {
@@ -124,20 +90,12 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.diagnostics.export, e);
         return UNAUTHORIZED_FRAME;
       }
-      // Validated OUTSIDE the try, so a malformed day key rejects the invoke
-      // the way `ave:audit:search` does rather than being reported as
-      // "export-failed" — and, more importantly, rather than reaching the
-      // bundle builder, which catches a throwing audit section and would hand
-      // back an ok bundle with its audit trail quietly missing.
+      // Validate day keys before bundle construction; audit-section error isolation would otherwise hide an incomplete export.
       const dateFrom = parseIsoDate(opts?.dateFrom, "dateFrom");
       const dateTo = parseIsoDate(opts?.dateTo, "dateTo");
       try {
         const settings = settingsService.getAll();
-        // Persisted setting is AUTHORITATIVE; the renderer arg may only NARROW,
-        // never widen. Crash dumps
-        // are only ever included when the persisted opt-in is true AND the caller
-        // did not explicitly opt out — a renderer that sends `true` can never
-        // force-include dumps the user's setting has disabled.
+        // Persisted crash-dump consent is authoritative; renderer arguments may narrow it, never widen it.
         const includeCrashDumps =
           settings.diagnostics.includeCrashDumps === true && opts?.includeCrashDumps !== false;
         const buffer = await buildDiagnosticsBundle({
@@ -153,7 +111,6 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
         const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const dialogOptions = {
-          // User-facing dialog copy — Korean per IPC/UI language convention.
           title: "진단 번들 저장",
           defaultPath: `ave-diagnostics-${stamp}.zip`,
           filters: [{ name: "ZIP", extensions: ["zip"] }],
@@ -166,11 +123,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
         const { writeFile } = await import("node:fs/promises");
         await writeFile(res.filePath, buffer);
-        // Forensic record of the export:
-        // a diagnostics bundle is a sanctioned exfiltration of redacted host
-        // state, so log WHO exported WHAT — the effective includeCrashDumps
-        // (post-M2 narrowing), the date window, byte size, and the destination
-        // path (redactFsPath strips the home dir / username).
+        // Audit effective options, date range, byte size, and redacted destination without exposing host paths.
         auditLogger.log({
           timestamp: new Date().toISOString(),
           sessionId: "diagnostics-export",
@@ -192,7 +145,6 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ── ave:diagnostics:crash-list ── crash-dump metadata (filename/time/size) ──
   ipcMain.handle(CHANNELS.diagnostics.crashList, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.diagnostics.crashList, e);
@@ -207,7 +159,6 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // ── ave:logs:tail ── recent N redacted log lines, optional level filter ──
   ipcMain.handle(
     CHANNELS.logs.tail,
     async (e, args?: { lines?: number; level?: string }) => {

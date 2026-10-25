@@ -1,20 +1,4 @@
-/**
- * SlashPicker — the composer's command button.
- *
- * The rows are the OS's own menu, not a panel drawn in the page. A menu of
- * commands is what the platform already draws well: it escapes the window, it
- * scrolls and keyboard-navigates the way every other menu on the machine does,
- * and it costs no layout inside a composer that is already tight.
- *
- * What it gives up is type-to-filter, which a native menu cannot do — items are
- * fixed when the menu pops, and the OS takes the key grab, so keystrokes never
- * reach the page to refine anything. That surface still exists and is untouched:
- * typing "/" in the composer opens `InlineSlashMenu`, which filters as you type.
- * This button is the browse path; "/" is the search path.
- *
- * Everything still runs through the same callbacks: slash commands are inserted
- * as text ("/cmd "), shortcuts run their action, plugins open their view.
- */
+/** Native command menus cannot filter typed input; typing / still opens the separate inline filter menu. */
 import { useCallback, useEffect, useRef } from "react";
 import { Command as CommandIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -76,9 +60,8 @@ export function SlashPicker({
     // window's corner is not.
     if (!anchor) return;
     try {
-      // Read at click time rather than held open in every mounted composer: the
-      // menu is built and popped in one call, so what it draws is what is
-      // connected now, and a tile that never opens it pays nothing.
+      // Read at click time rather than held open in every mounted composer: the menu is built and popped in one call, so what it
+      // draws is what is connected now, and a tile that never opens it pays nothing.
       const [runtime, customCommands] = await Promise.all([
         loadSlashPickerRuntime(),
         loadCustomCommands ? loadCustomCommands().then((result) => result.commands) : Promise.resolve([]),
@@ -102,8 +85,8 @@ export function SlashPicker({
       const shown = await showMenu({ x: anchor.left, y: anchor.bottom }, sections);
       if (!shown) console.error("[ave] composer menu was refused; nothing opened");
     } catch (err) {
-      // Reading the runtime crosses IPC and can reject. Saying so beats a button
-      // that looks broken, and the flag below must be released either way.
+      // Reading the runtime crosses IPC and can reject. Saying so beats a button that looks broken, and the flag below must be
+      // released either way.
       console.error("[ave] composer menu could not be built", err);
     } finally {
       // `popup` returns as soon as the menu is on screen, and the OS owns it from
@@ -151,8 +134,8 @@ export function SlashPicker({
           aria-label={t("slashPicker.ariaLabel")}
           aria-haspopup="menu"
           data-testid={TEST_IDS.slashPickerTrigger}
-          // SpotlightTour anchor: step 3 of the `first-boot-essentials`
-          // scenario highlights this toggle, see `default-tour-scenarios.ts`.
+          // SpotlightTour anchor: step 3 of the `first-boot-essentials` scenario highlights this toggle, see
+          // `default-tour-scenarios.ts`.
           data-tour-anchor="command-palette-toggle"
           onClick={() => { void openMenu(); }}
         >

@@ -1,7 +1,4 @@
-/**
- * Command blocks parsed from a terminal's output stream: OSC 133 boundaries,
- * the Enter-split fallback, chunk splits, text normalization and the bounds.
- */
+import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 import { describe, expect, it } from "vitest";
 import {
   TerminalBlockTracker,
@@ -19,15 +16,10 @@ const ESC = "\u001b";
 const BEL = "\u0007";
 const osc = (body: string, terminator: "bel" | "st" = "bel"): string =>
   `${ESC}]${body}${terminator === "bel" ? BEL : `${ESC}\\`}`;
-/** This terminal's marker nonce, as the shell integration would carry it. */
 const NONCE = "0123456789abcdef0123456789abcdef";
-/** The B token the test prompts announce in their P marker. */
 const PROMPT_TOKEN = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
-/**
- * An authenticated OSC 133 marker: its fields, then the nonce. A P marker
- * also announces the prompt's B token, and B carries that token instead of
- * the nonce (the prompt string prints it).
- */
+// An authenticated OSC 133 marker: its fields, then the nonce. A P marker also announces the prompt's B token, and B carries that token instead of the
+// nonce (the prompt string prints it).
 const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
   if (fields === "B") return osc(`133;B;${PROMPT_TOKEN}`, terminator);
   let announced = fields;
@@ -38,7 +30,7 @@ const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
   return osc(`133;${announced};${NONCE}`, terminator);
 };
 
-/** One prompt-command-output-finish cycle, as the generated zsh rc emits it. */
+// One prompt-command-output-finish cycle, as the generated zsh rc emits it.
 function cycle(command: string, output: string, exit: number, cwd = "/work"): string {
   return [
     mark(`P;Cwd=${encodeURIComponent(cwd).replace(/%2F/gu, "/")};Keys=emacs;Paste=1`),
@@ -189,6 +181,27 @@ describe("TerminalBlockTracker — OSC 133", () => {
     tracker.recordOutput(`\r$ ${mark("B")}l`);
     expect(tracker.editLineText()).toBe("l");
     expect(tracker.promptState()).toBe("pending-input");
+  });
+
+  it("reads bash readline's wrap placeholder (\" \" CR at the right margin) as no part of the edit line", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    // The bytes the ubuntu-24.04 runner's bash 5.2 echoed for a paste that ended at column 100: an 85-column prompt, the pasted line in standout, then a
+    // blank on the next row and a return to its start.
+    const prompt = "runner@runnervm4yw5a:/tmp/ave-test-1001/t-HDkvJN/pty-linux-sandbox-pHo2zN/workspace$ ";
+    expect(prompt.length + "echo still-here".length).toBe(100);
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}\u001b[?2004h${prompt}${mark("B")}`);
+    tracker.recordOutput("\u001b[7mecho still-here\u001b[27m \r");
+    expect(tracker.editLineText()).toBe("echo still-here");
+    expect(tracker.promptEndCount()).toBe(1);
+  });
+
+  it("keeps the line's own trailing space: only the placeholder's one space before a pending CR goes", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}$ ${mark("B")}`);
+    tracker.recordOutput("\u001b[7mecho still-here \u001b[27m");
+    expect(tracker.editLineText()).toBe("echo still-here ");
+    tracker.recordOutput(" \r");
+    expect(tracker.editLineText()).toBe("echo still-here ");
   });
 
   it("closes a block whose D never came when the next prompt starts, without an exit code", () => {
@@ -374,6 +387,176 @@ describe("TerminalBlockTracker — fallback without markers", () => {
   });
 });
 
+describe("authenticated editor-buffer reports", () => {
+  const prompt = (fields = "Edit=1"): string => `${mark(`P;Cwd=/work;Keys=emacs;Paste=1;${fields}`)}${mark("A")}% ${mark("B")}`;
+  const report = (line: string): string => mark(`E;Line=${encodeURIComponent(line)};B=${PROMPT_TOKEN}`);
+
+  it("accepts fresh empty and exact buffer reports without changing the displayed echo", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    expect(tracker.editLineReport()).toBeNull();
+    tracker.recordOutput(prompt());
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(report(""));
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "" });
+    tracker.recordOutput("echo shown");
+    tracker.recordOutput(report("echo 'actual;100% 한 😀'"));
+    expect(tracker.editLineText()).toBe("echo shown");
+    expect(tracker.editLineReport()).toEqual({ generation: 2, line: "echo 'actual;100% 한 😀'" });
+    expect(tracker.editLineReportGeneration()).toBe(2);
+  });
+
+  it("requires a single current authenticated Edit capability", () => {
+    for (const fields of ["", "Edit=0", "Edit=true", "Edit=1;Edit=1", "Edit=0;Edit=1"]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt(fields));
+      expect(tracker.supportsEditLineQuery()).toBe(false);
+      expect(tracker.recordOutput(report("x"))).toBe("");
+      expect(tracker.editLineReportGeneration()).toBe(0);
+    }
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt());
+    tracker.recordOutput(osc(`133;P;Edit=0;B=${PROMPT_TOKEN};wrong-nonce`));
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(prompt("Edit=0"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+  });
+
+  it("rejects a bad nonce, stale token, wrong phase, duplicate or missing fields and invalid encoding", () => {
+    for (const fields of [
+      `E;Line=x;B=${PROMPT_TOKEN};wrong-nonce`,
+      `E;Line=x;B=aaaaaaaaaaaaaaaa;${NONCE}`,
+      `E;Line=x;Line=y;B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;B=${PROMPT_TOKEN};B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;${NONCE}`,
+      `E;B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;B=${PROMPT_TOKEN};Extra=1;${NONCE}`,
+      ...["%", "%zz", "%0", "%FF", "%ED%A0%80", "raw\ncontrol"].map((line) => `E;Line=${line};B=${PROMPT_TOKEN};${NONCE}`),
+    ]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt());
+      let notifications = 0;
+      tracker.subscribe(() => { notifications++; });
+      const untrusted = osc(`133;${fields}`);
+      expect(tracker.recordOutput(untrusted)).toBe(fields.endsWith(`;${NONCE}`) ? "" : untrusted);
+      expect(tracker.editLineReport()).toBeNull();
+      expect(tracker.editLineReportGeneration()).toBe(0);
+      expect(notifications).toBe(0);
+    }
+    for (const phase of ["", mark("D;0"), mark("A"), mark("C;cmdline_url=echo"), mark("P;Cwd=/work;Edit=1")]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      if (phase !== "") tracker.recordOutput(prompt() + phase);
+      expect(tracker.recordOutput(report("x"))).toBe("");
+      expect(tracker.editLineReport()).toBeNull();
+    }
+  });
+
+  it("advertises queries only after the current B while the authenticated prompt remains in input phase", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(mark("P;Cwd=/work;Edit=1"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("A"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("B"));
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(mark("C;cmdline_url=echo"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("D;0"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(prompt());
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordExit();
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+  });
+
+  it("hides stale authenticated reports while leaving unauthenticated reports as ordinary output", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt());
+    const stale = report("private stale buffer");
+    const newToken = "aa".repeat(16);
+    tracker.recordOutput(`${mark(`P;Cwd=/work;Edit=1;B=${newToken}`)}${mark("A")}${osc(`133;B;${newToken}`)}`);
+    expect(tracker.recordOutput(stale)).toBe("");
+    expect(tracker.editLineReport()).toBeNull();
+    expect(tracker.editLineReportGeneration()).toBe(0);
+    const unauthenticated = osc(`133;E;Line=ordinary;B=${newToken};wrong-nonce`);
+    expect(tracker.recordOutput(unauthenticated)).toBe(unauthenticated);
+  });
+
+  it("invalidates reports on new prompts, user input and exit without resetting generation", () => {
+    for (const invalidate of [
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("P;Cwd=/work;Edit=1")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("A")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("C;cmdline_url=echo")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("D;0")),
+      (tracker: TerminalBlockTracker) => tracker.recordInput("\u001b"),
+      (tracker: TerminalBlockTracker) => tracker.recordExit(),
+    ]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt() + report("old"));
+      invalidate(tracker);
+      expect(tracker.editLineReport()).toBeNull();
+      expect(tracker.editLineReportGeneration()).toBe(1);
+    }
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt() + report("old"));
+    tracker.recordInput("\u001b[I");
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "old" });
+    tracker.recordOutput(prompt() + report("new"));
+    expect(tracker.editLineReport()).toEqual({ generation: 2, line: "new" });
+  });
+
+  it("preserves actual-buffer proof across a same-token prompt redisplay after the query callback", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt() + "echo actual" + report("echo actual"));
+    tracker.recordOutput(mark("B") + "echo actual");
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "echo actual" });
+    expect(tracker.editLineText()).toBe("echo actual");
+    expect(tracker.promptEndCount()).toBe(1);
+    tracker.recordInput("x");
+    tracker.recordOutput(mark("B") + "echo actualx");
+    expect(tracker.editLineReport()).toBeNull();
+    tracker.recordOutput(prompt() + mark("B"));
+    expect(tracker.editLineReport()).toBeNull();
+  });
+
+  it("hides complete and split reports from renderer replay and blocks, and notifies host subscribers", () => {
+    for (const size of [1, 3, 1000]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt());
+      let reports = 0;
+      tracker.subscribe(() => { if (tracker.editLineReport() !== null) reports++; });
+      const stream = mark(`E;Line=${encodeURIComponent("private report ; 한")};B=${PROMPT_TOKEN}`, size === 3 ? "st" : "bel");
+      let display = "";
+      for (let i = 0; i < stream.length; i += size) display += tracker.recordOutput(stream.slice(i, i + size));
+      expect(display).toBe("");
+      expect(reports).toBe(1);
+      tracker.recordOutput(`${mark("C;cmdline_url=echo")}visible${mark("D;0")}`);
+      expect(tracker.recent(1)[0]).toMatchObject({ command: "echo", output: "visible" });
+      expect(JSON.stringify(tracker.recent(1))).not.toContain("private report");
+    }
+  });
+
+  it("discards split oversized editor reports privately and recovers within the OSC payload bound", () => {
+    for (const size of [1, 127, 100_000]) {
+      for (const nonce of [NONCE, "wrong-nonce"]) {
+        const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+        tracker.recordOutput(prompt());
+        let notifications = 0;
+        tracker.subscribe(() => { notifications++; });
+        const stream = `before${osc(`133;E;Line=${"private".repeat(10_000)};B=${PROMPT_TOKEN};${nonce}`, "st")}after`;
+        let display = "";
+        for (let i = 0; i < stream.length; i += size) display += tracker.recordOutput(stream.slice(i, i + size));
+        expect(display).toBe("beforeafter");
+        expect(tracker.editLineReport()).toBeNull();
+        expect(tracker.editLineReportGeneration()).toBe(0);
+        expect(notifications).toBe(0);
+        tracker.recordOutput(report("valid"));
+        expect(tracker.editLineReport()).toEqual({ generation: 1, line: "valid" });
+      }
+    }
+  });
+});
+
 describe("decodePercentEncoded", () => {
   it("decodes byte escapes as UTF-8 and keeps literal characters and malformed escapes", () => {
     expect(decodePercentEncoded("a%3Bb%25")).toBe("a;b%");
@@ -388,14 +571,14 @@ describe("terminal block registry", () => {
     __resetTerminalBlocksForTest();
     const first = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     const second = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", first, 1);
-    registerTerminalBlockTracker("terminal:2", second, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), first, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:2"), second, 1);
     expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1", "terminal:2"]);
     const replacement = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", replacement, 1);
-    expect(getTerminalBlockTracker("terminal:1")).toBe(replacement);
-    unregisterTerminalBlockTracker("terminal:1");
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), replacement, 1);
+    expect(getTerminalBlockTracker(terminalSessionFixture("terminal:1"))).toBe(replacement);
+    unregisterTerminalBlockTracker(terminalSessionFixture("terminal:1"));
+    expect(getTerminalBlockTracker(terminalSessionFixture("terminal:1"))).toBeUndefined();
     __resetTerminalBlocksForTest();
     expect(listTerminalBlockTabs(1)).toEqual([]);
   });
@@ -403,14 +586,14 @@ describe("terminal block registry", () => {
   it("scopes listing and lookup to the window that owns the terminal", () => {
     __resetTerminalBlocksForTest();
     const mine = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    registerTerminalBlockTracker("terminal:1", mine, 1);
-    registerTerminalBlockTracker("terminal:2", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), 2);
-    registerTerminalBlockTracker("terminal:3", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), null);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:1"), mine, 1);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:2"), new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), 2);
+    registerTerminalBlockTracker(terminalSessionFixture("terminal:3"), new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), null);
     expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
     expect(listTerminalBlockTabs(2).map((entry) => entry.tabId)).toEqual(["terminal:2"]);
-    expect(getWindowTerminalBlockTracker("terminal:1", 1)).toBe(mine);
-    expect(getWindowTerminalBlockTracker("terminal:1", 2)).toBeUndefined();
-    expect(getWindowTerminalBlockTracker("terminal:3", 1)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:1"), 1)).toBe(mine);
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:1"), 2)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(terminalSessionFixture("terminal:3"), 1)).toBeUndefined();
     __resetTerminalBlocksForTest();
   });
 });
@@ -468,8 +651,7 @@ describe("prompt state (whether a command may be typed now)", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => clock });
     tracker.recordOutput(prompt());
     expect(tracker.promptState()).toBe("ready");
-    // An ESC (a pending prefix, or vi command mode) echoes nothing, yet
-    // changes what typed text does: the prompt stays taken however long it waits.
+    // An ESC (a pending prefix, or vi command mode) echoes nothing, yet changes what typed text does: the prompt stays taken however long it waits.
     tracker.recordInput("\u001b");
     expect(tracker.promptState()).toBe("pending-input");
     clock += USER_INPUT_QUIET_MS * 10;
@@ -571,8 +753,7 @@ describe("prompt state (whether a command may be typed now)", () => {
     const unsubscribe = tracker.subscribe(() => seen.push(tracker.promptState()));
     expect(tracker.nextBlockId()).toBe(1);
     tracker.recordOutput(cycle("make", "built\r\n", 0));
-    // P, A, B, C, D: one notification per marker.
-    // Between A and B of its first prompt the shell is still starting.
+    // P, A, B, C, D: one notification per marker. Between A and B of its first prompt the shell is still starting.
     expect(seen).toEqual(["between-prompts", "shell-starting", "ready", "command-running", "between-prompts"]);
     expect(tracker.nextBlockId()).toBe(2);
     tracker.recordExit();

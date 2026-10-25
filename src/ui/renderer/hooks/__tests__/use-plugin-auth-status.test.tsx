@@ -156,8 +156,8 @@ describe("usePluginAuthStatuses", () => {
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
 
-    // Wait for the initial mount poll to consume the `null` reject AND
-    // surface a fallback message — proves the catch handler did not crash.
+    // Wait for the initial mount poll to consume the `null` reject AND surface a fallback message — proves the catch handler
+    // did not crash.
     await waitFor(() => {
       expect(callPluginMethod).toHaveBeenCalledTimes(1);
       const s = result.current.statuses.get("samplemail");
@@ -165,8 +165,6 @@ describe("usePluginAuthStatuses", () => {
       expect(s?.kind === "error" && s.message).toBe("auth status invocation failed");
     });
 
-    // Now trigger the second reject (raw string). This path proves the
-    // string narrow returns the string verbatim.
     act(() => result.current.refresh("samplemail"));
     await waitFor(() => {
       expect(callPluginMethod).toHaveBeenCalledTimes(2);

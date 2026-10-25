@@ -5,10 +5,8 @@ import {
   clampSidePanelSplitPercent,
 } from "../../../shared/side-panel.js";
 
-/**
- * The `SystemSettings` fields that persist a workspace-rail vertical split. One
- * per tab kind whose body is a list-over-viewer layout.
- */
+/** The `SystemSettings` fields that persist a workspace-rail vertical split. One per tab kind whose body is a
+ * list-over-viewer layout. */
 export type VerticalSplitStorageKey =
   | "sidePanelSplitFilePercent"
   | "sidePanelSplitPreviewPercent"
@@ -23,21 +21,7 @@ export interface UseVerticalSplitResult {
   commitTopPercent: (percent: number) => void;
 }
 
-/**
- * Owns one workspace-rail vertical (list↕viewer) split ratio, persisted to
- * `SystemSettings.<storageKey>`. Deliberately a round-trip clone of
- * `usePanelWidth` (mount seed + drag-end persist) — durability comes from
- * the settings round-trip, NOT the mount location, so the ratio survives the
- * ChatSidePanel conditional unmount just like the docked width. It is NOT an
- * extension of the width hook: the two persist independent fields and must not
- * share a cleanup ref (a horizontal-width drag and a vertical-split drag can be
- * in flight against different DOM handles).
- *
- * Drag emits per-move `setTopPercent` (state only); release / keyboard emits
- * `commitTopPercent` (one IPC write, no-op guarded). The value is stored as the
- * TOP pane's share of the tab-body height; both sides are clamped to the shared
- * [MIN, MAX] pane range so neither pane can collapse to zero.
- */
+/** Persist split ratios independently from panel widths and keep drag cleanup refs separate; clamp both panes above zero. */
 export function useVerticalSplit(
   api: AveApi,
   storageKey: VerticalSplitStorageKey,

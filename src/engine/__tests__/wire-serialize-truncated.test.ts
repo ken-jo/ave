@@ -74,7 +74,7 @@ describe("prepareMarkedToolResultsForWire truncated output", () => {
       makeToolResult({ toolUseId: "t1", toolName: "bash", content: "ok" }),
     ];
     const out = prepareMarkedToolResultsForWire(messages);
-    expect(out).toBe(messages); // no allocation
+    expect(out).toBe(messages);
   });
 
   it("swaps content for meta.truncated tool_result", () => {
@@ -146,9 +146,7 @@ describe("prepareMarkedToolResultsForWire truncated output", () => {
   });
 
   it("sanitizes toolName before embedding in stub (defense-in-depth)", () => {
-    // Even though `registerPluginTools` enforces `^[a-zA-Z0-9_-]+$` at
-    // registration, the stub builder must not trust the field — future
-    // validation drift would otherwise become an injection vector.
+    // Sanitize stub tool names even after registration validation to prevent injection if validation drifts.
     const msg: GenericMessage = {
       role: "tool_result",
       toolUseId: "t1",
@@ -165,7 +163,6 @@ describe("prepareMarkedToolResultsForWire truncated output", () => {
     };
     const out = prepareMarkedToolResultsForWire([msg]);
     const stub = out[0] as Extract<GenericMessage, { role: "tool_result" }>;
-    // The sanitized tool=... segment never carries the dangerous chars.
     expect(stub.content).toContain("tool=evil?tool?script?");
     expect(stub.content).not.toMatch(/tool=[^,]*[<>]/);
     expect(stub.content).not.toMatch(/tool=[^,]* /);

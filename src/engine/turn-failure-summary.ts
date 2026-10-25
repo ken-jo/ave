@@ -1,19 +1,6 @@
-/**
- * Share-safe summary of one failed conversation turn.
- *
- * A turn failure crosses trust boundaries with very different clearances: the
- * owner renderer may see the raw provider message, but a remote/shared surface
- * (chat-platform bridges) must only ever see this closed summary. Both the
- * category union and every summary sentence are fixed tables, so a stack
- * trace, raw provider payload, secret, or filesystem path can never flow
- * through this type regardless of what the underlying error contained.
- *
- * This module is the single source of truth for that summary: derivation
- * happens once where the turn error is published, and every boundary that
- * re-admits a summary revalidates it through {@link toSafeTurnFailureSummary}.
- */
+// Shared failures use closed categories and fixed sentences, never raw errors, secrets, or paths.
+// Derive once at publication and revalidate at every serialization boundary.
 
-/** Closed set of user-displayable failure categories. */
 export const TURN_FAILURE_CATEGORIES = Object.freeze([
   "provider",
   "auth",
@@ -26,20 +13,16 @@ export const TURN_FAILURE_CATEGORIES = Object.freeze([
 
 export type TurnFailureCategory = (typeof TURN_FAILURE_CATEGORIES)[number];
 
-/** Share-safe failure detail carried alongside a failed-turn event. */
 export interface TurnFailureSummary {
   readonly category: TurnFailureCategory;
-  /** Short, user-displayable English sentence; never raw error text. */
+  // Display-safe sentence, never raw error text.
   readonly summary: string;
 }
 
-/** Defensive bound applied wherever a summary is re-admitted. */
+// Re-admission always applies this defensive bound.
 export const MAX_TURN_FAILURE_SUMMARY_CHARS = 200;
 
-/**
- * The only sentences a shared surface can ever receive for a failed turn.
- * Fixed table on purpose: the raw error message is classified, never copied.
- */
+// Classify raw error text without copying any of it into shared output.
 const TURN_FAILURE_SUMMARY_TEXT: Readonly<Record<TurnFailureCategory, string>> = Object.freeze({
   provider: "The model provider returned an error.",
   auth: "The model API key was rejected. Check the key in settings.",
@@ -50,11 +33,7 @@ const TURN_FAILURE_SUMMARY_TEXT: Readonly<Record<TurnFailureCategory, string>> =
   internal: "An internal error stopped the turn.",
 });
 
-/**
- * Provider error-classifier category → share-safe failure category. Keys are
- * the closed `ErrorCategory` values from `llm/error-classifier.ts`; an
- * unrecognized value deliberately falls through to the notice-based default.
- */
+// Unknown classifier values fall through to notice-based defaults.
 const CLASSIFIER_CATEGORY_TO_FAILURE: Readonly<Record<string, TurnFailureCategory>> = Object.freeze({
   "api-key": "auth",
   "rate-limit": "rate-limit",
@@ -64,7 +43,6 @@ const CLASSIFIER_CATEGORY_TO_FAILURE: Readonly<Record<string, TurnFailureCategor
   unknown: "provider",
 });
 
-/** Turn-engine system notice → failure category when no classification exists. */
 const SYSTEM_NOTICE_TO_FAILURE: Readonly<
   Record<NonNullable<DeriveTurnFailureSummaryInput["systemNotice"]>, TurnFailureCategory>
 > = Object.freeze({
@@ -73,21 +51,12 @@ const SYSTEM_NOTICE_TO_FAILURE: Readonly<
 });
 
 export interface DeriveTurnFailureSummaryInput {
-  /** The turn engine's system notice attached to the error callback. */
   readonly systemNotice?: "context-error" | "stream-error";
-  /**
-   * The provider error classification computed where the raw error object
-   * exists (`classifyProviderError` in the stream collector). Passed as an
-   * opaque string and validated against the closed map here so a drifting or
-   * forged value can never widen the output union.
-   */
+  // Validate opaque classification against the closed map so forged values cannot widen the union.
   readonly classifierCategory?: string;
 }
 
-/**
- * Derive the one share-safe failure summary for a failed turn. Pure table
- * lookup over closed unions: no field of the input error message is copied.
- */
+/** Derive through fixed tables without copying any input error text. */
 export function deriveTurnFailureSummary(
   input: DeriveTurnFailureSummaryInput,
 ): TurnFailureSummary {
@@ -108,12 +77,7 @@ function resolveTurnFailureCategory(
   return classified ?? noticed ?? "internal";
 }
 
-/**
- * Fail-closed re-admission of a summary that crossed a serialization or
- * projection boundary. Only the two whitelisted fields flow onward; an unknown
- * category drops the whole summary, and the sentence is control-stripped and
- * truncated defensively even though the producer only emits table text.
- */
+/** Re-admit only known categories and two allowed fields; strip controls and bound sentence length. */
 export function toSafeTurnFailureSummary(value: unknown): TurnFailureSummary | undefined {
   if (!value || typeof value !== "object") return undefined;
   const candidate = value as { readonly category?: unknown; readonly summary?: unknown };
@@ -130,11 +94,7 @@ export function toSafeTurnFailureSummary(value: unknown): TurnFailureSummary | u
   return { category: category as TurnFailureCategory, summary };
 }
 
-/**
- * Strip control characters and keep at most
- * {@link MAX_TURN_FAILURE_SUMMARY_CHARS} UTF-16 units, never splitting a
- * surrogate pair.
- */
+/** Bound UTF-16 length without splitting surrogate pairs. */
 function boundedSummaryText(value: string): string {
   let output = "";
   for (let index = 0; index < value.length && output.length < MAX_TURN_FAILURE_SUMMARY_CHARS;) {

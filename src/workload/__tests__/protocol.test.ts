@@ -165,8 +165,7 @@ describe("workload broker protocol", () => {
     expect(WorkloadShellReadResultSchema.safeParse(read).success).toBe(true);
     expect(WorkloadShellReadResultSchema.safeParse({
       ...read,
-      // JavaScript string length is four UTF-16 code units here, not six
-      // UTF-8 bytes. A character-count cursor must never cross the wire.
+      // Wire cursors count UTF-8 bytes, never UTF-16 string units.
       nextOffset: read.offset + unicode.length,
     }).success).toBe(false);
     expect(WorkloadShellReadResultSchema.safeParse({

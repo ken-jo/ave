@@ -1,19 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
-/**
- * Terminal attention — a shell asking to be looked at.
- *
- * A program in a terminal says "look at me" with a desktop-notification escape
- * sequence: OSC 9 (`ESC ] 9 ; message BEL`, iTerm2's form) or OSC 777
- * (`ESC ] 777 ; notify ; title ; body BEL`, urxvt's form). The pattern follows
- * the terminal tools the owner pointed at (cmux): such a terminal gets a ring
- * on its pane and an unread badge on its tab; seeing it marks it read; and the
- * OS is told only when the window is not focused.
- *
- * The scan runs on the window's terminal data stream, not inside a view: a
- * side-panel terminal that is not the active tab has no view mounted, and its
- * shell can still finish a build and ask for attention.
- */
+/** Scan OSC 9/777 notifications in the window stream so hidden terminals still signal; notify the OS only while the window
+ * is unfocused. */
 export interface TerminalAttention {
   tabId: string;
   message: string;
@@ -74,10 +62,8 @@ export function setTerminalAttended(tabId: string, isAttended: boolean): void {
   if (isAttended && document.hasFocus()) markTerminalRead(tabId);
 }
 
-/**
- * A view is about to (re)attach: the scrollback main replays next is output
- * already seen, and must not ring again. Cleared when the attach settles.
- */
+/** A view is about to (re)attach: the scrollback main replays next is output already seen, and must not ring again. Cleared
+ * when the attach settles. */
 export function setTerminalReplaying(tabId: string, isReplaying: boolean): void {
   if (isReplaying) replaying.add(tabId);
   else replaying.delete(tabId);
@@ -122,10 +108,8 @@ interface TerminalDataSource {
   onData: (listener: (payload: { tabId: string; chunk: string }) => void) => () => void;
 }
 
-/**
- * Scan every terminal's output for notification sequences. Mounted once per
- * window. `label` names a terminal for the OS notification.
- */
+/** Scan every terminal's output for notification sequences. Mounted once per window. `label` names a terminal for the OS
+ * notification. */
 export function useTerminalAttentionWatcher(terminal: TerminalDataSource | undefined, label: (tabId: string) => string): void {
   useEffect(() => {
     if (!terminal) return undefined;

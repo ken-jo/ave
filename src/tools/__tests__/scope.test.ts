@@ -1,12 +1,4 @@
-/**
- * Phase 1 Lazy Tool Scoping — getToolSchemasForScope regression tests.
- *
- * Verifies scope filter semantics:
- *   - Empty activePluginIds → builtin-only (plugin tools excluded)
- *   - Active plugin scope alone → catalog eligibility, not loaded schemas
- *   - Plugin/MCP schemas load only by activeToolNames
- *   - Builtins toggle → builtins excluded when includeBuiltins=false
- */
+// Plugin scope controls catalogue eligibility; activeToolNames controls loaded plugin and external schemas.
 import { describe, it, expect } from "vitest";
 
 import { ToolRegistry } from "../registry.js";
@@ -23,7 +15,7 @@ function makeBuiltin(name: string) {
   });
 }
 
-/** A BUILTIN that surfaces MCP-server data and therefore declares the MCP scope. */
+// Builtins exposing server content also require external-tool scope.
 function makeMcpScopedBuiltin(name: string) {
   return createDynamicTool({
     name,
@@ -36,7 +28,7 @@ function makeMcpScopedBuiltin(name: string) {
   });
 }
 
-/** A BUILTIN that can reach a model-chosen external URL. */
+// This builtin can reach a model-selected external URL.
 function makeEgressBuiltin(name: string) {
   return createDynamicTool({
     name,
@@ -109,12 +101,8 @@ describe("ToolRegistry.getToolSchemasForScope — Phase 1 Lazy Tool Scoping", ()
     expect(names).toEqual(["bash", "web_search"]);
   });
 
-  // A builtin that hands the model untrusted MCP content honors the SAME switch as
-  // an MCP tool. Headless (routine) loops run with `includeMcp: false` on purpose,
-  // and a builtin badge must not be a way around that decision.
+  // A builtin must not bypass includeMcp restrictions on untrusted server content in headless loops.
   it("withholds an mcp-scoped builtin when MCP is out of scope", () => {
-    // Registered here rather than in `seed()` so the other cases keep asserting
-    // exact tool lists without this one perturbing them.
     const r = seed();
     r.register(makeMcpScopedBuiltin("mcp_resource_list"));
     const withoutMcp = r.getToolSchemasForScope({
@@ -136,10 +124,7 @@ describe("ToolRegistry.getToolSchemasForScope — Phase 1 Lazy Tool Scoping", ()
   });
 
   it("withholds an arbitrary-egress builtin when egress is out of scope", () => {
-    // Unattended (headless/routine) lanes set `includeEgress: false`. Dropping
-    // the tool at the REGISTRY — not at the approval gate — is what makes this
-    // hold against prompt injection: the schema is never shown, so injected
-    // text in a mail body or indexed document cannot ask for the tool by name.
+    // Withhold egress schemas at registry scope so injected unattended content cannot request those tools.
     const r = seed();
     r.register(makeEgressBuiltin("web_fetch"));
 
@@ -150,7 +135,7 @@ describe("ToolRegistry.getToolSchemasForScope — Phase 1 Lazy Tool Scoping", ()
       includeEgress: false,
     }).map((s) => s.name);
     expect(unattended).not.toContain("web_fetch");
-    // Withholding egress must not disturb the rest of the builtin surface.
+    // Egress restrictions must preserve unrelated builtins.
     expect(unattended).toContain("bash");
 
     const attended = r.getToolSchemasForScope({
@@ -163,14 +148,13 @@ describe("ToolRegistry.getToolSchemasForScope — Phase 1 Lazy Tool Scoping", ()
   });
 
   it("fails closed when the egress switch is omitted", () => {
-    // A security switch must withhold when a caller forgets it, not expose.
+    // Missing security scope must withhold egress by default.
     const r = seed();
     r.register(makeEgressBuiltin("web_fetch"));
     const names = r.getToolSchemasForScope({
       activePluginIds: new Set<string>(),
       includeBuiltins: true,
       includeMcp: false,
-      // includeEgress deliberately omitted — that is the case under test.
     } as never).map((s) => s.name);
     expect(names).not.toContain("web_fetch");
   });
@@ -307,8 +291,6 @@ describe("ToolRegistry — Tool-Level Deferral", () => {
       deferral: true,
     });
     const names = schemas.map((s) => s.name).sort();
-    // builtins + tool_search load; only the preloaded meeting_start loads,
-    // NOT meeting_stop (deferred), and not mcp_fetch (not in activeToolNames).
     expect(names).toEqual(["bash", "meeting_start", "tool_search", "web_search"]);
   });
 
@@ -349,9 +331,6 @@ describe("ToolRegistry.getToolCatalogForScope", () => {
       includeMcp: true,
     });
     const names = catalog.map((c) => c.name).sort();
-    // meeting_start is loaded → excluded; meeting_stop deferred → present;
-    // mcp_fetch in scope (includeMcp) and not loaded → present;
-    // email_list plugin not active → excluded.
     expect(names).toEqual(["mcp_fetch", "meeting_stop"]);
   });
 
@@ -414,7 +393,6 @@ describe("ToolRegistry — eager exposure (deferral=false, #1176)", () => {
     const r = seed();
     const schemas = r.getToolSchemasForScope({
       activePluginIds: new Set(["com.example.meeting"]),
-      // No activeToolNames at all — eager mode must still load every meeting tool.
       includeBuiltins: true,
       includeMcp: false,
       includeEgress: true,

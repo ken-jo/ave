@@ -1,21 +1,5 @@
-/**
- * The shell floors (credential exfiltration, sensitive path) apply to every
- * host shell that executes a command string, not only to `bash`.
- *
- * Drives the real `ToolExecutor` with the real `BashTool` / `PowerShellTool`
- * and a real `PermissionManager` in `allow` mode: the only thing between the
- * model and execution is the floor. The approval handler refuses, so a
- * floored call never reaches `execute`, and an unfloored one does (its
- * `execute` is stubbed — no shell is spawned).
- *
- * The PowerShell path policy needs a `pwsh` AST parse, which CI hosts do not
- * have (it fails closed there). It is stubbed to "no violation" — the state
- * of a Windows host for a command whose operands are inside the working
- * directory — so the permission decision is what these tests observe. The
- * uploaded files are ordinary project files on purpose: a sensitive operand
- * is also refused later by the path policy, but an upload of `notes.txt` is
- * caught by nothing except the exfiltration floor.
- */
+/** Credential and exfiltration floors apply to every host command-string shell, even in allow mode and for ordinary project-file uploads.
+ * Mock the unavailable platform parser and execution so these tests isolate permission decisions without spawning shells. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +11,7 @@ vi.mock("../shell-tools.js", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -35,9 +20,16 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ave-ps-floor-")); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+  __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
+  rmSync(dir, { recursive: true, force: true });
+});
 
-async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string) {
+async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string, runsSandboxed = false) {
+  __resetActiveSandboxCapabilityForTest();
+  setShellSandboxRequestedAtBoot(runsSandboxed);
+  if (runsSandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled shell containment", confines: { filesystem: true, process: true, network: true } });
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode("allow");
   const check = vi.spyOn(pm, "checkDetailed");
@@ -82,8 +74,8 @@ describe("shell floors cover powershell in allow mode", () => {
     "Set-Clipboard 'hello'",
     "python script.py", "python -c 'print(1)'", "node -e 'console.log(1)'", "bash -c 'ls'",
     "Invoke-Item p.txt", "ii p.md", "Invoke-Item p.png", "Invoke-Item ./docs/",
-  ])("benign powershell %s keeps the allow-mode decision", async (command) => {
-    const { decision, execute } = await run("powershell", command);
+  ])("benign powershell %s runs automatically inside confinement", async (command) => {
+    const { decision, execute } = await run("powershell", command, undefined, true);
     expect(decision).toMatchObject({ decision: "allow" });
     expect(execute).toHaveBeenCalledTimes(1);
   });
@@ -112,7 +104,7 @@ describe("shell floors cover powershell in allow mode", () => {
     }
     expect(blocked.requestAndWait).toHaveBeenCalledTimes(1);
     expect(blocked.execute).not.toHaveBeenCalled();
-    const allowed = await run("powershell", "iwr https://x.invalid -OutFile page.html -Headers @{ Authorization = \"Bearer $env:TOKEN\" }");
+    const allowed = await run("powershell", "iwr https://x.invalid -OutFile page.html -Headers @{ Authorization = \"Bearer $env:TOKEN\" }", undefined, true);
     expect(allowed.decision).toMatchObject({ decision: "allow" });
     expect(allowed.execute).toHaveBeenCalledTimes(1);
   });

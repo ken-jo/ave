@@ -240,9 +240,7 @@ describe("preview:read-file handler", () => {
   });
 
   it("refuses a file over the text size cap (too-large, fail-closed)", async () => {
-    // The preview read shares read_file's MAX_TEXT_FILE_BYTES (2MB) cap — a file
-    // above it is refused BEFORE buffering so a huge file can't be pulled across
-    // the sandbox boundary for display. #1445 size-cap guard.
+    // Reject oversized previews before buffering, using the read tool's shared byte cap.
     const big = join(root, "huge.txt");
     writeFileSync(big, "a".repeat(2_000_001));
     try {
@@ -259,9 +257,7 @@ describe("preview:read-file handler", () => {
   });
 
   it("rejects a symlink whose real target escapes the allowed root", async () => {
-    // A symlink INSIDE the allowed root that points OUT of it must not become a
-    // read hole: the guard realpath's the link before the boundary check, so the
-    // escaped target is what gets validated (and rejected).
+    // Resolve symlinks before authorization so an in-root link cannot expose an out-of-scope target.
     const outside = mkdtempSync(join(tmpdir(), "ave-ws-symlink-outside-"));
     writeFileSync(join(outside, "secret.txt"), "escaped secret");
     const link = join(root, "escape-link");
@@ -562,9 +558,7 @@ describe("workspace handlers", () => {
   });
 
   it("pickRoot does NOT persist an adjacency-warned path until it is acknowledged (token flow)", async () => {
-    // A directory whose path carries a `.git` segment trips an adjacency warning
-    // (not a hard deny) — the pick must be withheld from the read allow-list
-    // until the renderer confirms by echoing the one-time token.
+    // Git-adjacent roots require one-time token confirmation before entering the read scope.
     const base = mkdtempSync(join(tmpdir(), "ave-ws-warn-"));
     const warnDir = join(base, ".git");
     mkdirSync(warnDir);
@@ -587,8 +581,6 @@ describe("workspace handlers", () => {
     expect(first.added).toBeUndefined();
     expect(addAllowedDirectoryPersistMock).not.toHaveBeenCalled();
 
-    // Second, explicit confirmation echoes the TOKEN (not a path) and persists
-    // WITHOUT reopening the dialog.
     showOpenDialogMock.mockClear();
     const second = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: first.ackToken })) as {
       ok: boolean;
@@ -602,17 +594,13 @@ describe("workspace handlers", () => {
   });
 
   it("pickRoot REFUSES an ack token that was never issued by a dialog pick (forged/unknown)", async () => {
-    // A compromised renderer cannot forge a token: without a main-process-held
-    // pending entry the ack pass is refused and NOTHING is persisted, so it can
-    // never self-clear adjacency warnings for a directory of its own choosing.
+    // Only a pending main-owned token can confirm a root; renderer paths cannot forge approval.
     const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, {
       ackToken: "forged-token-never-minted",
     })) as { ok: boolean; error?: string; added?: string };
     expect(res).toMatchObject({ ok: false, error: "ack-unknown" });
     expect(res.added).toBeUndefined();
     expect(addAllowedDirectoryPersistMock).not.toHaveBeenCalled();
-    // Dialog is NEVER reopened on a bogus ack — a forged token can't trigger a
-    // fresh pick either.
     expect(showOpenDialogMock).not.toHaveBeenCalled();
   });
 
@@ -652,7 +640,6 @@ describe("workspace handlers", () => {
       const first = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME)) as { ackToken?: string };
       const token = first.ackToken;
 
-      // Advance past the 60s acknowledgement window.
       vi.setSystemTime(Date.now() + 61_000);
       addAllowedDirectoryPersistMock.mockClear();
       const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: token })) as {
@@ -677,7 +664,6 @@ describe("workspace handlers", () => {
     showOpenDialogMock.mockResolvedValue({ canceled: false, filePaths: [picked] });
     const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME)) as { ok: boolean; added?: string };
     expect(res).toMatchObject({ ok: true, added: canonicalizePathForMatch(picked) });
-    // The read-scope WRITE is audited (redacted path), mirroring the preview READ.
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "info",
@@ -1285,11 +1271,7 @@ describe("workspace handlers", () => {
   });
 
   it("#1493 removeRoot prunes path grants under the root and reports the count", async () => {
-    // Re-register the workspace handler with a deps carrying a stub permission
-    // manager so the prune path fires. #1494 item-4: prunePathGrantsUnderRoot now
-    // returns the pruned grant TUPLES (not a bare number); the handler derives
-    // prunedGrants:3 (length) for the renderer toast AND audits redacted
-    // per-pattern provenance.
+    // The prune path returns grant tuples for redacted audit; IPC still exposes only the count.
     const prunedTuples = [
       { pattern: "write_file:path:/ws/a.md", toolName: "write_file", tier: "write" as const, path: "/ws/a.md" },
       { pattern: "edit_file:path:/ws/b.ts", toolName: "edit_file", tier: "write" as const, path: "/ws/b.ts" },
@@ -1312,12 +1294,10 @@ describe("workspace handlers", () => {
         ok: boolean;
         prunedGrants?: number;
       };
-      // IPC response shape unchanged — a bare count, never the pattern list.
       expect(res).toMatchObject({ ok: true, prunedGrants: 3 });
       expect(prune).toHaveBeenCalledWith(canonicalizePathForMatch(root), {
         preserveRoots: [],
       });
-      // The success audit records redacted per-pattern tuples (tool/tier/path).
       const infoEntry = auditLog.mock.calls
         .map((c) => c[0] as { type: string; input: string })
         .find((entry) => entry.type === "info" && entry.input.includes(CHANNELS.workspace.removeRoot));
@@ -1329,10 +1309,8 @@ describe("workspace handlers", () => {
       expect(parsed.prunedGrants).toBe(3);
       expect(parsed.prunedPatterns).toHaveLength(3);
       expect(parsed.prunedPatterns![0]).toMatchObject({ tool: "write_file", tier: "write" });
-      // Raw pattern strings must NOT leak into the response (renderer unchanged).
       expect(JSON.stringify(res)).not.toContain("write_file:path:");
     } finally {
-      // Restore the shared handler registration for later tests in this file.
       registerWorkspaceHandlers(deps);
     }
   });
@@ -1385,7 +1363,6 @@ describe("workspace handlers", () => {
     };
     expect(res.ok).toBe(true);
     expect(showItemInFolderMock).toHaveBeenCalledTimes(1);
-    // The shell only ever receives the main-owned realpath from the scope guard.
     const [arg] = showItemInFolderMock.mock.calls[0] as [string];
     expect(arg.endsWith(join("docs", "architecture.md"))).toBe(true);
   });
@@ -1448,8 +1425,7 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 
   it("mints a MAIN-OWNED ack token for a valid dropped folder and NEVER persists directly", async () => {
-    // A drop always requires acknowledgement (even with zero warnings): the OS
-    // dialog never vouched for the path, so the explicit user ack is that vouch.
+    // Dropped paths always require acknowledgment because no native dialog vouched for them.
     const dropped = mkdtempSync(join(tmpdir(), "ave-ws-drop-"));
     const res = (await invoke(CHANNELS.workspace.dropPrepare, OK_FRAME, dropped)) as {
       ok: boolean;
@@ -1461,18 +1437,13 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
     expect(res.pendingPath).toBe(dropped);
     expect(typeof res.ackToken).toBe("string");
     expect((res.ackToken ?? "").length).toBeGreaterThan(0);
-    // dropPrepare NEVER widens the read scope on its own — persistence only
-    // happens on the pickRoot ack pass. (added is not returned by dropPrepare.)
     expect((res as { added?: string }).added).toBeUndefined();
     expect(addAllowedDirectoryPersistMock).not.toHaveBeenCalled();
     await cleanupTmpDir(dropped);
   });
 
   it("HARD-DENIES a Layer 0 sensitive dropped path and mints NO token", async () => {
-    // A renderer that resolves a dropped ~/.ssh cannot widen the read scope: the
-    // deny happens before any token is minted, so it can never be acknowledged.
-    // The surfaced error is the STABLE `sensitive-path` code (mapped to Korean in
-    // the renderer), NEVER the validator's raw English prose.
+    // Reject sensitive dropped paths before minting a token, using a stable localized error code.
     const res = (await invoke(CHANNELS.workspace.dropPrepare, OK_FRAME, join(homedir(), ".ssh"))) as {
       ok: boolean;
       error?: string;
@@ -1484,7 +1455,6 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 
   it("REFUSES the filesystem root (hard deny, no token)", async () => {
-    // Surfaces the stable `path-not-allowed` code, not raw English prose.
     const fsRoot = process.platform === "win32" ? "C:\\" : "/";
     const res = (await invoke(CHANNELS.workspace.dropPrepare, OK_FRAME, fsRoot)) as {
       ok: boolean;
@@ -1532,15 +1502,12 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
     expect(prep.ok).toBe(true);
     log.mockClear();
     addAllowedDirectoryPersistMock.mockClear();
-    // The renderer confirms by echoing the TOKEN (never re-supplying the path).
     const done = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: prep.ackToken })) as {
       ok: boolean;
       added?: string;
     };
     expect(done).toMatchObject({ ok: true, added: canonicalizePathForMatch(dropped) });
     expect(addAllowedDirectoryPersistMock).toHaveBeenCalledWith(canonicalizePathForMatch(dropped));
-    // The widening audit records gesture=drop so a renderer-named drop widening
-    // is distinguishable from a native-picker widening.
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "info",
@@ -1570,9 +1537,7 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 
   it("re-checks is-a-directory at the ack pass — a dir swapped for a file after prepare is refused (TOCTOU)", async () => {
-    // prepare a real directory, mint a token, THEN replace the directory with a
-    // regular file before the ack lands. The persist pass must re-stat and refuse
-    // a non-directory rather than widening the read scope to a file.
+    // Re-stat at acknowledgment; a directory may have become a file since preparation.
     const base = mkdtempSync(join(tmpdir(), "ave-ws-drop-toctou-"));
     const target = join(base, "target");
     mkdirSync(target);
@@ -1582,7 +1547,6 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
     };
     expect(prep.ok).toBe(true);
     expect(typeof prep.ackToken).toBe("string");
-    // Swap the directory for a file between prepare and ack.
     rmSync(target, { recursive: true, force: true });
     writeFileSync(target, "now a file");
     addAllowedDirectoryPersistMock.mockClear();
@@ -1596,8 +1560,6 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 
   it("re-checks existence at the ack pass — a path deleted after prepare is refused (not-found)", async () => {
-    // A directory removed entirely between prepare and ack must fail closed at
-    // persist rather than persisting a vanished path into the read allow-list.
     const dropped = mkdtempSync(join(tmpdir(), "ave-ws-drop-vanish-"));
     const prep = (await invoke(CHANNELS.workspace.dropPrepare, OK_FRAME, dropped)) as {
       ok: boolean;
@@ -1615,11 +1577,7 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
   });
 });
 
-// A plugin UI shell is also a `file://` frame, so the base `validateSender`
-// accepts it — only `validateHostRendererSender` turns it away. These rows pin
-// that the root-mutating and shell-invoking workspace channels use the stronger
-// validator, so a plugin shell cannot widen the workspace scope or drive the
-// OS file manager through a host channel.
+// Root mutation and shell access require the host-renderer guard, not the base file-frame check.
 describe("workspace channels refuse a plugin-ui-shell frame", () => {
   it("pickRoot refuses", async () => {
     const res = (await invoke(CHANNELS.workspace.pickRoot, PLUGIN_SHELL_FRAME)) as {

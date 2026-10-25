@@ -76,8 +76,7 @@ describe("intercepted meta gate — sub-agent ask", () => {
     );
 
     expect(result.approved).toEqual(toolUses);
-    // This ask blocks the turn like any other, so a Stop has to be able to end
-    // it rather than leave it on the gate's own timer.
+    // User stop must cancel the pending approval ask rather than wait for its timeout.
     expect(requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({ abortSignal: turn.signal }),
     );

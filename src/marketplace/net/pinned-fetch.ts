@@ -1,32 +1,5 @@
-/**
- * The marketplace's download transport (design §18.2.4): the address that is
- * checked is the address that is connected to.
- *
- * Chromium's stack, which downloads used before, resolves a host on its own
- * after Ave checked it, so a name that answers a public address to the check
- * and a loopback or metadata address to the connection passed. This transport
- * resolves each hop once, hands every answer to the caller's `select`
- * (`selectAnswers` under the gate's address policy), and opens the socket to
- * a kept answer by its address, never by name. The host name stays the TLS
- * server name and the certificate identity.
- *
- * The route is the session's PAC answer for the URL, first entry only (a
- * fallback to DIRECT is never taken silently):
- *
- *   DIRECT          target resolved here, checked, pinned
- *   PROXY h:p       TCP to the checked proxy address; CONNECT for https,
- *                   an absolute-form request for http; the proxy resolves
- *                   the target (trusted beyond its socket)
- *   HTTPS h:p       TLS to the checked proxy address, then as PROXY inside it
- *   SOCKS5 h:p      SOCKS5 CONNECT with the domain-name address type
- *   SOCKS/SOCKS4    SOCKS4 CONNECT carrying the target's checked IPv4 answer
- *
- * A proxy's own address is checked with a fixed rule: metadata and
- * unroutable addresses are refused, internal and this-computer accepted,
- * because the system configuration chose them. Any other PAC kind fails
- * SOURCE_UNREACHABLE `proxy`. Trust: Node's bundled roots plus the OS store,
- * so a company root installed there keeps working.
- */
+/** Resolve each direct hop once and connect only to a checked address, retaining hostname TLS identity.
+ * System proxies are trusted beyond their checked socket; unsupported PAC routes never fall back silently. */
 import { promises as dns } from "node:dns";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { connect as netConnect, isIP, isIPv4, type Socket } from "node:net";
@@ -39,16 +12,13 @@ type ProxyKind = "DIRECT" | "PROXY" | "HTTPS" | "SOCKS5" | "SOCKS4";
 
 export interface ProxyRoute {
   kind: ProxyKind;
-  /** The proxy's host and port; null for DIRECT. */
   proxy: { host: string; port: number } | null;
 }
 
 export interface PinnedFetchOptions {
-  /** The one lookup a connection makes; tests substitute a resolver fake. */
   lookup?: (host: string) => Promise<readonly string[]>;
-  /** The session's PAC answer for a URL (`session.resolveProxy`); absent → DIRECT. */
   resolveProxy?: (url: string) => Promise<string>;
-  /** Trust anchors (PEM). Default: Node's bundled roots plus the OS store. */
+  /** Trust uses bundled roots plus the OS certificate store unless explicitly supplied. */
   ca?: () => readonly string[];
 }
 
@@ -71,7 +41,6 @@ function proxyFailure(host: string, entry: string, message: string): Marketplace
   return new MarketplaceError("SOURCE_UNREACHABLE", `${message} (${entry})`, { detail: { reason: "proxy", host, proxy: entry } });
 }
 
-/** The first entry of a PAC answer as a route; a kind this transport cannot speak fails `proxy`. */
 export function routeFromPac(pac: string, targetHost: string): ProxyRoute {
   const entry = (pac.split(";")[0] ?? "").trim();
   const [kindText, endpoint] = entry.split(/\s+/u, 2);
@@ -85,13 +54,7 @@ export function routeFromPac(pac: string, targetHost: string): ProxyRoute {
   return { kind: mapped, proxy: { host: bare(match[1]!), port } };
 }
 
-/**
- * A proxy's own addresses, on every transport that connects to one (this
- * one and git over http, §18.2.4): the configuration chose the proxy, so
- * only metadata and unroutable answers are refused. A literal proxy is its
- * own one answer and is judged the same way. No answer left fails with the
- * most restrictive refusal, metadata before unroutable.
- */
+/** System proxy addresses permit private networks but always reject metadata and unroutable answers. */
 export function proxyAnswers(host: string, answers: readonly string[]): string[] {
   const kept = answers.filter((address) => {
     const kind = classifyAddress(address);
@@ -108,7 +71,7 @@ function abortError(): Error {
   return new DOMException("This operation was aborted", "AbortError");
 }
 
-/** Bytes read off a socket during a proxy handshake; what follows them stays in the socket. */
+/** Consume only proxy-handshake bytes, leaving subsequent response bytes in the socket. */
 function readBytes(socket: Socket, count: number | "head", signal: AbortSignal | undefined): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
     let buffered = Buffer.alloc(0);
@@ -244,7 +207,6 @@ function toResponse(response: IncomingMessage, method: string): Response {
   });
 }
 
-/** One HTTP/1.1 exchange over a socket already connected to where the request goes. */
 function exchange(socket: Socket, url: URL, absoluteForm: boolean, init: RequestInit): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
@@ -285,12 +247,7 @@ function exchange(socket: Socket, url: URL, absoluteForm: boolean, init: Request
   });
 }
 
-/**
- * The pinned transport. `select` (the gate's address rule through
- * `selectAnswers`) sees every answer of the target's one lookup; the socket
- * goes to a kept answer by address, trying the next when one refuses the
- * connection.
- */
+/** Check all resolved answers once; try only retained addresses until a connection succeeds. */
 export function createPinnedFetch(options: PinnedFetchOptions = {}): AddressCheckedFetch {
   const lookup = options.lookup ?? defaultLookup;
   const trust = options.ca ?? systemTrust;
@@ -300,7 +257,6 @@ export function createPinnedFetch(options: PinnedFetchOptions = {}): AddressChec
     return isIP(name) !== 0 ? [name] : lookup(name);
   };
 
-  /** Try each address in order until one accepts the TCP connection. */
   const connectFirst = async (addresses: readonly string[], port: number, signal: AbortSignal | undefined): Promise<Socket> => {
     let last: unknown = new NetworkGuardError("no address to connect to");
     for (const address of addresses) {

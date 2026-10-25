@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync,
   openSync, readSync, readdirSync, realpathSync, unlinkSync, write, writeSync,
-  type Stats,
+  type BigIntStats,
 } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -18,7 +18,7 @@ import {
 
 type CaptureReason = NonNullable<ToolOutputArtifactInfo["reason"]>;
 type ArtifactWrite = (fd: number, buffer: Buffer, offset: number, length: number, position: number) => Promise<number>;
-interface OwnedPath { path: string; stat: Stats; realPath?: string }
+interface OwnedPath { path: string; stat: BigIntStats; realPath?: string }
 interface ArtifactPaths { temporary: string; data: string; metadataTemporary: string; metadata: string }
 
 const MAX_METADATA_BYTES = 4_096;
@@ -28,17 +28,17 @@ const PUBLISHED_TEMPORARY_PATTERN = /^\.([a-f0-9]{64}-([a-f0-9-]{36}))\.(part|js
 // Stores for main and auxiliary conversations can share a physical sessions root.
 const reservations = new Map<string, Map<string, ArtifactPaths>>();
 
-function sameFile(a: Stats, b: Stats): boolean {
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
 
-function ownedByHost(stat: Stats): boolean {
-  return typeof process.getuid !== "function" || stat.uid === process.getuid();
+function ownedByHost(stat: BigIntStats): boolean {
+  return typeof process.getuid !== "function" || stat.uid === BigInt(process.getuid());
 }
 
-function safeFile(stat: Stats): boolean {
-  return stat.isFile() && stat.nlink === 1 && ownedByHost(stat)
-    && (process.platform === "win32" || (stat.mode & 0o777) === PRIVATE_FILE_MODE);
+function safeFile(stat: BigIntStats): boolean {
+  return stat.isFile() && stat.nlink === 1n && ownedByHost(stat)
+    && (process.platform === "win32" || (stat.mode & 0o777n) === BigInt(PRIVATE_FILE_MODE));
 }
 
 function ensureDirectory(path: string, create: boolean, privateMode: boolean): OwnedPath {
@@ -46,11 +46,11 @@ function ensureDirectory(path: string, create: boolean, privateMode: boolean): O
     try { mkdirSync(path, { mode: PRIVATE_DIR_MODE }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   }
-  const stat = lstatSync(path);
+  const stat = lstatSync(path, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink() || !ownedByHost(stat)
     || (process.platform !== "win32" && (privateMode
-      ? (stat.mode & 0o777) !== PRIVATE_DIR_MODE
-      : (stat.mode & 0o022) !== 0))) {
+      ? (stat.mode & 0o777n) !== BigInt(PRIVATE_DIR_MODE)
+      : (stat.mode & 0o022n) !== 0n))) {
     throw new Error("tool-output-directory-invalid");
   }
   return { path, stat, realPath: realpathSync(path) };
@@ -58,10 +58,10 @@ function ensureDirectory(path: string, create: boolean, privateMode: boolean): O
 
 function verifyDirectories(directories: readonly OwnedPath[]): void {
   for (const directory of directories) {
-    const stat = lstatSync(directory.path);
+    const stat = lstatSync(directory.path, { bigint: true });
     if (!stat.isDirectory() || stat.isSymbolicLink() || !ownedByHost(stat)
       || !sameFile(stat, directory.stat) || realpathSync(directory.path) !== directory.realPath
-      || (process.platform !== "win32" && (stat.mode & 0o777) !== (directory.stat.mode & 0o777))) {
+      || (process.platform !== "win32" && (stat.mode & 0o777n) !== (directory.stat.mode & 0o777n))) {
       throw new Error("tool-output-directory-changed");
     }
   }
@@ -80,8 +80,8 @@ function pathsFor(directory: string, toolUseId: string, captureId: string): Arti
 function openOwnedTemporary(path: string): { fd: number; owned: OwnedPath } {
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW, PRIVATE_FILE_MODE);
   try {
-    const stat = fstatSync(fd);
-    if (!safeFile(stat) || !sameFile(stat, lstatSync(path))) throw new Error("tool-output-file-invalid");
+    const stat = fstatSync(fd, { bigint: true });
+    if (!safeFile(stat) || !sameFile(stat, lstatSync(path, { bigint: true }))) throw new Error("tool-output-file-invalid");
     return { fd, owned: { path, stat } };
   } catch (error) {
     closeSync(fd);
@@ -94,7 +94,7 @@ function removeOwnedTemporary(owned: OwnedPath | undefined, directories: readonl
   if (!owned) return;
   try {
     verifyDirectories(directories);
-    const stat = lstatSync(owned.path);
+    const stat = lstatSync(owned.path, { bigint: true });
     if (stat.isFile() && ownedByHost(stat) && sameFile(stat, owned.stat)) unlinkSync(owned.path);
   } catch { /* Missing or replaced entries are not this capture's cleanup targets. */ }
 }
@@ -104,19 +104,19 @@ function readOwnedFile(path: string, maxBytes: number): Buffer {
   // symlinks and avoid blocking on a FIFO before fstat can reject its type.
   const fd = openSync(path, constants.O_RDONLY | NO_FOLLOW | NON_BLOCKING);
   try {
-    const before = fstatSync(fd);
-    if (!safeFile(before) || before.size > maxBytes || !sameFile(before, lstatSync(path))) {
+    const before = fstatSync(fd, { bigint: true });
+    if (!safeFile(before) || before.size > BigInt(maxBytes) || !sameFile(before, lstatSync(path, { bigint: true }))) {
       throw new Error("tool-output-file-invalid");
     }
-    const bytes = Buffer.alloc(before.size);
+    const bytes = Buffer.alloc(Number(before.size));
     let offset = 0;
     while (offset < bytes.length) {
       const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (read === 0) throw new Error("tool-output-file-short-read");
       offset += read;
     }
-    const after = fstatSync(fd);
-    if (!safeFile(after) || after.size !== before.size || !sameFile(after, lstatSync(path))) {
+    const after = fstatSync(fd, { bigint: true });
+    if (!safeFile(after) || after.size !== before.size || !sameFile(after, lstatSync(path, { bigint: true }))) {
       throw new Error("tool-output-file-changed");
     }
     return bytes;
@@ -133,13 +133,14 @@ function recoverPublishedTemporaries(directories: readonly OwnedPath[]): void {
     const temporary = join(directory.path, name);
     const published = join(directory.path, `${match[1]}.${match[3] === "part" ? "bin" : "json"}`);
     try {
-      const source = lstatSync(temporary);
-      const target = lstatSync(published);
-      if (!source.isFile() || !target.isFile() || source.nlink !== 2 || target.nlink !== 2
+      const source = lstatSync(temporary, { bigint: true });
+      const target = lstatSync(published, { bigint: true });
+      if (!source.isFile() || !target.isFile() || source.nlink !== 2n || target.nlink !== 2n
         || !ownedByHost(source) || !sameFile(source, target)
-        || (process.platform !== "win32" && (source.mode & 0o777) !== PRIVATE_FILE_MODE)) continue;
+        || (process.platform !== "win32" && (source.mode & 0o777n) !== BigInt(PRIVATE_FILE_MODE))) continue;
       verifyDirectories(directories);
-      if (!sameFile(lstatSync(temporary), source) || !sameFile(lstatSync(published), target)) continue;
+      if (!sameFile(lstatSync(temporary, { bigint: true }), source)
+        || !sameFile(lstatSync(published, { bigint: true }), target)) continue;
       // Both links name the same owned inode within this directory. Its published
       // link remains; an arbitrary orphan or an outside hard link is never removed.
       unlinkSync(temporary);
@@ -246,8 +247,8 @@ class ArtifactCapture implements ToolOutputCapture {
         while (offset < chunk.length) {
           verifyDirectories(this.directories);
           if (this.fd === undefined || !this.owned
-            || !sameFile(fstatSync(this.fd), this.owned.stat)
-            || !sameFile(lstatSync(this.owned.path), this.owned.stat)) {
+            || !sameFile(fstatSync(this.fd, { bigint: true }), this.owned.stat)
+            || !sameFile(lstatSync(this.owned.path, { bigint: true }), this.owned.stat)) {
             throw new Error("tool-output-file-changed");
           }
           const written = await this.writeBytes(this.fd, chunk, offset, chunk.length - offset, this.capturedBytes);
@@ -284,9 +285,9 @@ class ArtifactCapture implements ToolOutputCapture {
         return this.unavailable(this.reason ?? "write-failed");
       }
       verifyDirectories(this.directories);
-      const stat = fstatSync(this.fd);
-      if (!safeFile(stat) || !sameFile(stat, this.owned.stat) || stat.size !== this.capturedBytes
-        || !sameFile(lstatSync(this.owned.path), this.owned.stat)) throw new Error("tool-output-file-changed");
+      const stat = fstatSync(this.fd, { bigint: true });
+      if (!safeFile(stat) || !sameFile(stat, this.owned.stat) || stat.size !== BigInt(this.capturedBytes)
+        || !sameFile(lstatSync(this.owned.path, { bigint: true }), this.owned.stat)) throw new Error("tool-output-file-changed");
       fsyncSync(this.fd);
       closeSync(this.fd);
       this.fd = undefined;
@@ -301,7 +302,7 @@ class ArtifactCapture implements ToolOutputCapture {
       // Exclusive hard-link publication cannot overwrite an existing capture.
       linkSync(this.paths.temporary, this.paths.data);
       removeOwnedTemporary(this.owned, this.directories);
-      if (!safeFile(lstatSync(this.paths.data))) throw new Error("tool-output-publication-incomplete");
+      if (!safeFile(lstatSync(this.paths.data, { bigint: true }))) throw new Error("tool-output-publication-incomplete");
       this.owned = undefined;
       this.beforePublish?.("metadata");
       verifyDirectories(this.directories);
@@ -320,7 +321,7 @@ class ArtifactCapture implements ToolOutputCapture {
       verifyDirectories(this.directories);
       linkSync(this.paths.metadataTemporary, this.paths.metadata);
       removeOwnedTemporary(metadataTemporary, this.directories);
-      if (!safeFile(lstatSync(this.paths.metadata))) throw new Error("tool-output-publication-incomplete");
+      if (!safeFile(lstatSync(this.paths.metadata, { bigint: true }))) throw new Error("tool-output-publication-incomplete");
       metadataTemporary = undefined;
       if (process.platform !== "win32") {
         const directoryFd = openSync(this.directories.at(-1)!.path, constants.O_RDONLY | NO_FOLLOW);
@@ -376,15 +377,15 @@ export class ToolOutputArtifactStore {
       const key = directory.realPath!;
       const active = reservations.get(key) ?? new Map<string, ArtifactPaths>();
       const excluded = new Set([...active.values()].flatMap((value) => [basename(value.temporary), basename(value.data)]));
-      let retained = 0;
+      let retained = 0n;
       for (const name of readdirSync(directory.path)) {
         const path = join(directory.path, name);
-        const stat = lstatSync(path);
+        const stat = lstatSync(path, { bigint: true });
         if (!safeFile(stat)) throw new Error("tool-output-retained-file-invalid");
         // Count payloads even when metadata is missing after an interrupted publication.
         if ((name.endsWith(".bin") || name.endsWith(".part")) && !excluded.has(name)) retained += stat.size;
       }
-      if (retained + (active.size + 1) * MAX_TOOL_RESULT_ARTIFACT_BYTES > MAX_SESSION_TOOL_OUTPUT_BYTES) {
+      if (retained + BigInt(active.size + 1) * BigInt(MAX_TOOL_RESULT_ARTIFACT_BYTES) > BigInt(MAX_SESSION_TOOL_OUTPUT_BYTES)) {
         reason = "session-limit";
       } else {
         paths = pathsFor(directory.path, toolUseId, captureId);
@@ -414,11 +415,11 @@ export class ToolOutputArtifactStore {
       if (Object.keys(metadata).some((key) => !["sessionId", "toolUseId", "info"].includes(key))
         || metadata.sessionId !== sessionId || metadata.toolUseId !== toolUseId
         || !stored || JSON.stringify(stored) !== JSON.stringify(expected)) return false;
-      const data = lstatSync(paths.data);
-      if (!safeFile(data) || data.size !== expected.capturedBytes || data.size > MAX_TOOL_RESULT_ARTIFACT_BYTES) return false;
+      const data = lstatSync(paths.data, { bigint: true });
+      if (!safeFile(data) || data.size !== BigInt(expected.capturedBytes) || data.size > BigInt(MAX_TOOL_RESULT_ARTIFACT_BYTES)) return false;
       verifyDirectories(directories);
-      const current = lstatSync(paths.data);
-      return safeFile(current) && sameFile(current, data) && current.size === expected.capturedBytes;
+      const current = lstatSync(paths.data, { bigint: true });
+      return safeFile(current) && sameFile(current, data) && current.size === BigInt(expected.capturedBytes);
     } catch { return false; }
   }
 
@@ -464,14 +465,14 @@ export class ToolOutputArtifactStore {
           || info.status === "unavailable" || retainedCaptureIds.has(info.captureId) || active?.has(info.captureId)) continue;
         const paths = pathsFor(directory.path, metadata.toolUseId, info.captureId);
         if (paths.metadata !== metadataPath || this.read(sessionId, metadata.toolUseId, info) === null) continue;
-        const dataStat = lstatSync(paths.data);
-        const metadataStat = lstatSync(paths.metadata);
+        const dataStat = lstatSync(paths.data, { bigint: true });
+        const metadataStat = lstatSync(paths.metadata, { bigint: true });
         verifyDirectories(directories);
         if (!safeFile(dataStat) || !safeFile(metadataStat)) continue;
         unlinkSync(paths.data);
         // A failed data deletion leaves the reference and its quota intact.
         verifyDirectories(directories);
-        if (sameFile(lstatSync(paths.metadata), metadataStat)) unlinkSync(paths.metadata);
+        if (sameFile(lstatSync(paths.metadata, { bigint: true }), metadataStat)) unlinkSync(paths.metadata);
       } catch { /* Keep unverifiable or undeletable files charged to the next quota scan. */ }
     }
   }

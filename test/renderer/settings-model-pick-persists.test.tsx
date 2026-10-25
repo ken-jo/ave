@@ -1,8 +1,4 @@
-/**
- * A pick in the settings model chooser is the decision: it persists on its
- * own, through the same debounced save the vendor row and the thinking
- * controls use, without the section's Save button.
- */
+// Model picks persist through debounce without requiring the section save action.
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
@@ -17,9 +13,7 @@ afterEach(() => {
 describe("settings model chooser", () => {
   it("persists a pick without the Save button", async () => {
     const { api } = makeMockAveApi();
-    // The chooser offers what the endpoint answered — a vendor with a fixed
-    // /models endpoint has no bundled list standing in — so there is nothing
-    // to pick between until a catalogue lands.
+    // Endpoint catalogs must arrive before model choices exist.
     api.listLlmModels = vi.fn(async () => ({
       ok: true,
       vendor: "openai",
@@ -38,9 +32,7 @@ describe("settings model chooser", () => {
       </TooltipProvider>,
     );
     const trigger = await view.findByTestId(TEST_IDS.llmModelSelect);
-    // The pick must ride hydrated settings. Save now belongs to whichever
-    // provider card is open, so the section's own hydration flag is the
-    // readiness signal rather than a button that may not be on screen.
+    // Await section hydration rather than a save button that may belong to a closed provider card.
     await waitFor(() => expect(view.getByTestId("llm-tab:section-providers"))
       .toHaveAttribute("data-settings-loaded", "true"));
     api.updateSettings.mockClear();
@@ -51,10 +43,7 @@ describe("settings model chooser", () => {
       if (found.length < 2) throw new Error("chooser not open yet");
       return found;
     });
-    // By model id, not by rendered text: the row prints provider and id in
-    // adjacent spans, so textContent runs them together and a substring test
-    // can land back on the model that is already selected — which Radix does
-    // not report as a change, and nothing would be saved.
+    // Match model ids exactly; adjacent provider spans and unchanged selection can hide a missed pick.
     const currentModelId = trigger.querySelector("[data-model-id]")?.getAttribute("data-model-id");
     const other = options.find((option) => {
       const id = option.querySelector("[data-model-id]")?.getAttribute("data-model-id");
@@ -65,16 +54,14 @@ describe("settings model chooser", () => {
     fireEvent.keyDown(other!, { key: "Enter" });
 
     type VendorPatch = { llm: { provider: string; vendors: Record<string, { model: string }> } };
-    // The catalogue's own cache is persisted through the same call, so the
-    // last write is not necessarily the pick — take the one carrying vendors.
+    // Catalog caching also writes settings; select the write carrying the provider choice.
     const vendorPatch = () => api.updateSettings.mock.calls
       .map((call) => call[0] as Partial<VendorPatch>)
       .filter((call): call is VendorPatch => Boolean(call.llm?.vendors))
       .at(-1);
     await waitFor(() => expect(vendorPatch()).toBeTruthy(), { timeout: 2_000 });
     const patch = vendorPatch()!;
-    // Equality, not containment: a stale `gpt-5.4` would sit inside a picked
-    // `gpt-5.4-mini` and pass a substring check.
+    // Require exact ids so a selected model prefix cannot pass as a longer id.
     const pickedModelId = other!.querySelector("[data-model-id]")?.getAttribute("data-model-id");
     expect(pickedModelId).toBeTruthy();
     expect(patch.llm.vendors[patch.llm.provider]!.model).toBe(pickedModelId);

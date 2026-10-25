@@ -6,9 +6,12 @@ import {
   INSTALLED_LLM_VENDOR_IDS,
   KNOWN_LEGACY_LLM_VENDOR_IDS,
   isLLMVendor,
+  isOpenAICompatiblePresetVendor,
   LLM_VENDORS,
   LLM_VENDOR_DEFAULTS,
-  LLM_VENDOR_MODEL_OPTIONS,
+  OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
+  llmVendorModelOptions,
   MARKETPLACE_ELIGIBLE_LLM_VENDOR_IDS,
   canUseLlmVendorWithoutApiKey,
   freshAllVendorBlocks,
@@ -31,6 +34,16 @@ import {
   RETIRED_LLM_VENDOR_IDS,
 } from "../llm-vendor-defaults.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
+import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
+
+describe("upstream-prefixed model ids", () => {
+  it("declares exactly the presets whose model ids identify an upstream provider", () => {
+    expect(Object.entries(OPENAI_COMPATIBLE_VENDOR_PRESETS)
+      .filter(([, preset]) => preset.upstreamPrefixedModelIds === true)
+      .map(([id]) => id).sort())
+      .toEqual(["kilo", "openrouter", "requesty", "vercel-ai-gateway"]);
+  });
+});
 
 describe("isLLMVendor", () => {
   it("accepts every member of LLM_VENDORS", () => {
@@ -55,11 +68,7 @@ describe("isLLMVendor", () => {
   });
 
   it("narrows the type so downstream callers receive a typed LLMVendor", () => {
-    // Compile-time proof: passing `raw` to a function whose parameter is
-    // typed `LLMVendor` only succeeds when the guard has narrowed it.
-    // No hand-written exhaustive map needed — the call site itself is the
-    // proof, and a future vendor added to LLM_VENDORS does not invalidate
-    // this test.
+    // The typed call proves guard narrowing without duplicating the vendor set.
     const acceptVendor = (v: import("../llm-vendor-defaults.js").LLMVendor) => v;
     const raw: unknown = "claude";
     if (isLLMVendor(raw)) {
@@ -182,10 +191,6 @@ describe("LLMVendorSettings", () => {
 
 describe("LLM vendor defaults", () => {
   it("keeps provider count in the Cline-scale range", () => {
-    // Cline had 49 built-in provider IDs when this expansion was mirrored
-    // (2026-06-29). Ave intentionally skips subscription/CLI-only providers,
-    // but keeps the OpenAI-compatible preset surface broad enough to be
-    // comparable rather than a small handful of hardcoded vendors.
     expect(LLM_VENDORS.length).toBeGreaterThanOrEqual(40);
     expect(isLLMVendor("openrouter")).toBe(true);
     expect(isLLMVendor("ollama")).toBe(true);
@@ -234,12 +239,14 @@ describe("LLM vendor defaults", () => {
       .toEqual([...LLM_VENDORS].sort());
   });
 
-  it("uses gpt-5.4-mini as the OpenAI default model", () => {
-    expect(LLM_VENDOR_DEFAULTS.openai.model).toBe("gpt-5.4-mini");
+  it("requires a model choice on every fresh vendor route", () => {
+    for (const vendor of LLM_VENDORS) {
+      expect(LLM_VENDOR_DEFAULTS[vendor].model, vendor).toBe("");
+    }
   });
 
   it("offers the OpenRouter free router as an explicit selectable model", () => {
-    expect(LLM_VENDOR_MODEL_OPTIONS.openrouter).toContain("openrouter/free");
+    expect(llmVendorModelOptions("openrouter")).toContain("openrouter/free");
   });
 
   it("marks only local or OpenAI-compatible endpoints as API-key optional", () => {
@@ -252,39 +259,30 @@ describe("LLM vendor defaults", () => {
   });
 
   it("classifies only the self-hosted vLLM class for vLLM request extensions", () => {
-    // The endpoints that actually honor chat_template_kwargs +
-    // continue_final_message.
     expect(isSelfHostedVllmVendor("openai-compatible")).toBe(true);
     expect(isSelfHostedVllmVendor("litellm")).toBe(true);
     expect(isSelfHostedVllmVendor("ollama")).toBe(true);
     expect(isSelfHostedVllmVendor("lmstudio")).toBe(true);
-    // Commercial OpenAI-compatible gateways route through the same adapter but
-    // do NOT run a vLLM chat template — they must be excluded so the adapter
-    // never leaks chat_template_kwargs to them (the OpenRouter 400/422 bug).
+    // Compatible gateways must not receive local chat-template extensions.
     expect(isSelfHostedVllmVendor("openrouter")).toBe(false);
     expect(isSelfHostedVllmVendor("groq")).toBe(false);
     expect(isSelfHostedVllmVendor("together")).toBe(false);
     expect(isSelfHostedVllmVendor("deepseek")).toBe(false);
     expect(isSelfHostedVllmVendor("mistral")).toBe(false);
     expect(isSelfHostedVllmVendor("xai")).toBe(false);
-    // Non-openai-compatible vendors are false too.
     expect(isSelfHostedVllmVendor("openai")).toBe(false);
     expect(isSelfHostedVllmVendor("claude")).toBe(false);
   });
 
   it("classifies the self-hosted trusted-network class for private/loopback + insecure-credentialed HTTP", () => {
-    // Network-trust SOT — distinct concept from the vLLM request-extension set,
-    // even though it mirrors the same ids today. Editing one must not move the
-    // other; this pins the current membership.
+    // Network trust and request extensions are independent policies even when their memberships match.
     expect(isSelfHostedTrustedNetworkVendor("openai-compatible")).toBe(true);
     expect(isSelfHostedTrustedNetworkVendor("litellm")).toBe(true);
     expect(isSelfHostedTrustedNetworkVendor("ollama")).toBe(true);
     expect(isSelfHostedTrustedNetworkVendor("lmstudio")).toBe(true);
-    // Commercial OpenAI-compatible gateways are NOT network-trusted.
     expect(isSelfHostedTrustedNetworkVendor("openrouter")).toBe(false);
     expect(isSelfHostedTrustedNetworkVendor("groq")).toBe(false);
     expect(isSelfHostedTrustedNetworkVendor("deepseek")).toBe(false);
-    // First-party vendors are excluded too.
     expect(isSelfHostedTrustedNetworkVendor("openai")).toBe(false);
     expect(isSelfHostedTrustedNetworkVendor("claude")).toBe(false);
   });
@@ -295,30 +293,29 @@ describe("LLM vendor defaults", () => {
     expect(canUseLlmVendorWithoutApiKey("openrouter", { baseUrl: "https://openrouter.ai/api/v1" })).toBe(false);
   });
 
-  it("does not offer gpt-4o in user-selectable LLM model options", () => {
+  it("never starts a vendor on gpt-4o", () => {
+    // Offering catalog ids and selecting defaults are separate policies.
     for (const v of LLM_VENDORS) {
-      expect(LLM_VENDOR_MODEL_OPTIONS[v]).not.toContain("gpt-4o");
       expect(LLM_VENDOR_DEFAULTS[v].model).not.toBe("gpt-4o");
     }
   });
 
   it("ships no default or curated model the active catalog deprecates (design §6.1)", () => {
     const retired = LLM_VENDORS.flatMap((vendor) =>
-      [LLM_VENDOR_DEFAULTS[vendor].model, ...LLM_VENDOR_MODEL_OPTIONS[vendor]]
+      [LLM_VENDOR_DEFAULTS[vendor].model, ...llmVendorModelOptions(vendor)]
         .filter((model) => model && resolveModelRetirement({ vendor, model }) !== undefined)
         .map((model) => `${vendor}/${model}`));
     expect(retired).toEqual([]);
   });
 
   it("keeps a stored model id as saved; no name list retires it", () => {
-    // Retirement is judged from the catalog and the vendor's own listing
-    // (resolveModelRetirement), never by rewriting the id on read.
+    // Determine retirement from catalog and vendor listings; never rewrite ids on read.
     expect(getLlmVendorSettings({ openai: { model: "gpt-4o" } } as never, "openai").model).toBe("gpt-4o");
     expect(getLlmVendorSettings({ "azure-foundry": { model: "gpt-4o" } } as never, "azure-foundry").model).toBe("gpt-4o");
   });
 
-  it("uses gemini-2.5-flash as the Gemini default model", () => {
-    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("gemini-2.5-flash");
+  it("leaves catalog routes unselected", () => {
+    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("");
   });
 
   it("enables thinking by default for every provider", () => {
@@ -329,8 +326,8 @@ describe("LLM vendor defaults", () => {
 
   it("freshVendorBlocks() preserves the default-visible thinking-enabled blocks", () => {
     const blocks = freshVendorBlocks();
-    expect(blocks.openai.model).toBe("gpt-5.4-mini");
-    expect(blocks.gemini.model).toBe("gemini-2.5-flash");
+    expect(blocks.openai.model).toBe("");
+    expect(blocks.gemini.model).toBe("");
     expect(blocks.groq).toBeUndefined();
     for (const v of DEFAULT_VISIBLE_LLM_VENDOR_IDS) {
       expect(blocks[v].enableThinking).toBe(true);
@@ -354,8 +351,7 @@ describe("LLM vendor defaults", () => {
   });
 
   it("drops a stored contextWindow that is not a usable positive integer", () => {
-    // A surviving 0 would zero the preflight threshold and switch
-    // auto-compaction off for the route without saying so anywhere.
+    // Reject zero windows so compaction cannot be silently disabled.
     for (const stored of [0, -1, 4.5, Number.NaN, "229376", null]) {
       const block = getLlmVendorSettings(
         {
@@ -388,18 +384,50 @@ describe("LLM vendor defaults", () => {
     expect(getLlmVendorSettings(freshVendorBlocks(), "openai-compatible").catalogModel).toBeUndefined();
   });
 
-  it("includes each provider's default model in its dropdown options", () => {
+  it("offers what the catalog lists for a vendor it describes, not a hand-written seed", () => {
+    expect(llmVendorModelOptions("openai")).toEqual(expect.arrayContaining(["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"]));
+    expect(llmVendorModelOptions("claude")).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]));
+    expect(llmVendorModelOptions("gemini")).toEqual(expect.arrayContaining(["gemini-3.8-flash", "gemini-3.5-flash-lite"]));
+    expect(llmVendorModelOptions("moonshot")).toEqual(expect.arrayContaining(["kimi-k3"]));
+  });
+
+  it("keeps hand-picked options only for a preset no catalog provider describes", () => {
+    const declaresWithCatalog: string[] = [];
+    const missingWithoutCatalog: string[] = [];
+    for (const vendor of OPENAI_COMPATIBLE_PRESET_VENDOR_IDS) {
+      const handPicked = OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].modelOptions;
+      if (CATALOG_PROVIDERS_BY_VENDOR[vendor].length > 0) {
+        if (handPicked !== undefined) declaresWithCatalog.push(vendor);
+      } else if (!handPicked || handPicked.length === 0) {
+        missingWithoutCatalog.push(vendor);
+      }
+    }
+    expect(declaresWithCatalog).toEqual([]);
+    expect(missingWithoutCatalog).toEqual([]);
+    expect(llmVendorModelOptions("ollama")).toEqual(OPENAI_COMPATIBLE_VENDOR_PRESETS.ollama.modelOptions);
+    expect(llmVendorModelOptions("openai-compatible")).toEqual([]);
+  });
+
+  it("offers current catalog choices before any credential without selecting one", () => {
+    expect(llmVendorModelOptions("claude")).toEqual(expect.arrayContaining([
+      "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
+    ]));
+    expect(llmVendorModelOptions("openai")[0]).toBe("gpt-6.1-sol");
+    expect(LLM_VENDOR_DEFAULTS.claude.model).toBe("");
+  });
+
+  it("keeps endpoint preset recommendations separate from route selections", () => {
     for (const v of LLM_VENDORS) {
-      const options = LLM_VENDOR_MODEL_OPTIONS[v];
+      if (CATALOG_PROVIDERS_BY_VENDOR[v].length > 0) continue;
+      const options = llmVendorModelOptions(v);
       const defaultModel = LLM_VENDOR_DEFAULTS[v].model;
-      // Handshake-only providers (openai-compatible) ship no static catalog and
-      // no default model — the list is fetched live from the endpoint's /models
-      // handshake, so there is nothing to cross-check here.
+      // Handshake-only providers fetch model lists live and have no static default to cross-check.
       if (options.length === 0) {
         expect(defaultModel, `${v} handshake-only default must be empty`).toBe("");
         continue;
       }
-      expect(options).toContain(defaultModel);
+      expect(defaultModel).toBe("");
+      if (isOpenAICompatiblePresetVendor(v)) expect(options).toContain(OPENAI_COMPATIBLE_VENDOR_PRESETS[v].defaultModel);
     }
   });
 });
@@ -433,9 +461,7 @@ describe("getLlmVendorSettings output ceiling", () => {
   });
 
   it("leaves the default out of every block and reports it as the host's", () => {
-    // A block that carried the default could not say whether the user chose
-    // it, so a saved 32000 came to mean "never set" (the one-time migration
-    // in settings-store.ts drops those).
+    // Drop legacy seeded output limits so an unset value remains distinguishable from a user choice.
     expect(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT).toBe(32_000);
     for (const vendor of LLM_VENDORS) {
       expect(LLM_VENDOR_DEFAULTS[vendor].outputTokenLimit).toBeUndefined();
@@ -448,8 +474,7 @@ describe("getLlmVendorSettings output ceiling", () => {
   it.each([0, -1, 12.5, Number.NaN, "16384"])(
     "drops a malformed limit %p, leaving the host default",
     (stored) => {
-      // The transport reads any non-positive or non-integer value as "no cap",
-      // so a value that survived here would look applied and do nothing.
+      // Reject invalid caps; the transport otherwise treats them as no limit.
       const block = getLlmVendorSettings(
         {
           openai: {

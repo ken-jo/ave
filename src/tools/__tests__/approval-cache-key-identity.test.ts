@@ -1,18 +1,5 @@
-/**
- * Remembered decisions follow a tool's opted-in memory scope, not its args.
- *
- * A tool that returns an `approvalMemoryScope` gets target-wide memory:
- * "allow for this session" on a public web_fetch covers that exact origin
- * (`scheme://host:port`), a write approval covers its target path. A hit on
- * arguments the user never saw is reviewed like a fresh request (risk screen +
- * reviewer) and only reuses the grant when that verdict is no riskier than the
- * stored one. Tools without a scope — including private-network fetches and
- * tools that only declare a policy `approvalCacheKey` — stay on exact args.
- *
- * Drives the real ToolExecutor + PermissionManager (rule-based reviewer) +
- * ApprovalGate + store, recording each decision the way the
- * `userApprovalRecord` IPC does: from the gate's host-owned request snapshot.
- */
+/** Opted-in approval memory follows target scope; new arguments still need a fresh review no riskier than the stored verdict.
+ * Unscoped tools keep exact-argument memory, and recorded identity comes only from the host pending snapshot. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,11 +58,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     await cleanupTmpDir(aveHomeDir);
   });
 
-  /**
-   * One executor with a rule-based reviewer whose approval cards are answered
-   * like the desktop card: persisted from the gate snapshot under the same
-   * eligibility gate as the record IPC, then resolved.
-   */
+  /** One executor with a rule-based reviewer whose approval cards are answered like the desktop card:
+   * persisted from the gate snapshot under the same eligibility gate as the record IPC, then resolved. */
   function harness(
     tools: Tool[],
     answer: () => CardAnswer = () => "allow-session",
@@ -88,8 +72,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const rules = new RuleBasedRiskClassifier();
     const classify = vi.fn((ctx: ToolInvocationContext) => rules.classify(ctx));
     if (options.reviewer === false) {
-      // No reviewer: every card is an unassessed ask, which may be remembered
-      // exactly — the lane a tool without a memory scope always uses.
+      // No reviewer: every card is an unassessed ask, which may be remembered exactly; the lane a tool without a memory scope always uses.
       manager.setInteractiveAutoApprove("low");
     } else {
       // Every call reaches the card; nothing is auto-approved by threshold.
@@ -115,6 +98,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
           if (remember) await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             decision: choice === "deny-exact" ? "deny" : "allow",
             scope: choice === "deny-exact" ? "persistent" : "session",
+            // As the record handler does: a session allow is the root conversation's.
+            ...(choice === "deny-exact" ? {} : { sessionId: snapshot.sessionId }),
             verdictAtApproval: snapshot.verdictAtApproval,
             nlJustification: null,
             trustOrigin: snapshot.trustOrigin,
@@ -222,8 +207,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       await run("web_fetch", { url: "https://a.example/x" });
       await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
       expect(cards).toHaveLength(2);
-      // The egress screen graded the credential-bearing request above the
-      // remembered verdict, so the grant did not stand in for the card.
+      // The egress screen graded the credential-bearing request above the remembered verdict, so the grant did not stand in for the card.
       expect(warn.mock.calls.some(([, marker]) =>
         (marker as { event?: string; ruleVerdict?: string } | undefined)?.event === "memory-skip-escalation" &&
         (marker as { ruleVerdict?: string }).ruleVerdict === "high")).toBe(true);
@@ -238,8 +222,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       const { cards, run } = harness([tool], undefined, { reviewer: false });
       await run("web_fetch", { url: "https://a.example/x" });
       expect(cards).toHaveLength(1);
-      // Unassessed (no reviewer): the gate records the rule verdict as the
-      // row's ceiling, which is what makes a rules-only reuse eligible.
+      // Unassessed (no reviewer): the gate records the rule verdict as the row's ceiling, which is what makes a rules-only reuse eligible.
       expect(cards[0].reviewerVerdict?.reason).toMatch(/reviewer not wired/);
       await run("web_fetch", { url: "https://a.example/docs/y" });
       expect(cards).toHaveLength(1);
@@ -261,6 +244,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       // A reviewer-assessed row: a verdict, no rules-only ceiling.
       await recordApproval("web_fetch", canonicalStringify(approved), "builtin", {
         scope: "session",
+        sessionId: "memory-scope",
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
@@ -338,7 +322,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const read = new ReadFileTool();
     expect((await approvalIdentityFor(read, { path: target }, dir)).approvalMemory).toEqual({ kind: "args" });
     await recordApproval("read_file", canonicalStringify({ path: target }), "builtin", {
-      scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
+      scope: "session", sessionId: "memory-scope", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
     });
     const { cards, run } = harness([read, new WriteFileTool()]);
     await run("write_file", { path: target, content: "changed" });

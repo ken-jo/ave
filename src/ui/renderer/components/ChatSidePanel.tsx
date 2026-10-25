@@ -36,8 +36,9 @@ import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { showActiveSurface } from "../preview/active-surface.js";
-import { AgentControlBadge } from "./AgentControlBadge.js";
-import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
+import { BrowserControlHeader } from "./BrowserControlHeader.js";
+import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
+import { navigateBrowserTabAsUser, useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
@@ -57,8 +58,8 @@ import {
   BROWSER_TARGET_KINDS,
   FILE_TARGET_KINDS,
   TAB_DRAG_THRESHOLD_PX,
-  DetailHeader,
-  PreviewBody,
+  PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   tabIcon,
 } from "./ChatSidePanelPreview.js";
@@ -473,11 +474,15 @@ function ContentTabView({
   sessionId,
   tab,
   targetById,
+  manualUrl,
+  onBrowserUrlChange,
 }: {
   api: AveApi;
   sessionId?: string;
   tab: WorkspaceTab;
   targetById: Map<string, ChatPreviewTarget>;
+  manualUrl: string | null;
+  onBrowserUrlChange: (tabId: string, url: string) => void;
 }) {
   const { t } = useTranslation();
   const content = tab.content;
@@ -488,11 +493,12 @@ function ContentTabView({
   // the display title, not a safety gate.
   const browserTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (content?.source !== "browser") return null;
+    const url = manualUrl ?? content.url;
     let title: string;
     try {
-      title = new URL(content.url).hostname || content.url;
+      title = new URL(url).hostname || url;
     } catch {
-      title = content.url;
+      title = url;
     }
     return {
       id: `content-browser:${tab.id}`,
@@ -500,19 +506,24 @@ function ContentTabView({
       title,
       sourceLabel: t("chatPreviewRail.manualUrlSource"),
       createdOrder: Number.MAX_SAFE_INTEGER,
-      url: content.url,
+      url,
       origin: "address",
     };
-  }, [content, tab.id, t]);
+  }, [content, manualUrl, tab.id, t]);
   if (!content) return null;
   if (browserTarget) {
     return (
+      <div className="flex h-full min-h-0 flex-col">
+      <BrowserSurfaceTools api={api} tabId={tab.id} onOpenUrl={(url) => {
+        void navigateBrowserTabAsUser(api, tab.id, () => onBrowserUrlChange(tab.id, url));
+      }} />
       <UrlDocumentViewer
         api={api}
         target={browserTarget}
         surfaceTabId={tab.id}
         browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
       />
+      </div>
     );
   }
   const target = content.source === "preview" ? targetById.get(content.targetId) : undefined;
@@ -524,11 +535,12 @@ function ContentTabView({
     );
   }
   return (
-    <div className="h-full min-h-0 overflow-auto p-3" data-testid="chat-side-panel-content-view" data-tab-id={tab.id}>
-      <div className="space-y-3">
-        <DetailHeader target={target} />
-        <PreviewBody api={api} sessionId={sessionId} target={target} />
-      </div>
+    <div
+      className={previewFillsPanel(target) ? "flex h-full min-h-0 flex-col overflow-auto p-3" : "h-full min-h-0 overflow-auto p-3"}
+      data-testid="chat-side-panel-content-view"
+      data-tab-id={tab.id}
+    >
+      <PreviewDetail api={api} sessionId={sessionId} target={target} />
     </div>
   );
 }
@@ -700,6 +712,8 @@ function WorkspaceLauncherMenu({ onOpen }: { onOpen: (kind: WorkspaceTabKind) =>
 
 export interface ChatSidePanelProps {
   api: AveApi;
+  /** Whether the column fits and is drawn, independent of retained tab state. */
+  visible?: boolean;
   sessionId?: string;
   targets: ChatPreviewTarget[];
   files: WorkspaceFileItem[];
@@ -763,6 +777,7 @@ export interface ChatSidePanelProps {
 
 export function ChatSidePanel({
   api,
+  visible = true,
   sessionId,
   targets,
   files,
@@ -1231,7 +1246,8 @@ export function ChatSidePanel({
             // Drawn below, where every browser page tab stays mounted.
             null
           ) : activeTab.content ? (
-            <ContentTabView api={api} sessionId={sessionId} tab={activeTab} targetById={targetById} />
+            <ContentTabView api={api} sessionId={sessionId} tab={activeTab} targetById={targetById}
+              manualUrl={browserUrlByTab[activeTab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
           ) : activeTab.kind === "file-browser" ? (
             <FileBrowserWorkspace
               api={api}
@@ -1281,7 +1297,6 @@ export function ChatSidePanel({
             // guest keeps a size. The browser launcher tab follows the panel's
             // shared selection, so it still mounts only while shown.
             const shown = tab.id === activeTab?.id;
-            const agentControlled = agentControlledTabIds.has(tab.id);
             return (
               <div
                 key={tab.id}
@@ -1290,11 +1305,10 @@ export function ChatSidePanel({
                 data-testid="chat-side-panel-browser-tab-host"
                 data-tab-id={tab.id}
               >
-                {agentControlled ? (
-                  <AgentControlBadge onStop={() => void api.browserTabs?.stop(tab.id)} />
-                ) : null}
+                <BrowserControlHeader api={api} tabId={tab.id} />
                 <div className="min-h-0 flex-1">
-                  <ContentTabView api={api} sessionId={sessionId} tab={tab} targetById={targetById} />
+                  <ContentTabView api={api} sessionId={sessionId} tab={tab} targetById={targetById}
+                    manualUrl={browserUrlByTab[tab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
                 </div>
               </div>
             );
@@ -1310,7 +1324,7 @@ export function ChatSidePanel({
                 api={api}
                 openRequest={sideChatOpenRequest}
                 onSessionsChanged={onSessionsChanged}
-                shown={sideChatActive}
+                shown={sideChatActive && visible}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
                 targetChip={<ActiveSurfaceChip />}

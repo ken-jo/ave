@@ -41,15 +41,9 @@ function AssistantCardImpl({
   isFinal?: boolean;
 }) {
   const { t } = useTranslation();
-  // Issue #911 — host-emitted system notice (context-error / stream-error)
-
-  // distinguish a real LLM reply from an error banner masquerading as one.
+  // Distinguish host-emitted system notices from model replies.
   const isSystemNotice = entry.systemNotice !== undefined;
-  // Issue #2113 — a systemNotice replayed from persisted history is an old
-  // error, not a fresh one. Softened styling + a "previous session" badge
-  // keep it recognizable without re-alarming the user after a session
-  // reload (e.g. OS-notification click). Live notices keep the destructive
-  // treatment unchanged. This is the single live/restored distinction point.
+  // Style restored system notices as previous-session errors; keep live notices destructive without re-alarming on reload.
   const isRestoredNotice = isSystemNotice && entry.restored === true;
   const systemNoticeLabel =
     entry.systemNotice === "context-error"
@@ -70,7 +64,6 @@ function AssistantCardImpl({
   const hasRenderableText = markdownText.trim().length > 0;
   const hasHeaderTitle = title.trim().length > 0;
   const showHeader = actions !== undefined || isSystemNotice || wasInterrupted || (entry.streaming && hasHeaderTitle);
-
 
   if (entry.streaming && !isSystemNotice && !hasRenderableText) {
     return null;

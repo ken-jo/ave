@@ -9,6 +9,9 @@ import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-h
 import { ContentStore, type ContentActivation } from "../../../marketplace/content/store.js";
 import { PluginStudioStore } from "../../../studio/store.js";
 import { previewStudioConnector } from "../../../studio/connector.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
 const { handlers } = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>() }));
 vi.mock("electron", () => ({
@@ -19,6 +22,7 @@ vi.mock("electron", () => ({
 import { registerPluginStudioHandlers } from "../plugin-studio.js";
 
 const originalHome = process.env.AVE_HOME;
+const ORIGINAL_PLATFORM = process.platform;
 let root: string;
 let content: ContentStore;
 let reload: ReturnType<typeof vi.fn>;
@@ -39,6 +43,9 @@ beforeEach(async () => {
   } } as never, async () => ({ store: content, reload } as never));
 });
 afterEach(async () => {
+  _resetAveHomePrivacyForTest();
+  __resetSandboxRequestedAtBootForTest();
+  setProcessPlatform(ORIGINAL_PLATFORM);
   if (originalHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = originalHome;
   await rm(root, { recursive: true, force: true });
@@ -51,6 +58,18 @@ async function invoke(channel: string, event: unknown, ...args: unknown[]): Prom
 }
 
 describe("plugin Studio IPC", () => {
+  it("previews a reviewed draft while home privacy refuses extension starts", async () => {
+    const studio = new PluginStudioStore();
+    const draft = await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+      files: [{ path: "skills/review/SKILL.md", text: "---\nname: review\ndescription: Review work\n---\nReview work.\n" }] });
+    await studio.reviewDraft("team-kit", draft.treeDigest);
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: root, category: "read-back-failed", reason: "fixture" });
+    expect(await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit"))
+      .toMatchObject({ ok: true, value: { name: "team-kit", hookConfinement: "user-permissions" } });
+  });
+
   it("registers every declared channel and refuses a plugin shell", async () => {
     expect([...handlers.keys()].sort()).toEqual(Object.values(CHANNELS.pluginStudio).sort());
     const result = await invoke(CHANNELS.pluginStudio.listDrafts, pluginShellFrameEvent());

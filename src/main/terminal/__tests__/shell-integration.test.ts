@@ -1,23 +1,19 @@
-/**
- * The generated shell integration, run by the real shells: each startup file
- * is written into a throwaway HOME, the shell runs a few commands as an
- * interactive login shell, and its output goes through the block tracker.
- * This pins the whole marker path — the scripts, their percent-encoding and
- * the parser — against the shells themselves rather than a hand-written
- * stream. A shell absent from the host is not run.
- */
+// Run generated startup files in temporary homes through real interactive shells to cover marker encoding and parsing together.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { SHELL_INTEGRATION_NONCE_FILE, detectIntegratedShell, installShellIntegration } from "../shell-integration.js";
+import * as nodePty from "node-pty";
+import { SHELL_INTEGRATION_NONCE_FILE, TERMINAL_EDIT_LINE_QUERY, detectIntegratedShell, installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 const homes: string[] = [];
-/** The XDG layout createSandboxProcessHome gives a sandbox HOME. */
+const editors: Array<{ pty: nodePty.IPty; exited: Promise<void> }> = [];
+// The XDG layout createSandboxProcessHome gives a sandbox HOME.
 const sandboxEnvFor = (home: string) => ({ HOME: home, XDG_CONFIG_HOME: join(home, "config") });
 function makeHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ave-shell-integration-"));
@@ -25,11 +21,18 @@ function makeHome(): string {
   return home;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  for (const { pty, exited } of editors.splice(0)) {
+    try { pty.kill(); } catch { /* Already exited. */ }
+    await Promise.race([exited, sleep(3_000)]);
+  }
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-/** Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream. */
+// Windows reports writable mode bits without secrecy guarantees; no Windows terminal installs this integration. A native agent path would require owner-only DACLs.
+const OWNER_ONLY_FILE_MODE = process.platform === "win32" ? 0o666 : 0o600;
+
+// Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream.
 function runInteractive(shell: string, script: string) {
   const home = makeHome();
   const { env } = installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
@@ -43,6 +46,40 @@ function runInteractive(shell: string, script: string) {
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   const display = tracker.recordOutput(result.stdout);
   return { home, tracker, status: result.status, raw: result.stdout, display };
+}
+
+async function startEditor(shell: string) {
+  const home = makeHome();
+  const { env } = installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
+  const pty = nodePty.spawn(shell, ["-l", "-i"], {
+    cwd: home,
+    cols: 120,
+    rows: 30,
+    env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
+  });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+  pty.onData((data) => { tracker.recordOutput(data); });
+  const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
+  editors.push({ pty, exited });
+  await waitForTerminal(() => tracker.promptEndCount() > 0);
+  return { home, pty, tracker };
+}
+
+function generatedBindingFlag(flag: "ave_edit" | "ave_keymap", binding: string): number {
+  const home = makeHome();
+  installShellIntegration(home, TERMINAL_TEST_MODERN_BASH!, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
+  const checks = readFileSync(join(home, ".bash_profile"), "utf-8").split("\n")
+    .filter((line) => line.includes('"$ave_binding"') && line.trimEnd().endsWith("&& " + flag + "=1"));
+  expect(checks).toHaveLength(1);
+  const result = spawnSync(TERMINAL_TEST_MODERN_BASH!, ["--noprofile", "--norc", "-c", [
+    flag + "=0",
+    "ave_binding=$1",
+    checks[0],
+    'printf "%s" "$' + flag + '"',
+  ].join("\n"), "binding-check", binding], { encoding: "utf-8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toMatch(/^[01]$/u);
+  return Number(result.stdout);
 }
 
 describe("installShellIntegration", () => {
@@ -59,7 +96,9 @@ describe("installShellIntegration", () => {
       shell: "zsh",
       env: { ZDOTDIR: home },
     });
-    expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(statSync(join(home, ".zshenv")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(readFileSync(join(home, ".zshenv"), "utf-8")).toContain("skip_global_compinit=1\n");
     expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "bash", env: {} });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
     expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "fish", env: {} });
@@ -79,13 +118,149 @@ describe("installShellIntegration", () => {
     expect(Object.values(env)).not.toContain(NONCE);
     const file = join(home, SHELL_INTEGRATION_NONCE_FILE);
     expect(readFileSync(file, "utf-8")).toBe(NONCE);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(file).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
   });
+
+  it("installs private editor queries with an attested binding and the actual editor buffer as source", () => {
+    expect(TERMINAL_EDIT_LINE_QUERY).toBe("\u0018\u0016");
+    for (const [shell, file, source] of [["/bin/bash", ".bash_profile", "READLINE_LINE"], ["/bin/zsh", ".zshrc", "BUFFER"]] as const) {
+      const home = makeHome();
+      installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
+      const script = readFileSync(join(home, file), "utf-8");
+      expect(script).toContain(`__ave_encode "$${source}"`);
+      expect(script).toContain("${#" + source + "} <= 4096");
+      expect(script).toContain("133;E;Line=%s;B=%s;%s");
+      expect(script).toContain("NotFound=%s;Edit=%s;B=%s");
+      expect(script).toContain('__ave_prompt_token="$ave_token"');
+      expect(script).toContain("__ave_edit_handler");
+      expect(script).toContain(shell.endsWith("zsh") ? "bindkey -M main" : "bind -m emacs-standard -X");
+      if (shell.endsWith("bash")) {
+        expect(script).toContain("! alias __ave_report_edit_line >/dev/null 2>&1");
+        expect(script).toContain("&& builtin bind -m emacs-standard -x");
+        expect(script).toContain("done < <(builtin bind -m emacs-standard -X");
+        expect(script).toContain("done < <(builtin bind -v 2>/dev/null)");
+        expect(script).toContain('"$ave_binding" == "set keymap emacs" || "$ave_binding" == "set keymap emacs-standard"');
+      }
+    }
+  });
+
+  it.runIf(TERMINAL_TEST_MODERN_BASH !== undefined).each([
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line"', expected: 1 },
+    { binding: '"\\C-x\\C-v" "__ave_report_edit_line"', expected: 1 },
+    { binding: '"\\C-x\\C-u": "__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line_extra"', expected: 0 },
+    { binding: '"\\C-x\\C-v": "__ave_report_edit_line; accept-line"', expected: 0 },
+    { binding: 'prefix "\\C-x\\C-v": "__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v":"__ave_report_edit_line"', expected: 0 },
+    { binding: '"\\C-x\\C-v" "__ave_report_edit_line" ', expected: 0 },
+  ])("attests only complete reserved query readbacks: $binding", ({ binding, expected }) => {
+    expect(generatedBindingFlag("ave_edit", binding)).toBe(expected);
+  });
+
+  it.runIf(TERMINAL_TEST_MODERN_BASH !== undefined).each([
+    { binding: "set keymap emacs", expected: 1 },
+    { binding: "set keymap emacs-standard", expected: 1 },
+    { binding: "set keymap emacs-ctlx", expected: 0 },
+    { binding: "set keymap emacs-meta", expected: 0 },
+    { binding: "set keymap vi-insert", expected: 0 },
+  ])("attests only the complete primary editing keymap: $binding", ({ binding, expected }) => {
+    expect(generatedBindingFlag("ave_keymap", binding)).toBe(expected);
+  });
+
+  for (const shell of [TERMINAL_TEST_ZSH, TERMINAL_TEST_MODERN_BASH]) {
+    it.runIf(shell !== undefined)(`${shell}: reports the actual edit buffer without executing the line or adding it to history`, async () => {
+      const { home, pty, tracker } = await startEditor(shell!);
+      expect(tracker.supportsEditLineQuery()).toBe(true);
+      const firstBlockId = tracker.nextBlockId();
+      const promptCount = tracker.promptEndCount();
+      pty.write(TERMINAL_EDIT_LINE_QUERY);
+      await waitForTerminal(() => tracker.editLineReportGeneration() === 1);
+      expect(tracker.editLineReport()).toEqual({ generation: 1, line: "" });
+      const line = "printf 'actual;100% 한 😀' > query-must-not-run";
+      pty.write(`\u001b[200~${line}\u001b[201~`);
+      pty.write(TERMINAL_EDIT_LINE_QUERY);
+      await waitForTerminal(() => tracker.editLineReportGeneration() === 2);
+      expect(tracker.editLineReport()).toEqual({ generation: 2, line });
+      expect(tracker.nextBlockId()).toBe(firstBlockId);
+      expect(tracker.promptEndCount()).toBe(promptCount);
+      expect(tracker.currentCwd()?.endsWith(home.split("/").pop()!)).toBe(true);
+      expect(existsSync(join(home, "query-must-not-run"))).toBe(false);
+      pty.write("\u0003");
+      await waitForTerminal(() => tracker.promptEndCount() > promptCount);
+      expect(tracker.editLineReport()).toBeNull();
+      pty.write(TERMINAL_EDIT_LINE_QUERY);
+      await waitForTerminal(() => tracker.editLineReportGeneration() === 3);
+      expect(tracker.editLineReport()).toEqual({ generation: 3, line: "" });
+      const beforeHistory = tracker.nextBlockId();
+      pty.write("fc -ln -1\r");
+      await waitForTerminal(() => tracker.get(beforeHistory)?.status === "done");
+      expect(tracker.get(beforeHistory)?.output).not.toContain("query-must-not-run");
+      expect(tracker.get(beforeHistory)?.output).not.toContain("__ave_report_edit_line");
+    }, 30_000);
+
+    const replaceBinding = shell?.endsWith("zsh") ? "bindkey -M main '^X^V' self-insert" : undefined;
+    const replaceWidget = shell?.endsWith("zsh")
+      ? "__ave_other_widget() { :; }; zle -N __ave_report_edit_line __ave_other_widget"
+      : undefined;
+    const switchKeymap = shell?.endsWith("zsh") ? "bindkey -v" : "set -o vi";
+    const replaceAlias = shell?.endsWith("bash") ? "alias __ave_report_edit_line='printf altered'" : undefined;
+    const replaceCurrentKeymaps = shell?.endsWith("bash") ? ["bind 'set keymap vi-insert'", "bind 'set keymap emacs-ctlx'"] : [];
+    for (const mutation of ["__ave_report_edit_line() { :; }", switchKeymap, ...replaceCurrentKeymaps, ...(replaceBinding === undefined ? [] : [replaceBinding]), ...(replaceWidget === undefined ? [] : [replaceWidget]), ...(replaceAlias === undefined ? [] : [replaceAlias])]) {
+      it.runIf(shell !== undefined)(`${shell}: stops attesting a replaced query handler or binding (${mutation})`, async () => {
+        const { pty, tracker } = await startEditor(shell!);
+        expect(tracker.supportsEditLineQuery()).toBe(true);
+        const promptCount = tracker.promptEndCount();
+        pty.write(`${mutation}\r`);
+        await waitForTerminal(() => tracker.promptEndCount() > promptCount);
+        expect(tracker.supportsEditLineQuery()).toBe(false);
+      }, 30_000);
+    }
+  }
+
+  for (const scenario of [
+    { name: "a direct accept-line binding", command: "bind -m emacs-standard '\"\\C-x\\C-v\":accept-line'" },
+    { name: "a removed binding", command: "bind -m emacs-standard -r '\\C-x\\C-v'" },
+    { name: "an accept-line keymap file", inputrc: 'set keymap emacs-standard\n"\\C-x\\C-v": accept-line\n' },
+    { name: "a command macro keymap file", inputrc: 'set keymap emacs-standard\n"\\C-x\\C-v": "printf macro-must-not-run > rebound-macro\\C-m"\n' },
+  ]) {
+    it.runIf(TERMINAL_TEST_MODERN_BASH !== undefined)(`restores the reserved editor query after ${scenario.name}`, async () => {
+      const { home, pty, tracker } = await startEditor(TERMINAL_TEST_MODERN_BASH!);
+      expect(tracker.supportsEditLineQuery()).toBe(true);
+      if (scenario.inputrc !== undefined) writeFileSync(join(home, "query-bindings"), scenario.inputrc, { mode: 0o600 });
+      const promptCount = tracker.promptEndCount();
+      const mutationBlockId = tracker.nextBlockId();
+      pty.write(`${scenario.command ?? "bind -f ./query-bindings"}\r`);
+      await waitForTerminal(() => tracker.promptEndCount() > promptCount);
+      expect(tracker.get(mutationBlockId)).toMatchObject({ status: "done", exitCode: 0, output: "" });
+      expect(tracker.supportsEditLineQuery()).toBe(true);
+      const firstBlockId = tracker.nextBlockId();
+      const readyPrompt = tracker.promptEndCount();
+      const generation = tracker.editLineReportGeneration();
+      pty.write(TERMINAL_EDIT_LINE_QUERY);
+      await waitForTerminal(() => tracker.editLineReportGeneration() > generation);
+      expect(tracker.editLineReport()).toEqual({ generation: generation + 1, line: "" });
+      const line = "printf 'actual;100%' > restored-query-must-not-run";
+      pty.write(`\u001b[200~${line}\u001b[201~`);
+      pty.write(TERMINAL_EDIT_LINE_QUERY);
+      await waitForTerminal(() => tracker.editLineReportGeneration() > generation + 1);
+      expect(tracker.editLineReport()).toEqual({ generation: generation + 2, line });
+      expect(tracker.nextBlockId()).toBe(firstBlockId);
+      expect(tracker.promptEndCount()).toBe(readyPrompt);
+      expect(existsSync(join(home, "restored-query-must-not-run"))).toBe(false);
+      expect(existsSync(join(home, "rebound-macro"))).toBe(false);
+      pty.write("\u0003");
+      await waitForTerminal(() => tracker.promptEndCount() > readyPrompt);
+      pty.write("fc -ln -1\r");
+      await waitForTerminal(() => tracker.get(firstBlockId)?.status === "done");
+      expect(tracker.get(firstBlockId)?.output).not.toContain("restored-query-must-not-run");
+      expect(tracker.get(firstBlockId)?.output).not.toContain("__ave_report_edit_line");
+    }, 30_000);
+  }
 
   it("never writes the nonce into a startup file and refuses a weak one", () => {
     const home = makeHome();
     for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
-    for (const file of [".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
+    for (const file of [".zshenv", ".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
       expect(readFileSync(join(home, file), "utf-8")).not.toContain(NONCE);
     }
     expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "", sandboxEnv: sandboxEnvFor(home) })).toThrow(/nonce/u);
@@ -122,13 +297,11 @@ describe("installShellIntegration", () => {
     });
 
   }
-  // macOS /bin/bash 3.2 has no PS0: its C marker comes from a DEBUG trap,
-  // which runs inside a group's redirection. terminal_run refuses that bash
-  // (no bracketed paste), so only the user's own commands run there.
+  // macOS /bin/bash 3.2 has no PS0: its C marker comes from a DEBUG trap, which runs inside a group's redirection. terminal_run refuses that bash (no
+  // bracketed paste), so only the user's own commands run there.
   for (const shell of [TERMINAL_TEST_ZSH, TERMINAL_TEST_MODERN_BASH]) {
     it.runIf(shell !== undefined)(`${shell}: keeps the nonce out of the environment, the prompt, files a command writes and the disk, and markers out of forged output`, () => {
-      // Every probe writes to a file under HOME; the nonce itself is never
-      // typed or echoed (a line editor's redisplay would put it on screen).
+      // Every probe writes to a file under HOME; the nonce itself is never typed or echoed (a line editor's redisplay would put it on screen).
       const expandPrompt = shell!.endsWith("zsh") ? 'print -rP -- "$PS1"' : 'echo "${PS1@P}"';
       const { tracker, raw, display, home } = runInteractive(
         shell!,

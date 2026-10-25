@@ -8,9 +8,10 @@ import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js
 import { CodexAppServerError, type CodexAppServerClient, type CodexAppServerClientOptions } from "../codex-app-server-client.js";
 import { CodexUserRuntimeError } from "../codex-user-runtime.js";
 import { ClaudeCodeSubscriptionError } from "../claude-code-subscription-client.js";
-import type {
-  CodexConversationRuntime,
-  CodexConversationRuntimeOptions,
+import {
+  CodexConversationRuntimeError,
+  type CodexConversationRuntime,
+  type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { AcpSubscriptionSessionError } from "../acp-subscription-session-client.js";
@@ -25,7 +26,8 @@ import {
   readSubscriptionToolMcpServerConfig,
 } from "../subscription-tool-mcp-server.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
-import { createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
+import { CodexExecutableLocationError } from "../codex-executable-location.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 
 const CODEX_CONNECTED: CodexSubscriptionStatus = {
   runtime: "ready",
@@ -69,7 +71,6 @@ const HOST_TOOL: ToolSchema = {
   },
 };
 
-
 function fakeCodexClient(): CodexAppServerClient {
   return {
     getStatus: vi.fn(async () => CODEX_CONNECTED),
@@ -83,6 +84,56 @@ function fakeCodexClient(): CodexAppServerClient {
 }
 
 describe("SubscriptionRuntimeService", () => {
+  it("claims every persistent runtime directory for the current account when it starts", async () => {
+    claimFakeRuntimeDirectories.mockClear();
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories, codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+    });
+    try {
+      expect(claimFakeRuntimeDirectories).toHaveBeenCalledOnce();
+      const root = "C:\\isolated\\subscription-runtimes\\";
+      expect(claimFakeRuntimeDirectories.mock.calls[0]![0]).toEqual([
+        "codex-v3-home", "codex-v3-home/runtime", "codex-v3-sqlite", "codex-login-v2-workspace", "codex-login-v2-tmp",
+        "codex-text-v2-workspace", "codex-text-v2-tmp", "claude-cli-v1-claude-code-home", "claude-cli-v1-claude-code-workspace",
+        "claude-cli-v1-claude-code-tmp",
+      ].map((name) => `${root}${name}`));
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("refuses to start when a persistent runtime directory cannot be claimed", async () => {
+    const refusal = new CodexExecutableLocationError("Runtime directory is owned by another account");
+    const stopAll = vi.fn(async () => undefined);
+    await expect(SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: vi.fn(async () => { throw refusal; }), codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll } as unknown as AcpSubscriptionRuntimeRegistry,
+    })).rejects.toBe(refusal);
+  });
+
+  it.each(["kimi-code", "grok-build"] as const)("does not enable signed-out chat after verification (%s)", async (provider) => {
+    const status: AcpSubscriptionStatus = { ...KIMI_CONNECTED, provider, connection: "signed-out" };
+    const openTextSession = vi.fn();
+    const registry = {
+      getStatus: vi.fn(async () => status),
+      verify: vi.fn(async () => status),
+      openTextSession,
+      stopAll: vi.fn(async () => undefined),
+    } as unknown as AcpSubscriptionRuntimeRegistry;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories, codexClient: fakeCodexClient(), acpRegistry: registry,
+    });
+    try {
+      expect((await service.verify(provider)).capabilities.chat).toBe(false);
+      await expect(service.openTextSession({ kind: "subscription", provider }))
+        .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      expect(openTextSession).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("requires isolation verification and shares the fresh v3 Codex auth home with text chat", async () => {
     const clientOptions: CodexAppServerClientOptions[] = [];
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];
@@ -92,7 +143,7 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as CodexConversationRuntime;
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       acpRegistry: registry,
       createCodexAppServerClient: (options) => {
         clientOptions.push(options);
@@ -135,7 +186,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -159,7 +210,7 @@ describe("SubscriptionRuntimeService", () => {
   it("rejects model ids above the shared subscription cap before opening a runtime", async () => {
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -189,7 +240,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -230,14 +281,13 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
 
-    // The caller holds this instance while status is still resolving. Stopping
-    // the singleton must make that retained reference terminal before the
-    // pending operation can reach verify/openTextSession.
+    // The caller holds this instance while status is still resolving. Stopping the singleton must make that retained reference terminal before the pending
+    // operation can reach verify/openTextSession.
     const opening = service.openTextSession({ kind: "subscription", provider: "kimi-code" });
     expect(registry.getStatus).toHaveBeenCalledOnce();
     const stopping = service.stop();
@@ -277,7 +327,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -312,7 +362,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -356,7 +406,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -388,8 +438,7 @@ describe("SubscriptionRuntimeService", () => {
       verify: vi.fn(async () => KIMI_CONNECTED),
       setExecutable: vi.fn(async () => KIMI_CONNECTED),
       openTextSession: vi.fn(async () => {
-        // The first queued microtask lets trackSession add the wrapper. The
-        // second invalidates it before trackVerifiedSession resumes its await.
+        // The first queued microtask lets trackSession add the wrapper. The second invalidates it before trackVerifiedSession resumes its await.
         queueMicrotask(() => {
           queueMicrotask(() => {
             void service.chooseExecutable("kimi-code", "C:\\approved\\kimi.exe").then(markMutationDone);
@@ -400,7 +449,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -430,7 +479,7 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as CodexAppServerClient;
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient,
       acpRegistry: registry,
       createCodexConversationRuntime: (options) => {
@@ -503,7 +552,7 @@ describe("SubscriptionRuntimeService", () => {
     const audit = vi.fn();
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient,
       acpRegistry: registry,
       audit,
@@ -525,7 +574,6 @@ describe("SubscriptionRuntimeService", () => {
         { fallbackSelection: parentSelection },
       );
       for await (const _event of staleProfileSession.streamTurn("Run the child task.")) {
-        // Drain the short fake turn so its selected model reaches startTurn.
       }
       await staleProfileSession.stop();
 
@@ -534,7 +582,6 @@ describe("SubscriptionRuntimeService", () => {
         { fallbackSelection: parentSelection },
       );
       for await (const _event of verifiedProfileSession.streamTurn("Run the child task.")) {
-        // Drain the short fake turn so its selected model reaches startTurn.
       }
       await verifiedProfileSession.stop();
 
@@ -551,7 +598,6 @@ describe("SubscriptionRuntimeService", () => {
       await service.stop();
     }
   });
-
 
   it("emits completed Codex usage as separate non-billable subscription telemetry", async () => {
     const verificationRuntime = {
@@ -591,7 +637,7 @@ describe("SubscriptionRuntimeService", () => {
     const runtimes = [verificationRuntime, textRuntime];
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       createCodexConversationRuntime: () => {
@@ -655,7 +701,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -698,7 +744,7 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const setHandler = vi.spyOn(SubscriptionToolBridge.prototype, "setHandler");
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -721,8 +767,7 @@ describe("SubscriptionRuntimeService", () => {
       expect(onHostRequest).toBeTypeOf("function");
       if (!bridgeHandler || !onHostRequest) throw new Error("test-bridge-handler-missing");
 
-      // Do not await: this schedules the bridge emission, then the raw ACP
-      // host request arrives within the same event-loop turn.
+      // Do not await: this schedules the bridge emission, then the raw ACP host request arrives within the same event-loop turn.
       void bridgeHandler({
         id: "subscription_test_tool",
         name: HOST_TOOL.name,
@@ -759,7 +804,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -817,7 +862,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
     });
@@ -888,7 +933,7 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const audit = vi.fn();
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       audit,
@@ -964,7 +1009,7 @@ describe("SubscriptionRuntimeService", () => {
     const runtimes = [verificationRuntime, textRuntime];
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       createCodexConversationRuntime: () => {
@@ -1033,7 +1078,7 @@ describe("SubscriptionRuntimeService", () => {
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const setHandler = vi.spyOn(SubscriptionToolBridge.prototype, "setHandler");
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       createCodexConversationRuntime: () => {
@@ -1100,7 +1145,7 @@ describe("SubscriptionRuntimeService", () => {
       };
       const codexClient = fakeCodexClient();
       const service = await SubscriptionRuntimeService.create(async () => undefined, {
-        namespace: namespace(),
+        namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
         codexClient,
         codexRuntimeLocator: locator,
         acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
@@ -1117,11 +1162,41 @@ describe("SubscriptionRuntimeService", () => {
     },
   );
 
+  it("keeps sandbox readiness detail out of renderer-facing verification errors", async () => {
+    const runtime = {
+      verifyIsolation: vi.fn(async () => {
+        throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+          "Windows sandbox readiness: notConfigured");
+      }),
+      stop: vi.fn(),
+    } as unknown as CodexConversationRuntime;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      createCodexConversationRuntime: () => runtime,
+    });
+    try {
+      const error = await service.verify("codex").catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ code: "subscription-runtime-unavailable", message: "subscription-runtime-unavailable" });
+      expect(JSON.stringify(error)).not.toContain("notConfigured");
+      expect(error).not.toHaveProperty("detail");
+      expect(error).not.toHaveProperty("providerError", expect.anything());
+      expect(runtime.stop).toHaveBeenCalledOnce();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("gives each user-CLI failure its own renderer-safe code", () => {
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
       .toBe("subscription-runtime-unsafe-location");
     expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-unsafe-location")))
       .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-npm-location")))
+      .toBe("subscription-runtime-unsafe-npm-location");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
       .toBe("subscription-runtime-not-configured");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))
@@ -1138,8 +1213,7 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-invalid-executable")))
       .toBe("subscription-runtime-unavailable");
-    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the
-    // same "update it" state as a too-old `codex`.
+    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the same "update it" state as a too-old `codex`.
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible")))
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured")))

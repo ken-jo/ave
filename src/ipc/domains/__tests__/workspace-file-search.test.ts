@@ -1,7 +1,4 @@
-/**
- * Composer `@file` search: main offers only files the read guard would let
- * `read_file` open — inside the current roots, never a Layer-0 sensitive path.
- */
+// Offer only files inside the current read scope and outside sensitive paths.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,8 +59,6 @@ describe("searchWorkspaceFiles", () => {
   });
 
   it("never offers a path outside the read scope, even when handed a stale root", async () => {
-    // `outside` is passed as a root but is not in the read scope (cwd + extraAllowed):
-    // the read guard, not the walk, decides — so nothing under it is offered.
     const result = await searchWorkspaceFiles({
       query: "app",
       roots: [workspace, outside],

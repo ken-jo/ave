@@ -1,44 +1,24 @@
-/**
- * The scopes an out-of-allowed-dir approval is willing to grant — one
- * authority, shared by the card that renders them and the host that offers
- * them to the `/allow` sentence selector.
- *
- * Issue #1940. Both consumers must agree on the *same* list, in the *same*
- * order: the selector returns an option and the renderer has to land on the
- * button that option means. Two copies of this derivation would pass their own
- * unit tests and disagree only at the integration — so there is exactly one.
- *
- * Nothing here reads the filesystem or the user's sentence. `candidatePath`
- * and `suggestedParent` arrive already host-resolved (`pickClosestParent`),
- * and a scope's `path` is only ever one of those two values.
- */
+// Card and sentence selector must share the same ordered scope options. Paths come only from host-resolved candidatePath/suggestedParent; no filesystem or sentence parsing occurs here.
 import type { ApprovalChoice } from "./approval-gate.js";
 
 export interface ApprovalScopeOption {
-  /**
-   * Opaque, positional handle. It is the only thing besides `choice` that is
-   * ever disclosed to the selector model, and it carries no path.
-   */
+  // Opaque, positional handle. It is the only thing besides `choice` that is ever disclosed to the selector model, and it carries no path.
   id: string;
   choice: ApprovalChoice;
-  /** Widening scopes outlive the call being decided. */
+  // Widening scopes outlive the call being decided.
   widens: boolean;
-  /** Host-resolved path this scope would allow. Never user-supplied. */
+  // Host-resolved path this scope would allow. Never user-supplied.
   path?: string;
 }
 
 export interface ApprovalScopeInput {
   candidatePath: string;
   suggestedParent: string | null;
-  /** Host-imposed narrowing (e.g. a remote-controller one-shot request). */
+  // Host-imposed narrowing (e.g. a remote-controller one-shot request).
   allowedChoices?: readonly ApprovalChoice[];
 }
 
-/**
- * Build the host-authorized choices, narrowest first. The renderer may present
- * those choices in a different visual order, but it focuses allow-once and can
- * only commit one of the exact host-provided choice/path pairs.
- */
+// Build the host-authorized choices, narrowest first. The renderer may present those choices in a different visual order, but it focuses allow-once and can only commit one of the exact host-provided choice/path pairs.
 export function buildApprovalScopeOptions(
   input: ApprovalScopeInput,
 ): ApprovalScopeOption[] {

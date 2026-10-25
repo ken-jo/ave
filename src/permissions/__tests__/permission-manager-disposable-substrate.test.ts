@@ -1,10 +1,4 @@
-/**
- * The dispatch input's `disposableSubstrate` must reach the reviewer as the
- * `disposable-container` capability. The executor tests stub
- * `dispatchReviewer`, so this is the one place the argument threading through
- * `resolveReviewerSandboxCacheState` is pinned: drop it and guest calls
- * silently regress to host grading.
- */
+// The dispatch input's `disposableSubstrate` must reach the reviewer as the `disposable-container` capability. The executor tests stub `dispatchReviewer`, so this is the one place the argument threading through `resolveReviewerSandboxCacheState` is pinned: drop it and guest calls silently regress to host grading.
 import { afterEach, describe, expect, it } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import { DeferredQueue } from "../reviewer/deferred-queue.js";

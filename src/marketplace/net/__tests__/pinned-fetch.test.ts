@@ -9,19 +9,16 @@ import { MarketplaceError } from "../../errors.js";
 import { createTestAuthority, type TestAuthority } from "../../__tests__/fixtures/test-certificates.js";
 import { createPinnedFetch, routeFromPac } from "../pinned-fetch.js";
 
-// The transport's own TLS calls pass through to Node unchanged; the spy records the options each
-// was given, so a test can read what the transport asked for rather than what the process defaults to.
+// Record explicit TLS options to avoid mistaking process defaults for transport enforcement.
 vi.mock("node:tls", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:tls")>();
   return { ...actual, connect: vi.fn(actual.connect) };
 });
 
-/** The options of every TLS connection the transport opened since the last reset. */
 function tlsCalls(): ConnectionOptions[] {
   return vi.mocked(tlsConnect).mock.calls.map((call) => call[0] as ConnectionOptions);
 }
 
-/** Drops metadata answers, keeps every other one: the shape of the gate's rule. */
 const dropMetadata: AddressPolicy = (address) => (classifyAddress(address) === "metadata" ? new NetworkGuardError(`${address} is metadata`, { rank: 4 }) : "allow");
 
 interface Seen {
@@ -30,7 +27,6 @@ interface Seen {
   host: string | undefined;
 }
 
-/** Every socket a server accepted, tunnels included, so closing it ends them too. */
 const accepted = new WeakMap<HttpServer | NetServer, Set<Socket>>();
 
 function listen(server: HttpServer | NetServer): Promise<number> {
@@ -50,7 +46,6 @@ function close(server: HttpServer | NetServer): Promise<void> {
   });
 }
 
-/** Tunnels a CONNECT to the loopback port it names; the proxy resolves nothing ("pkg.test" goes to 127.0.0.1). */
 function tunnel(connects: string[]) {
   return (request: IncomingMessage, client: Duplex, head: Buffer) => {
     connects.push(request.url ?? "");
@@ -66,7 +61,6 @@ function tunnel(connects: string[]) {
   };
 }
 
-/** Answers an absolute-form request itself, as a forwarding proxy would after fetching it. */
 function forward(requests: string[]) {
   return (request: IncomingMessage, response: ServerResponse) => {
     requests.push(request.url ?? "");
@@ -191,7 +185,6 @@ describe("createPinnedFetch", () => {
     vi.mocked(tlsConnect).mockClear();
   });
 
-  /** A resolver over a table, recording each name it is asked. */
   function resolver(table: Record<string, readonly string[]>) {
     const lookups: string[] = [];
     const lookup = vi.fn(async (host: string) => {
@@ -206,7 +199,7 @@ describe("createPinnedFetch", () => {
   const keepAll = (answers: readonly string[]) => [...answers];
 
   it("resolves the target once and connects by address, keeping the name for the request (DIRECT)", async () => {
-    // A rebinding resolver: the fixture's address to the first lookup, the metadata address to any later one.
+    // A second lookup returns metadata, exposing any failure to pin the first answer.
     const lookups: string[] = [];
     const lookup = async (host: string) => {
       lookups.push(host);
@@ -220,7 +213,6 @@ describe("createPinnedFetch", () => {
     expect(select).toHaveBeenCalledTimes(1);
     expect(select).toHaveBeenCalledWith(["127.0.0.1"]);
     expect(seen.at(-1)).toEqual({ method: "GET", url: "/direct?x=1", host: `pkg.test:${plainPort}` });
-    // Plain http is plain: no TLS connection is opened on the way.
     expect(tlsCalls()).toEqual([]);
   });
 
@@ -244,19 +236,15 @@ describe("createPinnedFetch", () => {
     const { lookup } = resolver({ "pkg.test": ["127.0.0.1"], "other.test": ["127.0.0.1"] });
     const fetch = createPinnedFetch({ lookup, ca: () => [authority.caPem] });
     expect(await (await fetch(`https://pkg.test:${securePort}/secure`, {}, keepAll)).text()).toBe("served /secure");
-    // The same address under a name the certificate does not carry fails verification.
     await expect(fetch(`https://other.test:${securePort}/secure`, {}, keepAll)).rejects.toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
-    // A root the transport was not given is not trusted.
     await expect(createPinnedFetch({ lookup, ca: () => [createTestAuthority("Stranger").caPem] })(`https://pkg.test:${securePort}/secure`, {}, keepAll)).rejects.toThrow();
   });
 
   it("asks every TLS connection itself to verify the certificate against the name, whatever the process default (§7.4)", async () => {
     const { lookup } = resolver({ "pkg.test": ["127.0.0.1"], "proxy.test": ["127.0.0.1"] });
-    // To the target: connected by address, the certificate checked against the name.
     await createPinnedFetch({ lookup, ca: () => [authority.caPem] })(`https://pkg.test:${securePort}/structural`, {}, keepAll);
     expect(tlsCalls()).toEqual([expect.objectContaining({ host: "pkg.test", servername: "pkg.test", rejectUnauthorized: true })]);
 
-    // To an HTTPS proxy, and through it to the target: each connection carries the setting itself.
     vi.mocked(tlsConnect).mockClear();
     const viaProxy = createPinnedFetch({ lookup, ca: () => [authority.caPem], resolveProxy: async () => `HTTPS proxy.test:${httpsProxyPort}` });
     await viaProxy(`https://pkg.test:${securePort}/structural-tunnel`, {}, keepAll);
@@ -338,7 +326,6 @@ describe("createPinnedFetch", () => {
     const before = proxied.length;
     await expect(createPinnedFetch({ lookup, resolveProxy: async () => "PROXY proxy.test:8080" })(`http://pkg.test:${plainPort}/x`, {}, keepAll))
       .rejects.toMatchObject({ code: "SOURCE_URL_REJECTED", detail: { reason: "address-metadata", host: "proxy.test", address: "169.254.169.254" } });
-    // A literal proxy is its own one answer, judged the same way; nothing is looked up for it.
     for (const [pac, reason] of [
       ["PROXY 169.254.169.254:8080", "address-metadata"],
       ["PROXY 192.0.2.1:8080", "address-unroutable"],

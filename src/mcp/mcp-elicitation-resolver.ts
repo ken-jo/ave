@@ -1,28 +1,5 @@
-/**
- * MRTR elicitation resolver (milestone `mrtr-input-loop`, the design's
- * "live-resolver step", mcp-alignment-design.md §5a/§8).
- *
- * `McpClient` runs the MRTR `input_required` loop but needs an injected
- * {@link McpInputRequestResolver} to actually gather each `inputRequest`. This is
- * the host's wiring for the ELICITATION case: an `elicitation/create` request
- * from an (untrusted) external MCP server is routed to the host
- * {@link ApprovalGate} as an `agent-action` consent ask, and the user's decision
- * is translated into an MCP `ElicitResult { action, content? }` placed verbatim
- * under `inputResponses[id]` on the retry.
- *
- * Scope (No-Fallback): ELICITATION only.
- *  - `sampling/createMessage` and `roots/list` are DEPRECATED upstream (§8
- *    SEP-2577) and the host does not implement them → a thrown typed error, never
- *    a fabricated response.
- *  - URL-mode elicitation is consent-only. Form-mode elicitation forwards
- *    `requestedSchema` to the renderer approval UI and returns the captured
- *    one-shot `content` with the accept decision.
- *
- * Trust: the request payload comes from an untrusted external server, so the
- * approval is raised with `trustOrigin: "plugin-emitted"` (never reaches the
- * user-keyboard slash dispatcher) and `source: "mcp"` so the audit/UI shows which
- * server is eliciting (the resolver is bound per-server via the factory).
- */
+/** Route untrusted elicitation through per-server host approval, never user-command dispatch.
+ * URL mode asks consent; forms return captured input; unsupported input methods throw. */
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalDecision,
@@ -36,7 +13,6 @@ import {
 } from "../shared/mcp-elicitation-schema.js";
 import { isRecord } from "../shared/is-record.js";
 
-/** MCP `ElicitResult` (§8). Returned verbatim into `inputResponses[id]`. */
 export interface ElicitResult {
   action: "accept" | "decline" | "cancel";
   content?: Record<string, unknown>;
@@ -44,7 +20,6 @@ export interface ElicitResult {
 
 const ELICITATION_METHOD = "elicitation/create";
 
-/** The single approval-gate method this resolver depends on (keeps it test-seam-able). */
 export interface ElicitationApprovalGate {
   requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision>;
 }
@@ -95,11 +70,7 @@ function shouldValidateFormContent(request: Record<string, unknown>): boolean {
   return request.mode === "form" || (request.mode !== "url" && request.requestedSchema !== undefined);
 }
 
-/**
- * Build a factory that yields a per-server {@link McpInputRequestResolver}. Bind
- * the serverId per client so the approval surface attributes the elicitation to
- * the correct MCP server.
- */
+/** Bind server identity per resolver so approval attribution cannot be selected by the caller. */
 export function createElicitationResolverFactory(deps: {
   approvalGate: ElicitationApprovalGate;
 }): (serverId: string) => McpInputRequestResolver {

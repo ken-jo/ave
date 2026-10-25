@@ -1,6 +1,3 @@
-/**
- * AuditLogger.search() + getStats() — filter correctness, date range, pagination.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
@@ -33,47 +30,11 @@ beforeEach(() => {
   testHome = mkdtempSync(join(process.cwd(), ".ave-audit-test-"));
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  // The logger's default directory, `<AVE_HOME>/audit`.
   vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
-  // The retry here is MITIGATION for a flake whose mechanism was never pinned down in this
-  // file, and saying so matters, because the obvious fix does not apply.
-  //
-  // Every logger in this file is constructed synchronously in a test body and only ever has
-  // `search()` called on it, and `search()` enqueues nothing — it only reads. So
-  // `AuditLogger.flush()`, which does exist, would have nothing to drain, and the only
-  // writers are the constructor's `mkdirSync` and this file's synchronous `writeJsonl`. Do
-  // not "improve" this into a flush call; it would be a no-op dressed as a fix.
-  //
-  // An earlier version of this comment contrasted the above with the executor teardown,
-  // describing that one as a real un-awaited `recordApproval` whose write outlived the test.
-  // That contrast was built on a false premise and is gone: `mutatePersistentApprovals`
-  // RETURNS the promise covering `readApprovalsFile → mutator → atomicWrite`, and
-  // `recordApproval` awaits it, so an awaited call has already landed. The writer that
-  // actually raced there was an unflushed `AuditLogger` the executor constructs implicitly —
-  // which makes it the same KIND of writer as this file's, just one that is actually written
-  // to. See that file's `beforeEach`.
-  //
-  // So this file's occasional ENOTEMPTY has no demonstrated cause, and retries are the honest
-  // response to that. One concrete aggravator IS evidenced though, and naming it is better
-  // than the earlier "below that, at the filesystem", which pointed nowhere: `beforeEach` uses
-  // `mkdtempSync(join(process.cwd(), ...))`, so these trees are created in the REPO ROOT rather
-  // than the OS temp dir, under a multi-worker vitest pool. That is a shared directory with
-  // concurrent creators and deleters. It is an aggravator rather than the mechanism — the
-  // failure is on `testHome` itself, not its parent — which is why this stays `maxRetries`
-  // instead of a claim.
-  //
-  // Restoring the mock AFTER removal, not before: an earlier version did the reverse and
-  // claimed it aimed a late construction at the real home rather than the tree being
-  // deleted. Both halves were wrong — the constructor captures `this.auditDir`, so a bound
-  // write cannot be redirected, and pointing a hypothetical late writer at the user's real
-  // `~/.ave` is the failure mode to avoid, not the fix.
-  //
-  // The ladder moved off `rmSync`'s own `maxRetries` (#1983): measured against a real lock
-  // that budget is never applied at all, failing in 0ms, so it was mitigation in name only.
-  // `cleanupTmpDir` retries the same codes on a bounded ladder that does run.
+  // The ENOTEMPTY cause remains unverified; search queues no writes, so flush cannot help. Keep bounded cleanup retries and restore home mocks only after removal.
   if (existsSync(testHome)) {
     await cleanupTmpDir(testHome);
   }
@@ -104,9 +65,7 @@ describe("AuditLogger.search()", () => {
   });
 
   it("filters by dateFrom/dateTo", async () => {
-    // Entries carry the instant their partition was named for, as the store
-    // writes them; the range is decided by that instant, not the file name.
-    // Noon UTC keeps each entry on its own civil day in every host zone.
+    // Filter by row timestamps, not partition names; noon UTC keeps fixture dates stable across zones.
     writeJsonl("2026-04-14.jsonl", [makeEntry({ type: "warn", timestamp: "2026-04-14T12:00:00.000Z" })]);
     writeJsonl("2026-04-17.jsonl", [makeEntry({ type: "turn", timestamp: "2026-04-17T12:00:00.000Z" })]);
     writeJsonl("2026-04-20.jsonl", [makeEntry({ type: "error", timestamp: "2026-04-20T12:00:00.000Z" })]);
@@ -144,7 +103,6 @@ describe("AuditLogger.search()", () => {
   it("returns empty when no files exist", async () => {
     const logger = new AuditLogger();
     const { entries, total } = await logger.search({});
-    // Today's empty file may exist (created by constructor); should still be 0 entries.
     expect(total).toBe(0);
     expect(entries).toHaveLength(0);
   });
@@ -161,9 +119,7 @@ describe("AuditLogger.search()", () => {
     const filePath = join(auditDir, "2026-04-17.jsonl");
     const output = createWriteStream(filePath, { encoding: "utf-8" });
     const totalRows = 50_000;
-    // One millisecond apart, so the newest-first order the page is sliced from
-    // is the row index reversed and the expectation below is exact rather than
-    // a tie-break the writer happened to produce.
+    // Separate rows by one millisecond so newest-first pagination has no accidental ties.
     const firstInstant = Date.parse("2026-04-17T00:00:00.000Z");
     for (let index = 0; index < totalRows; index += 1) {
       const entry = makeEntry({
@@ -190,7 +146,6 @@ describe("AuditLogger.search()", () => {
 
     expect(result.total).toBe(totalRows);
     expect(result.entries).toHaveLength(5);
-    // Newest first: offset 49_990 lands 49_990 rows back from the newest.
     expect(result.entries.map((entry) => entry.input?.split(":", 1)[0])).toEqual([
       "9",
       "8",
@@ -203,9 +158,7 @@ describe("AuditLogger.search()", () => {
 });
 
 describe("AuditLogger.getStats()", () => {
-  // getStats(N) keeps entries by timestamp instant and only opens the UTC
-  // partitions that can hold the window; pin fixtures to today's partition so
-  // the window doesn't rot as the calendar advances past a hard-coded date.
+  // Use today's partition so timestamp-window tests do not age out.
   const todayJsonl = () => `${new Date().toISOString().slice(0, 10)}.jsonl`;
 
   it("counts entries by type", async () => {
@@ -232,9 +185,7 @@ describe("AuditLogger.getStats()", () => {
   });
 
   it("counts permission-channel rows by their `decision`, never as an `undefined` type", async () => {
-    // The permission channel's contract (audit-schema.ts) discriminates rows
-    // by `decision`; they carry no `type`. Reading them as telemetry rows
-    // produced an "undefined" bucket in the Audit tab's top types.
+    // Permission rows use decision rather than type; do not invent an undefined telemetry bucket.
     const day = new Date().toISOString().slice(0, 10);
     const ts = new Date().toISOString();
     const permissionRow = (decision: string) => ({
@@ -256,8 +207,7 @@ describe("AuditLogger.getStats()", () => {
   });
 
   it("does not count a row that states neither a `type` nor a permission `decision`", async () => {
-    // Such a row matches no audit channel's contract: it is corrupt, and like
-    // an unparseable line it is not counted under an invented label.
+    // Rows matching no audit-channel contract are corrupt and must not count.
     writeFileSync(
       join(auditDir, todayJsonl()),
       [JSON.stringify(makeEntry({ type: "turn" })), JSON.stringify({ timestamp: new Date().toISOString(), sessionId: "s" })]
@@ -278,15 +228,7 @@ describe("AuditLogger.getStats()", () => {
   });
 });
 
-/**
- * The picker hands `search()` HOST-LOCAL civil days while the store stays
- * partitioned by UTC day, so an entry can live in a file named for a day the
- * person never picked. Every case pins `TZ`; CI runs UTC, where the local and
- * UTC days coincide and none of these boundaries exist.
- *
- * Seoul is UTC+9 with no DST: local day D runs [D-1 15:00Z, D 15:00Z).
- * New York is UTC-4 in June (EDT): local day D runs [D 04:00Z, D+1 04:00Z).
- */
+/** Pin TZ because local picker days can span two UTC partitions, including DST offsets. */
 describe("AuditLogger.search() — host-local day range over UTC partitions", () => {
   let previousTz: string | undefined;
 
@@ -302,9 +244,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
   it("a Seoul host at 01:00 local sees today's entries, which live in yesterday's UTC file", async () => {
     process.env.TZ = "Asia/Seoul";
     writeJsonl("2026-06-15.jsonl", [
-      // 01:00 on the 16th in Seoul — picked day, previous UTC partition.
       makeEntry({ timestamp: "2026-06-15T16:00:00.000Z", input: "after-local-midnight" }),
-      // 23:30 on the 15th in Seoul — same partition, day before the picked one.
       makeEntry({ timestamp: "2026-06-15T14:30:00.000Z", input: "before-local-midnight" }),
     ]);
     writeJsonl("2026-06-16.jsonl", [
@@ -319,13 +259,10 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
   it("a New York host at 21:00 local sees entries written after 00:00Z that belong to its local today", async () => {
     process.env.TZ = "America/New_York";
     writeJsonl("2026-06-16.jsonl", [
-      // 21:00 on the 15th in New York — picked day, next UTC partition.
       makeEntry({ timestamp: "2026-06-16T01:00:00.000Z", input: "local-evening" }),
-      // 00:00 on the 16th in New York — first instant of the next local day.
       makeEntry({ timestamp: "2026-06-16T04:00:00.000Z", input: "next-local-day" }),
     ]);
     writeJsonl("2026-06-15.jsonl", [
-      // 23:59:59 on the 14th in New York.
       makeEntry({ timestamp: "2026-06-15T03:59:59.000Z", input: "previous-local-day" }),
       makeEntry({ timestamp: "2026-06-15T12:00:00.000Z", input: "local-morning" }),
     ]);
@@ -387,13 +324,7 @@ describe("AuditLogger.search() — host-local day range over UTC partitions", ()
   });
 });
 
-/**
- * One day's rows are split across a handful of channel files that are read in
- * file-name order, so the raw stream restarts at the day's first instant on
- * every channel boundary. `search` orders by the row's own instant instead, and
- * every case below pins a TZ so the fixture means the same thing under the UTC
- * and Asia/Seoul runs.
- */
+/** Order by row timestamps across channels rather than concatenating partition streams. */
 describe("AuditLogger.search() — newest-first across a day's channel files", () => {
   let previousTz: string | undefined;
 
@@ -407,7 +338,6 @@ describe("AuditLogger.search() — newest-first across a day's channel files", (
     else process.env.TZ = previousTz;
   });
 
-  /** Instants inside 2026-06-16 in BOTH UTC and Asia/Seoul. */
   function writeDayChannels(): void {
     writeJsonl("2026-06-16.jsonl", [
       makeEntry({ timestamp: "2026-06-16T01:00:00.000Z", input: "turn-first" }),
@@ -467,13 +397,7 @@ describe("AuditLogger.search() — newest-first across a day's channel files", (
   });
 
   it("pages exactly as a full sort of the same rows would, at every window", async () => {
-    // The page is selected with a heap capped at `offset + limit` rather than by
-    // sorting the whole match set, so the thing worth pinning is that the cap
-    // changes nothing an observer can see. The reference is a stable sort of
-    // the same rows in the order the files hold them. Instants come from a
-    // fixed-seed generator over only 40 distinct values, so ties — the case a
-    // capped selection is most likely to order differently from a sort — are
-    // dense, and a failure reproduces exactly.
+    // Compare capped heap selection against stable sorting with dense deterministic ties.
     const base = Date.parse("2026-06-16T00:00:00.000Z");
     let seed = 20_260_616;
     const nextInstant = (): number => {
@@ -529,11 +453,7 @@ describe("AuditLogger.search() — newest-first across a day's channel files", (
   });
 });
 
-/**
- * Rows whose HMAC seal did not verify are moved aside into a `…-unverified-…`
- * file. Nothing in a search result or a stat count can say a row lost its seal,
- * so those files stay out of both.
- */
+/** Exclude unverified archives from search and stats; those surfaces cannot represent lost seals. */
 describe("AuditLogger — quarantined unverified rows", () => {
   const QUARANTINE_FILES = [
     "2026-06-16.permission-audit.torn-unverified-4096-1781568000000.jsonl",
@@ -580,7 +500,6 @@ describe("AuditLogger.getStats() — host-local window and day buckets", () => {
     else process.env.TZ = previousTz;
   });
 
-  // 01:30 on the 16th in Seoul; still the 15th in UTC.
   const NOW = new Date("2026-06-15T16:30:00.000Z");
 
   it("buckets totalByDay by the host's civil day, not the partition's UTC day", async () => {
@@ -607,7 +526,6 @@ describe("AuditLogger.getStats() — host-local window and day buckets", () => {
 
   it("starts the window at local midnight N days back, reaching into the earlier UTC partition", async () => {
     process.env.TZ = "Asia/Seoul";
-    // getStats(1) from the 16th local covers the 15th local onward: [2026-06-14T15:00Z, ...).
     writeJsonl("2026-06-14.jsonl", [
       makeEntry({ timestamp: "2026-06-14T15:00:00.000Z", type: "approval" }), // 00:00 local, the 15th
       makeEntry({ timestamp: "2026-06-14T14:59:59.000Z", type: "kill_switch" }), // 23:59:59 local, the 14th

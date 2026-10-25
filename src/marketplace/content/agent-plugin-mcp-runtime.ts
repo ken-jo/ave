@@ -30,15 +30,10 @@ interface ActivePackage {
   dir: string;
   activationId: string;
   credentialDeclarations: Readonly<Record<string, string>>;
-  /** The published servers, whose approvals an update may carry forward (§18.7.3). */
   projections: readonly PreparedPluginMcpProjection[];
 }
 
-/**
- * One published activation's calls (design §18.7.4): a call takes a lease,
- * and a retired activation admits none. Its servers disconnect only once its
- * count is zero.
- */
+/** Retired activations reject new leases and disconnect only after existing calls drain. */
 interface ActivationLeases {
   name: string;
   leases: number;
@@ -59,15 +54,7 @@ export interface AgentPluginMcpRuntimeOptions {
 
 const OWNER_PREFIX = "agent-plugin/";
 
-/**
- * Publish installed server components through the shared bundled MCP manager.
- *
- * It owns the generation leases of `agent-plugin/` servers (design §18.7.4):
- * every bundled call through the manager takes a lease on the exact
- * activation that published its server, a new activation closes admission
- * to the one it replaces, and the replaced one disconnects only after its
- * calls drain. An update in flight therefore never cuts a call short.
- */
+/** Calls lease the exact published activation; updates retire old servers only after their calls drain. */
 export class AgentPluginMcpRuntime {
   private active = new Map<string, ActivePackage>();
   private readonly activations = new Map<string, ActivationLeases>();
@@ -97,25 +84,18 @@ export class AgentPluginMcpRuntime {
     };
   }
 
-  /** Resolves when the activation's calls have all ended. */
   waitForDrain(activationId: string): Promise<void> {
     const record = this.activations.get(activationId);
     if (!record || record.leases === 0) return Promise.resolve();
     return new Promise<void>((resolve) => record.drained.push(resolve));
   }
 
-  /** Whether a call is running on the package's current activation (the apply queue waits for none, §18.7.4). */
   hasCallsInFlight(name: string): boolean {
     const current = this.active.get(name);
     return current !== undefined && (this.activations.get(current.activationId)?.leases ?? 0) > 0;
   }
 
-  /**
-   * The approval state of each server of the package's published
-   * generation (§18.7.2, §18.7.5): whether it is approved, and the approval
-   * digest its record holds (null for an approval from an earlier Ave
-   * version that could not be matched to its bytes).
-   */
+  /** Approval digests are null when legacy approvals cannot be matched to running bytes. */
   async approvals(name: string): Promise<Array<{ name: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>> {
     const current = this.active.get(name);
     if (!current) return [];
@@ -178,11 +158,7 @@ export class AgentPluginMcpRuntime {
     return restore;
   }
 
-  /**
-   * Publish `item`. Resolves once the new activation is published; the
-   * returned `retired` resolves once the activation it replaced has drained
-   * and disconnected (immediately when it replaced none).
-   */
+  /** Publication resolves first; retired resolves after the predecessor drains and disconnects. */
   private async publishOne(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = [], force = false): Promise<{ retired: Promise<void> }> {
     const pluginId = `${OWNER_PREFIX}${item.name}`;
     const previous = this.active.get(item.name);
@@ -202,7 +178,6 @@ export class AgentPluginMcpRuntime {
       this.active.delete(item.name);
       const record = this.activations.get(previous.activationId);
       if (record) record.retired = true;
-      // The servers' calls drain before they disconnect; the package's old files stay until then.
       const retired = this.retire(item.name, previous.activationId).catch(async (error: unknown) => {
         await restoreCredentials();
         throw error;
@@ -222,7 +197,7 @@ export class AgentPluginMcpRuntime {
       approvalDigests: agentPluginComponentDigests(item.content.components, item.content.files).mcpServers,
     });
     const trust = await this.trustStore();
-    // An approval of exactly this generation that predates approval digests gets the digest of these, its running bytes.
+    // Bind legacy approvals to the exact running generation bytes.
     for (const projection of projections) trust.recordDigest(projection);
     const newApprovals = projections.filter((projection) => selected.has(projection.owner.localId) && !trust.isApproved(projection));
     const restoreCredentials = await this.stageChangedCredentials(item.name, previous, nextCredentials, Object.keys(item.content.components.mcpServers));
@@ -230,17 +205,16 @@ export class AgentPluginMcpRuntime {
     if (!this.activations.has(activationId)) this.activations.set(activationId, { name: item.name, leases: 0, retired: false, drained: [] });
     try {
       for (const projection of newApprovals) trust.approve(projection);
-      // Approval carry-forward (§18.7.3): an unchanged server keeps the approval it had in the active generation.
+      // Carry approval only for identical active-generation server bytes.
       const carried = carryApprovals(trust, previous?.projections ?? [], projections);
       for (const { to } of carried) newApprovals.push(to);
       const prepared = await this.manager.prepareBundledGeneration(
         { pluginId, generationId: activationId }, projections, trust,
       );
       try {
-        // Before the active generation changes: a carried approval holds only while its source does.
+        // Revalidate carried approval before changing the active generation.
         assertCarriedApprovalsHold(trust, carried);
         if (this.active.get(item.name) !== previous) throw new Error(`agent plugin ${item.name} changed generation while it was prepared`);
-        // Admission to the replaced activation closes at publication: a call after this lands on the new one.
         if (replacing) this.activations.get(previous.activationId)!.retired = true;
         this.manager.publishBundledGeneration(prepared);
       } catch (error) {
@@ -262,15 +236,10 @@ export class AgentPluginMcpRuntime {
       throw error;
     }
     this.active.set(item.name, { version: item.version, generationId: item.generationId, dir: item.dir, activationId, credentialDeclarations: nextCredentials, projections });
-    // The predecessor disconnects only after its calls drain, outside this queue.
     return { retired: replacing ? this.retire(item.name, previous.activationId) : Promise.resolve() };
   }
 
-  /**
-   * Called inside the content-store transaction so a refused publication
-   * rolls back the ledger. `retired` resolves when the activation this one
-   * replaced has drained and disconnected.
-   */
+  /** Publish inside the store transaction so refusal rolls back the ledger; retirement waits for draining. */
   async activate(item: InstalledAgentPluginRuntime, consents: readonly McpComponentConsent[] = []): Promise<{ retired: Promise<void> }> {
     return this.serialize(() => this.publishOne(item, consents));
   }
@@ -285,7 +254,6 @@ export class AgentPluginMcpRuntime {
     });
   }
 
-  /** A retirement nobody waits for: its failure is logged, and the boot sweep removes what it left (§18.7.4). */
   private reportRetirement(name: string, retired: Promise<void>): void {
     retired.catch((error: unknown) => log.warn({ name, err: errorMessage(error) }, "agent plugin MCP predecessor retirement failed"));
   }

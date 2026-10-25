@@ -31,7 +31,6 @@ export const A2A_TASK_STATE_REJECTED = A2ATaskState.REJECTED;
 export const A2A_TASK_STATE_AUTH_REQUIRED = A2ATaskState.AUTH_REQUIRED;
 export type A2ATaskState = (typeof A2ATaskState)[keyof typeof A2ATaskState];
 
-/** Grammar of a registered A2A handler id: lowercase, hyphenated, at most 64 characters. */
 export const A2A_HANDLER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export const A2A_TASK_STATE_VALUES = [
@@ -54,7 +53,7 @@ export const A2A_TASK_STATE_PROTO_ORDER: Readonly<Record<A2ATaskState, number>> 
     >,
   );
 
-/** Lifecycle tiers asserted by a2a-tck STREAM-ORDER-001. */
+/** Lifecycle tiers required by the protocol stream-order contract. */
 export const A2A_TASK_STATE_TRANSITION_RANK = Object.freeze({
   [A2ATaskState.UNSPECIFIED]: -1,
   [A2ATaskState.SUBMITTED]: 0,
@@ -184,7 +183,6 @@ export interface A2ATask {
   history?: A2AMessage[];
   metadata?: A2AJsonObject;
 }
-/** v1.0 removed the legacy final field. */
 export interface A2ATaskStatusUpdateEvent {
   taskId: string;
   contextId: string;
@@ -226,15 +224,8 @@ export interface A2ASubAgentResultLike {
   ok: boolean;
   stopReason?: string;
   suspension?: SubAgentSuspension;
-  /** Temporary compatibility alias for pre-suspension results. */
   incomplete?: boolean;
-  /**
-   * Set when a resume was refused before running a turn. Either kind projects
-   * REJECTED: both are host POLICY refusals, not the child failing at its work,
-   * and the renderer maps FAILED and REJECTED to the same `error` run status
-   * (A2A_TASK_STATE_RUN_STATUS_MAP) so the unification costs no display
-   * fidelity while making the wire state honest about who refused.
-   */
+  /** Resume policy refusals project REJECTED rather than FAILED; both retain the renderer’s error status. */
   resumeRefusal?: "invalid" | "exhausted";
 }
 /** Approval/plugin-auth waits remain running/WORKING and never project AUTH_REQUIRED. */

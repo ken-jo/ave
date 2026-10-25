@@ -18,14 +18,8 @@ import {
   transientFsLockDelayMs,
 } from "./transient-fs-lock-retry.js";
 
-/**
- * The modes every user-data file and directory under `~/.ave/` is created
- * with — the storage-namespace rule (dir 0o700, file 0o600). POSIX-only:
- * Win32 maps `mode` onto the read-only attribute, and `ave-home.ts` sets
- * the DACL instead. Declared here because `lib/` is the lowest layer that
- * writes files; the feature-namespace store, the log sink, the session
- * search index and the secret document store all read them from here.
- */
+/** The modes every user-data file and directory under `~/.ave/` is created with; the storage-namespace rule (dir 0o700, file 0o600). POSIX-only: Win32 maps `mode` onto the read-only attribute, and `ave-home.ts`
+ * sets the DACL instead. Declared here because `lib/` is the lowest layer that writes files; the feature-namespace store, the log sink, the session search index and the secret document store all read them from here. */
 export const PRIVATE_FILE_MODE = 0o600;
 export const PRIVATE_DIR_MODE = 0o700;
 const DIRECTORY_SYNC_ERROR_CODE = "ATOMIC_FILE_DIRECTORY_SYNC_FAILED";
@@ -46,20 +40,18 @@ const DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME: ParentDirectorySyncRuntime = {
   close: closeSync,
 };
 
-function replaceStagedFile(
+/** Rename a staged filesystem entry with the shared synchronous lock policy. */
+export function replaceStagedFile(
   from: string,
   to: string,
-  runtime: ParentDirectorySyncRuntime,
+  runtime: ParentDirectorySyncRuntime = DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
 ): void {
   const rename = runtime.rename ?? renameSync;
   const wait = runtime.wait ?? ((milliseconds: number) => {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
   });
-  // Policy (codes, curve, budget) comes from transient-fs-lock-retry.ts so this
-  // ladder and the async one in plugin-artifact-store.ts cannot drift apart
-  // again — they previously disagreed 60ms vs 1750ms. The SYNC budget is the
-  // small one on purpose: this blocks the caller, and for the settings/secret/
-  // session writers that caller is the Electron main thread.
+  // Policy (codes, curve, budget) comes from transient-fs-lock-retry.ts so this ladder and the async one in plugin-artifact-store.ts cannot drift apart again; they previously
+  // disagreed 60ms vs 1750ms. The SYNC budget is the small one on purpose: this blocks the caller, and for the settings/secret/ session writers that caller is the Electron main thread.
   for (let attempt = 1; ; attempt += 1) {
     try {
       rename(from, to);
@@ -76,18 +68,7 @@ function replaceStagedFile(
   }
 }
 
-/**
- * Whether a filesystem error says the path is simply not there.
- *
- * `ENOTDIR` counts: a parent component that is a regular file means the file
- * under it can no more exist than when the directory is absent, and every
- * reader of a `<namespace-dir>/<file>` that treats "absent" as an ordinary
- * state (first boot, cleared feature directory) must answer the same for both
- * codes or the two shapes drift apart between the store that writes and the
- * store that reads. Probes that need to tell "missing" from "exists but is
- * not a directory" (readdir, stat, realpath) must not use this — they keep
- * their own `ENOENT` check by design.
- */
+/** For file readers, ENOTDIR is absent just like ENOENT; directory-shape probes must retain their separate ENOENT check. */
 export function isMissingPathError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
@@ -133,36 +114,14 @@ function syncParentDirectoryAfterRename(
   }
 }
 
-/**
- * Whether `error` is the one thrown above: the rename landed, only the
- * parent-directory sync did not. A caller that can verify the bytes on disk
- * treats it as a commit; every other error is a failed write. Strict
- * `instanceof Error` because that is what this module throws — the two
- * earlier per-store copies disagreed on whether a bare `{ committed: true }`
- * object counted, and only one answer describes what is actually thrown.
- */
+/** Whether `error` is the one thrown above: the rename landed, only the parent-directory sync did not. A caller that can verify the bytes on disk treats it as a commit; every other error is a failed write. Strict
+ * `instanceof Error` because that is what this module throws; the two earlier per-store copies disagreed on whether a bare `{ committed: true }` object counted, and only one answer describes what is actually thrown. */
 export function isCommittedAtomicWriteError(error: unknown): error is Error & { committed: true } {
   return error instanceof Error && (error as { committed?: unknown }).committed === true;
 }
 
-/**
- * Durably replace a UTF-8 file without exposing a partially-written target.
- *
- * The temporary file lives beside the destination so the final rename stays
- * on one filesystem. A random name plus exclusive creation prevents writers
- * from sharing a staging file. The staged bytes are fsynced before rename and
- * an uncommitted temporary file is removed on every failure path.
- *
- * `mode` is a POSIX control and nothing more. On Windows, Node maps only the
- * write bit of it onto the read-only ATTRIBUTE and never onto an ACL, so
- * `0o600` there does NOT keep the file to its owner — who may read it is
- * decided entirely by the DACL the file inherits from its directory. That is
- * why `~/.ave` gets an explicit owner-only DACL at boot
- * ({@link ../shared/ave-home.ensureAveHomePrivate}): under this writer the
- * mode is the protection on POSIX, and the inherited DACL is the protection on
- * Win32. A caller passing `mode` outside that tree gets no Win32 protection
- * from it.
- */
+/** Stage exclusively beside the target, fsync before rename, and remove uncommitted staging on failure.
+ * POSIX modes do not enforce Windows ACLs; owner-only access there depends on the private home directory's inherited DACL. */
 export function writeUtf8FileAtomicSync(
   filePath: string,
   content: string,
@@ -182,11 +141,8 @@ export function writeUtf8FileAtomicSync(
   );
 }
 
-/**
- * Atomically replace a UTF-8 file only while a caller-owned precondition still
- * holds. The candidate is fully written and fsynced before the final check, so
- * a false precondition or any staging failure leaves the destination intact.
- */
+/** Atomically replace a UTF-8 file only while a caller-owned precondition still holds. The candidate is fully written
+ * and fsynced before the final check, so a false precondition or any staging failure leaves the destination intact. */
 export function replaceUtf8FileAtomicSyncIf(
   filePath: string,
   content: string,
@@ -225,16 +181,8 @@ function writeUtf8FileAtomicSyncInternal(
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    // Accepted residual (#1640): precondition() and renameSync() are adjacent
-    // synchronous syscalls, not a filesystem-wide compare-and-swap — a same-user
-    // external editor could replace `filePath` in the gap. We deliberately do
-    // NOT add an advisory-lock layer: no portable macOS/Windows/Linux CAS
-    // primitive exists, and a lockfile would contradict the single-chokepoint
-    // design (one fail-closed staging path, not stacked defenses). Severity is
-    // Minor — the window only yields whole-file last-writer-wins, never a
-    // partial/corrupt file or an outside-path write, and precondition mismatches
-    // still fail closed above. Pinned by the residual-window test in
-    // atomic-file.test.ts.
+    // The adjacent precondition and rename are not compare-and-swap: another same-user writer may win the whole-file race.
+    // Mismatches fail closed; staging still prevents partial files or outside-path writes.
     if (precondition && !precondition()) return false;
     replaceStagedFile(tempPath, filePath, directorySyncRuntime);
     committed = true;
@@ -271,13 +219,8 @@ function writeUtf8FileAtomicSyncInternal(
   }
 }
 
-/**
- * Async twin of {@link writeUtf8FileAtomicSync} for writers on a hot path of
- * the main process (the turn journal's streaming snapshot): the same staging
- * file, fsync, rename and parent-directory sync, but every syscall runs on the
- * libuv pool, so the event loop that is delivering stream frames never waits
- * on the disk. Windows rename locks retry on the background budget.
- */
+/** Async twin of {@link writeUtf8FileAtomicSync} for writers on a hot path of the main process (the turn journal's streaming snapshot): the same staging file, fsync, rename and
+ * parent-directory sync, but every syscall runs on the libuv pool, so the event loop that is delivering stream frames never waits on the disk. Windows rename locks retry on the background budget. */
 export async function writeUtf8FileAtomic(
   filePath: string,
   content: string,

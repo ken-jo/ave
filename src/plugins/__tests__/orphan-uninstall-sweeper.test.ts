@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -22,8 +23,7 @@ describe("sweepOrphanUninstallDirs", () => {
     await rm(pluginsRoot, { recursive: true, force: true });
   });
 
-  // The child that wrote a tombstoned root may have locked part of it; a
-  // plain rm would fail there on every boot and keep the tombstone forever.
+  // A tombstoned child may have locked its data; a plain rm would leave recovery stuck on every boot.
   it.runIf(process.platform !== "win32")(
     "removes a tombstone holding a directory a child made unreadable or, on macOS, immutable",
     async () => {
@@ -38,7 +38,7 @@ describe("sweepOrphanUninstallDirs", () => {
     },
   );
 
-  it("removes a linked tombstone entry as a link, leaving its target", async () => {
+  it.skipIf(!canCreateSymlinks())("removes a linked tombstone entry as a link, leaving its target", async () => {
     const outside = join(pluginsRoot, "outside");
     await mkdir(outside);
     await writeFile(join(outside, "keep"), "keep");
@@ -51,9 +51,8 @@ describe("sweepOrphanUninstallDirs", () => {
     expect(await readdir(outside)).toEqual(["keep"]);
   });
 
-  // Judged by the entry itself, not by what it points at: a link to an
-  // outside file is unlinked, and the file is never touched.
-  it("removes a tombstone entry that links to an outside file, leaving the file", async () => {
+  // Unlink the entry itself without touching its outside target.
+  it.skipIf(!canCreateSymlinks())("removes a tombstone entry that links to an outside file, leaving the file", async () => {
     const outside = join(pluginsRoot, "outside.txt");
     await writeFile(outside, "keep");
     await mkdir(tombstoneDir, { recursive: true });
@@ -109,15 +108,12 @@ describe("sweepOrphanUninstallDirs", () => {
   });
 
   it("does NOT touch sibling plugin dirs (collision-free namespace)", async () => {
-    // Critical regression guard for the "malicious plugin slug ending in
-    // .uninstalling-1" attack: sibling dirs to +tombstones+ are NEVER swept.
+    // Only the tombstone namespace is swept; a plugin slug resembling a tombstone grants no authority.
     await mkdir(join(pluginsRoot, "real-plugin"));
     await writeFile(join(pluginsRoot, "real-plugin", "plugin.json"), "{}");
-    // Even if a plugin slug LOOKS like a tombstone naming pattern.
     await mkdir(join(pluginsRoot, "evil-plugin-1234-deadbeef"));
     await writeFile(join(pluginsRoot, "evil-plugin-1234-deadbeef", "plugin.json"), "{}");
 
-    // Real tombstone in the proper subdir
     await mkdir(tombstoneDir, { recursive: true });
     const real = "local-indexer-12345-feedbeef";
     await mkdir(join(tombstoneDir, real));
@@ -126,7 +122,6 @@ describe("sweepOrphanUninstallDirs", () => {
 
     expect(result.swept).toEqual([real]);
     expect(result.failed).toEqual([]);
-    // Sibling plugin dirs untouched
     const { stat } = await import("node:fs/promises");
     await expect(stat(join(pluginsRoot, "real-plugin", "plugin.json"))).resolves.toBeDefined();
     await expect(stat(join(pluginsRoot, "evil-plugin-1234-deadbeef", "plugin.json"))).resolves.toBeDefined();
@@ -143,10 +138,7 @@ describe("sweepOrphanUninstallDirs", () => {
   });
 
   it("invokes auditFailures hook when rm fails (escalation path)", async () => {
-    // Hard to reliably trigger an rm failure cross-platform without
-    // injecting fs. Verify the hook is wired by passing a hook that fires
-    // on success-path empty failures (hook should NOT be called when
-    // failures.length === 0).
+    // The failure hook must stay silent on successful cleanup.
     await mkdir(tombstoneDir, { recursive: true });
     await mkdir(join(tombstoneDir, "ok-1-x"));
     const auditFailures = vi.fn();
@@ -154,13 +146,11 @@ describe("sweepOrphanUninstallDirs", () => {
     const result = await sweepOrphanUninstallDirs(pluginsRoot, { auditFailures });
 
     expect(result.swept).toEqual(["ok-1-x"]);
-    // Hook only fires on failures, not on success
     expect(auditFailures).not.toHaveBeenCalled();
   });
 });
 
-// A runtime tombstone may hold a directory a still-running child is bound
-// to; only the boot sweep, before any confined process, deletes it.
+// Runtime tombstones can remain bound to children; sweep them only at boot before confinement starts.
 describe("sweepOrphanUninstallDirs after confined processes may run", () => {
   let pluginsRoot: string;
 

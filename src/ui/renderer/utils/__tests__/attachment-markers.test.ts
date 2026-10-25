@@ -118,8 +118,7 @@ describe("findMarkerAt", () => {
 
   it("returns the marker range when caret is just after `]`", () => {
     const text = "see [Image #1] here";
-    // text:    s e e   [ I m a g e   # 1 ]   h e r e
-    // index:   0 1 2 3 4 5 6 7 8 9 10 11 12 13 14...
+    // text: s e e [ I m a g e # 1 ] h e r e index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14...
     expect(findMarkerAt(text, 14)).toEqual({ start: 4, end: 14 });
   });
 
@@ -171,9 +170,8 @@ describe("resource markers", () => {
   });
 
   it("deletes a resource marker in one keystroke like every other kind", () => {
-    // The three regexes over the marker alternation are built from one string, so a kind
-    // that parses must also be findable — a kind added to `parseMarkers` alone would
-    // leave a chip the user can create and then cannot remove.
+    // The three regexes over the marker alternation are built from one string, so a kind that parses must also be findable — a
+    // kind added to `parseMarkers` alone would leave a chip the user can create and then cannot remove.
     const text = "before [Resource #4] after";
     expect(findMarkerAt(text, 20)).toEqual({ start: 7, end: 20 });
   });

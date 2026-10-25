@@ -1,40 +1,4 @@
-/**
- * Dev-mode flag gate (§Step 4).
- *
- * Packaged-state gate for development-only environment variables read in
- * main-process code. The canonical inventory lives in
- * `shared/development-env-policy.ts`; helpers here combine it with the cached
- * `app.isPackaged` decision so a packaged binary cannot silently weaken trust
- * through user-controlled environment variables.
- *
- * Default behaviour: until `setIsPackaged()` is called by boot, helpers
- * report packaged-mode (i.e. flags are IGNORED). This keeps the failure
- * mode safe even if a module reads a flag before boot wires the gate.
- *
- * Electron is intentionally NOT imported here so this module remains
- * unit-testable in node (vitest) without an electron stub.
- *
- * Removed flags (single direction):
- *  - `AVE_ALLOW_LINKED_PLUGIN_ENTRY` removed — `AVE_DEV=1` is the master
- *    dev unlock and already subsumed every use site.
- *  - `AVE_ALLOW_TEST_MARKETPLACE_KEYS` removed — same rationale.
- *  - Sidecar signature bypass removed with the sidecar gate. Marketplace
- *    envelope verification and install receipt integrity are not bypassable by
- *    dev env flags.
- *  - `AVE_PLUGINS_DIR` env tier removed from path resolution. Plugin path
- *    overrides flow through constructor injection (`resolvePluginPaths`'s
- *    `pluginsRoot` argument). The env name remains in
- *    {@link shouldWarnPackagedFlagsIgnored} for one release cycle so the
- *    tamper-detect log catches stale launchers.
- *  - `AVE_DEV_NO_SANDBOX` → `AVE_WIN_NO_SANDBOX` (separated from the dev
- *    mask; it's a Windows-only sandbox bypass for corp/VDI boxes, not a
- *    dev-mode flag).
- *  - `devLinkedEntryAllowed()` and `devLinkedInstallAllowed()` removed
- *    along with the dev:link script. There is no longer a "linked entry"
- *    concept — every plugin install (admin / user / local-dev) lives
- *    physically under `pluginsRoot/<id>/` and the entry-path containment
- *    check is unconditional.
- */
+/** Packaged builds ignore development flags; the cache defaults to packaged until boot seeds it. */
 
 import {
   isDevelopmentOnlyEnvVar,
@@ -45,48 +9,21 @@ import {
 let isPackagedCached = true;
 let configured = false;
 
-/**
- * Tamper-detect snapshot.
- *
- * `main.ts` scrubs dev/test-only env vars from `process.env` before the
- * renderer / preload / plugin runtime boots in packaged mode. That scrub runs
- * AFTER this module's import but BEFORE {@link shouldWarnPackagedFlagsIgnored}
- * is invoked from
- * `plugin-runtime.ts`. Reading `process.env` inside the helper would observe
- * the scrubbed (empty) state and silently disable the audit log.
- *
- * The fix: snapshot which forbidden vars were present at the moment this
- * module first loads. ESM execution order guarantees this top-level body
- * runs before any code in `main.ts`'s module body (including the scrub
- * loop), so the snapshot captures the pre-scrub truth.
- *
- * The snapshot is intentionally a frozen `Set<string>` so neither the helper
- * nor a malicious caller can mutate it after capture.
- */
-/** Backward-compatible name for packaged boot's shared development-env predicate. */
+/** Capture forbidden flags before the startup scrub so tampering still appears in the audit log. */
 export const isPackagedForbiddenEnvVar = isDevelopmentOnlyEnvVar;
 
 const tamperedAtBoot: ReadonlySet<string> = Object.freeze(
   new Set(Object.keys(process.env).filter(isPackagedForbiddenEnvVar)),
 );
 
-/**
- * Test-only override of the boot snapshot. Production code never calls
- * this — it only exists because the real snapshot is captured at
- * module-load time and tests can't re-trigger module-load to exercise the
- * warn-true / warn-false branches. Reset to `null` to fall back to the
- * real frozen snapshot.
- */
+/** Pass null to restore the real module-load snapshot. */
 let tamperedOverrideForTest: ReadonlySet<string> | null = null;
 
 function effectiveTamperedSet(): ReadonlySet<string> {
   return tamperedOverrideForTest ?? tamperedAtBoot;
 }
 
-/**
- * Boot calls this once with `app.isPackaged`. Subsequent calls overwrite —
- * tests use this to flip between packaged / unpackaged scenarios.
- */
+/** Boot seeds packaged state once; tests may overwrite it. */
 export function setIsPackaged(packaged: boolean): void {
   isPackagedCached = packaged;
   configured = true;
@@ -103,12 +40,7 @@ function envEquals(actual: string | undefined, expected: string): boolean {
   return actual === expected;
 }
 
-/**
- * Read a canonical development-only variable only for unpackaged execution.
- *
- * The default packaged state is fail-safe before boot seeds the cache. An
- * explicit env argument keeps tests deterministic without mutating process.env.
- */
+/** Explicit environment input keeps tests deterministic without mutating process.env. */
 export function readDevelopmentEnvVar(
   name: DevelopmentEnvVar,
   env: NodeJS.ProcessEnv = process.env,
@@ -117,11 +49,7 @@ export function readDevelopmentEnvVar(
   return readDevelopmentOnlyEnvVar(name, env, packaged);
 }
 
-/**
- * Core gate: dev mode is unlocked iff (a) the build is unpackaged AND (b) at
- * least one explicit AVE_DEV* opt-in env var is set. Override `packaged`
- * for tests to avoid relying on the cached state.
- */
+/** Development mode requires an unpackaged build and an explicit development flag. */
 export function isDevModeUnlocked(packaged: boolean = isPackagedCached): boolean {
   if (packaged) return false;
   return (
@@ -130,80 +58,27 @@ export function isDevModeUnlocked(packaged: boolean = isPackagedCached): boolean
   );
 }
 
-/**
- * Plugin live-reload watcher activation gate.
- */
 export function devPluginReloadEnabled(packaged: boolean = isPackagedCached): boolean {
   if (packaged) return false;
   return envEquals(process.env.AVE_DEV_RELOAD, "1");
 }
 
-/**
- * Re-inject `--no-sandbox` into the OS-registered `ave://` protocol command
- * so OS-launched second instances on corp/VDI boxes can clear Chromium's
- * sandbox init failure. Hard-gated on `!packaged` for the same reason as
- * every other dev flag — a packaged binary that inherits this env var must
- * not silently weaken Chromium sandboxing.
- *
- * Named `AVE_WIN_NO_SANDBOX` rather than `AVE_DEV_NO_SANDBOX` to
- * make the Windows-only intent explicit and decouple it from the dev-mode
- * mask (this flag is needed for `bun run start` on corp Windows even
- * outside a dev session).
- */
-export function devNoSandboxAllowed(
-  packaged: boolean = isPackagedCached,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  if (packaged) return false;
-  if (platform !== "win32") return false;
-  return envEquals(process.env.AVE_WIN_NO_SANDBOX, "1");
-}
-
-/**
- * Returns true if any forbidden dev/test env var was present at module-load
- * time in a packaged build — caller should log a single audit warning so
- * operators can detect tampered launches.
- *
- * Reads from the {@link tamperedAtBoot} snapshot, NOT live `process.env`.
- * `main.ts:67-73` scrubs these vars from `process.env` before this helper
- * is called from `plugin-runtime.ts`, so a live read would always return
- * `false` and silently defeat the audit log. The snapshot captures presence
- * before the scrub runs (ESM import-order guarantee).
- *
- * `AVE_PLUGINS_DIR` is intentionally retained here for one release cycle
- * even though path resolution no longer reads it: stale launchers and
- * external scripts may still set it, and the audit log is the only signal
- * an operator gets that someone is shipping packaged builds with dev
- * env vars in the environment.
- */
+/** Read the pre-scrub snapshot; retain retired flag names to detect stale launchers. */
 export function shouldWarnPackagedFlagsIgnored(packaged: boolean = isPackagedCached): boolean {
   if (!packaged) return false;
   return effectiveTamperedSet().size > 0;
 }
 
-/**
- * Names of forbidden env vars that were present at module-load time. Empty
- * array if none were set. Callers (e.g. the boot audit log) can use this to
- * surface which specific flags triggered the warning without hand-rolling
- * the same probe at every site.
- *
- * Returns a defensive copy — the underlying snapshot is frozen but this
- * keeps the API symmetric with idiomatic readonly array returns.
- */
+/** Return a defensive copy of the forbidden flags present at module load. */
 export function tamperedVarsAtBoot(): readonly string[] {
   return Array.from(effectiveTamperedSet());
 }
 
-/**
- * Test-only — override the boot snapshot. Pass an array of var names to
- * simulate that those vars were present at boot, or `null` to restore the
- * real captured snapshot. Not exported via barrel.
- */
+/** Pass null to restore the captured boot snapshot. */
 export function _setTamperedSnapshotForTest(names: readonly string[] | null): void {
   tamperedOverrideForTest = names === null ? null : Object.freeze(new Set(names));
 }
 
-/** True once boot has called {@link setIsPackaged}. */
 export function isConfigured(): boolean {
   return configured;
 }
@@ -213,43 +88,19 @@ export function getIsPackaged(): boolean {
   return isPackagedCached;
 }
 
-/**
- * The same "is this the packaged binary?" question, answered from process
- * facts alone, for the one module that has to ask it BEFORE boot can call
- * {@link setIsPackaged}: `lib/logger.ts` is imported by `main.ts` ahead of the
- * `app.isPackaged` seed, so it cannot read the cache (which would still hold
- * its fail-safe default). Electron sets `process.defaultApp` only when it is
- * running a directory or script (`electron .`), which is exactly the
- * unpackaged case `app.isPackaged === false` describes; a packaged build has
- * neither. Plain Node (no `versions.electron`) is never packaged.
- *
- * `AVE_DEV=1` does NOT enter this answer. It is user-controllable on every
- * desktop OS, and the rule this module exists for is that a packaged binary
- * ignores it — the logger and the file-sink gate previously honoured it, so a
- * packaged build launched with the flag chose the dev log format and dropped
- * its log file.
- */
+/** Before boot seeds the cache, derive packaging from runtime facts; user-controlled dev flags cannot change it. */
 export function isPackagedElectronProcess(
   proc: { versions?: { electron?: string }; defaultApp?: boolean } = process,
 ): boolean {
   return Boolean(proc.versions?.electron) && !proc.defaultApp;
 }
 
-/**
- * The e2e harness, and only it: `AVE_E2E=1` under `NODE_ENV=test`. Every
- * e2e-only surface (the marketplace background sync skip, the
- * bundle-snapshot IPC, the preload `env.isE2E` flag) reads this one
- * predicate; two of them used to accept `AVE_E2E=1` alone.
- */
+/** E2E-only surfaces require both AVE_E2E=1 and NODE_ENV=test. */
 export function isE2eTestRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.AVE_E2E === "1" && env.NODE_ENV === "test";
 }
 
-/**
- * An E2E run that exercises the marketplace's real update scheduler (design
- * §18.10 F): `AVE_E2E_MARKETPLACE_SCHEDULER=1` inside the e2e harness only.
- * The spec points `AVE_HOME` at an isolated home with its own sources.
- */
+/** Real scheduler tests require the E2E harness and an isolated AVE_HOME. */
 export function isE2eMarketplaceSchedulerRun(env: NodeJS.ProcessEnv = process.env): boolean {
   return isE2eTestRuntime(env) && env.AVE_E2E_MARKETPLACE_SCHEDULER === "1";
 }

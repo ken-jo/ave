@@ -1,18 +1,8 @@
-/**
- * `git --version` parsing and the minimum usable version (design §9.1).
- *
- * 2.45.1 is the first release that honors `GIT_NO_LAZY_FETCH`: without it a
- * local read of a missing object in a partial clone fetches from the promisor
- * remote on its own, outside the network gate. It is also the release that
- * fixed CVE-2024-32002/32004/32465. Partial clone with `blob:none`,
- * `rev-list --missing=print`, protocol v2 and `protocol.file.allow` behave
- * the way the invocation contract (§9.3) relies on well before that.
- */
+/** Git 2.45.1 is required for GIT_NO_LAZY_FETCH to prevent ungated missing-object downloads. */
 export interface GitVersion {
   major: number;
   minor: number;
   patch: number;
-  /** The version as printed, e.g. `2.39.5 (Apple Git-154)` or `2.45.1.windows.1`. */
   text: string;
 }
 

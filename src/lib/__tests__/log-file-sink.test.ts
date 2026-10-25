@@ -1,9 +1,3 @@
-/**
- * log-file-sink — production pino file sink: retention pruning, size-based
- * sequence rolling, namespace mode (0o700 dir / 0o600 file), and the filename
- * date parser. Uses an explicit temp `dir` (the sink is dependency-injectable),
- * so no homedir/aveHome mocking is required.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   existsSync,
@@ -37,17 +31,11 @@ beforeEach(() => {
 
 afterEach(async () => {
   if (!existsSync(logDir)) return;
-  // Every test in this suite waits for its sink's file(s) to actually land on
-  // disk (waitForFile) before calling destroy(), so no fs.open should still be
-  // in flight here. This one extra macrotask tick is defense-in-depth only —
-  // destroy()'s boom.end() itself does not return a promise the caller can
-  // await, so give any trailing internal callback (e.g. the stream 'close'
-  // event) a chance to settle before removing the directory.
+  // Allow trailing close callbacks to settle after destroy before removing the directory.
   await new Promise((r) => setTimeout(r, 0));
   await cleanupTmpDir(logDir);
 });
 
-/** date N days ago as YYYY-MM-DD */
 function daysAgo(n: number): string {
   return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 }
@@ -56,13 +44,7 @@ function listFiles(): string[] {
   return readdirSync(logDir).sort();
 }
 
-/**
- * Wait until `path` exists on disk. SonicBoom opens with `sync:false`, so the
- * fd (and therefore the file) appears on a later tick than the sink's
- * construction. Polling until existsSync is true makes mode/size assertions
- * DETERMINISTIC instead of racing the async open (the old chmodSync-after-open
- * approach raced it silently). Throws if the file never appears.
- */
+/** Wait for asynchronous open before asserting filesystem presence or permissions. */
 async function waitForFile(path: string, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(path)) {
@@ -117,7 +99,6 @@ describe("pruneOldLogs — retention", () => {
   });
 
   it("respects the retention boundary exactly", () => {
-    // A file dated exactly retentionDays ago is at the >= cutoff → deleted.
     writeFileSync(join(logDir, `ave-${daysAgo(7)}.log`), "boundary\n");
     const deleted = pruneOldLogs(logDir, 7);
     expect(deleted).toContain(`ave-${daysAgo(7)}.log`);
@@ -130,14 +111,10 @@ describe("createLogFileSink — file creation + mode", () => {
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7 });
     try {
       sink.write("hello\n");
-      // SonicBoom opens with sync:false, so the fd (and the file itself) lands
-      // on a LATER tick than write() returns — assert currentFile's path
-      // in-process first (race-free), then wait for the on-disk file before
-      // any existsSync/statSync assertion.
+      // Inspect currentFile immediately, then wait for the async open before disk assertions.
       expect(sink.currentFile).toBe(join(logDir, `ave-${todayDateStr()}.log`));
       await waitForFile(sink.currentFile);
       expect(existsSync(sink.currentFile)).toBe(true);
-      // Old file pruned at attach.
       expect(existsSync(join(logDir, `ave-${daysAgo(30)}.log`))).toBe(false);
     } finally {
       sink.destroy();
@@ -145,11 +122,7 @@ describe("createLogFileSink — file creation + mode", () => {
   });
 
   it("runs capLogTree at init: an over-per-day-count tree is pruned on attach", async () => {
-    // Seed 22 sequence files for a recent (in-retention) day — above the
-    // LOG_MAX_FILES_PER_DAY cap of 20. createLogFileSink must invoke capLogTree
-    // at init (after the date-retention prune), so the oldest 2 are removed
-    // (#1499 E2 cluster-review critic gap: prove the init wiring, not just the
-    // capLogTree unit).
+    // Seed more than the per-day cap to verify initialization invokes pruning.
     const day = daysAgo(1);
     writeFileSync(join(logDir, `ave-${day}.log`), "a");
     for (let i = 1; i <= 21; i++) writeFileSync(join(logDir, `ave-${day}.${i}.log`), "a");
@@ -171,10 +144,7 @@ describe("createLogFileSink — file creation + mode", () => {
       const sink = createLogFileSink({ dir: logDir, retentionDays: 7 });
       try {
         sink.write("x\n");
-        // Wait for the async (`sync:false`) SonicBoom open to land the file
-        // before asserting its mode — otherwise statSync races the open. The
-        // mode is applied AT OPEN via the constructor's `mode` option, so once
-        // the file exists it already carries 0o600 (no post-open chmod window).
+        // Wait for creation; mode is set during open, avoiding a post-open chmod window.
         await waitForFile(sink.currentFile);
         const fileMode = statSync(sink.currentFile).mode & 0o777;
         const dirMode = statSync(logDir).mode & 0o777;
@@ -189,54 +159,36 @@ describe("createLogFileSink — file creation + mode", () => {
 
 describe("createLogFileSink — size-based sequence rolling", () => {
   it("rolls to a .seq file once the active file crosses maxBytes", async () => {
-    // Small ceiling so a handful of writes trips the size guard.
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7, maxBytes: 64 });
     try {
       const base = join(logDir, `ave-${todayDateStr()}.log`);
-      // Rolling is byte-count based (in-process, not statSync). 8 writes ×
-      // 21 bytes = 168 bytes >> the 64-byte ceiling → a few rolls. Kept well
-      // under LOG_MAX_FILES_PER_DAY (20) so the #1499 per-day count cap (which
-      // prunes oldest sequences, base included, once a day exceeds the limit)
-      // does not delete the base file this assertion still expects to survive.
+      // Stay below the per-day file cap so byte-roll assertions retain their base file.
       const line = "x".repeat(20) + "\n";
       for (let i = 0; i < 8; i++) sink.write(line);
-      // currentFile (in-process, race-free) already reflects the final roll.
       const finalFile = sink.currentFile;
       expect(finalFile).not.toBe(base);
-      // Wait for BOTH the base and the final rolled file to actually land on
-      // disk before destroy()/cleanup — each roll opens its new destination
-      // with sync:false, so the fd (and the file) appears on a later tick
-      // than write() returns. Destroying (or letting afterEach rmSync the
-      // temp dir) while an open is still in flight produces an ENOENT that
-      // surfaces asynchronously, uncaught, well after this test has finished
-      // (and gets misattributed to whatever test runs next).
+      // Wait for every asynchronous destination open before destroy or cleanup to avoid delayed ENOENT errors.
       await waitForFile(base);
       await waitForFile(finalFile);
       sink.destroy();
       const files = listFiles().filter((f) => parseLogFileDate(f) === todayDateStr());
-      // Base file plus at least one sequenced roll.
       expect(files).toContain(`ave-${todayDateStr()}.log`);
       expect(files.some((f) => /\.\d+\.log$/.test(f))).toBe(true);
       expect(existsSync(base)).toBe(true);
     } finally {
-      // already destroyed; guard against double-destroy being fatal
+      // Repeated destroy must be safe.
     }
   });
 
   it("resumes into a fresh sequence when today's base file is already oversized", async () => {
-    // Pre-seed an oversized base file for today.
     const base = join(logDir, `ave-${todayDateStr()}.log`);
     writeFileSync(base, "y".repeat(200));
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7, maxBytes: 64 });
     try {
       sink.write("z\n");
-      // The active file must NOT be the oversized base — it should be a .1 seq.
       expect(sink.currentFile).not.toBe(base);
       expect(/\.\d+\.log$/.test(sink.currentFile)).toBe(true);
-      // Wait for the .1 file's async (sync:false) open to land before this
-      // test returns, so no in-flight fs.open survives into afterEach's
-      // rmSync of logDir (a late ENOENT there surfaces as an uncaught
-      // exception misattributed to a later test).
+      // Wait for asynchronous open before teardown removes the directory.
       await waitForFile(sink.currentFile);
     } finally {
       sink.destroy();
@@ -244,36 +196,20 @@ describe("createLogFileSink — size-based sequence rolling", () => {
   });
 
   it("resumes an UNDER-cap same-day file and seeds the byte counter from its size", async () => {
-    // A partially-filled today file that is still UNDER the cap must be
-    // APPENDED to (not rolled), and the in-process byte counter must be seeded
-    // from the on-disk size so the roll trips accounting for the pre-existing
-    // bytes — not from zero. maxBytes=100, pre-seed 60 bytes: the base is
-    // reused (60 < 100), then writes past the remaining 40-byte headroom must
-    // cross the ceiling and roll, proving the counter started at 60, not 0.
+    // Resume under-cap files in append mode and seed byte accounting from existing content.
     const base = join(logDir, `ave-${todayDateStr()}.log`);
     writeFileSync(base, "a".repeat(60));
     const sink = createLogFileSink({ dir: logDir, retentionDays: 7, maxBytes: 100 });
     try {
-      // The active file resumes the under-cap base (seq 0), not a new sequence.
       expect(sink.currentFile).toBe(base);
-      // The roll fires synchronously inside write() the moment the seeded
-      // counter (60) + accumulated chunk bytes crosses maxBytes (100). Assert
-      // on currentFile (in-process, race-free) rather than on-disk file
-      // presence — the rolled .seq file is opened with sync:false so its
-      // fd/inode lands on a later tick. 6 × 10 bytes = 60, so 60 + 60 = 120
-      // ≥ 100 → the active file must advance to a .seq. If the counter had
-      // been seeded to 0, 60 < 100 and currentFile would stay the base.
+      // Assert the synchronous currentFile transition; the rolled inode appears asynchronously.
       for (let i = 0; i < 6; i++) sink.write("b".repeat(9) + "\n"); // 10 bytes each
       expect(sink.currentFile).not.toBe(base);
       expect(/\.\d+\.log$/.test(sink.currentFile)).toBe(true);
-      // Wait for the rolled .seq file's async open to land BEFORE destroy()
-      // — destroying (or the afterEach rmSync) while the open is still in
-      // flight is exactly the ENOENT-after-teardown race this suite must
-      // avoid (see the two tests above for the same pattern).
+      // Wait for the rolled file before destroy so no open outlives the fixture.
       const rolledPath = sink.currentFile;
       await waitForFile(rolledPath);
       expect(existsSync(rolledPath)).toBe(true);
-      // The original base bytes are preserved (append mode, not truncated).
       expect(statSync(base).size).toBeGreaterThanOrEqual(60);
     } finally {
       sink.destroy();
@@ -283,9 +219,7 @@ describe("createLogFileSink — size-based sequence rolling", () => {
 
 describe("SOT constants", () => {
   it("exports the documented defaults", () => {
-    // LOG_RETENTION_DAYS is re-exported from the shared SOT — assert lockstep
-    // with src/shared/log-retention.ts rather than pinning a literal, so the two
-    // can never drift (#1499 E2 cluster-review architect MAJOR).
+    // Assert retention exports against the shared policy rather than duplicating its literal.
     expect(LOG_RETENTION_DAYS).toBe(SHARED_LOG_RETENTION_DAYS);
     expect(LOG_MAX_BYTES).toBe(10 * 1024 * 1024);
     expect(LOG_MAX_FILES_PER_DAY).toBe(20);
@@ -295,12 +229,10 @@ describe("SOT constants", () => {
 
 describe("capLogTree — per-day count + total-byte caps (#1499 E2)", () => {
   it("deletes oldest sequences beyond the per-day file limit", () => {
-    // 5 sequence files for one day; cap at 2 → oldest 3 removed.
     writeFileSync(join(logDir, "ave-2025-06-01.log"), "a");
     for (let i = 1; i <= 4; i++) writeFileSync(join(logDir, `ave-2025-06-01.${i}.log`), "a");
     const deleted = capLogTree(logDir, { maxFilesPerDay: 2, maxTotalBytes: Infinity });
     expect(deleted.length).toBe(3);
-    // The two highest sequences survive.
     const remaining = readdirSync(logDir).sort();
     expect(remaining).toEqual(["ave-2025-06-01.3.log", "ave-2025-06-01.4.log"]);
   });
@@ -310,7 +242,6 @@ describe("capLogTree — per-day count + total-byte caps (#1499 E2)", () => {
     writeFileSync(join(logDir, "ave-2025-06-02.log"), "x".repeat(100));
     writeFileSync(join(logDir, "ave-2025-06-03.log"), "x".repeat(100));
     const deleted = capLogTree(logDir, { maxFilesPerDay: 999, maxTotalBytes: 150 });
-    // Oldest (06-01) removed until total ≤ 150.
     expect(deleted).toContain("ave-2025-06-01.log");
     expect(existsSync(join(logDir, "ave-2025-06-03.log"))).toBe(true);
   });
@@ -337,7 +268,6 @@ describe("reprunePersistedRetention — boot re-prune (#1499 E2)", () => {
   });
 
   it("a tightened window (< default) prunes files older than the new window", () => {
-    // 3-day-old file survives the default (7) but not a tightened window of 2.
     writeFileSync(join(logDir, `ave-${daysAgo(3)}.log`), "old");
     writeFileSync(join(logDir, `ave-${daysAgo(1)}.log`), "recent");
     const deleted = reprunePersistedRetention(logDir, 2);
@@ -347,8 +277,7 @@ describe("reprunePersistedRetention — boot re-prune (#1499 E2)", () => {
   });
 
   it("also re-runs capLogTree (per-day count cap) after the date prune", () => {
-    // A tightened window triggers the re-prune path; capLogTree must then cap an
-    // over-count day (symmetry with the sink's init sequence — architect NIT).
+    // Tightened retention must also enforce the per-day file cap.
     const day = daysAgo(1);
     writeFileSync(join(logDir, `ave-${day}.log`), "a");
     for (let i = 1; i <= 21; i++) writeFileSync(join(logDir, `ave-${day}.${i}.log`), "a");

@@ -18,18 +18,11 @@ vi.mock("../../shared/escape-html.js", async (importOriginal) => {
 import { encodeMcpServerId } from "../../shared/mcp-app-partition.js";
 import type { McpUiResourceCsp } from "../../mcp/types.js";
 
-/**
- * MAJOR-1 (cluster critic) — the `ave-mcp-app://` `protocol.handle` callback makes
- * EVERY security decision for the containment boundary (400 bad-url, 404 unknown
- * token, 403 authority/token mismatch, and the CSP header value), yet nothing in the
- * suite invoked it — the partition test only asserted it was registered. So a refactor
- * that dropped the authority check or emitted a permissive CSP kept the whole gate
- * green. These tests capture the handler and drive it directly.
- */
+// Invoke the protocol handler directly to exercise authority, token, and CSP enforcement.
 
 type Handler = (request: { url: string }) => Response;
 
-/** Capture the callback `installMcpAppProtocolHandler` registers on a fresh session. */
+// Capture the callback `installMcpAppProtocolHandler` registers on a fresh session.
 function installAndCapture(partition = "ave-mcp-app:probe"): Handler {
   const handle = vi.fn();
   const ses = { protocol: { handle } } as unknown as Electron.Session;
@@ -64,8 +57,7 @@ describe("mcp-app-protocol — the protocol.handle security callback", () => {
     expect(res.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Content-Type")).toContain("text/html");
-    // The static proxy document is script-free (the inner iframe is created by the
-    // relay preload at runtime, not baked in) — so assert on its actual content.
+    // The static proxy document is script-free (the inner iframe is created by the relay preload at runtime, not baked in) — so assert on its actual content.
     const body = await res.text();
     expect(body).toContain("<title>MCP App</title>");
     expect(body).not.toContain("<script"); // nothing the server controls runs here
@@ -73,8 +65,7 @@ describe("mcp-app-protocol — the protocol.handle security callback", () => {
 
   it("serves the host-computed `allow` meta ONLY for a resource that declared permissions", async () => {
     const handler = installAndCapture();
-    // A resource that declared geolocation ⇒ the proxy document carries the allow meta,
-    // computed in main from the closed feature table (never renderer/app-supplied).
+    // A resource that declared geolocation ⇒ the proxy document carries the allow meta, computed in main from the closed feature table (never renderer/app-supplied).
     const withPerms = createMcpAppProxySession("srv-perm", undefined, { geolocation: {} });
     const withBody = await handler({ url: withPerms }).text();
     expect(withBody).toContain('<meta name="ave-mcp-app-allow" content="geolocation">');
@@ -135,9 +126,8 @@ describe("mcp-app-protocol — the protocol.handle security callback", () => {
 });
 
 describe("mcp-app-protocol — isMcpAppPermissionGranted (the Electron permission chokepoint)", () => {
-  // The `revoked` and `mic-only` real-<webview> cards, in code form: the decision is keyed
-  // off the proxy TOKEN in the frame URL, so it fail-closes on every way the token can be
-  // wrong, grants ONLY the resource's own declaration, and honors the media-kind split.
+  // The `revoked` and `mic-only` real-<webview> cards, in code form: the decision is keyed off the proxy TOKEN in the frame URL, so it fail-closes on
+  // every way the token can be wrong, grants ONLY the resource's own declaration, and honors the media-kind split.
   it("grants ONLY what the card's resource declared", () => {
     const url = createMcpAppProxySession("srv-geo", undefined, { geolocation: {} });
     expect(isMcpAppPermissionGranted(url, "geolocation")).toBe(true);
@@ -187,11 +177,7 @@ describe("mcp-app-protocol — isMcpAppPermissionGranted (the Electron permissio
 });
 
 describe("mcp-app-protocol — session lifetime = card mount lifetime (LRU cannot revoke a live card)", () => {
-  // Regression guard: the proxy session is now a long-lived permission AUTHORITY consulted
-  // for the card's whole life, so a tight FIFO cap could FIFO-evict a still-mounted card's
-  // grant after enough newer mints — the exact mechanism the `revoked` e2e uses on purpose.
-  // The authoritative reclaim is dispose-on-unmount; the cap is only a leak backstop set far
-  // above any plausible live-card count, so eviction never fires on a live card in practice.
+  // Mounted cards retain permission authority until disposal; the high FIFO cap is only a leak backstop.
   it("a live (undisposed) session survives well beyond the old 64 cap of subsequent mints", () => {
     // A long-lived camera card, minted first.
     const liveUrl = createMcpAppProxySession("srv-live", undefined, { camera: {} });
@@ -210,8 +196,7 @@ describe("mcp-app-protocol — session lifetime = card mount lifetime (LRU canno
     const url = createMcpAppProxySession("srv-mount", undefined, { camera: {} });
     const token = new URL(url).searchParams.get("t")!;
     expect(isMcpAppPermissionGranted(url, "media", ["video"])).toBe(true);
-    // Card unmounts → McpAppView calls disposeUiSession → this. The grant is gone at once,
-    // without waiting for any cap-driven eviction.
+    // Card unmounts → McpAppView calls disposeUiSession → this. The grant is gone at once, without waiting for any cap-driven eviction.
     disposeMcpAppProxySession(token);
     expect(isMcpAppPermissionGranted(url, "media", ["video"])).toBe(false);
   });

@@ -36,11 +36,8 @@ type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"
 
 export interface ChatComposerDockProps {
   dockColumnClass: string;
-  /**
-   * Empty work-mode conversation: offer the new-chat project selector. The
-   * composer itself stays bottom-docked whether or not the conversation is
-   * empty — there is no centered placement and no descent on first send.
-   */
+  /** Empty work-mode conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
+   * not the conversation is empty — there is no centered placement and no descent on first send. */
   emptyConversation?: boolean;
   workflowApi: AveApi;
   api: AveApi;
@@ -119,9 +116,8 @@ export interface ChatComposerDockProps {
   /** Re-fetch the workspace project list after adding a project folder. */
   onRefreshProjects?: () => void | Promise<void>;
   onProjectError?: ProjectErrorReporter;
-  /** Controlled open state for the project selector dropdown — owned by
-   *  ChatView so it can be force-closed when the conversation stops being
-   *  empty. */
+  /** Controlled open state for the project selector dropdown — owned by ChatView so it can be force-closed when the
+   * conversation stops being empty. */
   projectSelectorOpen: boolean;
   onProjectSelectorOpenChange: (open: boolean) => void;
 }
@@ -136,11 +132,8 @@ interface ComposerRuntimeGateInput {
   subscriptionPendingProvider?: string;
   /** The draft's current attachments — checked against the selected runtime. */
   attachments: Attachment[];
-  /**
-   * The API-key model the draft would go to. Only consulted when no
-   * subscription runtime is selected — a selected runtime owns its own image
-   * capability and the API-key model is not in the path at all.
-   */
+  /** The API-key model the draft would go to. Only consulted when no subscription runtime is selected — a selected runtime
+   * owns its own image capability and the API-key model is not in the path at all. */
   llmVendor?: LLMVendor;
   llmModel?: string;
   /** That route's input modalities; `undefined` until settings have resolved. */
@@ -162,11 +155,8 @@ interface ComposerRuntimeGates {
    * selected runtime has not verified.
    */
   draftHasUnsupportedAttachment: boolean;
-  /**
-   * The unsupported attachment is an image the API-key model cannot read. It is
-   * the one cause the user can clear from inside the composer — by removing the
-   * images or switching models — so it is the one that earns a written hint.
-   */
+  /** The unsupported attachment is an image the API-key model cannot read. It is the one cause the user can clear from inside
+   * the composer — by removing the images or switching models — so it is the one that earns a written hint. */
   draftImagesRejectedByModel: boolean;
 }
 
@@ -209,13 +199,7 @@ export function resolveComposerRuntimeGates({
   const filesEnabled = subscriptionRuntimePolicy
     ? subscriptionRuntimePolicy.filesEnabled
     : attachmentInputsReady && runtimeFileAttachmentProvider === undefined;
-  // A text-only API-key model cannot carry the draft's images, and the send path
-  // refuses rather than dropping them, so the composer's send affordances go
-  // inert on the same condition instead of offering a turn that will be refused.
-  // A selected subscription runtime is exempt: it owns image capability itself
-  // and the API-key model is not in that path. The model name is only known once
-  // settings have resolved; until then the composer states nothing about it.
-  // The route's stated modalities decide, as on the send path.
+  // Disable image sends only for resolved text-only API routes; subscription runtimes own their image capability.
   const draftImagesRejectedByModel =
     subscriptionRuntimePolicy?.subscriptionSelected !== true
     && llmVendor !== undefined
@@ -323,13 +307,7 @@ export function ChatComposerDock({
 }: ChatComposerDockProps) {
   const { t } = useTranslation();
 
-  // Stable identity, not an inline arrow. `allocateN` is a dependency of the mention
-  // hook's accept callback, which is a dependency of the composer's memoized keydown
-  // handler — so a fresh arrow per render rebuilt that handler on every render. The
-  // behaviour was correct (a fresh handler is never stale) but it made the handler's
-  // dependency array decorative: a missing dependency could not be observed, which is
-  // exactly how the mention menu shipped with a dead keyboard. The counter itself is a
-  // ref, so there is nothing to close over.
+  // Keep allocateN stable so mention acceptance and memoized keyboard handlers do not rebuild on every render.
   const allocateN = useCallback(() => ++attachmentNCounter.current, [attachmentNCounter]);
   const {
     runtimeImageAttachmentProvider,
@@ -364,8 +342,8 @@ export function ChatComposerDock({
   return (
     <div
       className="relative z-30 w-full max-w-full min-w-0 overflow-visible"
-      // The composer-dock anchor QuestionOverlay and ApprovalDock look up. The
-      // composer has one placement (bottom-docked); the value is kept for them.
+      // The composer-dock anchor QuestionOverlay and ApprovalDock look up. The composer has one placement (bottom-docked); the
+      // value is kept for them.
       data-composer-placement="bottom"
       // Which surface this whole dock subtree serves. The Composer's textarea
       // carries the same attribute for the field itself; here it covers the
@@ -542,8 +520,7 @@ export function ChatComposerDock({
             // is what the row is for. Up in the queue dock it floated over an
             // empty toast reserve whenever there was nothing to notify.
             tasksSlot={<SessionTasksPanel api={workflowApi} sessionId={currentSessionId} />}
-            /* The goal sits next to the plan for the same reason the plan
-               sits here: it describes what this conversation is doing. */
+            /** The goal sits next to the plan for the same reason the plan sits here: it describes what this conversation is doing. */
             goalSlot={<SessionGoalPanel api={workflowApi} sessionId={currentSessionId} />}
             onOpenModelSettings={onOpenModelSettings}
             onOpenPermissions={onOpenPermissions}
@@ -563,31 +540,8 @@ export function ChatComposerDock({
   );
 }
 
-/**
- * ComposerApiKeyChip — the "no LLM credential yet" affordance.
- *
- * Lives in the composer's reserved top zone, mirrored across from
- * `ComposerProjectSelector` (which sits at `left-0` in the same strip). Being an
- * absolutely-positioned chip plus an overlay popover, it contributes ZERO layout
- * height — it replaced a `min-h-[min(12rem,36vh)]` transcript card whose
- * vertical footprint pushed the empty conversation around.
- *
- * Render condition is a single flag: `hasApiKey === false`. That prop is
- * `App.tsx`'s `effectiveLlmReady`, which already ORs in `llmReadyWithoutApiKey`
- * — so a keyless-ready session (a reachable local Ollama, or an
- * OpenAI-compatible vendor with a `baseUrl`) never renders the
- * chip. `null` means the boot probe has not resolved; we stay silent then, same
- * as the card did, so no fake "log in" flash paints before the probe lands.
- *
- * Both destinations from the old card are preserved — settings for a provider
- * key, marketplace for a keyless local/router provider — so nothing is lost by
- * collapsing it into a popover. Copy reuses the card's existing `chatView.*`
- * message keys verbatim.
- *
- * The side chat reads the same readiness contract and shows this same chip:
- * a second credential affordance with its own copy would be the kind of copy
- * that drifts.
- */
+/** Show credential setup only for resolved false readiness; keyless-ready and pending-probe states must not flash a login
+ * prompt. */
 
 /**
  * The dock strip for a turn parked on an approval. It sits in the tile whose

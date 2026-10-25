@@ -1,9 +1,4 @@
-/**
- * node-pty's prebuilt spawn-helper ships non-executable; postinstall restores
- * the bit. Covers the repair on a fixture and, on hosts where it matters, the
- * real installed copy — so an install that skipped the repair fails here
- * instead of every terminal failing with `posix_spawnp failed`.
- */
+// Verify the postinstall repair makes the native spawn helper executable.
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,7 +39,6 @@ describe("restore-node-pty-exec-bit", () => {
     expect(nonExecutableSpawnHelpers(root)).toHaveLength(3);
     expect(restoreSpawnHelperExecBit(root)).toHaveLength(3);
     for (const helper of findSpawnHelpers(root)) expect(statSync(helper).mode & 0o777).toBe(0o755);
-    // Idempotent: a second run changes nothing.
     expect(restoreSpawnHelperExecBit(root)).toEqual([]);
   });
 
@@ -53,11 +47,9 @@ describe("restore-node-pty-exec-bit", () => {
     expect(restoreSpawnHelperExecBit(root, { platform: "win32" })).toEqual([]);
   });
 
-  // A check, not a repair: an install whose postinstall did not run (or ran
-  // without this step) fails here.
+  // Check the installed helper without repairing it, so skipped postinstall work remains visible.
   it.runIf(process.platform !== "win32")("finds every installed node-pty helper executable", () => {
     const ptyRoot = join(REPO_ROOT, "node_modules", "node-pty");
-    // macOS is the platform that ships and uses the helper.
     if (process.platform === "darwin") expect(findSpawnHelpers(ptyRoot).length).toBeGreaterThan(0);
     expect(nonExecutableSpawnHelpers(ptyRoot)).toEqual([]);
   });

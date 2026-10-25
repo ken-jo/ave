@@ -11,21 +11,10 @@ export type MultimodalTokenEstimatePart = {
   bytes?: number;
 };
 
-/**
- * Browser-safe user content shape shared by renderer projections and engine
- * provider-wire estimation. It intentionally stays structural so engine-only
- * `UserContentPart` does not leak into the shared layer.
- */
+/** Keep shared user content structural so engine-only message types do not enter renderer bundles. */
 export type UserContentForTokenEstimate = string | readonly MultimodalTokenEstimatePart[];
 
-/**
- * Canonical user-message wire shape for heuristic token estimation.
- *
- * Multimodal payload bytes are deliberately represented by stable markers here;
- * their image/file overhead is accounted for separately below. Keeping the
- * serialization and overhead together lets renderer projections match the
- * engine without importing engine-only message types.
- */
+/** Represent payload bytes with stable markers and account for multimodal overhead separately. */
 export function serializeUserContentForEstimation(content: UserContentForTokenEstimate): string {
   const contentForEstimation = typeof content === "string"
     ? content
@@ -39,20 +28,12 @@ export function serializeUserContentForEstimation(content: UserContentForTokenEs
   return JSON.stringify({ role: "user", content: contentForEstimation });
 }
 
-/**
- * Estimate one user message exactly as the provider-wire estimator does:
- * canonical serialized text plus multimodal payload overhead.
- */
 export function estimateUserMessageTokens(content: UserContentForTokenEstimate): number {
   return estimateTokens(serializeUserContentForEstimation(content)) +
     (typeof content === "string" ? 0 : estimateMultimodalTokenOverhead(content));
 }
 
-/**
- * Mirror `runTurn`'s user-content assembly for an already composed renderer
- * draft. `undefined` means no sendable payload, so callers never display the
- * synthetic wrapper cost of an empty user message.
- */
+/** Undefined means unsendable; do not charge synthetic empty-message wrapper cost. */
 export function toUserContentForEstimation(
   text: string,
   attachments: readonly MultimodalTokenEstimatePart[] = [],
@@ -61,7 +42,6 @@ export function toUserContentForEstimation(
   return attachments.length === 0 ? text : [{ type: "text", text }, ...attachments];
 }
 
-/** Estimate an already composed outgoing draft using the same payload shape as `runTurn`. */
 export function estimateOutgoingUserMessageTokens(
   text: string,
   attachments: readonly MultimodalTokenEstimatePart[] = [],
@@ -90,7 +70,7 @@ function estimateDataTokens(data: string | undefined): number {
   return Math.ceil(data.length / 4) + 1;
 }
 
-/** Normalize untrusted image metadata to the same bounded tile-estimation input. */
+/** Bound untrusted image metadata before tile estimation. */
 export function normalizeMultimodalTokenEstimateDimension(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.min(8192, Math.ceil(value));

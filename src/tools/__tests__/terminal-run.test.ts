@@ -1,6 +1,5 @@
-/**
- * terminal_run: type one approved command into a terminal the user can see.
- */
+import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
+/** terminal_run: type one approved command into a terminal the user can see. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTerminalRunTool,
@@ -25,6 +24,7 @@ import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRIN
 import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { t } from "../../i18n/index.js";
 
 describe("terminal executable registries", () => {
   it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
@@ -98,7 +98,7 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
   const typed: Array<[string, number, string]> = [];
   const mismatches: TerminalCommandMismatch[] = [];
   const typeCommand: TypeTerminalCommand = async (tabId, windowId, line) => {
-    typed.push([tabId, windowId, line]);
+    typed.push([tabId.tabId, windowId, line]);
     return { ok: true, firstBlockId: 1 };
   };
   return {
@@ -106,6 +106,7 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
     liveOriginSessionId: (sessionId) => (sessionId === "child" ? "main" : undefined),
     activeTerminalTabId: () => "terminal:aaaaaaaa-1",
     boundSurface: () => undefined,
+    ensureAgentTerminal: async (tabId) => terminalSessionFixture(tabId),
     typeCommand,
     // The operating system agrees with whatever the markers report.
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
@@ -149,10 +150,11 @@ describe("terminal_run", () => {
 
   describe("target, sealed before approval", () => {
     it("defaults to the window's active terminal and seals its id and directory", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker("/repo/app"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/repo/app"), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve(tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" }))).resolves.toEqual({
         kind: "terminal-command",
+        lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent", sandboxGeneration: "0",
         commandSha256: sha256Hex("npm test"),
         tabId: "terminal:aaaaaaaa-1",
         cwd: "/repo/app",
@@ -161,9 +163,9 @@ describe("terminal_run", () => {
     });
 
     it("prefers an explicit tabId, then the conversation's bound terminal, over the active one", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-2", readyTracker("/two"), WINDOW);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-3", readyTracker("/three"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker("/two"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-3"), readyTracker("/three"), WINDOW);
       const asked: Array<[number, string]> = [];
       const tool = createTerminalRunTool(depsWith({
         boundSurface: (windowId, hostSessionId) => {
@@ -180,7 +182,7 @@ describe("terminal_run", () => {
     });
 
     it("refuses a chat bound to a page instead of typing into the active terminal", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith({ boundSurface: () => ({ kind: "browser", tabId: "browser:aaaaaaaa-4" }) });
       const tool = createTerminalRunTool(deps);
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
@@ -192,33 +194,33 @@ describe("terminal_run", () => {
     });
 
     it("fails a chat whose bound terminal is gone, never falling back to the active one", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:aaaaaaaa-9" }) }));
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/no terminal with tabId "terminal:aaaaaaaa-9"/);
     });
 
     it("types into the window's active terminal from a chat bound to nothing", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith({ boundSurface: () => undefined }));
       expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
     });
 
     it("a sub-agent reaches its parent's window", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "child" })).toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
     });
 
     it("fails clearly when there is no terminal to name, and never picks one itself", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith({ activeTerminalTabId: () => undefined }));
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/no terminal is bound to this conversation or shown in its window; pass tabId/);
     });
 
     it("refuses another window's terminal exactly like a missing one, and a session with no window", async () => {
-      registerTerminalBlockTracker("terminal:bbbbbbbb-1", readyTracker(), 2);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:bbbbbbbb-1"), readyTracker(), 2);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:bbbbbbbb-1" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/no terminal with tabId "terminal:bbbbbbbb-1"/);
@@ -235,7 +237,7 @@ describe("terminal_run", () => {
     ])("refuses before any approval when %s", async (_label, mutate, reason) => {
       const tracker = readyTracker();
       mutate(tracker);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(reason);
@@ -244,25 +246,25 @@ describe("terminal_run", () => {
     it("tells a shell still drawing its first prompt to retry, and fish that it is unsupported", async () => {
       const starting = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
       starting.recordOutput(`${mark("P;Cwd=/repo;Keys=emacs;Paste=1")}${mark("A")}$ `);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", starting, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), starting, WINDOW);
       const tool = createTerminalRunTool(depsWith());
       const scopeOf = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
       await expect(scopeOf()).rejects.toThrow(/still starting.*retry in a moment/);
       const fish = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: false });
       fish.recordOutput(`${mark("P;Cwd=/repo;Keys=emacs;Paste=1")}${mark("A")}$ `);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", fish, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), fish, WINDOW);
       await expect(scopeOf()).rejects.toThrow(/\(fish\).*needs zsh or bash/);
     });
 
     it("refuses a shell without command markers", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/reports no command markers/);
     });
 
     it("reports a terminal that became busy while the card was open, typing nothing", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith({
         typeCommand: async () => ({ ok: false, reason: "command-running", message: "a command is running in the foreground of the terminal" }),
       });
@@ -290,7 +292,7 @@ describe("terminal_run", () => {
       ["a trailing backslash", "echo hi \\"],
       ["a here-document", "cat <<EOF"],
     ])("refuses %s before any approval is asked", async (_label, command) => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).rejects.toThrow();
@@ -299,9 +301,7 @@ describe("terminal_run", () => {
       expect(deps.typed).toEqual([]);
     });
 
-    // Each of these reads differently to the permission rules (bash) than to
-    // the terminal's interactive zsh, hides from the card, or outlives the
-    // command in the user's shell.
+    // Each of these reads differently to the permission rules (bash) than to the terminal's interactive zsh, hides from the card, or outlives the command in the user's shell.
     it.each([
       ["a # comment zsh may run as text", "echo SAFE # ; echo PWNED", /# comment/],
       ["a # comment hiding an rm", "ls # ; rm -rf build", /# comment/],
@@ -424,7 +424,7 @@ describe("terminal_run", () => {
       ["the marker nonce", "echo $__ave_nonce", /shell-integration names/],
       ["a shell-integration function", "__ave_precmd", /shell-integration names/],
     ])("refuses %s before any approval is asked", async (_label, command, reason) => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).rejects.toThrow(reason);
@@ -432,7 +432,7 @@ describe("terminal_run", () => {
     });
 
     it("accepts quoted #, mid-word #, non-ASCII words and command-scoped variables", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       for (const command of [
         "echo 'a # b'",
@@ -472,7 +472,7 @@ describe("terminal_run", () => {
     });
 
     it("accepts ordinary one-line commands, including a test's ! and a != comparison", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       for (const command of ["npm test -- --watch=false", "[ ! -f x ] && echo missing", "test \"$a\" != b", "git log --oneline | head -5", "echo 'it''s'"]) {
         await expect(Promise.resolve(tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).resolves.toMatchObject({ kind: "terminal-command" });
@@ -481,9 +481,27 @@ describe("terminal_run", () => {
   });
 
   describe("execute", () => {
+    it("includes the full Linux window when changed Git protection refuses typing", async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      try {
+        registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+        const deps = depsWith({ typeCommand: async () => ({ ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") }) });
+        const tool = createTerminalRunTool(deps);
+        const scope = await tool.approvalMemoryScope!({ command: "git status" }, { cwd: "/workspace", sessionId: "main" });
+        const result = await tool.execute({ command: "git status" }, ctxFor(scope));
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.output as string)).toMatchObject({
+          error: expect.stringContaining(t("sandboxPolicy.terminalChanged")),
+          sandboxNotice: t("sandboxPolicy.terminalWindow"),
+        });
+        expect(deps.typed).toEqual([]);
+      } finally { Object.defineProperty(process, "platform", descriptor); }
+    });
+
     it("types the exact command into the sealed terminal and returns its finished block", async () => {
       const tracker = readyTracker();
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
       const deps = depsWith({
         typeCommand: async (_tabId, _windowId, line) => {
           // The shell echoes and runs it a moment later.
@@ -496,30 +514,36 @@ describe("terminal_run", () => {
       const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
       const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
       expect(result.isError).toBe(false);
-      expect(typeSpy).toHaveBeenCalledWith("terminal:aaaaaaaa-1", WINDOW, "npm test", "/repo");
+      expect(typeSpy).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:aaaaaaaa-1", lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent" }), WINDOW, "npm test", "/repo", undefined);
       const parsed = body(result.output as string);
       expect(parsed).toMatchObject({ tabId: "terminal:aaaaaaaa-1", typed: true, finished: true });
       expect(parsed.block).toMatchObject({ id: 1, command: "npm test", exitCode: 0, status: "done", cwd: "/repo", output: "3 passed\n" });
     });
 
     it("keeps typing into the sealed terminal when the user switches terminals while the card is open", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
-      registerTerminalBlockTracker("terminal:aaaaaaaa-2", readyTracker(), WINDOW);
+      vi.useFakeTimers();
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker(), WINDOW);
       let active = "terminal:aaaaaaaa-1";
       const deps = depsWith({ activeTerminalTabId: () => active });
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
       active = "terminal:aaaaaaaa-2";
-      await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
     });
 
     it("fails as not verified when the shell never reports starting the typed command", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      vi.useFakeTimers();
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
-      const result = await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      const result = await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
       expect(result.isError).toBe(true);
       expect(body(result.output as string)).toMatchObject({ typed: true, finished: false, error: expect.stringContaining("terminal:aaaaaaaa-1") });
@@ -528,7 +552,7 @@ describe("terminal_run", () => {
 
     it("reports, audits and fails a run whose shell record names another command than the approved one", async () => {
       const tracker = readyTracker();
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
       const deps = depsWith({
         // A line editor that read part of the paste as keys ran something else.
         typeCommand: async () => {
@@ -545,7 +569,7 @@ describe("terminal_run", () => {
       expect(String(parsed.error)).toContain("terminal:aaaaaaaa-1");
       expect(deps.mismatches).toEqual([{
         sessionId: "main",
-        tabId: "terminal:aaaaaaaa-1",
+        tabId: "terminal:aaaaaaaa-1", lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent",
         approvedSha256: sha256Hex("echo hi"),
         ranSha256: sha256Hex("[200~echo hi~"),
       }]);
@@ -558,7 +582,7 @@ describe("terminal_run", () => {
         setLocale(locale);
         const tracker = readyTracker("/repo");
         tracker.recordOutput(promptIn("/repo").replace("NotFound=0", "NotFound=1"));
-        registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+        registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
         const deps = depsWith();
         const tool = createTerminalRunTool(deps);
         const request = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
@@ -571,7 +595,7 @@ describe("terminal_run", () => {
     });
 
     it("refuses before any card when the operating system disagrees with the terminal's markers", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker("/repo"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/repo"), WINDOW);
       for (const message of [
         "the terminal reported \"/repo\" as its directory, but its shell is in \"/etc\"",
         "the terminal's foreground process is \"python3\", not its zsh shell",
@@ -585,15 +609,30 @@ describe("terminal_run", () => {
     });
 
     it("takes the directory the card compares from the operating system", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker("/repo"), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/repo"), WINDOW);
       const tool = createTerminalRunTool(depsWith({ verifyShell: async () => ({ ok: true, cwd: "/private/Repo" }) }));
       await expect(Promise.resolve(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .resolves.toMatchObject({ cwd: "/repo", cwdForMatch: process.platform === "linux" ? "/private/Repo" : "/private/repo" });
     });
 
+    it("rejects the old approval when the isolated shell incarnation or sandbox generation changes", async () => {
+      for (const changed of [{ terminalSessionId: "replacement" }, { sandboxGeneration: "1" }]) {
+        const tracker = readyTracker("/repo");
+        registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
+        let info = terminalSessionFixture("terminal:aaaaaaaa-1");
+        const deps = depsWith({ ensureAgentTerminal: async () => info });
+        const tool = createTerminalRunTool(deps);
+        const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
+        info = { ...info, ...changed };
+        const result = await tool.execute({ command: "ls" }, ctxFor(scope));
+        expect(result.isError).toBe(true);
+        expect(deps.typed).toEqual([]);
+      }
+    });
+
     it("refuses when the terminal's shell moved to another directory after approval", async () => {
       const tracker = readyTracker("/repo");
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "rm -rf build" }, { cwd: "/workspace", sessionId: "main" });
@@ -605,7 +644,7 @@ describe("terminal_run", () => {
     });
 
     it("refuses a call whose authorized scope is missing or names another command", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const other = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
@@ -620,7 +659,7 @@ describe("terminal_run", () => {
     it("returns a still-running block when the wait ends first", async () => {
       vi.useFakeTimers();
       const tracker = readyTracker();
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), tracker, WINDOW);
       const deps = depsWith({
         typeCommand: async (_tabId, _windowId, line) => {
           tracker.recordOutput(`${line}\r\n${mark(`C;cmdline_url=${encodeURIComponent(line)}`)}building…\r\n`);
@@ -633,11 +672,11 @@ describe("terminal_run", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       const parsed = body((await pending).output as string);
       expect(parsed).toMatchObject({ finished: false, block: { id: 1, status: "running", output: "building…\n" } });
-      expect(parsed.note).toMatch(/terminal_read \(tabId terminal:aaaaaaaa-1, blockId 1\)/);
+      expect(parsed.continuation).toEqual({ tabId: "terminal:aaaaaaaa-1", lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent", blockId: 1 });
     });
 
     it("rejects a wait outside the policy bounds", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls", waitSeconds: 101 }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/waitSeconds must be an integer from 0 to 100/);
@@ -645,7 +684,7 @@ describe("terminal_run", () => {
   });
 
   it("the authorization step reads the sealed target and refuses an invocation without one", () => {
-    const scope = { kind: "terminal-command", commandSha256: "x", tabId: "terminal:aaaaaaaa-1", cwd: "/repo", cwdForMatch: "/repo" } as const;
+    const scope = { kind: "terminal-command", lane: "agent", terminalSessionId: "terminal:aaaaaaaa-1/agent", sandboxGeneration: "0", commandSha256: "x", tabId: "terminal:aaaaaaaa-1", cwd: "/repo", cwdForMatch: "/repo" } as const;
     expect(terminalCommandScopeOf({ kind: "key", key: "k", scope })).toBe(scope);
     expect(() => terminalCommandScopeOf({ kind: "args" })).toThrow(/without its sealed terminal target/);
     expect(() => terminalCommandScopeOf(undefined)).toThrow(/without its sealed terminal target/);

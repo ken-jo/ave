@@ -2,14 +2,7 @@ import type { WebContents } from "electron";
 
 const windowControlOwnedIds = new Set<number>();
 
-/**
- * Mark a host-owned shell webContents as allowed to use window-control IPC.
- *
- * Auth/link windows load a host-authored `data:` shell with the normal preload,
- * while remote content stays inside a sandboxed webview. The generic sender
- * gate rejects `data:` URLs, so only explicitly marked shell contents may
- * minimize/maximize/close their own BrowserWindow.
- */
+// Explicitly allow only host-owned shell contents for data-URL window controls; embedded remote content stays sandboxed.
 export function markAsWindowControlOwned(contents: WebContents): void {
   const id = contents.id;
   windowControlOwnedIds.add(id);

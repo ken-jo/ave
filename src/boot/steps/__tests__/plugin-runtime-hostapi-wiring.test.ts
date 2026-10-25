@@ -1,21 +1,6 @@
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
-/**
- * C1 gap-lock — initPluginRuntime HostApi factory: config get/set + emitEvent
- * / onEvent capability wiring.
- *
- * The `plugin-runtime.test.ts` harness already exercises getSecret / callTool /
- * agentApproval on the captured `createHostApi`. This file locks the CURRENT
- * behavior of two other HostApi surfaces that were uncovered:
- *   • `config.get` merged-read precedence (manifest.config < wildcard < saved
- *     plugin config) and `config.set` round-trip (persist + override + reload;
- *     secret-format rejection).
- *   • `emitEvent` → `onEvent` round-trip on the shared host bus, with the
- *     caller's pluginId injected into the payload and unsubscribe honored.
- *
- * The captured-runtime-options pattern mirrors the sibling harness so the
- * initPluginRuntime call shape stays type-compatible.
- */
+/** Drive the captured boot HostApi factory so config precedence and event identity are tested at their producer. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,8 +32,7 @@ const runtimeTestState = vi.hoisted(() => ({
   registryPath: "/tmp/ave-test/registry.json",
   spawnWorker: vi.fn(),
   runtime: {
-    // boot installs each loaded plugin's partition policy before starting any
-    // of them, so the double needs the cheap half of startAll too.
+    // Install partition policies before starting any plugin.
     load: vi.fn(async () => {}),
     startAll: vi.fn(async () => {}),
     listToolNames: vi.fn(() => [] as string[]),
@@ -122,7 +106,6 @@ vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
 }));
 
-// The official snapshot pins the artifact every origin below names.
 vi.mock("../plugin-runtime/grant-evidence.js", () => ({
   grantEvidenceReader: () => ({
     officialPins: runtimeTestState.officialPins,
@@ -131,7 +114,7 @@ vi.mock("../plugin-runtime/grant-evidence.js", () => ({
   }),
 }));
 
-/** An official install of the pinned artifact: what a host-secret grant needs (design §10.3). */
+/** Official artifact provenance is required for host-secret grants. */
 const OFFICIAL_ORIGIN = {
   sourceId: "ave",
   sourceOrigin: "official" as const,
@@ -153,10 +136,7 @@ import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests_
 import { resolvePluginHostStorageDir } from "../../../plugins/plugin-storage-layout.js";
 import type { PluginManifest } from "../../../plugins/types.js";
 
-/**
- * A running manifest read from its plugin.json, and the pin an installer
- * records for it: the canonical digest of the document, not of the projection.
- */
+/** Pins hash the original manifest document, not its runtime projection. */
 function granted(pluginId: string, secretKey: string, allowedDomains = ["api.openai.com"]): { manifest: PluginManifest; manifestSha256: string } {
   const networkAccess = { allowedDomains };
   const manifest = { id: pluginId, config: {}, hostSecrets: { read: [secretKey] }, networkAccess } as unknown as PluginManifest;
@@ -233,11 +213,7 @@ type CreateHostApi = (
   candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => ConfigHostApi;
 
-/**
- * The `bootAuditLogger` handed to the LAST `initAndGetFactory` call — the sink
- * every plugin-runtime audit record (including plugin-storage containment
- * refusals) lands on in production.
- */
+/** The logger passed to boot is the sink for runtime audit records. */
 let lastBootAuditLogger: { log: ReturnType<typeof vi.fn> };
 
 async function initAndGetFactory(
@@ -252,9 +228,7 @@ async function initAndGetFactory(
   } = {},
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
-  // Honour a caller-supplied logger; only default when none was given. The
-  // module-level handle still points at whatever was actually wired, so tests
-  // that do not pass one can still read the sink.
+  // Keep the handle on the actual injected logger so assertions read the wired sink.
   lastBootAuditLogger = bootAuditLogger;
   await initPluginRuntime({
     host: createBootHostFixture({ desktop: createDesktopHostFixture({
@@ -286,7 +260,6 @@ async function initAndGetFactory(
     approvalGate: approvalGate as never,
     ...(options.permissionManager ? { permissionManager: options.permissionManager } : {}),
     routinesStore: { list: () => [] } as never,
-    // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
     getAlertsService: () => undefined,
   });
@@ -391,7 +364,6 @@ describe("HostApi.config.get merged-read precedence", () => {
     expect(api.config.get("a")).toBe("m");
     expect(api.config.get("w")).toBe("wild");
     expect(api.config.get("p")).toBe("cfg");
-    // Saved plugin config wins over wildcard wins over manifest default.
     expect(api.config.get("shared")).toBe("cfg");
     expect(api.config.get("missing")).toBeUndefined();
   });
@@ -418,19 +390,14 @@ describe("HostApi.config.get merged-read precedence", () => {
       "plugin-a",
     );
 
-    // Unset schema-defaulted key now returns the author-declared default
-    // (was `undefined` before AB1) — consistent with ctx.config.
     expect(api.config.get("schemaOnly")).toBe("def");
-    // A saved value still wins over the schema default (precedence unchanged).
     expect(api.config.get("savedKey")).toBe("saved");
-    // A key with neither a value nor a schema default is still undefined.
     expect(api.config.get("nothing")).toBeUndefined();
   });
 });
 
 describe("HostApi.storage containment refusals reach the boot audit log", () => {
-  // Windows creates directory junctions without Developer Mode, so the escape
-  // is a real reparse point on every platform CI runs on.
+  // Use directory junctions on Windows so containment tests need no Developer Mode.
   const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
   it("routes a symlink escape through the shared plugin-runtime audit sink", async () => {
@@ -456,9 +423,7 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
       /symlink escapes plugin storage root/,
     );
 
-    // Same record the webview-bridge wiring emits (single authority:
-    // createPluginStorageAuditSink), carried by the same `pluginRuntimeAuditLog`
-    // transport `new PluginRuntime({ auditLog })` receives.
+    // Use the same storage-audit sink and transport as the runtime.
     const entries = lastBootAuditLogger.log.mock.calls.map(
       ([entry]) => entry as { type: string; sessionId: string; input: string; output?: string },
     );
@@ -488,8 +453,7 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     );
 
     await api.storage.writeJson("prefs.json", { theme: "dark" });
-    // The production factory operates in the host-only storage root beside
-    // data/, never in the data directory the confined child writes.
+    // Host storage stays beside data/, outside the confined child’s writable directory.
     expect(existsSync(join(resolvePluginHostStorageDir(dataDir), "prefs.json"))).toBe(true);
     expect(existsSync(join(dataDir, "prefs.json"))).toBe(false);
 
@@ -720,7 +684,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("uses the raw registry install identity for canonical alias HostApi provenance", async () => {
     const installAlias = "marketplace-install-alias";
-    // A granted plugin (design §10.3) whose registry row sits under an alias.
+    // The registry alias must not change grant provenance.
     const pluginId = "meeting";
     const secretKey = "llm.apiKey.openai";
     const { manifest, manifestSha256 } = granted(pluginId, secretKey);
@@ -1024,8 +988,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   });
 
   it("re-reads a registry entry another writer bound after the plugin started", async () => {
-    // The §16.3 migration binds a legacy entry to the official source from the
-    // background boot pass, after plugins run, and raises no install event.
+    // Background origin migration emits no install event.
     const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-registry-"));
     runtimeTestState.registryPath = join(dir, "registry.json");
     try {
@@ -1050,8 +1013,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   });
 
   it("lets a committed candidate see a registry entry bound after it started", async () => {
-    // A pre-switch entry re-enabled before the first sync: its candidate has no
-    // origin until the §16.3 migration binds one in the registry.
+    // Re-enabled legacy entries have no origin until migration binds one.
     const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-candidate-bound-"));
     runtimeTestState.registryPath = join(dir, "registry.json");
     try {
@@ -1177,14 +1139,12 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     }
     expect(eventHandler).toHaveBeenCalledTimes(1);
     expect(pluginsChanged).not.toHaveBeenCalled();
-    // Control: the same subscription delivers while shutdown has not begun.
     emitHostEvent("plugin.installed", { pluginId: "plugin-b", source: "marketplace" });
     expect(pluginsChanged).toHaveBeenCalledWith({ type: "installed", pluginId: "plugin-b", source: "marketplace" });
   });
 
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
-    // The plugin's own spec cannot name a read inside the protected floor;
-    // the host decides from the manifest's `hostDirectory` grants.
+    // Only host-interpreted manifest grants can name reads inside the protected floor.
     runtimeTestState.spawnWorker.mockResolvedValue({
       socketPath: null, pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
     });
@@ -1556,10 +1516,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   });
 
   it("audits a capability-denied emit from the production HostApi emit closure", async () => {
-    // Producer is the real `createHostApi` captured out of initPluginRuntime —
-    // the same closure the plugin's runtime handler calls. `capabilities` is present
-    // and deliberately does NOT authorize: emit authorization is inferred from
-    // `emittedEvents`.
+    // Emit authorization comes from emittedEvents; capabilities must not unlock it.
     const bootAuditLogger = { log: vi.fn() };
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
@@ -1595,7 +1552,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       + " required=mail-source declaredEmittedEvents=plugin-a.updated",
     );
 
-    // Negative control: a declared emit adds no denial row.
     api.emitEvent("plugin-a.updated", { value: 1 });
     expect(
       bootAuditLogger.log.mock.calls.filter(([entry]) =>

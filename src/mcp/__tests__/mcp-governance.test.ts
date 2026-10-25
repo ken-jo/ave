@@ -79,8 +79,6 @@ afterEach(async () => {
   await rm(testDir, { recursive: true, force: true });
 });
 
-// ─── Round 2 security tests: denylist + cap (PR #765) ────────────
-
 function makeStdioPolicy(apiKeyEnv?: string): McpGovernancePolicy {
   return {
     version: "1.0",
@@ -547,56 +545,42 @@ describe("McpGovernance — per-request capability gate (governance-per-request)
     const gov = governanceWithPolicy(basePolicy({ allowedCapabilities: [] }));
     expect(gov.validateRequestCapability("browser-use", "server/discover").valid).toBe(true);
     expect(gov.validateRequestCapability("browser-use", "initialize").valid).toBe(true);
-    // §6a.3 — opening the notification channel exercises no gated capability;
-    // every notification-driven refresh re-enters the gated */list paths.
+    // Opening notifications needs no capability; refreshes re-enter gated list methods.
     expect(gov.validateRequestCapability("browser-use", "subscriptions/listen").valid).toBe(true);
-    // Notifications never pass through this gate (sendNotification does not
-    // consult it), so they are declassified — fail-closed like any unknown verb.
+    // Notifications bypass request governance, so treating them as requests must fail closed.
     expect(gov.validateRequestCapability("browser-use", "notifications/initialized").valid).toBe(false);
   });
 
   it("fail-closed: denies an unclassified (non-control, uncapability) method", () => {
-    // CRITIC finding — unknown capability verbs must NOT sail through ungated.
     const gov = governanceWithPolicy(basePolicy({ allowedCapabilities: ["tools"] }));
-    // `ping` and `resources/subscribe`/`unsubscribe` were removed by the final
-    // `2026-07-28` revision — declassified here, so they fail closed too.
     for (const method of ["completion/complete", "logging/setLevel", "resources/subscribe", "resources/unsubscribe", "ping", "wat/evil"]) {
       expect(gov.validateRequestCapability("browser-use", method).valid, method).toBe(false);
     }
   });
 
   it("exempts MCP Apps ui:// reads from the resources capability (tools-only server)", () => {
-    // ARCHITECT finding — resources/read of a ui:// resource is the MCP Apps
-    // extension, not the core resources capability; must work for tools-only servers.
+    // Apps ui resources use the UI extension, allowing tools-only servers without core resources approval.
     const gov = governanceWithPolicy(basePolicy({ allowedCapabilities: ["tools"] }));
     expect(
       gov.validateRequestCapability("browser-use", "resources/read", { uri: "ui://app/panel.html" }).valid,
     ).toBe(true);
-    // A non-ui:// resources/read still requires the resources capability.
     expect(
       gov.validateRequestCapability("browser-use", "resources/read", { uri: "file:///etc/hosts" }).valid,
     ).toBe(false);
   });
 
   it("decides the ui:// exemption with the SAME predicate the client enforces", () => {
-    // This exemption is what lets a read skip the `resources` capability, and
-    // `McpClient.readResource` is what refuses a read that is not the Apps path. They
-    // answer one question, so they share one predicate — a URI exempted here that the
-    // client then refuses is a dead request, and one the client would serve but this
-    // refuses breaks MCP Apps on a tools-only server.
+    // Governance and the client must share the same Apps-URI predicate for capability exemptions.
     const gov = governanceWithPolicy(basePolicy({ allowedCapabilities: ["tools"] }));
     const exempt = (uri: unknown) =>
       gov.validateRequestCapability("browser-use", "resources/read", { uri }).valid;
 
-    // Malformed Apps URIs no longer buy the exemption. They fall through to needing
-    // `resources`, which this tools-only server does not have — the safe direction, and
-    // the client refuses them too, so nothing that used to work stops working.
+    // Malformed Apps URIs receive no exemption and still require resources capability.
     expect(exempt("ui://")).toBe(false);
     expect(exempt("ui:///panel.html")).toBe(false);
     expect(exempt("UI://app/panel.html")).toBe(false);
     expect(exempt("ui:panel.html")).toBe(false);
     expect(exempt(42)).toBe(false);
-    // …and the real thing still is exempt.
     expect(exempt("ui://app/panel.html")).toBe(true);
   });
 
@@ -633,10 +617,7 @@ describe("McpGovernance.validateServer — http scheme", () => {
   }
 
   it("admits plain http anywhere in the loopback block, not just 127.0.0.1", () => {
-    // This gate matched `localhost` / `127.0.0.1` / `::1` exactly, so a server
-    // on 127.0.0.2 -- loopback, traffic never leaving the host -- was told it
-    // needed HTTPS, while the marketplace provider gate admitted the same
-    // address. One question, two doors, two answers.
+    // Recognize the full loopback range consistently rather than requiring HTTPS on other 127/8 addresses.
     expect(validateUrl("http://127.0.0.1:9000/mcp").valid).toBe(true);
     expect(validateUrl("http://127.0.0.2:9000/mcp").valid).toBe(true);
     expect(validateUrl("http://localhost:9000/mcp").valid).toBe(true);

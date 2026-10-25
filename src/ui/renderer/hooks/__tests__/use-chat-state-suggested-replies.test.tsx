@@ -1,14 +1,4 @@
-/**
- * useChatState — suggested-replies lifetime across transcript changes.
- *
- * Suggested replies live in a renderer singleton that deliberately outlives
- * view remounts, so nothing about a component unmount bounds them. The
- * transcript intents are what mark the end of the conversation they describe:
- * every intent that replaces or rewinds the transcript must drop them, or the
- * next (possibly empty) conversation inherits a snapshot that still reads as
- * "suggestions on screen" — which is what suppresses the empty-conversation
- * affordances (project selector, suggested tasks).
- */
+/** Clear singleton suggested replies on transcript replacement or rewind; component unmount does not bound their lifetime. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, beforeEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";

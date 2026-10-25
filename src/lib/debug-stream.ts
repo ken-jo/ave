@@ -1,41 +1,19 @@
-/**
- * Streaming-flow diagnostic logger.
- *
- * Gated by `VITE_DEBUG_STREAM=1` or `AVE_DEBUG_STREAM=1` through the
- * preload bridge. DevTools can be open without enabling this stream.
- * Used to trace the chat-streaming path top-to-bottom: IPC events,
- * stream-state mutations, classifier output, WorkGroup mount/effect, and
- * handleAsk lifecycle.
- *
- * Usage:
- *   debugLog("WG", "render", { streaming, open });
- *   debugLog("stream", "BEGIN", requestId);
- *
- * Output format:
- *   [ave-debug:<scope>] <args...>
- *
- * Renderer-safe: prefers the preload bridge (`window.ave.env.debugStream`)
- * and also honors `import.meta.env.VITE_DEBUG_STREAM` / `process.env` when
- * available.
- */
+/** Enable stream diagnostics only through explicit debug flags; prefer the renderer-safe preload bridge. */
 function isFlagEnabled(value: unknown): boolean {
   return value === "1" || value === "true" || value === true;
 }
 
 export function isDebugStreamEnabled(): boolean {
-  // Preload is the canonical renderer source because BrowserWindow runs with
-  // nodeIntegration disabled, so `process` is not available in normal UI code.
+  // Normal renderer code lacks process because nodeIntegration is disabled.
   if (typeof window !== "undefined" && window.ave?.env?.debugStream === true) {
     return true;
   }
 
-  // Vite-style env fallback for browser/test harnesses that inject it.
   const importMetaEnv = (import.meta as { env?: Record<string, unknown> }).env;
   if (isFlagEnabled(importMetaEnv?.VITE_DEBUG_STREAM)) {
     return true;
   }
 
-  // Node/preload fallback keeps the helper usable outside the renderer.
   return (
     typeof process !== "undefined" &&
     (isFlagEnabled(process.env?.VITE_DEBUG_STREAM) || isFlagEnabled(process.env?.AVE_DEBUG_STREAM))

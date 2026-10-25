@@ -1,9 +1,4 @@
-/**
- * Plugin Doctor's repair: the entry it reinstalls, and what it asks the git
- * marketplace for. The repair skips the update review only because it puts the
- * version on disk back from the plugin's own source; these assertions red when
- * it would pick another source, another kind, or the newer candidate.
- */
+/** Repair bypasses update review only for reinstalling the installed version from its original source and kind. */
 import { describe, it, expect, vi } from "vitest";
 import {
   findPluginDoctorEntry,

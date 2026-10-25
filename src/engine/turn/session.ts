@@ -1,11 +1,3 @@
-/**
- * Session lifecycle.
- *
- * newConversation / loadSession / resetAndResume / branchFromCheckpoint /
- * startRoutineConversation. The newConversation + loadSession field-reset
- * lists live TOGETHER here so the two hand-maintained lists cannot drift.
- * Free functions over a `self: ConversationLoop` this-shaped param.
- */
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
 import { isValidSessionId, type SessionKind } from "../../memory/memory-manager.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -106,6 +98,7 @@ function applyFreshSessionState(
   self.sessionAdditionalDirectories = [];
   applyProjectContext(self, project);
   self.sessionStartFiredFor = null;
+  self.sessionSource = "clear";
   self.turnAdditionalDirectories = [];
   self.history.clear();
   self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
@@ -126,13 +119,7 @@ function applyFreshSessionState(
   self.tracer = createTracer(self.sessionId);
 }
 
-
-/**
- * Revoke every live session/turn directory covered by a removed workspace
- * root. When the active project depended on that root, re-authorize it against
- * the already-shrunk settings; independently registered child roots survive,
- * while unauthorized bindings fall back to the default workspace.
- */
+// Revoke grants under removed roots; keep independently authorized children and fall back for unauthorized projects.
 export function revokeWorkspaceRoot(
   self: ConversationLoop,
   removedRoot: string,
@@ -148,8 +135,7 @@ export function revokeWorkspaceRoot(
   const previousProjectName = self.sessionProjectName;
   const previousProjectWasDefault = self.sessionProjectIsDefault;
   const staticDirectories = self.deps.additionalDirectories ?? [];
-  // ONE revocation predicate, shared with every other live-scope owner the
-  // workspace-root removal sweep drives (see permissions/workspace-root-lifecycle.ts).
+  // Share the workspace-root lifecycle revocation predicate with other live-scope owners.
   const isRevoked = createWorkspaceRootRevocationFilter(
     normalizedRoot,
     options.preserveRoots ?? [],
@@ -162,8 +148,7 @@ export function revokeWorkspaceRoot(
       || staticDirectories.some(isRevoked),
   );
   if (affectsActiveTurn) {
-    // Tool batches snapshot their execution cwd. Abort only loops that actually
-    // reference the removed root; unrelated project work must keep running.
+    // Abort only loops whose snapshotted execution directory references the removed root.
     self.abortCurrentTurn(new Error("workspace-removal"));
   }
 
@@ -209,6 +194,7 @@ export function initializeConversation(
     throw new Error("conversation-loop:initialization-requires-pristine-session");
   }
   applyFreshSessionState(self, kind, project);
+  self.sessionSource = "startup";
 }
 
 export async function newConversation(
@@ -222,25 +208,18 @@ export async function newConversation(
     const outgoingSessionId = lease.sessionId;
     const leavingStartFiredFor = self.sessionStartFiredFor;
     const leavingSessionMeta = self.sessionMetaForLifecycle();
-    // SessionEnd (#811) — the outgoing session is being left for a new one.
     if (self.history.length > 0) {
       self.deps.memoryManager.saveSession(outgoingSessionId, self.history.getMessages()).catch((err: unknown) => {
         log.warn("newConversation saveSession failed: %s", (err as Error).message);
       });
     }
-    // Do not mutate session identity or session-scoped state until broker
-    // cleanup has a terminal, resource-zero proof.
+    // Require terminal resource-zero cleanup proof before mutating session identity or scoped state.
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
-    // C2(c): drop the previous session's loaded skills so a fresh chat
-    // starts with a clean overlay. Tests / stubs without overlay omit self.
     self.deps.skillOverlay?.clear(outgoingSessionId);
-    // Clear the OLD session's on-demand plugin activations BEFORE reassigning
-    // sessionId. Clearing after the reassignment would key on the NEW id and
-    // orphan the OLD session's Map entry.
+    // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);
-    // Emit only after cleanup is proven and all fallible retirement work has
-    // succeeded, immediately before committing the new generation.
+    // Emit after proven cleanup and fallible retirement, immediately before committing the new generation.
     if (leavingStartFiredFor !== null) {
       void self.fireLifecycleEvent(
         "SessionEnd",
@@ -290,9 +269,7 @@ export async function loadSession(
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
 
-    // Clear the OLD session's on-demand plugin activations BEFORE reassigning
-    // sessionId. Clearing after the reassignment would key on the NEW id and
-    // orphan the OLD session's Map entry.
+    // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);
     if (leavingStartFiredFor !== null) {
       void self.fireLifecycleEvent(
@@ -303,8 +280,8 @@ export async function loadSession(
     }
     self.sessionId = sessionId;
     self.sessionEpoch += 1;
-    // #811 m2 — switched-into session ⇒ SessionStart re-fires on its next turn.
     self.sessionStartFiredFor = null;
+    self.sessionSource = "resume";
     const sessionMeta = self.deps.memoryManager.loadSessionMetadata(sessionId);
     self.sessionKind = sessionMeta?.sessionKind ?? "main";
     self.sessionRoutineId = sessionMeta?.routineId ?? null;
@@ -336,9 +313,7 @@ export async function loadSession(
     self.lastTurnScope = null;
     self.lastTurnToolNames = null;
     self.turnAdditionalDirectories = [];
-    // Use max compactNum across all checkpoints (monotonic guarantee).
-    // Using array length would produce a stale value when normalizeCheckpoint drops
-    // invalid entries — next compact would reuse an already-used compactNum.
+    // Use maximum checkpoint number, not filtered array length, to prevent number reuse.
     self.compactNum = sessionMeta?.checkpoints?.reduce(
       (max, c) => Math.max(max, c.compactNum ?? 0),
       0,
@@ -362,9 +337,7 @@ export async function resetAndResume(
       return { ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 };
     }
 
-    // Session resume does not compact immediately. The next user turn computes
-    // a full request-input projection from the live prompt/tool scope before
-    // deciding whether compact is needed.
+    // Defer resume compaction until the next turn can measure its live prompt and tool scope.
     self.cumulativeUsage = {
       inputTokens: estimateMessagesTokens(self.history.getMessages()),
       outputTokens: 0,
@@ -413,11 +386,7 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
     const target = checkpoints.find((c) => c.compactNum === compactNum);
     if (!target) throw new Error(`Checkpoint #${compactNum} not found in session ${self.sessionId}`);
 
-    // Load the pre-compact snapshot saved at compaction time.
-    // The main session JSONL is overwritten by PostTurnHookChain.saveSession with the
-    // post-compact history after each turn, so it cannot be used to reconstruct the
-    // pre-checkpoint transcript. saveCheckpointSnapshot() persists messagesBefore to
-    // a checkpoint-specific file (.checkpoints/{sessionId}/{N}.jsonl) before the turn completes.
+    // Branch from the pre-compact snapshot; main session files already contain rewritten post-compact history.
     const snapshotMessages = self.deps.memoryManager.loadCheckpointSnapshot(self.sessionId, compactNum);
     if (!snapshotMessages) {
       throw new Error(
@@ -434,8 +403,7 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
     const newSessionId = createDlpSafeUuid();
     const sliced = (snapshotMessages as import("../llm/types.js").GenericMessage[]).slice(0, target.messageCountAtTrigger);
 
-    // Repair tool-pair invariant — loadCheckpointSnapshot skips malformed JSONL.
-    // lines, which can leave orphaned tool_call or tool_result entries in the slice.
+    // Repair pairs after snapshot loading skips malformed rows and can leave orphan calls or results.
     const { messages: repaired, removedMessages, removedToolCalls } = normalizeToolPairInvariant(sliced);
     if (removedMessages > 0 || removedToolCalls > 0) {
       log.warn(
@@ -454,7 +422,6 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       : rehydrated;
     await self.deps.memoryManager.saveSession(newSessionId, forkMessages);
 
-    // 브랜치 세션 metadata — checkpoint/fork provenance + prior summary.
     await self.deps.memoryManager.saveSessionMetadata(newSessionId, {
       sessionKind: self.sessionKind,
       ...(self.sessionRoutineId ? { routineId: self.sessionRoutineId } : {}),
@@ -466,7 +433,7 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       branchedAt: new Date().toISOString(),
     });
 
-    // The transcript decides whether the fork resumes; a prepended summary row does not.
+    // Transcript content decides fork resumability; an inserted summary row does not.
     const lastMessageRole = rehydrated[rehydrated.length - 1]?.role ?? null;
     const shouldAutoContinue = lastMessageRole === "user";
 
@@ -474,10 +441,6 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
     return { newSessionId, lastMessageRole, shouldAutoContinue };
   }
 
-/**
- * Recover the latest persisted context-token count from a message array.
- * Extracted verbatim from `conversation-loop.ts` — no `this` dependency.
- */
 function latestPersistedContextTokens(messages: GenericMessage[]): number {
   let latestTurnSummaryTokens = 0;
   let latestTurnSummaryCreatedAt = 0;

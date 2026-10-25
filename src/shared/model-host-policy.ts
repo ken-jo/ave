@@ -1,156 +1,53 @@
-/**
- * Host-owned model policy: the values Ave decides for itself rather than
- * reads from a model's description (issue #2501;
- * `docs/design/model-capability-catalog.md` §8).
- *
- * The model catalog, an endpoint's `/models` report and the user's settings
- * describe a model. What is here is not a description of any model: it is how
- * Ave budgets one nobody describes, how it throttles, and how it shapes a
- * request on the wire. None of it may be filled from a model name standing in
- * for a fact the catalog owns (a window, a price, a modality, a reasoning
- * level).
- *
- * Pure and browser-safe: the renderer's context ring reads it too.
- */
+import type { CatalogModel } from "./model-catalog/types.js";
 
-// ── Budget defaults ──────────────────────────────────────────────────────────
+/** Host policy owns unknown-model budgets, throttles, and request shape; never infer catalog facts from model-name spelling. */
 
-/**
- * The host's default request for an API-backed chat round's output, used when
- * the user set none. A host budget, not a model's maximum: the effective
- * limit is this or the user's value, clamped to the model's output ceiling
- * (`resolveOutputTokenLimit` in `context-budget.ts`).
- */
+/** The default request is a host budget, clamped to model ceilings, not a claimed model maximum. */
 export const DEFAULT_LLM_OUTPUT_TOKEN_LIMIT = 32_000;
 
-/**
- * The window budgeted for a model whose window nobody states: not the user,
- * not the endpoint's report, not the catalog. A guess, reported as source
- * `fallback` so the run record and the engine's warning say so.
- */
+/** Report unknown-capacity budgets as fallback so diagnostics expose the guess. */
 export const FALLBACK_CONTEXT_WINDOW = 128_000;
 
-/**
- * The largest window a declared or reported value is believed at.
- *
- * Above this the number is far likelier to be a typo or a malformed field than
- * a real deployment: an extra digit on 229,376 reads as 2,293,760, whose
- * preflight threshold no conversation ever reaches, so compaction never runs
- * again and the turn dies on a provider context error instead. The largest
- * window any model publishes today is about 2M, so this admits every real
- * model while refusing an order of magnitude past it.
- */
+/** Reject implausibly large windows so typos cannot move compaction beyond reachable thresholds. */
 export const MAX_CREDIBLE_CONTEXT_WINDOW = 4_000_000;
 
-// ── Throttling ───────────────────────────────────────────────────────────────
-
 interface TpmDefaultRow {
-  /** The vendors whose requests this limit throttles; an Azure deployment of the model shares it. */
+  /** Apply the throttle to all declared routes, including deployments of the same model. */
   readonly vendors: readonly string[];
   /** Any model id that begins with this one, compared without regard to case. */
   readonly idPrefix: string;
   readonly tokensPerMinute: number;
 }
 
-/**
- * Tokens-per-minute limits an organization's default OpenAI tier enforces on
- * a model whose prompt can exceed them: a 400K window behind a 200K TPM limit
- * (observed: 429 "Limit 200000"). Not a model fact — an account's throttle —
- * so it lives with the host's defaults and caps the compaction threshold.
- */
+/** Account-level token throttles can be smaller than context windows and must cap compaction thresholds. */
 const TPM_DEFAULTS: readonly TpmDefaultRow[] = [
   { vendors: ["openai", "azure-foundry"], idPrefix: "gpt-5.4-mini", tokensPerMinute: 200_000 },
   { vendors: ["openai", "azure-foundry"], idPrefix: "gpt-5.4-nano", tokensPerMinute: 200_000 },
 ];
 
-/** The host's TPM default for a vendor's model, or `undefined` when none applies. */
 export function hostTpmDefault(vendor: string, model: string): number | undefined {
   const id = model.toLowerCase();
   return TPM_DEFAULTS.find((row) => row.vendors.includes(vendor) && id.startsWith(row.idPrefix))?.tokensPerMinute;
 }
 
-// ── Request shape ────────────────────────────────────────────────────────────
-//
-// Facts about the Anthropic wire, not about the model's capacity: the catalog
-// lists Claude Sonnet 4.6 and Opus 4.6 at a 1M window with no note that the
-// window needs a beta header, and it carries no interleaving flag for
-// Anthropic. Each row names the model ids it applies to and the request
-// features it turns on.
-
-const CONTEXT_1M_BETA = "context-1m-2025-08-07";
-const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-
-interface ClaudeRequestShapeRow {
-  /** Matched against the model id as the route names it. */
-  readonly ids: RegExp;
-  /** The 1M window is delivered only with the `context-1m-2025-08-07` beta header. */
-  readonly context1MBeta?: true;
-  /** Numeric thinking may span tool calls with the `interleaved-thinking-2025-05-14` beta header. */
-  readonly interleavedNumericThinking?: true;
-}
-
-const CLAUDE_REQUEST_SHAPES: readonly ClaudeRequestShapeRow[] = [
-  // Any id that begins with the family id: dated and suffixed snapshots too.
-  { ids: /^claude-sonnet-4-6/iu, context1MBeta: true },
-  { ids: /^claude-opus-4-6/iu, context1MBeta: true },
-  // The numeric-thinking generations that support a budget across tool calls.
-  // A release date or `-latest` does not change a generation's capabilities;
-  // Sonnet 4.1 does not exist, so it is not listed.
-  { ids: /^claude-opus-4(?:-(?:0|1|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-  { ids: /^claude-sonnet-4(?:-(?:0|5))?(?:-(?:\d{8}|latest))?$/iu, interleavedNumericThinking: true },
-];
-
-/** The request-shape features the Anthropic wire carries for a model. */
 export interface ClaudeRequestShape {
-  /**
-   * Thinking is sent as `{type: "adaptive"}` with an effort, not as a numeric
-   * budget: version 4.6 onward. A release date after the major version is not
-   * a minor version.
-   */
   readonly adaptiveThinking: boolean;
-  readonly context1MBeta: boolean;
+  readonly numericThinking: boolean;
   readonly interleavedNumericThinking: boolean;
 }
 
-export function claudeRequestShape(model: string): ClaudeRequestShape {
-  const rows = CLAUDE_REQUEST_SHAPES.filter((row) => row.ids.test(model));
+export function claudeRequestShape(model: CatalogModel | undefined): ClaudeRequestShape {
+  const reasoning = model?.reasoning;
+  const numericThinking = reasoning?.supported === true && reasoning.budgetTokens !== undefined;
   return {
-    adaptiveThinking: takesAdaptiveThinking(model),
-    context1MBeta: rows.some((row) => row.context1MBeta === true),
-    interleavedNumericThinking: rows.some((row) => row.interleavedNumericThinking === true),
+    // Use numeric budgets when supported; qualitative-only controls use adaptive thinking without name-based guessing.
+    adaptiveThinking: reasoning?.supported === true && !numericThinking && Boolean(reasoning.effort?.length),
+    numericThinking,
+    interleavedNumericThinking: numericThinking && model?.interleaved === true,
   };
 }
 
-function takesAdaptiveThinking(model: string): boolean {
-  const match = model.toLowerCase().match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/u);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
-/**
- * Whether a request goes over OpenAI's Responses API rather than Chat
- * Completions: every Azure Foundry request, and an OpenAI request for the
- * reasoning families (gpt-5.x, the o-series), which the Responses API serves
- * with reasoning summaries. A wire choice, not a statement that the model
- * reasons: whether a request carries `reasoning_effort` is the catalog's to say.
- */
-export function usesOpenAIResponsesWire(vendor: string, model: string): boolean {
-  if (vendor === "azure-foundry") return true;
-  if (vendor !== "openai") return false;
-  const id = model.toLowerCase();
-  return ["gpt-5", "o1", "o3", "o4"].some((family) => id.includes(family));
-}
-
-/**
- * The `anthropic-beta` values a Claude request carries, in this order: the 1M
- * window opt-in for a model that needs it, and interleaved thinking when this
- * request sends numeric thinking with tools to a generation that supports it.
- */
-export function claudeBetaHeaders(request: { context1MBeta: boolean; interleavedThinking: boolean }): string[] {
-  return [
-    ...(request.context1MBeta ? [CONTEXT_1M_BETA] : []),
-    ...(request.interleavedThinking ? [INTERLEAVED_THINKING_BETA] : []),
-  ];
+/** The beta header is requested only for explicitly declared interleaving. */
+export function claudeBetaHeaders(request: { interleavedThinking: boolean }): string[] {
+  return request.interleavedThinking ? ["interleaved-thinking-2025-05-14"] : [];
 }

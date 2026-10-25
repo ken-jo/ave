@@ -59,9 +59,10 @@ function runImageChild(
     const maxWireBytes = 4 * Math.ceil(options.maxBytes / 3) + IMAGE_PREPARATION_POLICY.maxResponseMetadataBytes;
     let total = 0;
     let failure: Error | undefined;
+    let termination: void | Promise<void>;
     const stop = (error: Error): void => {
       failure ??= error;
-      forceKillManagedChildProcess(child, "image-preparation-stop");
+      termination = forceKillManagedChildProcess(child, "image-preparation-stop");
     };
     const abort = (): void => stop(signal.reason instanceof Error ? signal.reason : new Error("image-cancelled: Image preparation was cancelled."));
     signal.addEventListener("abort", abort, { once: true });
@@ -77,7 +78,8 @@ function runImageChild(
       failure = new Error(`image-processing-unavailable: ${error.message}`);
       if (child.pid) stop(failure);
     });
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
+      if (termination) await termination;
       signal.removeEventListener("abort", abort);
       if (failure) { reject(failure); return; }
       try {
@@ -149,11 +151,7 @@ export async function prepareImageFile(
   return prepareImageRequest(request, undefined, callerSignal);
 }
 
-/**
- * Normalize broker-returned bytes in the same isolated decoder used for local
- * files. The controller validates and copies the bounded input before queueing;
- * the child receives the binary payload through stdin, never argv/base64.
- */
+// Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.
 export async function prepareImageBytes(
   bytes: Uint8Array,
   requested: Partial<ImagePreparationOptions> = {},

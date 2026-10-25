@@ -1,48 +1,19 @@
-/**
- * Pure SoT for user font-appearance guards (`settings.appearance.font`).
- *
- * Extracted so both the main-process settings store (`src/data/settings-store.ts`,
- * which validates on write) and the renderer preload (`src/preload.ts`, which
- * validates the frame-0 theme prime before painting `--ave-font-size-scale` /
- * `--ave-font-family` on documentElement) enforce the *same* contract without
- * one pulling the other's dependencies. This module has zero runtime imports —
- * it is safe to bundle into the sandboxed preload context, unlike
- * `settings-store.ts` (which imports `electron.safeStorage` + `node:fs`).
- *
- * `settings-store.ts` re-exports these so existing import sites are unchanged.
- */
+/** Dependency-free guards share settings and pre-paint validation without loading privileged modules. */
 
-/**
- * Allowed `font.sizeScale` presets — multiplicative on the `1rem` base.
- * Discrete values keep the UI legible at every step (a free slider would let
- * users pick `0.4` and lock themselves out of the settings dialog).
- *
- * The ladder sits one step under the browser's 16px: the standard step is
- * 0.875 (14px root), so the transcript's `text-sm` body reads at ~12px — the
- * dense scale DESIGN.md describes — and "large" is the browser default.
- */
+/** Discrete scales keep settings usable; the standard scale matches the dense root typography. */
 export const FONT_SIZE_SCALE_VALUES = [0.75, 0.875, 1, 1.125] as const;
 export type FontSizeScale = (typeof FONT_SIZE_SCALE_VALUES)[number];
-/**
- * The scale with no override persisted. `styles.css` repeats this number as
- * the fallback of `var(--ave-font-size-scale, …)`, and the settings dialog
- * shows it as the standard step; the three must agree.
- */
+/** Keep the default scale aligned with the CSS fallback and settings label. */
 export const FONT_SIZE_SCALE_DEFAULT: FontSizeScale = 0.875;
 
 export interface AppearanceFontSettings {
   /** `"system"` = HOST_FONT_STACK default; otherwise a validated raw CSS font-family stack. */
   family?: "system" | string;
-  /** Multiplier on `1rem` base. Allowed: 0.75 / 0.875 / 1 / 1.125. */
   sizeScale?: FontSizeScale;
 }
 
-
-
-
 const _FONT_FAMILY_RE = /^[\p{L}\p{N} ,"'_-]+$/u;
-// Room for an installed font's stack: `"ave-font-<64-char package name>", `
-// followed by the host stack is 210 characters.
+// Allow enough characters for the longest installed font name plus the host stack.
 const _FONT_FAMILY_MAX = 256;
 
 export function isValidFontFamilyOverride(value: unknown): value is string {

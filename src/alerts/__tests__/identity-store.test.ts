@@ -1,7 +1,4 @@
-/**
- * The alert id is an HMAC under this install's secret, and the identity
- * tables persist ids and enums only.
- */
+/** Persist keyed alert ids and enums only, never dedupe keys. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -55,7 +52,7 @@ describe("install secret and alert id", () => {
     expect(id).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(alertIdFor(secret, "fixturemail", "reply", "mail-1")).toBe(id);
     expect(alertIdFor(Buffer.alloc(32, 1), "fixturemail", "reply", "mail-1")).not.toBe(id);
-    // Not a plain hash of the guessable key.
+    // Guessable keys require HMAC rather than a plain hash.
     const plain = createHmac("sha256", Buffer.alloc(0)).update("fixturemail\0reply\0mail-1").digest("base64url");
     expect(plain.slice(0, 32)).not.toBe(id);
   });
@@ -118,7 +115,6 @@ describe("AlertStore", () => {
     expect(store.add(open("fourth", { raisedAt: 4 })).map((gone) => gone.alertId)).toEqual(["old"]);
     store.add(open("low", { priority: "low", raisedAt: 5 }));
     expect(store.add(open("sixth", { raisedAt: 6 })).map((gone) => gone.alertId)).toEqual(["low"]);
-    // Another kind has its own three.
     expect(store.add(open("other", { kindId: "digest", raisedAt: 7 }))).toEqual([]);
   });
 
@@ -144,6 +140,13 @@ describe("AlertStore", () => {
     expect(store.isClosed("id0", 0)).toBe(false);
     expect(store.isClosed("id1", 0)).toBe(true);
     expect(store.isClosed(`id${MAX_CLOSED_PER_PLUGIN}`, 0)).toBe(true);
+
+    await store.flush();
+    const reloaded = createStore();
+    await reloaded.load(0);
+    expect(reloaded.isClosed("id0", 0)).toBe(false);
+    expect(reloaded.isClosed("id1", 0)).toBe(true);
+    expect(reloaded.isClosed(`id${MAX_CLOSED_PER_PLUGIN}`, 0)).toBe(true);
   });
 
   it("expires open identities at their lifetime and forgets closed ones past theirs", async () => {

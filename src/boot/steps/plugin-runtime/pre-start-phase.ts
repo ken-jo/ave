@@ -3,13 +3,7 @@ export type PluginRuntimeStartupState =
   | "starting"
   | "started";
 
-/**
- * Serializes boot-only durable plugin operations ahead of the one runtime start.
- * Admission is intentionally synchronous: once start() is called, no later
- * operation can enter the tail or touch durable plugin state. A failed start
- * remains sealed in `starting` and all callers receive the same rejection;
- * startup is never retried implicitly or reported as started.
- */
+/** Seal admission synchronously when start is called; failed startup stays sealed and shares its rejection. */
 export class PluginRuntimePreStartPhase {
   private state: PluginRuntimeStartupState = "accepting_pre_start_operations";
   private tail: Promise<void> = Promise.resolve();
@@ -37,8 +31,7 @@ export class PluginRuntimePreStartPhase {
   start(startPlugins: () => Promise<void>): Promise<void> {
     if (this.startPromise) return this.startPromise;
 
-    // This transition must happen before the first await so a caller that does
-    // not await start() still seals pre-start admission immediately.
+    // Seal before awaiting so even an unawaited start call closes durable-operation admission.
     this.state = "starting";
     this.startPromise = (async () => {
       await this.tail;

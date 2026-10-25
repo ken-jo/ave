@@ -1,15 +1,3 @@
-/**
- * Token preflight guard — token accumulation → compact trigger → compactWithBoundary.
- *
- * Covers:
- * - estimate-based trigger: estimateMessagesTokens ≥ threshold → compact called
- * - context-token secondary trigger: last context-fill SOT ≥ threshold even when
- *   estimate is below (undercount scenario for code-heavy English content)
- * - message count is not a compact trigger; token preflight owns context pressure
- * - autoCompact OFF → preflight skipped even when tokens exceed threshold
- * - disableSessionPersistence → preflight skipped
- * - threshold values: 80% of usable model context
- */
 import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { makeHistoryExceedingEstimateThreshold } from "./conversation-loop-test-helpers.js";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -28,12 +16,7 @@ import {
   makeConversationTurnProvider as makeTurnProvider,
   makeSyntheticCompactResult,
 } from "./conversation-loop-test-helpers.js";
-
-// ─── Module mock — intercept compactWithBoundary ──────────────────────────────
-//
-// vi.mock is hoisted to the top of the module at transform time, so it runs
-// before any import. We mock structured-compact.js so compactWithBoundary
-// returns a controlled result without requiring a real LLM call.
+import { ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
 
 vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
@@ -42,15 +25,12 @@ vi.mock("../structured-compact.js", () => ({
   withSummaryBoundary: vi.fn((messages: unknown) => messages),
 }));
 
-// Import the mock *after* vi.mock so we can configure return values per-test.
 import { compactWithBoundary } from "../structured-compact.js";
 import { CompressionStatus } from "../../shared/compact-status.js";
 
-// Clear mock call history before each test so assertions are test-local.
 beforeEach(() => {
   vi.mocked(compactWithBoundary).mockClear();
 });
-
 
 function makeSyntheticNoopResult(messages: GenericMessage[]): import("../structured-compact.js").CompactWithBoundaryResult {
   return {
@@ -75,19 +55,6 @@ function makeSyntheticContentTruncatedResult(messages: GenericMessage[]): import
   };
 }
 
-class ScriptedProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 describe("runPreflightGuard — estimate-based trigger", () => {
   it("calls compactWithBoundary when estimateMessagesTokens ≥ threshold", async () => {
     const settings = makeSettings(true, "claude-sonnet-4-5", "claude");
@@ -108,8 +75,8 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    // Configure mock to return a real-looking compact result.
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
+    const lifecycle = vi.spyOn(loop, "fireLifecycleEvent");
 
     const compactOccurredCb = vi.fn();
     await loop.runTurn(
@@ -119,7 +86,6 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // compactWithBoundary must have been called (estimate exceeded threshold).
     expect(compactWithBoundary).toHaveBeenCalled();
     expect(compactWithBoundary).toHaveBeenCalledWith(expect.objectContaining({
       memoryReviewer,
@@ -128,8 +94,10 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     const compactArgs = vi.mocked(compactWithBoundary).mock.calls[0]?.[0];
     expect(compactArgs).not.toHaveProperty("llm");
     expect(compactArgs).not.toHaveProperty("model");
-    // onCompactOccurred emitted from applyBoundaryToSession.
     expect(compactOccurredCb).toHaveBeenCalled();
+    expect(lifecycle).toHaveBeenCalledWith("PreCompact", expect.objectContaining({ reason: "auto-compact" }));
+    expect(lifecycle).toHaveBeenCalledWith("PostCompact", expect.objectContaining({ reason: "auto-compact" }));
+    lifecycle.mockRestore();
   });
 
   it("uses the provider-native projection for initial preflight", async () => {
@@ -219,8 +187,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     const messages = loop.getHistory().getMessages();
     const checkpointProjectionMessages = messages.slice(0, -1);
     const contextTokensAfter = messages[0]?.meta?.checkpointMeta?.contextTokensAfter;
-    // The summary rides in the boundary row, so the projection of the system
-    // prompt plus the compacted history is the whole post-compact context.
+    // The compact boundary carries the summary in post-compact history.
     expect(contextTokensAfter).toBe(
       estimateRequestInputProjection({
         systemPrompt: "system",
@@ -265,14 +232,11 @@ describe("runPreflightGuard — estimate-based trigger", () => {
 
 describe("runPreflightGuard — context-token secondary trigger", () => {
   it("calls compactWithBoundary when last context-fill SOT >= threshold even if estimate is below", async () => {
-    // Scenario: estimator undercount — history text is code-heavy and the
-    // context-fill SOT exceeds threshold while
-    // estimateMessagesTokens is still below (chars/4 undercount).
+    // Reported context pressure must trigger compaction when the character estimator undercounts.
 
     const settings = makeSettings(true, "claude-sonnet-4-5", "claude");
     const threshold = getModelPreflightThreshold("claude", "claude-sonnet-4-5");
 
-    // Short history — estimate well below threshold.
     const shortHistory: GenericMessage[] = [
       { role: "user", content: "short message" },
       { role: "assistant", content: "ok" },
@@ -287,12 +251,9 @@ describe("runPreflightGuard — context-token secondary trigger", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    // Simulate prior turn having reported a context-fill size above threshold.
     (loop as unknown as { lastContextInputTokens: number })
       .lastContextInputTokens = threshold + 1_000;
 
-    // Configure mock: return a compact result (with removedCount > 0) so
-    // applyBoundaryToSession fires and onCompactOccurred is emitted.
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(shortHistory));
 
     const compactOccurredCb = vi.fn();
@@ -303,7 +264,6 @@ describe("runPreflightGuard — context-token secondary trigger", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // Secondary trigger must have fired compactWithBoundary even though estimate was below.
     expect(compactWithBoundary).toHaveBeenCalled();
     expect(compactOccurredCb).toHaveBeenCalled();
   });
@@ -440,8 +400,7 @@ describe("queryLoop — rate-limit reactive compact", () => {
     );
 
     expect(compactWithBoundary).toHaveBeenCalledTimes(1);
-    // Recovery runs inside the turn, so the preserve floor has to count tool
-    // rounds. Counting user turns pins the whole turn and compacts nothing.
+    // In-turn recovery must preserve tool rounds; preserving user turns pins the entire active turn.
     expect(compactWithBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ preserveUnit: "tool-rounds" }),
     );
@@ -679,7 +638,6 @@ describe("runPreflightGuard — skip conditions", () => {
 
 describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
   it("blocks compactWithBoundary after MAX_FORCE_RECOVER_PER_SESSION exhaustion and fires onRecoveryExhausted", async () => {
-    // autoCompact ON so normal threshold gate would fire; force-recover budget exhausts first.
     const settings = makeSettings(true, "claude-sonnet-4-5", "claude");
     const threshold = getModelPreflightThreshold("claude", "claude-sonnet-4-5");
     const history = makeHistoryExceedingEstimateThreshold(threshold);
@@ -690,11 +648,9 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    // Simulate budget already exhausted: set count to MAX (3) directly.
     (loop as unknown as { contextErrorPending: boolean }).contextErrorPending = true;
     (loop as unknown as { contextErrorRecoveryCount: number }).contextErrorRecoveryCount = 3;
 
-    // Mock compact to return success — should NOT be called.
     vi.mocked(compactWithBoundary).mockResolvedValue(makeSyntheticCompactResult(history));
 
     const recoveryExhaustedCb = vi.fn();
@@ -706,11 +662,8 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
       { inputOrigin: "user-keyboard" },
     );
 
-    // Hard-cap: compactWithBoundary must NOT be called even though history exceeds threshold.
     expect(compactWithBoundary).not.toHaveBeenCalled();
-    // Renderer must be notified of exhaustion.
     expect(recoveryExhaustedCb).toHaveBeenCalledTimes(1);
-    // compact_started must NOT fire (no API call).
     expect(compactStartedCb).not.toHaveBeenCalled();
   });
 
@@ -725,12 +678,10 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    // Pre-set recoveryExhausted=true (as if prior turn triggered it).
     (loop as unknown as { recoveryExhausted: boolean }).recoveryExhausted = true;
 
     vi.mocked(compactWithBoundary).mockResolvedValue(makeSyntheticCompactResult(history));
 
-    // First turn — recoveryExhausted blocks compact.
     const compactStartedCb1 = vi.fn();
     await loop.runTurn(
       "turn while exhausted",
@@ -741,11 +692,9 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
     expect(compactWithBoundary).not.toHaveBeenCalled();
     expect(compactStartedCb1).not.toHaveBeenCalled();
 
-    // After a clean turn recoveryExhausted should be reset to false.
     expect((loop as unknown as { recoveryExhausted: boolean }).recoveryExhausted).toBe(false);
     expect((loop as unknown as { contextErrorRecoveryCount: number }).contextErrorRecoveryCount).toBe(0);
 
-    // Next turn with context_error pending can force-recover again.
     vi.mocked(compactWithBoundary).mockClear();
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
     (loop as unknown as { contextErrorPending: boolean }).contextErrorPending = true;
@@ -757,7 +706,6 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
       undefined,
       { inputOrigin: "user-keyboard" },
     );
-    // After re-arm force-recover can fire again.
     expect(compactWithBoundary).toHaveBeenCalled();
     expect(compactStartedCb2).toHaveBeenCalled();
   });
@@ -775,14 +723,7 @@ describe("getPreflightThreshold — 80% usable-context trigger", () => {
   });
 });
 
-/**
- * A turn that grows its own context past the threshold.
- *
- * The turn-start guard measures the history the user's message arrives with.
- * An agent turn then appends its own tool results for as many rounds as it
- * runs, and nothing re-measured that growth: the projection could cross the
- * threshold at round three and stay over for every round after it.
- */
+// Preflight must measure context growth within a tool loop, not only at turn start.
 class ToolLoopProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   roundsStarted = 0;
@@ -801,11 +742,6 @@ class ToolLoopProvider implements LLMProvider {
   }
 }
 
-/**
- * The one round that carries both a compaction and a pending re-prompt: two
- * tool rounds grow the history, a reasoning-only round arms the re-prompt, and
- * the round after it assembles the re-prompt AND crosses the threshold.
- */
 class NudgeAndCompactProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   readonly requests: StreamTurnParams[] = [];
@@ -865,8 +801,6 @@ async function makeToolLoopSetup(resultChars: number, toolRounds: number) {
 
 describe("round-loop token preflight — a turn that grows its own context", () => {
   beforeEach(() => {
-    // A small threshold stands in for a full context window: the gate reads the
-    // same `getModelPreflightThreshold` the turn-start guard does.
     process.env.AVE_DEV_PREFLIGHT_OVERRIDE = "5000";
     vi.mocked(compactWithBoundary).mockImplementation(
       async ({ messages }) => makeSyntheticCompactResult(messages),
@@ -878,9 +812,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
   });
 
   it("compacts mid-turn once the accumulated tool results cross the threshold", async () => {
-    // ~1,500 tokens of tool result per round (kept under MAX_TOOL_RESULT_TOKENS
-    // so the result reaches the wire whole) against a 5,000-token threshold:
-    // the turn starts well under and crosses partway through.
+    // Keep results below the per-result cap so they cross preflight without being stubbed first.
     const { loop, provider } = await makeToolLoopSetup(6_000, 8);
     const decisions: TurnDecisionEvent[] = [];
     const roundsWhenCompacted: number[] = [];
@@ -897,31 +829,20 @@ describe("round-loop token preflight — a turn that grows its own context", () 
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
-    // Not at turn start: the turn began with an empty history and a short
-    // question, so the only thing that could have crossed the threshold is the
-    // turn's own tool output.
     expect(roundsWhenCompacted[0]).toBeGreaterThan(0);
     expect(decisions).toContainEqual(
       expect.objectContaining({ kind: "compact.auto", branch: "fired" }),
     );
-    // Mid-turn the protected window has to be this turn's own tool rounds. On
-    // the user-turn floor the whole turn sits inside the protected region and
-    // the compactor reduces nothing, however far over the threshold it is.
+    // The protected window must count tool rounds to allow active-turn compaction.
     expect(compactWithBoundary).toHaveBeenCalledWith(
       expect.objectContaining({ preserveUnit: "tool-rounds" }),
     );
   });
 
   it("sends one instruction row, once, when the re-prompt round is also the compacting round", async () => {
-    // Both the re-prompt and the compaction land in the same round, so the
-    // round is assembled twice: once to measure it, once against the history
-    // the compaction rewrote. An assembly that consumed the armed re-prompt
-    // itself would spend the cap on the assembly that was only measured and
-    // send the round that reaches the model without any instruction at all.
+    // Measuring and rebuilding a round must not spend or consume its pending re-prompt twice.
     const sessionId = "7c9d2b41-3e18-4c05-8b6a-9d4f1e0a2c73";
-    // Stored history remains below the threshold. Only the pending request's
-    // bounded reasoning replay and instruction cross it, so both preflight
-    // checks must measure that assembled request rather than raw history.
+    // Preflight must measure pending replay and instructions as part of the assembled request.
     process.env.AVE_DEV_PREFLIGHT_OVERRIDE = "1400";
     const provider = new NudgeAndCompactProvider();
     const deps = makeDeps({
@@ -948,10 +869,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
     const instruction = t("be_conversationLoop.reasoningOnlyContinuePrompt");
     const rePromptRequest = provider.requests[3]!;
     const rePromptRound = rePromptRequest.messages;
-    // Compaction rewrote history only; the system prompt is unchanged.
     expect(rePromptRequest.systemPrompt).toBe(provider.requests[0]!.systemPrompt);
-    // The round went out on the compacted history, not the one the gate
-    // measured — and it still carries the instruction, exactly once.
     expect(rePromptRound[0]?.meta?.compactBoundary).toBe(true);
     expect(compactWithBoundary).toHaveBeenCalledTimes(1);
     const compactInput = vi.mocked(compactWithBoundary).mock.calls[0]![0];
@@ -964,9 +882,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       messages: compactInput.messages,
     }, provider);
     expect(rawHistoryProjection.totalTokens).toBeLessThan(getModelPreflightThreshold("openai", "gpt-4o"));
-    // The compact boundary stores the re-evaluation against rewritten history.
-    // Its pressure must include the same pending instruction and reasoning
-    // replay that the provider actually receives after compaction.
+    // Boundary pressure must match the pending content actually sent after compaction.
     const sentProjection = estimateRequestInputProjection(projectionInput, provider);
     expect(rePromptRound[0]?.meta?.checkpointMeta?.contextTokensAfter).toBe(sentProjection.totalTokens);
     expect(
@@ -975,8 +891,6 @@ describe("round-loop token preflight — a turn that grows its own context", () 
           typeof message.content === "string" && message.content.includes(instruction),
       ),
     ).toHaveLength(1);
-    // And the cap was charged once for it: the second reasoning-only round
-    // still sees one spend behind it, not two.
     expect(decisions.filter((event) => event.kind === "reasoning_only.continuation")).toEqual([
       expect.objectContaining({ branch: "continue", data: expect.objectContaining({ nudgesRun: 0 }) }),
       expect.objectContaining({ branch: "continue", data: expect.objectContaining({ nudgesRun: 1 }) }),
@@ -1006,9 +920,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
   });
 
   it("leaves the turn-start guard as the only compaction when the history arrives over the threshold", async () => {
-    // The round-loop gate skips the turn's first provider call precisely
-    // because the turn-start guard already measured that request. A turn that
-    // was already over must still compact exactly once, before round 0.
+    // Turn-start preflight already covers the first call; round preflight must not compact it twice.
     const sessionId = "0f2b7a63-1a26-4f0e-9c1e-6a1a6a2b31c7";
     const history = makeHistoryExceedingEstimateThreshold(5_000);
     const provider = new ToolLoopProvider(0);
@@ -1055,11 +967,9 @@ describe("round-loop token preflight — a turn that grows its own context", () 
   });
 
   it("does not fire again on the next round when a compaction left the projection over the threshold", async () => {
-    // A compaction that reduced the history but not below the threshold used
-    // to re-arm at zero, so the very next round crossed and compacted again.
+    // Partial progress must not immediately re-arm compaction while still above the threshold.
     const { loop } = await makeToolLoopSetup(1_200, 40);
     const decisions: TurnDecisionEvent[] = [];
-    // Reduces by one message — real progress, still far over the threshold.
     vi.mocked(compactWithBoundary).mockImplementation(async ({ messages }) => ({
       status: CompressionStatus.SUMMARIZED,
       boundary: makeSyntheticCompactResult(messages).boundary,
@@ -1084,9 +994,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
   });
 
   it("does not spend a compaction per round when compaction cannot reduce the history", async () => {
-    // NOOP is the shape of "there was nothing left to summarize": the
-    // projection stays over the threshold, so an ungated gate would spend an
-    // LLM compaction on every remaining round of the turn.
+    // No-op compaction must not spend another model call on every subsequent round.
     const { loop } = await makeToolLoopSetup(1_200, 40);
     const decisions: TurnDecisionEvent[] = [];
     vi.mocked(compactWithBoundary).mockImplementation(
@@ -1105,8 +1013,6 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       (event) => event.kind === "compact.auto" && event.branch === "rearm-hold",
     ).length;
     expect(attempts).toBeGreaterThan(0);
-    // Rounds where the threshold was crossed and the gate declined anyway,
-    // because nothing had grown enough for a boundary to cut differently.
     expect(held).toBeGreaterThan(0);
   });
 });

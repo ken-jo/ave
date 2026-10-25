@@ -1,11 +1,8 @@
-/**
- * Each tab operation from main is carried out by exactly one chat view's
- * store: the one holding the tab, or for a new tab the one showing the
- * conversation it is for.
- */
+/** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
-import { bindGuestToTab, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
+import { setWebSurfaceElement } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -13,13 +10,21 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
     calls,
     sessionId: () => sessionId,
     hasTab: (tabId) => tabs.includes(tabId),
-    openAgentTab: vi.fn((url, requestId) => calls.push(`new ${url} ${requestId}`)),
+    openAgentTab: vi.fn((url, requestId, active) => calls.push(`new ${url} ${requestId} ${active}`)),
     selectTab: vi.fn((tabId) => calls.push(`select ${tabId}`)),
     closeTab: vi.fn((tabId) => calls.push(`close ${tabId}`)),
   };
 }
 
 describe("user browser navigation", () => {
+  it("quietly ignores a close for a tab no host holds", () => {
+    const owner = host("session", ["browser:live"]);
+    const unregister = registerBrowserTabHost({} as AveApi, owner);
+    try {
+      expect(() => closeBrowserTab("browser:missing")).not.toThrow();
+      expect(owner.calls).toEqual([]);
+    } finally { unregister(); }
+  });
   it("waits for main to confirm takeover before navigating", async () => {
     let resolveStop!: (result: { ok: true }) => void;
     const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { resolveStop = resolve; }));
@@ -108,23 +113,45 @@ describe("guest binding", () => {
 });
 
 describe("routeBrowserTabOp", () => {
-  it("opens a new tab beside the conversation it is for, else in the first view", () => {
+  it("focuses only the exact connected visible guest without selecting a different surface", () => {
+    const guest = document.createElement("webview");
+    const focus = vi.spyOn(guest, "focus");
+    vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 300, height: 200 } as DOMRect);
+    document.body.append(guest);
+    setWebSurfaceElement("browser:focus", guest);
+    try {
+      const candidate = host("s1", ["browser:focus"]);
+      routeBrowserTabOp({ requestId: "f1", op: "focus", tabId: "browser:missing" }, [candidate]);
+      expect(focus).not.toHaveBeenCalled();
+      routeBrowserTabOp({ requestId: "f2", op: "focus", tabId: "browser:focus" }, [candidate]);
+      expect(focus).toHaveBeenCalledOnce();
+      guest.style.visibility = "hidden";
+      routeBrowserTabOp({ requestId: "f3", op: "focus", tabId: "browser:focus" }, [candidate]);
+      expect(focus).toHaveBeenCalledOnce();
+      guest.style.visibility = "visible";
+      guest.setAttribute("inert", "");
+      routeBrowserTabOp({ requestId: "f4", op: "focus", tabId: "browser:focus" }, [candidate]);
+      expect(focus).toHaveBeenCalledOnce();
+      expect(candidate.calls).toEqual([]);
+    } finally { setWebSurfaceElement("browser:focus", null); guest.remove(); }
+  });
+  it("opens beside the exact named conversation, and uses the first view only when none is named", () => {
     const first = host("s1", []);
     const second = host("s2", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2" }, [first, second]);
-    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other" }, [first, second]);
-    routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/" }, [first, second]);
-    expect(second.calls).toEqual(["new https://a.example/ r1"]);
-    expect(first.calls).toEqual(["new https://b.example/ r2", "new https://c.example/ r3"]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", active: false }, [first, second]);
+    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", active: true }, [first, second]);
+    routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/", active: true }, [first, second]);
+    expect(second.calls).toEqual(["new https://a.example/ r1 false"]);
+    expect(first.calls).toEqual(["new https://c.example/ r3 true"]);
   });
 
   it("never opens the agent's new tab in a host that only holds tabs (the main area's web panels)", () => {
     const { openAgentTab: _unused, ...mainArea } = host(null, ["browser:7"]);
     const panels = mainArea as BrowserTabHost & { calls: string[] };
     const chat = host("s1", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/" }, [panels, chat]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", active: false }, [panels, chat]);
     routeBrowserTabOp({ requestId: "r2", op: "select", tabId: "browser:7" }, [panels, chat]);
-    expect(chat.calls).toEqual(["new https://a.example/ r1"]);
+    expect(chat.calls).toEqual(["new https://a.example/ r1 false"]);
     expect(panels.calls).toEqual(["select browser:7"]);
   });
 

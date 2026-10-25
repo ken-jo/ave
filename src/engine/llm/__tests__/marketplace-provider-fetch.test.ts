@@ -42,9 +42,6 @@ describe("guarded model-provider fetch", () => {
   });
 
   it("rejects every request and registers no trust policy when the baseUrl is unparseable", async () => {
-    // `originFor("not a url")` hits the URL-constructor catch and returns null,
-    // so `configuredOrigin` is null: no request can equal an absent origin, and
-    // the `if (configuredOrigin)` policy-registration guard is skipped.
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const providerFetch = createGuardedModelProviderFetch("not a url", fetchImpl);
 
@@ -55,8 +52,6 @@ describe("guarded model-provider fetch", () => {
     ).rejects.toThrow("configured origin");
     expect(fetchImpl).not.toHaveBeenCalled();
 
-    // No policy was recorded for the unparseable baseUrl, so credentialed-HTTP
-    // trust cannot be claimed for it.
     expect(
       isGuardedInsecureCredentialedModelProviderFetch("not a url", providerFetch),
     ).toBe(false);
@@ -103,7 +98,6 @@ describe("tailnet reach for a saved self-hosted endpoint", () => {
     expect(typeof scope).toBe("function");
     if (typeof scope !== "function") return;
     expect(scope(new URL(tailnetBase))).toBe(true);
-    // A redirect or SDK pivot to any other tailnet peer stays closed.
     expect(scope(new URL("http://100.83.225.18:30000/v1"))).toBe(false);
     expect(scope(new URL("http://100.75.34.2:8080/v1"))).toBe(false);
   });

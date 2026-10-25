@@ -1,53 +1,23 @@
-/**
- * Engine guidance buffer + round-boundary inject — regression guard for the
- * "guide" mode of the chat utterance taxonomy (`src/shared/chat-utterance.ts`).
- *
- * Contract (re-stated for future readers):
- *   - `queueGuidance(text)` returns `"queued" | "no-active-turn" | "queue-full"
- *     | "too-long" | "empty"`. Bounded by `GUIDE_MAX_ENTRIES` (16) and
- *     `GUIDE_MAX_CHARS` (8000) — caller MUST surface non-"queued" results
- *     so the renderer can preserve the user's typed text.
- *   - At each round boundary AFTER round 0 (between tool execution end and
- *     the next LLM stream), any buffered text is drained, joined with
- *     `"\n\n"`, prepended with the "[방향 지시 — ...]" marker, and appended
- *     to history as a `user` message so the model sees it like normal input.
- *   - Per user spec "방향지시는 endturn 전에 영향을 미치는 거": when a turn
- *     would end (no tool calls or stopReason="end_turn") but guide is queued,
- *     the loop refuses to return and falls through to one more round so the
- *     LLM responds to the queued direction-adjustment. Round-cap still applies
- *     — if cap is reached, `onGuidanceDropped` fires and the user sees a
- *     visible "방향 지시 미적용" system entry.
- *   - `onGuidanceInjected(text)` and `onGuidanceDropped(text)` callbacks fire
- *     per round-boundary drain / per turn-end drop so the renderer surfaces
- *     visible system entries.
- *   - `hasActiveTurn()` is `currentAbortController !== null`, set just before
- *     `queryLoop` and cleared in `runTurn`'s `finally`.
- */
+// Rejected guidance must stay visible to the caller; capped turns report unapplied entries.
 import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   private index = 0;
-  /**
-   * Optional hook fired right BEFORE the next turn yields its first event.
-   * Tests use this to call `queueGuidance` after the turn has started (so
-   * `currentAbortController` is set and the active-turn check passes)
-   * without needing to spin up real concurrent IPC traffic.
-   */
+  // Queue after the controller is set, before the first stream event.
   beforeNextTurn?: () => void;
 
   constructor(private readonly turns: StreamEvent[][]) {}
@@ -75,16 +45,10 @@ function makeLoop(
   }),
   );
   configureTools?.(toolRegistry);
-  const loop = new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...overrides,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }
@@ -124,39 +88,30 @@ class DeferredGate<T> {
 describe("ConversationLoop guidance queue + boundary inject", () => {
   it("queues guide text and injects it at the next round boundary (between tool rounds)", async () => {
     const provider = new FakeProvider([
-      // Round 0: emit tool_call so the loop runs a second round.
       [
         { type: "text_delta", text: "보고를 시작합니다." } as StreamEvent,
         { type: "tool_call", id: "t1", name: "noop_tool", input: {},
         } as StreamEvent,
         { type: "message_complete", stopReason: "tool_use" } as StreamEvent,
       ],
-      // Round 1 (after tool result): final text.
       [
         { type: "text_delta", text: "방향 반영 결과." } as StreamEvent,
         { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
       ],
     ]);
-    // Queue mid-turn (after currentAbortController is set, before round 1
-    // starts) so the active-turn check passes and the inject site catches it.
     provider.beforeNextTurn = () => {
-      // First yield of turn 0 — controller is set; queue guidance now.
-      // (Subsequent yields no-op because `beforeNextTurn = undefined`.)
     };
     const loop = makeLoop(provider);
     const injected: string[] = [];
     const dispositions: string[] = [];
     let injectedAckFinished = false;
 
-    // Schedule queueGuidance right after runTurn starts.
     const turnPromise = loop.runTurn(
       "긴 보고서 만들어줘",
       { onGuidanceInjected: (t) => injected.push(t) },
       undefined,
       { inputOrigin: "user-keyboard" },
     );
-    // Microtask ordering: by the time the first stream event resolves, the
-    // controller has been set. Queue guidance now.
     await Promise.resolve();
     loop.queueGuidanceWithDisposition("더 짧게 요약", {
       onInjected: async () => {
@@ -181,11 +136,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("marks the injected row as host-minted, whoever the batch came from", async () => {
-    // The row is a host injection whether it carried the user's guide, a
-    // child's report, or both. Anything that later decides what the USER said
-    // reads this marker — the tier-2 parent-context evidence is the first such
-    // reader, and a mixed batch is deliberately not attributed to the child,
-    // so without the stamp a child's prose would pass as its parent's words.
+    // Stamp host injections so child reports cannot be mistaken for parent-authored text.
     const provider = new FakeProvider([
       [
         { type: "tool_call", id: "t1", name: "noop_tool", input: {} } as StreamEvent,
@@ -248,10 +199,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("extends a 1-round turn by one round to deliver queued guide BEFORE end-turn", async () => {
-    // User spec: "방향지시는 endturn 전에 영향을 미치는 거". A naive
-    // single-round turn would let end_turn ship before the inject site runs;
-    // queryLoop now refuses to return when guidance is queued, falling
-    // through to one more round so the LLM responds with the guide applied.
+    // Pending guidance must affect the turn before end_turn, subject to the round cap.
     const provider = new FakeProvider([
       [
         { type: "text_delta", text: "원래 답" } as StreamEvent,
@@ -423,9 +371,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   it("rejects empty / oversized / no-active-turn cases by return code", () => {
     const provider = new FakeProvider([]);
     const loop = makeLoop(provider);
-    // No active turn — IPC handler must surface this so renderer keeps text.
     expect(loop.queueGuidance("뭔가")).toBe("no-active-turn");
-    // Synthesize an active turn for the rest of the matrix.
     (
       loop as { currentAbortController: AbortController | null }
     ).currentAbortController = new AbortController();
@@ -447,15 +393,8 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("fires onGuidanceDropped when round-cap blocks the extension", async () => {
-    // maxRounds: 1 → one assistant round allowed; extension would need a
-    // second round, which the cap forbids. Queue must drain via the
-    // drop-on-end path so the renderer surfaces the failure.
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "응답" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    // At the round cap, drop queued guidance visibly instead of silently losing it.
+    const provider = new FakeProvider(endTurnScript("응답"));
     const loop = makeLoop(provider);
     const injected: string[] = [];
     const dropped: string[] = [];
@@ -482,12 +421,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("`hasActiveTurn()` reflects in-flight runTurn for IPC gate", async () => {
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const loop = makeLoop(provider);
     expect(loop.hasActiveTurn()).toBe(false);
     const p = loop.runTurn("test", undefined, undefined, {
@@ -497,12 +431,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     expect(loop.hasActiveTurn()).toBe(false);
   });
   it("drops guidance queued during a deferred prompt denial and never leaks it into session B", async () => {
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "session B response" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("session B response"));
     const skillOverlay = { clear: vi.fn() };
     const loop = makeLoop(provider, { skillOverlay });
     const gate = new DeferredGate<{
@@ -560,7 +489,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
           message.content.includes("A-only guidance"),
       ),
     ).toBe(false);
-    // Turn cleanup does not touch the per-conversation read-skill registry.
+    // Turn cleanup must preserve the conversation-scoped read-skill registry.
     expect(skillOverlay.clear).not.toHaveBeenCalled();
   });
 
@@ -762,8 +691,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     expect(injected).toHaveBeenCalledTimes(1);
     expect(dropped).toHaveBeenCalledTimes(1);
     expect(rendererInjected).toHaveBeenCalledTimes(1);
-    // The renderer is told which history row the injection landed on, so the
-    // bubble it draws names the same row a reloaded transcript names.
+    // Live injection bubbles must identify the same row as a reloaded transcript.
     expect(rendererInjected).toHaveBeenCalledWith(
       "durable child result",
       { messageId: expect.any(String) },
@@ -825,15 +753,11 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         typeof message.content === "string" &&
         message.content.includes("durable child result"),
     );
-    // Only the successful turn retains the separate guidance-injection row.
     expect(guidanceHistory).toHaveLength(1);
   });
 
   it("rolls back a drained mid-turn guide after an applied-compaction clone", async () => {
-    // The window is real: the guide is appended at a round boundary and only
-    // committed when that round finishes, and the rate-limit recovery inside
-    // the round compacts in between. Identity-based removal leaves the row in
-    // history AND puts its entry back on the queue — injected twice.
+    // Compaction can replace the injected row before commit; removal must survive identity changes.
     const provider = new FakeProvider([
       [
         { type: "tool_call", id: "t1", name: "noop_tool", input: {} } as StreamEvent,
@@ -847,7 +771,6 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     const dropped = vi.fn();
     vi.spyOn(loop, "shouldAutoCompactForRateLimit").mockReturnValue(true);
     vi.spyOn(loop, "runPreflightGuard").mockImplementation(async (_ctx, _signal, _cb, options) => {
-      // Only the rate-limit recovery, which runs after the row is in history.
       if (options?.forceReason !== "rate-limit") return false;
       cloneHistoryLikeAppliedCompaction(loop);
       return true;
@@ -872,9 +795,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
   });
 
   it("runs one preflight on a round that both drained a guide and crossed the threshold", async () => {
-    // The guidance drain evaluates the guard before appending; the round-loop
-    // gate evaluates it again before the provider call. Both firing in one
-    // round spends two LLM compactions on a history the first just rewrote.
+    // Guidance draining and round preflight must not both spend a compaction on the same round.
     process.env.AVE_DEV_PREFLIGHT_OVERRIDE = "1";
     try {
       const provider = new FakeProvider([
@@ -901,8 +822,6 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         inputOrigin: "user-keyboard",
       });
 
-      // A threshold of 1 token means the gate would fire on every round it is
-      // allowed to run. It stands down on the round the drain already covered.
       expect(intraTurnCalls.filter(Boolean)).toHaveLength(0);
       expect(intraTurnCalls.length).toBeGreaterThan(0);
     } finally {
@@ -987,15 +906,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       const dir = mkdtempSync(join(tmpdir(), "ave-host-injection-rollback-"));
       const memoryManager = new MemoryManager({ aveDir: dir });
       memoryManager.load();
-      const provider = new FakeProvider([
-        [
-          {
-            type: "text_delta",
-            text: "completed before post-turn failure",
-          } as StreamEvent,
-          { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-        ],
-      ]);
+      const provider = new FakeProvider(endTurnScript("completed before post-turn failure"));
       let dirtySnapshotSaved = false;
       const loop = makeLoop(provider, {
         memoryManager,

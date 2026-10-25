@@ -1,16 +1,6 @@
-/**
- * #1182 — provider-as-oracle reactive tool-schema guard.
- *
- * When the provider rejects the whole request with a strict-mode 400
- * (invalid_function_parameters) naming one offending function, the loop drops
- * just that tool and retries the round with the reduced set — no hand-rolled
- * mirror of the provider's strict-mode rules. These tests drive a real
- * ConversationLoop with two in-scope builtin tools and a provider that 400s.
- */
+// Drop only the provider-rejected schema and retry with the reduced tool set.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams, TurnSummary,
 } from "../llm/types.js";
@@ -20,10 +10,10 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-/** Provider that records the tool names it was handed on each streamTurn call. */
 class ToolRecordingProvider implements LLMProvider {
   private index = 0;
   readonly toolNamesPerCall: string[][] = [];
@@ -73,28 +63,29 @@ function makeLoop(
       }),
     );
   }
-  const loop = new ConversationLoop({
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     settingsService: {
       get: () => settings,
       getSecret: () => "test-key",
     },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }
 
-/**
- * A GPT-5.x route on Chat Completions: an OpenAI alias that names no Responses
- * family, declared as GPT-5.4 in the catalog.
- */
+// Use a catalog alias without a Responses family to exercise Chat Completions.
+// An uncataloged model lets the endpoint report its own reasoning parameter contract.
 function chatCompletionsGpt5Settings(): ReturnType<typeof fakeLlmSettings> {
-  const settings = fakeLlmSettings({ provider: "openai", model: "team-alias", outputTokenLimit: 32_000 });
-  settings.vendors.openai.catalogModel = "openai/gpt-5.4";
+  const model = "team-alias";
+  const settings = fakeLlmSettings({ provider: "openai", model, outputTokenLimit: 32_000 });
+  settings.modelListCache = {
+    [llmModelListCacheKey("openai", settings.vendors.openai.baseUrl)]: {
+      vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [model],
+      modelEntries: [{ id: model, supportedParameters: ["tools", "reasoning_effort"] }],
+      fetchedAt: "2026-10-13T00:00:00.000Z",
+    },
+  };
   settings.vendors.openai.enableThinking = true;
   settings.vendors.openai.thinkingBudgetTokens = 16_000;
   return settings;
@@ -155,7 +146,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
     expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
     expect(result.stopReason).toBe("interrupted");
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
-      reasoning: expect.objectContaining({ kind: "none", suppressed: "chat-completions-tool-turn" }),
+      reasoning: expect.objectContaining({ kind: "openai-effort", effort: "high" }),
     }) }));
   });
 
@@ -175,9 +166,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
 
     expect(result.text).toContain("done");
     expect(result.stopReason).toBe("end_turn");
-    // Two provider calls: the 400, then the successful retry.
     expect(provider.toolNamesPerCall).toHaveLength(2);
-    // First call saw both tools; retry dropped only the rejected one.
     expect(provider.toolNamesPerCall[0]).toEqual(
       expect.arrayContaining(["good_tool", "bad_tool"]),
     );
@@ -209,9 +198,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
   });
 
   it("does not loop forever when the same tool is reported again after being dropped", async () => {
-    // The provider re-reports bad_tool on the retry. Since it is no longer in
-    // the tool set, the extractor returns undefined → no further retry → the
-    // error surfaces normally. The turn must end after exactly two calls.
+    // Repeated rejection of an already-dropped tool must surface instead of retrying forever.
     const provider = new ToolRecordingProvider([
       [rejection("bad_tool")],
       [rejection("bad_tool")],
@@ -246,7 +233,6 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
 
     expect(result.stopReason).toBe("end_turn");
     expect(provider.toolNamesPerCall).toHaveLength(2);
-    // The MCP tool was in scope on the first call and dropped on the retry.
     expect(provider.toolNamesPerCall[0]).toEqual(
       expect.arrayContaining(["good_tool", "mcp_bad_tool"]),
     );
@@ -276,7 +262,6 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
       inputOrigin: "user-keyboard",
     });
 
-    // Single call, no retry — the rate-limit error is not a schema rejection.
     expect(provider.toolNamesPerCall).toHaveLength(1);
     expect(result.stopReason).toBe("stream-error");
   });

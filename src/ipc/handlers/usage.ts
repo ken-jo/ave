@@ -1,12 +1,3 @@
-/**
- * usage.ts (handlers) — transport-agnostic PUBLIC usage handler logic (#1409 C10).
- *
- * Pure `handle*` functions behind the PUBLIC usage channels (`usage summary`,
- * `usage range`). They import NOTHING from the electron transport; the
- * `ipcMain.handle` wrapper + sender guard (on `usage range`) stay in
- * `domains/usage.ts`. The engine `usage-stats` module is lazily imported here
- * exactly as before to keep it out of the boot-time graph.
- */
 import { redactForLLM } from "../../audit/dlp-filter.js";
 import {
   resolvePricingOverrides,
@@ -17,22 +8,13 @@ export interface UsageAuditFlushBoundary {
   flush(): Promise<void>;
 }
 
-/**
- * The price corrections in force, resolved here rather than in the engine.
- *
- * The aggregation caches its answer against this list, so it has to be one
- * value decided once per call — not something the engine re-reads part-way
- * through and disagrees with its own cache key about. The setting is the
- * source; a deployment that still sets `AVE_PRICING_OVERRIDE` wins, same
- * precedence as every other env-backed setting.
- */
+// Resolve pricing corrections once per call so cached aggregation and engine values cannot diverge mid-query.
 function pricingOverridesFor(
   settingOverrides?: readonly PricingOverride[],
 ): readonly PricingOverride[] {
   return resolvePricingOverrides(settingOverrides);
 }
 
-/** PUBLIC `ave:usage:summary` — rolling usage summary over `days` (default 60). */
 export async function handleUsageSummary(
   days?: number,
   auditLogger?: UsageAuditFlushBoundary,
@@ -47,7 +29,6 @@ export async function handleUsageSummary(
   );
 }
 
-/** PUBLIC `ave:usage:range` — usage aggregated over an explicit date range. */
 export async function handleUsageRange(
   opts: { dateFrom: string; dateTo: string },
   auditLogger?: UsageAuditFlushBoundary,
@@ -58,7 +39,7 @@ export async function handleUsageRange(
   return getUsageRange(opts, new Date(), pricingOverridesFor(settingOverrides));
 }
 
-export interface UsageDailySummaryItem {
+interface UsageDailySummaryItem {
   title?: string;
   preview?: string;
   text?: string;

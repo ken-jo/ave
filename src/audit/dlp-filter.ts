@@ -24,7 +24,6 @@ export interface RedactResult {
   totalCount: number;
 }
 
-/** Optional auditLogger injected at boot to record DLP hits. */
 let _auditLogger: { log: (e: { timestamp: string; sessionId: string; type: "dlp"; dlp: { byKind: Record<string, number>; totalRedactions: number; turnId: string } }) => void } | null = null;
 type DlpAuditSessionSource = string | (() => string);
 let _sessionId: DlpAuditSessionSource = "unknown";
@@ -43,8 +42,7 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
 
   let out = text;
 
-  // Same converged detection set as maskSensitiveData, in the same order; this
-  // entry point applies full redaction instead of the display-shape mask.
+  // Share display detection order but replace complete matches rather than preserving display shape.
   for (const spec of PII_PATTERNS) {
     spec.pattern.lastIndex = 0;
     out = out.replace(spec.pattern, (match: string): string => {
@@ -58,9 +56,7 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
   if (totalCount > 0 && _auditLogger) {
     _auditLogger.log({
       timestamp: new Date().toISOString(),
-      // A main-process session can change after IPC registration (new/resume/
-      // fork). Resolve a supplied getter at the hit rather than attributing
-      // every later redaction to the boot-time session.
+      // Resolve session getters at each hit so new or resumed sessions receive correct attribution.
       sessionId: typeof _sessionId === "function" ? _sessionId() : _sessionId,
       type: "dlp",
       dlp: {
@@ -73,23 +69,12 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
   return { redacted: out, counts, totalCount };
 }
 
-// Resolved once at module load; fallback to empty string in test environments
-// where os.homedir() may throw or return unexpected values.
+// Resolve home once; tolerate throwing or invalid test homedir values.
 const _homeDir = (() => { try { return os.homedir(); } catch { return ""; } })();
 
 const MAX_AUDIT_PATH = 256;
 
-/**
- * Replace the current user's home directory in a filesystem path or
- * file:// URL with the literal "<home>" so audit logs don't leak
- * /Users/<username>/ (or Windows equivalent). Also caps the result at
- * MAX_AUDIT_PATH characters — defence against a crafted long string
- * bloating the audit log (safeStringify's 1 KB cap applies at the JSON
- * level; this cap applies per-field before serialisation).
- *
- * Safe to call on non-path strings: if no home-dir prefix is found the
- * string is returned unchanged (only the length cap applies).
- */
+/** Replace home prefixes in paths and file URLs and cap each field before JSON serialization; non-path strings still receive the cap. */
 export function redactFsPath(p: string): string {
   if (!p) return p;
   let out = p;
@@ -104,16 +89,12 @@ export function redactFsPath(p: string): string {
       out = "<home>" + out.slice(_homeDir.length);
     }
   }
-  // Use code-point iteration so a surrogate pair at the boundary is not split.
+  // Iterate code points so truncation cannot split surrogate pairs.
   const codePoints = [...out];
   return codePoints.length > MAX_AUDIT_PATH ? codePoints.slice(0, MAX_AUDIT_PATH).join("") + "…" : out;
 }
 
-/**
- * Redact home-directory paths wherever they occur in display/audit text.
- * Unlike redactFsPath(), this is intentionally not prefix-only and recognizes
- * the standard Windows, macOS, and Linux home layouts plus file:// URLs.
- */
+/** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
   if (!value) return value;
   let out = value;
@@ -142,20 +123,12 @@ export function redactHomePathsInText(value: string): string {
     .replace(/\/home\/[a-z0-9._-]+/giu, "[home]");
 }
 
-/**
- * Path-like fields in audit log payloads that may contain the user's home
- * directory. Shallow: nested objects are not walked.
- */
+/** Only listed top-level path fields are redacted; nested objects are not traversed. */
 const AUDIT_PATH_KEYS = new Set([
   "entryUrl", "entryFsPath", "rawInstallRoot", "realEntry", "realRoot", "frameUrl",
 ]);
 
-/**
- * Redact home-dir paths in all recognised path fields of a flat audit payload
- * object. Non-path fields and non-object payloads are returned unchanged.
- * Exported so IPC domains can share the same sanitisation without duplicating
- * the field list.
- */
+/** Leave non-path fields and non-object payloads unchanged. */
 export function redactAuditPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
   return Object.fromEntries(

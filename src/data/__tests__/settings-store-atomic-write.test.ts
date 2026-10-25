@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -161,7 +161,8 @@ describe("settings persistence", () => {
         .toThrowError(expect.objectContaining({ code: "lease-audience-denied" }));
     }
   });
-  it("lets an existing reader finish the previous complete settings while publishing the next version", async () => {
+
+  it.skipIf(process.platform === "win32")("lets an existing reader finish the previous complete settings while publishing the next version", async () => {
     const path = settingsFilePath(root);
     const before = readFileSync(path, "utf8");
     const fd = openSync(path, "r");
@@ -175,6 +176,24 @@ describe("settings persistence", () => {
     } finally {
       closeSync(fd);
     }
+  });
+
+  // When Windows replacement exhausts lock retries, both readers and disk must retain complete prior settings.
+  it.runIf(process.platform === "win32")("keeps the previous complete settings for an open reader when Windows refuses the publish", async () => {
+    const path = settingsFilePath(root);
+    const before = readFileSync(path, "utf8");
+    const fd = openSync(path, "r");
+    try {
+      await expect(service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } }))
+        .rejects.toMatchObject({ code: "EPERM" });
+      expect(readFileSync(fd, "utf8")).toBe(before);
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      closeSync(fd);
+    }
+    await service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
+    expect(JSON.parse(readFileSync(path, "utf8")).system.hardwareAcceleration).toBe(true);
   });
 
   it.skipIf(process.platform === "win32")("replaces a settings symlink without overwriting its target", async () => {
@@ -193,7 +212,6 @@ describe("settings persistence", () => {
   });
 
   it.skipIf(process.platform === "win32")("keeps memory on the saved settings when a write fails", async () => {
-    // A directory where the settings file goes: every write fails.
     const path = settingsFilePath(root);
     unlinkSync(path);
     mkdirSync(path);
@@ -215,11 +233,9 @@ describe("settings persistence", () => {
 
   it("fails every write not yet on disk when a save fails, and keeps memory on disk", async () => {
     const save = vi.spyOn(service as unknown as { saveSettings(settings: unknown): Promise<void> }, "saveSettings");
-    // The first save waits, as on a held file lock, then fails.
     save.mockImplementationOnce(() => new Promise((_, reject) => setTimeout(() => reject(new Error("disk full")), 20)));
 
     const failing = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
-    // Made on top of the failing change, while its save waits.
     const onTop = service.setPluginConfig("sample", { mode: "fast" });
 
     await expect(failing).rejects.toThrow("disk full");
@@ -241,7 +257,6 @@ describe("settings persistence", () => {
     const first = service.patch({ system: { ...service.get("system"), hardwareAcceleration: true } });
     const queued = service.setPluginConfig("sample", { mode: "fast" });
     expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
-    // Built from a read: must keep the queued change.
     const built = service.set("pluginConfigs", { ...service.get("pluginConfigs"), other: { mode: "slow" } });
 
     await Promise.all([first, queued, built]);

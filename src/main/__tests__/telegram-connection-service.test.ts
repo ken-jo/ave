@@ -30,14 +30,14 @@ import { mintTelegramPairingCode, telegramPairingCodeDigest } from "../telegram-
 import { conversationDigestFor, namespaceAt } from "./telegram-connection-namespace.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/** The service must mint codes the ingress-side authority can redeem. */
+// The service must mint codes the ingress-side authority can redeem.
 function redeemableDigest(code: string): string {
   const digest = telegramPairingCodeDigest(code);
   expect(digest).not.toBeNull();
   return digest!;
 }
 
-/** Raw values the owner surface handles; none may reach a snapshot. */
+// Raw values the owner surface handles; none may reach a snapshot.
 const BOT_TOKEN = "123456789:SENTINEL-bot-token-must-not-persist";
 const OTHER_BOT_TOKEN = "987654321:SENTINEL-second-bot-token-value";
 const RAW_CHAT_ID = "-1009988776655";
@@ -49,7 +49,7 @@ const SECRET_KEY = "telegram.botToken.v1";
 
 const ACTOR_DIGEST = createHash("sha256").update("actor", "utf8")
   .update(RAW_TELEGRAM_USER_ID, "utf8").digest("hex");
-/** Stands in for the platform runtime's digest of this machine's actor key. */
+// Stands in for the platform runtime's digest of this machine's actor key.
 const ACTOR_KEY_DIGEST = createHash("sha256").update("actor-key", "utf8")
   .update("the-key-this-machine-can-load", "utf8").digest("hex");
 
@@ -60,8 +60,7 @@ afterEach(async () => {
   directories = [];
 });
 
-
-/** Records every store call so "never touches the store" is checkable. */
+// Records every store call so "never touches the store" is checkable.
 function trackedStore(real: TelegramConnectionStore): {
   readonly store: TelegramConnectionStore;
   readonly calls: string[];
@@ -135,27 +134,21 @@ function botApiFixture() {
 interface Harness {
   readonly service: TelegramConnectionService;
   readonly store: TelegramConnectionStore;
-  /** Where the store's real `connection.json` lands, for on-disk assertions. */
+  // Where the store's real `connection.json` lands, for on-disk assertions.
   readonly directory: string;
   readonly calls: string[];
   readonly secrets: ReturnType<typeof secretsFixture>;
   readonly bot: ReturnType<typeof botApiFixture>;
   readonly bridge: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; nudge: ReturnType<typeof vi.fn> };
-  /**
-   * The composed reconcile, as a spy over the real store call. `digest` is the
-   * name of the key this machine can load right now, so a test rotates the key
-   * by changing it — the same evidence the platform runtime would hand over.
-   */
+  // The composed reconcile, as a spy over the real store call. `digest` is the name of the key this machine can load right now, so a test rotates the key
+  // by changing it — the same evidence the platform runtime would hand over.
   readonly reconcileActorKey: ReturnType<typeof vi.fn>;
   readonly reconcile: { digest: string; fail: boolean };
   readonly conversation: { id: string };
-  /**
-   * The conversations that exist, as the app's own list would report them.
-   * A test deletes one by removing its id, which is what makes the share
-   * dangle without touching the store the share lives in.
-   */
+  // The conversations that exist, as the app's own list would report them. A test deletes one by removing its id, which is what makes the share dangle
+  // without touching the store the share lives in.
   readonly existingConversations: Set<string>;
-  /** The store's own bot identity, so a test can name a digest the way it does. */
+  // The store's own bot identity, so a test can name a digest the way it does.
   digestOf(conversationId: string): string;
 }
 
@@ -173,8 +166,7 @@ async function harness(
     conversationDigestFor,
   });
   await real.open();
-  // Mirrors main composition: the service resolves the bot from the store, so
-  // before a bot is verified there is no digest and no approval is possible.
+  // Mirrors main composition: the service resolves the bot from the store, so before a bot is verified there is no digest and no approval is possible.
   const digestOf = (conversationId: string): string => {
     const botFingerprint = real.botFingerprint();
     if (botFingerprint === null) throw new Error("telegram-conversation-digest-unavailable");
@@ -184,16 +176,14 @@ async function harness(
   const secrets = secretsFixture(options.encrypted ?? true);
   const bot = botApiFixture();
   const bridge = { start: vi.fn(async (_hooks?: unknown) => {}), stop: vi.fn(async () => {}), nudge: vi.fn() };
-  // Mirrors main composition: the reconcile names this machine's actor key to
-  // the store, and the store alone decides what a changed name costs.
+  // Mirrors main composition: the reconcile names this machine's actor key to the store, and the store alone decides what a changed name costs.
   const reconcile = { digest: ACTOR_KEY_DIGEST, fail: false };
   const reconcileActorKey = vi.fn(async () => {
     if (reconcile.fail) throw new Error("this machine could not name its actor key");
     await real.reconcileActorKey(reconcile.digest);
   });
   const conversation = { id: CONVERSATION_ID };
-  // Both by default: a test that shares the other conversation is exercising a
-  // reshare, not a deletion, and would otherwise dangle for the wrong reason.
+  // Both by default: a test that shares the other conversation is exercising a reshare, not a deletion, and would otherwise dangle for the wrong reason.
   const existingConversations = new Set(
     options.existingConversations ?? [CONVERSATION_ID, OTHER_CONVERSATION_ID],
   );
@@ -205,8 +195,7 @@ async function harness(
     getCurrentConversationId: () => conversation.id,
     conversationDigestFor: digestOf,
     conversationExists: (conversationId: string) => existingConversations.has(conversationId),
-    // The suite injects its own client factory, so no request may reach a
-    // transport; this one fails loudly if that ever changes.
+    // The suite injects its own client factory, so no request may reach a transport; this one fails loudly if that ever changes.
     networkFetch: unusedNetworkFetch,
     createBotApiClient: bot.factory,
     ...options.serviceOptions,
@@ -225,7 +214,7 @@ function snapshotOf(service: TelegramConnectionService): TelegramConnectionSnaps
   return result.snapshot;
 }
 
-/** connect → mint → redeem, i.e. an identified account with no access yet. */
+// connect → mint → redeem, i.e. an identified account with no access yet.
 async function pairedHarness(): Promise<Harness & { readonly code: string }> {
   const h = await harness();
   expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
@@ -299,12 +288,7 @@ describe("createTelegramConnectionService", () => {
     expect(h.secrets.values.size).toBe(0);
     expect(h.store.desiredState()).toBe("disconnected");
     expect(h.bridge.start).not.toHaveBeenCalled();
-    // Locked inventory: the client exposes no webhook mutator at all, so none
-    // can be called. `sendMessage` is a host-authored control notice, not a
-    // bot-configuration call; adding anything here must be deliberate.
-    // The three decision-card methods are the remote-approval surface: fixed
-    // host text and opaque tokens outbound, one acknowledgement inbound —
-    // still nothing that can reconfigure the owner's bot.
+    // Expose no bot-configuration mutators; control and approval methods carry only fixed host text and opaque tokens.
     expect(Object.keys(h.bot.client)).toEqual([
       "getMe",
       "getWebhookInfo",
@@ -383,8 +367,7 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // Positive control: while the key still names the account, the surface
-    // says so — this is the reading the guard has to replace, not weaken.
+    // Positive control: while the key still names the account, the surface says so — this is the reading the guard has to replace, not weaken.
     const paired = snapshotOf(h.service);
     expect(paired.state).toBe("active");
     expect(paired.pairing?.accountFingerprint).toMatch(/^[a-f0-9]{12}$/);
@@ -396,9 +379,8 @@ describe("createTelegramConnectionService", () => {
     expect(lost.state).toBe("pairing-unrecognized");
     expect(lost.pairing).toBeNull();
     expect(lost.approval).toBeNull();
-    // Nothing was recorded as a connection failure: the bot is fine, and an
-    // error code here would be answered as `error`, which withholds the
-    // pairing affordance the owner needs. The test below pins that ordering.
+    // Nothing was recorded as a connection failure: the bot is fine, and an error code here would be answered as `error`, which withholds the pairing
+    // affordance the owner needs. The test below pins that ordering.
     expect(lost.lastErrorCode).toBeNull();
   });
 
@@ -406,8 +388,7 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // One keychain reset takes both secrets: the stored bot token is gone, and
-    // so is the key every stored actor digest was minted under.
+    // One keychain reset takes both secrets: the stored bot token is gone, and so is the key every stored actor digest was minted under.
     h.secrets.values.delete(SECRET_KEY);
     h.reconcile.digest = "f".repeat(64);
     h.reconcileActorKey.mockClear();
@@ -416,9 +397,8 @@ describe("createTelegramConnectionService", () => {
 
     await h.service.resumeStoredConnection();
 
-    // The resume gives up at the missing credential and never starts a bridge,
-    // so everything downstream of that return is unreachable — which is why
-    // the reconcile has to come before the read and not with the activation.
+    // The resume gives up at the missing credential and never starts a bridge, so everything downstream of that return is unreachable — which is why the
+    // reconcile has to come before the read and not with the activation.
     expect(h.bridge.start).not.toHaveBeenCalled();
     expect(h.reconcileActorKey).toHaveBeenCalledTimes(1);
     expect(h.secrets.service.getEncryptedSecret).toHaveBeenCalled();
@@ -427,8 +407,7 @@ describe("createTelegramConnectionService", () => {
 
     const lost = snapshotOf(h.service);
     expect(lost.pairing).toBeNull();
-    // The lost token is still reported as itself; the reconcile does not
-    // swallow the failure that exposed it.
+    // The lost token is still reported as itself; the reconcile does not swallow the failure that exposed it.
     expect(lost.lastErrorCode).toBe("telegram-bot-token-unreadable");
   });
 
@@ -436,9 +415,8 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // Nothing changed between the two: the same key still loads. A resume has
-    // to read that as continuity rather than as a rotation, which it can only
-    // do if the connect that preceded the pairing named the key to the store.
+    // Nothing changed between the two: the same key still loads. A resume has to read that as continuity rather than as a rotation, which it can only do if
+    // the connect that preceded the pairing named the key to the store.
     await h.service.resumeStoredConnection();
 
     const still = snapshotOf(h.service);
@@ -453,8 +431,7 @@ describe("createTelegramConnectionService", () => {
     h.bridge.start.mockClear();
 
     expect(await h.service.resume()).toEqual({ ok: false, error: "telegram-connection-unavailable" });
-    // Unnameable is not the same as rotated: nothing was retired, and nothing
-    // was started either. A bridge whose pairing cannot be checked must not run.
+    // Unnameable is not the same as rotated: nothing was retired, and nothing was started either. A bridge whose pairing cannot be checked must not run.
     expect(h.bridge.start).not.toHaveBeenCalled();
     expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-connection-unavailable");
   });
@@ -483,8 +460,7 @@ describe("createTelegramConnectionService", () => {
 
     h.conversation.id = OTHER_CONVERSATION_ID;
     const switched = snapshotOf(h.service);
-    // The share is durable: looking elsewhere is a property of the approval,
-    // not a state the connection falls into and has to be repaired from.
+    // The share is durable: looking elsewhere is a property of the approval, not a state the connection falls into and has to be repaired from.
     expect(switched.state).toBe("active");
     expect(switched.approval?.matchesCurrentConversation).toBe(false);
     expect(switched.approval?.id).toBe(approved.approval?.id);
@@ -494,15 +470,13 @@ describe("createTelegramConnectionService", () => {
 
   it("does not call a conversation deleted just because it has never been saved", async () => {
     const h = await pairedHarness();
-    // A conversation the owner just opened: on screen, routable, but with no
-    // transcript file until its first turn is written.
+    // A conversation the owner just opened: on screen, routable, but with no transcript file until its first turn is written.
     h.existingConversations.delete(CONVERSATION_ID);
 
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // This used to report `shared-conversation-missing` the instant the owner
-    // shared it — beside a success toast — and on every refresh until they
-    // said something. The share was routing correctly the entire time.
+    // This used to report `shared-conversation-missing` the instant the owner shared it — beside a success toast — and on every refresh until they said
+    // something. The share was routing correctly the entire time.
     expect(snapshotOf(h.service).state).toBe("active");
   });
 
@@ -510,9 +484,8 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // Non-vacuous: the exemption above is scoped to the conversation on screen,
-    // so a share that is genuinely gone must still be reported. Without this,
-    // the fix could have been "never report missing".
+    // Non-vacuous: the exemption above is scoped to the conversation on screen, so a share that is genuinely gone must still be reported. Without this, the
+    // fix could have been "never report missing".
     h.existingConversations.delete(CONVERSATION_ID);
     h.conversation.id = OTHER_CONVERSATION_ID;
 
@@ -522,24 +495,18 @@ describe("createTelegramConnectionService", () => {
   it("says the shared conversation is gone instead of calling it merely closed", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
-    // Positive control: the same snapshot reads `active` while the conversation
-    // is there, so the assertion below is about the deletion and nothing else.
+    // Positive control: the same snapshot reads `active` while the conversation is there, so the assertion below is about the deletion and nothing else.
     const live = snapshotOf(h.service);
     expect(live.state).toBe("active");
     expect(live.approval?.id).toBeDefined();
 
-    // Deleted from the app, not from the connection store: the share is still a
-    // live grant, which is precisely why it can dangle. The owner is looking
-    // elsewhere, because a conversation cannot be both deleted and on screen —
-    // the resolver treats the current conversation as existing whether or not
-    // it has a transcript yet.
+    // Delete from the app while preserving the live share; inspect from another conversation to avoid the current-conversation existence shortcut.
     h.conversation.id = OTHER_CONVERSATION_ID;
     h.existingConversations.delete(CONVERSATION_ID);
 
     const dangling = snapshotOf(h.service);
     expect(dangling.state).toBe("shared-conversation-missing");
-    // The grant itself is untouched — this is a report, not a revocation. An
-    // owner who restores a backup gets their share back.
+    // The grant itself is untouched — this is a report, not a revocation. An owner who restores a backup gets their share back.
     expect(dangling.approval?.id).toBe(live.approval?.id);
     expect(h.store.resolveBoundConversation(ACTOR_DIGEST)).toBe(CONVERSATION_ID);
   });
@@ -548,16 +515,14 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    // Looking elsewhere: the conversation still exists, so the share stays
-    // active and only the approval reports the mismatch.
+    // Looking elsewhere: the conversation still exists, so the share stays active and only the approval reports the mismatch.
     h.conversation.id = OTHER_CONVERSATION_ID;
     const elsewhere = snapshotOf(h.service);
     expect(elsewhere.state).toBe("active");
     expect(elsewhere.approval?.matchesCurrentConversation).toBe(false);
 
-    // Same "not on screen" reading, different cause. Before the resolver told
-    // these apart, both produced the state above and the surface told the owner
-    // to reopen a conversation that no longer existed.
+    // Same "not on screen" reading, different cause. Before the resolver told these apart, both produced the state above and the surface told the owner to
+    // reopen a conversation that no longer existed.
     h.existingConversations.delete(CONVERSATION_ID);
     const deleted = snapshotOf(h.service);
     expect(deleted.state).toBe("shared-conversation-missing");
@@ -569,12 +534,7 @@ describe("createTelegramConnectionService", () => {
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
     expect(snapshotOf(h.service).state).toBe("active");
 
-    // A Set whose lookup throws stands in for a conversation store that cannot
-    // answer. "I could not check" is not evidence the conversation is there,
-    // and defaulting to healthy would hide the loss it was asked about.
-    // Off the shared conversation first: the current-conversation shortcut
-    // answers before the existence check, so the throwing path is only
-    // reachable for a share the owner is not looking at.
+    // A failed existence lookup must not count as healthy; select another conversation to bypass the current-conversation shortcut.
     h.conversation.id = OTHER_CONVERSATION_ID;
     const broken = h.existingConversations as unknown as { has: () => boolean };
     const original = broken.has;
@@ -618,8 +578,7 @@ describe("createTelegramConnectionService", () => {
       pendingCode: null,
       lastErrorCode: null,
     };
-    // Retired with the durable binding: a producer that still emitted it would
-    // be rejected by the shared parser rather than reach a renderer.
+    // Retired with the durable binding: a producer that still emitted it would be rejected by the shared parser rather than reach a renderer.
     expect(parseTelegramConnectionSnapshot({ ...base, state: "paused-conversation-inactive" }))
       .toBeNull();
     // Non-vacuous: the state that absorbed it parses through the same call.
@@ -664,8 +623,7 @@ describe("createTelegramConnectionService", () => {
     expect(minted.ok).toBe(true);
     if (!minted.ok) throw new Error("unreachable");
 
-    // The seam: the ingress redeems by calling telegramPairingCodeDigest on the
-    // pasted text, so the byte the store holds must be exactly that digest. A
+    // The seam: the ingress redeems by calling telegramPairingCodeDigest on the pasted text, so the byte the store holds must be exactly that digest. A
     // local digest reintroduced on either side changes one of these two values.
     const persisted = JSON.parse(readFileSync(join(h.directory, "connection.json"), "utf8")) as {
       pendingCode: { codeDigest: string } | null;
@@ -739,27 +697,22 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation()).toEqual({ ok: true });
     expect(snapshotOf(h.service).state).toBe("active");
-    // A keychain reset or a restore onto another machine: storage still reports
-    // itself encrypted, and the value it held no longer comes back.
+    // A keychain reset or a restore onto another machine: storage still reports itself encrypted, and the value it held no longer comes back.
     h.secrets.values.delete(SECRET_KEY);
     h.bridge.start.mockClear();
 
     await h.service.resumeStoredConnection();
 
     const snapshot = snapshotOf(h.service);
-    // `active` here is the whole defect: it is what the settings screen reads to
-    // claim a live share, and what enables the Away Authority arm control, while
-    // no poll loop exists.
+    // `active` here is the whole defect: it is what the settings screen reads to claim a live share, and what enables the Away Authority arm control, while no poll loop exists.
     expect(snapshot.state).toBe("error");
     expect(snapshot.lastErrorCode).toBe("telegram-bot-token-unreadable");
     expect(h.bridge.start).not.toHaveBeenCalled();
-    // Only the credential is gone; the pairing and the share are still the
-    // owner's, and re-entering the same token adopts them again.
+    // Only the credential is gone; the pairing and the share are still the owner's, and re-entering the same token adopts them again.
     expect(snapshot.pairing).not.toBeNull();
     expect(snapshot.approval).not.toBeNull();
 
-    // Non-vacuous: the identical boot continuation resumes to a live share the
-    // moment the credential reads back.
+    // Non-vacuous: the identical boot continuation resumes to a live share the moment the credential reads back.
     h.secrets.values.set(SECRET_KEY, BOT_TOKEN);
     await h.service.resumeStoredConnection();
     expect(snapshotOf(h.service).state).toBe("active");
@@ -771,16 +724,14 @@ describe("createTelegramConnectionService", () => {
     expect(await h.service.approveCurrentConversation()).toEqual({ ok: true });
     await h.store.recordPollOffset(4_242);
     const pairingId = snapshotOf(h.service).pairing?.id;
-    // A Windows EPERM/EBUSY, a locked feature namespace, an unreadable actor
-    // key: transient, unattended, and none of it the owner's doing.
+    // A Windows EPERM/EBUSY, a locked feature namespace, an unreadable actor key: transient, unattended, and none of it the owner's doing.
     h.bridge.start.mockRejectedValueOnce(new Error("EPERM"));
 
     await h.service.resumeStoredConnection();
 
     const snapshot = snapshotOf(h.service);
-    // Not `disconnected`. That state was produced by a reset which is not the
-    // inverse of connecting: it erases the pairing, every approval, the pending
-    // code and the poll offset, none of which the failure touched.
+    // Not `disconnected`. That state was produced by a reset which is not the inverse of connecting: it erases the pairing, every approval, the pending code
+    // and the poll offset, none of which the failure touched.
     expect(snapshot.state).toBe("error");
     expect(snapshot.lastErrorCode).toBe("telegram-connection-unavailable");
     expect(snapshot.pairing?.id).toBe(pairingId);
@@ -789,9 +740,8 @@ describe("createTelegramConnectionService", () => {
     expect(h.store.activePairingActorDigest()).toBe(ACTOR_DIGEST);
     expect(h.store.pollOffset()).toBe(4_242);
 
-    // And the state says so rather than merely preserving things quietly: the
-    // recorded error is what the surface renders, and the retry it offers is
-    // this same resume, which clears the error once the condition passes.
+    // And the state says so rather than merely preserving things quietly: the recorded error is what the surface renders, and the retry it offers is this
+    // same resume, which clears the error once the condition passes.
     expect(await h.service.resume()).toEqual({ ok: true });
     expect(snapshotOf(h.service).state).toBe("active");
     expect(snapshotOf(h.service).lastErrorCode).toBeNull();
@@ -805,9 +755,8 @@ describe("createTelegramConnectionService", () => {
       ok: false,
       error: "telegram-connection-unavailable",
     });
-    // Symmetric with the credential rollback, and safe for the same reason: a
-    // store that was `disconnected` holds no pairing and no approval, so putting
-    // it back destroys nothing and leaves the Connect control on screen.
+    // Symmetric with the credential rollback, and safe for the same reason: a store that was `disconnected` holds no pairing and no approval, so putting it
+    // back destroys nothing and leaves the Connect control on screen.
     expect(h.secrets.values.size).toBe(0);
     expect(h.store.desiredState()).toBe("disconnected");
     const snapshot = snapshotOf(h.service);
@@ -849,7 +798,7 @@ describe("createTelegramConnectionService", () => {
 });
 
 describe("reconnecting after sleep, a network change, or an outage", () => {
-  /** A retry timer the test fires by hand. */
+  // A retry timer the test fires by hand.
   function manualRetries() {
     const pending: Array<{ run: () => void; delayMs: number; cancelled: boolean }> = [];
     return {
@@ -863,7 +812,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     };
   }
 
-  /** A wake source the test triggers, counting live subscriptions. */
+  // A wake source the test triggers, counting live subscriptions.
   function manualSource() {
     const listeners = new Set<() => void>();
     return {
@@ -938,8 +887,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     const getMeCalls = vi.mocked(h.bot.client.getMe).mock.calls.length;
 
     resumeEvents.fire();
-    // No waiting out the 5 s timer: the attempt runs now, fails, and the next
-    // wait starts from the bottom of the backoff again.
+    // No waiting out the 5 s timer: the attempt runs now, fails, and the next wait starts from the bottom of the backoff again.
     await vi.waitFor(() => expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeCalls + 1));
     await vi.waitFor(() => expect(retries.live().map((entry) => entry.delayMs)).toEqual([5_000]));
 
@@ -976,14 +924,12 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     const startsBefore = h.bridge.start.mock.calls.length;
     const getMeBefore = vi.mocked(h.bot.client.getMe).mock.calls.length;
 
-    // The pause is queued first; the retry fires before its save lands and
-    // still reads "connected" outside the queue.
+    // The pause is queued first; the retry fires before its save lands and still reads "connected" outside the queue.
     const pausing = h.service.pause();
     retries.live()[0]!.run();
 
     expect(await pausing).toEqual({ ok: true });
-    // The retry's resume is queued behind the pause; let it run to completion
-    // (it persists through the real store) before reading the outcome.
+    // The retry's resume is queued behind the pause; let it run to completion (it persists through the real store) before reading the outcome.
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(retries.live()).toHaveLength(0);
     expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeBefore);

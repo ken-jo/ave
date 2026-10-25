@@ -1,40 +1,14 @@
-/**
- * Wire format for the host's "race window = 0" appMode prime — shared between:
- *  - `src/main.ts` (`initialAppModeArgs()` — serializes the persisted appMode)
- *  - `src/preload.ts` (`readInitialAppModeArg()` — deserializes from `process.argv`)
- *  - `src/ui/renderer/App.tsx` (seeds `useState` from `window.__aveInitialAppMode`)
- *
- * Mirrors the theme-prime contract in `src/shared/initial-theme.ts`: the main
- * process passes the persisted workspace mode into every new main BrowserWindow
- * via `webPreferences.additionalArguments` so the renderer's FIRST React render
- * already paints the correct mode layout (expanded rail for work, collapsed
- * rail for chat) — no flash of the wrong mode followed by a post-mount tween.
- *
- * Keeping the prefix + value set in one module ensures main, preload, and the
- * renderer cannot drift apart silently.
- */
+/** Prime mode through additionalArguments so the first renderer frame uses the saved layout. */
 
 export const INITIAL_APP_MODE_ARG_PREFIX = "--ave-initial-app-mode=";
 
-/**
- * Workspace mode. SoT for the *value set* lives here so main, preload, and the
- * renderer all validate against the same union. The renderer's `AppMode`
- * (`MainToolbar.tsx`) is the structurally identical UI-facing alias.
- */
+/** Share the mode value set across main, preload, and renderer. */
 export type InitialAppMode = "chat" | "work";
 
-/**
- * Legacy persisted / argv value from builds before the Action → Work rename.
- * Boundary readers normalize it to `"work"`; app internals should not store or
- * compare against this literal.
- */
-export const LEGACY_ACTION_APP_MODE = "action";
+/** Normalize legacy persisted values only at boundaries; internals use work. */
+const LEGACY_ACTION_APP_MODE = "action";
 
-/**
- * Default workspace mode on first run (no persisted value yet). `"work"`
- * preserves the historical inline behavior. This is a legitimate first-run
- * default, not a bug-papering fallback.
- */
+/** First-run default keeps the workspace expanded. */
 export const DEFAULT_APP_MODE: InitialAppMode = "work";
 
 export function normalizeAppMode(value: unknown): InitialAppMode | null {

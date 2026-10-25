@@ -1,26 +1,5 @@
-/**
- * One framed stdio stream, both directions of one JSON-RPC 2.0 session
- * (`docs/blueprints/plugin-process-isolation.md` §5.2,
- * `docs/design/plugin-hostapi-protocol.md` §3.1).
- *
- * The host owns the child's pipes, and both halves of the protocol share them:
- * MCP and `ave/instance/*` requests travel host→child, `ave/host/*` requests
- * travel child→host, and notifications travel both ways. §5.2 chose a spawned
- * stdio child precisely BECAUSE its argv can be wrapped by ASRT, so a second
- * channel (a socket, an extra descriptor) would have to be carried through the
- * sandbox wrap as well.
- *
- * Every frame is JSON-RPC, so {@link classifyMultiplexedMessage} discriminates
- * on JSON-RPC fields only: a `method` with an `id` is a request, routed by its
- * namespace; a `method` without one is a notification; an `id` with `result` or
- * `error` is a response, matched against the pending table of the direction it
- * arrived on. The `ave/` prefix is what keeps the Ave methods apart from every
- * name MCP defines. A frame matching none of these is `unknown` and is DROPPED
- * by both sides rather than guessed at — guessing is how a malformed frame
- * becomes a call to the wrong handler.
- *
- * ELECTRON-FREE BY CONSTRUCTION: the child imports this.
- */
+// Multiplex one bounded JSON-RPC stream per direction; duplicate decoders can misroute frames.
+// This module must remain safe to import in the child.
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -32,18 +11,9 @@ import {
 } from "./host-api-wire.js";
 import { isPluginInstanceMethod } from "./plugin-instance-wire.js";
 
-/** A decoded frame, before anyone has decided what it is. */
 export type MultiplexedMessage = Record<string, unknown>;
 
-/**
- * What one frame is.
- *
- * `mcp-request` and `instance-request` are split because they are answered by
- * DIFFERENT handlers in the child — the `PluginMcpServer` and the lifecycle
- * handler — and routing them from one place is what keeps the child from
- * needing a second decoder. `host-request` is the reverse direction's request,
- * answered only by the host.
- */
+/** Distinguish MCP, instance and reverse host requests because each has a different handler. */
 export type MultiplexedKind =
   | "mcp-request"
   | "instance-request"
@@ -62,7 +32,6 @@ export function classifyMultiplexedMessage(
         ? "notification"
         : "unknown";
     }
-    // A request whose id JSON-RPC does not allow could not be answered anyway.
     if (typeof id !== "string" && typeof id !== "number") return "unknown";
     if (isPluginInstanceMethod(method)) return "instance-request";
     if (isHostApiMethod(method)) return "host-request";
@@ -77,28 +46,11 @@ export function classifyMultiplexedMessage(
   return "unknown";
 }
 
-/** A notification's params must be an object; anything else is not one. */
 function isParamsObject(params: unknown): boolean {
   return typeof params === "object" && params !== null && !Array.isArray(params);
 }
 
-/**
- * A framed message stream over one pair of Node streams.
- *
- * ONE decoder per direction, which is the reason this is a class and not two
- * loose functions: attaching a second decoder to the same `Readable` would give
- * two consumers two independent views of the same bytes, and a partial frame
- * would then be reassembled twice.
- *
- * `onViolation` is how the owner learns the peer broke the framing — a line
- * past {@link FRAME_BYTES_MAX}. It is called once, reading stops, and ending
- * the channel is the owner's to do: the host kills the child, the child treats
- * the host as gone.
- *
- * `onDroppedNotification` is how the owner learns THIS side dropped a
- * notification too large to frame, so it can say so in its own log (see
- * {@link FramedMessageStream.send}).
- */
+/** Use one decoder per direction and report oversized outbound notifications through the owner. */
 export class FramedMessageStream {
   private readonly decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   private started = false;
@@ -112,7 +64,6 @@ export class FramedMessageStream {
     private readonly onDroppedNotification: (dropped: DroppedNotification) => void,
   ) {}
 
-  /** Bytes of a frame that started arriving and never ended. */
   get pendingBytes(): number {
     return this.decoder.pendingBytes;
   }
@@ -136,27 +87,7 @@ export class FramedMessageStream {
     this.input.on("data", onData);
   }
 
-  /**
-   * Write one whole frame.
-   *
-   * Every writer on this side funnels through here so a frame is always one
-   * `write` call, and one line: two writers can interleave whole frames but
-   * never splice one line into another.
-   *
-   * The line bound is enforced HERE as well as by the reader, because the
-   * reader's only answer to an over-long line is to end the channel, so a peer
-   * that stays inside the protocol never trips the other end's kill — it is
-   * left for a peer that skipped this check. What happens instead depends on
-   * who is waiting:
-   *
-   *  - a reply is sent as a `payload-too-large` error for the same call, so its
-   *    caller fails and nothing else does;
-   *  - a request throws that error to its caller;
-   *  - a notification is DROPPED and reported to the owner. Nobody waits for
-   *    one, and what sends it — an event listener, `context.log`, a snapshot
-   *    push — never throws in-process, so a throw here would surface in code
-   *    that has no reason to expect one.
-   */
+  /** Write each complete frame once so concurrent writers cannot interleave its bytes. */
   send(message: unknown): void {
     const frame = frameMessage(message);
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
@@ -171,32 +102,26 @@ export class FramedMessageStream {
     this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
-  /**
-   * Write a frame another writer already built — the child's MCP server, which
-   * frames its own responses. Held to the same bound as {@link send}.
-   */
+  /** Prebuilt MCP frames obey the same outbound size limit. */
   forward(frame: Buffer): void {
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
       this.output.write(frame);
       return;
     }
-    // Parsed only on this path: the id of the call it answers is inside.
+    // Parse prebuilt frames only to recover their request ID.
     const message: unknown = JSON.parse(frame.toString("utf-8"));
     this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 }
 
-/** A notification {@link FramedMessageStream.send} did not write, for its owner's log. */
+/** Report oversized notifications to their owner. */
 export interface DroppedNotification {
-  /** The notification's method. */
   readonly method: string;
-  /** The subscription it was for, when it was for one. */
   readonly subscriptionId?: string;
   readonly byteLength: number;
   readonly limit: number;
 }
 
-/** Describe `message` as a dropped notification, or `undefined` when it is not one. */
 function droppedNotificationOf(message: unknown, lineBytes: number): DroppedNotification | undefined {
   const candidate = (message ?? {}) as MultiplexedMessage;
   if (classifyMultiplexedMessage(candidate) !== "notification") return undefined;
@@ -209,14 +134,7 @@ function droppedNotificationOf(message: unknown, lineBytes: number): DroppedNoti
   };
 }
 
-/**
- * What an over-long message is sent as instead, or the error its writer gets.
- *
- * A REPLY becomes a refusal of the call it answers: the caller is waiting on
- * that id, and an error it can read is the difference between one failed call
- * and a peer that waits forever. A request has a caller on THIS side, so it
- * throws to that caller instead.
- */
+/** Oversized replies must answer the original call with refusal; oversized requests throw to their local caller. */
 function refuseOversizedFrame(message: unknown, lineBytes: number): unknown {
   const refusal = new HostApiBoundaryError(
     "payload-too-large",
@@ -237,22 +155,13 @@ function refuseOversizedFrame(message: unknown, lineBytes: number): unknown {
   };
 }
 
-/** A request awaiting its reply. */
 interface PendingCall<T> {
   readonly resolve: (value: T) => void;
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout | undefined;
 }
 
-/**
- * Correlate outbound requests with inbound replies, and fail every one of them
- * when the peer goes away.
- *
- * Both sides need this, each for the requests it sends, keyed by the JSON-RPC
- * `id` it allocated — so it is generic rather than written twice. {@link rejectAll} is the reason it exists at all: a pending call whose
- * peer died must REJECT, because a promise that never settles is exactly the
- * hung host this whole boundary is supposed to make impossible.
- */
+/** Peer loss must reject every pending call in each direction. */
 export class PendingCallTable<T> {
   private readonly pending = new Map<string, PendingCall<T>>();
   private closedReason: string | undefined;
@@ -261,15 +170,7 @@ export class PendingCallTable<T> {
     return this.pending.size;
   }
 
-  /**
-   * Register a call.
-   *
-   * `timeoutMs` is optional and is left UNSET for tool calls on purpose: a
-   * gated hostApi write can block on a human for as long as the human takes
-   * (§7.5), and a boundary deadline there would abandon a call the host is
-   * still servicing. The lifecycle requests, whose host-side bounds already
-   * exist, pass their own.
-   */
+  /** Leave tool calls without a boundary timeout while host approval is pending; lifecycle callers supply their existing bounds. */
   register(
     key: string,
     timeoutMs: number | undefined,
@@ -296,7 +197,6 @@ export class PendingCallTable<T> {
                 ),
               );
             }, timeoutMs);
-      // `unref` so a pending deadline cannot by itself keep the host alive.
       timer?.unref?.();
       this.pending.set(key, { resolve, reject, timer });
     });
@@ -320,7 +220,7 @@ export class PendingCallTable<T> {
     return true;
   }
 
-  /** The peer is gone. Every pending call rejects and no new one is accepted. */
+  /** Reject pending and future calls when the peer is gone. */
   rejectAll(reason: string): number {
     this.closedReason = reason;
     const calls = [...this.pending.values()];

@@ -28,7 +28,6 @@ describe("trimOversizedToolResult (Issue #902)", () => {
   });
 
   it("trips truncated on single-line content above token limit (long-line shape)", () => {
-    // ~12K bytes of a single line, well over MAX_TOOL_RESULT_TOKENS (2_000)
     const oneLong = "x".repeat(12_000);
     const result = trimOversizedToolResult(oneLong);
     expect(result.truncated).toBeDefined();
@@ -49,7 +48,6 @@ describe("trimOversizedToolResult (Issue #902)", () => {
   });
 
   it("hard byte ceiling short-circuits exact scan with sentinel -1 counts", () => {
-    // Use a string just over the hard ceiling — adversarial-size guard.
     const huge = "x".repeat(HARD_BYTES_CEILING + 1);
     const result = trimOversizedToolResult(huge);
     expect(result.truncated).toBeDefined();

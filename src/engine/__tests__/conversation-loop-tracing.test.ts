@@ -1,41 +1,21 @@
-/**
- * A turn is observable: the branches it took reach the caller as decisions,
- * the counts reach the turn summary, and — when boot configured a tracer — the
- * whole turn is one span with the tool calls nested inside it.
- *
- * The privacy line is asserted here rather than assumed: a span carries the
- * SIZE of a tool result, never the result. A trace leaves the machine; the
- * transcript does not.
- */
+// Exported traces may contain result sizes, never tool output.
 import { describe, expect, it, vi } from "vitest";
 import {
   InMemorySpanExporter,
-  NodeTracerProvider,
   SimpleSpanProcessor,
-} from "@opentelemetry/sdk-trace-node";
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { TOOL_SPAN_PREFIX, TURN_SPAN_NAME } from "../telemetry/tracing.js";
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
 
 const SECRET_RESULT = "SECRET-TOOL-OUTPUT-THAT-MUST-NOT-BE-EXPORTED";
 
-class ScriptedProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-  constructor(private readonly turns: StreamEvent[][]) {}
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
-
-/** One tool round then a clean answer — the shape every assertion here needs. */
 function toolThenAnswer(): StreamEvent[][] {
   return [
     [
@@ -60,15 +40,10 @@ function makeLoop(provider: LLMProvider, tracer?: unknown) {
     isReadOnly: () => true,
     execute: async () => ({ output: SECRET_RESULT, isError: false }),
   }));
-  const loop = new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...(tracer ? { tracer } : {}),
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }
@@ -138,8 +113,8 @@ describe("ConversationLoop — loop decisions", () => {
 describe("ConversationLoop — turn tracing", () => {
   it("opens one turn span with the tool call nested under it, and no result text anywhere", async () => {
     const exporter = new InMemorySpanExporter();
-    const provider = new NodeTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    const provider = new TracerProvider({
+      spanProcessors: [new SimpleSpanProcessor({ exporter })],
     });
     const tracer = provider.getTracer("test");
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), tracer);
@@ -167,8 +142,6 @@ describe("ConversationLoop — turn tracing", () => {
     expect(turnSpan!.attributes["ave.turn.tool_count"]).toBe(1);
     expect(turnSpan!.attributes["ave.decision.tool_batch"]).toBe(1);
 
-    // Everything an exporter would write out — every span's name, attributes
-    // and events — carries no tool output.
     const exported = JSON.stringify(spans.map((span) => ({
       name: span.name,
       attributes: span.attributes,
@@ -181,8 +154,8 @@ describe("ConversationLoop — turn tracing", () => {
 
   it("records each decision as a span event on the turn span", async () => {
     const exporter = new InMemorySpanExporter();
-    const provider = new NodeTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    const provider = new TracerProvider({
+      spanProcessors: [new SimpleSpanProcessor({ exporter })],
     });
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), provider.getTracer("test"));
 

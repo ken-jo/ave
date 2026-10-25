@@ -1,6 +1,7 @@
-const { mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { join, relative, resolve, sep } = require("node:path");
 const { deflateSync } = require("node:zlib");
+const { normalizedImage } = require("./lib/normalized-image.cjs");
 
 const root = resolve(__dirname, "..");
 const buildDir = join(root, "build");
@@ -19,13 +20,7 @@ const TRAY_ICON_SCALE_FACTORS = [1, 2];
 const TRAY_ICON_PADDING_RATIO = 0.12;
 const TRAY_ICON_STROKE_RATIO = 0.028;
 const WINDOWS_ICO_SIZES = [16, 32, 64, 128, 256];
-// Linux desktop environments resolve `Icon=ave` through the freedesktop
-// icon theme spec, which only searches the directories the hicolor theme's
-// `index.theme` declares. Every size below is one of those declared app
-// directories; a size outside them installs to a path the lookup never walks,
-// so the launcher falls back to a generic icon no matter how good the artwork
-// is. 512 is the largest hicolor app size, which is why the ladder stops there
-// rather than carrying the 1024 master through.
+// Install only sizes declared by the desktop icon theme; other directories are never searched.
 const DESKTOP_ICON_SET_SIZES = [16, 24, 32, 48, 64, 128, 256, 512];
 const GRADIENT_STOPS = [
   { at: 0, color: [255, 75, 46] },
@@ -356,18 +351,8 @@ function downsample(source, sourceSize, factor, targetSize = TARGET_SIZE, solidC
   return target;
 }
 
-/**
- * Area-average resample to any target size, including sizes the source is not
- * an integer multiple of. `downsample` above needs a whole-pixel factor, which
- * covers the supersampling and the Windows `.ico` ladder but excludes 24 and
- * 48 — two sizes the freedesktop icon theme searches and Linux launchers
- * routinely pick. Each destination pixel integrates the source rectangle it
- * covers, weighting partially covered source pixels by their overlap.
- *
- * Colour is accumulated premultiplied by alpha: the master icon stores RGB 0
- * under its fully transparent margin, so averaging straight colour would pull
- * a dark fringe into every antialiased edge of the shrunken icon.
- */
+// Area-weight resampling supports non-integer size ratios.
+// Accumulate premultiplied color to avoid dark fringes from transparent pixels.
 function resampleArea(source, sourceSize, targetSize) {
   const target = Buffer.alloc(targetSize * targetSize * 4);
   const scale = sourceSize / targetSize;
@@ -398,7 +383,7 @@ function resampleArea(source, sourceSize, targetSize) {
       }
       const averageAlpha = alpha / coverage;
       const targetOffset = (y * targetSize + x) * 4;
-      // Undo the premultiplication so the stored pixel is straight RGBA again.
+      // Store straight RGBA after premultiplied accumulation.
       const unpremultiply = averageAlpha === 0 ? 0 : coverage * (averageAlpha / 255);
       target[targetOffset] = unpremultiply === 0 ? 0 : Math.round(red / unpremultiply);
       target[targetOffset + 1] = unpremultiply === 0 ? 0 : Math.round(green / unpremultiply);
@@ -546,18 +531,14 @@ function encodeIco(sourceRgba, sourceSize, sizes) {
   return Buffer.concat([header, ...images.map((image) => image.png)]);
 }
 
-/**
- * Every asset write goes through `emit` so the set of generated paths has a
- * single authority. The manifest written at the end of `main` is that set, and
- * `scripts/check-generated-assets.mjs` reads it rather than keeping its own
- * copy of the list — add an output here and the guard covers it with no second
- * edit. The progress log is derived from the same record, so it can no longer
- * drift out of sync with what was actually written.
- */
+// Record all asset writes through emit so the manifest and guard share one output inventory.
 const emitted = [];
 
+// Keep pixel-identical images: runtime-dependent compression bytes must not dirty the worktree.
 function emit(path, contents) {
-  writeFileSync(path, contents);
+  const before = existsSync(path) ? normalizedImage(readFileSync(path)) : null;
+  const after = before === null ? null : normalizedImage(contents);
+  if (before === null || after === null || !before.equals(after)) writeFileSync(path, contents);
   emitted.push(path);
 }
 
@@ -591,21 +572,18 @@ function main() {
     );
   }
 
-  // Rebuilt from empty so a size dropped from the ladder also leaves the tree,
-  // rather than lingering as an orphan the packager would still install.
+  // Rebuild from empty so removed sizes cannot remain packaged as orphans.
   rmSync(desktopIconSetDir, { recursive: true, force: true });
   mkdirSync(desktopIconSetDir, { recursive: true });
   for (const size of DESKTOP_ICON_SET_SIZES) {
-    // electron-builder reads the pixel size out of the filename when it walks
-    // an icon-set directory, so the name is load-bearing, not descriptive.
+    // The packager reads pixel size from the filename.
     emit(
       join(desktopIconSetDir, `${size}x${size}.png`),
       encodePng(size, size, resampleArea(iconRgba, TARGET_SIZE, size)),
     );
   }
 
-  // Repository-relative POSIX paths: the guard compares them against `git
-  // ls-files` output, which is always POSIX-separated regardless of platform.
+  // Manifest paths must match the POSIX paths emitted by version control.
   const manifest = emitted
     .map((path) => relative(root, path).split(sep).join("/"))
     .sort();

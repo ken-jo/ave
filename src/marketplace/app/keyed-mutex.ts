@@ -1,20 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-/**
- * Proof that its holder runs with a set of keys of one {@link KeyedMutex}.
- * It lives exactly as long as the holder's callback: passed down
- * explicitly, it lets work inside that callback run under keys it already
- * holds ({@link KeyedMutex.within}); it never adds a key.
- */
+/** A callback-scoped lease permits nested work under existing keys, never additional keys. */
 export interface MutexLease {
-  /** The keys it holds, ascending. */
   readonly keys: readonly string[];
 }
 
 class Lease implements MutexLease {
-  /** Its holder's callback returned: it may no longer be passed down. */
   closed = false;
-  /** Its keys were released. */
   released = false;
   /** Work running under it through {@link KeyedMutex.within}; the holder releases only once none is left. */
   active = 0;
@@ -29,7 +21,6 @@ class Lease implements MutexLease {
 interface Waiter {
   readonly keys: readonly string[];
   granted: boolean;
-  /** Called once, when the waiter heads the queue of every one of its keys. */
   readonly grant: () => void;
 }
 
@@ -40,30 +31,12 @@ export interface MutexRunOptions {
   readonly beforeAcquire?: (keys: readonly string[]) => void;
 }
 
-/**
- * Mutual exclusion per key (design §18.6). A caller declares every key it
- * needs at once and takes them all as one request: the request joins every
- * key's FIFO queue in the same step and runs once it heads all of them.
- * Since each request joins all its queues together, two requests stand in
- * the same order in every queue they share, so none waits for another in a
- * cycle, and there is nothing to extend later.
- *
- * - One cancellation point covers the whole acquisition: cancelling removes
- *   the request from every queue (it never held a key), and only it.
- * - The lease passed to `fn` lives as long as `fn`. Work inside `fn` that
- *   must run under some of those keys passes the lease to {@link within},
- *   which runs it at once. Passing it after `fn` returned throws, and the
- *   holder releases its keys only after the work admitted under it ends.
- * - A caller that holds keys and asks for keys without its lease throws
- *   instead of waiting, perhaps for itself. The current context's lease is
- *   used for that refusal only, never to grant anything; work the holder
- *   does not own leaves its context through {@link detached}.
- */
+/** Atomically joins every requested key queue in FIFO order to avoid acquisition cycles.
+ * Nested work needs an explicit live lease; implicit context can refuse access but cannot grant it. */
 export class KeyedMutex {
   private readonly queues = new Map<string, Waiter[]>();
   private readonly context = new AsyncLocalStorage<Lease>();
 
-  /** No key is held or asked for. */
   get idle(): boolean {
     return this.queues.size === 0;
   }
@@ -93,11 +66,7 @@ export class KeyedMutex {
     }
   }
 
-  /**
-   * Run `fn` under keys `lease` holds, at once, while its holder's callback
-   * runs. Asking for a key the lease does not hold throws: a request names
-   * every key it needs up front.
-   */
+  /** Runs immediately under a live lease; requesting any additional key throws. */
   async within<T>(value: MutexLease, keys: readonly string[], fn: () => Promise<T>): Promise<T> {
     if (!(value instanceof Lease) || value.mutex !== this) throw new Error("lock contract: the lease passed does not belong to this lock");
     if (value.closed) throw new Error(`lock contract: the lease of ${value.keys.join(", ")} was passed after its holder returned`);
@@ -114,7 +83,7 @@ export class KeyedMutex {
     }
   }
 
-  /** Run `fn` as work detached from the current holder: another caller, which waits for the keys like any other. */
+  /** Detaches from the holder context so new work waits for keys independently. */
   detached<T>(fn: () => T): T {
     return this.context.exit(fn);
   }
@@ -143,7 +112,7 @@ export class KeyedMutex {
       }
       if (!signal) return;
       const onAbort = () => {
-        // Not granted, so it holds no key: leaving every queue changes no holder, but may let a waiter behind it run.
+        // An ungranted request owns no keys, so cancellation only removes its queue entries.
         for (const key of keys) this.leave(key, waiter);
         this.wake(keys);
         reject(signal.reason);
@@ -171,7 +140,6 @@ export class KeyedMutex {
     this.wake(waiter.keys);
   }
 
-  /** Grant every waiter that now heads all of its queues. */
   private wake(keys: readonly string[]): void {
     for (const key of keys) {
       const head = this.queues.get(key)?.[0];

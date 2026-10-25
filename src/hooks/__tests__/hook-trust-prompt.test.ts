@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area B — TOFU workflow orchestrator tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import {
   existsSync,
@@ -87,26 +83,22 @@ describe("Permission policy P4 runHookTrustWorkflow", () => {
     });
     expect(result.disabledHooks.map((h) => h.fileName)).toEqual(["pre-bad.sh"]);
     expect(result.trustedHooks.map((h) => h.fileName)).toEqual(["pre-good.sh"]);
-    // The bad hook lives under .disabled now
     const disabledFiles = readdirSync(disabledDir);
     expect(disabledFiles).toContain("pre-bad.sh");
-    // The good hook is still in hooksDir
     expect(existsSync(join(hooksDir, "pre-good.sh"))).toBe(true);
     expect(existsSync(join(hooksDir, "pre-bad.sh"))).toBe(false);
   });
 
   it("changed-hash detection on subsequent boot", async () => {
     writeExecutableHook(hooksDir, "pre-x.sh", "#!/bin/sh\necho 'v1'");
-    // First run: trust the hook
     await runHookTrustWorkflow({
       hooksDir,
       lockfilePath,
       disabledDir,
       promptDispatcher: makeDispatcher([{ fileName: "pre-x.sh", trust: true }]),
     });
-    // Mutate the hook
     writeExecutableHook(hooksDir, "pre-x.sh", "#!/bin/sh\necho 'v2-malicious'");
-    // Second run: dispatcher should be invoked because hash changed
+    // Changed bytes must prompt for trust again.
     const seen: string[] = [];
     const result = await runHookTrustWorkflow({
       hooksDir,
@@ -132,7 +124,7 @@ describe("Permission policy P4 runHookTrustWorkflow", () => {
       promptDispatcher: makeDispatcher([{ fileName: "pre-keep.sh", trust: true }]),
     });
     const firstAcceptedAt = first.lockfile!.hooks[0].acceptedAt;
-    // Second run with no changes — should not re-prompt
+    // Unchanged trusted bytes must not prompt again.
     const second = await runHookTrustWorkflow({
       hooksDir,
       lockfilePath,

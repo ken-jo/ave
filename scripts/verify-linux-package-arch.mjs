@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Fail unless every native binary in a Linux release build is the target arch.
- *
- *   node scripts/verify-linux-package-arch.mjs --release-dir release --arch x64 [--require-installers]
- *
- * See scripts/lib/linux-package-arch.mjs for what is checked.
- */
 import { resolve } from "node:path";
 import { archSpec, auditLinuxRelease } from "./lib/linux-package-arch.mjs";
 

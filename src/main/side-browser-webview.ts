@@ -11,52 +11,67 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
 import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
 import { createLogger } from "../lib/logger.js";
+import { browserWorkspaceOrigin, browserWorkspaceUrl } from "../shared/browser-workspace.js";
+import type { BrowserPermissionDetails } from "./browser/browser-site-permissions.js";
+import {
+  browserWorkspaceGuestWindowId,
+  getBrowserWorkspaceService,
+  observeBrowserWorkspaceDownload,
+  observeBrowserWorkspaceGuest,
+  registerBrowserWorkspacePopup,
+} from "./browser/browser-workspace-desktop.js";
 
 const log = createLogger("ave");
 
 export type SideBrowserAttachResult = "ignored" | "accepted" | "blocked";
 
-/**
- * Protocol + embedded-credential rule, delegated to the shared authority
- * (src/shared/external-url.ts) rather than re-implemented here.
- */
+// Protocol + embedded-credential rule, delegated to the shared authority (src/shared/external-url.ts) rather than re-implemented here.
 function isHttpUrl(value: string): boolean {
   return validateExternalUrl(value).ok;
 }
 
-/**
- * The only permissions a side-browser page is granted. The browser is meant to
- * work like a normal one for reading, signing in and downloading, but there is
- * no per-site prompt UI yet, so anything that reaches a device or the user's
- * attention (camera, microphone, location, notifications, MIDI, HID...) stays
- * denied. `fullscreen` is denied too: the app shows no exit hint for an
- * element going fullscreen, so a page could cover the whole app window and
- * draw a convincing copy of the approval UI. Request and check handlers read
- * the same set so they always agree.
- */
-const SIDE_BROWSER_ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set([
-  "clipboard-sanitized-write",
-]);
-
-function isSideBrowserPermissionAllowed(permission: string): boolean {
-  return SIDE_BROWSER_ALLOWED_PERMISSIONS.has(permission);
+function permissionDetails(contents: WebContents | null, permission: string, details: unknown, requestingOrigin?: string): BrowserPermissionDetails | null {
+  if (!contents || contents.isDestroyed() || !isSideBrowserContents(contents) || browserWorkspaceGuestWindowId(contents) === null) return null;
+  // Sanitized writes have no device/read capability and remain safe for frames.
+  if (permission === "clipboard-sanitized-write") return details && typeof details === "object" ? details as BrowserPermissionDetails : {};
+  if (details === null || typeof details !== "object") return null;
+  const record = details as Record<string, unknown>;
+  if (record.isMainFrame !== true) return null;
+  const current = browserWorkspaceUrl(contents.getURL());
+  const requesting = browserWorkspaceUrl(record.requestingUrl);
+  if (!current || current !== requesting || record.embeddingOrigin !== undefined) return null;
+  const origin = new URL(current).origin;
+  if (requestingOrigin !== undefined && browserWorkspaceOrigin(requestingOrigin) !== origin) return null;
+  if (record.securityOrigin !== undefined && browserWorkspaceOrigin(record.securityOrigin) !== origin) return null;
+  if (record.mediaTypes !== undefined && (!Array.isArray(record.mediaTypes) || record.mediaTypes.some((value) => typeof value !== "string"))) return null;
+  if (record.mediaType !== undefined && typeof record.mediaType !== "string") return null;
+  return details as BrowserPermissionDetails;
 }
 
 export function installSideBrowserPartitionPolicy(): void {
   const sideBrowserSession = session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
-  // Sign-in pages (Google, Microsoft) refuse UAs that carry `Electron/` as an
-  // embedded browser; present the same vanilla Chromium/Edge UA as the link
+  // Sign-in pages (Google, Microsoft) refuse UAs that carry `Electron/` as an embedded browser; present the same vanilla Chromium/Edge UA as the link
   // viewer so logins in the in-app browser work and persist.
   sideBrowserSession.setUserAgent(buildPersistentBrowserUserAgent());
-  sideBrowserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(isSideBrowserPermissionAllowed(permission));
+  sideBrowserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const verified = permissionDetails(contents, permission, details);
+    if (verified === null) { callback(false); return; }
+    void getBrowserWorkspaceService().requestPermission(contents.id, permission, verified).then(callback, (error) => {
+      log.warn({ error, permission }, "browser permission request failed");
+      callback(false);
+    });
   });
-  sideBrowserSession.setPermissionCheckHandler((_webContents, permission) =>
-    isSideBrowserPermissionAllowed(permission));
-  sideBrowserSession.on("will-download", createSideBrowserDownloadPolicy());
+  sideBrowserSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    const verified = permissionDetails(contents, permission, details, requestingOrigin);
+    return verified !== null && getBrowserWorkspaceService().checkPermission(contents!.id, permission, verified);
+  });
+  const downloadPolicy = createSideBrowserDownloadPolicy();
+  sideBrowserSession.on("will-download", (event, item, contents) => {
+    if (downloadPolicy(event, item, contents)) observeBrowserWorkspaceDownload(contents, item);
+  });
 }
 
-/** Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}. */
+// Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}.
 export const DOWNLOAD_PROMPTS_PER_ORIGIN = 3;
 export const DOWNLOAD_RATE_WINDOW_MS = 60_000;
 
@@ -71,27 +86,12 @@ function originOf(url: string): string {
   }
 }
 
-/**
- * The side browser's `will-download` policy. Downloads work as in a normal
- * browser, through the native Save dialog, with three limits so a page cannot
- * use them to badger the user or write files unseen:
- *
- * - No `setSavePath` is ever called, so Electron always shows the Save dialog
- *   and the user picks (or cancels) the destination. Nothing opens the file
- *   once it is saved.
- * - One pending Save dialog per side browser (per guest or popup
- *   `WebContents`): a download requested while that browser's dialog is still
- *   open is cancelled.
- * - At most {@link DOWNLOAD_PROMPTS_PER_ORIGIN} prompts per page origin within
- *   {@link DOWNLOAD_RATE_WINDOW_MS}; further requests are cancelled and logged.
- *
- * A prompt stops being pending once the user picked a path (the item reports
- * a save path) or the item finished (saved, cancelled or interrupted).
- */
+// Downloads always use native Save with no automatic path or launch.
+// Permit one pending dialog per guest/popup and rate-limit prompts per origin to prevent attention flooding.
 export function createSideBrowserDownloadPolicy(options: {
   now?: () => number;
   warn?: (fields: Record<string, unknown>, message: string) => void;
-} = {}): (event: Pick<ElectronEvent, "preventDefault">, item: DownloadPolicyItem, contents: DownloadPolicyContents | null | undefined) => void {
+} = {}): (event: Pick<ElectronEvent, "preventDefault">, item: DownloadPolicyItem, contents: DownloadPolicyContents | null | undefined) => boolean {
   const now = options.now ?? Date.now;
   const warn = options.warn ?? ((fields, message) => log.warn(fields, message));
   const pendingPrompt = new Set<number>();
@@ -103,7 +103,7 @@ export function createSideBrowserDownloadPolicy(options: {
     if (pendingPrompt.has(contentsId)) {
       event.preventDefault();
       warn({ origin, url: item.getURL() }, "side browser download cancelled: a Save dialog is already open");
-      return;
+      return false;
     }
     const at = now();
     const recent = (promptsByOrigin.get(origin) ?? []).filter((t) => at - t < DOWNLOAD_RATE_WINDOW_MS);
@@ -111,7 +111,7 @@ export function createSideBrowserDownloadPolicy(options: {
       promptsByOrigin.set(origin, recent);
       event.preventDefault();
       warn({ origin, url: item.getURL() }, "side browser download cancelled: too many download prompts from this origin");
-      return;
+      return false;
     }
     recent.push(at);
     promptsByOrigin.set(origin, recent);
@@ -121,6 +121,7 @@ export function createSideBrowserDownloadPolicy(options: {
       if (item.getSavePath()) settle();
     });
     item.on("done", settle);
+    return true;
   };
 }
 
@@ -128,11 +129,8 @@ export function isSideBrowserContents(contents: WebContents): boolean {
   return contents.session === session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
 }
 
-/**
- * Preferences forced on every remote-content surface of the side browser: the
- * `<webview>` guest at attach time and every popup window it opens. Remote
- * pages never get a preload, Node, or a nested `<webview>`.
- */
+// Preferences forced on every remote-content surface of the side browser: the `<webview>` guest at attach time and every popup window it opens. Remote
+// pages never get a preload, Node, or a nested `<webview>`.
 function hardenRemoteWebPreferences(prefs: Record<string, unknown>): void {
   delete prefs.preload;
   delete prefs.preloadURL;
@@ -165,12 +163,7 @@ export function configureSideBrowserWebviewAttach(input: {
   return "accepted";
 }
 
-/**
- * Whether a side-browser page may open `url` as a new window. Blank popup
- * requests are ambiguous: a script URL can arrive as `about:blank` and execute
- * without a cancellable navigation event. Only concrete http(s) URLs are safe
- * to admit here. Blank guest bootstraps use the separate attach policy.
- */
+// Admit concrete HTTP(S) popup URLs only: a script can execute through about:blank without cancellable navigation; guest bootstraps use attach policy.
 export function isSideBrowserPopupUrlAllowed(url: string): boolean {
   return isHttpUrl(url);
 }
@@ -182,38 +175,29 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
     width: 520,
     height: 720,
     autoHideMenuBar: true,
-    // A child of the main window whose side panel opened it, so it closes
-    // with that window instead of outliving it as a stray top-level window.
+    // A child of the main window whose side panel opened it, so it closes with that window instead of outliving it as a stray top-level window.
     parent: owner,
-    // Native frame on purpose: the app's hidden-titlebar chrome relies on an
-    // in-page titlebar that a remote page does not have.
+    // Native frame on purpose: the app's hidden-titlebar chrome relies on an in-page titlebar that a remote page does not have.
     webPreferences: webPreferences as BrowserWindowConstructorOptions["webPreferences"],
   };
 }
 
-/**
- * Install the side-browser guards on a remote-content `WebContents` — the
- * `<webview>` guest, and recursively every popup it (or a popup) opens.
- *
- * Popups are top-level `BrowserWindow`s (type `"window"`), so the global
- * webview guard in `main.ts` never sees them; these listeners are their only
- * gate. The popup's session is inherited from its opener (that is what keeps
- * `window.opener` working for OAuth `postMessage`); a child that somehow lands
- * on any other session is closed instead of trusted.
- *
- * `owner` is the main window whose side panel hosts the guest. Every popup in
- * the chain is parented to it, so closing that window closes them; once it is
- * gone, no further popup opens.
- */
+// Guard guests and every popup recursively; global webview guards do not cover top-level popup windows.
+// Require inherited session identity and parent popups to the owning main window; close foreign-session children.
 export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
   markAsLinkOwned(contents);
+  observeBrowserWorkspaceGuest(contents, owner);
   contents.setWindowOpenHandler(({ url }) => {
     if (!isSideBrowserPopupUrlAllowed(url)) return { action: "deny" };
     if (owner.isDestroyed()) return { action: "deny" };
     return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions(owner) };
   });
   contents.on("did-create-window", (child) => {
-    if (!isSideBrowserContents(child.webContents)) {
+    if (owner.isDestroyed() || !isSideBrowserContents(child.webContents)) {
+      child.destroy();
+      return;
+    }
+    if (registerBrowserWorkspacePopup(contents.id, child, owner) === null) {
       child.destroy();
       return;
     }

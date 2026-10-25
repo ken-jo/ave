@@ -1,14 +1,5 @@
-/**
- * The bundled model catalog's generator (issue #2501): committed models.dev
- * input in, `src/core/model-catalog/bundled-snapshot.json` out.
- *
- * The input under `scripts/model-catalog/` is committed so the snapshot is
- * reproducible from the repository alone: `models-dev-input.json` is the
- * pruned download, `models-dev-source.json` records where and when it was
- * downloaded, and `models-dev-LICENSE.txt` is the license the data is
- * distributed under. `--fetch` replaces all three; everything else reads them.
- * The packaged app ships the same license text from `resources/licenses/`.
- */
+// Generate reproducible snapshots from committed input and source metadata.
+// The packaged license must match the committed input license.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -33,16 +24,14 @@ export const MODEL_CATALOG_PATHS = {
   input: "scripts/model-catalog/models-dev-input.json",
   source: "scripts/model-catalog/models-dev-source.json",
   license: "scripts/model-catalog/models-dev-LICENSE.txt",
-  /** The attribution the installer ships (`build.extraResources` → `licenses/models.dev`). */
   packagedLicense: "resources/licenses/models.dev/LICENSE-MIT",
   snapshot: "src/core/model-catalog/bundled-snapshot.json",
 } as const;
 
-/** Depth at which a JSON value is written on one line: a model record, in both files. */
 const INPUT_COMPACT_DEPTH = 3;
 const SNAPSHOT_COMPACT_DEPTH = 4;
 
-/** The license as the catalog carries it; the copyright line is read from the text, not restated. */
+// Read copyright text from the input license rather than restating it.
 function modelCatalogLicense(text: string): ModelCatalogLicense {
   const copyright = text.split("\n").find((line) => line.startsWith("Copyright"));
   if (!text.startsWith("MIT License") || !copyright) {
@@ -53,14 +42,12 @@ function modelCatalogLicense(text: string): ModelCatalogLicense {
 
 function readText(root: string, path: string): string {
   try {
-    // A copy checked out with CRLF is the same input; the blob is LF (.gitattributes).
     return readFileSync(join(root, path), "utf-8").replace(/\r\n/g, "\n");
   } catch {
     throw new Error(`${path} is missing; run bun run generate:model-catalog -- --fetch`);
   }
 }
 
-/** The snapshot the committed input generates, as the bytes the file must hold. */
 export function generateModelCatalog(root: string): {
   path: string;
   text: string;
@@ -84,7 +71,6 @@ export function generateModelCatalog(root: string): {
   };
 }
 
-/** The committed input files a download produces: the pruned document, its source record, and the license. */
 async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<{
   input: string;
   source: string;
@@ -96,9 +82,7 @@ async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<
   const fetchedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const pruned = pruneModelsDevDocument(JSON.parse(raw.toString("utf-8")), catalogProviderIds());
 
-  // The deployed document carries no revision, so the repository head at
-  // download time is recorded as the nearest one. Best effort: an API limit
-  // must not stop a download that already succeeded.
+  // The download has no revision; record the repository head as best-effort provenance.
   let upstreamHeadAtFetch: string | undefined;
   let upstreamSchemaBlob: string | undefined;
   try {
@@ -112,7 +96,6 @@ async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<
       if (schema.ok) upstreamSchemaBlob = ((await schema.json()) as { sha?: string }).sha;
     }
   } catch {
-    // Recorded as absent; the fields are optional for exactly this reason.
   }
   const licenseResponse = await fetchImpl(
     `https://raw.githubusercontent.com/anomalyco/models.dev/${upstreamHeadAtFetch ?? MODELS_DEV_BRANCH}/LICENSE`,
@@ -144,7 +127,6 @@ function writeText(root: string, path: string, text: string): void {
   writeFileSync(target, text, "utf-8");
 }
 
-/** The snapshot the committed input generates, written, with the packaged license kept equal to the input's. */
 export function writeModelCatalog(root: string): ReturnType<typeof generateModelCatalog> {
   const generated = generateModelCatalog(root);
   writeText(root, generated.path, generated.text);
@@ -152,10 +134,7 @@ export function writeModelCatalog(root: string): ReturnType<typeof generateModel
   return generated;
 }
 
-/**
- * Download new input and regenerate. Every download finishes before the
- * first file is written, so a failed run leaves the committed input as it was.
- */
+// Finish all downloads before writing so failed fetches preserve committed input.
 export async function fetchAndWriteModelCatalog(
   root: string,
   fetchImpl: typeof fetch = fetch,
@@ -167,7 +146,6 @@ export async function fetchAndWriteModelCatalog(
   return writeModelCatalog(root);
 }
 
-/** Why the committed files differ from what the input generates, or `undefined` when they match. */
 export function modelCatalogDrift(root: string): string | undefined {
   const { path, text, document } = generateModelCatalog(root);
   const committed = (relative: string): string | undefined => {

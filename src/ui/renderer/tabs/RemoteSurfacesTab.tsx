@@ -13,11 +13,8 @@ import type { TailnetObserverSnapshot } from "../../../shared/tailnet-observer-c
 
 export interface RemoteSurfacesTabProps {
   api: AveApi;
-  /**
-   * The tile the away-authority grant would bind to — the focused conversation.
-   * Threaded from the window because settings has no conversation of its own,
-   * and main refuses a grant that names no tile.
-   */
+  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
+   * has no conversation of its own, and main refuses a grant that names no tile. */
   chatGroupId: string;
   /**
    * The `data-settings-section` a deep link named, while it is still unapplied.
@@ -33,11 +30,8 @@ export interface RemoteSurfacesTabProps {
 const TAILNET_ROW = "connection:tailnet";
 const LOCAL_API_ROW = "connection:local-api";
 
-/**
- * The local API binds loopback-only and cannot be made to bind anything else —
- * the guard is in `src/api/http-server.ts`. The row names the address because
- * "on" is not one, and this is what a companion actually connects to.
- */
+/** The local API binds loopback-only and cannot be made to bind anything else — the guard is in `src/api/http-server.ts`.
+ * The row names the address because "on" is not one, and this is what a companion actually connects to. */
 const LOCAL_API_HOST = "127.0.0.1";
 
 /** What main answers when a switched-on remote A2A gate did not start this run. */
@@ -75,17 +69,8 @@ const UNREAD: HostSurfaceReadings = Object.freeze({
   localApiGatesOn: null,
 });
 
-/**
- * What the collapsed Tailnet line says.
- *
- * A failure the expanded section already reports in red — a listener that did
- * not start, a configuration file that could not be read, paired sharing that
- * failed at boot, or Tailscale itself not answering — is "needs attention" on
- * the folded line too. Reading those as "setup needed" told an owner whose
- * listener had crashed that they simply had not turned it on yet. A listener
- * that is up but not yet behind Tailscale Serve is reachable from nowhere but
- * this desktop, which is a setup step still to take, not a connection.
- */
+/** Listener/probe failures mean needs attention; a running listener without external serving still needs setup rather than
+ * claiming connectivity. */
 function tailnetRowState(snapshot: TailnetObserverSnapshot): ConnectionRowState {
   if (snapshot.configFileError !== null
     || snapshot.lastStartError !== null
@@ -99,21 +84,7 @@ function tailnetRowState(snapshot: TailnetObserverSnapshot): ConnectionRowState 
   return serveOn ? "connected" : "needs-setup";
 }
 
-/**
- * The owner-facing home for surfaces that observe or drive this desktop's
- * conversation from somewhere else.
- *
- * One line per vendor. Each surface still keeps its own trust story and its own
- * controls — they open inside the row rather than stacking down the page, so
- * the question "what can reach this desktop" is answerable by reading a column
- * instead of scrolling through four fully expanded sections.
- *
- * Rows open independently, because setting two connections up side by side is
- * a real thing to want. What keeps the list from quietly becoming the old stack
- * again is the other half: a row folds itself away the moment the thing it was
- * opened for is done, and stays open — carrying its own error — when that did
- * not work.
- */
+/** Connection rows open independently, collapse after success, and stay open with errors after failure. */
 export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: RemoteSurfacesTabProps) {
   const { t } = useTranslation();
   const [expandedRowIds, setExpandedRowIds] = useState<readonly string[]>([]);
@@ -132,8 +103,8 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
   useEffect(() => {
     if (sectionTarget === null) return;
     const row = ROW_FOR_SECTION[sectionTarget] ?? messagingConnectionRowForSection(sectionTarget);
-    // Not every anchor on this tab belongs to a row. One that does not is
-    // already in the DOM, and arrival will find it on its own.
+    // Not every anchor on this tab belongs to a row. One that does not is already in the DOM, and arrival will find it on its
+    // own.
     if (row === undefined || row === null) return;
     setExpandedRowIds((open) => (open.includes(row) ? open : [...open, row]));
   }, [sectionTarget]);
@@ -145,9 +116,8 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
   useEffect(() => {
     let alive = true;
     void (async () => {
-      // Settled separately: one read failing must not leave the other row
-      // unread, and a rejected read is a state to show, not an unhandled
-      // rejection that leaves both lines blank.
+      // Settled separately: one read failing must not leave the other row unread, and a rejected read is a state to show, not an
+      // unhandled rejection that leaves both lines blank.
       const [observerRead, settingsRead, remoteA2ARead] = await Promise.allSettled([
         api.tailnetObserver.snapshot(),
         api.getSettings(),
@@ -171,16 +141,15 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
       const remoteA2AStartFailed = remoteA2ARead.status === "fulfilled"
         && !remoteA2ARead.value.ok
         && remoteA2ARead.value.error === REMOTE_A2A_START_FAILED;
-      // A switch moved since launch is configured but not running: the owner's
-      // next move is a restart, which is what "pending" means on this row.
+      // A switch moved since launch is configured but not running: the owner's next move is a restart, which is what "pending"
+      // means on this row.
       const remoteA2ARestartPending = remoteA2ARead.status === "fulfilled"
         && remoteA2ARead.value.restartPending === true;
       setReadings({
         tailnet: observer === null ? "attention" : tailnetRowState(observer),
         tailnetOrigin: observer?.derivedWebOrigin ?? null,
-        // Off rather than "setup needed": these four are the owner's own
-        // switches, and all of them down is a resting state, not an unfinished
-        // one.
+        // Off rather than "setup needed": these four are the owner's own switches, and all of them down is a resting state, not an
+        // unfinished one.
         localApi: gatesOn === null || remoteA2AStartFailed
           ? "attention"
           : remoteA2ARestartPending

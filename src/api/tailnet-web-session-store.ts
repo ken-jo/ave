@@ -1,11 +1,4 @@
-/**
- * Ephemeral browser-session store for the same-origin Tailnet Web adapter.
- *
- * Cookies and CSRF values are high-entropy one-time browser secrets. Their raw
- * values are returned only while issuing a session and are never persisted:
- * records retain domain-separated digests plus the opaque paired-share
- * authority needed for each request's reauthorization.
- */
+// Store only digests of issued cookie/CSRF secrets and reauthorize their paired-share binding on every request.
 import { randomBytes as nodeRandomBytes } from "node:crypto";
 import type { TailnetPairingShareBinding } from "../shared/chat-origin.js";
 import type { TailnetShareActorId } from "../main/tailnet-pairing-share-store.js";
@@ -27,20 +20,14 @@ export interface TailnetWebSessionAuthorization {
   readonly expiresAt: number;
 }
 
-export interface TailnetWebIssuedSession extends TailnetWebSessionAuthorization {
+interface TailnetWebIssuedSession extends TailnetWebSessionAuthorization {
   /** HttpOnly cookie value; never retained in the store. */
   readonly cookieToken: string;
   /** Page-local CSRF value; never retained in the store. */
   readonly csrfToken: string;
 }
 
-/**
- * A browser that has cleared the same-origin boundary but holds no share yet.
- *
- * The pairing page needs a CSRF secret before there is anything to authorize,
- * so this record deliberately carries no actor and no share binding: it can
- * only be presented to the pairing-claim route, never resolved into a session.
- */
+// Share-less pairing entries may redeem codes but must never resolve into authorized sessions.
 interface TailnetWebPairingEntry {
   readonly cookieToken: string;
   readonly csrfToken: string;
@@ -52,15 +39,9 @@ export interface TailnetWebSessionStore {
     actorId: TailnetShareActorId;
     pairedShare: TailnetPairingShareBinding;
   }>): TailnetWebIssuedSession | null;
-  /** Mint the share-less cookie/CSRF pair the pairing-code page is served with. */
   issuePairingEntry(): TailnetWebPairingEntry | null;
-  /** Whether a cookie/CSRF pair is a current pairing entry — never a session. */
   resolvePairingEntryMutation(cookieToken: string, csrfToken: string): boolean;
-  /**
-   * Add an independent page CSRF secret to a current browser session. This
-   * keeps separately opened same-origin tabs usable without rotating their
-   * shared HttpOnly cookie.
-   */
+  // Give each tab a CSRF secret without rotating its shared HttpOnly cookie.
   issuePageCsrf(cookieToken: string, input: Readonly<{
     actorId: TailnetShareActorId;
     pairedShare: TailnetPairingShareBinding;
@@ -82,7 +63,6 @@ export interface CreateTailnetWebSessionStoreOptions {
 }
 
 interface StoredSession {
-  /** Null while the browser may only redeem a pairing code. */
   readonly authorization: TailnetWebSessionAuthorization | null;
   readonly expiresAt: number;
   readonly cookieDigest: string;

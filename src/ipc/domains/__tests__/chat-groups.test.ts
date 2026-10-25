@@ -1,13 +1,8 @@
-/**
- * Tiled chat groups at the IPC boundary: every per-conversation channel names
- * its group, each group runs on its own loop, and a closed tile's group is
- * released.
- *
- * The property under test is separation. A registrar that handed every group
- * the primary loop would pass every other chat test — those only ever speak
- * to "main" — while four tiles quietly shared one conversation.
- */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtemp, readFile, writeFile, rm, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { checkpointFileMutation, withCodeCheckpoint } from "../../../memory/code-checkpoints.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -31,9 +26,7 @@ vi.mock("../../gated.js", async (importOriginal) => ({
   validateHostRendererSender: () => true,
 }));
 
-// Every group's frames leave through one adapter subscription; releasing the
-// group must let go of it. The adapter is real except that the unsubscribe
-// it hands back is observable.
+// Releasing a group must unsubscribe its stream adapter.
 vi.mock("../../../core/custom-commands.js", () => ({
   listCustomCommands: vi.fn(async (projectRoot?: string) => [
     { name: "from-project", scope: "project", description: projectRoot ?? "" },
@@ -60,8 +53,6 @@ vi.mock("../../../api/platform-conversation-legacy-adapter.js", async (importOri
   };
 });
 
-// Every surface runtime the registrar builds, in order — the primary's first,
-// then one per group. A group's leases live on its own.
 const runtimes: import("../../../engine/conversation-surface-runtime.js").ConversationSurfaceRuntime[] = [];
 vi.mock("../../../engine/conversation-surface-runtime.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../engine/conversation-surface-runtime.js")>();
@@ -86,6 +77,8 @@ type FakeLoop = {
   isSessionTransitioning: () => boolean;
   getSessionId: () => string;
   getSessionKind: () => "main";
+  getSessionExecutionCwd: () => string;
+  getTurnAdditionalDirectories: () => readonly string[];
   hasActiveTurn: () => boolean;
   getHistory: () => {
     length: number;
@@ -99,8 +92,7 @@ type FakeLoop = {
 };
 
 function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
-  // Truncation really removes rows here: a no-op would let a handler that cuts
-  // the WRONG tile's conversation still look correct.
+  // Truncation must remove rows so cutting the wrong tile cannot pass.
   let messages = [...seed];
   let transitioning = false;
   const loop: FakeLoop = {
@@ -122,6 +114,8 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
     isSessionTransitioning: vi.fn(() => transitioning),
     getSessionId: () => loop.sessionId,
     getSessionKind: () => "main",
+    getSessionExecutionCwd: () => `/projects/${id}`,
+    getTurnAdditionalDirectories: () => [],
     hasActiveTurn: () => false,
     getHistory: () => ({
       length: messages.length,
@@ -253,7 +247,6 @@ describe("ave:chat:* with chat groups", () => {
     expect(main.hasProvider).toHaveBeenCalledTimes(1);
     expect(groups.get("group-2")!.hasProvider).toHaveBeenCalledTimes(1);
     expect(groups.get("group-3")!.hasProvider).toHaveBeenCalledTimes(1);
-    // Resolved once per group, then cached: a second call must not build twice.
     invoke(CHANNELS.chat.hasProvider, "group-2");
     expect(resolveChatGroupLoop).toHaveBeenCalledTimes(2);
   });
@@ -262,13 +255,10 @@ describe("ave:chat:* with chat groups", () => {
     const { invoke, groups } = await registerWithGroups();
     invoke(CHANNELS.chat.hasProvider, "group-2");
     const loop = groups.get("group-2")!;
-    // The primary holds a user message; this group holds none. Reading the
-    // primary's history here would find one and go on to run a turn.
     const result = await invoke(CHANNELS.chat.continueLastUser, { sessionId: loop.sessionId }, "group-2");
     expect(result).toEqual({ ok: false, error: "no-user-message" });
     const retried = await invoke(CHANNELS.chat.retryEffort, {}, "group-2");
     expect(retried).toEqual({ ok: false, error: "no-user-message" });
-    // And the session check is against the group's session, not the primary's.
     const mismatched = await invoke(CHANNELS.chat.continueLastUser, { sessionId: sessionUuid("session-of-main") }, "group-2");
     expect(mismatched).toEqual({ ok: false, error: "session-mismatch" });
   });
@@ -285,10 +275,75 @@ describe("ave:chat:* with chat groups", () => {
 
     expect(result).toMatchObject({ ok: true, text: "tile question" });
     expect(tile.getHistory().getMessages()).toEqual([]);
-    // The primary is a different conversation and a rewind in one tile is not
-    // an edit of another.
     expect(main.getHistory().getMessages()).toHaveLength(2);
     expect(memoryManager.saveSession).toHaveBeenCalledWith(sessionUuid("session-of-group-2"), []);
+  });
+
+  describe("code rewind at the conversation mutation boundary", () => {
+    let root: string;
+    beforeEach(async () => {
+      root = await realpath(await mkdtemp(join(tmpdir(), "ave-rewind-ipc-")));
+      vi.stubEnv("AVE_HOME", join(root, "state"));
+    });
+    afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+    async function setup() {
+      const registered = await registerWithGroups(undefined, [
+        { role: "user", content: "tile question", meta: { messageId: "tile-q1" } },
+        { role: "assistant", content: "tile answer", meta: { messageId: "tile-a1" } },
+      ]);
+      registered.invoke(CHANNELS.chat.hasProvider, "group-2");
+      const tile = registered.groups.get("group-2")!;
+      tile.getSessionExecutionCwd = () => root;
+      const file = join(root, "code.txt");
+      await writeFile(file, "before");
+      await withCodeCheckpoint({ sessionId: tile.getSessionId(), messageId: "tile-q1" }, () =>
+        checkpointFileMutation([{ path: file, content: "agent" }], () => writeFile(file, "agent")));
+      return { ...registered, tile, file };
+    }
+    it("restores code without truncating or persisting the conversation", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "code")).toMatchObject({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("before");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    });
+    it("restores both files and persisted conversation", async () => {
+      const { invoke, tile, file, main, memoryManager } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({ ok: true, text: "tile question" });
+      expect(await readFile(file, "utf8")).toBe("before");
+      expect(tile.getHistory().getMessages()).toEqual([]);
+      expect(main.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).toHaveBeenCalledWith(tile.getSessionId(), []);
+    });
+    it("lists conflicts and keeps history and code unchanged on refusal", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      await writeFile(file, "external");
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({ ok: false, error: "code-restore-conflict", conflictingFiles: [file] });
+      expect(await readFile(file, "utf8")).toBe("external");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    });
+    it("leaves code untouched for conversation-only rewind", async () => {
+      const { invoke, file } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "conversation")).toMatchObject({ ok: true });
+      expect(await readFile(file, "utf8")).toBe("agent");
+    });
+    it("refuses a code rewind after the tile's write scope is revoked", async () => {
+      const { invoke, tile, file, memoryManager } = await setup();
+      tile.getSessionExecutionCwd = () => join(root, "other");
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({
+        ok: false, error: "code-restore-conflict", conflictingFiles: [file],
+      });
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    });
+    it("rejects invalid restore modes without changing anything", async () => {
+      const { invoke, tile, file } = await setup();
+      expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "force")).toEqual({ ok: false, error: "invalid-rewind-mode" });
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(tile.getHistory().getMessages()).toHaveLength(2);
+    });
   });
 
   it("refuses a rewind while that tile is mid-turn", async () => {
@@ -296,7 +351,6 @@ describe("ave:chat:* with chat groups", () => {
       { role: "user", content: "tile question", meta: { messageId: "tile-q1" } },
     ]);
     invoke(CHANNELS.chat.hasProvider, "group-2");
-    // The tile's own runtime is the one created for it — the primary's is first.
     const tileRuntime = runtimes[runtimes.length - 1];
     let releaseTurn = () => {};
     const heldTurn = tileRuntime.activity.tryTrackTurn(
@@ -317,8 +371,6 @@ describe("ave:chat:* with chat groups", () => {
     ]);
     invoke(CHANNELS.chat.hasProvider, "group-2");
 
-    // "main-q1" is a real row — in the PRIMARY's conversation. A tile resolves
-    // ids against its own history only.
     const result = await invoke(CHANNELS.chat.rewindTo, "main-q1", "group-2");
 
     expect(result).toEqual({ ok: false, error: "message-not-found" });
@@ -330,17 +382,13 @@ describe("ave:chat:* with chat groups", () => {
     invoke(CHANNELS.chat.hasProvider, "group-2");
     const second = groups.get("group-2")!;
 
-    // The primary's conversation cannot be pulled into the second tile...
-    // ...and the refusal names the holder, so the renderer can bring it forward.
     const refused = await invoke(CHANNELS.chat.sessionResume, sessionUuid("session-of-main"), "group-2");
     expect(refused).toMatchObject({ ok: false, error: "session-open-in-other-group", holderChatGroupId: MAIN_CHAT_GROUP_ID });
     expect(second.resetAndResume).not.toHaveBeenCalled();
-    // ...and the second tile's cannot be pulled into the primary.
     const refusedBack = await invoke(CHANNELS.chat.sessionResume, sessionUuid("session-of-group-2"), MAIN_CHAT_GROUP_ID);
     expect(refusedBack).toMatchObject({ ok: false, error: "session-open-in-other-group", holderChatGroupId: "group-2" });
     expect(main.resetAndResume).not.toHaveBeenCalled();
 
-    // A conversation no tile holds loads normally.
     const loaded = await invoke(CHANNELS.chat.sessionResume, sessionUuid("session-archived"), "group-2");
     expect(loaded).toMatchObject({ ok: true });
     expect(second.resetAndResume).toHaveBeenCalledWith(sessionUuid("session-archived"));
@@ -351,13 +399,10 @@ describe("ave:chat:* with chat groups", () => {
     invoke(CHANNELS.chat.hasProvider, "group-2");
     const second = groups.get("group-2")!;
 
-    // The first resume holds group-2's session-mutation lease until it settles;
-    // the two calls below are issued while it is still held.
     const first = invoke(CHANNELS.chat.sessionResume, sessionUuid("session-archived"), "group-2");
     const refused = invoke(CHANNELS.chat.sessionResume, sessionUuid("session-of-main"), "group-2");
     const busy = invoke(CHANNELS.chat.sessionResume, sessionUuid("session-older"), "group-2");
     await expect(refused).resolves.toMatchObject({ ok: false, error: "session-open-in-other-group", holderChatGroupId: MAIN_CHAT_GROUP_ID });
-    // A conversation nobody holds is what the lease refuses.
     await expect(busy).resolves.toMatchObject({ ok: false, error: "streaming-active" });
     await expect(first).resolves.toMatchObject({ ok: true });
     expect(second.resetAndResume).toHaveBeenCalledTimes(1);
@@ -379,7 +424,6 @@ describe("ave:chat:* with chat groups", () => {
     expect(await invoke(CHANNELS.chat.groupRelease, MAIN_CHAT_GROUP_ID)).toEqual({ ok: true, released: true });
     expect(main.abortCurrentTurn).toHaveBeenCalledTimes(1);
     expect(main.newConversation).toHaveBeenCalledTimes(1);
-    // The next launch must not bring the closed conversation back.
     expect(memoryManager.markMainActiveFresh).toHaveBeenCalledTimes(1);
     expect(releaseChatGroupLoop).not.toHaveBeenCalledWith(MAIN_CHAT_GROUP_ID);
   });
@@ -392,8 +436,6 @@ describe("ave:chat:* with chat groups", () => {
     expect(first.abortCurrentTurn).toHaveBeenCalledTimes(1);
     expect(releaseChatGroupLoop).toHaveBeenCalledWith("group-2");
     expect(await invoke(CHANNELS.chat.groupRelease, "group-2")).toEqual({ ok: true, released: false });
-    // The primary is never released.
-    // A name reaching main again after release builds a new group, not the old one.
     invoke(CHANNELS.chat.hasProvider, "group-2");
     expect(resolveChatGroupLoop).toHaveBeenCalledTimes(2);
     expect(groups.get("group-2")).not.toBe(first);
@@ -427,9 +469,7 @@ describe("ave:chat:* with chat groups", () => {
     });
     expect(settled).toBe(false); // cleanup proof is also part of release
 
-    // The loop transition and the surface coordinator share one admission
-    // decision. While cleanup is pending, no turn or history mutation may
-    // enter and a goal-change trigger must not spend a revival round.
+    // Cleanup holds the shared admission decision; turns, history edits, and goal revival remain blocked.
     expect(await invoke(CHANNELS.chat.compact, "group-2")).toEqual({ error: "streaming-active" });
     expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2")).toEqual({ ok: false, error: "streaming-active" });
     expect(await invoke(CHANNELS.chat.send, {
@@ -540,29 +580,21 @@ describe("ave:chat:* with chat groups", () => {
     invoke(CHANNELS.chat.hasProvider, "group-3");
     const before = groups.get("group-2")!;
     expect(events["did-navigate"]).toHaveLength(1); // installed once, not per group
-    // A navigation attempt is not a reload: the window's will-navigate policy
-    // cancels an external link click after did-start-navigation has fired,
-    // and in-page or subframe navigation never replaces the tiles' document.
+    // Cancelled main-frame, in-page, and subframe navigation retain the owning document.
     expect(events["did-start-navigation"]).toBeUndefined();
     expect(releaseChatGroupLoop).not.toHaveBeenCalled();
     events["did-navigate"]![0]!();
     await vi.waitFor(() => {
       expect(releaseChatGroupLoop.mock.calls.map((call) => call[0]).sort()).toEqual(["group-2", "group-3"]);
     });
-    // The reloaded renderer's first extra tile is "group-2" again — and gets a new loop.
     invoke(CHANNELS.chat.hasProvider, "group-2");
     expect(resolveChatGroupLoop).toHaveBeenCalledTimes(3);
     expect(groups.get("group-2")).not.toBe(before);
-    // A dead render process is the same story.
     invoke(CHANNELS.chat.hasProvider, "group-4");
     events["render-process-gone"]![0]!();
     await vi.waitFor(() => expect(releaseChatGroupLoop).toHaveBeenLastCalledWith("group-4"));
     expect(releaseChatGroupLoop).toHaveBeenLastCalledWith("group-4");
-    // A failed main-frame load commits an error page without did-navigate and
-    // raises did-fail-provisional-load. A stopped load (ERR_ABORTED) or a failed
-    // subframe keeps the tiles' document, and so does every did-fail-load
-    // without a committed error page (an invalid loadURL, a committed
-    // document's own load failing), so that event is not watched at all.
+    // Only a committed main-frame error page replaces the document; aborted or subframe loads retain the tiles.
     invoke(CHANNELS.chat.hasProvider, "group-5");
     expect(events["did-fail-load"]).toBeUndefined();
     expect(events["did-fail-provisional-load"]).toHaveLength(1);
@@ -625,8 +657,7 @@ describe("ave:chat:* across several main windows", () => {
     const fromPrimary = from(primary.window.webContents);
     const fromSecondary = from(secondary.window.webContents);
 
-    // Both renderers number their tiles the same way; only the primary's ids
-    // are global. The secondary's `main` tile is a loop of its own.
+    // Tile ids are window-scoped; only the primary conversation id is global.
     fromPrimary(CHANNELS.chat.hasProvider, "group-2");
     fromSecondary(CHANNELS.chat.hasProvider, MAIN_CHAT_GROUP_ID);
     fromSecondary(CHANNELS.chat.hasProvider, "group-2");
@@ -638,15 +669,11 @@ describe("ave:chat:* across several main windows", () => {
     expect(main.hasProvider).not.toHaveBeenCalled();
     expect(groups.get("group-2")).not.toBe(groups.get("window-20:group-2"));
 
-    // Closing the secondary tile named `main` releases that window's loop and
-    // leaves the primary conversation alone.
     await expect(fromSecondary(CHANNELS.chat.groupRelease, MAIN_CHAT_GROUP_ID))
       .resolves.toEqual({ ok: true, released: true });
     expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:main");
     expect(main.newConversation).not.toHaveBeenCalled();
 
-    // The secondary window closing takes its remaining tiles with it; the
-    // primary window's tile stays.
     secondary.events["destroyed"]![0]!();
     await vi.waitFor(() => expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:group-2"));
     expect(releaseChatGroupLoop).not.toHaveBeenCalledWith("group-2");
@@ -664,22 +691,16 @@ describe("ave:chat:* across several main windows", () => {
     const fromSecondary = (channel: string, ...args: unknown[]) =>
       handlers.get(channel)!({ ...RENDERER_EVENT, sender: secondary.window.webContents }, ...args);
 
-    // A prompt about the secondary window's tile goes to that window; the
-    // primary conversation is shown by the primary window; a session no tile
-    // holds has no window of its own.
     fromSecondary(CHANNELS.chat.hasProvider, "group-2");
     const secondarySession = groups.get("window-20:group-2")!.sessionId;
     expect(appState.findSessionMainWindowContents(secondarySession)).toBe(secondary.window.webContents);
     expect(appState.findSessionMainWindowContents(main.sessionId)).toBe(primary.window.webContents);
     expect(appState.findSessionMainWindowContents("no-tile-holds-this")).toBeNull();
 
-    // The primary closes. The secondary keeps its role and its tiles: its ids
-    // stay window-scoped and nothing of it is released.
     primaryClosed = true;
     appState.unregisterMainWindow(primaryWindow as never);
     expect(appState.isSecondaryMainWindowContents(secondary.window.webContents)).toBe(true);
     expect(appState.findSessionMainWindowContents(secondarySession)).toBe(secondary.window.webContents);
-    // No window shows the primary conversation now.
     expect(appState.findSessionMainWindowContents(main.sessionId)).toBeNull();
     fromSecondary(CHANNELS.chat.hasProvider, "group-2");
     expect(groups.get("window-20:group-2")!.sessionId).toBe(secondarySession);
@@ -691,8 +712,6 @@ describe("ave:chat:* across several main windows", () => {
     const primary = fakeMainWindow(1);
     appState.registerMainWindow(primary.window as never, "primary");
     const { resolveChatGroupLoop } = await registerWithGroups(primary.window);
-    // A sender that is not a secondary main window (another host surface)
-    // addresses the same groups the primary window does.
     handlers.get(CHANNELS.chat.hasProvider)!({ ...RENDERER_EVENT, sender: { id: 999 } }, "group-2");
     expect(resolveChatGroupLoop).toHaveBeenCalledWith("group-2");
   });

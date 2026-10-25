@@ -19,22 +19,8 @@ export interface UseProjectPreferencesResult {
   setProjectLabel: (projectRoot: string, label: string) => void;
 }
 
-/**
- * The project ROW's preferences: whether it is pinned, whether it is archived,
- * and what the user chose to call it.
- *
- * All three are lightweight UI preferences rather than project-domain
- * mutations, so they persist the same way other UI preferences do (a
- * SystemSettings round trip) instead of earning an IPC domain. They live in one
- * hook because they are one thing from the row's side — its own card — and
- * because all three key on the same root identity: splitting them would be
- * three chances to disagree about whether two spellings of a path are the same
- * folder.
- *
- * Renaming a row NEVER renames the folder on disk, and archiving NEVER removes
- * the workspace root or its durable permission scope. Both are deliberately
- * weaker than the actions they sit next to.
- */
+/** Project row names and archive flags are UI preferences, never filesystem renames or removal of durable root permission
+ * scope. */
 export function useProjectPreferences(api: AveApi): UseProjectPreferencesResult {
   const [pinnedProjectRoots, setPinnedProjectRoots] = useState<string[]>([]);
   const [archivedProjectRoots, setArchivedProjectRoots] = useState<string[]>([]);
@@ -119,8 +105,7 @@ export function useProjectPreferences(api: AveApi): UseProjectPreferencesResult 
       setLabels((current) => {
         const next = { ...current };
         const trimmed = label.trim();
-        // Clearing the label is how the row goes back to its derived name, so
-        // an empty string DELETES rather than storing "".
+        // Clearing the label is how the row goes back to its derived name, so an empty string DELETES rather than storing "".
         if (trimmed) next[key] = trimmed;
         else delete next[key];
         void api.updateSettings({ system: { projectLabels: next } });

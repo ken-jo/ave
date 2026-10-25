@@ -1,15 +1,5 @@
-/**
- * The data of each content kind (design §5.2): the entry
- * files of an installed package, parsed and checked. The same parse runs at
- * install (a failure refuses the package) and whenever installed content is
- * loaded (a failure lists the package as broken and applies nothing), so
- * bytes changed on disk after install are held to the same rules.
- *
- * Every entry file is strict JSON with a closed set of fields. The provider
- * and messaging-connection files go through the same normalizers today's
- * asset packages use, and a field the normalizer drops or rewrites refuses
- * the file instead of being lost silently.
- */
+/** Apply the same content rules at install and load; modified files become broken rather than active.
+ * Strict entry files reject fields their normalizers would discard or rewrite. */
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import {
   normalizeMarketplaceMessagingConnection,
@@ -33,7 +23,6 @@ import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
 import type { AgentPluginComponents } from "../catalog/types.js";
 
 export interface ContentFile {
-  /** Package-relative, `/`-separated. */
   path: string;
   data: Buffer;
   executable?: boolean;
@@ -48,7 +37,6 @@ interface ThemeContent {
   tokens: ThemeTokens;
   surfaces: ThemeSurfaces;
   preview?: string;
-  /** The theme of the other shell `followSystem` switches to with this one. */
   pair?: string;
 }
 
@@ -67,11 +55,7 @@ interface FontContent {
   faces: Array<{ file: string; format: FontFormat; weight: string; style: "normal" | "italic" }>;
 }
 
-/**
- * A provider package is either a preset (an OpenAI-compatible endpoint of its
- * own) or one of the built-in vendors the marketplace unlocks, with an optional
- * default model and — from an official or managed source only — base URL.
- */
+/** Built-in provider base URLs may be overridden only by official or managed sources. */
 type ProviderContent =
   | { kind: "provider"; preset: MarketplaceInstalledProviderPreset }
   | { kind: "provider"; vendor: { providerId: MarketplaceEligibleLLMVendor; defaultModel?: string; baseUrl?: string } };
@@ -81,14 +65,8 @@ interface MessagingConnectionContent {
   connection: MarketplaceInstalledMessagingConnection;
 }
 
-/**
- * A skill (`SKILL.md`, the Agent Skills layout) or an agent profile
- * (`AGENTS.md`): instructions the model reads, applied by the skill and
- * agent stores reading the installed package directory.
- */
 interface InstructionContent {
   kind: "skill" | "agent";
-  /** The package name; the front matter may repeat it and may not say another. */
   name: string;
   description: string;
 }
@@ -96,13 +74,11 @@ interface InstructionContent {
 interface AgentPluginContent {
   kind: "agent-plugin";
   components: AgentPluginComponents;
-  /** Verified package bytes retained for main-process component publication. */
   files: readonly ContentFile[];
 }
 
 export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
 
-/** Every content kind has a data model; the name stays for the store's plan type. */
 export type DataContentKind = ParsedContent["kind"];
 
 export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
@@ -119,25 +95,16 @@ export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
 }
 
 export interface ContentContext {
-  /** The package name. */
   name: string;
-  /** Required for an agent plugin so its manifest cannot claim another version. */
+  /** Prevents an agent-plugin manifest from claiming a different package version. */
   version?: string;
   minAppVersion?: string;
-  /** The descriptor's payload (already schema-checked); null when loading an installed package. */
   payload: Record<string, unknown> | null;
-  /** The English catalog: the keys a language may translate and the placeholders each must keep. */
+  /** Translations retain the English key placeholders. */
   english: Readonly<Record<string, string>>;
   /** The source the package came from; some content is reserved for official and managed sources. */
   sourceOrigin: SourceOrigin;
-  /**
-   * What a language key outside this app's interface keys does. The repository
-   * check refuses it, so an author learns of a typo or a model-facing key. On a
-   * device it is ignored and never applied: a package written for another app
-   * version names keys this one removed or has since made model-facing, and
-   * refusing them would break every installed language whenever the catalog
-   * loses a key.
-   */
+  /** Author checks reject unknown or model-facing keys; installed languages ignore them across catalog changes. */
   unknownMessageKeys: "refuse" | "ignore";
 }
 
@@ -147,11 +114,7 @@ class ContentFailure extends MarketplaceError {
   }
 }
 
-/**
- * The package's files by path. Two paths that differ only in case would be
- * one file on a case-insensitive disk (macOS, Windows), so which bytes were
- * installed would depend on write order.
- */
+/** Reject case-only path collisions so installation is deterministic on case-insensitive disks. */
 function fileMap(files: readonly ContentFile[]): Map<string, Buffer> {
   const folded = new Map<string, string>();
   for (const file of files) {
@@ -181,11 +144,7 @@ function closed(record: Record<string, unknown>, path: string, keys: readonly st
   if (unknown.length > 0) throw new ContentFailure(path, `unknown field ${unknown.join(", ")}`);
 }
 
-/**
- * Bidirectional overrides and invisible formatting characters: text shown in
- * the app (a theme's name, a language's names, a translated approval prompt)
- * could otherwise read differently from what it says.
- */
+/** Reject invisible formatting that could misrepresent displayed names or approval prompts. */
 const HIDDEN_FORMATTING = /[\u00ad\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 function text(record: Record<string, unknown>, path: string, key: string, max: number): string {
@@ -196,7 +155,6 @@ function text(record: Record<string, unknown>, path: string, key: string, max: n
   return value;
 }
 
-/** The raster formats a theme preview may use, by magic bytes, with the image size from the header. */
 function imageSize(bytes: Buffer): { format: string; width: number; height: number } | null {
   if (bytes.length >= 24 && bytes.readUInt32BE(0) === 0x89504e47 && bytes.readUInt32BE(4) === 0x0d0a1a0a && bytes.subarray(12, 16).toString("latin1") === "IHDR") {
     return { format: "png", width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
@@ -212,7 +170,6 @@ function imageSize(bytes: Buffer): { format: string; width: number; height: numb
     return null;
   }
   if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    // Walk the JPEG segments to the first start-of-frame marker.
     let at = 2;
     while (at + 9 < bytes.length) {
       if (bytes[at] !== 0xff) return null;
@@ -232,8 +189,7 @@ const PREVIEW_MAX_SIDE = 2048;
 
 function theme(files: Map<string, Buffer>, context: ContentContext): ThemeContent {
   const path = "theme.json";
-  // The bundles compiled into the app keep their ids; every other theme,
-  // the fourteen the server marketplace delivered among them, is a package.
+  // Bundled themes retain their ids; other themes are packages.
   if (isBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
   const record = readJson(files, path);
   closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview", "pair"]);
@@ -278,14 +234,10 @@ function placeholders(value: string): string {
   return [...new Set([...value.matchAll(PLACEHOLDER)].map((match) => match[1]!))].sort().join(",");
 }
 
-/**
- * The keys a language package may translate: every English key the model does
- * not read. Model-facing text always comes from the compiled catalogs.
- */
+/** Model-facing text always uses compiled catalogs, never language packages. */
 export function translatableKeys(english: Readonly<Record<string, string>>): string[] {
   return Object.keys(english).filter((key) => !isModelFacingKey(key));
 }
-/** The descriptor schema's `languagePayload.locale` pattern. */
 const LOCALE_TAG = /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?$/u;
 
 function language(files: Map<string, Buffer>, context: ContentContext): LanguageContent {
@@ -297,9 +249,7 @@ function language(files: Map<string, Buffer>, context: ContentContext): Language
   if (context.payload && context.payload.locale !== locale) {
     throw new ContentFailure(infoPath, `locale must be ${String(context.payload.locale)}, the descriptor's locale`);
   }
-  // A compiled language keeps its tag. Only an official or managed source may
-  // ship the compiled Korean catalog's replacement, under exactly its tag; a
-  // regional variant of a compiled language would be read as the compiled one.
+  // Only trusted sources may replace a compiled language; regional aliases must not shadow one.
   const primary = locale.split("-")[0]!;
   if ((SUPPORTED_LOCALES as readonly string[]).includes(primary)) {
     const reserved = primary === "en" || locale !== primary || (context.sourceOrigin !== "official" && context.sourceOrigin !== "managed");
@@ -318,7 +268,7 @@ function language(files: Map<string, Buffer>, context: ContentContext): Language
     if (typeof value !== "string" || value.length === 0 || value.length > MESSAGE_MAX || HIDDEN_FORMATTING.test(value)) {
       throw new ContentFailure(messagesPath, `${key} must be a non-empty string of at most ${MESSAGE_MAX} characters without hidden formatting`);
     }
-    // A translation says the same thing: an approval prompt that dropped {path} would ask about something else.
+    // Approval translations must retain placeholders so the approved target cannot change.
     if (placeholders(value) !== placeholders(english)) {
       throw new ContentFailure(messagesPath, `${key} must keep the placeholders {${placeholders(english).split(",").filter(Boolean).join("}, {")}}`);
     }
@@ -390,11 +340,7 @@ function font(files: Map<string, Buffer>): FontContent {
   return { kind: "font", family, faces };
 }
 
-/**
- * `normalized` must hold every field of `input` unchanged: the normalizer
- * drops unknown fields and invalid values, and a package file that loses a
- * field on the way in is refused rather than installed as something else.
- */
+/** Refuse any input field a normalizer would drop or rewrite. */
 function sameFields(input: Record<string, unknown>, normalized: object | undefined, path: string): void {
   if (!normalized) throw new ContentFailure(path, "is not a valid declaration");
   const out = normalized as Record<string, unknown>;
@@ -447,11 +393,7 @@ function messagingConnection(files: Map<string, Buffer>, context: ContentContext
   return { kind: "messaging-connection", connection: connection! };
 }
 
-/**
- * `SKILL.md` or `AGENTS.md`: the front matter the stores read (YAML for a
- * skill, the flat header for an agent profile), a name that is the package's
- * when it is given, and a body.
- */
+/** Optional front-matter names must match the package identity. */
 function instruction(kind: "skill" | "agent", files: Map<string, Buffer>, context: ContentContext): InstructionContent {
   const path = kind === "skill" ? "SKILL.md" : "AGENTS.md";
   const bytes = files.get(path);
@@ -469,7 +411,6 @@ function instruction(kind: "skill" | "agent", files: Map<string, Buffer>, contex
   return { kind, name: context.name, description: header.description ?? "" };
 }
 
-/** The parsed entry files of a `kind` package; CONTENT_RULE_VIOLATION when they do not hold. */
 export function parseContent(kind: DataContentKind, files: readonly ContentFile[], context: ContentContext): ParsedContent {
   const map = fileMap(files);
   switch (kind) {

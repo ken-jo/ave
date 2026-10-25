@@ -61,8 +61,7 @@ export class OpenAiProvider implements LLMProvider {
       messages: projectOpenAiMessages(input.messages),
       toolSchemas: projectOpenAiTools(input.toolSchemas),
     };
-    // The API keeps the engine's existing estimator, applied to the same
-    // prepared input as dispatch. Native envelopes retain their own estimator.
+    // Estimate the same prepared API input used for dispatch; native envelopes own their estimator.
     return this.connectionKind === "api-key"
       ? estimateRequestInputProjection(projected, {
           vendor: this.vendor,
@@ -72,8 +71,7 @@ export class OpenAiProvider implements LLMProvider {
   }
 
   async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
-    // Keep the selected model, output controls and signal exact. The connection
-    // owns their native meaning and the provenance of every returned event.
+    // Preserve model, controls, and signal; the connection owns their protocol meaning and provenance.
     yield* this.transport.streamTurn({
       ...params,
       messages: projectOpenAiMessages(params.messages),

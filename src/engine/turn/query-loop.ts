@@ -1,20 +1,6 @@
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
-/**
- * queryLoop — the vendor-abstracted agentic round loop, extracted
- * from conversation-loop.ts as a free function over `self: LoopContext`. All
- * turn state (history, provider, usage, lastRound/lastContext token fields,
- * guidance queue) stays on the ConversationLoop instance, accessed via `self`.
- */
 import { appendRequestOnlyText } from "./request-only-text.js";
 import { randomUUID } from "node:crypto";
-/**
- * LoopContext — the turn-local mutable carrier that the run-turn
- * and query-loop free functions operate on. It is the ConversationLoop instance
- * itself: the class owns all turn state (history, provider, the lastRound and
- * lastContext token-projection fields, the guidance queue, compaction flags),
- * and the extracted free functions read/write it through this alias so the
- * implicit cross-method contracts stay on one object.
- */
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type { GuidanceInjectionSource, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
 import type { GenericMessage, LLMProvider, LLMVendor, MessageMeta, TokenUsage, TokenUsageByModel, ToolCallBlock, ToolSchema } from "../llm/types.js";
@@ -84,96 +70,26 @@ import {
 } from "../../shared/authorization-required.js";
 
 const log = createLogger("ave");
-// No caller-assigned `maxRounds` = PARENT session: unbounded — a turn ends
-// at natural end_turn or user interrupt. Child loops always get a budget.
+// Parent turns are unbounded without maxRounds; child loops always receive a budget.
 const PARENT_UNLIMITED_ROUNDS = Number.MAX_SAFE_INTEGER;
-/**
- * Hard cap on finish_reason=length CONTINUATIONS per logical assistant answer.
- * Published provider guidance converges on 2–3. AND-ed with: (a) a
- * zero-progress break (a round adding no text AND no reasoning ends the chain),
- * (b) the caller-assigned round budget, and (c) the loop's effective round
- * bound. Any one tripping stops the chain — defense against a model that
- * always returns "max_tokens".
- */
+// Stop continuation at its cap, zero progress, or the assigned round budget, whichever comes first.
 const MAX_LENGTH_CONTINUATIONS = 3;
-/**
- * Hard cap on reasoning-only re-prompts per turn. A round that ends `end_turn`
- * with reasoning but no answer text and no tool call has not finished the turn:
- * the reasoning names the next action the model meant to take, so returning
- * there gives up before the model did. Two: the first re-prompt covers a model
- * that narrated its next action and simply failed to emit it, the second covers
- * one that answers the re-prompt with more reasoning. Past that the model is
- * looping, and every attempt spends a round out of the same budget the real
- * work needs. AND-ed with the caller-assigned round budget — either one
- * tripping ends the turn exactly the way it ends without this branch.
- */
+// Bound reasoning-only re-prompts per turn and charge them against the ordinary round budget.
 const MAX_REASONING_ONLY_NUDGES = 2;
-/**
- * How much of an answer-less round's reasoning the next round replays as that
- * round's assistant text.
- *
- * The replay is what puts the reasoning in front of the model at all: `thought`
- * is mapped to no wire part on any vendor, and a row holding it with neither
- * text nor tool calls is dropped whole rather than sent as an empty assistant
- * turn. Dropping it also collapses the rows either side into two consecutive
- * user turns, which a chat template that asserts role alternation rejects.
- *
- * The TAIL is the part that matters — a reasoning block ends on the action it
- * decided, and the earlier text is the deliberation that led there. 2,000
- * characters is roughly the last few paragraphs: enough to carry the decision
- * and its immediate justification, small enough that a runaway reasoning block
- * cannot push the round over the context budget it just came back under.
- */
+// Cap stop-hook continuations as well as rounds so an always-blocking hook cannot keep a turn alive.
+export const MAX_STOP_HOOK_CONTINUATIONS = 8;
+// Replay a bounded reasoning tail as assistant text so next-action context and role alternation survive.
 const MAX_NUDGE_REASONING_CHARS = 2_000;
-/**
- * Defensive cap on provider-as-oracle tool drops per turn. Termination is
- * already guaranteed structurally (each drop strictly shrinks the finite tool
- * set and we only drop a tool the provider named AND that is still present),
- * so this is belt-and-suspenders against pathological churn: if more than this
- * many distinct tools each 400 in one turn, stop dropping and let the error
- * surface normally rather than burning rounds.
- */
+// Bound schema drops despite a shrinking tool set so pathological rejections cannot burn the turn.
 const MAX_TOOL_SCHEMA_DROPS_PER_TURN = 5;
-/**
- * Tool errors that have to pile up since the last progress notification before
- * one fires ahead of the round cadence. Below this a couple of recoverable
- * failures inside an otherwise healthy turn would trigger a notification the
- * model has no use for.
- */
+// A few recoverable tool failures do not justify an early progress notification.
 const PROGRESS_NUDGE_TOOL_ERROR_THRESHOLD = 3;
-/**
- * C3(a): per-round cap on the number of tool calls an assistant round can
- * issue. Pathological round-emitting many tool_use blocks at once would
- * otherwise execute every one before the maxRounds guard could intervene.
- * Since `agent_spawn` is a tool call, this is also the model-facing sub-agent
- * fan-out limit: at most MAX_TOOL_CALLS_PER_ROUND sub-agents can be requested
- * in one assistant round.
- * SubAgentRunner also relies on this cap to keep a sub-agent's total tool
- * execution count bounded by `maxRounds * MAX_TOOL_CALLS_PER_ROUND`.
- */
-// Intra-turn tool-result stubbing — deep tool loops (e.g. indexer turns of
-// 11~19 rounds) otherwise resend the full accumulated tool_result history on
-// every round, blowing past the model's per-minute token budget. Between
-// rounds we mark older tool_results stale (memory stays verbatim; the wire
-// serializer stubs them on the next send), keeping the current + previous
-// round's results intact so chained tool calls can still reference recent
-// output. The window is count-based to match the markStaleToolResults
-// contract: 2 rounds worth of results (current + previous).
+// Bound per-round fan-out before round limits can intervene, including recursive tool-backed spawns.
+// Stub older results on wire to bound repeated input; preserve two rounds and raw in-memory text.
 const INTRA_TURN_PRESERVE_RECENT_RESULTS = 2 * MAX_TOOL_CALLS_PER_ROUND;
-// Only micro-compact between rounds once the projected per-round input is
-// already large enough to matter — half the model's preflight threshold —
-// so short turns don't pay the mark overhead.
+// Delay stubbing overhead until input reaches half the preflight threshold.
 const MICRO_COMPACT_FLOOR_FACTOR = 0.5;
-// How much a turn's projected request has to grow, as a fraction of the
-// preflight threshold, before the round-loop gate may repeat a compaction that
-// a previous attempt in the same turn already failed to deliver. Real
-// compaction is an LLM call; without this a turn whose history cannot be
-// reduced any further would spend one on every remaining round.
-//
-// A quarter of the threshold is the same order as the preserve window a
-// compaction protects (`preserveRecentTokens` is 0.2–0.4 × preflight), so an
-// attempt only repeats once enough new content exists for a boundary to have
-// something new to cut.
+// Retry ineffective compaction only after substantial new growth can produce a different boundary.
 const ROUND_COMPACT_REARM_GROWTH_FACTOR = 0.25;
 
 export async function queryLoop(
@@ -198,6 +114,7 @@ export async function queryLoop(
       rolePrompt?: ActiveRolePrompt;
       onMemoryCaptureTaint?: (reason: "staged-guidance") => void;
       memoryQuery?: string;
+      onStopHook?: (state: { toolCount: number; stopHookActive: boolean }) => Promise<string | undefined>;
     },
   ): Promise<{
     text: string;
@@ -210,7 +127,6 @@ export async function queryLoop(
     subscriptionUsage: ReturnType<typeof createSubscriptionUsageCollector>["values"];
     vendorProvider?: LLMVendor;
     vendorModel?: string;
-    /** What this turn's API route resolved about its model; absent for subscription runtimes and fallbacks. */
     modelSettings?: RunModelSettings;
     finalToolSchemas: ToolSchema[];
     promotedToolNames: string[];
@@ -221,19 +137,12 @@ export async function queryLoop(
       llmSettings.provider,
     );
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
-    // Subscription transports have no host-verifiable API-key billing identity.
-    // A future runtime must add an explicit subscription telemetry contract
-    // before its usage can cross this engine boundary.
+    // Subscription usage requires an explicit telemetry contract, never an inferred API-key billing identity.
     const subscriptionUsageIsOpaque = subscriptionRuntime !== undefined;
     const runtimeContextBudget = contextBudgetForCurrentRuntime(self);
     const model = runtimeContextBudget.model;
-    // Login-backed runtimes own their own reasoning policy. Never project the
-    // inactive API vendor's toggle/budget into a subscription prompt.
-    //
-    // An API route carries the effective output limit — the user's limit or the
-    // host default, clamped to the model's ceiling (endpoint report, else the
-    // catalog) — never the bare block value, which is absent for the default.
-    // The thinking budget is bounded against that same effective limit.
+    // Subscription reasoning never inherits inactive API-key settings.
+    // API thinking budgets share the route-resolved effective output limit.
     const effectiveOutput = runtimeContextBudget.output;
     if (!subscriptionRuntime && effectiveOutput === undefined) {
       throw new Error("API route resolved without an output limit");
@@ -242,10 +151,7 @@ export async function queryLoop(
       ? undefined
       : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, runtimeContextBudget);
     const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
-    // Subscription transports receive an ordinary serialized prompt for every
-    // Ave round. Until a runtime exposes and proves a native assistant-prefill
-    // continuation protocol, a max_tokens response must remain a partial
-    // response rather than being host-stitched as if that prompt were a prefill.
+    // Subscription max-token responses remain partial until native assistant-prefill support is verified.
     const supportsLengthContinuation = subscriptionRuntime === undefined
       && vendorSupportsLengthContinuation(llmSettings.provider);
     let systemPrompt = initialSystemPrompt;
@@ -259,48 +165,31 @@ export async function queryLoop(
     const usageByModel: TokenUsageByModel[] = [];
     const turnPricingOverrides = resolvePricingOverrides(llmSettings.pricingOverrides);
     const subscriptionUsage = createSubscriptionUsageCollector();
-    // Report a branch the loop just took. Reporting can never change what the
-    // loop does, so a listener that throws is swallowed here rather than
-    // failing a turn that had already decided.
+    // Decision reporting is observational; listener errors must not change execution.
     const decide = (event: TurnDecisionEvent): void => {
       try {
         callbacks?.onDecision?.(event);
       } catch {
-        // Observation must not break the turn it observes.
       }
     };
-    // Provider-as-oracle: tools the provider 400'd on (invalid_function_parameters)
-    // and we dropped this turn. Turn-scoped — resets naturally each queryLoop call.
+    // Rejected tool schemas stay excluded only for this turn.
     const droppedToolSchemaNames = new Set<string>();
-    // Same-anchor replay protection for siblings cancelled by a rationale batch.
-    // The digest is host-only and resets with this queryLoop invocation.
+    // Host-only same-anchor digests prevent replay of siblings canceled by a rationale batch.
     const cancelledSiblingProposalDigests = new Set<string>();
     let cancelledSiblingProposalGuardIncomplete = false;
-    // Option C: scope is mutable within the turn. Mutating the caller's Set
-    // directly means the next turn's fallback sees every plugin that was
-    // activated here. Route EVERY turn rebuild through this so already-dropped
-    // tools stay excluded — a mid-turn rebuild (request_plugin / tool_search)
-    // must not reintroduce a tool the provider already rejected and re-break
-    // the turn.
-    //
-    // Every rebuild honors the route's resolved tool capability, including
-    // an explicit named denial above a positive endpoint report. Unknown
-    // sends tools as before. The turn record notes the omission.
+    // Scope rebuilds must retain activations, excluded rejected tools, and resolved tool-capability denials.
     const toolsWithheld = runtimeContextBudget.toolCall?.supported === false ? runtimeContextBudget.toolCall : undefined;
     const rebuildTurnToolSchemas = (): ToolSchema[] => toolsWithheld
       ? []
       : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
-    // The primary API route's endpoint and its own price report. A serving
-    // model other than the route's (a fallback) is priced without them.
     const primaryPricingRoute = subscriptionRuntime
       ? undefined
       : {
           ...(runtimeContextBudget.baseUrl !== undefined ? { baseUrl: runtimeContextBudget.baseUrl } : {}),
           ...(runtimeContextBudget.reportedPricing !== undefined ? { reported: runtimeContextBudget.reportedPricing } : {}),
         };
-    // Capacity stays fixed for the turn. Reasoning is recorded at each request
-    // boundary because a retry can change the tool shape and its wire control.
+    // Capacity is turn-stable; record reasoning at each request because retries may change its shape.
     const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
       ? undefined
       : {
@@ -339,9 +228,7 @@ export async function queryLoop(
             vendorModel: servingVendorModel,
           }
         : {}),
-      // Fallbacks resolve generation again, even when their provider and model
-      // labels match: a fallback can change endpoints and named capabilities.
-      // Keep only facts from the last primary request.
+      // Fallbacks resolve their own facts even when labels match; retain only last primary request facts.
       ...(turnModelSettings !== undefined
         && servingVendorProvider === llmSettings.provider && servingVendorModel === model
         ? { modelSettings: turnModelSettings }
@@ -369,8 +256,7 @@ export async function queryLoop(
       : self.provider!;
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }> = [];
     const toolMetaByUseId = new Map<string, ToolCallMeta>();
-    // Last review event per tool call — the verdict the user saw live, stamped
-    // onto the tool_result so reload rebuilds the same row.
+    // Persist the last live review verdict on its tool result so reload shows the same decision.
     const permissionReviewByUseId = new Map<string, PermissionReviewEvent>();
     let turnUsage: TokenUsage | undefined;
     const recordProviderUsage = (
@@ -422,28 +308,13 @@ export async function queryLoop(
         (self.cumulativeUsage.cacheWriteTokens ?? 0) + cacheWrite;
     };
     let pluginExpansions = 0;
-    // Tool-Level Deferral — per-turn tool_search counter (mirror pluginExpansions).
     let toolSearches = 0;
     const promotedToolNamesForTurn: string[] = [];
     let roundIndex = 0;
     let toolTrustOrigin = bounds.toolTrustOrigin;
-    // The turn's STAGED origin (`overlay:*` / `app:*`), which forces write/shell/network
-    // tools to ask. It is a `let` because an MCP App can inject text mid-turn through
-    // the guidance queue: from that round on, the turn is no longer purely the user's,
-    // so the rest of it runs under the app's origin (see the drain site below). It only
-    // ever tightens — a staged origin is never cleared.
+    // Staged origin only tightens; non-user guidance forces remaining write, shell, and network calls to ask.
     let stagedOrigin = overlayTriggerOrigin;
-    // Single source for the session key used by on-demand plugin activation.
-    // This MUST equal the value wrapped in `sessionContext.run({ sessionId })`
-    // at the runTurn call site (i.e. `options.sessionIdOverride ?? self.sessionId`,
-    // exposed here as `bounds.sessionIdOverride ?? self.sessionId`). Gate 4
-    // (plugin-runtime-delegate) reads the activation set via
-    // `sessionContext.getStore()?.sessionId`, so the WRITE
-    // (`setSessionActivated`) and the CLEAR must key on the SAME id — otherwise
-    // a caller passing BOTH `allowedPluginIds` AND a `sessionIdOverride` would
-    // write under one id and the delegate would read another, silently refusing
-    // the activated tool. Today these coincide, but keying on one source removes
-    // the future-coincidence dependency.
+    // Activation writes, reads, and clears must use the same overridden session ID as sessionContext.
     const effectiveSessionId = bounds.sessionIdOverride ?? self.sessionId;
     let activeA2ACausalContext =
       isA2AAgentCausalContext(bounds.a2aCausalContext)
@@ -452,51 +323,31 @@ export async function queryLoop(
         : undefined;
     if (activeA2ACausalContext) toolTrustOrigin = "agent-message";
 
-    // C3(a): assistant-round counter — used by the maxRounds break below.
     let assistantRoundsRun = 0;
-    // Progress-notification bookkeeping. These three numbers are the only thing
-    // the model is told about its own budget, so they are counted here rather
-    // than derived from history: history is compacted mid-turn and a compacted
-    // prefix would make a long turn look like a short one.
+    // Count progress outside history because compaction must not make a long turn appear short.
     const turnStartedAtMs = Date.now();
     let toolErrorsRun = 0;
     let toolErrorsAtLastProgressNudge = 0;
-    // The assistant-round index the last notification was sent at. `roundIndex`
-    // is HELD across a continuation chain and across a schema-drop retry, so
-    // without this the same index would arm again on the next iteration and
-    // send twice for one assistant round.
+    // Continuations and schema retries hold roundIndex; record the last notification to avoid duplicate sends.
     let roundIndexAtLastProgressNudge = -1;
-    // Cadence in assistant rounds; `0` disables the notification entirely.
     const progressNudgeRounds =
       self.deps.settingsService.get("chat").progressNudgeRounds;
-    // Round-loop compaction re-arm. The projection this turn must exceed
-    // before the round-loop preflight gate may attempt another compaction.
-    // Zero means armed: the next crossing of the threshold fires. See the gate
-    // itself for why a failed attempt raises it and a successful one clears it.
+    // Re-arm only after sufficient growth following an ineffective in-turn compaction.
     let roundCompactArmedAbove = 0;
     const roundCompactRearmGrowth = Math.max(
       1_000,
       Math.floor(runtimeContextBudget.preflight * ROUND_COMPACT_REARM_GROWTH_FACTOR),
     );
-    // finish_reason=length CONTINUATION carry. While a logical answer is being
-    // continued across rounds we accumulate its raw text + reasoning here and
-    // DEFER the history append + onAssistantRound until the chain terminates —
-    // so the user sees ONE coherent answer and history holds ONE assistant
-    // message. `continuationPrefillText !== undefined` ⇒ next round continues.
+    // Accumulate raw continuation text and reasoning; append and notify once for the final merged answer.
     let continuationsRun = 0;
     let continuationCarryText = "";
     let continuationCarryThought = "";
     let continuationPrefillText: string | undefined = undefined;
-    // Reasoning-only re-prompt state. `reasoningNudgePending` arms exactly one
-    // re-prompt for the NEXT round (see MAX_REASONING_ONLY_NUDGES); the round
-    // assembly consumes it and spends `reasoningNudgesRun`, the per-turn tally
-    // against the cap. The reasoning itself needs no carrying — the assembly
-    // replays it off the committed row.
+    // Arm one next-round re-prompt; assembly replays reasoning from the committed row.
     let reasoningNudgesRun = 0;
     let reasoningNudgePending = false;
-    // C3(a): effective round budget. A host-assigned `maxRounds` (the sub-agent
-    // runner, carrying the user's configured budget) is HONOURED exactly, above
-    // the default too; narrowing it only shows up as an agent stopped mid-task.
+    let stopHookContinuationsRun = 0;
+    // Honor the exact caller-assigned round budget, including values above the default.
     const requestedMaxRounds = bounds?.maxRounds;
     const effectiveMaxRounds =
       typeof requestedMaxRounds === "number" && Number.isFinite(requestedMaxRounds) && requestedMaxRounds > 0
@@ -519,14 +370,10 @@ export async function queryLoop(
       pendingGuidanceDelivery = null;
       const injectionId = delivery.historyMessage?.meta?.hostInjectionId;
       if (injectionId !== undefined) {
-        // NOT removeExact: a compaction between the append and this rollback
-        // replaces message object identities, and a row that survives rollback
-        // while its entry goes back on the queue is delivered twice.
+        // Remove by durable row ID; compaction can replace object identity and cause duplicate redelivery.
         self.history.removeByHostInjectionId(injectionId);
       }
-      // Return the drained entries to the turn queue. runTurn's outer finally
-      // clears the active controller first, then atomically drops this queue via
-      // dropPendingGuidance so producer and renderer dispositions fire once.
+      // Requeue drained entries; outer cleanup clears the controller before delivering drop dispositions.
       self.guidanceQueue = [...delivery.entries, ...self.guidanceQueue];
     };
 
@@ -538,9 +385,7 @@ export async function queryLoop(
         delivery.entries.map((entry) =>
           Promise.resolve().then(() => entry.onInjected?.())),
       );
-      // The row is appended before the round whose completion commits this
-      // delivery, so a committed batch without one is a broken invariant —
-      // surfacing it is the only way it ever gets fixed.
+      // A committed delivery without its appended row violates the injection invariant.
       const committedRow = delivery.historyMessage;
       if (committedRow === null) {
         throw new Error("[guidance] committed a guidance batch that never reached history");
@@ -561,14 +406,8 @@ export async function queryLoop(
     const loopRoundBound = effectiveMaxRounds;
     try {
     for (let round = 0; round < loopRoundBound; round++) {
-      // Whether the guidance-injection guard already evaluated the preflight
-      // for THIS round. Reset per round, read by the round-loop gate below so
-      // one round never runs two compactions.
+      // Track whether guidance already ran preflight so the same round cannot compact twice.
       let preflightRanThisRound = false;
-      // C3(a): hard guard between rounds — if we have already executed
-      // `effectiveMaxRounds` assistant turns, stop cleanly and return the
-      // last text. This is the loop-boundary defense for agent_spawn
-      // turn caps; abortCurrentTurn remains the user-cancel path.
       if (assistantRoundsRun >= effectiveMaxRounds) {
         log.warn(
           `queryLoop: EARLY-EXIT(round-cap) — assistantRoundsRun=${assistantRoundsRun} effectiveMaxRounds=${effectiveMaxRounds} totalToolCalls=${allToolCalls.length}`,
@@ -585,9 +424,7 @@ export async function queryLoop(
         callbacks?.onError?.(
           t("be_conversationLoop.roundCapError", { max: effectiveMaxRounds }),
         );
-        // stopReason "round-cap" flags a BUDGET-hit termination, not a natural
-        // end_turn: the runner marks the result `incomplete` and the renderer
-        // shows "cut off, can continue". `resolveRoundCapText` picks the text.
+        // Round-cap is resumable budget exhaustion, not natural completion.
         const finalized = await finalizeAfterRoundCap({
           provider: turnProvider, model, systemPrompt,
           messages: self.history.getMessages(),
@@ -606,43 +443,16 @@ export async function queryLoop(
           stopReason: "round-cap",
         });
       }
-      // Round-boundary guidance inject — drain any "guide" utterances
-      // queued via `ConversationLoop.queueGuidance` while the previous
-      // round was running. Only fires when `round > 0` so the user's
-      // initial turn input is never preempted by a stale queue (round 0
-      // is the user's original prompt; queue is empty there because
-      // `queueGuidance` requires `currentAbortController !== null`, which
-      // is set just before the queryLoop starts but a fresh runTurn
-      // always starts with the queue drained on the prior turn's finally).
-      //
-      // Race ordering (critic MAJOR #2): both `queueGuidance` (from IPC
-      // handler thread) and this drain run on Node's single-threaded
-      // event loop. `queryLoop` awaits between rounds inside
-      // `collectRoundStream`, giving the IPC handler an injection point.
-      // The atomic `currentAbortController` check inside `queueGuidance`
-      // closes the only true race.
-      // Do not interrupt an in-flight length-continuation with queued guidance:
-      // it would push a user message after the assistant prefill and break the
-      // continue_final_message "last message is assistant" precondition.
+      // Drain guidance only after round zero and outside continuation chains.
+      // Guidance after assistant prefill would violate its final-assistant-message contract.
       if (
         round > 0
         && pendingGuidanceDelivery === null
         && self.guidanceQueue.length > 0
         && continuationPrefillText === undefined
       ) {
-        // Guidance that arrives mid-turn from a NON-USER actor is not the user's own
-        // mid-stream guide: it carries a provenance envelope, which is the mechanism
-        // the whole feature reads. The moment such text enters this turn, the REST of
-        // the turn runs under that staged origin — the permission manager then forces
-        // every write/shell/network tool to ask, and tool provenance is recorded as
-        // the actor's rather than the user's. Checked on the WHOLE queue before
-        // head-truncation can drop an entry.
-        //
-        // Table-driven (shared/staged-origins.ts). This site used to recognize only
-        // `<app-message>`: any other staged kind reaching the queue would leave the
-        // rest of the turn running with the force-ask gate OFF and the user recorded
-        // as the author — a fail-open that a hand-written check cannot be trusted to
-        // avoid for the next origin.
+        // Inspect the whole queue before truncation so staged provenance cannot be dropped.
+        // Once non-user guidance enters, its stricter origin applies to the rest of the turn.
         const stagedGuidance = self.guidanceQueue
           .map((entry) => parseStagedEnvelope(entry.text))
           .find((parsed) => parsed !== null);
@@ -651,8 +461,6 @@ export async function queryLoop(
           stagedOrigin = stagedGuidance.source;
           toolTrustOrigin = stagedGuidance.kind.inputOrigin;
         }
-        // Head-truncated to GUIDE_JOINED_MAX_CHARS with a marker — see
-        // `truncateGuidanceBatch`, which owns the bound and the marker.
         const { kept, dropped, joined } = truncateGuidanceBatch(self.guidanceQueue);
         activeApprovalReasonPrefix = mergeGuidanceApprovalReasonPrefixes(
           activeApprovalReasonPrefix,
@@ -692,13 +500,7 @@ export async function queryLoop(
           subAgentSource,
         };
         pendingGuidanceDelivery = delivery;
-        // Critic round 2 M1: run preflight BEFORE appending the guide so
-        // compaction targets the older history and never accidentally
-        // summarizes-away the just-injected guide marker. `joined` is
-        // capped at GUIDE_MAX_ENTRIES × GUIDE_MAX_CHARS = 128KB chars
-        // (≈ 30K tokens worst case) but typical use is < 1K tokens —
-        // well below the post-compact preserveRecent budget, so the
-        // next round's prompt-assembly will fit.
+        // Compact before appending guidance so the newly injected instruction cannot be summarized away.
         if (self.provider && !self.deps.disableSessionPersistence) {
           preflightRanThisRound = true;
           const compacted = await self.runPreflightGuard(
@@ -729,20 +531,10 @@ export async function queryLoop(
         const historyMessage = self.history.append({
           role: "user",
           content: injectedContent,
-          // Always marked host-minted, like the start-of-turn injection: a
-          // batch mixing the user's guide with a child's report is deliberately
-          // NOT attributed to the child, so without this stamp the row reads as
-          // one the user typed — and readers that decide what the USER said
-          // (tier-2 parent-context evidence first) would quote the child's
-          // prose as its parent's. The sub-agent meta below is display
-          // provenance, so a reload rebuilds the same box.
+          // Stamp all injected batches host-owned; mixed child/user content must not become parent-authored evidence.
           meta: {
             hostInjectionId: randomUUID(),
-            // The stored content is the injection envelope, which is
-            // prompt-bearing but is not what the bubble shows. Recording the
-            // bare guide text keeps a reloaded transcript — and anything that
-            // hands a row's text back to the user, like restoring it into the
-            // composer — showing the same words the live bubble did.
+            // Persist bare display text separately from the prompt envelope so reload and composer restore agree.
             displayText: joined,
             ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
           },
@@ -750,41 +542,8 @@ export async function queryLoop(
         delivery.historyMessage = historyMessage;
       }
 
-      // ─── Progress notification ──────────────────────────────────────────
-      // A long turn has no notion of its own budget: nothing in the transcript
-      // tells the model how many rounds it has spent, how long it has run, or
-      // how many of its tool calls failed. Runs that stop converging therefore
-      // keep announcing a next step until an external deadline cuts them off
-      // mid tool-call, and runs that are finished declare completion without
-      // ever executing the check that would prove it. This is the only thing in
-      // the turn that supplies those numbers and asks for either a real
-      // verification or a change of approach.
-      //
-      // It never enters history. The numbers are true only for the round they
-      // are sent in, so a persisted row would replay a stale round count into
-      // every later turn, draw as a user bubble on reload, and survive
-      // compaction as if the user had typed it.
-      //
-      // The cadence counts `roundIndex`, not the for-loop index: the loop
-      // iterates for schema-drop retries and length continuations too, and
-      // neither is an assistant round. Counting iterations would make the
-      // interval shorter than the setting says and report a number the model
-      // cannot reconcile with its own transcript.
-      //
-      // Nothing is due on a length-continuation round, and no deferral is
-      // needed to say so. Both inputs to the question below are FROZEN across a
-      // continuation chain: `roundIndex` is deliberately not incremented for a
-      // continuation, and a continuation round carries no tool calls (that is
-      // the gate it is chosen under), so `toolErrorsRun` cannot move either.
-      // `roundIndex` also only ever advances on an iteration that did NOT
-      // continue, so the first iteration at any new index has no prefill
-      // pending. A notification therefore always falls due on an ordinary
-      // round — and `assembleRoundMessages` returns before the append on a
-      // continuation anyway, so no separate check is carried here.
-      //
-      // Decided here and spent just below, next to the re-prompt; the text it
-      // produces is what assembleRoundMessages appends, so a recorded
-      // notification always corresponds to one the model was actually handed.
+      // Progress notifications are request-only and count assistant rounds, not retry or continuation iterations.
+      // Record a notification only when the model is actually handed it.
       const progressNudgeBranch: "cadence" | "tool-errors" | null =
         progressNudgeRounds === 0
           ? null
@@ -803,24 +562,8 @@ export async function queryLoop(
         );
       }
 
-      // ─── Stream attempt — token preflight 가 사전 압축 처리하므로 mid-loop retry 없음 ───
-      // Rows appended for THIS round only. None of them is persisted: history
-      // holds what the conversation said, and a host row committed there would
-      // replay on every later turn as if the user had typed it.
-      //
-      // The appended USER text never adds a second consecutive user row, which
-      // a chat template that asserts role alternation rejects: it extends the
-      // round's user message when there is one, and otherwise shares a single
-      // row (request-only-text.ts).
-      //
-      // Both host instructions for the round are spent HERE, once, rather than
-      // inside the assembly below: the round-loop preflight re-assembles the
-      // round against the history a compaction rewrote, and state consumed
-      // inside assembly would be consumed by the assembly that was only
-      // measured — leaving the round the model actually receives without the
-      // instruction, its cap already charged and its decision already recorded.
-      // Both conditions are the ones the assembly appends under, so a spend
-      // still cannot stand for an instruction the model was never sent.
+      // Spend host instructions once outside assembly; preflight may rebuild the request after compaction.
+      // Merge user instructions into one request-only row to preserve role alternation.
       let nudgeTextForRound: string | undefined;
       if (continuationPrefillText === undefined && reasoningNudgePending) {
         reasoningNudgePending = false;
@@ -849,27 +592,16 @@ export async function queryLoop(
         toolErrorsAtLastProgressNudge = toolErrorsRun;
         roundIndexAtLastProgressNudge = roundIndex;
       }
-      // Built at most once per round, so the measured assembly and the sent one
-      // carry the same text; it reads the staged origin current for this round.
+      // Build once so measured and sent assemblies share identical text and current staged origin.
       let roundTurnContext: string | undefined;
       const turnContextForRound = (): string =>
         (roundTurnContext ??= self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin));
-      // Pure over the history handed in, so the gate below can rebuild the same
-      // round from the compacted history without re-deciding anything.
+      // Assembly is pure over history so compaction can rebuild without consuming state.
       const assembleRoundMessages = (
         base: GenericMessage[],
       ): GenericMessage[] => {
-        // A continuation round carries no turn context: it resumes the same
-        // turn's answer, whose opening round already carried it, and its last
-        // row must stay the partial assistant turn.
-        //
-        // finish_reason=length CONTINUATION: a WIRE-ONLY partial assistant turn
-        // as the final message. The openai-compatible adapter pairs this with
-        // continue_final_message so vLLM resumes it verbatim. For mid-<think>
-        // truncation the prefill text is `<think>\n…` (open, no closing tag) so
-        // the model finishes reasoning before answering; add_generation_prompt:
-        // false blocks a 2nd auto <think>. It IS the last row by contract, so it
-        // never shares the round with an appended instruction.
+        // Continuations end with wire-only assistant prefill and carry no extra user context.
+        // Open reasoning stays open so the model can finish it without a second generated think block.
         if (continuationPrefillText !== undefined) {
           return [
             ...base,
@@ -877,14 +609,7 @@ export async function queryLoop(
           ];
         }
         const rows: GenericMessage[] = [...base];
-        // A round whose whole answer went into reasoning leaves an assistant row
-        // with no text and no tool calls. `thought` is mapped to no wire part on
-        // any vendor, so the adapter drops that row entirely — the model loses
-        // the reasoning, AND the rows either side of it collapse into two
-        // consecutive user turns. Replay the reasoning as the row's text on the
-        // wire: the model sees what it worked out, and alternation holds for
-        // whatever follows, the re-prompt below or a delivered guide alike.
-        // Bounded because a reasoning block ends on the action it decided.
+        // Replay bounded reasoning as wire assistant text; otherwise empty-row filtering loses it and breaks alternation.
         for (let i = rows.length - 1; i >= 0; i--) {
           const row = rows[i]!;
           if (row.role !== "assistant") continue;
@@ -902,14 +627,9 @@ export async function queryLoop(
           break;
         }
         const appendedUserText: string[] = [];
-        // The turn context rides only on a round that starts from a user
-        // message (the turn's input, or a guide delivered mid-turn), inside
-        // that message. A tool round carries none: extending the tool-result
-        // message would put host text where only results belong.
+        // Attach turn context only inside user input or guidance, never tool-result rows.
         if (rows[rows.length - 1]?.role === "user") appendedUserText.push(turnContextForRound());
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
-        // After the re-prompt: that one says what to do with THIS round, the
-        // notification says what the turn has spent so far.
         if (progressNudgeText !== undefined) appendedUserText.push(progressNudgeText);
         return appendRequestOnlyText(rows, appendedUserText);
       };
@@ -925,27 +645,12 @@ export async function queryLoop(
       let messagesForRound = assembleRoundMessages(self.history.getMessages());
       self.lastRoundInputProjection = projectRound(messagesForRound);
 
-      // ─── Round-loop token preflight ───
-      // The turn-start guard (run-turn.ts) used to be the only place a turn's
-      // context was ever measured against the threshold. An agent turn appends
-      // its own tool results for as many rounds as it runs, so it could cross
-      // the threshold at round 3 and stay over for every round after it —
-      // this round's projection was computed and then never compared.
-      //
-      // This is the same condition and the same compaction, evaluated against
-      // the request that is about to go out. It reuses the projection the
-      // round already computed, so a turn that stays under the threshold pays
-      // nothing for the gate.
+      // Measure each outgoing request so tool-loop growth can trigger the same preflight compaction.
       if (
         assistantRoundsRun > 0 &&
-        // A length-continuation round is mid-stitch: its wire prefill is an
-        // unpersisted assistant message that the provider resumes verbatim.
-        // Rewriting the history under it would hand the model a prefill that
-        // no longer follows from what precedes it.
+        // Do not compact mid-continuation: its unpersisted prefill depends on the preceding history.
         continuationPrefillText === undefined &&
-        // A guidance round already ran the guard against this same history a
-        // few lines above. Running it twice in one round would spend a second
-        // LLM compaction on a history the first one just rewrote.
+        // Guidance already evaluated this history; do not spend a second compaction in the same round.
         !preflightRanThisRound &&
         self.provider &&
         !self.deps.disableSessionPersistence &&
@@ -964,9 +669,7 @@ export async function queryLoop(
               {
                 systemPrompt,
                 toolSchemas,
-                // The guard and its post-compact evaluation must include this
-                // round's wire-only instructions and bounded reasoning replay,
-                // plus the summary preamble that compaction may have replaced.
+                // Both preflight measurements must include request-only instructions, replay, and updated summary context.
                 estimateCurrent: () => projectRound(
                   assembleRoundMessages(self.history.getMessages()),
                   self.buildSystemPromptForScope(
@@ -978,9 +681,7 @@ export async function queryLoop(
               },
               abortSignal,
               callbacks,
-              // Mid-turn: the compactor's protected window has to be this
-              // turn's own tool rounds, or it protects everything the turn
-              // appended and reduces nothing.
+              // Protect recent tool rounds, not the entire active user turn.
               { intraTurn: true },
             );
             decide({
@@ -994,9 +695,7 @@ export async function queryLoop(
                 bounds.rolePrompt,
                 bounds.sessionIdOverride ?? self.sessionId,
               );
-              // The round already repaired the history above; compaction has
-              // since rewritten it, and a boundary that cut between a tool_use
-              // and its result is exactly what the provider rejects.
+              // Repair pairs again after compaction can cut between a call and its result.
               const repairedAfterCompact = self.history.repairToolPairInvariant();
               if (repairedAfterCompact.removedMessages > 0 || repairedAfterCompact.removedToolCalls > 0) {
                 log.warn(
@@ -1005,19 +704,11 @@ export async function queryLoop(
               }
               messagesForRound = assembleRoundMessages(self.history.getMessages());
               self.lastRoundInputProjection = projectRound(messagesForRound);
-              // Re-arm against what the compaction actually achieved, not
-              // against zero. A compaction that reduced the history but did
-              // not get back under the threshold would otherwise fire again on
-              // the very next round; measured from the post-compaction
-              // projection, a compaction that DID get back under re-arms as
-              // soon as the turn grows into the threshold again.
+              // Re-arm from the achieved post-compaction projection, never zero while still over threshold.
               roundCompactArmedAbove =
                 self.lastRoundInputProjection.totalTokens + roundCompactRearmGrowth;
             } else {
-              // A compaction that could not reduce anything leaves the
-              // projection over the threshold, so an ungated retry would spend
-              // one LLM compaction per round for the rest of the turn. Require
-              // real growth before asking again.
+              // No-op compaction needs real request growth before another model call is justified.
               roundCompactArmedAbove = projected + roundCompactRearmGrowth;
             }
           }
@@ -1044,7 +735,6 @@ export async function queryLoop(
         projection: self.lastRoundInputProjection,
         toolExposure,
       });
-      // §4.5.2 step 7 — LLM_STREAM
       self.tracer.step("LLM_STREAM", {
         round,
         assistantRoundIndex: roundIndex,
@@ -1068,17 +758,9 @@ export async function queryLoop(
         warnUnstatedReasoningOnce({ identity: runtimeContextBudget.identity, vendor: llmSettings.provider, model }, reasoning);
         requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
       }
-      // Crash durability: the text this round has streamed so far is
-      // snapshotted (throttled) under the id its committed row will carry, so
-      // a process that dies mid-answer keeps all but the last interval of it.
-      // Carry text is captured now — it is what the committed or interrupted
-      // row will be prefixed with for this stream.
+      // Snapshot partial text under its eventual row ID, including captured continuation carry.
       const roundJournal = self.activeTurnJournal;
-      // Barrier: every row the previous rounds appended is on disk before the
-      // next provider request goes out. Costs one lock + append + fdatasync
-      // per round (see the bench in session-turn-journal tests) against a
-      // network round trip, and makes "completed rounds survive" exact rather
-      // than "survive unless the death lands in the next few milliseconds".
+      // Flush completed rows before the next provider request so process death cannot lose completed rounds.
       if (roundJournal) await roundJournal.settled();
       const carryTextAtStreamStart = continuationCarryText;
       const carryThoughtAtStreamStart = continuationCarryThought;
@@ -1116,7 +798,6 @@ export async function queryLoop(
           onRequestStarted: () => { turnModelSettings = requestModelSettings; },
           ...(apiRound === undefined ? {} : {
             onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
-              // A fallback cleared these primary facts before its dispatch.
               if (turnModelSettings === undefined) return;
               const reasoning = turnModelSettings.reasoning;
               turnModelSettings = {
@@ -1132,14 +813,10 @@ export async function queryLoop(
         self.deps.settingsService.get("llm").activeChatRuntime,
         () => self.abortCurrentTurn(new Error("active chat runtime changed")),
       );
-      // One-shot: clear so a following tool round or terminal round does not
-      // re-inject the prefill. The continuation branch below re-sets it when the
-      // chain extends. (Carry text/thought persist independently for stitching.)
+      // Consume prefill once; the continuation branch re-arms it only if the chain extends.
       continuationPrefillText = undefined;
 
-      // EARLY-EXIT (safety net): token estimator drift 로 context_error 도달 시
-      // 사용자 안내 + turn 종료. retry 없음 — mid-loop history mutation 으로 LLM tool-chain
-      // 손상되던 silent failure 패턴 영구 제거.
+      // End on context drift instead of mutating active tool history in a mid-loop retry.
       if (stream.kind === "context_error") {
         log.warn(
           `queryLoop: EARLY-EXIT(context_error after token preflight) — round=${roundIndex} err="${(stream.errorMessage ?? "").slice(0, 100)}" (estimator drift suspected)`,
@@ -1150,36 +827,22 @@ export async function queryLoop(
           reason: "estimator-drift",
           data: { round: roundIndex },
         });
-        // `stream.kind === "context_error"` 는 `stream-collector.ts` 의
-        // `isContextLengthError(raw)` 가 *이미* true 를 판정한 신호 — 이
-        // 분기 도달 raw 는 context-window 초과로 확정. TPM rate-limit raw
-        // 는 `isContextLengthError` 패턴 (prompt is too long / maximum
-        // context length / context window / input token count) 어느 것
-        // 에도 매치되지 않으므로 *별도 경로* (`stream_error`, line 1582)
-        // 로 도달 — 그쪽에서 새 `classifyProviderError` 가 정확한 TPM
-        // 메시지를 전달함 (issue #900).
+        // context_error is already classified as capacity overflow; TPM failures take the stream-error path.
         const userMsg =
           t("be_conversationLoop.contextErrorUserMessage");
         callbacks?.onError?.(userMsg, "context-error");
-        // Issue #911: mark as systemNotice so the UI renders a destructive
-        // banner (red border + warning icon) instead of a normal assistant
-        // reply. Without this marker the user cannot distinguish a real LLM
-        // turn from a host-emitted error notice.
+        // Host error notices need systemNotice metadata so they cannot impersonate assistant replies.
         self.history.append({
           role: "assistant",
           content: userMsg,
           meta: { systemNotice: "context-error" },
         });
-        // Issue #910 follow-up — the user-facing message promises "새 메시지를
-        // 보내면 자동 압축이 다시 시도됩니다". Set a pending flag so the next
-        // runPreflightGuard force-triggers compact regardless of threshold.
+        // The displayed recovery promise requires forced compaction on the next send.
         self.contextErrorPending = true;
         return withServingIdentity({ text: userMsg, toolCalls: allToolCalls, usage: turnUsage, stopReason: "context-error" });
       }
 
       if (stream.kind === "stream_error") {
-        // EARLY-EXIT #2: provider stream error. 이미 onError 콜백 + history 에
-        // 메시지 push. 추가 진단 로그로 빈도 추적.
         const streamErrorMeta = {
           round,
           assistantRoundIndex: roundIndex,
@@ -1196,15 +859,7 @@ export async function queryLoop(
         );
         self.tracer.step("LLM_STREAM_ERROR", streamErrorMeta);
 
-        // Provider-as-oracle recovery (#1182). The provider is the source of
-        // truth for "is this tool schema acceptable": when it rejects the whole
-        // request with a strict-mode 400 (invalid_function_parameters) naming
-        // one offending function, drop just that tool and retry the round with
-        // the reduced set — no hand-rolled mirror of the provider's rules. The
-        // plugin-load lint catches the common case for free; this catches the
-        // rest. `rejectedToolNameFromError` only returns a name still present in
-        // `toolSchemas`, so the drop strictly shrinks a finite set and the loop
-        // is guaranteed to terminate (the cap is just defensive).
+        // Drop only the rejected tool still present in schemas; each retry shrinks the finite set.
         const rejectedTool = rejectedToolNameFromError(
           stream.providerError,
           toolSchemas.map((s) => s.name),
@@ -1254,9 +909,7 @@ export async function queryLoop(
               remainingTools: toolSchemas.length,
             },
           });
-          // Retry the round with the offending tool removed. Does NOT count as
-          // an assistant round (assistantRoundsRun is unchanged); the for-loop
-          // `round` counter + the round budget still bound total iterations.
+          // Schema retry does not consume an assistant round; total iterations remain budget-bounded.
           continue;
         }
 
@@ -1279,9 +932,7 @@ export async function queryLoop(
             },
             abortSignal,
             callbacks,
-            // Also mid-turn: without this the compactor protects everything
-            // the turn appended and recovers nothing, which is the whole
-            // reason the recovery was attempted.
+            // Mid-turn recovery must preserve tool rounds so it can reduce the active turn.
             { forceReason: "rate-limit", intraTurn: true },
           );
           if (compacted) {
@@ -1305,12 +956,7 @@ export async function queryLoop(
           content: stream.userMessage,
           meta: { systemNotice: "stream-error" },
         });
-        // Issue #910 round-4 security MED — stream_error covers network /
-        // auth / rate-limit / 5xx in addition to context-length. Only set
-        // the force-recover flag when the underlying message *actually*
-        // matches a context-length pattern; for other stream errors
-        // forcing a destructive (preserve=0) compact would just drop the
-        // user's working history for no benefit.
+        // Force context recovery only for actual capacity failures; other errors must not discard working history.
         if (isContextLengthError(stream.userMessage)) {
           self.contextErrorPending = true;
         }
@@ -1324,8 +970,6 @@ export async function queryLoop(
       }
 
       if (stream.kind === "interrupted") {
-        // EARLY-EXIT #3: 사용자 abort. abortCurrentTurn() 또는 외부 abortSignal.
-        // 정상 케이스이지만 빈도 추적용 로그.
         log.info(
           `queryLoop: EARLY-EXIT(interrupted) — round=${roundIndex} priorTextLen=${(stream.text ?? "").length}`,
         );
@@ -1334,15 +978,8 @@ export async function queryLoop(
           branch: "interrupted",
           data: { round: roundIndex, priorTextChars: (stream.text ?? "").length },
         });
-        // Strip suggested-replies block before persistence — otherwise raw
-        // `<suggested_replies>` tags would land in ~/.ave/sessions/*.jsonl
-        // and be fed back to the LLM on every subsequent turn.
-        //
-        // interrupted is user-initiated, not a host error, so no systemNotice:
-        // the streamed content is real model output. The boundary is
-        // `meta.interrupted` (renderer badge) — a "[중단됨]" text literal put UI
-        // state into the transcript the model replays. Continuation carry is
-        // prepended so an aborted chain persists the full partial answer.
+        // Strip suggestion markup before persistence; interruption is metadata, never synthetic model prose.
+        // Prepend continuation carry so interrupted chains retain their full partial answer.
         const savedText = stripSuggestedReplies(continuationCarryText + (stream.text ?? ""));
         self.history.append({
           role: "assistant",
@@ -1350,63 +987,28 @@ export async function queryLoop(
           meta: {
             interrupted: true,
             ...(isHostExitAbort(abortSignal?.reason) ? { interruptedBy: HOST_EXIT_INTERRUPTION } : {}),
-            // The id the round's partial snapshot was filed under, so recovery
-            // never shows the snapshot beside this row.
+            // Reuse the snapshot row ID to prevent recovery from displaying both copies.
             ...(roundJournal ? { messageId: roundJournal.currentRoundRowId() } : {}),
           },
         });
         return withServingIdentity({ text: savedText, toolCalls: allToolCalls, usage: turnUsage, stopReason: "interrupted" });
       }
 
-      // stream.kind === "ok" — usage 반영 + assistant round commit
-      //
-      // Ave usage accounting invariant:
-      //   AI SDK v6 normalized inputTokens include cached tokens across
-      //   providers, so subtract cacheRead/cacheWrite to get fresh input.
-      //
-      // 1) turnUsage 는 모든 round 의 AI SDK normalized usage 합산
-      //    (이전: `=` 으로 마지막 round 만 보존
-      //    → multi-round turn 의 turn_summary 가 under-report 되던 버그).
-      // 2) cumulativeUsage.inputTokens 는 fresh input 만 누적 (cached 빼서)
-      //    → long session 에서 cached prefix 가 매 turn 누적되어 ctxUsage 가
-      //    조기에 100% 도달, auto-compact 가 premature 발화하던 root cause 해소.
-      // 3) cache read/write 는 별도 누적 — 비용 계산은 다른 가중치 (read 0.1×,
-      //    write 1.25×) 적용 가능하도록 분리 보존. Audit/UsageDashboard
-      //    경계에서는 `normalizeAiSdkUsageForCost` 로 computeCost 계약에 맞춘다.
+      // Aggregate every round; normalized input includes cache, so cumulative fresh input subtracts it.
+      // Keep cache reads and writes separate for their distinct prices.
       if (stream.usage) recordProviderUsage(stream.usage, true);
 
       const { text: streamText, thought: thoughtContent, thinkingBlocks: roundThinkingBlocks, toolCalls: pendingToolCalls, stopReason } = stream;
       recordSubscriptionRoundTelemetry(
         self, subscriptionUsage, subscriptionRuntime, stream, stopReason === "end_turn",
       );
-      // Strip the suggested-replies block at the single chokepoint between the
-      // raw stream and every downstream consumer (history, callbacks, return
-      // value). Keeping this stripped here protects: (a) persisted session
-      // JSONL — the tag would otherwise be fed back as context on every
-      // subsequent turn, (b) sub-agent summaries — sub-agent results flow
-      // back to the parent via runTurn's return value, (c) plugin/routine
-      // generateText callers — orthogonal strip is also applied in
-      // generateText() but defense in depth.
-      // finish_reason=length CONTINUATION: carry the RAW (un-stripped) text
-      // across rounds so the wire prefill resumes vLLM verbatim — zero seam,
-      // trailing whitespace preserved (stripSuggestedReplies trimEnd would
-      // otherwise eat the boundary whitespace between a truncated round and its
-      // continuation). The suggested-replies block is stripped ONCE on the fully
-      // merged answer below — a max_tokens-truncated round never holds a
-      // complete block. With no continuation in flight the carry is "" so
-      // mergedRawText === streamText and mergedText === stripSuggestedReplies(
-      // streamText); every non-continuation path is byte-for-byte unchanged.
+      // Keep raw continuation carry to preserve inter-chunk whitespace and exact prefill.
+      // Strip suggestions once from the merged answer before history, callbacks, and return values.
       const mergedRawText = continuationCarryText + streamText;
       const mergedThought = continuationCarryThought + thoughtContent;
       const mergedText = stripSuggestedReplies(mergedRawText);
 
-      // ─── finish_reason=length CONTINUATION ──────────────────────────────────
-      // A truncated round (stopReason "max_tokens") with NO tool calls is not a
-      // finished turn. Instead of terminating (cut-off answer + suspect-
-      // truncation notice), re-invoke the model to CONTINUE the partial answer.
-      // We DEFER the history append + onAssistantRound here so deltas keep
-      // streaming into the SAME open UI card and history ends up with ONE merged
-      // assistant message. (`madeProgress` is the zero-progress break.)
+      // Length truncation without tools may continue; defer commit and callbacks until one merged answer ends.
       const madeProgress = streamText.length > 0 || thoughtContent.length > 0;
       const willContinue =
         stopReason === "max_tokens" &&
@@ -1416,9 +1018,6 @@ export async function queryLoop(
         assistantRoundsRun + 1 < effectiveMaxRounds &&
         madeProgress;
 
-      // The continuation branch only exists for a round the provider truncated
-      // with nothing left to run, so that is the only shape worth reporting;
-      // every other round never reached the question.
       if (stopReason === "max_tokens" && pendingToolCalls.length === 0) {
         decide({
           kind: "length.continuation",
@@ -1445,34 +1044,22 @@ export async function queryLoop(
       if (willContinue) {
         continuationCarryText = mergedRawText;
         continuationCarryThought = mergedThought;
-        // Wire prefill for the next round. If the answer body has started
-        // (mergedRawText non-empty) continue it verbatim — vLLM already split
-        // any reasoning into reasoning_content. If we truncated INSIDE <think>
-        // (no answer text yet) re-open the think block; the model emits its own
-        // closing </think> before answering.
+        // Continue answer text verbatim; reasoning-only truncation reopens its unfinished think block.
         continuationPrefillText =
           mergedRawText.length > 0 ? mergedRawText : `<think>\n${mergedThought}`;
         continuationsRun += 1;
-        assistantRoundsRun += 1; // counts against the global round budget
+        assistantRoundsRun += 1;
         self.tracer.step("LENGTH_CONTINUATION", {
           round: roundIndex,
           continuationsRun,
           carryTextLen: continuationCarryText.length,
           reopenedThink: mergedRawText.length === 0,
         });
-        // roundIndex is intentionally NOT incremented — the continuation is the
-        // SAME logical assistant round from the UI's perspective, and we must
-        // NOT fire onAssistantRound (it would close the streaming card and the
-        // renderer would drop every subsequent delta).
+        // Continuations share roundIndex and an open UI card; firing completion here would drop later deltas.
         continue;
       }
 
-      // Cap BEFORE persisting to history. Anthropic + OpenAI strict
-      // APIs reject mismatches between assistant.tool_use blocks and the
-      // tool_result blocks in the next user turn. If we keep the un-capped
-      // pendingToolCalls in history, blocks 11..N never receive a matching
-      // tool_result (executor only runs the capped slice) and the next
-      // request 400s. Persist only what will be answered.
+      // Cap before persistence so every stored call receives a matching executed result.
       let pendingToolCallsCapped = pendingToolCalls;
       const wasCapped = pendingToolCalls.length > MAX_TOOL_CALLS_PER_ROUND;
       if (wasCapped) {
@@ -1482,12 +1069,7 @@ export async function queryLoop(
         pendingToolCallsCapped = pendingToolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
       }
 
-      // A persisted call must also record WHAT it called. The action panel
-      // counts plugin and MCP calls off the transcript, and a reload that kept
-      // only id/name/input reports zero of both — the origin lived solely on
-      // the live stream's ToolCallMeta. The registry is the authority for a
-      // tool's identity, so it is read here rather than inferred from the name;
-      // a name with no registry entry (an unloaded plugin) persists unchanged.
+      // Persist registry-owned tool provenance so reloaded action panels retain plugin and MCP attribution.
       const persistedToolCalls: ToolCallBlock[] = pendingToolCallsCapped.map((toolCall) => {
         const tool = self.deps.toolRegistry.findByName(toolCall.name);
         if (!tool) return toolCall;
@@ -1500,33 +1082,23 @@ export async function queryLoop(
         };
       });
 
-      // thinkingBlocks는 tool_use 체인이 이어지는 다음 요청에만 signature 그대로 포함되어야 Anthropic이 수락한다.
+      // Pending tool chains must replay signed thinking blocks with unchanged signatures.
       const preserveThinkingBlocks = stopReason === "tool_use" && pendingToolCallsCapped.length > 0;
-      // Persist the MERGED answer (carry + this round). Non-continued turns have
-      // empty carries ⇒ original single-round content.
       const committedAssistantRow = self.history.append({
         role: "assistant",
-        // Same id as the round's partial snapshot: once this row is on disk
-        // the snapshot is superseded, never shown alongside it.
+        // A committed row supersedes its partial snapshot by sharing the same ID.
         ...(roundJournal ? { meta: { messageId: roundJournal.currentRoundRowId() } } : {}),
         content: wasCapped ? `${mergedText}\n\n[capped at ${MAX_TOOL_CALLS_PER_ROUND} of ${pendingToolCalls.length} tool_use blocks]` : mergedText,
         ...(mergedThought && { thought: mergedThought }),
         ...(preserveThinkingBlocks && roundThinkingBlocks.length > 0 && { thinkingBlocks: roundThinkingBlocks }),
-        // Persist only the capped slice — these are the only blocks
-        // that will receive a matching tool_result. Streaming UI still sees
-        // the un-capped count below via the assistant-round callback so the
-        // user can observe the original LLM intent (and the cap message).
+        // Persist only executed calls; live UI may still report the full intended count.
         ...(persistedToolCalls.length > 0 && { toolCalls: persistedToolCalls }),
       });
-      // Continuation chain (if any) terminates HERE — merged message committed.
       continuationCarryText = "";
       continuationCarryThought = "";
-      // Barrier: the tool calls are on disk before any of them starts, so a
-      // process that dies while a tool runs leaves the call itself behind —
-      // reopened as "interrupted, result unknown", never silently dropped.
+      // Flush calls before tool execution so recovery can show interrupted work with unknown results.
       if (roundJournal && persistedToolCalls.length > 0) await roundJournal.settled();
 
-      // §4.5.2 step 8 — REASONING_ACCUMULATE
       if (thoughtContent.length > 0) {
         self.tracer.step("REASONING_ACCUMULATE", { round: roundIndex, thoughtLen: thoughtContent.length });
       }
@@ -1535,15 +1107,11 @@ export async function queryLoop(
         text: mergedText,
         thought: mergedThought,
         stopReason,
-        // The row the surface's card stands for. Every round re-announces it,
-        // so a card that spans several rounds ends up naming the row that
-        // actually holds the answer it is showing.
+        // Reannounce the row ID so multi-round cards name the row containing their displayed answer.
         messageId: committedAssistantRow.meta.messageId,
-        // The UI / telemetry callback receives the un-capped count so the
-        // user sees the LLM's full intent — only persisted history is capped.
+        // Live telemetry retains the full intended fan-out even though stored calls are capped.
         hasToolCalls: pendingToolCalls.length > 0,
       });
-      // §4.5.2 step 10 — ROUND_COMMIT
       self.tracer.step("ROUND_COMMIT", {
         round: roundIndex,
         stopReason,
@@ -1552,17 +1120,11 @@ export async function queryLoop(
       });
       await commitPendingGuidance();
       roundIndex += 1;
-      // C3(a): a "round" for cap purposes is any assistant message we
-      // committed to history — `end_turn` and `tool_use` both count.
+      // Both tool-call and terminal assistant commits count against the round budget.
       assistantRoundsRun += 1;
 
       if (pendingToolCalls.length === 0 || stopReason === "end_turn") {
-        // BEFORE returning — "방향 지시는 end-turn 전에 영향을 미치는 거"
-        // (user spec). If guide is queued, do NOT end the turn; fall
-        // through to another iteration so the round-boundary inject site
-        // drains the queue and the LLM gets one more round to respond to
-        // the guidance. Round-cap still applies — if we're at the cap, we
-        // can't add another round; drop-on-end will surface to the user.
+        // Queued guidance takes effect before ending the turn; the cap still reports undelivered entries.
         if (self.guidanceQueue.length > 0 && assistantRoundsRun < effectiveMaxRounds) {
           self.tracer.step("GUIDANCE_INJECTED", {
             round: roundIndex,
@@ -1570,16 +1132,7 @@ export async function queryLoop(
           });
           continue;
         }
-        // A round that ended `end_turn` with reasoning but no answer text and no
-        // tool call is not a completed turn. Measured on an agentic run: the
-        // reasoning of such rounds states the next action in the first person
-        // ("I need to retry the installation") and the loop returned anyway, so
-        // the turn ended because the LOOP gave up, not the model. Re-prompt
-        // instead, bounded by MAX_REASONING_ONLY_NUDGES so a model that only
-        // ever reasons still terminates. A round with no text, no tool call AND
-        // no reasoning is genuinely empty and keeps today's behaviour: it falls
-        // through to the return below (which also warns when the stop reason was
-        // not `end_turn`).
+        // Re-prompt bounded reasoning-only completion; truly empty rounds still terminate normally.
         const reasoningOnlyEnd =
           stopReason === "end_turn" &&
           pendingToolCalls.length === 0 &&
@@ -1606,9 +1159,6 @@ export async function queryLoop(
             },
           });
           if (willNudge) {
-            // Arm the instruction only. The round that sends it replays this
-            // round's reasoning off the row just committed, so nothing about it
-            // has to be carried across the loop iteration.
             reasoningNudgePending = true;
             self.tracer.step("REASONING_ONLY_CONTINUATION", {
               round: roundIndex,
@@ -1618,11 +1168,28 @@ export async function queryLoop(
             continue;
           }
         }
-        // EARLY-EXIT #4: turn 종료. 정상 케이스는 stopReason === "end_turn"
-        // 또는 LLM 이 tool 없이 final 답을 내놓은 케이스. *비정상 silent
-        // truncation* (예: max_tokens / unknown stopReason 으로 0 tools 반환)
-        // 도 같은 분기로 떨어지므로 stopReason 이 end_turn 이 *아닌데* 0 tools
-        // 면 WARN 로 명시적 진단 — 28-step abandonment 의 가능한 원인.
+        // Deliberate stop-hook feedback continues as host-owned guidance, retaining its framing in later rounds.
+        if (stopReason === "end_turn" && bounds.onStopHook && !abortSignal?.aborted) {
+          const feedback = await bounds.onStopHook({
+            toolCount: allToolCalls.length,
+            stopHookActive: stopHookContinuationsRun > 0,
+          });
+          if (feedback !== undefined && !abortSignal?.aborted) {
+            if (stopHookContinuationsRun >= MAX_STOP_HOOK_CONTINUATIONS) {
+              log.warn(`queryLoop: stop hook continuation cap (${MAX_STOP_HOOK_CONTINUATIONS}) reached; ending the turn`);
+              callbacks?.onError?.(t("be_conversationLoop.stopHookContinuationCap", { max: MAX_STOP_HOOK_CONTINUATIONS }));
+            } else if (assistantRoundsRun < effectiveMaxRounds) {
+              stopHookContinuationsRun += 1;
+              self.history.append({
+                role: "user",
+                content: t("be_conversationLoop.stopHookFeedback", { reason: feedback }),
+                meta: { hostInjectionId: randomUUID(), displayText: feedback },
+              });
+              continue;
+            }
+          }
+        }
+        // Warn on no-tool termination without end_turn so silent truncation remains diagnosable.
         if (stopReason !== "end_turn" && pendingToolCalls.length === 0) {
           log.warn(
             `queryLoop: EARLY-EXIT(suspect-truncation) — stopReason="${stopReason}" pendingTools=0 textLen=${mergedText.length} round=${roundIndex}`,
@@ -1634,21 +1201,8 @@ export async function queryLoop(
         return withServingIdentity({ text: mergedText, toolCalls: allToolCalls, usage: turnUsage, stopReason });
       }
 
-      // §4.5.6 tool execution — request_plugin 가로채기 + knowledge depth cap + executor 호출
-      // (cap already applied above before history commit; pendingToolCallsCapped is the
-      //  authoritative slice that flows through executor and produces tool_result blocks.)
-      // A call whose arguments never parsed carries no input to execute, so it
-      // is answered with an error here instead of reaching the executor. The
-      // model reads that error on the next round and re-issues the call — the
-      // same recovery it gets from any other failing tool. Without this the
-      // malformed call would go on to poison the turn: the wire mapper coerces
-      // the missing input to `{}`, and the model would keep waiting for a
-      // result that describes a call it never actually made.
-      //
-      // No onToolStart/onToolEnd fires for these, so the live action panel
-      // shows no card until the transcript is reloaded — the same trade the
-      // intercepted-meta denial below already makes. Both rows are persisted,
-      // so nothing is lost; only the live card is.
+      // Malformed argument calls receive per-call errors without reaching execution.
+      // Persisted results preserve replay pairing even though intercepted errors have no live tool card.
       for (const tc of pendingToolCallsCapped) {
         if (!tc.invalidInput) continue;
         const content = t("be_conversationLoop.toolCallInvalidArguments", {
@@ -1690,9 +1244,7 @@ export async function queryLoop(
         enableDormantRationaleForTesting:
           self.deps.enableDormantRationaleForTesting,
       });
-      // Materialize the runtime before meta-tool ordering changes. A callable
-      // factory is not enough: a stale/failed/null factory must leave the full
-      // batch on the exact legacy request_plugin/tool_search path.
+      // Materialize the runtime before reordering meta tools; unavailable factories retain legacy ordering.
       const preparedRationaleRuntime = rationaleActivationRequested
         ? await prepareRationaleConversationRuntime({
             coordinatorFactory: availableRationaleCoordinatorFactory,
@@ -1742,8 +1294,6 @@ export async function queryLoop(
         });
       }
 
-      // Snapshot the session-activation set so we can audit exactly the
-      // disabled plugins this turn newly session-activated (one event each).
       const sessionActivatedBefore = new Set(self.sessionActivatedPluginIds);
       const pluginExpansionsBefore = pluginExpansions;
       const requestedPluginExpansions = interceptedMetaGate.approved
@@ -1754,11 +1304,7 @@ export async function queryLoop(
         activePluginIds: scope.activePluginIds,
         availablePluginIds: self.filterAllowedPluginIds(
           (self.deps.pluginRuntime?.listPluginIds() ?? [])
-            // A registry-DISABLED plugin is normally excluded, but a
-            // session-scoped allow-list (routine `allowedPluginIds`) may
-            // on-demand activate it for THIS session. Main chat has
-            // `allowedPluginIds === undefined`, so the right-hand side is
-            // always false and disabled plugins stay excluded (unchanged).
+            // Only allowlisted sessions may activate disabled plugins for themselves; main chat cannot.
             .filter((pluginId) =>
               self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false ||
               self.deps.allowedPluginIds?.has(pluginId) === true),
@@ -1787,24 +1333,11 @@ export async function queryLoop(
         });
       }
 
-      // Audit each NEW session-scoped activation of a registry-DISABLED plugin.
-      // This path never persists enabled state (setPluginEnabled is not called),
-      // so the audit trail is the only durable record that a disabled plugin was
-      // exposed for the session — valuable for the permission/scope review.
+      // Audit each new session-only activation because enabled state is never persisted.
       for (const activated of self.sessionActivatedPluginIds) {
         if (!sessionActivatedBefore.has(activated)) {
-          // Mirror into PluginRuntime so Gate 4 (plugin-runtime-delegate) allows
-          // this plugin's tool calls for the remainder of the session. This is
-          // the ONLY way a registry-disabled plugin's tools become executable —
-          // setPluginEnabled is deliberately NOT called (non-persistence invariant).
-          // Ordering invariant: this fires in the request_plugin interception block,
-          // BEFORE the remaining non-request_plugin tool calls are dispatched to the
-          // executor, so Gate 4 is already relaxed by the time index_scan (or any
-          // other plugin tool) reaches the delegate.
-          // Key on `effectiveSessionId` (the value wrapped in sessionContext.run),
-          // NOT self.sessionId, so the WRITE matches the delegate's
-          // sessionContext.getStore()?.sessionId READ even when a caller passes
-          // both allowedPluginIds and a sessionIdOverride.
+          // Publish session activation before dispatching remaining tools so delegate checks see it.
+          // Use the same effective session ID as async context; never persist enabled state.
           self.deps.pluginRuntime?.setSessionActivated?.(effectiveSessionId, activated);
           self.auditLogger.log({
             timestamp: new Date().toISOString(),
@@ -1815,7 +1348,6 @@ export async function queryLoop(
         }
       }
 
-      // 활성화 성공했으면 tool schema 재빌드 + 추가된 tool 수 보고
       const rebuiltAfterPlugin = pluginOutcome.activatedPluginIds.length > 0;
       if (rebuiltAfterPlugin) {
         scope.deferral = self.shouldDeferToolSchemas(scope.activePluginIds);
@@ -1823,10 +1355,7 @@ export async function queryLoop(
       }
       const catalogCountAfterPlugin = self.deps.toolRegistry.getToolCatalogForScope(scope).length;
       for (const rr of pluginOutcome.results) {
-        // #1176 — in eager mode the activated plugin's full tool suite is
-        // already loaded, so there is nothing to discover; tell the model it is
-        // ready instead of pointing it at tool_search. Deferred mode keeps the
-        // catalog-search guidance.
+        // Eager activation exposes the full suite immediately; only deferred mode needs search guidance.
         const finalContent = !rr.is_error && rebuiltAfterPlugin
           ? scope.deferral
             ? t("be_conversationLoop.pluginToolsDeferred", { content: rr.content, catalogCount: catalogCountAfterPlugin, loadedCount: toolSchemas.length })
@@ -1848,11 +1377,7 @@ export async function queryLoop(
         });
       }
 
-      // Tool-Level Deferral — tool_search 가로채기. request_plugin 과 동일
-      // 패턴: catalog 매치 → activeToolNames promote → schema rebuild →
-      // tool_result 합성 (tool-pair invariant) + round 예산 환불.
-      // Assigned unconditionally from searchOutcome.remaining below (never read
-      // before then) — declared without the dead initializer (CodeQL).
+      // Search promotion rebuilds schemas and synthesizes paired results before remaining execution.
       let toolUsesForExecutor: ToolUseBlock[];
       let searchPromotedThisRound = false;
       const prevToolCountForSearch = toolSchemas.length;
@@ -1920,8 +1445,7 @@ export async function queryLoop(
         });
       }
 
-      // meta-tool (request_plugin / tool_search) 만 있으면 다음 round 로 —
-      // 성공 시 round 예산 돌려받기 (C9). 둘 중 하나라도 promote 했으면 환불.
+      // Successful meta-only promotion refunds its assistant-round budget.
       if (toolUsesForExecutor.length === 0) {
         if (interceptedAuthorizationRequired) {
           decide({
@@ -1943,7 +1467,6 @@ export async function queryLoop(
         continue;
       }
 
-      // §4.5.2 step 9 — TOOL_EXECUTE
       self.tracer.step("TOOL_EXECUTE", {
         round: roundIndex,
         toolNames: toolUsesForExecutor.map((tu) => tu.name),
@@ -2004,25 +1527,17 @@ export async function queryLoop(
               callbacks?.onToolEnd?.(name, result, isError, meta, uiPayload, durationMs);
             },
           },
-          // C3(c): sub-agents pass their childSessionId so audit attribution
-          // for tool calls flows to the child, not the parent. Falls back to
-          // this loop's sessionId for normal interactive turns.
+          // Attribute child tool audits to the effective child session, not its parent.
           sessionId: bounds?.sessionIdOverride ?? self.sessionId,
-          // Forward the turn's overlay trigger origin so write/shell/network tools
-          // bypass `allow-always` cache and force a user-confirmation
-          // approval prompt — the hard gate for the overlay trigger's propose-only contract.
+          // Staged origins bypass cached allow-always decisions and require confirmation for effects.
           overlayTriggerOrigin: stagedOrigin ?? null,
-          // C3(b): carry spawn depth into ToolExecutionContext.metadata.
-          // The executor uses this to refuse `agent_spawn` calls inside an
-          // already-spawned sub-agent (depth >= 1).
+          // Carry spawn depth so execution refuses recursive agent_spawn calls.
           spawnDepth: bounds?.spawnDepth,
           memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
           supportsA2AParentDelivery: self.deps.supportsA2AParentDelivery === true,
           approvalReasonPrefix: activeApprovalReasonPrefix,
-          // Threading the turn's abort signal lets long-blocking tools
-          // (`ask_user_question`) honor the user's 중단 button instead of
+          // Pass the turn abort signal so blocking tools honor user stop.
           a2aCausalContext: activeA2ACausalContext,
-          // hanging until their internal timeout.
           abortSignal,
           toolResultChunkReader: (toolUseId) => self.readToolResultForChunk(toolUseId),
           toolOutputCaptureFactory: (toolUseId) => {
@@ -2032,12 +1547,7 @@ export async function queryLoop(
           },
           executionCwd: self.getSessionExecutionCwd(),
           permissionContext: {
-            // A host-issued unattended authority puts this ONE turn on the
-            // routine policy lane (reviewer-routed asks, deferred directory
-            // holds, fail-closed explicit host execution) while the owner's
-            // allow rules and durable grants keep applying. The loop's own
-            // `headless` flag stays untouched, so the turn keeps its ordinary
-            // tool, plugin, MCP, and egress scope.
+            // One-turn unattended authority selects routine approval policy without changing tool or egress scope.
             ...(bounds.unattendedAuthority !== undefined
               ? { headless: true, ownerUnattended: true }
               : { headless: self.deps.headless }),
@@ -2207,8 +1717,7 @@ export async function queryLoop(
             return true;
           }
         } catch {
-          // A non-canonical proposal cannot prove that it differs from a
-          // cancelled sibling, so fail it closed once this anchor has guards.
+          // Once replay guards exist, non-canonical proposals cannot prove they differ from canceled siblings.
         }
         log.warn(
           { sessionId: effectiveSessionId, toolName: toolUse.name },
@@ -2222,10 +1731,7 @@ export async function queryLoop(
         });
         return false;
       });
-      // What the loop decides here is the SHAPE of the batch it hands the
-      // executor; whether a batch's parallel-safe members actually overlap is
-      // the executor's segmentation, and the tool spans show it directly by
-      // their timestamps. Reporting the dispatch keeps the two claims separate.
+      // Report batch shape only; actual parallel overlap belongs to executor segmentation and spans.
       if (toolUsesForExecutor.length > 0) {
         decide({
           kind: "tool_batch",
@@ -2301,8 +1807,7 @@ export async function queryLoop(
         log.info(
           `queryLoop: EARLY-EXIT(tool-abort) — round=${roundIndex} toolResults=${toolResults.length}`,
         );
-        // No streamed text exists on the tool-abort path: empty prose plus the
-        // interrupted marker; the renderer badge carries the whole meaning.
+        // Tool-abort rows carry empty prose and interruption metadata, never a synthetic assistant answer.
         const savedText = "";
         self.history.append({
           role: "assistant",
@@ -2337,8 +1842,6 @@ export async function queryLoop(
           authorizationRequired,
         });
       }
-      // Intra-turn micro-compact — mark older tool_results stale before the
-      // next round assembles its request (`messagesForRound`), so the next
       const inputRequiredControls = toolResults.flatMap((toolResult) => {
         const toolUse = toolUsesForExecutor.find((candidate) =>
           candidate.id === toolResult.tool_use_id);
@@ -2370,11 +1873,7 @@ export async function queryLoop(
         });
       }
 
-      // Aged view_image images are a wire-bandwidth cost (~MBs re-sent every
-      // turn), not a token cost, so evict them from history as soon as they age
-      // past the preserve window — UNCONDITIONALLY, independent of the token
-      // floor that (correctly) gates text stubbing below. The model has already
-      // seen the image while it was in-window (per-round call cap < window).
+      // Evict aged images regardless of token pressure; the protect window guarantees they were sent once.
       {
         const { messages: afterEvict, result: ie } = evictAgedToolResultImages(
           self.history.getMessages(),
@@ -2391,11 +1890,7 @@ export async function queryLoop(
         }
       }
 
-      // provider send stubs them on the wire. Mirrors the sub-agent fallback
-      // mark (clear()/restore() atomic swap). Gated on the already-computed
-      // per-round projection to skip short turns; the threshold SOT is
-      // contextBudgetForCurrentRuntime so subscription turns never inherit an
-      // inactive API-key provider's context budget.
+      // Gate text stubbing on the current runtime budget, never inactive API-key context settings.
       const microCompactFloor = Math.floor(
         runtimeContextBudget.preflight * MICRO_COMPACT_FLOOR_FACTOR,
       );
@@ -2434,11 +1929,7 @@ export async function queryLoop(
       }
     }
 
-    // Outer for-loop bound (`loopRoundBound`) exhausted — reachable when
-    // meta-tool refunds (`round--`) iterate the loop past 30 while
-    // assistantRoundsRun stays under the cap. Same class as the assistantRounds
-    // early-exit above: a budget-hit, not a natural end_turn — flag it so the
-    // sub-agent runner marks the result incomplete.
+    // Exhausted outer iterations are resumable round-cap termination, including meta-tool refund churn.
     decide({
       kind: "early_exit",
       branch: "round-cap",
@@ -2459,26 +1950,9 @@ export async function queryLoop(
     }
   }
 
-// ---------------------------------------------------------------------------
-// Guidance batching — how a mid-turn guidance batch is formed, bounded, and
-// attributed.
-//
-// Guidance reaches the receiver as a user-role message, which is how the model
-// must see it — but a sub-agent's report is not something the user wrote, and
-// the transcript has to say so. Forming the batch and attributing it live
-// together here: the live renderer frame and the persisted history meta are two
-// halves of one decision, and splitting them would let a reloaded session render
-// a different bubble than the live turn had shown.
-// ---------------------------------------------------------------------------
+// Derive live and persisted guidance provenance together so reload renders the same attribution.
 
-/**
- * Drain the queue into one bounded message, oldest entries first.
- *
- * Truncation is from the HEAD so the most recent guides survive (older ones may
- * already be superseded), and the drop is surfaced by a leading marker so the
- * model is not left reasoning over silently missing context. Callers must still
- * fire `onDropped` for every returned `dropped` entry.
- */
+/** Bound batches by dropping oldest text visibly; notify every dropped producer entry. */
 function truncateGuidanceBatch<T extends { text: string }>(
   queue: readonly T[],
 ): { kept: T[]; dropped: T[]; joined: string } {
@@ -2501,13 +1975,7 @@ function truncateGuidanceBatch<T extends { text: string }>(
   };
 }
 
-/**
- * Attribute a batch to a sub-agent only when EVERY entry came from one.
- *
- * A batch that also carried the user's own mid-turn guide is still the user's
- * message; labelling it a child report would credit the wrong author for text
- * the user typed.
- */
+/** Attribute to children only when every entry is a child report; mixed user guides keep user framing. */
 function subAgentSourceForBatch(
   entries: readonly { subAgentTitle?: string }[],
 ): GuidanceInjectionSource | undefined {
@@ -2516,13 +1984,11 @@ function subAgentSourceForBatch(
   if (titles.includes(undefined)) return undefined;
   return {
     kind: "sub-agent",
-    // Several children in one batch: report it as a child report, unnamed,
-    // rather than crediting one child for another's work.
+    // Mixed-child batches stay unnamed so no child receives credit for another report.
     ...(titles.length === 1 ? { title: titles[0]! } : {}),
   };
 }
 
-/** Persisted counterpart of {@link subAgentSourceForBatch}, for reload replay. */
 function subAgentHistoryMeta(
   source: GuidanceInjectionSource | undefined,
 ): { meta: MessageMeta } | Record<string, never> {
@@ -2534,15 +2000,7 @@ function subAgentHistoryMeta(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Persisted tool_result renderer metadata.
-// ---------------------------------------------------------------------------
-
-/**
- * Renderer metadata for one persisted tool_result: display fields for the tool
- * row plus the permission verdict for that call. Both are what a reloaded
- * transcript rebuilds the row from, so they are assembled in one place.
- */
+// Persist tool display fields and permission verdict together for transcript reconstruction.
 function toolResultMeta(
   result: ToolResult,
   callMeta: ToolCallMeta | undefined,
@@ -2574,18 +2032,13 @@ function toolResultMeta(
   };
 }
 
-// ---------------------------------------------------------------------------
-// API-key usage segments.
-// ---------------------------------------------------------------------------
-
-/** Appends an API-key usage segment only when the serving identity is known. */
+// Record API usage only with a verified serving identity.
 function appendUsageForServingModel(
   usageByModel: TokenUsageByModel[],
   vendorProvider: LLMVendor | undefined,
   vendorModel: string | undefined,
   usage: TokenUsage,
   pricingOverrides: readonly PricingOverride[],
-  /** The primary route, priced with its endpoint's report when it is the one serving. */
   primaryRoute?: { vendor: string; model: string } & ModelPricingRoute,
 ): void {
   if (vendorProvider === undefined || vendorModel === undefined) {
@@ -2610,29 +2063,14 @@ function appendUsageForServingModel(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Round-cap finalization — one bounded, tool-free model call issued when a turn
-// exhausts its round budget.
-//
-// Without it, `round-cap` returns the last assistant message verbatim. When the
-// final round was a pure tool-call round that text is empty or a mid-thought
-// fragment, so a sub-agent that ran out of budget mid-investigation returns
-// nothing its parent can act on — the "agent stopped without reporting" symptom.
-// The budget is spent either way; what is missing is a readable hand-off.
-//
-// Deliberately NOT a normal round: no tools are offered, so it cannot extend the
-// work it is summarizing, and `outputTokenLimit` bounds it. It reports; it does
-// not continue.
-// ---------------------------------------------------------------------------
+// At round exhaustion, make one output-bounded, tool-free handoff call; it cannot extend the work.
 
-/** Enough for a dense hand-off, small enough that the call cannot run away. */
 const FINALIZE_OUTPUT_TOKEN_LIMIT = 1024;
 
 export interface RoundCapFinalizeParams {
   provider: LLMProvider;
   model: string;
   systemPrompt: string;
-  /** Turn history as it stood when the budget ran out. */
   messages: GenericMessage[];
   modelCapabilities?: import("../llm/types.js").StreamTurnParams["modelCapabilities"];
   abortSignal?: AbortSignal;
@@ -2643,13 +2081,7 @@ export interface RoundCapFinalizeResult {
   usage?: TokenUsage;
 }
 
-/**
- * Ask the model to state what it established and what remains.
- *
- * Returns `null` when the call cannot produce text — provider error, abort, or
- * an empty completion. The caller keeps whatever partial text it already had;
- * a failed hand-off must never be worse than no hand-off.
- */
+/** Failed, aborted, or empty finalization returns null so existing partial text remains available. */
 export async function finalizeAfterRoundCap(
   params: RoundCapFinalizeParams,
 ): Promise<RoundCapFinalizeResult | null> {
@@ -2668,7 +2100,7 @@ export async function finalizeAfterRoundCap(
       systemPrompt: params.systemPrompt,
       messages,
       ...(params.modelCapabilities !== undefined ? { modelCapabilities: params.modelCapabilities } : {}),
-      // No `tools`: the call must summarize the work, never extend it.
+      // No tools: finalization reports work without extending it.
       outputTokenLimit: FINALIZE_OUTPUT_TOKEN_LIMIT,
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     })) {
@@ -2692,16 +2124,7 @@ export async function finalizeAfterRoundCap(
   return usage ? { text: trimmed, usage } : { text: trimmed };
 }
 
-/**
- * What a round-capped turn returns, in order of preference:
- *
- *  1. the finalize hand-off — written knowing the work stopped, so it states
- *     findings and remaining steps rather than trailing off mid-thought;
- *  2. the last assistant message verbatim — the pre-existing behavior, kept as
- *     the fallback because a real partial answer beats a synthetic notice;
- *  3. the round-cap notice — only when there is no assistant text at all, which
- *     is exactly the tool-only-final-round case that read as silent failure.
- */
+/** Prefer the final handoff, then real partial text, then a notice only when no answer exists. */
 export function resolveRoundCapText(
   finalized: RoundCapFinalizeResult | null,
   messages: readonly GenericMessage[],
@@ -2714,7 +2137,6 @@ export function resolveRoundCapText(
   return lastAssistant.length > 0 ? lastAssistant : roundCapNotice;
 }
 
-/** Fold the finalize call's usage into the turn total. Identity when absent. */
 export function mergeFinalizeUsage(
   turnUsage: TokenUsage | undefined,
   finalized: RoundCapFinalizeResult | null,
@@ -2729,10 +2151,6 @@ export function mergeFinalizeUsage(
   };
 }
 
-// ---------------------------------------------------------------------------
-// `request_plugin` meta-tool — promotes a whole plugin into scope.
-// ---------------------------------------------------------------------------
-
 const REQUEST_PLUGIN_TOOL = "request_plugin";
 
 const MAX_PLUGIN_EXPANSION = 2;
@@ -2740,7 +2158,6 @@ const MAX_PLUGIN_EXPANSION = 2;
 const MAX_SESSION_PLUGIN_EXPANSION = 6;
 
 interface PluginExpansionState {
-
   turnExpansions: number;
 
   sessionExpansions: number;
@@ -2748,22 +2165,12 @@ interface PluginExpansionState {
   activePluginIds: Set<string>;
 
   availablePluginIds: string[];
-  /**
-   * Session-scoped on-demand activation sink. When a registry-DISABLED plugin
-   * (per {@link isPluginEnabled}) is activated, its id is recorded here so the
-   * caller's scope resolver skips the disabled-drop for THIS session only —
-   * never persisting enabled state (setPluginEnabled is NOT called). A
-   * disabled id can only reach the activation branch if it already passed the
-   * caller's allow-list gate (it would not be in {@link availablePluginIds}
-   * otherwise). Omitted for main chat.
-   */
+  // Record allowlisted disabled-plugin activation for this session only; never persist enabled state.
   sessionActivatedPluginIds?: Set<string>;
-  /** Registry active-state predicate; `false` ⇒ the plugin is disabled. */
   isPluginEnabled?: (pluginId: string) => boolean;
 }
 
 interface PluginExpansionOutcome {
-
   results: Array<{ tool_use_id: string; content: string; is_error: boolean }>;
 
   remaining: ToolUseBlock[];
@@ -2822,10 +2229,7 @@ function handleRequestPlugin(
       });
     } else {
       state.activePluginIds.add(pluginId);
-      // Session-scoped on-demand activation — a registry-disabled plugin that
-      // cleared the caller's allow-list gate (else it would not be in
-      // availablePluginIds) is activated for THIS session only. Record it so
-      // the scope resolver keeps its tools WITHOUT persisting enabled=true.
+      // Preserve activated scope for this session without changing registry enabled state.
       if (state.isPluginEnabled?.(pluginId) === false) {
         state.sessionActivatedPluginIds?.add(pluginId);
       }
@@ -2834,8 +2238,7 @@ function handleRequestPlugin(
       activatedPluginIds.push(pluginId);
       results.push({
         tool_use_id: tu.id,
-        // 실제 추가된 도구 수는 호출자가 rebuild 후 보강 가능하지만
-        // 초기 메시지는 activation 사실만 보고한다 — 호출자가 replace 하기도 한다.
+        // 호출자가 schema 재빌드 후 추가 도구 수와 activation 메시지를 보강한다.
         content: t("be_pluginExpansion.activated", { pluginId }),
         is_error: false,
       });
@@ -2851,23 +2254,8 @@ function handleRequestPlugin(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tool-Level Deferral — `tool_search` meta-tool handler.
-//
-// Mirror of `request_plugin` one layer down: where `request_plugin` promotes a
-// whole *plugin* into scope, `tool_search` promotes individual *tools* from the
-// per-turn catalog into the live `tools[]` for the next round.
-//
-// When the LLM emits `tool_search({ query })` the loop does not pass it to the
-// tool executor; instead this section ranks catalog tools by `query`, promotes a
-// small top-N result set into `activeToolNames`, and synthesizes a `tool_result`
-// per intercepted `tool_use` (tool-pair invariant). The caller rebuilds tool
-// schemas and refunds the round, exactly like the plugin path.
-//
-// Pure logic — the caller owns side effects (history append, schema rebuild).
-// ---------------------------------------------------------------------------
+// Promote catalog tools without execution; synthesize paired results and let the caller rebuild schemas.
 
-/** Name of the meta-tool. SOT is the registry; re-exported here for the loop. */
 export const TOOL_SEARCH_TOOL = TOOL_SEARCH_TOOL_NAME;
 
 export const MAX_TOOL_SEARCH_PER_TURN = 4;
@@ -2878,14 +2266,12 @@ export const MAX_TOOL_SEARCH_PROMOTIONS_PER_SEARCH = 5;
 
 export const MIN_CATALOG_MATCH_TOKEN_LENGTH = 2;
 
-/** Catalog entry the loop supplies (from `getToolCatalogForScope`). */
 interface ToolSearchCatalogEntry {
   name: string;
   description: string;
 }
 
 export interface ToolSearchState {
-
   turnSearches: number;
 
   sessionSearches: number;
@@ -2900,7 +2286,6 @@ export interface ToolSearchState {
 }
 
 interface ToolSearchOutcome {
-
   results: Array<{ tool_use_id: string; content: string; is_error: boolean }>;
 
   remaining: ToolUseBlock[];
@@ -2934,14 +2319,7 @@ function entrySearchText(entry: ToolSearchCatalogEntry): string {
   return `${entry.name} ${entry.description}`.toLowerCase();
 }
 
-/**
- * IDF weight per query token over the current catalog corpus: a rare token
- * weighs ~1.0, a token that appears in most entries (get/list/file) is damped
- * toward a 0.2 floor (kept above 0 so a common-token match still counts).
- * Normalized by log(1+N) so the range is stable regardless of catalog size and
- * clamped to [0.2, 1]. This is the discriminative core of the ranking upgrade:
- * a match on a distinctive token now outranks a match on boilerplate.
- */
+// Damp common tokens with catalog-normalized IDF in [0.2, 1] while retaining a positive match floor.
 function computeIdfWeights(
   catalog: ToolSearchCatalogEntry[],
   queryTokens: string[],
@@ -2972,14 +2350,11 @@ function scoreCatalogEntry(
   const name = entry.name.toLowerCase();
   const description = entry.description.toLowerCase();
   const nameTokens = tokenizeName(entry.name);
-  // Exact whole-query name match is an un-weighted strong signal (still requires
-  // the query to clear the minimum token length so a 1-char query cannot promote
-  // a 1-char tool name).
+  // Exact name matches stay unweighted but must meet the minimum query length.
   let score = name === query && query.length >= MIN_CATALOG_MATCH_TOKEN_LENGTH ? 1_000 : 0;
 
   for (const token of tokens) {
-    // Defense at the scoring boundary: sub-minimum tokens never contribute,
-    // even if a future caller bypasses tokenizeQuery's length filter.
+    // Reject short tokens here even if a caller bypasses tokenizer filtering.
     if (token.length < MIN_CATALOG_MATCH_TOKEN_LENGTH) continue;
     let tokenScore = 0;
     if (name === token) {
@@ -2996,24 +2371,16 @@ function scoreCatalogEntry(
       tokenScore += 30;
     }
 
-    // IDF weighting: dampen contributions from tokens common across the catalog.
-    // Absent weights (default 1) preserve the pre-IDF behavior.
+    // Missing weights default to one; common catalog tokens contribute less.
     score += tokenScore * (idfWeights?.get(token) ?? 1);
   }
 
   return score;
 }
 
-/**
- * Test-only export — allows unit tests to drive `scoreCatalogEntry` directly
- * so the scoring-side MIN_CATALOG_MATCH_TOKEN_LENGTH guards (lines above) are
- * covered independently of the tokenizeQuery pre-filter. The function is pure
- * and has no side effects; exporting it does not affect production behaviour.
- *
- * @internal Do not import outside of `__tests__/`.
- */
+/** @internal Tests may exercise scorer guards independently of tokenizer filtering. */
 export { scoreCatalogEntry as _scoreCatalogEntryForTest };
-/** @internal Test-only — IDF weighting is pure; do not import outside `__tests__/`. */
+/** @internal Pure IDF test seam; import only from __tests__. */
 export { computeIdfWeights as _computeIdfWeightsForTest };
 
 function matchCatalog(
@@ -3137,12 +2504,7 @@ export function handleToolSearch(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Cross-agent gate for the intercepted meta tools (`request_plugin`,
-// `tool_search`). Both mutate the active tool/session surface while bypassing
-// the ordinary ToolExecutor, so a message that did not come from the local user
-// has to clear an approval before either can run.
-// ---------------------------------------------------------------------------
+// Intercepted scope-mutating meta tools bypass execution and need approval for non-local-user origins.
 
 interface InterceptedMetaGateResult {
   approved: ToolUseBlock[];
@@ -3178,10 +2540,7 @@ export async function gateCrossAgentInterceptedMetaTools(
       continue;
     }
 
-    // These meta commands mutate the active tool/session surface while
-    // bypassing the ordinary ToolExecutor. A P1 Tailnet controller cannot
-    // create a cross-turn capability; retain a narrow send/read/write model
-    // until an actor-scoped continuation protocol exists.
+    // Remote controllers cannot create cross-turn capabilities without an actor-scoped continuation protocol.
     if (remoteControllerAuthority !== undefined) {
       denied.push({
         toolUseId: toolUse.id,
@@ -3237,7 +2596,6 @@ export async function gateCrossAgentInterceptedMetaTools(
           kind: "tool",
           toolName: toolUse.name,
           toolCategory: "meta",
-          // Same conversation this gate already audits under.
           sessionId,
           args: toolUse.input,
           reason: `${approvalReasonPrefix} cross-agent message requested ${toolUse.name}`,
@@ -3246,11 +2604,7 @@ export async function gateCrossAgentInterceptedMetaTools(
           isReadOnly: false,
           mode: "ask_all",
           trustOrigin,
-          // This ask parks the turn like any other, so the turn's Stop has to
-          // be able to end it rather than leave it on the gate's own timer.
-          // Read from the loop rather than threaded in: this is the same
-          // controller `runTurn` installed and the same signal it handed the
-          // executor, and the caller has no third one to offer.
+          // Use the active turn controller so user stop cancels this pending approval too.
           ...(self.currentAbortController === null
             ? {}
             : { abortSignal: self.currentAbortController.signal }),

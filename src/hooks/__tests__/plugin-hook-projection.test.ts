@@ -6,9 +6,10 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
+import { filterRegistryByEventAndTool } from "../hook-registry.js";
 import { PluginHookTrustStore, preparePluginHookGeneration as prepareWithDigests } from "../plugin-hook-projection.js";
 
-/** Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+// Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes.
 function preparePluginHookGeneration(generation: ActivePluginGeneration, root: string, dataDir: string) {
   return prepareWithDigests(generation, root, dataDir, new Map(generation.contributions.map((contribution) =>
     [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
@@ -46,7 +47,7 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
         sha256: fingerprint,
         content: JSON.stringify({
           hooks: {
-            PreToolUse: [{ matcher: "portal_*", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }] }],
+            PreToolUse: [{ matcher: "^portal_.*$", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }] }],
           },
         }),
       }],
@@ -55,6 +56,26 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
 }
 
 describe("plugin-owned Hook projections", () => {
+  it("compiles plugin matchers at publication and reuses them during filtering", () => {
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
+    const trust = new PluginHookTrustStore();
+    trust.approve(projection);
+    const manager = new ScriptHookManager();
+    const constructor = vi.spyOn(globalThis, "RegExp");
+    try {
+      manager.publishPluginGeneration([projection], trust);
+      expect(constructor).toHaveBeenCalledTimes(1);
+      const entries = manager.hooksOfType("pre");
+      for (let call = 0; call < 3; call += 1) {
+        expect(filterRegistryByEventAndTool(entries, "pre", "portal_read")).toHaveLength(1);
+        expect(filterRegistryByEventAndTool(entries, "pre", "prefix_portal_read")).toEqual([]);
+      }
+      expect(constructor).toHaveBeenCalledTimes(1);
+    } finally {
+      constructor.mockRestore();
+    }
+  });
+
   it("prepares without spawn and contributes nothing until exact trust", () => {
     const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();

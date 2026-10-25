@@ -8,8 +8,7 @@ import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../../lib/chat-stream-state.js";
 
 function createMessages(): GenericMessage[] {
-  // 16 messages — preserveRecentMessages=12 보다 커야 compactMessages 가 실제로 압축 수행.
-  // 8 turn (user+assistant 쌍 × 8 = 16) 으로 새 default 와 정합.
+  // Use more than preserveRecentMessages=12 messages so compaction actually runs.
   const out: GenericMessage[] = [];
   for (let i = 1; i <= 8; i++) {
     out.push({ role: "user", content: `${i}번째 요청입니다.` });
@@ -48,13 +47,10 @@ describe("PostTurnHookChain", () => {
     expect(saveSession).toHaveBeenCalledWith("session-disabled", messages);
   });
 
-  // Post-turn full compact 가 제거됐으므로 *PostTurnHookChain 안에서*
-  // boundary marker 생성 시나리오 자체 폐기. 동등 검증은 `runPreflightGuard` 의 LLM compact 경로
-  // (engine 통합 테스트) 에서 다뤄짐 — `structured-compact.test.ts:compactWithBoundary` 참조.
+  // Compaction boundary coverage belongs to runPreflightGuard; see structured-compact.test.ts:compactWithBoundary.
 
   it("leaves earlier tool results untouched after a turn", async () => {
-    // Rewriting an earlier row after the turn would change the prefix the next
-    // request repeats. Stubbing belongs to compaction, not to the turn's end.
+    // Rewriting an earlier row after the turn would change the prefix the next request repeats. Stubbing belongs to compaction, not to the turn's end.
     const saveSession = vi.fn();
     const memoryManager = {
       saveSession,
@@ -379,7 +375,7 @@ describe("PostTurnHookChain", () => {
       } as unknown as import("../../audit/audit-logger.js").AuditLogger;
       const settingsService = {
         get: vi.fn((key: string) => {
-          if (key === "llm") return fakeLlmSettings();
+          if (key === "llm") return fakeLlmSettings({ model: "gpt-5.4-mini" });
           return { systemPrompt: "", autoCompact: opts.autoCompact };
         }),
       } as unknown as SettingsService;
@@ -400,11 +396,7 @@ describe("PostTurnHookChain", () => {
         route: "llm",
       });
 
-      // Audit route should be transformed from the bare classification
-      // "llm" into the `${provider}/${model}` form so usage-stats.parseRoute
-      // can attribute cost per vendor/model. The exact provider/model
-      // depends on what `fakeLlmSettings()` seeds — assert structural
-      // shape (`vendor/model`) rather than a specific vendor.
+      // Audit routes use provider/model so usage parsing can attribute cost; assert the shape rather than a specific provider.
       expect(logTurn).toHaveBeenCalledOnce();
       const call = logTurn.mock.calls[0]![0] as { route: string };
       expect(call.route).toMatch(/^[a-z][\w-]*\/[\w.-]+$/);
@@ -518,11 +510,7 @@ describe("PostTurnHookChain", () => {
     });
 
     it("prefers ctx.vendorProvider/vendorModel snapshot over current settings", async () => {
-      // Regression: when the user mutates settings mid-flight (retry-effort
-      // patches thinking config; user switches vendor while streaming),
-      // the audit log must attribute to the model that actually served
-      // the turn, not to whatever settings happen to be live when the
-      // hook fires. The snapshot is captured at runTurn entry.
+      // Audit must use the model snapshot captured at runTurn entry, even when settings change mid-flight.
       const logTurn = vi.fn();
       const chain = makeChain({ autoCompact: false, logTurn });
 

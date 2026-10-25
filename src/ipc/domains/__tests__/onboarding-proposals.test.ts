@@ -1,15 +1,4 @@
-/**
- * `ave:onboarding:proposals:*` — the host side of plugin onboarding proposals.
- *
- * What these channels have to get right is the sequencing, so that is what is
- * proved here:
- *   - the sender frame is checked before anything is read or written
- *   - asking what is pending STAGES the head of the queue as an overlay card,
- *     one at a time, on the ordinary `OVERLAY_V1.show` path
- *   - an answer is persisted and the NEXT proposal is staged from state that
- *     already contains it — so the same launch never re-asks
- *   - a malformed key or disposition writes nothing
- */
+// Pending reads stage the queue head; acceptance is the authority to mutate.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -83,7 +72,6 @@ async function setup(cards?: unknown[]) {
   return { deps, send, event };
 }
 
-/** The overlay cards pushed to the renderer that asked. */
 function stagedCards(send: ReturnType<typeof vi.fn>) {
   return send.mock.calls
     .filter(([channel]) => channel === OVERLAY_V1.show)
@@ -142,8 +130,6 @@ describe("ave:onboarding:proposals:list-pending", () => {
         action: { kind: "composer", prompt: "Start recording the meeting" },
       },
     });
-    // Onboarding stays inline where the user is: it names no conversation, so
-    // it is not addressed to the Suggestions conversation.
     expect(staged[0]).not.toHaveProperty("originSessionId");
   });
 
@@ -235,8 +221,7 @@ describe("ave:onboarding:proposals:answer", () => {
       locale: "en",
     });
 
-    // Registering again is a new launch: the stored answer survives, the
-    // per-launch set does not.
+    // Persisted answers survive registration; per-launch state does not.
     const next = await setup();
     const result = (await handlers.get(CHANNELS.onboarding.listPending)!(
       next.event as never,

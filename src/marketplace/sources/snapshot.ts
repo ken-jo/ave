@@ -1,26 +1,5 @@
-/**
- * Build the validated snapshot of one source at one revision (design §2.2,
- * §3, §4.2, §10.4, §18.4.2, §18.4.3).
- *
- * The snapshot is everything the catalog needs without reading the source
- * again: the marketplace identity, each package with its versions, the
- * source's own revocations and the per-package diagnostics. What is read,
- * through a {@link SourceTree}:
- *   - marketplace sources: `marketplace.json`; a package the index lists
- *     without `versions` is read from its descriptor;
- *   - direct sources: the one package at the subdir (or root), from its
- *     descriptor or synthesized from its own file (direct-package.ts);
- *   - every source: `policy/revocations.json` when present.
- * A package that fails validation is dropped with a diagnostic. An invalid
- * index or revocations file rejects the whole revision, so the caller keeps
- * its previous pin.
- *
- * A git source is read at a commit. A folder source is read as it is now
- * (§18.4.3): every package's descriptor is read, only the version in the
- * folder is offered (it must equal its index copy), each package carries the
- * tree digest of what it would install, and the pin is the revision those
- * reads name, computed once they are done.
- */
+/** Invalid packages are diagnosed and dropped; invalid index or revocations preserve the previous pin.
+ * Folder snapshots offer only the installed tree version and derive their revision after all reads. */
 import type {
   IndexVersion,
   MarketplaceIndex,
@@ -42,26 +21,23 @@ import { folderRevision, type GitTree, type SourceTree } from "./source-tree.js"
 export interface CatalogPackage {
   kind: PackageKind;
   name: string;
-  /** Package directory in the repository; "" is the root (a direct source without subdir). */
   path: string;
   displayName?: string;
   description?: string;
   keywords?: string[];
-  /** Repository-relative image path, read from the git tree only. */
   icon?: string;
   latest?: string;
-  /** Newest first. A package read from its descriptor, and every package of a folder source, has exactly one. */
+  /** Versions are newest first; descriptor and folder reads yield exactly one. */
   versions: IndexVersion[];
-  /** Folder sources: the tree digest (§6.4) of the files this package installs, which a plan's capture must match. */
+  /** Folder plans must capture bytes matching this payload digest. */
   treeSha256?: string;
 }
 
 export interface SourceSnapshot {
-  /** Absent on snapshots written before conditional policies. */
+  /** Legacy snapshots may omit conditional policies. */
   formatVersion?: 1 | 2;
   conditionalRevocations?: ConditionalRevocation[];
   sourceId: string;
-  /** The pin: a commit, or a folder source's revision (§18.4.3). */
   commit: string;
   fetchedAt: string;
   marketplace: MarketplaceIdentity;
@@ -94,25 +70,21 @@ class Rejection extends Error {
   }
 }
 
-/** The source being read, as the builder needs it. */
 export interface SnapshotSubject {
   id: string;
   origin: SourceOrigin;
   label?: string;
-  /** A direct source's package path ("" is the root). */
   subdir?: string;
-  /** The repository's or folder's own name, which names a direct package at the root that names none. */
   rootName: string;
 }
 
-/** A folder version's commit until the read is done and its revision is known; never leaves the builder. */
+/** Temporary folder commit marker never leaves the builder. */
 const FOLDER_REVISION_PENDING = "local-pending";
 
 function descriptorPath(packagePath: string): string {
   return packagePath ? `${packagePath}/${MARKETPLACE_DESCRIPTOR_FILE}` : MARKETPLACE_DESCRIPTOR_FILE;
 }
 
-/** One catalog package from a descriptor read at `commit`; the icon becomes repository-relative. */
 function packageFromDescriptor(descriptor: PackageDescriptor, path: string, commit: string, publishedAt: string): CatalogPackage {
   const plugin = descriptor.kind === "plugin"
     ? (descriptor.payload as { authority: PluginAuthority; artifact: PluginArtifactPins })
@@ -144,7 +116,7 @@ function subjectOf(entry: { kind: string; name: string }): string {
   return `${entry.kind}/${entry.name}`;
 }
 
-/** Drop every package whose (kind, name) or path another package also claims (§4.2). */
+/** Ambiguous identity or path claims drop every claimant. */
 function dropAmbiguous(packages: CatalogPackage[], diagnostics: CatalogDiagnostic[]): CatalogPackage[] {
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
@@ -175,7 +147,6 @@ export class SnapshotBuilder {
     this.folder = tree instanceof FolderTree ? tree : null;
   }
 
-  /** The commit a version read here is at: the git commit, or the folder's revision once it is known. */
   private get versionCommit(): string {
     return this.folder ? FOLDER_REVISION_PENDING : (this.tree as GitTree).commit;
   }
@@ -193,7 +164,6 @@ export class SnapshotBuilder {
     if (paths.length > 0) await this.reader.ensure(paths);
   }
 
-  /** Read and validate the descriptor at each path; failures become diagnostics. */
   private async descriptors(
     wanted: ReadonlyArray<{ path: string; expected?: { kind: PackageKind; name: string }; subject: string }>,
     diagnostics: CatalogDiagnostic[],
@@ -230,7 +200,6 @@ export class SnapshotBuilder {
     diagnostics.push(...validated.value.diagnostics);
     const publishedAt = await this.reader.revisionTime();
     const listed: CatalogPackage[] = [];
-    // A folder holds one version of each package: its descriptor says which.
     const described = this.folder ? index.packages : index.packages.filter((entry) => !entry.versions);
     const read = await this.descriptors(
       described.map((entry) => ({ path: entry.path, expected: { kind: entry.kind, name: entry.name }, subject: subjectOf(entry) })),
@@ -242,7 +211,7 @@ export class SnapshotBuilder {
       if (versions && this.folder) {
         const descriptor = readByPath.get(entry.path);
         if (!descriptor) continue;
-        // Only the version whose files are here installs; the index copy of it must say what the files say (§18.4.3).
+        // The folder version must match its index copy because only these files can install.
         const here = versions.find((version) => version.version === descriptor.version);
         if (!here) {
           diagnostics.push({ subject: subjectOf(entry), message: `the folder holds ${descriptor.version}, which the index does not list` });
@@ -263,7 +232,6 @@ export class SnapshotBuilder {
       const descriptor = readByPath.get(entry.path);
       if (!descriptor) continue;
       const fromFile = packageFromDescriptor(descriptor, entry.path, this.versionCommit, publishedAt);
-      // The index's own presentation fields win over the descriptor's.
       listed.push({ ...fromFile, ...rest, latest: fromFile.latest!, versions: fromFile.versions });
     }
     const { name, displayName, description, owner } = index;
@@ -273,7 +241,6 @@ export class SnapshotBuilder {
     };
   }
 
-  /** The one package at the source's path (design §8.1): a descriptor, or one synthesized from the package's own file. */
   private async fromDirect(): Promise<CatalogPackage[]> {
     const path = this.source.subdir ?? "";
     const read = await readDirectPackage({ tree: this.reader, path, rootName: this.source.rootName });
@@ -284,11 +251,7 @@ export class SnapshotBuilder {
     return [packageFromDescriptor(read.found.descriptor, path, this.versionCommit, await this.reader.revisionTime())];
   }
 
-  /**
-   * A folder read is done: digest what each package installs (a package
-   * that cannot be read under the folder rules is dropped with a
-   * diagnostic), name the revision, and put it wherever a commit stands.
-   */
+  /** Digest folder payloads after validation, then replace temporary commit markers with the revision. */
   private async sealFolder(folder: FolderTree, packages: CatalogPackage[], diagnostics: CatalogDiagnostic[]): Promise<{ revision: string; packages: CatalogPackage[] }> {
     const sealed: CatalogPackage[] = [];
     const digests = new Map<string, string>();
@@ -321,8 +284,7 @@ export class SnapshotBuilder {
     const text = await this.read(REVOCATIONS_PATH, SNAPSHOT_FILE_LIMITS.revocations);
     if (text === null) return [];
     const result = validateRevocationsText(text);
-    // Accepting the rest of a commit whose revocations cannot be read would
-    // silently drop a revocation; the previous pin keeps the last good list.
+    // Reject unreadable revocations so the previous pin retains the last good rules.
     if (!result.ok) throw new Rejection("SOURCE_INDEX_INVALID", result.error);
     return result.value.revocations;
   }
@@ -346,7 +308,6 @@ export class SnapshotBuilder {
       }
       const revocations = await this.revocations();
       const conditionalPath = "policy/revocations-by-app.json";
-      // ensureBlobs ignores absent paths; the sibling is never required.
       await this.ensure([conditionalPath]);
       const conditionalText = await this.read(conditionalPath, SNAPSHOT_FILE_LIMITS.revocations);
       const conditional = conditionalText === null ? null : validateConditionalRevocationsText(conditionalText);
@@ -375,9 +336,7 @@ export class SnapshotBuilder {
     } catch (error) {
       if (error instanceof Rejection) return { ok: false, code: error.code, message: error.message, ...(error.detail ? { detail: error.detail } : {}) };
       if (isMarketplaceError(error)) {
-        // A blob fetch can still fail on the network, auth or a timeout; that
-        // is the sync's result, not an exception past it. A folder's link or
-        // file refusal keeps its reason, so the sentence names the file.
+        // Preserve network and folder-read failures as sync outcomes with their original reason.
         if (error.code === "CONTENT_RULE_VIOLATION" && !error.detail) return { ok: false, code: "SOURCE_INDEX_INVALID", message: error.message };
         return { ok: false, code: error.code, message: error.message, ...(error.detail ? { detail: error.detail } : {}) };
       }
@@ -386,12 +345,7 @@ export class SnapshotBuilder {
   }
 }
 
-/**
- * Every artifact sha256 the snapshot pins for plugin `name@version` (release
- * and archive): the bytes that source published as that version. The
- * host-secret grant compares an install against the official snapshot's
- * pins (design §10.3 condition 2).
- */
+/** Host-secret grants compare receipt hashes against official release and archive pins. */
 export function pinnedArtifactSha256s(snapshot: SourceSnapshot, name: string, version: string): string[] {
   const pkg = snapshot.packages.find((item) => item.kind === "plugin" && item.name === name);
   const listed = pkg?.versions.find((item) => item.version === version);

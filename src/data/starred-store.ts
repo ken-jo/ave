@@ -10,22 +10,17 @@ import { adoptLegacyRootFileSync } from "../main/storage/feature-namespace.js";
 const log = createLogger("starred-store");
 
 export interface StarredMessage {
-  /** unique id (uuid) */
   id: string;
-  /** owning session id */
   sessionId: string;
-  /** 0-based index within that session's message array at star time */
+  /** Message index is zero-based at star time. */
   messageIndex: number;
-  /** "user" | "assistant" */
   role: string;
-  /** snapshot of message text (may be truncated in UI) */
+  /** Store a text snapshot independent of later session edits. */
   text: string;
-  /** iso timestamp */
   starredAt: string;
 }
 
 export interface StarredStoreOptions {
-  /** override path for tests */
   filePath?: string;
 }
 
@@ -33,17 +28,7 @@ const FEATURE_ID = "sessions";
 const FILE_NAME = "starred.json";
 const LEGACY_ROOT_FILE = "starred.json";
 
-/**
- * Starred messages live in the SESSIONS namespace, not at the `~/.ave` root.
- * Every record is an index INTO a session file — `sessionId` plus the message
- * index within `~/.ave/sessions/<sessionId>.jsonl` — so the two are one
- * domain: clearing `~/.ave/sessions/` and leaving the stars behind would
- * leave every record pointing at a session that no longer exists.
- *
- * Enumeration is unaffected: the session lister filters on `.jsonl` AND on
- * `isValidSessionId`, so a `starred.json` sitting beside the session files is
- * invisible to it.
- */
+/** Store stars beside sessions so clearing sessions also removes their indexes; session enumeration excludes starred.json. */
 export class StarredStore {
   private readonly filePath: string;
   private cache: StarredMessage[] = [];
@@ -51,9 +36,7 @@ export class StarredStore {
   constructor(options?: StarredStoreOptions) {
     const defaultPath = resolve(join(aveHome(), FEATURE_ID, FILE_NAME));
     this.filePath = resolve(options?.filePath ?? defaultPath);
-    // Only on the default path — a caller that supplied one (tests, fixtures)
-    // is not talking about `~/.ave`, and migrating the real user's file
-    // underneath such a call would be a side effect nobody asked for.
+    // Migrate only the default path; custom callers must not touch a real user's store.
     if (this.filePath === defaultPath) {
       adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
     }

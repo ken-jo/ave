@@ -1,23 +1,8 @@
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
-/**
- * Shutdown ordering.
- *
- * `unregisterAllGlobalShortcuts()` must run FIRST in the shutdown cleanup pipeline:
- * a later step that throws or wedges must never leave the global accelerator bound
- * OS-wide after quit. `closeFileLogSink()` (PR #1503) must stay LAST on every exit
- * path (completed / failed / timed-out) so no shutdown-step log line is dropped by
- * an early sink close. The two are independent constraints on opposite ends of the
- * same pipeline.
- *
- * MUTATION CONTRACT:
- *  - Moving unregisterAllGlobalShortcuts() off the head of the pipeline makes the
- *    "closes the file log sink LAST, after unregister runs FIRST" test fail.
- *  - Moving closeFileLogSink() off the tail of the completed path makes the same
- *    test fail on its other assertion.
- */
+// Global shortcuts must release before any shutdown step can fail; the log sink must close last on every exit path.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -98,12 +83,10 @@ vi.mock("../../tools/shell-tools.js", () => ({
     waitForAllBrokerCleanup: () => waitForAllBrokerCleanup(),
   },
 }));
-// A test that exercises the timed-out branch flips this; the body is not run
-// then, exactly as a real deadline abandons a cleanup that never settles.
+// A test that exercises the timed-out branch flips this; the body is not run then, exactly as a real deadline abandons a cleanup that never settles.
 let hardTimeoutFires = false;
 vi.mock("../shutdown-timeout.js", () => ({
   resolveShutdownCleanupTimeoutMs: (_settingMs?: number) => 5000,
-  // Run the cleanup body with a never-aborted signal and report completion.
   runCleanupWithHardTimeout: async (fn: (signal: AbortSignal) => Promise<void>) => {
     if (hardTimeoutFires) return { status: "timed-out" as const };
     try {
@@ -143,8 +126,7 @@ function makeServices() {
       beginShutdown: vi.fn(() => { calls.push("closePluginAdmission"); }),
       stopAll: vi.fn(async () => { calls.push("stopPluginRuntime"); }),
     },
-    // The cleanup window is a Settings control now, so the shutdown path reads
-    // the persisted value before it arms the deadline.
+    // The cleanup window is a Settings control now, so the shutdown path reads the persisted value before it arms the deadline.
     settingsService: { get: vi.fn(() => ({})) },
   };
 }
@@ -191,8 +173,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     });
     shutdown.registerBootMcpDisconnect(async () => { calls.push("partialMcpDisconnect"); });
     expect(await shutdown.runIncompleteBootShutdown()).toBe("completed");
-    // Admission closes first, so no post-commit MCP publication opens once
-    // MCP is gone.
+    // Admission closes first, so no post-commit MCP publication opens once MCP is gone.
     expect(calls.slice(0, 4)).toEqual([
       "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialMcpDisconnect", "partialPluginRuntimeStop",
     ]);
@@ -251,10 +232,28 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     }
   });
 
-  // PR #1503 cross-PR check: the log-sink close (added on main after this file
-  // was authored) must remain the LAST step on the happy path, coexisting with
-  // unregisterAllGlobalShortcuts staying FIRST — the two orderings are
-  // independent constraints on opposite ends of the pipeline.
+  it("waits for pending tab binding writes before disposing services", async () => {
+    const services = makeServices();
+    getServices.mockReturnValue(services);
+    vi.resetModules();
+    const { runAppShutdownCleanup } = await configuredShutdown();
+    const { browserTabRegistry } = await import("../browser/browser-tab-registry.js");
+    let finishWrite!: () => void;
+    browserTabRegistry.trackBindingWrite(new Promise<void>((resolve) => { finishWrite = resolve; }));
+    const flush = vi.spyOn(browserTabRegistry, "flushBindingWrites");
+    const cleanup = runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    try {
+      await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+      expect(services.shutdown).not.toHaveBeenCalled();
+      expect(stopLocalApiServer).not.toHaveBeenCalled();
+    } finally {
+      finishWrite();
+      await cleanup;
+      flush.mockRestore();
+    }
+    expect(services.shutdown).toHaveBeenCalledOnce();
+  });
+
   it("closes the file log sink LAST, after unregister runs FIRST", async () => {
     getServices.mockReturnValue(makeServices());
     vi.resetModules();
@@ -411,21 +410,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
   });
 });
 
-/**
- * Shutdown hooks, and the listener ceiling they exist to keep.
- *
- * Node warns once an emitter passes ten listeners for one event. Electron's
- * `App` is a single long-lived emitter and `before-quit` is the event every
- * subsystem wants, so one listener per subsystem put a
- * `MaxListenersExceededWarning` on stderr of every launch — which a one-shot
- * `--exec` run hands to its caller as if the run had leaked something.
- *
- * The bound is structural rather than a raised ceiling: teardown that needs no
- * ordering registers a hook and shares the one listener `src/main.ts` owns, so
- * the listener count does not move when a subsystem is added. The source scan
- * at the bottom is what holds that: it fails the moment a new module takes a
- * `before-quit` listener of its own.
- */
+// Share one before-quit listener through shutdown hooks instead of raising the listener ceiling.
 describe("shutdown hooks", () => {
   it("runs every hook once, in registration order", async () => {
     vi.resetModules();
@@ -441,11 +426,7 @@ describe("shutdown hooks", () => {
   });
 
   it("runs a hook registered after the drain immediately, and only once", async () => {
-    // Boot can still be registering while a quit is in flight: the drain has
-    // already happened, the ordered cleanup declined because AppServices did
-    // not exist yet, and the plugin runtime deferred the quit. A hook that
-    // arrives then belongs to a drain that has passed, and a second drain
-    // never comes — so it has to run on the spot.
+    // Run hooks registered after the drain immediately; a deferred quit does not guarantee another drain.
     vi.resetModules();
     const { registerShutdownHook, runShutdownHooks } = await configuredShutdown();
     runShutdownHooks();
@@ -457,8 +438,7 @@ describe("shutdown hooks", () => {
     runShutdownHooks();
     expect(late).toHaveBeenCalledTimes(1);
 
-    // Same containment as the drain: a late hook that throws must not surface
-    // in the middle of the boot step that registered it.
+    // Same containment as the drain: a late hook that throws must not surface in the middle of the boot step that registered it.
     expect(() =>
       registerShutdownHook("late-and-throws", () => {
         throw new Error("timer already gone");
@@ -491,19 +471,9 @@ describe("shutdown hooks", () => {
   });
 });
 
-/**
- * Every `before-quit` listener in the shipped main process, by file.
- *
- * Source inspection rather than a runtime count: the registrations are spread
- * across boot steps that a single test cannot execute together, and the
- * property being locked is "no module takes its own listener", which is a
- * property of the source.
- */
+// Inspect source because registrations span boot paths that cannot all run in one test.
 describe("before-quit listener inventory", () => {
-  /**
-   * One entry per file allowed to register an Electron `before-quit` listener,
-   * with the reason it cannot be a shutdown hook instead.
-   */
+  // One entry per file allowed to register an Electron `before-quit` listener, with the reason it cannot be a shutdown hook instead.
   const ALLOWED_LISTENER_FILES: ReadonlyMap<string, string> = new Map([
     [
       "src/main.ts",
@@ -534,7 +504,7 @@ describe("before-quit listener inventory", () => {
       /\bapp\s*\.\s*(?:on|once|addListener|prependListener|prependOnceListener)\s*\(\s*"before-quit"/u;
     const found = collectSourceFiles(srcRoot, [])
       .filter((file) => registration.test(readFileSync(file, "utf-8")))
-      .map((file) => relative(process.cwd(), file))
+      .map((file) => relative(process.cwd(), file).split(sep).join("/"))
       .sort();
 
     const allowed = [...ALLOWED_LISTENER_FILES.keys()].sort();

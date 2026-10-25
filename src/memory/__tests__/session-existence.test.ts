@@ -1,10 +1,4 @@
-/**
- * `hasSessionTranscript` is the cheap existence check callers use instead of
- * scanning and stat-ing every session. Its whole value is that it agrees with
- * `listSessions`, so these tests assert the agreement rather than asserting the
- * two independently — a check that disagreed with the list the user can see
- * would tell a caller a conversation exists that does not, or the reverse.
- */
+// The cheap existence predicate must agree with the actual conversation listing.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +22,6 @@ afterEach(async () => {
   await cleanupTmpDir(dir);
 });
 
-/** What `listSessions` reports, which is what the user's conversation list shows. */
 function listedIds(): string[] {
   return mm.listSessions().map((entry) => entry.id).sort();
 }
@@ -42,7 +35,6 @@ describe("hasSessionTranscript", () => {
     for (const id of listedIds()) {
       expect(mm.hasSessionTranscript(id)).toBe(true);
     }
-    // The negative half: an id the list does not carry must not be claimed.
     expect(mm.hasSessionTranscript(NEVER_WRITTEN)).toBe(false);
   });
 
@@ -54,15 +46,12 @@ describe("hasSessionTranscript", () => {
     unlinkSync(join(dir, "sessions", `${SESSION_A}.jsonl`));
 
     expect(mm.hasSessionTranscript(SESSION_A)).toBe(false);
-    // Still in step with the list, and the deletion did not take the other one
-    // with it — an over-broad answer would pass the first assertion alone.
     expect(listedIds()).toEqual([SESSION_B]);
     expect(mm.hasSessionTranscript(SESSION_B)).toBe(true);
   });
 
   it("answers false for a malformed id instead of throwing at its caller", () => {
-    // The callers are snapshot projections that must not throw, and an id that
-    // is not well-formed names no conversation, so false is the whole answer.
+    // Snapshot projections return false for invalid ids instead of throwing.
     for (const malformed of ["", "not-a-uuid", "../escape", 42, null, undefined]) {
       expect(mm.hasSessionTranscript(malformed)).toBe(false);
     }

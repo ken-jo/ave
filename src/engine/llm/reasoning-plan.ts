@@ -1,27 +1,5 @@
-/**
- * Which reasoning control a request carries, and at what level.
- *
- * The catalog states, per model, whether it reasons and which qualitative
- * effort levels it accepts. Where it states them, that list decides: the
- * level Ave's budget maps to is sent if the model accepts it, otherwise the
- * nearest accepted level below it (the lowest accepted level when none is
- * below), and the change is reported. Where nobody states the levels — the
- * catalog does not know the model, lists no levels for it, or the route's
- * endpoint does not establish its identity — an OpenAI-family request carries
- * no `reasoning_effort` (source `host-fallback`): a level guessed from the
- * model's name is a 400 on a model that does not take it. Naming the entry the
- * endpoint serves (`llm.vendors.<vendor>.catalogModel`) supplies the levels.
- *
- * Request SHAPE stays out of this: whether a Claude model takes adaptive or
- * numeric thinking, whether numeric thinking interleaves with tools, and
- * whether an OpenAI model is reached over the Responses API are properties of
- * the wire the catalog does not describe (it lists effort levels for models
- * that take numeric thinking), so they are host rules in the request-shape
- * table (`shared/model-host-policy.ts`).
- *
- * The adapter applies {@link planReasoning}; the conversation loop records the
- * same function's answer in the turn summary, so the record is what was sent.
- */
+// Use declared reasoning controls and accepted levels; unknown models receive no guessed effort.
+// The adapter and turn record must use this same plan.
 import {
   catalogModelFor,
   resolveReasoningSupport,
@@ -29,15 +7,29 @@ import {
   type ResolvedReasoningSupport,
 } from "../../shared/context-budget.js";
 import { isOpenAICompatibleVendor, isSelfHostedVllmVendor, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { claudeRequestShape, usesOpenAIResponsesWire } from "../../shared/model-host-policy.js";
+import { claudeRequestShape } from "../../shared/model-host-policy.js";
+import { allowsImplicitModelLimits } from "../../shared/model-catalog/resolve.js";
 
-/**
- * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
- *   budget ≤   500 → "none"
- *   budget ≤ 3 000 → "low"
- *   budget > 8 000 → "high"
- *   else           → "medium"
- */
+// Native origins may select response reasoning controls; custom endpoints require an explicit report.
+export function usesOpenAIResponsesWire(
+  vendor: string,
+  model: string,
+  reasoning: ResolvedReasoningSupport | undefined,
+  baseUrl?: string,
+): boolean {
+  if (vendor === "azure-foundry") return true;
+  if (vendor !== "openai") return false;
+  if (reasoning?.source === "endpoint-report" && reasoning.control !== undefined) {
+    return reasoning.control === "reasoning";
+  }
+  // A public model identity does not establish a custom endpoint's protocol.
+  if (!allowsImplicitModelLimits(vendor, baseUrl)) return false;
+  const nativeSupport = reasoning?.source === "model-catalog"
+    ? reasoning
+    : resolveReasoningSupport({ vendor, model, baseUrl });
+  return nativeSupport?.supported === true;
+}
+
 export function mapReasoningEffort(
   budget: number,
 ): "none" | "low" | "medium" | "high" {
@@ -47,14 +39,6 @@ export function mapReasoningEffort(
   return "medium";
 }
 
-/**
- * Map Ave thinking budget (tokens) to Anthropic adaptive-thinking effort.
- *   budget ≤ 3 000 → "low"
- *   budget ≤ 6 000 → "medium"
- *   budget ≤ 16 000 → "high"
- *   budget >  16 000 → "max"
- * Numeric thinking routes use their token budget directly.
- */
 export function mapBudgetToEffort(
   budget: number,
 ): "low" | "medium" | "high" | "max" {
@@ -64,11 +48,11 @@ export function mapBudgetToEffort(
   return "max";
 }
 
-/** Qualitative levels from least to most reasoning; `default` is not a level. */
+// Order qualitative levels by effort; default is not an effort level.
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type EffortLevel = (typeof EFFORT_ORDER)[number];
 
-/** The accepted level nearest `requested` from below, else the lowest accepted; `undefined` when none is accepted. */
+// Choose the nearest accepted level below the request, or the lowest accepted level.
 function nearestAcceptedEffort(requested: EffortLevel, accepted: readonly string[]): EffortLevel | undefined {
   const levels = EFFORT_ORDER.filter((level) => accepted.includes(level));
   if (levels.length === 0) return undefined;
@@ -79,78 +63,28 @@ function nearestAcceptedEffort(requested: EffortLevel, accepted: readonly string
 
 type ReasoningPlanSource = "model-catalog" | "endpoint-report" | "request-shape" | "host-fallback";
 
-/**
- * The level sent where only the endpoint's report says the model reasons: the
- * report names the parameter, not the levels. `low`, `medium` and `high` are
- * the levels every effort convention defines (OpenAI `reasoning_effort`,
- * OpenRouter `reasoning.effort`); Ave's lowest budget maps to `none`, which a
- * model whose reasoning is mandatory rejects and which contradicts thinking
- * being on, so it is sent as `low`.
- */
+// Endpoint-only effort uses low instead of none because reasoning is enabled and may be mandatory.
 function reportedEffort(requested: ReturnType<typeof mapReasoningEffort>): "low" | "medium" | "high" {
   return requested === "none" ? "low" : requested;
 }
 
-/** What a request's reasoning control is, as the adapter sends it. */
 export interface ReasoningPlan {
-  /**
-   * `openai-effort`: `reasoning_effort` on an OpenAI-family route;
-   * `anthropic-adaptive`: adaptive thinking with an effort;
-   * `anthropic-numeric`: a numeric thinking budget;
-   * `endpoint-reasoning`: the reasoning parameter an OpenAI-compatible
-   * endpoint's `/models` report names (`control`);
-   * `none`: the route sends no reasoning control from this plan.
-   */
+  // Control kinds distinguish API effort, adaptive effort, numeric budgets, and endpoint-reported parameters.
   readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "endpoint-reasoning" | "none";
-  /** The reported parameter an `endpoint-reasoning` plan sends. */
   readonly control?: ReportedReasoningControl;
-  /** The level Ave's budget maps to, for an effort kind. */
   readonly requestedEffort?: EffortLevel;
-  /** The level sent; differs from `requestedEffort` when the model does not accept it. */
+  // Sent effort may differ from the request when the model rejects the requested level.
   readonly effort?: EffortLevel;
-  /** The numeric budget, for `anthropic-numeric`. */
   readonly budgetTokens?: number;
-  /**
-   * Which knowledge decided: the catalog entry; the endpoint's `/models`
-   * report (a reasoning parameter or price); the request-shape table, for a
-   * Claude model whose reasoning the catalog does not state (adaptive or
-   * numeric thinking is a wire rule); or the host fallback, which sends no
-   * effort when nobody states the levels an OpenAI-family model accepts.
-   */
+  // Catalog or endpoint knowledge selects controls; fallback never invents one.
   readonly source: ReasoningPlanSource;
-  /**
-   * The effort the route would carry was dropped for this request: a tool turn
-   * on Chat Completions (see {@link chatCompletionsRejectsToolTurnEffort}).
-   */
+  // Retain historical suppressed-control records; new plans honor explicitly reported controls.
   readonly suppressed?: "chat-completions-tool-turn";
-}
-
-/**
- * Whether this request must not carry `reasoning_effort`: Chat Completions
- * answers 400 when GPT-5.x gets it together with tools. The actual protocol
- * selected by the adapter decides this; changing an endpoint does not change
- * that protocol. The responses wire has no such restriction.
- * One rule for the request and for the turn's record of it.
- */
-function chatCompletionsRejectsToolTurnEffort(params: {
-  vendor: LLMVendor;
-  model: string;
-  hasTools: boolean;
-  baseUrl?: string;
-  catalogModel?: string;
-}): boolean {
-  const identity = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.id;
-  if (!params.hasTools || ![params.model, identity ?? ""].some((model) => model.toLowerCase().includes("gpt-5"))) return false;
-  return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model);
 }
 
 const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "azure-foundry"]);
 
-/**
- * The reasoning control for one request. `undefined` when thinking is off or
- * the route has no reasoning control this plan owns (self-hosted routes pass
- * their numeric budget through the compatibility options on their own).
- */
+/** No plan when thinking is off or the route owns its numeric control outside this planner. */
 export function planReasoning(params: {
   vendor: LLMVendor;
   model: string;
@@ -158,22 +92,26 @@ export function planReasoning(params: {
   budgetTokens: number;
   baseUrl?: string;
   catalogModel?: string;
-  /**
-   * The route's resolved reasoning support (`resolveReasoningSupport`), which
-   * carries the endpoint's report. Absent: the catalog alone is asked.
-   */
+  // Route reasoning support includes endpoint reports; without it, consult only the catalog.
   reasoning?: ResolvedReasoningSupport;
-  /** The request's shape, for the rules that depend on it. */
   request: { hasTools: boolean };
 }): ReasoningPlan | undefined {
   if (!params.enableThinking) return undefined;
-  const plan = planReasoningLevel(params);
-  if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({
-    vendor: params.vendor, model: params.model, baseUrl: params.baseUrl, catalogModel: params.catalogModel, ...params.request,
-  })) {
-    return { kind: "none", requestedEffort: plan.requestedEffort, source: plan.source, suppressed: "chat-completions-tool-turn" };
-  }
-  return plan;
+  const reasoning = routeReasoningSupport(params);
+  return planReasoningLevel({ ...params, reasoning });
+}
+
+// Prefer the named entry, then endpoint report, then catalog-established model identity.
+function routeReasoningSupport(params: {
+  vendor: LLMVendor; model: string; baseUrl?: string; catalogModel?: string;
+  reasoning?: ResolvedReasoningSupport;
+}): ResolvedReasoningSupport | undefined {
+  return params.reasoning ?? resolveReasoningSupport({
+    vendor: params.vendor,
+    model: params.model,
+    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
+    ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
+  });
 }
 
 function planReasoningLevel(params: {
@@ -182,24 +120,15 @@ function planReasoningLevel(params: {
 }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
   const accepted = entry?.reasoning?.effort;
-  // One answer with the settings chooser: the user's named entry, then the
-  // endpoint's report, then the catalog where the route establishes the model.
-  const support = params.reasoning ?? resolveReasoningSupport({
-    vendor: params.vendor,
-    model: params.model,
-    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
-    ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
-  });
+  const support = params.reasoning;
   if (support?.source === "model-catalog" && !support.supported) {
     return { kind: "none", source: "model-catalog" };
   }
   if (OPENAI_FAMILY.has(params.vendor)) {
     const requestedEffort = mapReasoningEffort(params.budgetTokens);
     if (support?.source === "endpoint-report") {
-      // The SDK sends `reasoningEffort` as `reasoning.effort` on the Responses
-      // wire and as `reasoning_effort` on Chat Completions; the report has to
-      // name that parameter.
-      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model) ? "reasoning" : "reasoning_effort";
+      // The report must name the parameter used by the selected request protocol.
+      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support, params.baseUrl) ? "reasoning" : "reasoning_effort";
       return support.control === wireParameter
         ? { kind: "openai-effort", requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" }
         : { kind: "none", requestedEffort, source: "endpoint-report" };
@@ -207,14 +136,11 @@ function planReasoningLevel(params: {
     const efforts = support?.source === "model-catalog" && support.supported ? support.efforts : undefined;
     const catalogEffort = efforts ? nearestAcceptedEffort(requestedEffort, efforts) : undefined;
     if (catalogEffort !== undefined) return { kind: "openai-effort", requestedEffort, effort: catalogEffort, source: "model-catalog" };
-    // Nobody states the levels this model accepts (absent means unknown, not
-    // none): the request carries no effort rather than a guessed one.
+    // Unknown accepted levels mean omit effort, not guess a level.
     return { kind: "none", requestedEffort, source: "host-fallback" };
   }
   if (isOpenAICompatibleVendor(params.vendor) && !isSelfHostedVllmVendor(params.vendor)) {
-    // The self-hosted class carries its own switch and budget (adapter); a
-    // commercial OpenAI-compatible endpoint gets only the parameter its own
-    // report names, never one guessed from the catalog or the name.
+    // Self-hosted routes own switch and budget; hosted compatible routes use reported parameters only.
     if (support?.source !== "endpoint-report") return undefined;
     if (support.control === undefined) return { kind: "none", source: "endpoint-report" };
     const requestedEffort = mapReasoningEffort(params.budgetTokens);
@@ -223,10 +149,12 @@ function planReasoningLevel(params: {
       : { kind: "endpoint-reasoning", control: support.control, requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" };
   }
   if (params.vendor === "claude") {
-    const source = entry?.reasoning !== undefined ? "model-catalog" : "request-shape";
-    if (!claudeRequestShape(params.model).adaptiveThinking) {
+    const source = "model-catalog";
+    const shape = claudeRequestShape(entry);
+    if (shape.numericThinking) {
       return { kind: "anthropic-numeric", budgetTokens: params.budgetTokens, source };
     }
+    if (!shape.adaptiveThinking) return { kind: "none", source: "host-fallback" };
     const requestedEffort = mapBudgetToEffort(params.budgetTokens);
     const effort = accepted ? nearestAcceptedEffort(requestedEffort, accepted) ?? requestedEffort : requestedEffort;
     return { kind: "anthropic-adaptive", requestedEffort, effort, source };

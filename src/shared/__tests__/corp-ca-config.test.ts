@@ -1,7 +1,3 @@
-/**
- * The corporate CA settings/environment precedence, and the name validator the
- * three layers share.
- */
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
@@ -13,8 +9,7 @@ import { resolveCorpCaConfig } from "../corp-ca-config.js";
 describe("normalizeCorpCaCommonName", () => {
   it("accepts a certificate name and trims it", () => {
     expect(normalizeCorpCaCommonName("  Acme Root CA  ")).toBe("Acme Root CA");
-    // Real corporate CNs carry punctuation; none of it is rejected, because the
-    // value never reaches a shell.
+    // Corporate common names may contain punctuation because values never reach a shell.
     expect(normalizeCorpCaCommonName("Acme Corp. Root CA (G2), Ltd.")).toBe(
       "Acme Corp. Root CA (G2), Ltd.",
     );
@@ -70,7 +65,6 @@ describe("resolveCorpCaConfig", () => {
   });
 
   it("falls back past an unusable name rather than searching for it", () => {
-    // A hand-edited profile, or an environment variable set to whitespace.
     expect(resolveCorpCaConfig({ commonName: "  " }, {}).commonName)
       .toBe(DEFAULT_CORP_CA_COMMON_NAME);
     expect(resolveCorpCaConfig({ commonName: "Acme Root CA" }, { AVE_CORP_CA_CN: "   " })

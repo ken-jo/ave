@@ -12,11 +12,7 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
-/**
- * Derive the stable content identity used for generation-scoped contribution
- * trust. `installedAt` is local audit metadata, so a verified reinstall of the
- * same artifact must not invalidate its executable-contribution approval.
- */
+/** Exclude installedAt from artifact identity so verified reinstalls preserve contribution approvals. */
 export function pluginArtifactGenerationId(manifestRaw: string, receiptRaw: string): string {
   let parsedReceipt: unknown;
   try {
@@ -35,10 +31,7 @@ export function pluginArtifactGenerationId(manifestRaw: string, receiptRaw: stri
     throw new Error("cannot derive plugin artifact identity from an install receipt without files");
   }
 
-  // Build this object explicitly instead of reusing the manifest pin
-  // canonicalizer: receipts and manifests have distinct trust domains. Keep
-  // every security-relevant receipt field, normalize the file-set order, and
-  // deliberately omit only the volatile local installation timestamp.
+  // Receipt and manifest trust domains differ; retain security fields and normalize file order, omitting only installedAt.
   const files = receipt.files
     .map((file): ReceiptFileIdentity => {
       if (!file || typeof file !== "object" || Array.isArray(file)) {

@@ -1,19 +1,4 @@
-/**
- * Telemetry surface — rendered at the bottom of the Audit tab, next to
- * diagnostics, because both answer the same question: what leaves this machine.
- *
- * Until this existed the entire `telemetry` settings block was unreachable.
- * `telemetry.enabled` was written exactly once, by the first-boot consent
- * prompt, and there was no second chance to change the answer — a user who
- * accepted could never opt back out, and one who declined could never opt in.
- * The endpoint, the crash-report endpoint and the Sentry DSN were settings the
- * store held and nothing could ever set.
- *
- * The allowlist is shown, not edited. It is the bound on `endpoint`, which the
- * renderer can write — a control the same party could widen would not be a
- * bound. Showing it is still required: without it the endpoint field rejects
- * hosts for reasons the user cannot see.
- */
+/** Show the endpoint allowlist read-only; letting the endpoint editor widen its own bound would defeat the restriction. */
 import { useCallback, useEffect, useState } from "react";
 import { Switch } from "../../../components/ui/switch.js";
 import { SettingsSection } from "../components/PageShell.js";
@@ -64,9 +49,8 @@ export function TelemetrySection() {
 
   const handleEnabledChange = useCallback((next: boolean) => {
     setEnabled(next);
-    // `telemetryPromptAnswered` rides along: reaching this switch at all is an
-    // answer, so the first-boot prompt must not reappear afterwards asking a
-    // question the user has now answered twice.
+    // `telemetryPromptAnswered` rides along: reaching this switch at all is an answer, so the first-boot prompt must not
+    // reappear afterwards asking a question the user has now answered twice.
     persist({ enabled: next, telemetryPromptAnswered: true });
   }, [persist]);
 

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Native browser action fixture</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; font: 16px sans-serif; background: #fff; }
+  .row { display: flex; gap: 24px; align-items: center; margin-bottom: 18px; }
+  button, select, input { font: inherit; }
+  button { min-width: 135px; min-height: 42px; }
+  #hover { background: #eee; } #hover:hover { background: #59f; }
+  #drag { width: 145px; height: 56px; padding: 16px; border: 2px solid #36a; }
+  #drop { width: 170px; height: 70px; border: 3px dashed #578; }
+  #nested { width: 460px; height: 150px; overflow: auto; border: 2px solid #555; }
+  #nested button { display: block; width: 100%; margin: 0; height: 50px; }
+  #nested .content { height: 1000px; background: linear-gradient(#eef, #cfc); }
+  #slider { width: 350px; }
+  #bottom { margin-top: 1700px; height: 110px; background: #00a65a; }
+</style>
+<h1>Native browser controls</h1>
+<div class="row">
+  <button id="hover">Hover target</button>
+  <button id="human">Human takeover target</button>
+  <a id="navigate" href="/navigated">Navigate fixture</a>
+</div>
+<div class="row">
+  <div id="drag" role="button" tabindex="0" draggable="true" aria-label="Drag source">Drag source</div>
+  <button id="drop">Drop target</button>
+</div>
+<div class="row">
+  <label>Native choice <select id="choice" aria-label="Native choice"><option value="a">Alpha</option><option value="b">Beta</option><option value="c">Gamma</option></select></label>
+  <label>Navigation choice <select id="navigate-choice" aria-label="Navigation choice"><option value="a">Stay</option><option value="b">Navigate</option></select></label>
+</div>
+<div class="row">
+  <input id="slider" type="range" min="0" max="100" value="0" aria-label="Native slider">
+  <button id="slider-end">Slider end</button>
+</div>
+<div id="nested"><button id="scroll-target">Nested scroll target</button><div class="content">Nested scrolling content</div></div>
+<div class="row" style="margin-top:18px">
+  <input id="file" type="file" aria-label="Upload fixture bytes">
+  <button id="submit">Send selected bytes</button>
+</div>
+<div id="bottom">Full-page bottom marker</div>
+<script>
+  window.nativeState = { hover: 0, dragStarted: 0, dropped: '', dropCount: 0, humanClicks: 0, selected: 'a', slider: '0', upload: null, uploadResponse: null };
+  const byId = id => document.getElementById(id);
+  byId('hover').addEventListener('mousemove', () => { window.nativeState.hover++; });
+  byId('human').addEventListener('click', () => { window.nativeState.humanClicks++; });
+  byId('drag').addEventListener('dragstart', event => { window.nativeState.dragStarted++; event.dataTransfer.setData('text/plain', 'fixture-drag-payload'); });
+  byId('drop').addEventListener('dragover', event => { event.preventDefault(); });
+  byId('drop').addEventListener('drop', event => { event.preventDefault(); window.nativeState.dropCount++; window.nativeState.dropped = event.dataTransfer.getData('text/plain'); });
+  byId('choice').addEventListener('change', () => { window.nativeState.selected = byId('choice').value; });
+  byId('navigate-choice').addEventListener('change', () => { if (byId('navigate-choice').value === 'b') location.assign('/navigated-select'); });
+  byId('slider').addEventListener('input', () => { window.nativeState.slider = byId('slider').value; });
+  byId('file').addEventListener('change', () => { const file = byId('file').files[0]; window.nativeState.upload = file ? { name: file.name, bytes: file.size } : null; });
+  byId('submit').addEventListener('click', async () => {
+    const file = byId('file').files[0];
+    if (!file) return;
+    const response = await fetch('/upload', { method: 'POST', body: file, headers: { 'x-fixture-name': encodeURIComponent(file.name) } });
+    window.nativeState.uploadResponse = await response.text();
+  });
+</script>
+</html>

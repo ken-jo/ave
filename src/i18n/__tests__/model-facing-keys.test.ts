@@ -1,15 +1,5 @@
-/**
- * Every catalog key whose text reaches the model is in the model-facing set
- * (`model-facing.ts`), which installed language packages may not translate.
- *
- * The scan is inverted so a new path to the model is caught by default: every
- * `t("…")` / `translate(…, "…")` key used outside the renderer must be in the
- * set, except the interface namespaces (dialogs, menus, notifications,
- * labels) listed for the few files that also build text only people read. In
- * the renderer, a message a surface sends as the user's own
- * (`chatSend(t(...))`) must be in the set too, and so must the origin
- * guidance lines the system prompt emits per staged input origin.
- */
+/** Every catalog key whose text reaches the model is in the model-facing set (`model-facing.ts`), which installed language packages may not translate. The scan is inverted so a new path to the model is caught by default: every `t("…")` / `translate(…, "…")` key used outside the renderer must be in the set, except the
+ * interface namespaces (dialogs, menus, notifications, labels) listed for the few files that also build text only people read. In the renderer, a message a surface sends as the user's own (`chatSend(t(...))`) must be in the set too, and so must the origin guidance lines the system prompt emits per staged input origin. */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,11 +9,8 @@ import { isModelFacingKey } from "../model-facing.js";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 
-/**
- * Outside the renderer, the files that also build text only people read, and
- * the interface namespaces each may use there. Any other key in these files
- * must still be model-facing.
- */
+/** Outside the renderer, the files that also build text only people read, and the interface
+ * namespaces each may use there. Any other key in these files must still be model-facing. */
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
@@ -34,6 +21,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["lib/chat-stream-state.ts", ["askUserQuestionCard."]], // transcript recap labels
   ["lib/llm-status-message.ts", ["useChatState."]], // status line
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
+  ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs
@@ -109,6 +97,8 @@ describe("model-facing catalog keys", () => {
   it("keeps interface keys outside the set", () => {
     expect(isModelFacingKey("be_conversationLoop.generateTextSystemPrompt")).toBe(true);
     expect(isModelFacingKey("shellExecution.pipelineStatus")).toBe(true);
+    expect(isModelFacingKey("sandboxPolicy.quarantined")).toBe(true);
+    expect(isModelFacingKey("sandboxPolicy.scanNarrowed")).toBe(true);
     expect(isModelFacingKey("appearanceTab.pageTitle")).toBe(false);
     expect(isModelFacingKey("routinePanel.errorNaturalParseFailed")).toBe(false);
   });

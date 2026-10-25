@@ -6,6 +6,30 @@ import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import type { LLMVendor } from "../llm/types.js";
+
+async function loadProviderLoop(vendor: LLMVendor) {
+  const createProvider = vi.fn(() => ({
+    vendor,
+    streamTurn: async function* () {},
+  }));
+  vi.doMock("../llm/provider-factory.js", () => ({
+    createProvider,
+    secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
+  }));
+  const { ConversationLoop } = await import("../conversation-loop.js");
+  return { createProvider, ConversationLoop };
+}
+
+function makeLoopDeps(toolRegistry: ToolRegistry) {
+  return {
+    systemPromptBuilder: { build: () => "system" },
+    inputClassifier: new InputClassifier(),
+    routeEngine: new RouteEngine(),
+    toolRegistry,
+    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+  };
+}
 
 describe("ConversationLoop LLM fetch wiring", () => {
   beforeEach(() => {
@@ -28,15 +52,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
 }
 
   it("passes the injected main-process fetch implementation to the active provider", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "azure-foundry" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("azure-foundry");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -52,11 +68,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
       llmFetch,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
@@ -72,15 +84,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("does not pass the injected fetch to non-Azure providers", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -95,11 +99,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
       llmFetch,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
@@ -119,15 +119,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("creates OpenAI-compatible providers without an API key when a base URL is configured", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -141,11 +133,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     expect(createProvider).toHaveBeenCalledWith(
@@ -159,15 +147,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("does not create an OpenAI-compatible provider when no model is configured", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -181,28 +161,15 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
-    // Handshake-only: an empty model means "not configured" — never send a
-    // fabricated/seed id to the endpoint. The user must pick from the live list.
+    // Empty model IDs mean unconfigured; never fabricate an endpoint model selection.
     expect(createProvider).not.toHaveBeenCalled();
   });
 
   it("keeps a stored API key for a saved OpenAI-compatible private endpoint", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -216,11 +183,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => "stored-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     expect(createProvider).toHaveBeenCalledWith(
@@ -235,15 +198,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("uses the selected marketplace provider preset key for OpenAI-compatible providers", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -280,11 +235,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
             ? "fr-secret"
             : null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     expect(createProvider).toHaveBeenCalledWith(
@@ -309,15 +260,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     const fetchPublicHttpResponse = vi
       .spyOn(networkGuard, "fetchPublicHttpResponse")
       .mockResolvedValue(new Response("ok"));
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -351,13 +294,8 @@ async function collectStream(iterable: AsyncIterable<unknown>,
             ? "fr-secret"
             : null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-      // The guarded provider fetch runs on the transport the host wires; the
-      // assertions below are about WHAT the guard is handed, so it must be here.
+      ...makeLoopDeps(toolRegistry),
+      // Supply the host transport so the guarded-fetch assertions exercise the real boundary.
       networkFetch: unusedNetworkFetch,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
@@ -398,15 +336,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     const fetchPublicHttpResponse = vi
       .spyOn(networkGuard, "fetchPublicHttpResponse")
       .mockResolvedValue(new Response("ok"));
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -437,11 +367,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         },
         getSecret: () => null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     const providerConfig = createProvider.mock.calls[0]?.[0];
@@ -474,15 +400,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("does not fall back to generic OpenAI-compatible credentials when the selected preset is uninstalled", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai-compatible" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai-compatible");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -502,11 +420,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         getSecret: (key: string) =>
           key === "llm.apiKey.openai-compatible" ? "generic-secret" : null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     expect(createProvider).not.toHaveBeenCalled();
@@ -571,11 +485,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         },
         getSecret,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     const pending = collectStream(
@@ -598,15 +508,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
   });
 
   it("does not create ordinary keyed providers when the API key is missing", async () => {
-    const createProvider = vi.fn(() => ({
-      vendor: "openai" as const,
-      streamTurn: async function* () {},
-    }));
-    vi.doMock("../llm/provider-factory.js", () => ({
-      createProvider,
-      secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
-    }));
-    const { ConversationLoop } = await import("../conversation-loop.js");
+    const { createProvider, ConversationLoop } = await loadProviderLoop("openai");
 
     const toolRegistry = new ToolRegistry();
     const settings = fakeLlmSettings({
@@ -619,11 +521,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         get: () => settings,
         getSecret: () => null,
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
     expect(createProvider).not.toHaveBeenCalled();

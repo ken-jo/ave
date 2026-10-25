@@ -5,19 +5,45 @@ import { useWorkflowTools } from "../use-workflow-tools.js";
 import type { AveApi } from "../../types.js";
 import type { AgentSpawnEvent } from "../../../../tools/agent-spawn.js";
 
+function renderWorkflowTools(
+  options?: Parameters<typeof useWorkflowTools>[1],
+  overrides: Partial<AveApi> = {},
+) {
+  let onAsk: Parameters<AveApi["onAskUserQuestion"]>[0] | undefined;
+  let onSkill: Parameters<AveApi["onSkillLoaded"]>[0] | undefined;
+  let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
+  const api = {
+    onAskUserQuestion: vi.fn((handler: typeof onAsk) => {
+      onAsk = handler;
+      return () => undefined;
+    }),
+    onAgentSpawnEvent: vi.fn((handler: typeof onSpawn) => {
+      onSpawn = handler;
+      return () => undefined;
+    }),
+    onSkillLoaded: vi.fn((handler: typeof onSkill) => {
+      onSkill = handler;
+      return () => undefined;
+    }),
+    onAskUserQuestionTimeout: vi.fn(() => () => undefined),
+    ...overrides,
+  } as unknown as AveApi;
+  return {
+    ...renderHook(() => useWorkflowTools(api, options)),
+    api,
+    onAsk: (event: Parameters<NonNullable<typeof onAsk>>[0]) => onAsk?.(event),
+    onSkill: (event: Parameters<NonNullable<typeof onSkill>>[0]) => onSkill?.(event),
+    onSpawn: (event: AgentSpawnEvent) => onSpawn?.(event),
+  };
+}
+
+function ask(id: string, sessionId: string) {
+  return { id, sessionId, questions: [{ question: `${id}?`, choices: ["yes", "no"] }], createdAt: 0 };
+}
+
 describe("useWorkflowTools", () => {
   it("preserves suspension metadata when a done event transitions a spawn to waiting", () => {
-    let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn(() => () => undefined),
-      onAgentSpawnEvent: vi.fn((handler: Parameters<AveApi["onAgentSpawnEvent"]>[0]) => {
-        onSpawn = handler;
-        return () => undefined;
-      }),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
-    const { result } = renderHook(() => useWorkflowTools(api));
+    const { result, onSpawn } = renderWorkflowTools();
 
     act(() => {
       onSpawn?.({
@@ -48,17 +74,7 @@ describe("useWorkflowTools", () => {
   });
 
   it("replaces a live status snapshot with cleaned entries when the child errors", () => {
-    let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn(() => () => undefined),
-      onAgentSpawnEvent: vi.fn((handler: Parameters<AveApi["onAgentSpawnEvent"]>[0]) => {
-        onSpawn = handler;
-        return () => undefined;
-      }),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
-    const { result } = renderHook(() => useWorkflowTools(api));
+    const { result, onSpawn } = renderWorkflowTools();
     const statusEntry = {
       kind: "assistant" as const,
       text: "retrying",
@@ -98,17 +114,7 @@ describe("useWorkflowTools", () => {
   });
 
   it("marks rows rebuilt from disk as restored, and a live start as not", () => {
-    let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn(() => () => undefined),
-      onAgentSpawnEvent: vi.fn((handler: Parameters<AveApi["onAgentSpawnEvent"]>[0]) => {
-        onSpawn = handler;
-        return () => undefined;
-      }),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
-    const { result } = renderHook(() => useWorkflowTools(api));
+    const { result, onSpawn } = renderWorkflowTools();
 
     act(() => {
       result.current.restoreSubAgentSpawns([
@@ -124,18 +130,8 @@ describe("useWorkflowTools", () => {
   });
 
   it("a tile keeps only the sub-agent frames of the conversation it is showing", () => {
-    let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn(() => () => undefined),
-      onAgentSpawnEvent: vi.fn((handler: Parameters<AveApi["onAgentSpawnEvent"]>[0]) => {
-        onSpawn = handler;
-        return () => undefined;
-      }),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
     const ownsSession = (sessionId: string) => sessionId === "session-mine";
-    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
+    const { result, onSpawn } = renderWorkflowTools({ ownsSession });
 
     act(() => {
       onSpawn?.({ spawnId: "mine", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Mine", parentSessionId: "session-mine" });
@@ -156,28 +152,11 @@ describe("useWorkflowTools", () => {
   });
 
   it("a tile draws only the question cards of the conversations it owns", () => {
-    let onAsk: Parameters<AveApi["onAskUserQuestion"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn((handler: Parameters<AveApi["onAskUserQuestion"]>[0]) => {
-        onAsk = handler;
-        return () => undefined;
-      }),
-      onAgentSpawnEvent: vi.fn(() => () => undefined),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
-    // A tile owns its own conversation AND the child sessions of the agents it
-    // spawned — a question a sub-agent asks belongs to the tile that started it.
+    // A tile owns its own conversation AND the child sessions of the agents it spawned — a question a sub-agent asks belongs
+    // to the tile that started it.
     const ownsSession = (sessionId: string) =>
       sessionId === "session-mine" || sessionId === "child-of-mine";
-    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
-
-    const ask = (id: string, sessionId: string) => ({
-      id,
-      sessionId,
-      questions: [{ question: `${id}?`, choices: ["yes", "no"] }],
-      createdAt: 0,
-    });
+    const { result, onAsk } = renderWorkflowTools({ ownsSession });
 
     act(() => {
       onAsk?.(ask("mine", "session-mine"));
@@ -189,18 +168,8 @@ describe("useWorkflowTools", () => {
   });
 
   it("a tile wears only the skill badges of its own conversation", () => {
-    let onSkill: Parameters<AveApi["onSkillLoaded"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn(() => () => undefined),
-      onAgentSpawnEvent: vi.fn(() => () => undefined),
-      onSkillLoaded: vi.fn((handler: Parameters<AveApi["onSkillLoaded"]>[0]) => {
-        onSkill = handler;
-        return () => undefined;
-      }),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
     const ownsSession = (sessionId: string) => sessionId === "session-mine";
-    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
+    const { result, onSkill } = renderWorkflowTools({ ownsSession });
 
     act(() => {
       onSkill?.({ name: "mine", description: "loaded here", sessionId: "session-mine" });
@@ -211,30 +180,12 @@ describe("useWorkflowTools", () => {
   });
 
   it("draws an adopted card while sub-agent frames stay bound to the owned session", () => {
-    let onAsk: Parameters<AveApi["onAskUserQuestion"]>[0] | undefined;
-    let onSkill: Parameters<AveApi["onSkillLoaded"]>[0] | undefined;
-    let onSpawn: Parameters<AveApi["onAgentSpawnEvent"]>[0] | undefined;
-    const api = {
-      onAskUserQuestion: vi.fn((handler: Parameters<AveApi["onAskUserQuestion"]>[0]) => {
-        onAsk = handler;
-        return () => undefined;
-      }),
-      onAgentSpawnEvent: vi.fn((handler: Parameters<AveApi["onAgentSpawnEvent"]>[0]) => {
-        onSpawn = handler;
-        return () => undefined;
-      }),
-      onSkillLoaded: vi.fn((handler: Parameters<AveApi["onSkillLoaded"]>[0]) => {
-        onSkill = handler;
-        return () => undefined;
-      }),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
-    // What a focused tile passes: it owns one conversation, and adopts cards
-    // from any session no tile is showing (a routine here).
+    // What a focused tile passes: it owns one conversation, and adopts cards from any session no tile is showing (a routine
+    // here).
     const ownsSession = (sessionId: string) => sessionId === "session-mine";
     const drawsSession = (sessionId: string) =>
       ownsSession(sessionId) || sessionId === "session-routine";
-    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession, drawsSession }));
+    const { result, onAsk, onSkill, onSpawn } = renderWorkflowTools({ ownsSession, drawsSession });
 
     act(() => {
       onAsk?.({
@@ -244,8 +195,8 @@ describe("useWorkflowTools", () => {
         createdAt: 0,
       });
       onSkill?.({ name: "routine-skill", description: "loaded headless", sessionId: "session-routine" });
-      // Frames keep the narrower rule: an adopted card is a prompt this tile
-      // must answer, but another session's agent list is not this tile's panel.
+      // Frames keep the narrower rule: an adopted card is a prompt this tile must answer, but another session's agent list is
+      // not this tile's panel.
       onSpawn?.({ spawnId: "routine-spawn", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Routine", parentSessionId: "session-routine" });
     });
 
@@ -255,26 +206,11 @@ describe("useWorkflowTools", () => {
   });
 
   it("draws questions still waiting from before it loaded, only its own, once, ahead of live ones", async () => {
-    let onAsk: Parameters<AveApi["onAskUserQuestion"]>[0] | undefined;
-    const ask = (id: string, sessionId: string) => ({
-      id,
-      sessionId,
-      questions: [{ question: `${id}?`, choices: ["yes", "no"] }],
-      createdAt: 0,
-    });
     let deliverSnapshot: (parked: ReturnType<typeof ask>[]) => void = () => undefined;
-    const api = {
-      onAskUserQuestion: vi.fn((handler: Parameters<AveApi["onAskUserQuestion"]>[0]) => {
-        onAsk = handler;
-        return () => undefined;
-      }),
-      listPendingAskUserQuestions: vi.fn(() => new Promise((resolve) => { deliverSnapshot = resolve; })),
-      onAgentSpawnEvent: vi.fn(() => () => undefined),
-      onSkillLoaded: vi.fn(() => () => undefined),
-      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
-    } as unknown as AveApi;
     const ownsSession = (sessionId: string) => sessionId === "session-mine";
-    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
+    const { result, api, onAsk } = renderWorkflowTools({ ownsSession }, {
+      listPendingAskUserQuestions: vi.fn(() => new Promise<ReturnType<typeof ask>[]>((resolve) => { deliverSnapshot = resolve; })),
+    });
     expect(api.listPendingAskUserQuestions).toHaveBeenCalledOnce();
 
     // A live question arrives while the snapshot is in flight, and is also in it.

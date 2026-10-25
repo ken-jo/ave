@@ -1,23 +1,5 @@
 // @vitest-environment jsdom
-/**
- * FloatingRightLane — the invariant that stops the top-right overlays from
- * landing on each other.
- *
- * The bug this replaced: the tool-activity rail and the overlay card each
- * carried its own `absolute right-4 top-2`, at z-50 and z-20. Same anchor,
- * different layers, so the rail's button column covered the overlay card's
- * close and queue controls — and since that button is `pointer-events-auto`, a
- * click aimed at the card's dismiss hit the rail instead.
- *
- * The action panel has since left this corner entirely: it hangs off the chat
- * group's header now, so the collision it caused cannot recur from that side.
- * The lane remains the single anchor for whatever DOES hang here, and these
- * assertions keep the rule that made the collision impossible — the lane
- * positions, the occupant does not.
- *
- * jsdom has no layout, so overlap itself is not measurable here. What IS
- * measurable is the cause: whether an occupant positions itself.
- */
+/** The lane owns positioning and occupants do not; jsdom can verify that structure but cannot measure overlap. */
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
@@ -40,7 +22,6 @@ const PLUGIN_ITEM: OverlayItem = {
   createdAt: "2026-08-23T00:00:00.000Z",
 };
 
-/** Render the lane the way PaneFrame does for a tile. */
 function renderLane() {
   const addFireRef = createRef<((item: OverlayItem) => void) | null>();
   const view = render(
@@ -70,8 +51,7 @@ describe("FloatingRightLane", () => {
     const lane = screen.getByTestId("floating-right-lane");
     const card = screen.getByTestId("overlay-card-region");
 
-    // In the lane — a sibling that escaped it would be back to positioning
-    // itself.
+    // In the lane — a sibling that escaped it would be back to positioning itself.
     expect(lane.contains(card)).toBe(true);
     expect(lane.className).toContain("flex-col");
   });
@@ -235,8 +215,7 @@ describe("FloatingRightLane", () => {
   it("keeps the overlay card's own dismiss control reachable", () => {
     renderLane();
 
-    // The control the rail used to sit on top of. Present, and inside the card
-    // rather than behind another `pointer-events-auto` surface.
+    // Keep card controls reachable inside the shared lane.
     const card = screen.getByTestId("overlay-card-region");
     const dismiss = screen.getByTestId("routine-card-dismiss");
     expect(card.contains(dismiss)).toBe(true);

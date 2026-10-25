@@ -1,26 +1,4 @@
-/**
- * TranscriptRenderer — shared-core isolation contract.
- *
- * PR1 extracts the main-chat render loop (formerly `useTranscriptEntries`) into
- * a context-free `<TranscriptRenderer>` so side-chat / sub-agent sources (PR2 /
- * PR3) can reuse it by omitting optional prop clusters. The true regression risk
- * of that reshape is NOT a type error — it is a *silent* one: forgetting a
- * default value makes footer actions / stars vanish (or crash) at
- * runtime with no compile-time signal.
- *
- * These tests render the core directly with ONLY the three required props and
- * lock the default-value contract:
- *   (a) no crash,
- *   (b) no edit / fork / star hover actions,
- *   (c) no TurnActionBar retry/fork/star footer buttons,
- *   (d) WorkGroup still collapses mid-turn work.
- * A parallel "fully-wired" case asserts the actions DO appear once their
- * callbacks are supplied — i.e. suppression keys off callback presence.
- *
- * The main-path visual regression net stays in ChatView.test.tsx (which renders
- * the full <App/> through this same core). If PR1 is truly pure, that suite
- * passes untouched.
- */
+/** Render with only required props to verify optional interaction clusters have safe defaults. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { withTz, userEntry } from "../../../__tests__/test-helpers.js";
@@ -31,9 +9,8 @@ import { TranscriptRenderer, type TurnSummary } from "../components/TranscriptRe
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
-// Radix Tooltip (used by WorkGroup / TurnActionBar primitives) requires a
-// provider in the tree — the real app mounts it in App.tsx. Wrap the
-// isolated core the same way so these unit renders mirror production context.
+// Radix Tooltip (used by WorkGroup / TurnActionBar primitives) requires a provider in the tree — the real app mounts it in
+// App.tsx. Wrap the isolated core the same way so these unit renders mirror production context.
 const renderCore = (ui: React.ReactElement) =>
   render(<TooltipProvider>{ui}</TooltipProvider>);
 
@@ -98,9 +75,8 @@ describe("TranscriptRenderer — minimal (required-only) contract", () => {
     const { getAllByTestId } = renderCore(
       <TranscriptRenderer entries={entries} streaming={false} currentSessionId="s1" />,
     );
-    // The intermediate tool_group collapses into exactly one work-group; the
-    // final assistant renders outside it. This is the heart of the unified
-    // render and must survive extraction unchanged.
+    // The intermediate tool_group collapses into exactly one work-group; the final assistant renders outside it. This is the
+    // heart of the unified render and must survive extraction unchanged.
     expect(getAllByTestId("work-group").length).toBe(1);
   });
 
@@ -664,8 +640,8 @@ describe("TranscriptRenderer — permission review attaches to its tool row", ()
   });
 
   it("opens the work group for a call the parent agent answered", () => {
-    // No dock ever showed these calls. A collapsed group would leave the only
-    // record of a decision made without the user folded away by default.
+    // No dock ever showed these calls. A collapsed group would leave the only record of a decision made without the user
+    // folded away by default.
     for (const status of ["parent_approved", "parent_denied"] as const) {
       const entries = [userEntry("q"), review("t1", { status }), toolGroup("t1"), assistant("done")];
       const { getByTestId, unmount } = renderCore(
@@ -708,8 +684,7 @@ describe("TranscriptRenderer — action suppression keys off callback presence",
     );
 
     expect(getByTestId("user-message-actions")).toBeTruthy();
-    // starredView.unstar / chatView pin titles are gone from the user bubble;
-    // the assistant footer keeps its own pin control.
+    // starredView.unstar / chatView pin titles are gone from the user bubble; the assistant footer keeps its own pin control.
     expect(queryByTitle("핀 고정")).toBeNull();
   });
 
@@ -748,8 +723,8 @@ describe("TranscriptRenderer — action suppression keys off callback presence",
   });
 
   it("shows the send time recorded on a user message, in the host time zone", () => {
-    // `formatHhMm` renders in the host zone, so pin it — otherwise this asserts
-    // nothing more than "whatever zone the machine running the suite is in".
+    // `formatHhMm` renders in the host zone, so pin it — otherwise this asserts nothing more than "whatever zone the machine
+    // running the suite is in".
     withTz("UTC", () => {
       const { getByTestId } = renderCore(
         <TranscriptRenderer
@@ -776,9 +751,8 @@ describe("TranscriptRenderer — action suppression keys off callback presence",
   });
 
   it("pins the send time to the trailing edge, with the hover controls before it", () => {
-    // The footer row is `justify-end`, so the LAST child owns the trailing
-    // edge. Ordering the controls first keeps the time in a fixed column while
-    // they fade in on its leading side.
+    // The footer row is `justify-end`, so the LAST child owns the trailing edge. Ordering the controls first keeps the time in
+    // a fixed column while they fade in on its leading side.
     const { getByTestId } = renderCore(
       <TranscriptRenderer
         entries={[{ kind: "user", text: "timed", createdAt: Date.UTC(2026, 0, 2, 4, 26) }]}
@@ -797,8 +771,8 @@ describe("TranscriptRenderer — action suppression keys off callback presence",
     expect(
       actions.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    // The reveal must stay opacity/transform-only: the row keeps its fixed
-    // height so showing the controls never reflows the transcript.
+    // The reveal must stay opacity/transform-only: the row keeps its fixed height so showing the controls never reflows the
+    // transcript.
     expect(footer?.className).toContain("h-7");
     expect(actions.className).toContain("opacity-0");
     expect(actions.className).not.toContain("h-");

@@ -94,7 +94,13 @@ function projectStatus(
   state: ProviderState,
 ): SubscriptionProviderStatus | undefined {
   const status = state.status;
-  if (!status) return undefined;
+  if (!status) {
+    // Failed actions and reads may have no status payload. Keep their safe error visible without retaining stale connection or
+    // chat capabilities.
+    return state.errorCode
+      ? { runtime: "unavailable", connection: "unknown", errorCode: state.errorCode }
+      : undefined;
+  }
   return {
     runtime: status.runtime,
     connection: status.connection,
@@ -108,20 +114,9 @@ function projectStatus(
   };
 }
 
-/**
- * Renderer-only controller for every subscription runtime. It contains no
- * credentials, executable paths, or URLs: those stay in the main process and
- * are represented only by the common safe status projection.
- */
-/**
- * Subscription-provider state, as a hook.
- *
- * It used to be a component that rendered `SubscriptionProvidersSection` and
- * nothing else. The model chooser now spans BOTH halves of this tab — the API
- * vendor's catalogue and every connected subscription's — so the tab needs this
- * state beside the API state to build one list. A component could only have
- * handed it downward.
- */
+/** Renderer-only controller for every subscription runtime. It contains no credentials, executable paths, or URLs: those
+ * stay in the main process and are represented only by the common safe status projection. */
+/** Expose subscription state beside API state so one model chooser can consume both. */
 export function useSubscriptionProviders(api: AveApi) {
   const [states, setStates] = useState<ProviderStateMap>(initialProviderStates);
   const [activeRuntime, setActiveRuntime] = useState<ActiveChatRuntime>({ kind: "api" });
@@ -152,8 +147,8 @@ export function useSubscriptionProviders(api: AveApi) {
       if (revision !== settingsRevisionRef.current) return;
       applySettings(settings);
     } catch {
-      // A settings refresh never turns an already safe subscription state into
-      // a permissive one. The main-owned status action remains authoritative.
+      // A settings refresh never turns an already safe subscription state into a permissive one. The main-owned status action
+      // remains authoritative.
     }
   }, [api, applySettings]);
 
@@ -195,8 +190,8 @@ export function useSubscriptionProviders(api: AveApi) {
     }
     const mutationRevision = ++mutationRevisionByProviderRef.current[provider];
     activeMutationRevisionByProviderRef.current[provider] = mutationRevision;
-    // Supersede any status read that predates the mutation. Its response is no
-    // longer a trustworthy projection after login, logout, or reconfiguration.
+    // Supersede any status read that predates the mutation. Its response is no longer a trustworthy projection after login,
+    // logout, or reconfiguration.
     const statusRevision = ++statusRevisionByProviderRef.current[provider];
     setStates((current) => ({
       ...current,
@@ -244,10 +239,8 @@ export function useSubscriptionProviders(api: AveApi) {
   }, [refreshSettings, refreshStatus]);
 
   const runChatSelection = useCallback(async (operation: () => Promise<void>): Promise<void> => {
-    // The main process provides authoritative request-start ordering across
-    // windows. This renderer gate prevents a single settings surface from
-    // issuing conflicting API/provider selections before it has painted the
-    // first action as busy.
+    // The main process provides authoritative request-start ordering across windows. This renderer gate prevents a single
+    // settings surface from issuing conflicting API/provider selections before it has painted the first action as busy.
     if (chatSelectionBusyRef.current) return;
     chatSelectionBusyRef.current = true;
     setChatSelectionBusy(true);
@@ -264,8 +257,8 @@ export function useSubscriptionProviders(api: AveApi) {
     if (activeMutationRevisionByProviderRef.current[provider] !== 0) return;
     const mutationRevision = ++mutationRevisionByProviderRef.current[provider];
     activeMutationRevisionByProviderRef.current[provider] = mutationRevision;
-    // The status bundled with model discovery is authoritative only until a
-    // newer status action/event starts. It also invalidates an older read.
+    // The status bundled with model discovery is authoritative only until a newer status action/event starts. It also
+    // invalidates an older read.
     const statusRevision = ++statusRevisionByProviderRef.current[provider];
     setStates((current) => ({
       ...current,
@@ -330,22 +323,12 @@ export function useSubscriptionProviders(api: AveApi) {
   }, [api, applySettings, refreshSettings, refreshStatus]);
 
   useEffect(() => api.onSubscriptionRuntimeStatusUpdated(({ provider }) => {
-    // A different settings window or an external completion changed a safe
-    // status projection. Refresh only that provider card.
+    // A different settings window or an external completion changed a safe status projection. Refresh only that provider card.
     void refreshStatus(provider);
   }), [api, refreshStatus]);
 
-  /**
-   * A connected subscription's catalogue, asked for as soon as it is reachable.
-   *
-   * The settings page offers subscription models in the same chooser as every
-   * API vendor's, and a chooser cannot offer what was never fetched. This used
-   * to wait on a "Load models" button on the provider card; that button was the
-   * only way in, so the chooser sat empty until the user found it. Asked once
-   * per connection: leaving `connected` clears the marker, so signing back in
-   * asks again, and a provider that answers with an empty catalogue is not
-   * re-asked in a loop.
-   */
+  /** Fetch subscription catalogs once per reachable connection, including empty results; disconnect clears the marker so
+   * reconnect fetches again. */
   useEffect(() => {
     for (const provider of PROVIDER_IDS) {
       const connected = states[provider].status?.connection === "connected";

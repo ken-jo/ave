@@ -1,39 +1,14 @@
-/**
- * `runGit` — every marketplace git call goes through here (design §9.3).
- *
- * The contract is the same for system and managed git:
- *
- *   - environment built from scratch: the safe baseline plus `SSH_AUTH_SOCK`,
- *     `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, the generated
- *     `GIT_CONFIG_GLOBAL`, `LC_ALL=C`, the askpass helper, ssh in batch mode,
- *     `GIT_ALLOW_PROTOCOL` (`https:ssh`, plus `http` only for a source the
- *     gate accepted over http: listed, acknowledged or a dev build's loopback;
- *     none for a call without a remote), `GIT_LFS_SKIP_SMUDGE=1` and `GIT_NO_LAZY_FETCH=1` (a missing
- *     object is an error, never a fetch the gate did not see), and `GIT_DIR`
- *     for a call on a repository (discovery stopped otherwise);
- *   - `-c` flags that turn off the file protocol, submodules, fsmonitor,
- *     hooks, redirects, LFS filters and automatic gc/maintenance (a pruned
- *     commit that an install still references could not be read again), set
- *     the proxy the OS resolves for the remote, and clear the user's credential
- *     helpers on a call that answers with a stored token, and on every http
- *     call whose source does not hold `token-unencrypted` (design §18.2.2);
- *   - the address the connection uses is the address that was checked
- *     (§18.2.4): an http(s) call resolves the remote's host once, judges
- *     every answer by the gate's address rule and pins the kept answers with
- *     `http.curloptResolve` (and the proxy's own host when one is used); an
- *     ssh call runs the `ssh -G` preflight (ssh-preflight.ts) instead;
- *   - a timeout, an abort signal and an output cap per call.
- *
- * A failure of a call that talks to a remote is classified into a
- * {@link MarketplaceError} code from git's (C-locale) stderr; any other
- * failure is a {@link GitCommandError} for the caller to interpret.
- */
+/** Use a clean noninteractive environment: disable lazy fetch, LFS smudge, system config, discovery outside the chosen repository, and ambient credential prompts.
+ * Allow HTTPS/SSH, HTTP only after its source gate, and no remote protocols for local calls; disable file protocol, submodules, hooks, fsmonitor, redirects, filters, and automatic maintenance.
+ * Use OS proxy policy; clear credential helpers for stored tokens and cleartext routes without token consent; pin checked DNS answers or run SSH preflight.
+ * Enforce timeout, cancellation, and output caps; classify remote failures separately from local command failures. */
 import type { ChildProcessByStdio } from "node:child_process";
 import { promises as dns } from "node:dns";
 import { isIP } from "node:net";
 import { delimiter, dirname } from "node:path";
 import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
 import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
@@ -92,30 +67,19 @@ export interface GitRemote {
   sourceId: string;
   /** Plain http is allowed for this remote: the gate accepted it (listed, acknowledged, or a dev build's loopback). */
   allowHttp: boolean;
-  /**
-   * The source declares token auth for this host. When a token is stored for
-   * it, askpass answers with that token and the user's credential helpers are
-   * switched off for the call, so git neither asks them first nor stores the
-   * token in them. Without a stored token the helpers answer as usual.
-   */
+  /** The source declares token auth for this host. When a token is stored for it, askpass answers with that token and the user's credential helpers
+   * are switched off for the call, so git neither asks them first nor stores the token in them. Without a stored token the helpers answer as usual. */
   useToken: boolean;
-  /**
-   * Credentials may answer for this remote (the gate's verdict): always over
-   * https and ssh; over http only when the source holds `token-unencrypted`.
-   * Without it an http call offers no token and clears the helpers, so no
-   * password crosses the network in the clear unannounced (§18.2.2).
-   */
+  /** Credentials may answer for this remote (the gate's verdict): always over https and ssh; over http only when the source holds
+   * `token-unencrypted`. Without it an http call offers no token and clears the helpers, so no password crosses the network in the clear unannounced (§18.2.2). */
   credentialsAllowed: boolean;
   /** The rule each answer of the remote host's one lookup is judged by (§18.2.4). */
   addressPolicy: AddressPolicy;
 }
 
 export interface RunGitOptions {
-  /**
-   * The repository the call works on, passed as `GIT_DIR` so git never
-   * discovers another one by walking up from a directory. Without it the call
-   * runs in the empty directory with discovery stopped there.
-   */
+  /** The repository the call works on, passed as `GIT_DIR` so git never discovers another one by walking
+   * up from a directory. Without it the call runs in the empty directory with discovery stopped there. */
   gitDir?: string;
   /** Set for calls that contact a remote; enables askpass, proxy and error classification. */
   remote?: GitRemote;
@@ -132,6 +96,8 @@ export interface GitResult {
 }
 
 export interface GitRunnerOptions {
+  /** Substitute the command deadline's scheduler; cancellation still waits for child close. */
+  _scheduleTimeoutForTest?: (expire: () => void, delayMs: number) => () => void;
   git: GitExecutable;
   /** Generated file for `GIT_CONFIG_GLOBAL` (see global-config.ts). */
   globalConfigPath: string;
@@ -171,24 +137,15 @@ const REMOTE_FAILURES: ReadonlyArray<readonly [MarketplaceErrorCode, RegExp]> = 
   ["SOURCE_REF_NOT_FOUND", /couldn't find remote ref|remote branch .* not found|no such ref was fetched/u],
 ];
 
-/**
- * The host's "no repository here": GitHub over https ("repository '…' not
- * found") and ssh ("ERROR: Repository not found."), GitLab's "could not be
- * found or you don't have permission", a plain 404, and a path that is not a
- * repository. Hosts answer this way for a private repository the caller
- * cannot see as well, so it never says which of the two it is.
- */
+/** The host's "no repository here": GitHub over https ("repository '…' not found") and ssh ("ERROR: Repository not found."), GitLab's "could not be found or you don't have
+ * permission", a plain 404, and a path that is not a repository. Hosts answer this way for a private repository the caller cannot see as well, so it never says which of the two it is. */
 const NOT_FOUND = /repository .* not found|repository not found|could not be found or you don't have permission|returned error: 404|does not appear to be a git repository/u;
 
 /** OpenSSH's banner for a key that differs from the one in known_hosts, before "host key verification failed". */
 const HOST_KEY_CHANGED = /remote host identification has changed|host key for .* has changed/u;
 
-/**
- * Why git could not reach the remote, from curl's and ssh's (C-locale)
- * messages, in the order that keeps one cause from reading as another:
- * "network is unreachable" also follows "failed to connect", and a timeout
- * is reported on the same line as the address it was connecting to.
- */
+/** Why git could not reach the remote, from curl's and ssh's (C-locale) messages, in the order that keeps one cause from reading as another:
+ * "network is unreachable" also follows "failed to connect", and a timeout is reported on the same line as the address it was connecting to. */
 const UNREACHABLE_REASONS: ReadonlyArray<readonly ["offline" | "dns" | "timeout" | "refused" | "tls", RegExp]> = [
   ["offline", /network is unreachable/u],
   ["dns", /could not resolve host|could not resolve hostname|name or service not known|nodename nor servname provided|temporary failure in name resolution|no such host is known/u],
@@ -213,17 +170,8 @@ function unreachableDetail(text: string, host: string): MarketplaceErrorDetail<"
   return status ? { reason: "http-status", host, status: Number(status[1]) } : undefined;
 }
 
-/**
- * Map a remote-call failure to its error, with the detail its sentence
- * needs when git's message says why (design §18.8). A "repository not found"
- * after the broker offered a token means the token may not reach the
- * repository (hosts answer 404 rather than 403 to hide private
- * repositories): `SOURCE_AUTH_REQUIRED` `token-no-access`. Without a token
- * from Ave it is `SOURCE_UNREACHABLE` `not-found` (`not-found-ssh` over
- * ssh), whose sentence names both a wrong address and a private repository,
- * since the answer is the same for both. A failure whose cause git does not
- * name carries no detail and reads as its code's reason-less sentence.
- */
+/** Map a remote-call failure to its error, with the detail its sentence needs when git's message says why (design §18.8). A "repository not found" after the broker offered a token means the token may not reach the repository (hosts answer 404 rather than 403 to hide private repositories): `SOURCE_AUTH_REQUIRED`
+ * `token-no-access`. Without a token from Ave it is `SOURCE_UNREACHABLE` `not-found` (`not-found-ssh` over ssh), whose sentence names both a wrong address and a private repository, since the answer is the same for both. A failure whose cause git does not name carries no detail and reads as its code's reason-less sentence. */
 export function classifyRemoteFailure(stderr: string, credentialOffered: boolean, url: NormalizedSourceUrl, message: string, credentialsWithheld = false): MarketplaceError {
   const text = stderr.toLowerCase();
   const host = url.host;
@@ -275,11 +223,8 @@ export class GitRunner {
     return remote !== undefined && remote.url.scheme === "http" && !remote.credentialsAllowed;
   }
 
-  /**
-   * The address check of a remote without a git command: the lookup and the
-   * rule the next call against it binds to (the preview's confirmation step,
-   * §18.5). Throws what that call would.
-   */
+  /** The address check of a remote without a git command: the lookup and the rule the next call
+   * against it binds to (the preview's confirmation step, §18.5). Throws what that call would. */
   async preflight(remote: GitRemote): Promise<void> {
     await this.bindingArgs(remote, await this.proxyFor(remote), this.environment(remote));
   }
@@ -291,11 +236,9 @@ export class GitRunner {
 
   /** The `-c` flags for one call under one route: the same `proxy` its binding checked (§18.2.4). */
   private configArgsFor(remote: GitRemote | undefined, proxy: string): string[] {
-    return [
+    const configArgs = [
       "-c", "protocol.file.allow=never",
       "-c", "submodule.recurse=false",
-      "-c", "core.fsmonitor=false",
-      "-c", `core.hooksPath=${this.options.emptyDir}`,
       "-c", "http.followRedirects=false",
       "-c", `http.proxy=${proxy}`,
       "-c", "filter.lfs.smudge=",
@@ -307,6 +250,7 @@ export class GitRunner {
       ...(this.offersToken(remote) || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
       ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
+    return buildHostGitArgs([], { configArgs, disabledHooksPath: this.options.emptyDir });
   }
 
   /** The child environment for one call (without the askpass ticket). */
@@ -319,8 +263,7 @@ export class GitRunner {
       GIT_ASKPASS: this.options.askpass.launcherPath,
       SSH_ASKPASS_REQUIRE: "never",
       GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
-      // A call without a remote needs no transport; `none` names none, so even
-      // a git that ignored GIT_NO_LAZY_FETCH could not fetch on its own.
+      // A call without a remote needs no transport; `none` names none, so even a git that ignored GIT_NO_LAZY_FETCH could not fetch on its own.
       GIT_ALLOW_PROTOCOL: !remote ? "none" : remote.allowHttp ? "https:ssh:http" : "https:ssh",
       GIT_LFS_SKIP_SMUDGE: "1",
       GIT_NO_LAZY_FETCH: "1",
@@ -339,8 +282,7 @@ export class GitRunner {
     const entry = (pac.split(";")[0] ?? "").trim();
     const [kind, endpoint] = entry.split(/\s+/u, 2);
     if (!kind || kind.toUpperCase() === "DIRECT") return "";
-    // PAC's `SOCKS` is SOCKS4, which git's transport (curl) speaks; the shared
-    // mapping leaves it out for subprocesses that do not.
+    // PAC's `SOCKS` is SOCKS4, which git's transport (curl) speaks; the shared mapping leaves it out for subprocesses that do not.
     const kindUpper = kind.toUpperCase();
     const proxy = (kindUpper === "SOCKS" || kindUpper === "SOCKS4") && endpoint ? `socks4://${endpoint}` : proxyUrlFromPacEntry(entry);
     // Going direct would send the traffic where the configuration did not choose.
@@ -356,15 +298,8 @@ export class GitRunner {
     return (this.options.lookup ?? defaultLookup)(host);
   }
 
-  /**
-   * Bind the call to the addresses the gate's rule keeps (§18.2.4): one
-   * lookup of the remote's host, its kept answers pinned for curl, and the
-   * proxy's own host pinned and checked when one is used. Curl resolves the
-   * target itself only directly and through a SOCKS proxy (`socks4://`,
-   * `socks5://`); an http(s) proxy resolves it beyond its socket (trusted).
-   * An ssh remote gets the `ssh -G` preflight instead. Throws the refusal,
-   * block or confirmation before git starts.
-   */
+  /** Bind the call to the addresses the gate's rule keeps (§18.2.4): one lookup of the remote's host, its kept answers pinned for curl, and the proxy's own host pinned and checked when one is used. Curl resolves the target itself only
+   * directly and through a SOCKS proxy (`socks4://`, `socks5://`); an http(s) proxy resolves it beyond its socket (trusted). An ssh remote gets the `ssh -G` preflight instead. Throws the refusal, block or confirmation before git starts. */
   private async bindingArgs(remote: GitRemote, proxy: string, env: Readonly<Record<string, string>>): Promise<string[]> {
     const url = remote.url;
     try {
@@ -384,8 +319,8 @@ export class GitRunner {
       }
       if (proxyUrl !== null) {
         const proxyHost = bareHost(proxyUrl.hostname);
-        // The system configuration chose the proxy: only metadata and unroutable answers are refused.
-        // A literal is its own one answer, judged the same way; curl does not resolve it, so it needs no pin.
+        // The system configuration chose the proxy: only metadata and unroutable answers are refused. A
+        // literal is its own one answer, judged the same way; curl does not resolve it, so it needs no pin.
         const literal = isIP(proxyHost) !== 0;
         const kept = proxyAnswers(proxyHost, literal ? [proxyHost] : await this.lookup(proxyHost));
         if (!literal) {
@@ -430,10 +365,8 @@ export class GitRunner {
     credentialsWithheld: boolean,
   ): Promise<GitResult> {
     return new Promise<GitResult>((resolve, reject) => {
-      // git runs its transport in a child (git-remote-https) that holds the
-      // output pipes, so a stop has to reach the whole tree or `close` never
-      // comes. On POSIX git leads its own process group; the app's shutdown
-      // sweep kills that group too.
+      // git runs its transport in a child (git-remote-https) that holds the output pipes, so a stop has to reach the whole
+      // tree or `close` never comes. On POSIX git leads its own process group; the app's shutdown sweep kills that group too.
       const child = spawnManaged(
         this.options.git.path,
         argv,
@@ -451,6 +384,7 @@ export class GitRunner {
       let stderr = "";
       let failure: Error | null = null;
       let settled = false;
+      let termination: void | Promise<void>;
 
       const signalGroup = (signal: NodeJS.Signals) => {
         try {
@@ -464,7 +398,13 @@ export class GitRunner {
         failure = error;
         if (process.platform === "win32") {
           // TerminateProcess leaves no cleanup either way; taskkill /T takes the tree.
-          forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          termination = forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          // Do not depend on inherited pipes closing after a failed tree pass.
+          void Promise.resolve(termination).then(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            finish(() => reject(error));
+          });
           return;
         }
         // SIGTERM first so git removes its lock files, then the whole group.
@@ -473,7 +413,11 @@ export class GitRunner {
           if (!settled) signalGroup("SIGKILL");
         }, FORCE_KILL_AFTER_MS).unref();
       };
-      const timer = setTimeout(() => {
+      const scheduleTimeout = this.options._scheduleTimeoutForTest ?? ((expire: () => void, delayMs: number) => {
+        const timer = setTimeout(expire, delayMs);
+        return () => clearTimeout(timer);
+      });
+      const cancelTimeout = scheduleTimeout(() => {
         stop(
           options.remote
             ? new MarketplaceError("SOURCE_UNREACHABLE", `git ${command} timed out after ${options.timeoutMs} ms`, {
@@ -509,9 +453,10 @@ export class GitRunner {
       const finish = (outcome: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cancelTimeout();
         options.signal?.removeEventListener("abort", onAbort);
-        outcome();
+        if (termination) void termination.then(outcome);
+        else outcome();
       };
       child.on("error", (error: NodeJS.ErrnoException) => {
         finish(() =>

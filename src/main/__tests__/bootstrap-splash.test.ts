@@ -1,16 +1,4 @@
-/**
- * Splash status keys must resolve.
- *
- * `translate()` falls back to English and then to the key itself on a miss, so
- * a renamed or mistyped catalog key does not throw — it renders the raw key
- * (`be_main.bootstrapStatusOpeningWorkspace`) as the splash status line, which
- * is the very first thing a user sees. `t()` takes a plain `string`, so the
- * compiler does not catch it either.
- *
- * This reads the literals out of the module source rather than re-listing
- * them, so adding or renaming a splash message is covered without editing the
- * test.
- */
+// Missing translation keys render literally without a type error; read source literals so new splash messages are covered.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -19,7 +7,6 @@ import { t } from "../../i18n/index.js";
 
 const SOURCE = resolve(import.meta.dirname, "../bootstrap-splash.ts");
 
-/** Every `t("...")` literal the splash module names, read from its source. */
 function splashKeysFromSource(): string[] {
   const source = readFileSync(SOURCE, "utf-8");
   return [...source.matchAll(/\bt\("([^"]+)"\)/g)].map((m) => m[1]!);
@@ -39,12 +26,10 @@ describe("bootstrap splash status messages", () => {
     const { BOOTSTRAP_SPLASH } = await import("../bootstrap-splash.js");
     const keys = splashKeysFromSource();
     expect(keys.length).toBeGreaterThan(0);
-    // The <p id="status"> seed, the JSON-encoded idle-cycle array and the
-    // version-panel aria-label are all interpolated into BOOTSTRAP_SPLASH, so a
-    // key that failed to resolve would reach the served HTML verbatim.
+    // The <p id="status"> seed, the JSON-encoded idle-cycle array and the version-panel aria-label are all interpolated into BOOTSTRAP_SPLASH, so a key that
+    // failed to resolve would reach the served HTML verbatim.
     expect(BOOTSTRAP_SPLASH).not.toMatch(/be_main\.[A-Za-z]/);
-    // Derived from the module source rather than re-listed, so renaming a key
-    // (module + all catalogs) or adding a message needs no edit here.
+    // Derived from the module source rather than re-listed, so renaming a key (module + all catalogs) or adding a message needs no edit here.
     for (const key of keys) {
       expect(
         BOOTSTRAP_SPLASH,
@@ -54,8 +39,7 @@ describe("bootstrap splash status messages", () => {
   });
 });
 
-// `vi.mock` is hoisted above every const in this file, so the spy has to be
-// created by `vi.hoisted` to exist when the factory runs.
+// `vi.mock` is hoisted above every const in this file, so the spy has to be created by `vi.hoisted` to exist when the factory runs.
 const { executeJavaScript } = vi.hoisted(() => ({
   executeJavaScript: vi.fn((_script: string) => Promise.resolve(undefined)),
 }));
@@ -70,8 +54,7 @@ describe("updateSplashStatus", () => {
   });
 
   it("stays silent when no splash was ever shown", async () => {
-    // A headless run, or any window created with `showBootstrapSplash: false`,
-    // has no status line — evaluating script in that renderer is pure waste.
+    // A headless run, or any window created with `showBootstrapSplash: false`, has no status line — evaluating script in that renderer is pure waste.
     const { updateSplashStatus } = await import("../bootstrap-splash.js");
     updateSplashStatus("checking certs");
     expect(executeJavaScript).not.toHaveBeenCalled();

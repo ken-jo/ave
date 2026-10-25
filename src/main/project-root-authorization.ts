@@ -21,24 +21,11 @@ export interface AuthorizedProjectResolution {
   authorized: boolean;
 }
 
-/**
- * Display label for the app-managed default/base-directory project. Kept as the
- * literal "default" instead of the workspace folder's basename (which surfaced a
- * confusing "workspace" label in the sidebar + insights). Non-default,
- * user-picked projects still derive their name from the folder basename.
- */
+// Keep the managed project label stable; only user-picked projects use their folder basename.
 export const DEFAULT_PROJECT_NAME = "default";
 
-/**
- * The one project a broker-bound run may work in. While the exclusive
- * workload-broker route is active the guest cwd is the whole authorized set: it
- * is matched byte-for-byte, never canonicalized against the controller host's
- * filesystem (where it need not exist), and the host default workspace is not
- * a fallback — not even as the loop's "default project" that session
- * initialization and execution-cwd lookups fall back to. Every caller that
- * decides "which project" goes through this module, so the CLI pre-check, the
- * session authorizer, the project list, and the fallback cannot disagree.
- */
+// Broker-bound runs authorize only the exact guest cwd, without host canonicalization or default-workspace fallback.
+// CLI, session, listing, and execution resolution must share this authority.
 function activeBrokeredWorkloadProject(): ProjectIdentity | null {
   if (!isWorkloadBrokerActive()) return null;
   const projection = getActiveWorkloadBrokerProjection();
@@ -60,12 +47,8 @@ export function defaultWorkspaceProject(defaultWorkspaceRoot = getDefaultWorkspa
   };
 }
 
-/**
- * Whether the root a session actually bound matches the root that was
- * requested. Byte-for-byte for a brokered guest cwd; a symlink or case alias
- * of the default workspace binds the canonical default root, which is the
- * directory the caller named.
- */
+// Whether the root a session actually bound matches the root that was requested. Byte-for-byte for a brokered guest cwd; a symlink or case alias of the
+// default workspace binds the canonical default root, which is the directory the caller named.
 export function sessionBoundProjectRootMatches(
   boundRoot: string | null,
   requestedRoot: string,
@@ -112,8 +95,7 @@ export function resolveAuthorizedWorkspaceProject(
   if (!requestedRoot) {
     return { project: defaultWorkspaceProject(), authorized: true };
   }
-  // Same acceptance as isAuthorizedWorkspaceProjectRoot: a symlink or case
-  // alias of the default workspace is that workspace, not a fallback to it.
+  // Same acceptance as isAuthorizedWorkspaceProjectRoot: a symlink or case alias of the default workspace is that workspace, not a fallback to it.
   if (isDefaultWorkspaceRoot(requestedRoot)) {
     return { project: defaultWorkspaceProject(), authorized: true };
   }

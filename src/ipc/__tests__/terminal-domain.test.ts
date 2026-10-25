@@ -1,8 +1,4 @@
-/**
- * The terminal IPC domain, between two app windows: a terminal's output goes
- * to the window that owns it only, and the other window cannot type into,
- * resize, close or read the blocks of it.
- */
+import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import type { TerminalEmit } from "../../main/terminal/pty-manager.js";
@@ -24,13 +20,13 @@ vi.mock("../window-fanout.js", () => ({ fanOutToAllWindows: fanOut }));
 
 let emitter: TerminalEmit = () => {};
 const owners = new Map<string, number | null>();
-const writeTerminal = vi.fn();
+const writeTerminal = vi.fn(() => ({ ok: true }));
 const killTerminal = vi.fn();
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
-  spawnTerminal: vi.fn(async ({ tabId }: { tabId: string }) => ({ ok: true, tabId, replayed: false })),
+  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane) })),
   writeTerminal,
-  resizeTerminal: vi.fn(),
+  resizeTerminal: vi.fn(() => ({ ok: true })),
   killTerminal,
   terminalOwnedBy: (tabId: string, ownerWindowId: number | null) => !owners.has(tabId) || owners.get(tabId) === ownerWindowId,
 }));
@@ -65,8 +61,8 @@ beforeEach(() => {
 
 describe("terminal IPC between two windows", () => {
   it("sends a terminal's output and exit to its owning window only", () => {
-    emitter("data", { tabId: "terminal:0000000a-1", chunk: "hi" }, 2);
-    emitter("exit", { tabId: "terminal:0000000a-1", exitCode: 0 }, 2);
+    emitter("data", { ...terminalSessionFixture("terminal:0000000a-1", "manual"), chunk: "hi" }, 2);
+    emitter("exit", { ...terminalSessionFixture("terminal:0000000a-1", "manual"), exitCode: 0 }, 2);
     expect(fanOut.mock.calls.map(([windows, channel]) => [(windows as Array<{ id: number }>).map((win) => win.id), channel])).toEqual([
       [[2], CHANNELS.terminal.data],
       [[2], CHANNELS.terminal.exit],
@@ -78,12 +74,22 @@ describe("terminal IPC between two windows", () => {
     const input = handlers.get(CHANNELS.terminal.input)!;
     const kill = handlers.get(CHANNELS.terminal.kill)!;
     const resize = handlers.get(CHANNELS.terminal.resize)!;
-    expect(await input(from(windowTwo), { tabId: "terminal:0000000a-1", data: "rm -rf ~\r" })).toEqual({ ok: false, error: "not-owner" });
-    expect(await resize(from(windowTwo), { tabId: "terminal:0000000a-1", cols: 10, rows: 10 })).toEqual({ ok: false, error: "not-owner" });
+    expect(await input(from(windowTwo), { ...terminalSessionFixture("terminal:0000000a-1", "manual"), data: "rm -rf ~\r" })).toEqual({ ok: false, error: "not-owner" });
+    expect(await resize(from(windowTwo), { ...terminalSessionFixture("terminal:0000000a-1", "manual"), cols: 10, rows: 10 })).toEqual({ ok: false, error: "not-owner" });
     expect(await kill(from(windowTwo), { tabId: "terminal:0000000a-1" })).toEqual({ ok: false, error: "not-owner" });
     expect(writeTerminal).not.toHaveBeenCalled();
     expect(killTerminal).not.toHaveBeenCalled();
-    expect(await input(from(windowOne), { tabId: "terminal:0000000a-1", data: "ls\r" })).toEqual({ ok: true });
-    expect(writeTerminal).toHaveBeenCalledWith("terminal:0000000a-1", "ls\r");
+    expect(await input(from(windowOne), { ...terminalSessionFixture("terminal:0000000a-1", "manual"), data: "ls\r" })).toEqual({ ok: true });
+    expect(writeTerminal).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "manual", terminalSessionId: "terminal:0000000a-1/manual" }), "ls\r");
+  });
+});
+
+
+describe("terminal IPC lane validation", () => {
+  it("requires explicit lane on spawn and incarnation on mutations and block reads", async () => {
+    expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toMatchObject({ ok: false, reason: "bad-request" });
+    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block]) {
+      expect(await handlers.get(channel)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toEqual({ ok: false, error: "invalid-params" });
+    }
   });
 });

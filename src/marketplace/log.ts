@@ -1,10 +1,4 @@
-/**
- * The marketplace's logger: `createLogger` with every string it is handed
- * scrubbed first. A log line quotes paths, addresses, refs and remote
- * messages as the renderer's answers do, and the same one scrubber applies
- * (`scrubMarketplaceStrings`, design §18.8), so a token never reaches the
- * console or the log file from the marketplace.
- */
+/** Scrub every logged string, including remote messages and identifiers, before it reaches any sink. */
 import { createLogger } from "../lib/logger.js";
 import { scrubMarketplaceStrings } from "./errors.js";
 

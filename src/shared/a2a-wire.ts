@@ -126,12 +126,7 @@ export type A2AErrorDefinition =
   (typeof A2AJsonRpcErrorDefinition)[keyof typeof A2AJsonRpcErrorDefinition];
 export type A2AErrorReason = A2AErrorDefinition["reason"];
 
-/**
- * Host policy errors outside the vendored A2A v1.0 error registry.
- *
- * These remain JSON-RPC server errors, but must not be presented as protocol
- * definitions supplied by the A2A specification.
- */
+/** Host policy errors are server errors outside the protocol registry, not specification-defined codes. */
 export const A2AHostJsonRpcErrorDefinition = {
   OPERATION_REJECTED: {
     code: -32010,
@@ -144,7 +139,6 @@ export type A2AHostErrorDefinition =
   (typeof A2AHostJsonRpcErrorDefinition)[keyof typeof A2AHostJsonRpcErrorDefinition];
 export type A2AHostErrorReason = A2AHostErrorDefinition["reason"];
 
-/** Error definitions the host router may safely project onto the A2A wire. */
 export type A2ARouterErrorDefinition = A2AErrorDefinition | A2AHostErrorDefinition;
 
 export const StandardJsonRpcErrorDefinition = {

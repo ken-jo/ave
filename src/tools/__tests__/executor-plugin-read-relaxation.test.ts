@@ -1,35 +1,5 @@
-/**
- * executor-plugin-read-relaxation.test.ts — effect-boundary pre-exec relaxation.
- *
- * The FINAL phase of the host-classify completion: when `hostClassifiesRisk` is
- * ON, a FIRST-PARTY PLUGIN tool in a FOREGROUND context no longer runs the
- * pre-exec blocking approval lane. Instead it EXECUTES under effect-boundary
- * gating (the merged effect-boundary gate is the only gate):
- *   • a plugin tool that performs NO mutating host-mediated effect runs to
- *     completion with ZERO modals;
- *   • a plugin tool that reaches a host-mediated WRITE chokepoint trips the
- *     effect-gate AT THE MUTATION (deny → tool error, mutation not performed).
- *
- * Scope locked here (each is a separate cluster-review concern):
- *   • SANDBOX FILESYSTEM-CONTAINMENT COUPLING → the relaxation requires the
- *     ACTIVE OS sandbox to FILESYSTEM-CONTAIN the host (`confines.filesystem ===
- *     true`), not merely be active (it relies on the effect-boundary, which only
- *     contains the off-hostApi `node:fs` WRITE residual when the sandbox
- *     filesystem-contains). Filesystem-contained mac/linux plugin worker
- *     effects → relax; NOT filesystem-contained (degraded / off / synthetic
- *     network-only / ordinary non-worker-backed plugin call path) → the
- *     pre-exec ask remains.
- *   • FLAG OFF (default) → full pre-exec ask, byte-for-byte unchanged.
- *   • PLUGIN ONLY → MCP + builtin keep the pre-exec ask (not relaxed).
- *   • FOREGROUND ONLY → a headless plugin tool keeps the existing headless lane.
- *   • DENY STILL WINS → a standing deny rule / a prior user deny-always still
- *     blocks under relaxation (it is a `deny`, never an `ask`).
- *   • PERM-HOOK PRESERVED → an operator `perm-*.sh` deny still fires on the
- *     relaxed path and blocks the tool fail-closed (the relaxation runs the perm
- *     hook BEFORE finalizing the allow).
- *   • LAYER ≤ 2 HARD GATES NOT RELAXED → global strict mode (layer 2) still shows
- *     the pre-exec ask (the relaxation floor is layer ≥ 3).
- */
+// Foreground plugin relaxation requires active filesystem containment and gates writes at their effects.
+// Standing denies, permission hooks, strict-mode gates, and non-plugin or headless approval lanes remain enforced.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,11 +23,10 @@ import {
   setActiveSandboxCapability,
   unmarkPluginWorkerWrapped,
   __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 
-// ─── Helpers ─────────────────────────────────────────
-
-/** A stub ApprovalGate that records every request and answers with a fixed choice. */
 function makeGate(choice: ApprovalChoice): {
   gate: ApprovalGate;
   requests: Array<Omit<ApprovalRequest, "requireExplicit">>;
@@ -74,14 +43,7 @@ function makeGate(choice: ApprovalChoice): {
   return { gate, requests };
 }
 
-/**
- * A plugin tool whose execute does NO host-mediated effect (a "read" under the
- * effect boundary). Declared category is irrelevant to the relaxation — what
- * matters is that the pre-exec decision is an `ask`; with the flag ON the host
- * inspector raises an evidence-free plugin call to `write` → `ask`, and with
- * the flag OFF we declare `write` so the pre-exec ask is shown for the
- * byte-for-byte lock.
- */
+// Force a pre-execution ask in both flag states to isolate relaxation from category classification.
 function makePluginNoEffectTool(
   spy: { ran: boolean },
   ids: { readonly pluginId?: string; readonly workerId?: string } = {},
@@ -104,12 +66,7 @@ function makePluginNoEffectTool(
   });
 }
 
-/**
- * A plugin tool whose execute REACHES a host-mediated WRITE chokepoint via
- * {@link gateMutatingEffect}, exactly as a real per-plugin hostApi closure does
- * (it reads the ambient effect-gate context the executor binds around execute).
- * The `mutated` flag flips ONLY past the gate, so a denied effect leaves it false.
- */
+// Mutation occurs only after the ambient effect gate allows it.
 function makePluginWriteTool(
   gate: ApprovalGate,
   flagEnabled: () => boolean,
@@ -133,18 +90,13 @@ function makePluginWriteTool(
         approvalGate: gate,
         flagEnabled,
       });
-      state.mutated = true; // only reached if the effect-gate ALLOWS
+      state.mutated = true;
       return { output: "writer-ok", isError: false };
     },
   });
 }
 
-/**
- * A plugin tool whose execute reaches the host-mediated `openExternalUrl` WRITE
- * chokepoint (an egress/exfil-class action). `openExternalUrl` is now EFFECT-GATED
- * (moved out of ENFORCEMENT_EXCLUSIONS), so under the flag the pre-exec ask is
- * relaxed but the effect-gate fires AT the open; `opened` flips only past the gate.
- */
+// URL egress is a mutating effect; denial must prevent the open even when pre-execution approval is relaxed.
 function makePluginOpenUrlTool(
   gate: ApprovalGate,
   flagEnabled: () => boolean,
@@ -168,19 +120,13 @@ function makePluginOpenUrlTool(
         approvalGate: gate,
         flagEnabled,
       });
-      state.opened = true; // only reached if the effect-gate ALLOWS
+      state.opened = true;
       return { output: "opener-ok", isError: false };
     },
   });
 }
 
-/**
- * A plugin tool the HOST INSPECTOR classifies as `read` when the flag is ON:
- * invoked with `{ command: "ls" }`, inspectHostRisk parses the read-only verb and
- * returns `"read"` → categoryBasedDecision auto-allows it at layer 6 (NOT an ask),
- * so it bypasses the relaxation block. With the flag OFF the DECLARED `"read"`
- * category drives the (identical) auto-allow. `ran` flips only inside execute.
- */
+// A host-classified read auto-allows at layer 6, bypassing the ask-relaxation block.
 function makePluginReadTool(spy: { ran: boolean }): Tool {
   return createDynamicTool({
     name: "plugin_reader",
@@ -234,7 +180,6 @@ function makeBuiltinWriteTool(spy: { ran: boolean }): Tool {
   });
 }
 
-/** A builtin tool the inspector leaves as the trusted declared `read`. */
 function makeBuiltinReadTool(spy: { ran: boolean }): Tool {
   return createDynamicTool({
     name: "builtin_read",
@@ -257,12 +202,7 @@ function makeExecutor(
   flagEnabled: () => boolean,
   permMgr = new PermissionManager("/tmp/nonexistent-permissions.json"),
   scriptHookManager?: import("../../hooks/script-hook-manager.js").ScriptHookManager,
-  // Filesystem-containment interlock (default CONTAINED — the macOS/Linux
-  // live-verified full-confine state). The relaxation requires BOTH the flag AND
-  // the active sandbox FILESYSTEM-CONTAINING the host (`confines.filesystem ===
-  // true`); existing relaxation assertions run with the sandbox fs-contained.
-  // The coupling tests below pass `() => false` to assert the degraded /
-  // sandbox-off / synthetic network-only fallback.
+  // Relaxation requires both the flag and active filesystem containment; false models degraded or absent confinement.
   sandboxFsContained: (tool: Tool) => boolean = () => true,
 ): { executor: ToolExecutor; permMgr: PermissionManager } {
   const registry = new ToolRegistry();
@@ -281,13 +221,7 @@ function makeExecutor(
   return { executor, permMgr };
 }
 
-/**
- * A minimal ScriptHookManager stub whose PermissionRequest (`perm-*.sh`) dispatch
- * always DENIES — models an operator deny policy encoded in a `perm-*.sh` hook.
- * Only `runPermissionRequest` is stubbed: the relaxed-path perm-hook preservation
- * fires it BEFORE finalizing the allow and (on deny) returns the tool error before
- * any `pre`/`post` dispatch, so no other method is reached.
- */
+// PermissionRequest denial must stop relaxed execution before pre/post hooks.
 function makeDenyPermHookManager(
   calls: { permRan: boolean },
 ): import("../../hooks/script-hook-manager.js").ScriptHookManager {
@@ -303,8 +237,6 @@ beforeEach(() => {
   __resetEffectGrantsForTest();
 });
 
-// ─── Tests ───────────────────────────────────────────
-
 describe("plugin read-relaxation — FLAG OFF = byte-for-byte unchanged", () => {
   it("flag OFF + foreground + plugin tool → the FULL pre-exec ask is shown (relaxation inert)", async () => {
     const spy = { ran: false };
@@ -316,8 +248,7 @@ describe("plugin read-relaxation — FLAG OFF = byte-for-byte unchanged", () => 
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The pre-exec tool-level modal fired (category "tool") and, on deny-once,
-    // the tool NEVER executed — identical to today's behaviour.
+    // Pre-execution denial must prevent execution while relaxation is disabled.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(false);
@@ -336,7 +267,7 @@ describe("plugin read-relaxation — FLAG ON + foreground + plugin", () => {
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // Pre-exec ask relaxed AND no host-mediated write effect → zero modals.
+    // No mutating host effect means no effect approval.
     expect(requests).toHaveLength(0);
     expect(spy.ran).toBe(true);
     expect(result.is_error).toBeFalsy();
@@ -358,11 +289,10 @@ describe("plugin read-relaxation — FLAG ON + foreground + plugin", () => {
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // EXACTLY ONE modal — the effect-gate (category "agent-action"), NOT the
-    // pre-exec tool modal (category "tool"). The pre-exec ask was relaxed.
+    // Show only effect approval, with no duplicate tool approval.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("agent-action");
-    // Deny at the effect-gate → the impl past the gate never ran.
+    // Effect denial must prevent mutation.
     expect(state.mutated).toBe(false);
     expect(result.is_error).toBe(true);
   });
@@ -404,9 +334,7 @@ describe("plugin read-relaxation — FLAG ON + foreground + plugin", () => {
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // openExternalUrl is now GATED (no longer an ENFORCEMENT_EXCLUSIONS member):
-    // the pre-exec ask was relaxed (no "tool" modal), but the effect-gate fired
-    // (category "agent-action") and, on deny, the browser was never opened.
+    // URL egress must face effect approval and remain unopened on denial.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("agent-action");
     expect(state.opened).toBe(false);
@@ -450,8 +378,7 @@ describe("plugin read-relaxation — NOT relaxed (scope guards)", () => {
   it("flag ON + HEADLESS plugin tool → NOT relaxed: kept on the existing headless lane (no reviewer → blocked, tool does not execute)", async () => {
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
-    // No reviewer wired → the headless lane denies a mutating plugin tool
-    // instead of relaxing it through to execution.
+    // Headless mutation without a reviewer must deny rather than relax.
     const { executor } = makeExecutor(makePluginNoEffectTool(spy), gate, () => true);
 
     const [result] = await executor.executeAll(
@@ -459,8 +386,7 @@ describe("plugin read-relaxation — NOT relaxed (scope guards)", () => {
       { sessionId: "s", permissionContext: userPermissionContext({ headless: true }) },
     );
 
-    // Relaxation is foreground-only: in headless the tool is NOT allowed
-    // through (it never executed), and no foreground modal was shown.
+    // Headless calls must not inherit foreground relaxation or show a modal.
     expect(spy.ran).toBe(false);
     expect(requests).toHaveLength(0);
     expect(result.is_error).toBe(true);
@@ -481,7 +407,7 @@ describe("plugin read-relaxation — explicit deny still wins", () => {
     );
 
     expect(spy.ran).toBe(false);
-    expect(requests).toHaveLength(0); // a deny shows no modal — it is blocked outright
+    expect(requests).toHaveLength(0);
     expect(result.is_error).toBe(true);
   });
 
@@ -491,8 +417,7 @@ describe("plugin read-relaxation — explicit deny still wins", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-relax-deny-"));
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      // Models the executor's deny-always handling — a prior user "deny always"
-      // persists exactly this rule, which checkDetailed reads as a layer-1 deny.
+      // Persisted user deny-always decisions remain layer-1 denies.
       await permMgr.addAlwaysDeniedPersist("plugin_noeffect");
       const { executor } = makeExecutor(makePluginNoEffectTool(spy), gate, () => true, permMgr);
 
@@ -513,9 +438,7 @@ describe("plugin read-relaxation — explicit deny still wins", () => {
 describe("plugin read-relaxation — operator perm-*.sh deny hook is preserved on the relaxed path", () => {
   it("flag ON + foreground + plugin + a perm hook that DENIES → tool is BLOCKED (not relaxed-allowed), no modal", async () => {
     const spy = { ran: false };
-    // allow-once so that if the perm hook were SKIPPED and the (non-existent)
-    // pre-exec modal somehow fired, the tool would run — making a regression
-    // visible. With the fix the perm hook denies first and the tool never runs.
+    // Allow-once would expose a skipped permission hook by letting the tool run.
     const { gate, requests } = makeGate("allow-once");
     const calls = { permRan: false };
     const { executor } = makeExecutor(
@@ -531,9 +454,7 @@ describe("plugin read-relaxation — operator perm-*.sh deny hook is preserved o
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The perm hook ran on the relaxed path and DENIED → fail-closed: tool blocked,
-    // tool body never executed, and no approval modal was shown (the relaxation
-    // path shows none; the perm-hook deny short-circuits before execution).
+    // Permission-hook denial must fail closed before execution or approval.
     expect(calls.permRan).toBe(true);
     expect(spy.ran).toBe(false);
     expect(requests).toHaveLength(0);
@@ -543,9 +464,7 @@ describe("plugin read-relaxation — operator perm-*.sh deny hook is preserved o
 
 describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAINING the host", () => {
   it("flag ON + sandbox FILESYSTEM-CONTAINED + foreground plugin ask → relaxed (NO modal, tool runs)", async () => {
-    // The baseline coupling assertion: with the active sandbox filesystem-
-    // contained (macOS/Linux full-confine ASRT), the relaxation fires exactly as
-    // before — clean UX, unchanged.
+    // Active filesystem containment enables relaxation.
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
     const { executor } = makeExecutor(
@@ -554,7 +473,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => true, // sandbox FILESYSTEM-CONTAINED
+      () => true,
     );
 
     const [result] = await executor.executeAll(
@@ -569,10 +488,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
   });
 
   it("flag ON + sandbox NOT filesystem-contained + foreground plugin ask → NOT relaxed: the pre-exec ask is shown, tool NOT auto-allowed", async () => {
-    // On a degraded / sandbox-off / synthetic network-only host the
-    // effect-boundary cannot contain the off-hostApi `node:fs` WRITE residual,
-    // so relaxing would be WEAKER than the pre-exec ask. The coupling clause
-    // keeps the pre-exec approval ask: on deny-once the tool never runs.
+    // Without filesystem containment, off-hostApi writes remain uncontained and require pre-execution approval.
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
     const { executor } = makeExecutor(
@@ -581,7 +497,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // sandbox NOT filesystem-contained (degraded / off / network-only)
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -589,8 +505,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The pre-exec tool-level modal fired (category "tool") and, on deny-once,
-    // the tool NEVER executed — the known-safe fallback, identical to flag-OFF.
+    // Pre-execution denial must prevent execution without confinement.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(false);
@@ -598,11 +513,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
   });
 
   it("flag ON + a MUTATING plugin tool + sandbox NOT filesystem-contained → NOT auto-allowed: the pre-exec ask is shown, mutation NOT performed", async () => {
-    // Hardens the "no mutating plugin tool is auto-allowed without filesystem
-    // containment" invariant: a tool that WOULD reach a host WRITE chokepoint
-    // must still face the pre-exec ask when the sandbox does not filesystem-
-    // contain. On deny-once at the pre-exec ask the tool body never runs, so the
-    // mutation is never even attempted.
+    // Mutating plugins must face pre-execution approval before reaching a write when filesystem confinement is absent.
     const state = { mutated: false };
     const flagEnabled = (): boolean => true;
     const { gate, requests } = makeGate("deny-once");
@@ -612,7 +523,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       flagEnabled,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // sandbox NOT filesystem-contained
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -620,9 +531,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The pre-exec tool-level modal fired (category "tool", NOT the effect-gate
-    // "agent-action"): the relaxation did NOT fire, so the tool was gated BEFORE
-    // execution and the mutation chokepoint was never reached.
+    // Denial before execution must prevent reaching the mutation chokepoint.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(state.mutated).toBe(false);
@@ -630,8 +539,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
   });
 
   it("flag OFF + sandbox NOT filesystem-contained → unchanged: the pre-exec ask is shown (relaxation inert regardless of sandbox)", async () => {
-    // Flag-OFF behaviour is independent of the sandbox state — the relaxation
-    // block is skipped entirely, so the full pre-exec ask stands.
+    // With relaxation disabled, pre-execution approval is independent of sandbox state.
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
     const { executor } = makeExecutor(
@@ -640,7 +548,7 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
       () => false,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // sandbox NOT filesystem-contained
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -655,17 +563,16 @@ describe("plugin read-relaxation — coupled to the OS sandbox FILESYSTEM-CONTAI
   });
 });
 
-// Confines-aware coupling wired through the REAL active-capability SOT. These
-// assert both the generic active filesystem-containment signal and the narrower
-// production plugin-effect provider. Platform-specific worker details live in
-// worker-spawn; the production provider only relaxes a plugin tool when its
-// specific worker-backed execution substrate is wrapped and filesystem-contained.
+// Production relaxation requires the specific worker-backed execution substrate to be filesystem-contained.
 describe("plugin read-relaxation — confines-aware via the active-capability SOT", () => {
   beforeEach(() => {
     __resetActiveSandboxCapabilityForTest();
   });
+  // Host-shell capability is visible only when shell sandboxing was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("active capability filesystem-contained (mac/linux full-confine) → relaxed (NO modal, tool runs)", async () => {
@@ -829,9 +736,7 @@ describe("plugin read-relaxation — confines-aware via the active-capability SO
   });
 
   it("active capability synthetic NETWORK-ONLY (confines.filesystem === false) → NOT relaxed: pre-exec ask stands, tool NOT auto-allowed", async () => {
-    // The core fix: an ACTIVE network-only sandbox contains egress but NOT the
-    // off-hostApi FS-write residual, so the relaxation must NOT fire even though
-    // a sandbox is active.
+    // Network-only confinement cannot contain off-hostApi filesystem writes and must not enable relaxation.
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -862,8 +767,6 @@ describe("plugin read-relaxation — confines-aware via the active-capability SO
   });
 
   it("no active capability (sandbox inactive, kind none) → NOT relaxed: pre-exec ask stands", async () => {
-    // No setActiveSandboxCapability → detectSandboxCapability reports kind none
-    // with no `confines` → isActiveSandboxFilesystemContained() is false.
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
     const { executor } = makeExecutor(
@@ -887,13 +790,8 @@ describe("plugin read-relaxation — confines-aware via the active-capability SO
   });
 });
 
-// The READ-auto-allow ↔ sandbox-fs-containment coupling. A plugin tool the host
-// inspector classifies as `read` (`{ command: "ls" }`) is auto-allowed at layer 6
-// (NOT an `ask`), so it skips the relaxation block above. This coupling closes the
-// SAME off-hostApi residual the relaxation closes — when the sandbox is NOT
-// filesystem-contained, a plugin read auto-allow must instead show the pre-exec
-// ask. Mirrors the relaxation coupling exactly: flag-on + plugin + foreground +
-// not shell-contained → ask; filesystem-contained plugin effects → unchanged auto-allow.
+// Foreground plugin reads must also require pre-execution approval without filesystem containment.
+// Layer-6 auto-allow bypasses the ask-relaxation block and needs its own containment check.
 describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT", () => {
   it("flag ON + host-derived plugin read + sandbox FILESYSTEM-CONTAINED → auto-allows (NO modal, tool runs) — macOS/Linux unchanged", async () => {
     const spy = { ran: false };
@@ -904,7 +802,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => true, // sandbox FILESYSTEM-CONTAINED
+      () => true,
     );
 
     const [result] = await executor.executeAll(
@@ -912,8 +810,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // inspectHostRisk("ls") → "read" → layer-6 auto-allow; fs-contained means the
-    // coupling does NOT fire, so the read auto-allows exactly as before: no modal.
+    // Filesystem-contained host-classified reads retain auto-allow.
     expect(requests).toHaveLength(0);
     expect(spy.ran).toBe(true);
     expect(result.is_error).toBeFalsy();
@@ -929,7 +826,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // sandbox NOT filesystem-contained (degraded / off / network-only)
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -937,9 +834,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The off-hostApi residual is uncontained without fs-containment → the read
-    // auto-allow is converted to the pre-exec ask (category "tool"); on deny-once
-    // the tool never executes. Was a silent auto-allow before this coupling.
+    // Uncontained off-hostApi effects require pre-execution approval even for host-classified reads.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(false);
@@ -955,7 +850,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // NOT filesystem-contained
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -963,8 +858,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The coupling produces a genuine user ask (not a deny): on allow-once the
-    // pre-exec modal fired exactly once and the read proceeds.
+    // This coupling asks the user rather than denying outright.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(true);
@@ -978,10 +872,10 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
     const { executor } = makeExecutor(
       makePluginReadTool(spy),
       gate,
-      () => false, // flag OFF — declared "read" drives the (identical) auto-allow
+      () => false,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // NOT filesystem-contained — irrelevant while the flag is OFF
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -1004,7 +898,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // NOT filesystem-contained
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -1012,8 +906,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // `source === "plugin"` excludes builtins → the coupling never fires; a
-    // builtin read auto-allows regardless of sandbox containment.
+    // Builtin reads are outside plugin containment coupling.
     expect(requests).toHaveLength(0);
     expect(spy.ran).toBe(true);
     expect(result.is_error).toBeFalsy();
@@ -1029,7 +922,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       () => true,
       new PermissionManager("/tmp/nonexistent-permissions.json"),
       undefined,
-      () => false, // NOT filesystem-contained
+      () => false,
     );
 
     const [result] = await executor.executeAll(
@@ -1037,10 +930,7 @@ describe("plugin read auto-allow — coupled to sandbox FILESYSTEM-CONTAINMENT",
       { sessionId: "s", permissionContext: userPermissionContext({ headless: true }) },
     );
 
-    // Foreground-only (mirrors the relaxation): a bare layer-6 ask in a headless
-    // lane would HARD-DENY (no reviewer route), breaking legitimate routine reads
-    // and making headless reads stricter than headless writes. So headless plugin
-    // reads keep today's auto-allow — no modal, tool runs.
+    // Headless reads retain auto-allow; a bare ask without reviewer routing would hard-deny routine reads.
     expect(requests).toHaveLength(0);
     expect(spy.ran).toBe(true);
     expect(result.is_error).toBeFalsy();
@@ -1052,8 +942,11 @@ describe("plugin read auto-allow coupling — confines-aware via the active-capa
   beforeEach(() => {
     __resetActiveSandboxCapabilityForTest();
   });
+  // Host-shell capability is visible only when shell sandboxing was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("active capability filesystem-contained (mac/linux full-confine) → plugin read auto-allows (NO modal)", async () => {
@@ -1110,8 +1003,7 @@ describe("plugin read auto-allow coupling — confines-aware via the active-capa
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // A network-only sandbox contains egress but NOT the off-hostApi FS residual,
-    // so the read auto-allow must convert to the pre-exec ask just like the relaxation.
+    // Network-only confinement leaves filesystem effects uncontained and must require read approval.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(false);
@@ -1124,11 +1016,7 @@ describe("plugin read-relaxation — layer ≤ 2 hard gates are NOT relaxed", ()
     const spy = { ran: false };
     const { gate, requests } = makeGate("deny-once");
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    // Global strict mode is a layer-2 hard gate: checkDetailed returns
-    // { decision: "ask", layer: 2 }. The relaxation floor is layer ≥ 3, so the
-    // ask is NOT relaxed — the full pre-exec modal is shown exactly as today.
-    // Guards against a future checkDetailed layer renumber silently widening the
-    // relaxation past strict mode.
+    // Strict-mode layer-2 asks are hard gates below the relaxation floor and must never be relaxed.
     permMgr.setMode("strict");
     const { executor } = makeExecutor(makePluginNoEffectTool(spy), gate, () => true, permMgr);
 
@@ -1137,8 +1025,7 @@ describe("plugin read-relaxation — layer ≤ 2 hard gates are NOT relaxed", ()
       { sessionId: "s", permissionContext: userPermissionContext() },
     );
 
-    // The layer-2 strict ask survived the relaxation: the pre-exec tool modal
-    // (category "tool") fired and, on deny-once, the tool never executed.
+    // Strict-mode denial must prevent execution despite relaxation.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.category).toBe("tool");
     expect(spy.ran).toBe(false);

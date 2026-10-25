@@ -37,7 +37,7 @@ const EXACT_REPLAY_ERRORS = {
   capacity: [-32094, "Exact send replay capacity exhausted", "EXACT_SEND_REPLAY_CAPACITY_EXHAUSTED"],
 } as const;
 
-export interface A2ARemoteCallerAuthenticator {
+interface A2ARemoteCallerAuthenticator {
   authenticate(authorization: string | undefined): Promise<Readonly<{
     callerGenerationId: string;
   }> | null>;
@@ -118,9 +118,7 @@ function parseExtensions(value: A2AWireRequestContext["extensions"]): Readonly<{
     }
     seen.add(uri);
     if (uri === A2A_EXACT_SEND_REPLAY_URI) {
-      // This profile is advertised optional. A caller may activate only the
-      // exact URI token; rewriting `;required` into the optional token would
-      // silently change negotiation semantics.
+      // Only the exact optional profile URI activates this contract; rewriting requiredness changes negotiation semantics.
       if (required) throw extensionRequired();
       exact = true;
     }
@@ -255,10 +253,4 @@ export class A2AExactReplayHandler implements A2ARequestHandler {
       ),
     };
   }
-}
-
-export function createA2AExactReplayHandler(
-  options: CreateA2AExactReplayHandlerOptions,
-): A2ARequestHandler {
-  return options.enabled ? new A2AExactReplayHandler(options) : options.handler;
 }

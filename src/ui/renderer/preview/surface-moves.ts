@@ -3,16 +3,8 @@ import type { DropTarget } from "../components/pane-drop.js";
 import type { WorkspaceTab } from "./workspace-tabs.js";
 import type { SavedSurface } from "../../../shared/main-layout.js";
 
-/**
- * Moving terminals and web pages between a side panel and the main area.
- *
- * A move never touches the surface itself — the PTY and the web guest are
- * keyed by the window-unique tab id — it moves the RECORD: out of one store
- * (a group's side-panel tabs, or the main-surface store) and into the other,
- * and changes which pane or tab shows it. The two halves happen in one event,
- * so the web layer's reconcile sees the tab listed throughout and the guest
- * is never let go.
- */
+/** Move store records and pane selection in one event so reconciliation sees the tab live throughout; never move its PTY or
+ * guest. */
 export type MovableTabKind = "terminal" | "browser";
 
 export function isMovableTabKind(kind: WorkspaceTab["kind"]): kind is MovableTabKind {
@@ -86,14 +78,13 @@ export function activateSideTab(tabId: string): string | null {
 
 /** What the window offers the side panels for moving their tabs out. */
 export interface SurfaceMoves {
-  /**
-   * Move a side tab of `fromGroupId` into the main area: into `drop`'s pane
-   * (centre) or a new pane on its edge, or — with no drop — a new pane beside
-   * the group's own, else the group's own pane.
-   */
+  /** Move a side tab of `fromGroupId` into the main area: into `drop`'s pane (centre) or a new pane on its edge, or — with no
+   * drop — a new pane beside the group's own, else the group's own pane. */
   tabToMain: (fromGroupId: string, tabId: string, drop?: { paneId: string; target: DropTarget }) => void;
   /** Move the surface a pane shows into `toGroupId`'s side panel (default: the pane's own group). */
   paneToSide: (paneId: string, toGroupId?: string) => void;
+  /** Bring a live surface from any pane or side panel into this group's work panel. */
+  tabToSide: (tabId: string, toGroupId: string) => void;
 }
 
 export const SurfaceMovesContext = createContext<SurfaceMoves | null>(null);

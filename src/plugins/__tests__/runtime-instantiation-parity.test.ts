@@ -1,17 +1,4 @@
-/**
- * C1 gap-lock — PluginRuntime 4-path instantiation parity.
- *
- * A plugin instance can be created/started through four distinct entry points:
- *   • load()/startAll()  — boot path
- *   • addPlugin()        — single install path (cold add + already-loaded restart)
- *   • restartPlugin()    — targeted restart
- *   • reloadPlugin()     — dev live-reload
- *
- * Individual paths are exercised elsewhere, but their CONVERGENCE to the same
- * observable registered state was not locked. These tests pin that every path
- * ends with: the plugin listed, its tool registered + callable, a perf-stats
- * entry present, and its manifest retrievable.
- */
+/** Boot, add, restart and reload must converge on the same registered runtime state. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rm } from "node:fs/promises";
 
@@ -43,7 +30,6 @@ async function captureState(rt: PluginRuntime): Promise<RegisteredState> {
     toolListed: rt.listToolNames().includes(TOOL),
     callResult: await rt.call(TOOL),
     hasPerfEntry: Boolean(rt.getPerfStats()[PLUGIN_ID]),
-    // #885 v6 — manifest.tools is now Tool[]; project to names for the parity compare.
     manifestTools: rt.getPluginManifest(PLUGIN_ID)?.tools.map((t) => t.name) ?? null,
   };
 }
@@ -106,17 +92,7 @@ describe("PluginRuntime instantiation parity", () => {
     expect(reloadState).toEqual(startState);
   });
 
-  /**
-   * A tool declared in the manifest with no matching runtime handler is
-   * skipped, and the skip is reported on the structured plugin-phase stream —
-   * that stream is how an operator finds out a tool silently disappeared.
-   *
-   * The four instantiation paths derived the same map four ways: two called
-   * the shared `buildMethodMap`, two re-implemented the loop by hand. One of
-   * the hand-rolled copies (addPlugin) reported the skip as a bare
-   * `log.warn` string carrying neither pluginId nor phase, so a tool dropped
-   * during install/enable never reached the stream the other paths feed.
-   */
+  /** Missing runtime handlers must be skipped and reported on the structured plugin-phase stream on every activation path. */
   describe("missing-handler skip telemetry", () => {
     const DECLARED_ONLY = "parity_orphan";
 
@@ -131,7 +107,6 @@ describe("PluginRuntime instantiation parity", () => {
       ]);
     });
 
-    /** The structured phase records the run emitted for the orphan tool. */
     function skipRecords(
       warn: { mock: { calls: unknown[][] } },
     ): unknown[] {

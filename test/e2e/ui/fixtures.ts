@@ -2,6 +2,7 @@ import { type ElectronApplication, type Page,
 } from "playwright";
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +10,7 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
   launchElectron,
+  makeTreeWritableSync,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
 
@@ -26,20 +28,20 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 type LaunchEnv = Record<string, string | undefined>;
 
 async function seedE2ePlugins(
-  aveHomeForTest: string,
+  aveHome: string,
   seedTogglePlugin: boolean,
   seedViewFixturePlugin: boolean,
   seedAlertPlugin: boolean,
 ): Promise<void> {
   const entries: FixtureRegistryEntry[] = [];
   if (seedAlertPlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, {
+    entries.push(await writeFixturePlugin(aveHome, {
       manifest: ALERT_FIXTURE_MANIFEST,
       files: { [ALERT_FIXTURE_MANIFEST.entry]: ALERT_FIXTURE_SOURCE },
     }));
   }
   if (seedTogglePlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, {
+    entries.push(await writeFixturePlugin(aveHome, {
       manifest: {
         id: "e2e-toggle-plugin",
         name: "E2E Toggle Plugin",
@@ -75,19 +77,18 @@ async function seedE2ePlugins(
     }));
   }
   if (seedViewFixturePlugin) {
-    entries.push(await writeFixturePlugin(aveHomeForTest, VIEW_FIXTURE));
+    entries.push(await writeFixturePlugin(aveHome, VIEW_FIXTURE));
   }
-  writeFixtureRegistry(aveHomeForTest, entries);
+  writeFixtureRegistry(aveHome, entries);
 }
 
-/**
- * Shared fixture: launches the built Electron main process with an
- * isolated userData dir so E2E runs do not pollute local state.
- */
+/** Shared fixture: launches the built Electron main process with an isolated userData dir so E2E runs do not pollute local state. */
 export type ElectronFixtures = {
   app: ElectronApplication;
   mainWindow: Page;
   userDataDir: string;
+  tempHome: string;
+  aveHome: string;
   /** i18n catalog binding for locale-agnostic assertions (see ./i18n.ts). */
   t: TestT;
 };
@@ -102,12 +103,10 @@ export type ElectronOptions = {
   /** Raw persisted provider id, including an id a newer build has retired. */
   seedLlmProvider: string;
   seedLocale: "ko" | "en";
-  /**
-   * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
-   * build asks for (an http or loopback marketplace's confirmations, design
-   * §18.2.2) turns it off; without it, the seeded `local-dev` fixture plugins
-   * do not load, so such a spec also sets `seedViewFixturePlugin: false`.
-   */
+  /** Explicit saved sandbox preference; undefined exercises production defaults. */
+  seedOsToolSandbox: boolean | undefined;
+  /** Launch with `AVE_DEV=1` (the default). A spec that checks what a user's build asks for (an http or loopback marketplace's confirmations, design
+   * §18.2.2) turns it off; without it, the seeded `local-dev` fixture plugins do not load, so such a spec also sets `seedViewFixturePlugin: false`. */
   devFlag: boolean;
 };
 
@@ -118,21 +117,17 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   seedAlertPlugin: [false, { option: true }],
   seedPermissionMode: [undefined, { option: true }],
   seedViewFixturePlugin: [true, { option: true }],
-  // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets).
-  // Specs that assert the no-key / key-toggle state override with
-  // `test.use({ seedApiKey: false })`.
+  // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets). Specs that assert the no-key / key-toggle state override with `test.use({ seedApiKey: false })`.
   seedApiKey: [true, { option: true }],
   seedLlmProvider: ["", { option: true }],
-  // UI locale to seed. Defaults to 'en' — the production default (#1200) — so
-  // ./fixtures specs exercise the English render path; their assertions go
-  // through the `t` fixture so they resolve whatever is seeded. Specs that need
-  // Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own
-  // harness pin their locale via a module-scoped `makeTestT(...)`.
+  // UI locale to seed. Defaults to 'en'; the production default; so ./fixtures specs exercise the English render path; their assertions go through the `t` fixture so they resolve
+  // whatever is seeded. Specs that need Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
+  seedOsToolSandbox: [undefined, { option: true }],
   devFlag: [true, { option: true }],
 
   userDataDir: async ({}, use) => {
-    const dir = fs.mkdtempSync(path.join("/tmp", "ave-e2e-"));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), "ave-e2e-"));
     await use(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -141,9 +136,24 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     }
   },
 
+  tempHome: async ({}, use) => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), "ave-e2e-home-"));
+    await use(dir);
+    makeTreeWritableSync(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  },
+
+  aveHome: async ({ tempHome }, use) => {
+    const dir = path.join(tempHome, ".ave");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    await use(dir);
+  },
+
   app: async (
     {
       userDataDir,
+      tempHome,
+      aveHome,
       launchEnv,
       onboardingCompleted,
       seedTogglePlugin,
@@ -153,6 +163,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedApiKey,
       seedLlmProvider,
       seedLocale,
+      seedOsToolSandbox,
       devFlag,
     },
     use,
@@ -164,25 +175,13 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         `Electron main entry not found at ${mainEntry}. Run 'bun run build' before 'playwright test'.`,
       );
     }
-    /* Isolate Ave user-data state under the per-test temp dir so encrypted
-       secret blobs from a previous dev run on `~/.ave/secrets/` do not bleed
-       into the test (their Keychain key may have rotated, decryption fails,
-       bootstrap dies). Resolved via the shared `aveHome()` helper. */
-    const aveHomeForTest = path.join(userDataDir, "ave-state");
-    fs.mkdirSync(aveHomeForTest, { recursive: true, mode: 0o700 });
-    // Permission mode for the profile. The default is `default`, under which a
-    // real model's first path-bearing tool call parks the turn on an approval
-    // card — nobody answers it headlessly, so a live spec that needs tools to
-    // actually RUN never gets past the first one. Export
-    // AVE_E2E_PERMISSION_MODE=allow to exercise the tool path end to end.
+    /* Isolate Ave user-data state under the per-test temp dir so encrypted secret blobs from a previous dev run on `~/.ave/secrets/` do not bleed into the test (their Keychain key may have rotated, decryption fails, bootstrap dies). Resolved via the shared `aveHome()` helper. Permission mode for the profile. The default is `default`, under which a real model's first path-bearing tool call parks the turn on an approval card; nobody answers it headlessly, so a live spec that needs tools to actually RUN never gets past the first one. Export AVE_E2E_PERMISSION_MODE=allow to exercise the tool path end to end. */
     const permissionMode = seedPermissionMode ?? process.env.AVE_E2E_PERMISSION_MODE?.trim();
     if (permissionMode) {
-      // The WHOLE PermissionsFile shape. `readPermissionsFile` discards the
-      // file unless `version === 1` and `rules` is an array, and a discarded
-      // file silently falls back to `default` — so a partial seed looks like
-      // it worked while the app never leaves the default mode.
+      // The WHOLE PermissionsFile shape. `readPermissionsFile` discards the file unless `version === 1` and `rules` is an array, and a
+      // discarded file silently falls back to `default`; so a partial seed looks like it worked while the app never leaves the default mode.
       fs.writeFileSync(
-        path.join(aveHomeForTest, "permissions.json"),
+        path.join(aveHome, "permissions.json"),
         JSON.stringify(
           { version: 1, rules: [], mode: permissionMode, updatedAt: new Date().toISOString() },
           null,
@@ -192,6 +191,9 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     const baseSettings = buildE2eBaseSettings(onboardingCompleted, seedLocale);
+    if (seedOsToolSandbox !== undefined) {
+      baseSettings.features = { ...(baseSettings.features as object), osToolSandbox: seedOsToolSandbox };
+    }
     const initialSettings = seedLlmProvider
       ? { ...baseSettings, llm: { provider: seedLlmProvider } }
       : baseSettings;
@@ -204,10 +206,8 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       ) + "\n",
       "utf-8",
     );
-    // Live-model opt-in. With no key exported this is undefined and every spec
-    // stays offline on the fake seeded credentials, so the normal suite is
-    // unaffected; with one, the profile is pinned to OpenRouter and the app
-    // under test talks to a real provider.
+    // Live-model opt-in. With no key exported this is undefined and every spec stays offline on the fake seeded credentials, so
+    // the normal suite is unaffected; with one, the profile is pinned to OpenRouter and the app under test talks to a real provider.
     const liveKey = process.env.AVE_SMOKE_OPENROUTER_KEY?.trim();
     if (liveKey) {
       const settings = JSON.parse(
@@ -219,12 +219,8 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         vendors: {
           ...(settings.llm?.vendors ?? {}),
           openrouter: {
-            // Cheap router target by default. The app ships
-            // `anthropic/claude-sonnet-4.6`, but Ave sends no
-            // `maxOutputTokens` (adapter.ts — "vendor SDK defaults govern"),
-            // so OpenRouter pre-authorizes that model's full 65536-token
-            // output and a credit-limited key is rejected 402 on every turn.
-            // Override with AVE_SMOKE_MODEL to reproduce that.
+            // Cheap router target by default. The app ships `anthropic/claude-sonnet-4.6`, but Ave sends no `maxOutputTokens` (adapter.ts; "vendor SDK defaults govern"), so
+            // OpenRouter pre-authorizes that model's full 65536-token output and a credit-limited key is rejected 402 on every turn. Override with AVE_SMOKE_MODEL to reproduce that.
             model: process.env.AVE_SMOKE_MODEL?.trim() || "openrouter/auto",
             baseUrl: "https://openrouter.ai/api/v1",
           },
@@ -237,12 +233,8 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     if (seedApiKey) {
-      // Seed an at-rest LLM key secret so `has-api-key` is true at boot and the
-      // composer is enabled. Written to the same userData dir as the settings
-      // file (SettingsService resolves both from options.userDataPath). Use
-      // owner-only mode 0o600 to match production SettingsService.saveSecrets,
-      // so the seeded file is never group/world-readable before the app's own
-      // permission migration runs.
+      // Seed an at-rest LLM key secret so `has-api-key` is true at boot and the composer is enabled. Written to the same userData dir as the settings file (SettingsService resolves both from
+      // options.userDataPath). Use owner-only mode 0o600 to match production SettingsService.saveSecrets, so the seeded file is never group/world-readable before the app's own permission migration runs.
       fs.writeFileSync(
         path.join(userDataDir, "ave-secrets.json"),
         JSON.stringify(buildE2eSecrets(liveKey), null, 2) + "\n",
@@ -250,7 +242,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     await seedE2ePlugins(
-      aveHomeForTest,
+      aveHome,
       seedTogglePlugin,
       seedViewFixturePlugin,
       seedAlertPlugin,
@@ -259,11 +251,11 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         ...launchEnv,
-        HOME: userDataDir,
-        USERPROFILE: userDataDir,
+        HOME: tempHome,
+        USERPROFILE: tempHome,
         ...(devFlag ? { AVE_DEV: "1" } : {}),
         AVE_E2E: "1",
-        AVE_HOME: aveHomeForTest,
+        AVE_HOME: aveHome,
         NODE_ENV: "test",
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
       }),
@@ -286,22 +278,14 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
 
   mainWindow: async ({ app }, use) => {
     const win = await app.firstWindow();
-    // The app first loads a data: splash URL, then boots and replaces it with
-    // the real index.html. Wait for the top action bar root via data-testid —
-    // this is the first persistent element after React mounts and survives
-    // view changes. Locale-independent: previously we matched on Korean
-    // header text, which would break the moment the UI is localized.
+    // The app first loads a data: splash URL, then boots and replaces it with the real index.html. Wait for the top action bar root via data-testid; this is the first
+    // persistent element after React mounts and survives view changes. Locale-independent: previously we matched on Korean header text, which would break the moment the UI is localized.
     await win.locator('[data-testid="main-toolbar"]').first().waitFor({
       state: "visible",
       timeout: 60_000,
     });
-    // Neutralize the plugin onboarding proposal card. With onboardingCompleted
-    // seeded true the host treats the harness as a returning user, so the gate
-    // is open at boot and a seeded repository plugin (e.g. meeting) yields a
-    // proposal on every run. No spec asserts it, and a card in the floating
-    // lane takes pointer events the specs aim elsewhere — so hide it globally.
-    // CSS applies even if it mounts after this point, and specs that need it
-    // can scope it back in. Keeps the harness locale/onboarding-state agnostic.
+    // Neutralize the plugin onboarding proposal card. With onboardingCompleted seeded true the host treats the harness as a returning user, so the gate is open at boot and a seeded repository plugin (e.g. meeting) yields a proposal on every run. No spec
+    // asserts it, and a card in the floating lane takes pointer events the specs aim elsewhere; so hide it globally. CSS applies even if it mounts after this point, and specs that need it can scope it back in. Keeps the harness locale/onboarding-state agnostic.
     await win.addStyleTag({
       content: '[data-overlay-source="proposal"]{display:none !important;}',
     });

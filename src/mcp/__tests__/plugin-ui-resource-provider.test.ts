@@ -1,16 +1,4 @@
-/**
- * `createPluginUiResourceProvider` — the single fail-closed POLICY chokepoint for
- * serving a first-party plugin's OWN `ui://` MCP App cards.
- *
- * Content-serving: the plugin supplies the card bytes (`readHtml`, wired to
- * `PluginRuntime.readUiResource`), the manifest supplies the policy. The module is
- * PURE — no fs, no path — so these tests need no disk fixtures. Proves:
- *   - serves a declared own-namespace resource (plugin html + the MANIFEST's csp),
- *   - rejects a cross-plugin uri authority (own-namespace-only),
- *   - rejects an undeclared uri — and never asks the plugin for it,
- *   - a rejecting plugin hook fails closed (no body),
- *   - lists declared resources with the mcp-app mime.
- */
+/** Serve only declared own-namespace cards using manifest policy; reject before invoking the serving hook. */
 import { describe, it, expect, vi } from "vitest";
 import {
   createPluginUiResourceProvider,
@@ -29,7 +17,6 @@ const DECLS: PluginUiResourceDecl[] = [
   { uri: `ui://${PLUGIN_ID}/plain.html` },
 ];
 
-/** The plugin's serving hook, as an in-memory uri → html table. */
 function providerWith(cards: Record<string, string>, declarations = DECLS) {
   const readHtml = vi.fn(async (uri: string) => {
     const body = cards[uri];
@@ -46,7 +33,6 @@ describe("createPluginUiResourceProvider — plugin ui:// serving chokepoint", (
 
     const res = await provider.read(uri);
     expect(res.html).toBe("<h1>hello</h1>");
-    // Policy comes from the manifest declaration, NEVER from the hook.
     expect(res.csp).toEqual({ connectDomains: ["https://api.acme.example"] });
     expect(readHtml).toHaveBeenCalledWith(uri);
   });
@@ -60,16 +46,13 @@ describe("createPluginUiResourceProvider — plugin ui:// serving chokepoint", (
   });
 
   it("attaches the MANIFEST's declared permissions, never the plugin hook's return", async () => {
-    // `readHtml` (plugin CODE) returns only a string — it has no channel to request a
-    // powerful feature. The permissions come from the reviewed, manifest-covered decl.
+    // Serving hooks return bytes only; permissions come from the reviewed manifest.
     const uri = `ui://${PLUGIN_ID}/hello.html`;
     const res = await providerWith({ [uri]: "<h1>hi</h1>" }).provider.read(uri);
     expect(res.permissions).toEqual({ geolocation: {} });
   });
 
   it("rejects a uri whose authority is a DIFFERENT plugin (own-namespace-only, fail-closed)", async () => {
-    // Even if the FOREIGN uri were somehow declared, the authority gate rejects it
-    // first — and the plugin is never asked to serve it.
     const { provider, readHtml } = providerWith({ "ui://evil-plugin/hello.html": "<h1>pwn</h1>" }, [
       { uri: "ui://evil-plugin/hello.html" },
     ]);
@@ -79,8 +62,6 @@ describe("createPluginUiResourceProvider — plugin ui:// serving chokepoint", (
 
   it("rejects an undeclared uri in its OWN namespace — without asking the plugin", async () => {
     const undeclared = `ui://${PLUGIN_ID}/nope.html`;
-    // The plugin WOULD happily serve it; declared-only refuses first, so served
-    // content can never escape the manifest-declared csp the host computes from.
     const { provider, readHtml } = providerWith({ [undeclared]: "<h1>undeclared</h1>" });
     await expect(provider.read(undeclared)).rejects.toThrow(/no declared ui:\/\/ resource/i);
     expect(readHtml).not.toHaveBeenCalled();
@@ -93,7 +74,6 @@ describe("createPluginUiResourceProvider — plugin ui:// serving chokepoint", (
   });
 
   it("fails closed when the plugin's serving hook rejects (no body)", async () => {
-    // e.g. the host-side bound fired (timeout / size cap) or the plugin threw.
     const provider = createPluginUiResourceProvider({
       pluginId: PLUGIN_ID,
       declarations: DECLS,

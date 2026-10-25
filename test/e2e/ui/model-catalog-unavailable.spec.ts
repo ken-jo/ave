@@ -9,8 +9,7 @@ let bootstrapScript: string;
 test.use({ viewport: { width: 980, height: 640 }, trace: "on" });
 
 test.beforeAll(async () => {
-  // Exercise the unmounted startup panel directly, including the host refusal
-  // path. No running host or provider credentials are needed for this state.
+  // Mount the startup state directly to exercise refusal without a running host or credentials.
   const bundle = await build({
     stdin: {
       resolveDir: REPO_ROOT,

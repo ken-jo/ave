@@ -1,34 +1,5 @@
-/**
- * seedAveHomeDocs — first-boot seed + `.new` upgrade-marker coverage.
- *
- * Covers the unit-testable acceptance criteria of issue #1108 (follow-up to
- * PR #1104's built-in agents/skills seed):
- *   - first-boot copy of packaged resources into ~/.ave/{AGENTS.md,agents,skills,prompts}
- *   - byte-identical re-run is a no-op (idempotent)
- *   - a byte-identical known packaged AGENTS.md predecessor is replaced in place
- *   - a user-edited AGENTS.md / skill / prompt copy survives upgrade; the new
- *     packaged version lands as `<file>.new` rather than clobbering the user's edit
- *   - user-edited agent profiles are seed-only and do not create `agents/*.md.new`
- *   - a second divergent upgrade lands a timestamped `<file>.new.<ts>` and
- *     leaves the prior `.new` untouched
- *   - an already-offered `.new` identical to the packaged copy is a no-op
- *   - a version any existing marker already carries — the stale undated one or
- *     a dated sibling — is not offered a second time
- *   - a dated marker whose bytes are on the shipped-version allowlist is
- *     dropped when a newer version is offered
- *   - seeded files are chmod 0o600 (POSIX)
- *
- * Dev-mode resolution (`app.isPackaged === false`) walks up from the module's
- * own location to the first ancestor containing `resources/skills` — a fully
- * cwd-independent anchor that also ignores `app.getAppPath()` (wrong under
- * `bun run start`, where the launcher passes a script-file arg and getAppPath
- * resolves to the script dir `dist/src/main`). The test points the
- * `AVE_RESOURCE_ROOT` override at a temp fixtures root and `AVE_HOME` at a
- * temp home — no real ~/.ave or repo resources are touched.
- *
- * The packaged launch smoke verifies that resources ship and seed on real
- * first launch; this file keeps the deterministic seed/upgrade semantics.
- */
+// AVE_RESOURCE_ROOT and AVE_HOME point at fixtures; real user files and packaged resources remain untouched. Packaged launch coverage verifies resource
+// shipping; these cases exercise deterministic seed and upgrade behavior.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
@@ -48,7 +19,6 @@ import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { configureHostResources } from "../host-resources.js";
 
-
 import {
   discardAveHomeDocUpgradeMarker,
   isShippedAgentsMdContent,
@@ -65,7 +35,7 @@ let fixtures: string;
 let home: string;
 const prevAveHome = process.env.AVE_HOME;
 const prevResourceRoot = process.env.AVE_RESOURCE_ROOT;
-/** Write a packaged resource fixture under <fixtures>/resources/<rel>. */
+// Write a packaged resource fixture under <fixtures>/resources/<rel>.
 function writeRes(rel: string, content: string): void {
   const p = join(fixtures, "resources", rel);
   mkdirSync(dirname(p), { recursive: true });
@@ -124,10 +94,8 @@ describe("seedAveHomeDocs — first boot", () => {
   });
 
   it("resolves dev resources independent of process.cwd() (regression: chdir-before-seed)", async () => {
-    // ensureWorkspaceCwd() chdir()s the main process to ~/.ave/workspace before
-    // boot. Seeding must still find the repo's resources/ via the module-anchored
-    // walk-up, not a cwd-relative join (and not app.getAppPath(), which points at
-    // the script dir under `bun run start`).
+    // ensureWorkspaceCwd() chdir()s the main process to ~/.ave/workspace before boot. Seeding must still find the repo's resources/ via the module-anchored
+    // walk-up, not a cwd-relative join (and not app.getAppPath(), which points at the script dir under `bun run start`).
     const originalCwd = process.cwd();
     const elsewhere = mkdtempSync(join(tmpdir(), "ave-seed-cwd-"));
     process.chdir(elsewhere);
@@ -353,12 +321,7 @@ describe("seedAveHomeDocs — upgrade markers", () => {
 });
 
 describe("seedAveHomeDocs — one offer per packaged version", () => {
-  /**
-   * A seed pass at a pinned wall clock. Dated marker names are minted from
-   * `new Date()`, so two offers landing inside the same millisecond would
-   * share a name; pinning the clock makes each case's expected file set exact
-   * instead of dependent on how long the surrounding filesystem work took.
-   */
+  // Pin the clock to make dated marker names deterministic, including offers within the same millisecond.
   function seedAt(iso: string): ReturnType<typeof seedAveHomeDocs> {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(iso));
@@ -369,7 +332,7 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     }
   }
 
-  /** Divergent user copy + `AGENTS.md.new` at v2 + one dated sibling at v3. */
+  // Divergent user copy + `AGENTS.md.new` at v2 + one dated sibling at v3.
   function offerThroughV3(): void {
     seedAveHomeDocs();
     writeFileSync(join(home, "AGENTS.md"), "user edited\n");
@@ -387,9 +350,8 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
 
   it("adds nothing when a dated sibling already carries the packaged version", () => {
     offerThroughV3();
-    // The undated marker is stale at v2 and is never refreshed; before the
-    // dated siblings were consulted too, this relaunch minted another copy of
-    // v3, and so did every relaunch after it.
+    // The undated marker is stale at v2 and is never refreshed; before the dated siblings were consulted too, this relaunch minted another copy of v3, and
+    // so did every relaunch after it.
     const before = readdirSync(home).sort();
 
     const r = seedAt("2026-01-03T00:00:00.000Z");
@@ -417,7 +379,8 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     ]);
   });
 
-  it("removes a dated sibling whose bytes are an allowlisted shipped version", () => {
+  // Without O_NOFOLLOW the host deliberately retains existing markers.
+  it.skipIf(process.platform === "win32")("removes a dated sibling whose bytes are an allowlisted shipped version", () => {
     writeRes(
       "AGENTS.md.replaceable-sha256",
       `${sha256("AGENTS v1\n")}\n${sha256("AGENTS v3\n")}\n`,
@@ -428,13 +391,19 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     const r = seedAt("2026-01-03T00:00:00.000Z");
 
     expect(r.upgraded).toContain("AGENTS.md");
-    // v3 shipped, so that marker holds no user work — the same evidence under
-    // which the in-place path would have overwritten the user's own copy.
+    // v3 shipped, so that marker holds no user work — the same evidence under which the in-place path would have overwritten the user's own copy. Without
+    // O_NOFOLLOW (Windows) the marker cannot be hashed without following a link, so the prune fails closed and keeps it.
     const dated = datedMarkers();
-    expect(dated).toHaveLength(1);
-    expect(readFileSync(join(home, dated[0]), "utf8")).toBe("AGENTS v4\n");
-    // The undated marker is the path a pending upgrade is surfaced under and
-    // is left alone even when its bytes are allowlisted.
+    if (typeof fsConstants.O_NOFOLLOW === "number") {
+      expect(dated).toHaveLength(1);
+      expect(readFileSync(join(home, dated[0]), "utf8")).toBe("AGENTS v4\n");
+    } else {
+      expect(dated.map((f) => readFileSync(join(home, f), "utf8")).sort()).toEqual([
+        "AGENTS v3\n",
+        "AGENTS v4\n",
+      ]);
+    }
+    // The undated marker is the path a pending upgrade is surfaced under and is left alone even when its bytes are allowlisted.
     expect(readFileSync(join(home, "AGENTS.md.new"), "utf8")).toBe("AGENTS v2\n");
   });
 
@@ -452,8 +421,7 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     const afterV3 = readdirSync(skillDir).sort();
     expect(afterV3.filter((f) => f.startsWith("report-writing.md.new"))).toHaveLength(2);
 
-    // Skills ship no replaceable-hash allowlist, so nothing about them can be
-    // shown to be a superseded shipped copy and nothing is pruned.
+    // Skills ship no replaceable-hash allowlist, so nothing about them can be shown to be a superseded shipped copy and nothing is pruned.
     expect(seedAt("2026-01-03T00:00:00.000Z").upgraded).not.toContain(skill);
     expect(readdirSync(skillDir).sort()).toEqual(afterV3);
     expect(readFileSync(join(home, skill), "utf8")).toBe("user report\n");

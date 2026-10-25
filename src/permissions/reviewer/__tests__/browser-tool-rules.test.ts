@@ -1,12 +1,4 @@
-/**
- * The agent browser tools' rule verdicts.
- *
- * A browser action is graded on what it touches — a page origin the approval
- * card names — not by the generic builtin network/write rules, which grade
- * any builtin without a URL or path HIGH (once-only at the gate, so the
- * session-scoped origin memory could never be used). A model-chosen URL
- * (navigate, tab_new) still goes through web_fetch's request screen.
- */
+// Browser actions grade their named page origin; model-chosen navigation URLs still pass the request screen.
 import { describe, expect, it } from "vitest";
 import { RuleBasedRiskClassifier } from "../risk-classifier.js";
 import { makeRiskClassifierContext } from "../../__tests__/test-helpers.js";
@@ -22,6 +14,11 @@ function verdictFor(toolName: string, category: ToolCategory, input: Record<stri
 describe("browser tool rule verdicts", () => {
   it.each([
     [BROWSER_TOOL.click, "write" as const, { tabId: "tab-1", ref: "e3" }],
+    [BROWSER_TOOL.hover, "write" as const, { tabId: "tab-1", ref: "e3" }],
+    [BROWSER_TOOL.drag, "write" as const, { tabId: "tab-1", sourceRef: "e3", targetRef: "e4" }],
+    [BROWSER_TOOL.select, "write" as const, { tabId: "tab-1", ref: "e3", value: "a" }],
+    [BROWSER_TOOL.scroll, "write" as const, { tabId: "tab-1", ref: "e3", direction: "down", pixels: 200 }],
+    [BROWSER_TOOL.upload, "write" as const, { tabId: "tab-1", ref: "e3" }],
     [BROWSER_TOOL.type, "write" as const, { tabId: "tab-1", ref: "e3", text: "hello" }],
     [BROWSER_TOOL.pressKey, "write" as const, { tabId: "tab-1", key: "Enter" }],
     [BROWSER_TOOL.tabClose, "write" as const, { tabId: "tab-1" }],

@@ -1,14 +1,9 @@
-/**
- * MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated
- * to all app windows so the reviewer tab auto-unlocks without a full reload:
- *   - ave:settings:set-api-key
- *   - ave:settings:delete-api-key
- *   - ave:settings:set-web-api-key
- *   - ave:settings:delete-web-api-key
- *   - ave:settings:marketplace:set-api-key
- *   - ave:settings:marketplace:delete-api-key
- */
+/** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
+ * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -22,12 +17,12 @@ vi.mock("electron", () => ({
     }),
   },
 }));
-vi.mock("../../../engine/llm/model-list.js", () => ({
+vi.mock("../../../engine/llm/model-list.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../engine/llm/model-list.js")>(),
   listLlmModelsFromSettings: listLlmModelsFromSettingsMock,
 }));
 
-// Shared fixture (test-helpers.ts) — no senderFrame set, so validateSender's
-// `!frame` early-allow applies, same as this file's former inline `invoke`.
+// Shared fixture (test-helpers.ts); no senderFrame set, so validateSender's `!frame` early-allow applies, same as this file's former inline `invoke`.
 const invoke = makeAppIpcInvoker(handlers);
 
 function makeWindow() {
@@ -74,8 +69,7 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
     },
     auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => appWindows),
-    // Main's Chromium-stack transport; the handler is expected to hand it to
-    // the engine rather than let the engine reach for ambient `fetch`.
+    // Main's Chromium-stack transport; the handler is expected to hand it to the engine rather than let the engine reach for ambient `fetch`.
     singleHopNetworkFetch: vi.fn() as unknown as typeof fetch,
   };
 }
@@ -256,8 +250,6 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
   });
 });
 
-// ─── MAJOR-3: set/delete-web-api-key broadcast ────────────────────────
-
 describe("set-web-api-key broadcast (MAJOR-3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after storing the web key", async () => {
     const windows = [makeWindow(), makeWindow()];
@@ -295,8 +287,6 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
     }
   });
 });
-
-// ─── MAJOR-3: marketplace:set/delete-api-key broadcast ───────────────
 
 describe("marketplace provider preset runtime refresh", () => {
   it("refreshes both chat runtime providers after installing a provider preset", async () => {
@@ -407,6 +397,137 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     expect(rewire).toHaveBeenCalledOnce();
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["rewires", "claude/claude-sonnet-4-6", 1],
+    ["does not rewire", null, 0],
+  ] as const)("%s when a selected reviewer model's own provider route changes (reviewer model %s)", async (_label, reviewerModel, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "reviewer-route-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: reviewerModel } } }));
+    try {
+      const rewire = vi.fn();
+      const llm = (claudeBaseUrl: string) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" }, claude: { model: "claude-sonnet-4-6", baseUrl: claudeBaseUrl } },
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? "https://claude-a.example" : "https://claude-b.example");
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      await invoke("ave:settings:update", { llm: { vendors: { claude: { baseUrl: "https://claude-b.example" } } } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["adds the stage model", null, ["team-stage"], 1],
+    ["removes the stage model", ["team-stage", "other-model"], ["other-model"], 1],
+    ["changes an unrelated entry", ["other-model"], ["other-model", "another-model"], 0],
+  ] as const)("re-wires on a catalogue sync that %s for a chain stage's own model (listing %j -> %j, rewires %i)", async (_label, before, after, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "stage-catalogue-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({
+      permissions: { judge: { model: null, chain: [{ id: "stage", provider: "builtin-llm", model: "openai/team-stage" }] } },
+    }));
+    try {
+      const rewire = vi.fn();
+      const llm = (models: readonly string[] | null) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" } },
+        ...(models ? {
+          modelListCache: {
+            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
+          },
+        } : {}),
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? before : after);
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      await invoke("ave:settings:update", { llm: { modelListCache: llm(after).modelListCache } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["rewires", ["team-reviewer"], 1],
+    ["does not rewire", ["other-model"], 0],
+  ] as const)("%s when the chat provider's synced catalogue changes a same-provider reviewer model's availability (listing %j)", async (_label, listed, rewires) => {
+    const home = mkdtempSync(join(tmpdir(), "reviewer-catalogue-rewire-"));
+    vi.stubEnv("AVE_HOME", home);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
+    try {
+      const rewire = vi.fn();
+      const llm = (models: readonly string[] | null) => ({
+        provider: "openai",
+        activeChatRuntime: { kind: "api" },
+        vendors: { openai: { model: "gpt-4o" } },
+        ...(models ? {
+          modelListCache: {
+            std: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [...models], fetchedAt: "2026-10-23T00:00:00.000Z" },
+          },
+        } : {}),
+      });
+      let llmReads = 0;
+      const baseDeps = makeDeps([]);
+      const deps = {
+        ...baseDeps,
+        settingsService: {
+          ...baseDeps.settingsService,
+          get: vi.fn((key: string) => {
+            if (key === "marketplace") return {};
+            llmReads += 1;
+            return llm(llmReads === 1 ? null : listed);
+          }),
+          patch: vi.fn(async (p: unknown) => p),
+        },
+        rewireReviewerAgent: rewire,
+      };
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      // The chat route itself is unchanged: only the synced catalogue moves.
+      await invoke("ave:settings:update", { llm: { modelListCache: llm(listed).modelListCache } });
+      expect(rewire).toHaveBeenCalledTimes(rewires);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("calls rewireReviewerAgent when the active LLM model changes", async () => {
@@ -847,9 +968,8 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const windows: ReturnType<typeof makeWindow>[] = [];
     const rewire = vi.fn();
     const baseDeps = makeDeps(windows, undefined);
-    // Key-based mock (robust to call order — the handler reads several keys
-    // including E4's shortcuts/system). `llm` flips from null baseUrl to the new
-    // one once `patched` is set, reproducing the prev→new transition.
+    // Key-based mock (robust to call order; the handler reads several keys including E4's shortcuts/system).
+    // `llm` flips from null baseUrl to the new one once `patched` is set, reproducing the prev→new transition.
     let patched = false;
     const deps = {
       ...baseDeps,
@@ -940,8 +1060,6 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   });
 });
 
-// ─── Minor-1 R2: broadcastSettingsSnapshot helper consolidation ───────────────
-
 describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers call it", () => {
   it("set-api-key broadcasts snapshot via helper (not stale inline copy)", async () => {
     const win = makeWindow();
@@ -1022,8 +1140,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
       const { registerSettingsHandlers } = await import("../settings.js");
       registerSettingsHandlers(deps as never);
 
-      // The older update targets the lazy Korean catalog and stalls on its
-      // loader; the newer one targets the eager English catalog and lands first.
+      // The older update targets the lazy Korean catalog and stalls on its loader; the newer one targets the eager English catalog and lands first.
       const older = invoke("ave:settings:update", { appearance: { language: "ko" } });
       await koRequested;
       await expect(invoke("ave:settings:update", { appearance: { language: "en" } }))
@@ -1118,8 +1235,6 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
   });
 });
 
-// ─── Minor-4 R2: settings:update rejects non-string baseUrl ──────────────────
-
 describe("Minor-4: settings:update rejects non-string baseUrl", () => {
   it("returns invalid-foundry-endpoint when baseUrl is a number", async () => {
     const deps = makeDeps([]);
@@ -1163,8 +1278,6 @@ describe("Minor-4: settings:update rejects non-string baseUrl", () => {
     expect(deps.settingsService.patch).toHaveBeenCalled();
   });
 });
-
-// ─── LOW-2: settings:update validates vendors["azure-foundry"].baseUrl ────────
 
 describe("LOW-2: settings:update validates azure-foundry baseUrl at write time", () => {
   it("returns invalid-foundry-endpoint when baseUrl is HTTP (not HTTPS)", async () => {
@@ -1233,6 +1346,8 @@ describe("main-owned settings fields on ave:settings:update", () => {
   it.each([
     ["a2aRemote", "a2a-remote-settings-main-owned"],
     ["appliedMigrations", "applied-migrations-main-owned"],
+    // Where sandbox egress goes next: only the permissions upstreamProxySet channel (validated, credentials to the secret store) writes it.
+    ["upstreamProxy", "upstream-proxy-settings-main-owned"],
   ])("refuses a patch that names %s and writes nothing", async (field, error) => {
     const deps = makeDeps([makeWindow()]);
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -1259,4 +1374,20 @@ describe("the server marketplace's theme and language lists", () => {
       expect(deps.settingsService.patch).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("the renderer settings snapshot", () => {
+  it("leaves out the upstream proxy, which crosses only through its own permissions channels", async () => {
+    const deps = makeDeps([makeWindow()]);
+    deps.settingsService.getAll.mockReturnValue({
+      llm: { provider: "openai" },
+      upstreamProxy: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: true },
+    } as never);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const snapshot = await invoke("ave:settings:get") as Record<string, unknown>;
+
+    expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
+  });
 });

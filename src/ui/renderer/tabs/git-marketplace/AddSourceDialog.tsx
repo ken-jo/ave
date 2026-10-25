@@ -1,20 +1,5 @@
-/**
- * Add a marketplace (design §15.5, §7.2): the address, then a preview of
- * what the repository holds, then the confirm that adds it. A repository
- * that holds one package switches to the direct-install preview. When git is
- * missing, installing it is the first, blocking step (§15.7). An address
- * that needs a warning (plain http, an internal network, this computer) is
- * asked about before Ave contacts it: *Continue* checks again carrying the
- * confirmations, and *Add* stores exactly those (§18.5).
- *
- * The address can be a folder (§18.4, §7.7): typed, or chosen with *Choose
- * folder…* (main's folder dialog). A folder takes no branch, package folder
- * or sign-in, so the form stops asking for them, and it needs no git, so a
- * missing git does not block it. The preview names the folder Ave will
- * read, the path it was resolved from when a link led there, its contents
- * revision, and when its changes are picked up; a folder on another computer
- * is asked about first, like an address.
- */
+/** Confirm risky addresses before contact and persist exactly those confirmations; folders skip git/auth fields but network
+ * folders still require confirmation. */
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
@@ -42,10 +27,8 @@ export interface AddSourceDialogProps {
   /** Why a deep link filled nothing in (§18.3 #7), shown when the dialog opens. */
   initialFailure?: GitMarketplaceFailure | null;
   onClose: () => void;
-  /**
-   * A source was added, whether or not this dialog still shows the request that added it (it may
-   * have been closed, or reopened for another address since): the caller refreshes what lists sources.
-   */
+  /** A source was added, whether or not this dialog still shows the request that added it (it may have been closed, or
+   * reopened for another address since): the caller refreshes what lists sources. */
   onCommitted: (source: SourceView) => void;
   /** The add this dialog shows finished: the caller closes the dialog and, for a single package, opens it. */
   onAdded: (source: SourceView, preview: SourcePreviewView) => void;
@@ -71,10 +54,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   const [acknowledged, setAcknowledged] = useState<SourceWarning[]>([]);
   /** The folder dialog could not open: main's text, for Copy details. */
   const [pickFailure, setPickFailure] = useState<string | null>(null);
-  /**
-   * The folder *Choose folder…* chose, while the address still shows it: main holds the path and the
-   * field shows it scrubbed, so a check sends the pick, never the shown text (§18.9). Typing drops it.
-   */
+  /** The folder *Choose folder…* chose, while the address still shows it: main holds the path and the field shows it
+   * scrubbed, so a check sends the pick, never the shown text (§18.9). Typing drops it. */
   const [picked, setPicked] = useState<FolderPickView | null>(null);
   /** A folder takes no branch, package folder or sign-in, and needs no git (§18.4.1). */
   const folder = looksLikeFolder(input);
@@ -97,8 +78,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   };
 
   useEffect(() => {
-    // Opening or closing starts over: a request still on its way belongs to the dialog as it was,
-    // so it can no longer clear `busy`, and nothing it started may keep the new dialog waiting.
+    // Opening or closing starts over: a request still on its way belongs to the dialog as it was, so it can no longer clear
+    // `busy`, and nothing it started may keep the new dialog waiting.
     generation.current += 1;
     setBusy(false);
     if (!open) return;
@@ -125,8 +106,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setPickFailure(null);
     setWarnings(null);
     try {
-      // A folder is sent without the fields the form hides for it: they would only be refused.
-      // A chosen folder goes by its pick: the address field holds only its scrubbed display.
+      // A folder is sent without the fields the form hides for it: they would only be refused. A chosen folder goes by its pick:
+      // the address field holds only its scrubbed display.
       const confirmed = acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {};
       const request: SourcePreviewAsk = chosen !== null && address === chosen.display
         ? { pick: chosen.pick, auth: "none", ...confirmed }
@@ -158,11 +139,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     }
   };
 
-  /**
-   * *Choose folder…*: main's folder dialog. The chosen folder's display
-   * replaces the address and is checked at once by its pick (main reads the
-   * folder it chose); a cancel changes nothing.
-   */
+  /** *Choose folder…*: main's folder dialog. The chosen folder's display replaces the address and is checked at once by its
+   * pick (main reads the folder it chose); a cancel changes nothing. */
   const chooseFolder = async () => {
     const mine = generation.current;
     setPickFailure(null);
@@ -194,8 +172,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setFailure(null);
     try {
       const result = await api.gitMarketplace.addSource({ previewId: preview.previewId, ...(id.trim() ? { id: id.trim() } : {}) });
-      // The add happened either way, so the lists refresh; closing the dialog and opening the package
-      // belong to the dialog that asked, as a failure does. A reopened dialog is another request.
+      // The add happened either way, so the lists refresh; closing the dialog and opening the package belong to the dialog that
+      // asked, as a failure does. A reopened dialog is another request.
       if (result.ok) onCommitted(result.value);
       if (mine !== generation.current) return;
       if (result.ok) onAdded(result.value, preview);

@@ -86,8 +86,7 @@ describe("Work Board — briefing buttons", () => {
     fireEvent.click(button);
 
     await waitFor(() => expect(screen.queryByTestId("work-board-briefing-running")).not.toBeNull());
-    // Both windows are disabled while one survey runs — a second press would
-    // only be refused by the engine anyway.
+    // Both windows are disabled while one survey runs — a second press would only be refused by the engine anyway.
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId("work-board-briefing-weekly") as HTMLButtonElement).disabled).toBe(true);
 

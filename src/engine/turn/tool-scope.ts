@@ -1,11 +1,3 @@
-/**
- * Lazy tool-scope resolution helpers.
- *
- * `resolveToolScope` + `rebuildToolSchemas` + scope predicates, extracted from
- * `conversation-loop.ts`. The class keeps delegators that forward `this.deps`
- * and the carry-forward state (lastTurnScope / lastTurnToolNames /
- * sessionActivatedPluginIds).
- */
 import type { ToolSchema } from "../llm/types.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import {
@@ -73,17 +65,11 @@ export function resolveToolScope(
       }
     }
 
-    // #1176 active/inactive — a plugin toggled inactive stays loaded but its
-    // tools are hidden from the model. Drop inactive plugins from scope here so
-    // their tools vanish next turn with no runtime reload. `enabled !== false`
-    // is the active predicate (undefined → active, migration-safe).
+    // Disabled plugins stay loaded but leave model scope next turn; undefined enabled state remains active.
     const pluginRuntime = deps.pluginRuntime;
     if (pluginRuntime?.isPluginEnabled) {
       for (const pluginId of [...activePluginIds]) {
-        // Session-scoped on-demand activation — a disabled plugin that this
-        // session activated via request_plugin keeps its tools in scope for
-        // the session lifetime (its tools are already in getVisibleTools).
-        // The registry stays `enabled:false`; this is NON-PERSISTENT.
+        // Session-activated plugins keep scope without persisting registry enabled state.
         if (
           !pluginRuntime.isPluginEnabled(pluginId) &&
           !state.sessionActivatedPluginIds.has(pluginId)
@@ -93,23 +79,17 @@ export function resolveToolScope(
       }
     }
 
-    // #1176 deferral gate — eligible tools are active-plugin + in-scope MCP
-    // tools only (builtins/meta-tools are always eager and never counted).
-    // Below the ceiling the turn exposes every eligible tool's full schema so
-    // the model needs zero `tool_search` discovery rounds; at/above it the turn
-    // falls back to deferral so a very large surface does not flood context.
+    // Count only eligible plugin/MCP tools; expose eagerly below the ceiling and defer at or above it.
     const deferral = shouldDeferToolSchemas(deps, activePluginIds);
 
-  // (B) carried-forward loaded tools ∪ explicit fixed-surface allowlist.
-  // Entries are restricted to tools whose owning plugin is in scope.
+  // Restrict carried and explicit loaded names to tools whose owner plugin remains in scope.
   const activeToolNames = new Set<string>();
     const forcedToolNames = new Set<string>();
     const inScopeToolNames = scopedToolNameSet(deps, activePluginIds);
   for (const name of resetCarryForward ? [] : (state.lastTurnToolNames ?? [])) {
       if (inScopeToolNames.has(name)) activeToolNames.add(name);
     }
-    // Same model-facing listing: a forced name the model may not be shown cannot be
-    // forced INTO the model's turn scope (its schema would be filtered out anyway).
+    // Forced names cannot expose tools excluded from the model-visible registry.
     const registeredToolNames = new Set(deps.toolRegistry.getModelVisibleTools().map((tool) => tool.name),
   );
     for (const name of deps.forcedActiveToolNames ?? []) {
@@ -125,23 +105,17 @@ export function resolveToolScope(
       forcedToolNames,
       includeBuiltins: true,
       includeMcp: deps.headless !== true,
-      // Unattended lanes get no arbitrary-egress builtin. A routine turn has no
-      // human watching the destination, and its input (mail bodies, indexed
-      // documents, transcripts) is exactly the untrusted material an injected
-      // instruction rides in on.
+      // Unattended input is untrusted and cannot access arbitrary-egress builtins.
       includeEgress: deps.headless !== true,
       deferral,
     };
   }
 
-export function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
+function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
 ): Set<string> {
     const includeMcp = deps.headless !== true;
     const names = new Set<string>();
-  // MODEL-facing set (carry-forward and the eager-exposure ceiling),
-  // so it reads the registry's model-visible listing: an MCP Apps app-only tool is
-    // registered (its card's call must run under the gate) but the model never sees
-    // it, so it must not count toward the ceiling or be preloadable into the turn.
+  // Model-hidden app tools cannot count toward eager limits or become preloaded.
     for (const tool of deps.toolRegistry.getModelVisibleTools()) {
       if (tool.source === "plugin") {
         if (tool.pluginId && activePluginIds.has(tool.pluginId)) names.add(tool.name);
@@ -155,15 +129,10 @@ export function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: S
 export function shouldDeferToolSchemas(deps: ConversationLoopDeps, activePluginIds: Set<string>,
 ): boolean {
     const inScope = scopedToolNameSet(deps, activePluginIds);
-    // Cheap count pre-filter: a pathological catalog can never be exposed
-    // eagerly even if token estimation is unavailable.
+    // Count limits prevent pathological eager catalogs even without token estimates.
     if (inScope.size >= EAGER_TOOL_EXPOSURE_CEILING) return true;
     if (inScope.size === 0) return false;
-    // Authoritative token gate: estimate the eager plugin/MCP schema payload —
-    // the same in-scope schemas that would be sent, excluding always-eager
-    // builtins — and defer when it would dominate TPM. A few large schemas can
-    // exceed budget while the count stays under the ceiling. Only reached below
-    // the count ceiling, so the extra serialization is bounded.
+    // Below the count ceiling, defer if actual in-scope schema tokens exceed budget; exclude builtins.
     const schemas = deps.toolRegistry
       .getToolSchemas()
       .filter((entry) => inScope.has(entry.name));

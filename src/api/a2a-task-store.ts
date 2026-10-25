@@ -32,14 +32,7 @@ import { isValidSessionId } from "../memory/memory-manager.js";
 
 const STORE_VERSION = 1;
 const DEFAULT_FILE_NAME = "tasks.json";
-/**
- * Wire-level shape rule shared with the A2A subagent handler. Both modules
- * validate the same child-session ids off the same wire, so they must reject
- * the same strings — exported here because this module owns the persisted
- * task record those ids are keys into. The structural ids (context, task,
- * artifact) go through `isSafeStructuralId` in `shared/dlp-safe-id.ts` for
- * the same reason.
- */
+// Share child-session id validation with the wire handler; structural ids use isSafeStructuralId.
 /** Metadata object keys may not carry C0 controls or DEL. */
 const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
 const TASK_KEYS = new Set(["id", "contextId", "status", "history"]);
@@ -55,7 +48,6 @@ const RECORD_KEYS = new Set([
 
 const RFC3339_TIMESTAMP = /^(\d{4})-(0[1-9]|1[0-2])-([0-2]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
-/** Validate the RFC 3339 JSON representation used by protobuf Timestamp. */
 export function isA2ARfc3339Timestamp(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const match = RFC3339_TIMESTAMP.exec(value);
@@ -154,12 +146,7 @@ function normalizeStoredMessage(value: unknown): A2AMessage | null {
   }
 }
 
-/**
- * Canonical, DLP-masked validator for an untrusted remote Task result. This is
- * intentionally colocated with the local task-store validator so both stores
- * share the same message/part/timestamp limits and lifecycle state SOT. The
- * local sub-agent projection remains stricter and still excludes AUTH_REQUIRED.
- */
+// Share remote-task limits with local validation; the local projection still excludes AUTH_REQUIRED.
 export function canonicalizeA2ARemoteTask(
   value: unknown,
   maxHistoryMessages = GUIDE_MAX_ENTRIES,
@@ -698,11 +685,7 @@ export class A2ATaskStore {
       .map(cloneRecord));
   }
 
-  /**
-   * Reserve the single in-process admission slot before prompting or starting a
-   * child. The reservation is intentionally not persisted and is released when
-   * the durable Task link commits or the attempted spawn fails.
-   */
+  // Reserve admission before approval or spawn; release on durable task linkage or spawn failure.
   async reserveInitialTaskAdmission(input: {
     handlerId: string;
     message: A2AMessage;
@@ -914,11 +897,7 @@ export class A2ATaskStore {
     });
   }
 
-  /**
-   * Validate a continuation without changing task state or durable history.
-   * Callers must still use {@link beginContinuation} after authorization so
-   * races are revalidated under the store lock before the mutation commits.
-   */
+  // Preflight does not mutate state; beginContinuation must revalidate under the store lock after approval.
   async preflightContinuation(input: {
     handlerId: string;
     taskId: string;

@@ -1,18 +1,10 @@
-/**
- * The model catalog refresh and the boot selection it feeds (design §7),
- * offline: the transport is a fixture, DNS answers a public address, and the
- * cache lives in a temporary directory.
- *
- * The refresh is an external-boundary fallback (AGENTS.md): every way the
- * download can fail must leave the last good copy — or, with none, the bundled
- * snapshot — in force, never nothing. Failure cases check catalog bytes and,
- * where relevant, next-boot selection separately from attempted-check metadata.
- */
+/** Download failures must preserve the last verified cache or bundled snapshot; inspect both bytes and next-boot selection. */
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { buildModelCatalogDocument } from "../document-builder.js";
 import { selectBootModelCatalog } from "../bundled.js";
 import { MODEL_CATALOG_CACHE_MAX_ENTRIES, modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
@@ -27,6 +19,7 @@ import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
+import { withFileLock } from "../../../lib/with-file-lock.js";
 
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
@@ -38,7 +31,6 @@ const LICENSE = {
   text: "MIT License\n\nCopyright (c) 2025 models.dev\n",
 };
 
-/** A models.dev download listing `openai` and `anthropic`, one model each. */
 function rawDocument(openaiContext = 400_000): Record<string, unknown> {
   return {
     openai: { id: "openai", name: "OpenAI", models: { "gpt-fixture": { id: "gpt-fixture", limit: { context: openaiContext, output: 128_000 } } } },
@@ -56,7 +48,6 @@ function documentFrom(raw: Record<string, unknown>, fetchedAt: string): ModelCat
   }).document;
 }
 
-/** The "bundled snapshot" these tests boot against: older than any refresh below. */
 const BUNDLED = documentFrom(rawDocument(272_000), "2026-01-01T00:00:00Z");
 const loadBundled = async () => BUNDLED;
 
@@ -95,7 +86,6 @@ function cacheFiles(): Record<string, string> {
   return Object.fromEntries(readdirSync(dir).filter((name) => !name.startsWith(".")).sort().map((name) => [name, readFileSync(join(dir, name), "utf-8")]));
 }
 
-/** A good refresh at `at`, so a failure after it has a last good copy to keep. */
 async function seedGoodCopy(at = NOW): Promise<string> {
   const { fetchImpl } = respondWith(() => json(rawDocument(), { etag: "\"v1\"" }));
   const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => at });
@@ -106,6 +96,28 @@ async function seedGoodCopy(at = NOW): Promise<string> {
 const STALE = new Date(NOW.getTime() + MODEL_CATALOG_REFRESH_INTERVAL_MS + 1000);
 
 describe("refreshModelCatalogCache", () => {
+  it("a waiting refresh does not create a missing anchor before it holds the lock", async () => {
+    const anchor = join(dir, ".refresh-lock");
+    const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    let refresh: ReturnType<typeof refreshModelCatalogCache> | undefined;
+    try {
+      await withFileLock(anchor, async () => {
+        rmSync(anchor);
+        refresh = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(existsSync(anchor)).toBe(false);
+        expect(calls).toHaveLength(0);
+      });
+    } finally {
+      if (refresh) {
+        expect(await refresh).toMatchObject({ status: "updated" });
+      }
+    }
+    expect(existsSync(anchor)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
   it("keeps the installed process catalog unchanged until another boot", async () => {
     const installed = activeModelCatalog();
     const { fetchImpl } = respondWith(() => json(rawDocument()));
@@ -124,7 +136,6 @@ describe("refreshModelCatalogCache", () => {
     expect(calls[0]!.init.method).toBe("GET");
     expect(Object.keys(calls[0]!.init.headers as Record<string, string>).sort()).toEqual(["accept"]);
     expect(calls[0]!.init.body).toBeUndefined();
-    // Through the guard: the host was resolved and checked before the request.
     expect(lookupMock).toHaveBeenCalled();
 
     const sha256 = (result as { sha256: string }).sha256;
@@ -281,7 +292,6 @@ describe("refreshModelCatalogCache", () => {
       const started = Date.now();
       const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE, timeoutMs: 50 });
 
-      // The refresh's own deadline, not the guard's 15 s default, ended it.
       expect(Date.now() - started).toBeLessThan(3000);
       expect(result).toMatchObject({ status: "failed", reason: expect.stringMatching(/request failed/) });
       expect(cacheFiles()).toEqual(before);
@@ -425,7 +435,8 @@ describe("selectBootModelCatalog", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
+  it.for(["current.json", "entry"])("refuses a linked cache %s", async (name, { skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const sha256 = await seedGoodCopy();
     const path = join(dir, name === "entry" ? `${sha256}.json` : name);
     const external = join(dir, "outside.json");
@@ -435,14 +446,16 @@ describe("selectBootModelCatalog", () => {
     expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses a linked cache directory", async () => {
+  it("refuses a linked cache directory", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     await seedGoodCopy();
     const linked = join(dir, "linked");
     symlinkSync(dir, linked, "dir");
     expect(await selectBootModelCatalog({ env: {}, dir: linked, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses to publish through a linked cache parent", async () => {
+  it("refuses to publish through a linked cache parent", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     const home = join(dir, "home");
     const outside = join(dir, "outside");
     mkdirSync(home);
@@ -504,7 +517,6 @@ describe("selectBootModelCatalog", () => {
 
     it("a sha256 pins that cached copy", async () => {
       const sha256 = await seedGoodCopy();
-      // A later refresh moves the pointer; the pin still names the first copy.
       const { fetchImpl } = respondWith(() => json(rawDocument(500_000)));
       await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
       expect(await selectBootModelCatalog({ env: { AVE_MODEL_CATALOG: sha256 }, dir, loadBundled })).toMatchObject({ origin: "pinned", document: { sha256 } });

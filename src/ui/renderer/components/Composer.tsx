@@ -49,11 +49,8 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 
 export interface ComposerHandle {
   focus(): void;
-  /**
-   * Insert text at the current caret position (or replace selection if any).
-   * Used by the action-bar attach flow so file-picker markers land where the
-   * user is typing rather than always appending to the end of the body.
-   */
+  /** Insert text at the current caret position (or replace selection if any). Used by the action-bar attach flow so
+   * file-picker markers land where the user is typing rather than always appending to the end of the body. */
   insertAtCursor(insertion: string): void;
   /**
    * The live textarea element. Window-level shortcuts (⌘⏎, Esc) are owned by
@@ -74,19 +71,7 @@ export interface ComposerHandle {
  */
 export type ComposerSurface = "main" | "side";
 
-/**
- * Growth cap per surface. Both start at one line and grow to a bound. The
- * textarea is `rows={1}`: without it a textarea defaults to two rows, and the
- * empty field showed the placeholder pinned to the top of a two-line box. The
- * measured line is 17.5px with 7px of vertical padding, so one row is 31.5px
- * and that natural row is the floor at rest: `min-h-0` cancels the Textarea
- * primitive's `min-h-[80px]` (cn/twMerge keeps the later class), and nothing
- * pads the empty field up to the 40px action row beside it. The main column
- * has room for
- * five lines; the side rail is a narrow card whose transcript is the thing
- * being read, so the field stops at four — the one value the issue that
- * unified the two surfaces called out as worth differing.
- */
+/** Use rows=1 and override the primitive textarea minimum; grow to five lines in main chat and four in the side rail. */
 const TEXTAREA_MAX_HEIGHT_CLASS: Record<ComposerSurface, string> = {
   main: "max-h-[144px]",
   side: "max-h-[112px]",
@@ -131,10 +116,8 @@ export interface ComposerProps {
   imagesEnabled?: boolean;
   /** False when the active runtime cannot take file attachments — no `@file` rows then. */
   filesEnabled?: boolean;
-  /**
-   * Files dropped on the composer. Omitted → the composer is not a drop target
-   * (the window guard still blocks file:// navigation).
-   */
+  /** Files dropped on the composer. Omitted → the composer is not a drop target (the window guard still blocks file://
+   * navigation). */
   onDropFiles?: (files: FileList) => void;
   /** Exact main-verified raw-image budget for the selected subscription runtime. */
   imageAttachmentLimits?: SubscriptionImageAttachmentLimits | null;
@@ -160,10 +143,8 @@ export interface ComposerProps {
   inlinePlugins?: PluginEntry[];
   /** Open a plugin view when its inline-menu item is accepted. */
   onSelectPlugin?: (viewKey: string) => void;
-  /**
-   * Prompts the user typed earlier, oldest first. Up on an empty composer
-   * recalls them; Down walks back to the draft. Omitted → no recall.
-   */
+  /** Prompts the user typed earlier, oldest first. Up on an empty composer recalls them; Down walks back to the draft.
+   * Omitted → no recall. */
   promptHistory?: readonly string[];
 }
 
@@ -176,15 +157,7 @@ export interface ComposerProps {
  * deletes a marker, the matching attachment disappears automatically;
  * there is no separate ⓧ button on chips.
  */
-/**
- * Stable fallback for the optional plugin-select prop.
- *
- * An inline `?? (() => {})` mints a new function every render, which propagates into
- * the inline menu's memoized item list and from there into the memoized keydown
- * handler — so the handler is rebuilt on every render and a missing dependency in it
- * cannot be observed. It stayed invisible in production only because the real caller
- * always passes a memoized handler; the component should not depend on that.
- */
+/** Keep optional plugin-selection fallback stable so memoized menu keyboard dependencies remain observable. */
 const NOOP_SELECT_PLUGIN = () => {};
 const EMPTY_PROMPT_HISTORY: readonly string[] = [];
 
@@ -234,39 +207,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   imagesEnabledRef.current = imagesEnabled;
   const imageAttachmentLimitsRef = useRef(imageAttachmentLimits);
   imageAttachmentLimitsRef.current = imageAttachmentLimits;
-  // Mirror of the controlled value for callbacks that outlive the render they were
-  // created in — the asynchronous resource attach is the one that needs it.
+  // Mirror of the controlled value for callbacks that outlive the render they were created in — the asynchronous resource
+  // attach is the one that needs it.
   const textRef = useRef(text);
   textRef.current = text;
   const promptHistoryCursorRef = useRef<PromptHistoryCursor>(IDLE_PROMPT_HISTORY);
 
-  // because `e.nativeEvent.isComposing` is only available inside keydown — the
-  // ghost render path needs the value at render time, not just on key events.
+  // because `e.nativeEvent.isComposing` is only available inside keydown — the ghost render path needs the value at render
+  // time, not just on key events.
   const [isComposing, setIsComposing] = useState(false);
   const isComposingRef = useRef(false);
-  /**
-   * Set by the Ctrl/⌘+Shift+V keydown and consumed by the paste that follows
-   * it — a ClipboardEvent exposes no modifier state of its own, so the chord
-   * has to be carried across the two events.
-   */
+  /** Set by the Ctrl/⌘+Shift+V keydown and consumed by the paste that follows it — a ClipboardEvent exposes no modifier state
+   * of its own, so the chord has to be carried across the two events. */
   const plainPasteRequestedRef = useRef(false);
-  // Caret mirror — the inline "/" menu needs the cursor index, but the value is
-  // controlled so selectionStart lives only on the DOM node. Synced on every
-  // event that can move the caret (change / keyup / click / select).
+  // Caret mirror — the inline "/" menu needs the cursor index, but the value is controlled so selectionStart lives only on
+  // the DOM node. Synced on every event that can move the caret (change / keyup / click / select).
   const [caret, setCaret] = useState(0);
   const syncCaret = useCallback(() => {
     const ta = taRef.current;
     if (ta) setCaret(ta.selectionStart ?? 0);
   }, []);
 
-  // Live MCP-server tools + registered skills back the inline menu's mcp /
-  // skills categories (real host IPC). Fetched only while the composer is
-  // enabled so it stays parallel with the command menu's data.
+  // Live MCP-server tools + registered skills back the inline menu's mcp / skills categories (real host IPC). Fetched only
+  // while the composer is enabled so it stays parallel with the command menu's data.
   const { mcpTools, skills } = useSlashPickerRuntime(!disabled);
 
-  // Inline "/" autocomplete — derives an open/filtered menu from the controlled
-  // text + caret and owns accept/replace. Keyboard nav is wired into
-  // handleKeyDown below; rendering is the InlineSlashMenu at the end.
+  // Inline "/" autocomplete — derives an open/filtered menu from the controlled text + caret and owns accept/replace.
+  // Keyboard nav is wired into handleKeyDown below; rendering is the InlineSlashMenu at the end.
   const inlineSlash = useInlineSlashMenu({
     text,
     caret,
@@ -294,8 +261,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     return api?.captureUserKeyboardIntent?.() ?? { inputOrigin: "user-keyboard", token: "" };
   }, []);
 
-  // Live-derive attachments from textarea body (single source of truth).
-  // Drop any whose N is no longer present in the body.
+  // Live-derive attachments from textarea body (single source of truth). Drop any whose N is no longer present in the body.
   const liveAttachments = useMemo(() => {
     const present = new Set(parseMarkers(text));
     return attachments.filter((a) => present.has(a.n));
@@ -307,22 +273,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   }, [liveAttachments, attachments, onAttachmentsChange]);
 
-  // Resources are counted in their OWN lane, and the partition is derived here so both
-  // caps read one answer instead of each site re-filtering the array.
-  //
-  // The two caps measure different things, which is the whole reason they are separate
-  // lanes. `ATTACH_MAX_COUNT` bounds what the PICKER paths may add — an image, a file, a
-  // paste each cost a round trip and a thumbnail; a resource is bounded instead by how
-  // much server text one TURN may carry, which main enforces independently.
-  //
-  // Note what this is NOT: it is not that resources stay out of the chip strip. They
-  // render there like anything else, so a turn can show thirteen chips. An earlier
-  // version of this comment claimed the strip's legibility was the reason, which is not
-  // the true one — the true one is that the numbers bound different resources.
-  //
-  // Folding them would mean five attached documents stops the user adding a screenshot,
-  // and would make the per-turn bound unreachable from the only surface that produces
-  // resource attachments: a documented number nothing can reach.
+  // Picker count and resource-text budget are independent: resource attachments must not consume screenshot/file slots.
   const resourceCount = useMemo(
     () => liveAttachments.filter((a) => a.kind === "resource").length,
     [liveAttachments],
@@ -330,26 +281,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const chipStripCount = liveAttachments.length - resourceCount;
   const [dropActive, setDropActive] = useState(false);
 
-  // Shared by resource and file mentions: replace the `@token` with the marker
-  // and add the attachment in one flushSync.
+  // Shared by resource and file mentions: replace the `@token` with the marker and add the attachment in one flushSync.
   const spliceMention = useCallback((
     attachment: Attachment,
     marker: string,
     range: { start: number; end: number },
     mentionToken: string,
   ) => {
-      // Read the LIVE text, not the value this callback closed over. The read is
-      // asynchronous, so the user can keep typing while it is in flight; splicing into
-      // the text as it was when they pressed Enter would silently discard everything
-      // they typed since. The range can also have gone stale for the same reason, so it
-      // is verified before use and the marker is appended when it no longer holds the
-      // mention token. Either way the marker and the attachment land together, which is
-      // the invariant the marker-sync effect above depends on.
+      // Read current composer text after async resource reads; commit the marker and attachment together so typing is preserved.
       const current = textRef.current;
-      // The range must still hold THE SAME token, not merely something starting with a
-      // sigil. `startsWith("@")` let a retyped mention pass: select-all, type
-      // `@abcdefgh`, and the splice would eat `abc` — the same class of bug the range
-      // check was added to fix, one condition weaker.
+      // Revalidate the entire mention token after async reads; a matching sigil alone can splice into retyped content.
       const stillTheMention = current.slice(range.start, range.end) === mentionToken;
       const insertAt = stillTheMention ? range.start : current.length;
       const removeTo = stillTheMention ? range.end : current.length;
@@ -379,8 +320,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     caret,
     enabled: !disabled,
     isComposing,
-    // Read the same way the slash-picker runtime reads its tools. On reduced
-    // renderer surfaces without the MCP bridge, the menu simply never opens.
+    // Read the same way the slash-picker runtime reads its tools. On reduced renderer surfaces without the MCP bridge, the
+    // menu simply never opens.
     mcp: typeof window === "undefined" ? undefined : window.ave?.mcp,
     resourceCount,
     searchFiles: typeof window === "undefined" ? undefined : window.ave?.workspace?.searchFiles,
@@ -491,9 +432,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (plainPasteRequested && (e.clipboardData?.getData("text/plain") ?? "") !== "") {
         return;
       }
-      // Keep ordinary text paste available when only native image egress is
-      // unavailable. A clipboard image itself is consumed so the browser does
-      // not create an untracked attachment-like draft representation.
+      // Keep ordinary text paste available when only native image egress is unavailable. A clipboard image itself is consumed so
+      // the browser does not create an untracked attachment-like draft representation.
       if (!imagesEnabledRef.current && clipboardContainsImage(e.nativeEvent)) {
         e.preventDefault();
         warnImageAttachmentUnavailable();
@@ -505,9 +445,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         saveClipboardImage,
         max: ATTACH_MAX_COUNT,
       });
-      // A runtime switch may occur while the clipboard image is being saved.
-      // Recheck the live capability before committing renderer attachment
-      // state, not only when the asynchronous operation started.
+      // A runtime switch may occur while the clipboard image is being saved. Recheck the live capability before committing
+      // renderer attachment state, not only when the asynchronous operation started.
       if (outcome.newAttachment?.kind === "image" && !imagesEnabledRef.current) {
         e.preventDefault();
         discardRejectedClipboardImage(outcome.newAttachment.path);
@@ -536,16 +475,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (outcome.warning) onWarning?.(outcome.warning);
       if (outcome.newAttachment) {
         const candidate = outcome.newAttachment;
-        // Functional updater + flushSync: re-check the cap against the
-        // latest committed state (a concurrent file picker / second paste
-        // during the IPC saveClipboardImage await may have filled the 5
-        // slots in the meantime).
-        //
-        // Atomic commit: text-insert MUST be inside the same flushSync
-        // as onAttachmentsChange so the marker-sync useEffect never sees
-        // a transient mismatch (attachments=[chip] + text="" without
-        // marker → would destructively cleanup the chip before the text
-        // catches up).
+        // Recheck the latest attachment cap after async saves; flush marker text and attachments atomically so marker cleanup
+        // cannot delete the new chip.
         let inserted = false;
         let imageAttachmentBudgetRejected = false;
         flushSync(() => {
@@ -607,9 +538,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // The ref covers the window between compositionstart and the first
-      // flagged keydown; the helper covers Chromium's commit keydown (keyCode
-      // 229, isComposing false) that otherwise sends a half-typed syllable.
+      // The ref covers the window between compositionstart and the first flagged keydown; the helper covers Chromium's commit
+      // keydown (keyCode 229, isComposing false) that otherwise sends a half-typed syllable.
       if (isComposingKeyEvent(e) || isComposingRef.current) return;
 
       // Ctrl/⌘ + Shift + V = paste the ORIGINAL text straight into the field.
@@ -620,9 +550,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       plainPasteRequestedRef.current =
         (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v";
 
-      // Inline "/" autocomplete owns navigation while open. This MUST run
-      // before the suggested-reply Tab branch and the Enter→onSend branch, so
-      // Enter accepts the highlighted item instead of sending.
+      // Inline "/" autocomplete owns navigation while open. This MUST run before the suggested-reply Tab branch and the
+      // Enter→onSend branch, so Enter accepts the highlighted item instead of sending.
       if (inlineOpen) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -686,9 +615,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }
       }
 
-      // Prompt-history recall. After both menus (they own the arrows while
-      // open) and only without modifiers; `stepPromptHistory` returns null
-      // whenever the arrow should keep moving the caret instead.
+      // Prompt-history recall. After both menus (they own the arrows while open) and only without modifiers; `stepPromptHistory`
+      // returns null whenever the arrow should keep moving the caret instead.
       if (
         (e.key === "ArrowUp" || e.key === "ArrowDown") &&
         !e.shiftKey &&
@@ -756,8 +684,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
 
       if (e.key === "Escape" && hasSuggestion) {
-        // Don't preventDefault — let the document-level ESC handler (ChatView)
-        // still run when streaming. Dismissing the snapshot is additive.
+        // Don't preventDefault — let the document-level ESC handler (ChatView) still run when streaming. Dismissing the snapshot
+        // is additive.
         dismissSuggestedReplies();
         // Fall through so other ESC consumers still see the event.
       }
@@ -792,7 +720,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
 
       if (e.key === "Enter" && !e.shiftKey) {
-
         if (e.metaKey || e.ctrlKey) {
           e.preventDefault();
           return;
@@ -800,9 +727,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
         e.preventDefault();
         if (disabled || sendDisabled) return;
-        // Dismiss memory: a new user message means we are transitioning
-        // to the next turn — release the dismiss latch so the next suggestion
-        // push renders fresh regardless of any prior Escape during this turn.
+        // Dismiss memory: a new user message means we are transitioning to the next turn — release the dismiss latch so the next
+        // suggestion push renders fresh regardless of any prior Escape during this turn.
         clearDismissedReplies();
         onSend(captureUserKeyboardIntent());
       }
@@ -819,13 +745,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       inlineMove,
       inlineAccept,
       inlineClose,
-      // The mention values are as load-bearing here as the inline ones, and omitting
-      // them was not a stylistic slip: `mentionOpen` flips when the CATALOGUE lands,
-      // in a commit where nothing else in this array moves. The handler kept a stale
-      // `false`, so the FIRST `@` of a composer's lifetime rendered a visible menu
-      // whose Enter fell through to the send branch — the turn went out containing a
-      // bare `@` and nothing was attached. Clicking a row worked, because JSX reads
-      // fresh values, which is what made it look like a working feature.
+      // Include mention state in keyboard dependencies; catalog arrival alone can open the first menu and stale closures would
+      // send a bare @.
       mentionOpen,
       mentionMove,
       mentionAccept,
@@ -836,8 +757,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const isFull = chipStripCount >= ATTACH_MAX_COUNT;
   const ghostText = suggestedReplies?.text ?? null;
-  // Spec §3 line 42 + §8: ghost hidden when (a) user has typed any char, (b)
-  // IME composition active (preedit), (c) no suggestion, or (d) dismissed.
+  // Spec §3 line 42 + §8: ghost hidden when (a) user has typed any char, (b) IME composition active (preedit), (c) no
+  // suggestion, or (d) dismissed.
   const ghostVisible =
     text.length === 0 &&
     !isComposing &&
@@ -845,9 +766,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     !(suggestedReplies?.isDismissed ?? false);
   const fallbackPlaceholder = ghostVisible ? "" : t("composer.defaultPlaceholder");
 
-  // Drop target. Only a FILE drag is claimed (types include "Files"); text and
-  // in-app drags keep their own behaviour. The File objects go to the preload,
-  // which resolves and registers them with main — no path is read here.
+  // Drop target. Only a FILE drag is claimed (types include "Files"); text and in-app drags keep their own behaviour. The
+  // File objects go to the preload, which resolves and registers them with main — no path is read here.
   const isFileDrag = (e: ReactDragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
   const dropHandlers = onDropFiles && !disabled
     ? {
@@ -1017,21 +937,7 @@ export function ComposerFrame({ children }: { children: React.ReactNode }): Reac
   );
 }
 
-// Ghost-text overlay rendered on top of the Composer textarea when (a) the
-// textarea body is empty, (b) a suggested reply is available, and
-// (c) the user has not dismissed the current snapshot.
-//
-// The parent (Composer) owns positioning context: this component renders an
-// absolute-positioned layer that visually aligns with the textarea text.
-// `pointer-events-none` keeps clicks falling through to the textarea so
-// focus / caret behavior is unchanged.
-//
-// Spec: `docs/architecture/proposals/suggested-replies-ghost-text.md` §6.1.
-//
-// Animation: `motion-safe:animate-in fade-in` eases the ghost in when
-// a new turn's suggestion arrives. The `transition-opacity` keeps the fade
-// smooth when CSS class state flips (e.g. typing → empty). `prefers-
-// reduced-motion` opt-outs are honored by Tailwind's `motion-safe:` variant.
+// Ghost text must not take pointer events or change caret behavior; honor reduced-motion preferences.
 
 interface SuggestedRepliesGhostProps {
   text: string | null;

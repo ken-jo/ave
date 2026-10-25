@@ -19,9 +19,7 @@ function renderEditor() {
 }
 
 describe("UserMessageEditor frame", () => {
-  // The bubble is the input frame. The Textarea inside used to keep the shared
-  // primitive's `border border-input` plus its own focus ring, which drew a
-  // second rounded box inside the bubble.
+  // The bubble owns the input frame; remove nested textarea border and focus-ring chrome.
   it("draws exactly one frame — the bubble, not a box inside a box", () => {
     const { container } = renderEditor();
     const bubble = container.firstElementChild as HTMLElement;
@@ -30,9 +28,8 @@ describe("UserMessageEditor frame", () => {
     expect(bubble.className).toMatch(/(?:^|\s)border(?:\s|$)/);
     expect(bubble.className).toContain("border-message-user-border");
 
-    // The inner control contributes no border WIDTH (tailwind-merge keeps the
-    // inert `border-input` colour, which paints nothing at zero width) and no
-    // second focus ring.
+    // The inner control contributes no border WIDTH (tailwind-merge keeps the inert `border-input` colour, which paints
+    // nothing at zero width) and no second focus ring.
     expect(textarea.className).toContain("border-0");
     expect(textarea.className).not.toMatch(/(?:^|\s)border(?:\s|$)/);
     expect(textarea.className).toContain("focus-visible:ring-0");

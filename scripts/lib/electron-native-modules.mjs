@@ -19,9 +19,7 @@ const LOCK_OWNER_FILE = "owner.json";
 const SAFE_OWNER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SAFE_REAPER_GENERATION = /^[A-Za-z0-9][A-Za-z0-9_-]{15,511}$/;
 
-// Loading better-sqlite3 is lazy: require("better-sqlite3") alone does not
-// dlopen the native binding. Open an in-memory database so the probe exercises
-// the exact path used by the session-search index at runtime.
+// Open an in-memory database: importing the module alone does not load its native binding.
 const ELECTRON_NATIVE_PROBE = String.raw`
 const Database = require("better-sqlite3");
 const db = new Database(":memory:");
@@ -222,10 +220,7 @@ export function recoverOrphanedNativeReaper({
     throw error;
   }
 
-  // Re-read immediately before removal. The mandatory quiescence precondition
-  // prevents a successor generation from being created between this check and
-  // removal; the token or directory-generation check makes stale cleanup
-  // commands harmless afterward.
+  // Re-read ownership before removal under quiescence; stale cleanup must not remove a successor.
   const current = inspectReaperState({ lockDir });
   const currentTokenMatches = expectedToken
     && current.state === "orphaned"
@@ -251,9 +246,7 @@ function tryReclaimStaleLock({
   now,
   writeOwner = writeFileSync,
 }) {
-  // Serialise stale-owner decisions separately from the actual rebuild lock.
-  // Without this reaper mutex, two waiters can both decide that the old owner
-  // is dead and one can delete the replacement lock acquired by the other.
+  // Serialize stale-owner decisions so concurrent waiters cannot delete a replacement lock.
   const reaperDir = `${lockDir}.reaper`;
   const reaperOwnerPath = join(reaperDir, LOCK_OWNER_FILE);
   const token = randomUUID();
@@ -273,8 +266,7 @@ function tryReclaimStaleLock({
     }), { encoding: "utf8", flag: "wx" });
     ownerRecorded = true;
 
-    // The ownership evidence may have changed while acquiring the reaper.
-    // Re-read it inside the serialized section and only remove that state.
+    // Re-read ownership inside the serialized section.
     const currentOwner = inspectLockOwner(ownerPath);
     let lockAgeMs;
     try {
@@ -427,16 +419,7 @@ export function withElectronNativeRebuildLock(repoRoot, callback) {
   }
 }
 
-/**
- * Verify better-sqlite3 loads under Electron's runtime.
- *
- * better-sqlite3 13 is N-API (ABI-stable) and ships a per-platform PREBUILD
- * (`prebuilds/<platform>-<arch>.node`); there is no per-Electron-ABI compile to
- * repair. electron-rebuild's gyp output is never loaded while the prebuild
- * exists, so a failing load-probe means the shipped prebuild is missing or
- * corrupt for this platform+arch — a rebuild cannot fix that. Fail hard with a
- * reinstall remedy instead of mutating the native tree.
- */
+// Missing or corrupt shipped native prebuilds need reinstallation; rebuilding cannot repair them.
 export function ensureElectronNativeModules(options = {}) {
   const repoRoot = options.repoRoot ?? process.cwd();
   const run = options.spawnSync ?? spawnSync;

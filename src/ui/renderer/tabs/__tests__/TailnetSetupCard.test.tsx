@@ -88,9 +88,8 @@ function makeApi(options: {
   const queue = options.snapshots ? [...options.snapshots] : null;
   const snapshot = vi.fn(async () => ({
     ok: true as const,
-    // A queue that has run out keeps answering with its last entry: the
-    // component re-reads freely, and a test should pin what changes, not how
-    // many reads happen to occur.
+    // A queue that has run out keeps answering with its last entry: the component re-reads freely, and a test should pin what
+    // changes, not how many reads happen to occur.
     snapshot: queue === null
       ? options.snapshot ?? snapshotOf()
       : (queue.length > 1 ? queue.shift()! : queue[0]!),
@@ -126,9 +125,8 @@ afterEach(() => {
 
 describe("TailnetSetupCard", () => {
   describe("when Tailscale is ready and nothing is set up yet", () => {
-    // Every value guided setup writes is one the host decides for itself, so
-    // there is nothing to ask: the section reads as a provider row does — a
-    // state, the probe's facts, one button.
+    // Every value guided setup writes is one the host decides for itself, so there is nothing to ask: the section reads as a
+    // provider row does — a state, the probe's facts, one button.
     it("collapses to a card that states the connection is ready", async () => {
       const { api } = makeApi();
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
@@ -191,9 +189,8 @@ describe("TailnetSetupCard", () => {
       expect(await screen.findByTestId("tailnet-setup-done")).toBeInTheDocument();
     });
 
-    // Nothing asks the reader to verify the environment before pressing, so the
-    // press itself has to be the read: a "ready" that went stale since mount
-    // must not be what guided setup runs on.
+    // Nothing asks the reader to verify the environment before pressing, so the press itself has to be the read: a "ready"
+    // that went stale since mount must not be what guided setup runs on.
     it("re-reads the environment before it runs anything", async () => {
       const { api, snapshot, guidedSetup } = makeApi();
       render(<TailnetSetupCard api={api} onCreateInvitation={() => undefined} />);
@@ -256,9 +253,8 @@ describe("TailnetSetupCard", () => {
       expect(await screen.findByTestId("tailnet-observer-apply")).toBeInTheDocument();
     });
 
-    // The sentence for a failed Serve says its output is below. Dropping what
-    // Tailscale printed leaves that promise with nothing under it, and the
-    // certificate case is the one nobody can act on without those words.
+    // The sentence for a failed Serve says its output is below. Dropping what Tailscale printed leaves that promise with
+    // nothing under it, and the certificate case is the one nobody can act on without those words.
     it("shows what Tailscale printed when the Serve step failed", async () => {
       const { api } = makeApi({
         guidedSetup: {
@@ -353,8 +349,8 @@ describe("TailnetSetupCard", () => {
     });
   });
 
-  // A control that only re-reads asked the reader to verify an environment they
-  // cannot change from here, and left a stale "ready" as the thing setup ran on.
+  // A control that only re-reads asked the reader to verify an environment they cannot change from here, and left a stale
+  // "ready" as the thing setup ran on.
   it("carries no re-check affordance anywhere in the section", async () => {
     const { api } = makeApi();
     const { container } = render(
@@ -456,9 +452,8 @@ describe("TailnetSetupCard", () => {
     });
   });
 
-  // Setup is settings content, not an overlay. A flow that opened a
-  // window-modal dialog would freeze the rest of settings for a decision about
-  // one listener, which is the shape this deliberately does not take.
+  // Setup is settings content, not an overlay. A flow that opened a window-modal dialog would freeze the rest of settings
+  // for a decision about one listener, which is the shape this deliberately does not take.
   it("draws every state in the settings flow, never in an overlay", async () => {
     const { api } = makeApi();
     const { container } = render(

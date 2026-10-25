@@ -1,13 +1,4 @@
-/**
- * `ave:mcp:ui-model-context` — the gated IPC behind the MCP-app `onupdatemodelcontext`
- * handler.
- *
- * The three things asserted here and nowhere else:
- *   1. An UNAUTHORIZED sender is refused (it mutates what the model reads next turn).
- *   2. It NEVER touches the conversation loop — no turn, no guidance, no follow-up.
- *   3. A card whose session is no longer the live one is DROPPED (fail-safe), the same
- *      rule `ui/message` applies.
- */
+// Model-context updates must neither start a turn nor accept cards outside live sessions.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { tmpdir } from "node:os";
@@ -33,10 +24,8 @@ vi.mock("electron", () => ({
 
 
 const ACTIVE_SESSION = "session-live";
-/** A conversation open in a SECOND tile — not the primary loop's. */
 const TILE_SESSION = "session-second-tile";
 
-/** Every mutating conversation entry point — none of them may be reachable from here. */
 const loopSpies = {
   queueGuidance: vi.fn(),
   sendMessage: vi.fn(),
@@ -51,9 +40,7 @@ function makeDeps() {
     getMainWindow: () => null,
     mcpAppModelContext,
     conversationLoop: { getSessionId: () => ACTIVE_SESSION, ...loopSpies },
-    // Two conversations are open. The handler asks which loop HOLDS the card's
-    // session, so a card belonging to the second tile is as live as one
-    // belonging to the primary.
+    // A card is live if any open tile holds its session, including secondary conversations.
     findLoopBySessionId: (sessionId: string) =>
       sessionId === ACTIVE_SESSION || sessionId === TILE_SESSION
         ? { getSessionId: () => sessionId, ...loopSpies }
@@ -99,7 +86,6 @@ describe("ave:mcp:ui-model-context", () => {
 
     expect(result).toEqual({ ok: true, disposition: "stored" });
     expect(mcpAppModelContext.buildSection(ACTIVE_SESSION)).toContain("cart: 3 items");
-    // The whole point of the seam: no path from here into the conversation loop.
     expect(loopSpies.queueGuidance).not.toHaveBeenCalled();
     expect(loopSpies.sendMessage).not.toHaveBeenCalled();
     expect(loopSpies.processInput).not.toHaveBeenCalled();
@@ -128,8 +114,6 @@ describe("ave:mcp:ui-model-context", () => {
     const result = await invoke(hostFrameEvent(), "github", TILE_SESSION, "card-1", params);
 
     expect(result).toEqual({ ok: true, disposition: "stored" });
-    // Slotted under the card's OWN session, so the tile holding it is the one
-    // whose next prompt reads it.
     expect(mcpAppModelContext.buildSection(TILE_SESSION)).toContain("cart: 3 items");
     expect(mcpAppModelContext.buildSection(ACTIVE_SESSION)).not.toContain("cart: 3 items");
   });

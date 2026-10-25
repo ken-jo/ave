@@ -1,26 +1,9 @@
-/**
- * Single authority for which MCP `elicitation/create` `requestedSchema` shapes
- * the host supports.
- *
- * Two consumers used to answer that question independently:
- *  - the renderer approval dock, which decides whether to render a form at all
- *    (and disables approval when it cannot), and
- *  - the main-process elicitation resolver, which re-validates the captured
- *    content before returning `{ action: "accept", content }` to the server.
- *
- * A producer/validator pair that each re-derive "is this schema supported?" can
- * drift silently: both sides keep passing their own unit tests while the
- * end-to-end request becomes undecidable. So support is decided here once, and
- * both sides consume the same parsed result. The renderer layers display-only
- * concerns (labels) on top; it must never re-decide support.
- */
+/** Renderer forms and main validation share schema support; display labels must not redefine acceptance. */
 
 import { isRecord } from "./is-record.js";
 
-/** Field types the host can render and validate. */
 export type ElicitationFieldKind = "string" | "number" | "integer" | "boolean";
 
-/** JSON scalars admissible as `enum` members. */
 export type ElicitationEnumValue = string | number | boolean | null;
 
 export type ElicitationSchemaField = {
@@ -71,15 +54,7 @@ function trimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Parse a server-supplied `requestedSchema`. Returns `undefined` when the schema
- * is not supported — the whole schema, never a partial field list, because a
- * partial form would silently drop data the server asked for.
- *
- * Note that an `enum` member is admissible whenever it is a JSON scalar. Empty
- * strings are ordinary members; rendering them is the renderer's problem, not a
- * reason to reject the request the user is being asked to answer.
- */
+/** Reject unsupported schemas whole, never partial forms; empty scalar enum values remain valid. */
 export function parseElicitationSchema(rawSchema: unknown): ParsedElicitationSchema | undefined {
   if (!isRecord(rawSchema) || rawSchema.type !== "object" || !isRecord(rawSchema.properties)) {
     return undefined;

@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emitEvent, onEvent, offEvent } from "../types.js";
 
-/**
- * Boot event bus: onEvent() now returns an unsubscribe disposer so
- * PluginRuntime.onDisable can scrub handlers without having to retain the
- * original reference. offEvent() remains available for legacy callers.
- */
 describe("boot event bus — unsubscribe", () => {
   it("onEvent returns a disposer that stops further handler calls", () => {
     const received: unknown[] = [];
@@ -29,7 +24,7 @@ describe("boot event bus — unsubscribe", () => {
       (data) => { received.push(data); },
     );
     unsubscribe();
-    unsubscribe(); // second call is a no-op, must not throw
+    unsubscribe();
     emitEvent("test.boot.unsub-2", "x");
     expect(received).toEqual([]);
   });

@@ -1,20 +1,11 @@
-/**
- * TerminalBlocksBar — the command-block strip above a workspace terminal.
- *
- * The main process records each command the terminal runs as a block
- * (command, directory, exit code, timing, output; main/terminal/
- * terminal-blocks.ts). This strip lists them for one tab, searches them by
- * command text (the tab's command history), and copies a block or attaches it
- * to the chat composer as a pasted-text chip.
- *
- * It only reads: nothing here writes to the PTY.
- */
+/** Terminal block history is read-only; copying or attaching a block never writes to the PTY. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Blocks, ClipboardCopy, MessageSquarePlus } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
+import type { TerminalSessionInfo } from "../../../shared/terminal-session.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -35,20 +26,20 @@ const ATTACHED_FLASH_MS = 1500;
 
 export function TerminalBlocksBar({
   terminalApi,
-  tabId,
+  session,
   tabLabel,
   revision,
   onAttachText,
-  onCwd,
+  onSession,
 }: {
   terminalApi: TerminalApi;
-  tabId: string;
+  session: TerminalSessionInfo;
   tabLabel: string;
   /** Bumped by the terminal view whenever a block may have started or ended. */
   revision: number;
   onAttachText?: (text: string) => AttachTextResult;
   /** The directory the shell last reported, from the newest block that has one. */
-  onCwd?: (cwd: string) => void;
+  onSession?: (session: TerminalSessionInfo) => void;
 }): ReactElement {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -67,27 +58,18 @@ export function TerminalBlocksBar({
 
   useEffect(() => {
     let cancelled = false;
-    void terminalApi.listBlocks(tabId).then((res) => {
+    void terminalApi.listBlocks(session).then((res) => {
       if (cancelled || !res.ok) return;
       setBlocks(res.blocks);
+      onSession?.(res.session);
       setIntegrated(res.integrated || res.blocks.length === 0);
     }).catch(() => {
-      // The list is a convenience view; a failed refresh keeps the last one
-      // and the next marker retries.
+      // The list is a convenience view; a failed refresh keeps the last one and the next marker retries.
     });
     return () => {
       cancelled = true;
     };
-  }, [terminalApi, tabId, revision]);
-
-  // Blocks are newest first; the newest one with a reported cwd is where the
-  // shell last said it was.
-  const latestCwd = blocks.find((block) => block.cwd)?.cwd ?? null;
-  useEffect(() => {
-    // Nothing reported yet (the list is still loading, or the shell sends no
-    // markers) is not "no directory": what was known stays.
-    if (latestCwd) onCwd?.(latestCwd);
-  }, [onCwd, latestCwd]);
+  }, [terminalApi, session.tabId, session.lane, session.terminalSessionId, revision]);
 
   const visible = useMemo(() => filterBlocksByCommand(blocks, query), [blocks, query]);
   const latestDone = useMemo(() => blocks.find((block) => block.status === "done") ?? blocks[0] ?? null, [blocks]);
@@ -96,20 +78,20 @@ export function TerminalBlocksBar({
     async (blockId: number, use: (text: { chat: string; copy: string }) => void) => {
       setNotice(null);
       try {
-        const res = await terminalApi.getBlock(tabId, blockId);
+        const res = await terminalApi.getBlock(session, blockId);
         if (!res.ok) {
           setNotice(t("terminalBlocks.loadFailed", { error: formatIpcError(res.error, undefined) }));
           return;
         }
         use({
-          chat: formatBlockForChat(res.block, { label: tabLabel, id: tabId }, t),
+          chat: formatBlockForChat(res.block, { label: tabLabel, id: session.tabId }, t),
           copy: formatBlockForCopy(res.block),
         });
       } catch (err) {
         setNotice(t("terminalBlocks.loadFailed", { error: errorMessage(err) }));
       }
     },
-    [tabId, tabLabel, t, terminalApi],
+    [session, tabLabel, t, terminalApi],
   );
 
   const attach = useCallback(

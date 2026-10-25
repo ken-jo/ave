@@ -1,8 +1,3 @@
-/**
- * When the first-boot migration runs: not before the official snapshot
- * exists, plugins before content, once after both finished without a
- * failure, and never over a marker it cannot read.
- */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

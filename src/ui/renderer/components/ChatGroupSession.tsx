@@ -1,9 +1,10 @@
+import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { GalleryVerticalEnd, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
@@ -64,11 +65,8 @@ export interface ChatGroupEnvironment {
   // model + readiness
   llmVendor: LLMVendor;
   llmModel: string;
-  /**
-   * The active route's context window, resolved once off the settings snapshot
-   * (`resolveContextWindowForRoute`). The same number the engine budgets
-   * compaction against, so the ring and the compaction threshold agree.
-   */
+  /** The active route's context window, resolved once off the settings snapshot (`resolveContextWindowForRoute`). The same
+   * number the engine budgets compaction against, so the ring and the compaction threshold agree. */
   llmContextWindow: number;
   /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
   llmInputLimit?: number;
@@ -106,19 +104,13 @@ export interface ChatGroupEnvironment {
 
   // the window's conversation list and stars
   refreshSessions: () => void | Promise<void>;
-  /**
-   * A stored side chat a sidebar row asked for, naming the tile that must show
-   * it. Every tile is handed the same request and only the one it names acts —
-   * the panel that draws a side chat is one conversation's own column.
-   */
+  /** A stored side chat a sidebar row asked for, naming the tile that must show it. Every tile is handed the same request and
+   * only the one it names acts — the panel that draws a side chat is one conversation's own column. */
   sideChatOpenRequest?: { chatGroupId: string; sessionId: string; nonce: number } | null;
   /** Bring a chat group forward, including one chat mode has folded away. Returns whether focus moved. */
   focusChatGroup: (chatGroupId: string) => boolean;
-  /**
-   * Where the attention dot goes, decided once by the window. A tile reads
-   * its own side chat's verdict from here rather than deciding for itself,
-   * so the panel toggle, the panel's tab and the sidebar row agree.
-   */
+  /** Where the attention dot goes, decided once by the window. A tile reads its own side chat's verdict from here rather than
+   * deciding for itself, so the panel toggle, the panel's tab and the sidebar row agree. */
   pendingAnswers: PendingAnswers;
   sessions: readonly { id: string; title: string }[];
   isSessionStarred: (sessionId: string) => boolean;
@@ -134,8 +126,7 @@ export interface ChatGroupEnvironment {
     sessionId: string,
   ) => void;
 
-  // search lives in the window because the panel does; it reads the FOCUSED
-  // tile's transcript, which is the one on screen.
+  // search lives in the window because the panel does; it reads the FOCUSED tile's transcript, which is the one on screen.
   search: Pick<ChatContextValue,
     | "searchOpen" | "searchQuery" | "searchCase" | "searchMatches" | "searchMatchSet"
     | "searchIdx" | "searchHighlight" | "searchChangeQuery" | "searchToggleCase"
@@ -157,11 +148,8 @@ export interface ChatGroupEnvironment {
 
   // project binding
   activeProject: React.ComponentProps<typeof ChatView>["activeProject"];
-  /**
-   * The project a group adopted for New Chat was asked to start under, by
-   * group id. A tile listed here hydrates its fresh conversation under that
-   * project instead of the window's.
-   */
+  /** The project a group adopted for New Chat was asked to start under, by group id. A tile listed here hydrates its fresh
+   * conversation under that project instead of the window's. */
   freshProjectByGroup: ReadonlyMap<string, NonNullable<React.ComponentProps<typeof ChatView>["activeProject"]>>;
   workspaceProjects: React.ComponentProps<typeof ChatView>["workspaceProjects"];
   onNewChatForProject: React.ComponentProps<typeof ChatView>["onNewChatForProject"];
@@ -196,18 +184,17 @@ export interface ChatGroupSessionProps {
      * pane is not drawn at all (nothing to put them in).
      */
     settle: ReactNode;
-    /** This tile's session — the frame titles itself by its OWN conversation,
-     *  not the focused one, or four tiles would all wear the same name. */
+    /** This tile's session — the frame titles itself by its OWN conversation, not the focused one, or four tiles would all wear
+     * the same name. */
     currentSessionId: string;
   }) => ReactNode;
   panelOpen: boolean;
+  thumbnailOpen: boolean;
+  onThumbnailOpenChange: (open: boolean) => void;
   /** Is this the tile the window is focused on? It adopts cards no tile holds. */
   focused: boolean;
-  /**
-   * The view is not drawing this tile. It stays mounted so its conversation's
-   * turn keeps its stream subscription, its streaming flag and its stop
-   * control — but it must claim nothing the user has to see.
-   */
+  /** The view is not drawing this tile. It stays mounted so its conversation's turn keeps its stream subscription, its
+   * streaming flag and its stop control — but it must claim nothing the user has to see. */
   hidden: boolean;
   /**
    * The TREE is not drawing this pane — another tile has its box. One of the
@@ -231,15 +218,14 @@ export interface ChatGroupSessionProps {
  */
 export function ChatGroupSession({
   chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
-  paneHidden, onSidePanelOpenChange,
+  paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange,
 }: ChatGroupSessionProps) {
   const { t } = useTranslation();
 
   const api = useMemo(() => chatGroupApi(windowApi, chatGroupId), [windowApi, chatGroupId]);
   const approvals = useApprovalSurface();
-  // Stable identity: the hook re-hydrates when this changes, and the default
-  // (unscoped) project is no project at all. A project handed to this group
-  // for New Chat wins over the window's — including the default one.
+  // Stable identity: the hook re-hydrates when this changes, and the default (unscoped) project is no project at all. A
+  // project handed to this group for New Chat wins over the window's — including the default one.
   const requestedProject = env.freshProjectByGroup.get(chatGroupId);
   const freshSource = requestedProject ?? env.activeProject;
   const freshTileProject = useMemo(
@@ -254,8 +240,7 @@ export function ChatGroupSession({
     [onProjectError],
   );
 
-  // The tile's conversation, readable by the sub-agent frame filter before
-  // useCurrentSession (below) has run this render.
+  // The tile's conversation, readable by the sub-agent frame filter before useCurrentSession (below) has run this render.
   const currentSessionIdRef = useRef("");
   // Sessions of the sub-agents THIS tile spawned. A child runs its own session,
   // so anything it sends window-wide (a question card, its own frames) names an
@@ -277,8 +262,8 @@ export function ChatGroupSession({
   const drawsSession = useCallback(
     (sessionId: string) => {
       const owned = ownsSession(sessionId);
-      // The side view claims its session before its rendered surface reaches
-      // the registry, so a first-turn question must not be adopted here.
+      // The side view claims its session before its rendered surface reaches the registry, so a first-turn question must not be
+      // adopted here.
       if (!owned && approvals.claims.ownerOf(sessionId) !== null) return false;
       return tileDrawsSession({
         tiles: registry.readTiles(),
@@ -296,15 +281,15 @@ export function ChatGroupSession({
   useLayoutEffect(() => {
     focusedRef.current = focused;
   }, [focused]);
-  // What the side chat beside this conversation is holding, as it reports
-  // it. `shown` is combined here with what only the tile knows — whether its
-  // panel is open and its conversation drawn — before the window reads it.
+  // What the side chat beside this conversation is holding, as it reports it. `shown` is combined here with what only the
+  // tile knows — whether its panel is open and its conversation drawn — before the window reads it.
   const [sideChatSurface, setSideChatSurface] = useState<SideChatSurface | null>(null);
+  const [columnsVisibility, setColumnsVisibility] = useState({ thumbnailHiddenForWidth: false, panelHiddenForWidth: false });
   const sideChat = useMemo<SideChatSurface | null>(
     () => (sideChatSurface === null
       ? null
-      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !hidden }),
-    [sideChatSurface, panelOpen, hidden],
+      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !columnsVisibility.panelHiddenForWidth && !hidden }),
+    [sideChatSurface, panelOpen, columnsVisibility.panelHiddenForWidth, hidden],
   );
   const ownedChildSessionIds = useMemo(
     () => new Set(
@@ -314,8 +299,8 @@ export function ChatGroupSession({
     ),
     [subAgentSpawns],
   );
-  // Same commit-time discipline as the session id below: the listener reads the
-  // ref from an IPC callback, so it must never see a render that was discarded.
+  // Same commit-time discipline as the session id below: the listener reads the ref from an IPC callback, so it must never
+  // see a render that was discarded.
   useLayoutEffect(() => {
     ownedChildSessionIdsRef.current = ownedChildSessionIds;
   }, [ownedChildSessionIds]);
@@ -332,8 +317,7 @@ export function ChatGroupSession({
     upsertPersistent: upsertTilePersistent, removePersistent: removeTilePersistent,
   } = useStatusNotices();
   const announceProviderFallback = useCallback((message: string) => {
-    // One stable id: a second swap in the same turn replaces the notice
-    // instead of queueing behind the first.
+    // One stable id: a second swap in the same turn replaces the notice instead of queueing behind the first.
     upsertTileNotice("provider-fallback", { severity: "warning", message, ttlMs: DEFAULT_TOAST_TTL_MS });
   }, [upsertTileNotice]);
 
@@ -348,9 +332,8 @@ export function ChatGroupSession({
     insertImportedTriggerEntry,
   } = useChatState(api, announceProviderFallback);
 
-  // What this tile's composer dock draws above the composer, built once per
-  // change of the queue so the memoized view below is not re-rendered by a
-  // fresh object every turn of this component.
+  // What this tile's composer dock draws above the composer, built once per change of the queue so the memoized view below
+  // is not re-rendered by a fresh object every turn of this component.
   const tileStatusBar = useMemo(() => ({
     persistent: tileNoticePersistent,
     visibleToast: tileNoticeVisible,
@@ -377,26 +360,23 @@ export function ChatGroupSession({
     onLoadedSession: resetForNewSession,
     restoreSubAgents: restoreSubAgentSpawns,
     onSessionsChanged: env.refreshSessions,
-    // Only the primary window's primary tile resumes the window-active
-    // conversation; a secondary window's first tile is a conversation of its own.
+    // Only the primary window's primary tile resumes the window-active conversation; a secondary window's first tile is a
+    // conversation of its own.
     resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID && !isSecondaryMainWindow(),
     freshProject: freshTileProject,
     onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
   });
-  // The Suggestions conversation is named from the catalog by its id, in the
-  // language in use now — never by a stored title.
+  // The Suggestions conversation is named from the catalog by its id, in the language in use now — never by a stored title.
   const currentSessionTitle = sessionDisplayTitle(currentSessionId, storedSessionTitle, t);
-  // Written at commit, not in render: a render may be thrown away, and the
-  // frame listener (subscribed in an effect) must not read a session this
-  // tile never showed. Layout timing keeps it ahead of any IPC callback.
+  // Written at commit, not in render: a render may be thrown away, and the frame listener (subscribed in an effect) must not
+  // read a session this tile never showed. Layout timing keeps it ahead of any IPC callback.
   useLayoutEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
 
-  // A composer draft belongs to the conversation it was typed into. Switching
-  // this tile to another session has to drop it, or the next session opens
-  // holding attachments the user staged for a different one.
+  // A composer draft belongs to the conversation it was typed into. Switching this tile to another session has to drop it,
+  // or the next session opens holding attachments the user staged for a different one.
   const attachmentSessionScopeRef = useRef<{ initialized: boolean; sessionId?: string }>({
     initialized: false,
     sessionId: undefined,
@@ -421,9 +401,8 @@ export function ChatGroupSession({
   const questionRef = useRef(question);
   questionRef.current = question;
   const draftSessionIdRef = useRef<string | null>(null);
-  // Set by a new chat started from a conversation with no entries (the
-  // composer's project selector does this): that conversation is being
-  // replaced, not left, so its text belongs to the one that replaces it.
+  // Set by a new chat started from a conversation with no entries (the composer's project selector does this): that
+  // conversation is being replaced, not left, so its text belongs to the one that replaces it.
   const draftCarryFromRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const previous = draftSessionIdRef.current;
@@ -452,9 +431,8 @@ export function ChatGroupSession({
     (raw: string) => composeOutgoingUtil({ raw, activePreset: env.activePreset, attachments }),
     [env.activePreset, attachments],
   );
-  // This is the same trimmed draft the send path composes. Both pre-send
-  // surfaces consume it, so pasted text, file paths, resource text parts, and
-  // images cannot drift from the actual user payload.
+  // This is the same trimmed draft the send path composes. Both pre-send surfaces consume it, so pasted text, file paths,
+  // resource text parts, and images cannot drift from the actual user payload.
   const composedDraft = useMemo<ComposedOutgoing>(() => {
     const trimmedQuestion = question.trim();
     return trimmedQuestion.length > 0
@@ -507,8 +485,6 @@ export function ChatGroupSession({
     statusRemovePersistent: removeTilePersistent,
   });
 
-  // ── conversation actions ───────────────────────────────────────────────────
-
   const handleLoadSession = useCallback(
     (sessionId: string) => sessionLoad(sessionId, applyLoadedSession),
     [sessionLoad, applyLoadedSession],
@@ -533,15 +509,9 @@ export function ChatGroupSession({
     await sessionFork(target.messageId, entryIdx, truncateToEntry);
   }, [entries, sessionFork, truncateToEntry]);
 
-  // Rewind: the message's own input goes back to the composer and everything
-  // from it onward is discarded, in this session.
-  //
-  // The host is asked FIRST and hands back the input to restore. It owns that
-  // text because the transcript entry only ever held a flattened rendering of
-  // the row — and it is the host that knows when a row cannot be handed back
-  // whole (an image it cannot re-stage, a resource fence that must not be
-  // folded into the user's own body), in which case nothing is cut at all.
-  const handleReturnHere = useCallback(async (entryIdx: number): Promise<{ ok: boolean }> => {
+  // Ask the host before rewind: only it can return original input and refuse unrecoverable images or server-resource
+  // provenance.
+  const handleReturnHere = useCallback(async (entryIdx: number, mode: RewindMode = "conversation"): Promise<{ ok: boolean }> => {
     const entry = entries[entryIdx];
     if (entry?.kind !== "user") return { ok: false };
     if (entry.messageId === undefined) {
@@ -550,24 +520,26 @@ export function ChatGroupSession({
       }));
       return { ok: false };
     }
-    const res = await api.chatRewindTo(entry.messageId);
+    const res = await api.chatRewindTo(entry.messageId, mode);
     if (!res.ok) {
-      // The wire code is a kebab-case token; formatIpcError owns turning it
-      // into a sentence, the same as every other refusal surfaced here.
+      // The wire code is a kebab-case token; formatIpcError owns turning it into a sentence, the same as every other refusal
+      // surfaced here.
       appendSystemEntry(
-        t("chatView.returnHereFailed", { error: formatIpcError(res.error, undefined) }),
+        t("chatView.returnHereFailed", { error: res.error === "code-restore-conflict"
+          ? t("codeRewind.conflict", { files: (res.conflictingFiles ?? []).join("\n") })
+          : formatIpcError(res.error, undefined) }),
       );
       return { ok: false };
     }
-    // The bubble goes too: its text is in the composer now, and leaving it in
-    // the transcript would read as a message that is still part of the thread.
+    if (mode === "code") return { ok: true };
+    // The bubble goes too: its text is in the composer now, and leaving it in the transcript would read as a message that is
+    // still part of the thread.
     truncateToEntry(entryIdx - 1);
     setQuestion(res.text);
-    // The turn ran under this persona, so the composer returns to it — coming
-    // back to the moment before a send means coming back to how it was addressed.
+    // The turn ran under this persona, so the composer returns to it — coming back to the moment before a send means coming
+    // back to how it was addressed.
     if (res.personaPromptId !== undefined) env.setActivePresetId(res.personaPromptId);
-    // The sidebar row previews the last thing said in the conversation, and
-    // that is no longer what it was a moment ago.
+    // The sidebar row previews the last thing said in the conversation, and that is no longer what it was a moment ago.
     await env.refreshSessions();
     return { ok: true };
   }, [api, entries, truncateToEntry, appendSystemEntry, env, t]);
@@ -579,9 +551,8 @@ export function ChatGroupSession({
   );
 
   const handleAbort = useCallback(async () => {
-    // chatAbort resolves only after the turn settles as interrupted, so the
-    // badge lands exactly when the stream stops — the initiator marks it, not
-    // a "[중단됨]" literal pushed through the delta stream by the engine.
+    // chatAbort resolves only after the turn settles as interrupted, so the badge lands exactly when the stream stops — the
+    // initiator marks it, not a "[중단됨]" literal pushed through the delta stream by the engine.
     try { await api.chatAbort(); } catch { /* no-op */ }
     markLastAssistantInterrupted();
   }, [api, markLastAssistantInterrupted]);
@@ -592,8 +563,8 @@ export function ChatGroupSession({
     if (text.trim().length === 0) return { ok: false, error: "empty-text" };
     try {
       const result = await api.chatGuide(text);
-      // Main-process handler returns `{ ok: boolean, error?: string }`.
-      // Type-narrow defensively since the IPC boundary is `Promise<unknown>`.
+      // Main-process handler returns `{ ok: boolean, error?: string }`. Type-narrow defensively since the IPC boundary is
+      // `Promise<unknown>`.
       if (result && typeof result === "object" && "ok" in result) {
         const r = result as { ok: boolean; error?: string };
         if (r.ok) return { ok: true };
@@ -628,9 +599,8 @@ export function ChatGroupSession({
       if (streaming) { console.warn("new chat blocked during streaming"); return false; }
       const created = await api.chatNew(project);
       if (!created.ok) {
-        // Main kept the loop on what it held, so the tile keeps showing that:
-        // a blank transcript would claim a fresh conversation that does not
-        // exist. The refusal is said out loud, never read as success.
+        // Main kept the loop on what it held, so the tile keeps showing that: a blank transcript would claim a fresh conversation
+        // that does not exist. The refusal is said out loud, never read as success.
         reportChatNewRefused(created.error);
         return false;
       }
@@ -638,8 +608,8 @@ export function ChatGroupSession({
       clearForNewChat();
       resetForNewSession();
       const applied = await refreshSessionId();
-      // No move to a new id: the carry must not wait for a later, ordinary
-      // switch away from this conversation and take the text along then.
+      // No move to a new id: the carry must not wait for a later, ordinary switch away from this conversation and take the text
+      // along then.
       if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
       await env.refreshSessions();
       return true;
@@ -651,8 +621,7 @@ export function ChatGroupSession({
     pushTileNotice({ severity: "warning", message, ttlMs: 8000 });
   }, [pushTileNotice]);
 
-  // ── MCP prompts ────────────────────────────────────────────────────────────
-  // Arguments are collected by HOST chrome (McpPromptArgsDialog) — the renderer
+    // Arguments are collected by HOST chrome (McpPromptArgsDialog) — the renderer
   // has no `window.prompt`, and a composer draft would re-enter as
   // `user-keyboard`. An argument-less prompt skips the form entirely.
   const [mcpPromptAwaitingArgs, setMcpPromptAwaitingArgs] = useState<McpPromptEntry | null>(null);
@@ -678,9 +647,8 @@ export function ChatGroupSession({
 
   const runMcpPrompt = useCallback(
     async (prompt: McpPromptEntry, args: Record<string, string>) => {
-      // The prompt NAME is server-authored, so it is bounded before it goes near
-      // host chrome (React escapes it; this is about layout, and about the toast
-      // staying readable).
+      // The prompt NAME is server-authored, so it is bounded before it goes near host chrome (React escapes it; this is about
+      // layout, and about the toast staying readable).
       const label = prompt.name.slice(0, 64);
       const fail = (error?: string) => {
         // The handler distinguishes rate-limited from empty-prompt from
@@ -695,17 +663,16 @@ export function ChatGroupSession({
           ttlMs: 10000,
         });
       };
-      // One catch for the whole path: an IPC rejection, a missing bridge, or a
-      // send-gate refusal all surface as a toast rather than an unhandled
-      // rejection the user never sees.
+      // One catch for the whole path: an IPC rejection, a missing bridge, or a send-gate refusal all surface as a toast rather
+      // than an unhandled rejection the user never sees.
       try {
         const outcome = await window.ave?.mcp?.getPrompt?.(prompt.serverId, prompt.name, args);
         if (!outcome || outcome.ok !== true) {
           fail(outcome?.ok === false ? outcome.error : undefined);
           return;
         }
-        // The host clipped what the server returned. Saying so is the difference
-        // between a prompt that looks complete and one the user knows is partial.
+        // The host clipped what the server returned. Saying so is the difference between a prompt that looks complete and one the
+        // user knows is partial.
         if (outcome.truncated || (outcome.omittedBlocks ?? 0) > 0) {
           pushTileNotice({
             severity: "warning",
@@ -737,8 +704,6 @@ export function ChatGroupSession({
     [runMcpPrompt],
   );
 
-  // ── the approvals this tile's turn is parked on ────────────────────────────
-
   // The approval card is drawn in the PANE holding the conversation that
   // asked. This tile claims the sessions it owns (its own, and its
   // sub-agents'), so no other surface draws their cards; the cards render
@@ -746,13 +711,8 @@ export function ChatGroupSession({
   // in the pane frame's settle slot while a view covers it.
   useEffect(
     () => {
-      // A pane the tree is not drawing claims nothing. Its turn keeps running
-      // — which is why it is still mounted — and a running turn parks on
-      // approvals, but there is no surface here to draw the card in: the
-      // request stays in the window's queue, unclaimed, and the sidebar marks
-      // this conversation's row until the pane is drawn again and claims it
-      // back. Whether the pane is ROUTED does not enter into it — a routed
-      // pane is drawn, and draws its cards in its settle slot.
+      // Hidden tree panes claim no cards; requests remain queued with sidebar attention. Routed panes still draw their cards in
+      // settle slots.
       if (paneHidden) return;
       return approvals.claims.claim(chatGroupId, ownsSession);
     },
@@ -773,13 +733,7 @@ export function ChatGroupSession({
         && sessionOwnedBy(currentSessionId, ownedChildSessionIds, req.sessionId)),
     [approvals.queue, currentSessionId, ownedChildSessionIds],
   );
-  // What this PANE draws. A pane the tree hides draws none of them: a copy in
-  // a `display:none` subtree is not merely invisible — the dock takes keyboard
-  // focus when it mounts, and focusing anything inside a tile focuses that
-  // tile, which would drag the view back to the conversation the user just
-  // navigated away from. The unfiltered list is still what the turn-end notice
-  // below reads: a turn that ends on an unanswered ask has to say so wherever
-  // it was parked.
+  // Do not mount approval docks in hidden tree panes: their autofocus would steal focus back to the hidden conversation.
   const drawnApprovals = useMemo(
     () => (paneHidden ? [] : ownedApprovals),
     [paneHidden, ownedApprovals],
@@ -794,16 +748,14 @@ export function ChatGroupSession({
     () => (paneHidden ? [] : askQuestions),
     [paneHidden, askQuestions],
   );
-  // Which of the pane's two slots draws them: over the composer while the
-  // conversation is what the pane shows, the frame's settle slot while a view
-  // covers it. Never both — one card, one place.
+  // Which of the pane's two slots draws them: over the composer while the conversation is what the pane shows, the frame's
+  // settle slot while a view covers it. Never both — one card, one place.
   const routed = hidden && !paneHidden;
   const pendingApprovals = routed ? [] : drawnApprovals;
   const composerAskQuestions = routed ? [] : drawnAskQuestions;
   const settleApprovalHead = routed ? drawnApprovals[0] ?? null : null;
-  // Both cards sit at the same z-index, so DOM order is the stacking order:
-  // the question first, the approval after it — the approval stays the
-  // topmost decision, as it is over the composer in ChatView.
+  // Both cards sit at the same z-index, so DOM order is the stacking order: the question first, the approval after it — the
+  // approval stays the topmost decision, as it is over the composer in ChatView.
   const settle: ReactNode = routed ? (
     <>
       <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
@@ -856,8 +808,6 @@ export function ChatGroupSession({
     turnEnd.dropSettled(unanswered.map((req) => req.id));
   }), [api]);
 
-  // ── what this tile tells the window ────────────────────────────────────────
-
   useRegisterChatGroupSession(registry, chatGroupId, {
     entries, streaming, hidden, paneHidden,
     askQuestions, resolveAskQuestion: dismissAskQuestion,
@@ -874,8 +824,6 @@ export function ChatGroupSession({
     appendSystemEntry,
     startNewChat,
   });
-
-  // ── the frame's own actions ────────────────────────────────────────────────
 
   const actions = useMemo(
     () => buildChatGroupActions({
@@ -894,33 +842,54 @@ export function ChatGroupSession({
     [t, currentSessionId, env, handleImportAndLoad],
   );
 
-  // The one control this pane owns as a TILE rather than as content: the work
-  // panel is the conversation's, so it opens from the conversation's own frame.
-  const panelLabel = panelOpen ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
-  // The side chat holds a card the user cannot see from here — the panel is
-  // closed, or another tab is up. The window decided that; the toggle only
-  // carries the dot, because opening the panel is how the user reaches it.
+  // Each column belongs to this conversation and opens from its own frame.
+  const panelVisible = panelOpen && !columnsVisibility.panelHiddenForWidth;
+  const panelLabel = columnsVisibility.panelHiddenForWidth ? t("chatPreviewRail.hiddenForWidth")
+    : panelVisible ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
+  // The side chat holds a card the user cannot see from here — the panel is closed, or another tab is up. The window decided
+  // that; the toggle only carries the dot, because opening the panel is how the user reaches it.
   const sideChatPendingAnswer =
     sideChat !== null && env.pendingAnswers.sideChatSessionIds.has(sideChat.sessionId);
+  const thumbnailVisible = thumbnailOpen && !columnsVisibility.thumbnailHiddenForWidth;
+  const thumbnailLabel = t(columnsVisibility.thumbnailHiddenForWidth ? "chatThumbnails.hiddenForWidth"
+    : thumbnailVisible ? "chatThumbnails.close" : "chatThumbnails.open");
   const trailing = (
+    <>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon" className={`${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
+          onClick={() => {
+            if (!columnsVisibility.thumbnailHiddenForWidth) onThumbnailOpenChange(!thumbnailOpen);
+          }} title={thumbnailLabel}
+          aria-disabled={columnsVisibility.thumbnailHiddenForWidth}
+          aria-label={thumbnailLabel} aria-pressed={thumbnailVisible} data-testid={TEST_IDS.paneThumbnailToggle}>
+          <GalleryVerticalEnd className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{thumbnailLabel}</TooltipContent>
+    </Tooltip>
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           variant="ghost"
           size="icon"
-          className={`relative ${HEADER_BUTTON_CLASS}`}
-          onClick={() => onSidePanelOpenChange(!panelOpen)}
+          className={`relative ${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
+          onClick={() => {
+            if (!columnsVisibility.panelHiddenForWidth) onSidePanelOpenChange(!panelOpen);
+          }}
           title={panelLabel}
           aria-label={panelLabel}
-          aria-pressed={panelOpen}
+          aria-pressed={panelVisible}
+          aria-disabled={columnsVisibility.panelHiddenForWidth}
           data-testid={TEST_IDS.panePanelToggle}
         >
-          {panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          {panelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
           {sideChatPendingAnswer ? <PendingAnswerDot testId="pane-panel-toggle-pending-answer" /> : null}
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{panelLabel}</TooltipContent>
     </Tooltip>
+    </>
   );
 
   const chatContextValue = useMemo<ChatContextValue>(() => ({
@@ -961,8 +930,7 @@ export function ChatGroupSession({
         api={api}
         chatGroupId={chatGroupId}
         onAsk={(q, intent, opts) => handleAsk(q, "default", intent, opts)}
-        /* opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째
-           인자로 전달 — queue-auto inject path 활성. */
+        /** opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째 인자로 전달 — queue-auto inject path 활성. */
         onRunMcpPrompt={handleRunMcpPrompt}
         onRunPluginPrompt={handleRunPluginPrompt}
         onEditSave={handleEditSave}
@@ -996,6 +964,8 @@ export function ChatGroupSession({
         onSlashPickerOpenChange={env.onSlashPickerOpenChange}
         statusBar={tileStatusBar}
         onAttachmentWarning={handleAttachmentWarning}
+        thumbnailOpen={thumbnailOpen}
+        onColumnsVisibilityChange={setColumnsVisibility}
         sidePanelOpen={panelOpen}
         onSidePanelOpenChange={onSidePanelOpenChange}
         sideChatOpenRequest={env.sideChatOpenRequest?.chatGroupId === chatGroupId

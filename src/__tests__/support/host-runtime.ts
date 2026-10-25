@@ -11,7 +11,6 @@ export const unavailableSecretEncryption: SecretEncryption = {
   decryptString: () => { throw new Error("test-encryption-unavailable"); },
 };
 
-/** Settings state with no writes for host tests that do not exercise invalidation. */
 export const stationaryLeaseState = {
   getProviderConfigRevision: () => 0,
   getSecretGeneration: (_key: string) => 0,
@@ -41,6 +40,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     getAppWindows: () => [],
     getFocusedWindow: () => null,
     findSessionSurface: () => null,
+    findTerminalSurface: () => null,
     getAuthPartition: unavailable,
     openAuthWindowService: unavailable,
     openLinkWindowService: unavailable,
@@ -56,6 +56,8 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     createAudioCaptureSurface: unavailable,
     createFloatingDockSurface: unavailable,
     pickFolders: unavailable,
+    pickBrowserUploadFiles: unavailable,
+    browserGuestContentOrigin: unavailable,
     prepareRelease: () => ({}),
     beforeShutdown: () => {},
     ...overrides,

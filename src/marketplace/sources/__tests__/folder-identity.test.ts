@@ -1,9 +1,3 @@
-/**
- * Folder identity and `path:` patterns (design §18.4.4, §18.6): no
- * platform-wide case folding. The walk's on-disk spelling and equal
- * `dev`/`ino` decide whether two inputs are one folder; an allow pattern
- * admits only the spelling written, a block pattern every spelling.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

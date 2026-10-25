@@ -1,5 +1,6 @@
 import { readBoundedTextWindow } from "../shared/bounded-tool-output.js";
 import { ToolOutputArtifactStore } from "./tool-output-artifact-store.js";
+import { deleteCodeCheckpoints } from "./code-checkpoints.js";
 import { MAX_TOOL_RESULT_ARTIFACT_BYTES, MAX_TOOL_OUTPUT_PREVIEW_CHARS, normalizeToolOutputArtifactInfo, type ToolOutputCapture, type ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 export { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../shared/tool-output-artifact.js";
 import { isValidSessionId } from "../shared/session-id.js";
@@ -63,21 +64,9 @@ import {
   type TurnInflightPartial,
 } from "./session-turn-journal.js";
 const log = createLogger("memory");
-/**
- * What this process last wrote to each session transcript: logical history row
- * ids plus the file's size and mtime right after the write. Parallel results
- * reach disk in completion order while these ids stay in call order. An append
- * is only taken when these ids extend history or its open result group AND the file is
- * still exactly what was written — any other writer (another manager on the
- * same directory, a hand edit) changes size or mtime and forces a rewrite.
- * Keyed by transcript path because auxiliary managers share session dirs.
- */
+// Track written row ids plus file size and mtime; append completion-order results only while the prior prefix remains valid.
 const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
-/**
- * Sessions whose turn journal is open in THIS process, keyed by sidecar path.
- * A sidecar for one of these is the running turn's, not an orphan, so a read
- * of the session must not fold it in as an interrupted turn.
- */
+// A process-local open journal marks a live turn; never recover its sidecar as an orphan.
 const liveTurnJournals = new Map<string, number>();
 // Auxiliary managers can share the same host-owned session directory.
 const unpublishedCapturesByDirectory = new Map<string, Map<string, Set<string>>>();
@@ -173,7 +162,6 @@ export interface NoteEntry {
   excerpt?: string;
   projectRoot?: string;
   projectName?: string;
-  /** Stable lifecycle identity for v1 managed memories. */
   id?: string;
   kind?: MemoryKind;
   state?: MemoryState;
@@ -192,7 +180,6 @@ export interface ProjectScopedMemoryOptions {
   includeUnscoped?: boolean;
 }
 
-/** A managed memory's purpose. Kept intentionally small so policy stays explicit. */
 export type MemoryKind = "preference" | "constraint" | "fact" | "goal" | "reference" | "note";
 
 /** Candidates are optional review-only records; only active memories may reach a model prompt. */
@@ -201,14 +188,12 @@ export type MemoryState = "candidate" | "active";
 /** Provenance is recorded so later lifecycle policy can distinguish imports from direct user intent. */
 export type MemorySourceKind = "user" | "assistant" | "import" | "capture";
 
-/** The user intent that entered the host-owned LLM review path. */
 export type MemoryCaptureTrigger = "automatic" | "explicit";
 
 export type MemoryScope =
   | { type: "global" }
   | { type: "project"; projectRoot: string; projectName?: string };
 
-/** Host-generated metadata for a derived note; source notes never carry it. */
 interface MemoryDerivationV1 {
   v: 1;
   type: "consolidated-overview";
@@ -216,18 +201,14 @@ interface MemoryDerivationV1 {
   generatedAt: string;
 }
 
-/** Immutable provenance for a host-validated, LLM-refined automatic capture. */
 interface MemoryCaptureV1 {
   v: 1;
   method: "llm-refined";
-  /** Automatic post-turn capture versus an explicitly requested remembered note. */
   trigger: MemoryCaptureTrigger;
-  /** SHA-256 of the trusted user text used as the review evidence. */
   sourceDigest: string;
   capturedAt: string;
 }
 
-/** Bounded, exact-scope source set used for one consolidation attempt. */
 export interface MemoryConsolidationSnapshot {
   scope: MemoryScope;
   sources: readonly NoteEntry[];
@@ -238,7 +219,6 @@ export type MemoryConsolidationUpsertResult =
   | { status: "updated"; entry: NoteEntry }
   | { status: "sources-changed" | "empty" };
 
-/** Versioned, top-of-file metadata for a managed memory note. */
 export interface MemoryMetadataV1 {
   v: 1;
   id: string;
@@ -254,7 +234,7 @@ export interface MemoryMetadataV1 {
   capture?: MemoryCaptureV1;
 }
 
-/** Save-time lifecycle policy. Omitting projectRoot means explicit global long-term memory. */
+// Omitted projectRoot explicitly selects global long-term memory.
 export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
   kind?: MemoryKind;
   state?: MemoryState;
@@ -266,9 +246,8 @@ export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
 }
 
 export interface MemoryReadOptions extends ProjectScopedMemoryOptions {
-  /** Default false: candidates never appear in normal reads or prompt selection. */
+  // Candidates are excluded from normal reads and prompts by default.
   includeCandidates?: boolean;
-  /** Restrict a management/refresh read to global long-term memories. */
   scope?: "all" | "global";
 }
 
@@ -305,35 +284,12 @@ export interface ToolResultArtifact {
   createdAt: string;
 }
 
-/**
- * Which of the three session stores a listing was read from.
- *
- * The family a row belongs to is not a property of the row alone: `main` names
- * a conversation in `~/.ave/sessions/` and a side chat in
- * `~/.ave/side-chat/`, and the stores are separate {@link MemoryManager}
- * instances that cannot see each other. The reader therefore names the store it
- * asked, and {@link sessionFamilyOf} joins the two halves.
- */
+// Session family depends on the owning store as well as metadata; identical kinds can name different namespaces.
 export type SessionNamespace = "main" | "side-chat" | "subagent";
 
-/**
- * The list contract lives in `shared/session-lookup.ts` — the neutral module
- * main, the preload bridge and the renderer all import. Re-exported here
- * because the classifier and the row assembly below are what stamp it, so the
- * main-process callers read the union from the module that produces it.
- */
 export type { SessionFamily, SessionKind, SessionListRow };
 
-/**
- * The ONE classifier: which family a listed session belongs to, or `null` when
- * the row is not a conversation the list shows.
- *
- * `null` is a real answer rather than a failure. The sub-agent store holds a
- * child per `agent_spawn` call, and each is already reachable inside its parent
- * conversation's sub-agent tab, so listing them beside conversations would say
- * the same thing twice. Only the sub-agent sessions that ARE an item's run —
- * their origin names a work-board item — surface here.
- */
+// Return no family for ordinary spawned children; only work-board runs belong in the sidebar list.
 export function sessionFamilyOf(
   namespace: SessionNamespace,
   session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId">,
@@ -347,22 +303,7 @@ export function sessionFamilyOf(
   return null;
 }
 
-/**
- * The ONE assembly: a stored session entry as the row every conversation
- * surface reads. `null` when {@link sessionFamilyOf} says the entry is not a
- * conversation the list shows.
- *
- * The sidebar's list and the routine panel's run list are the same sessions
- * seen through two IPC channels. Assembling the row twice let them disagree on
- * what a row is called and which of its fields exist, so both channels build it
- * here.
- *
- * `parentSessionId` is NOT carried: it is checkpoint/fork provenance, an
- * answer to "which conversation was this branched out of", and the wire's
- * `originSessionId` answers "which conversation is this a side chat of". A row
- * that forwarded both under one name would let a surface group forks under a
- * parent as though they were side chats.
- */
+// Assemble one shared conversation row for sidebar and panel consumers.
 export function toSessionListRow(
   namespace: SessionNamespace,
   session: SessionListEntry,
@@ -376,9 +317,7 @@ export function toSessionListRow(
     sessionKind: session.sessionKind,
     family,
     ...(session.workBoardItemId !== undefined ? { workBoardItemId: session.workBoardItemId } : {}),
-    // Only a side chat is drawn under another conversation, so only a side
-    // chat's origin is a grouping key any surface reads. A sub-agent child's
-    // origin is its spawning parent and never leaves the panel that owns it.
+    // Only side-chat origins group sidebar rows; spawned children stay in their parent's panel.
     ...(family === "side-chat" && session.originSessionId
       ? { originSessionId: session.originSessionId }
       : {}),
@@ -396,33 +335,19 @@ export function toSessionListRow(
   };
 }
 
-/**
- * One sub-agent row rebuilt from persisted metadata after a restart.
- *
- * Carries only what a panel ROW needs. The transcript is fetched separately,
- * on demand, by loading `childSessionId`.
- */
+// Restore only panel row fields; load the child transcript separately on demand.
 export interface RestoredSubAgentSession {
-  /** Panel row identity; same id the live event stream uses. */
   spawnId: string;
-  /** The child's session id — also its `resumeId` for `agent_spawn`. */
   childSessionId: string;
   title: string;
   modifiedAt: Date;
-  /** Last durable A2A projection, when the child recorded one. */
   taskState?: A2AProjectedTaskState;
-  /** Parent `agent_spawn` tool_use id that created this child. */
   toolUseId?: string;
 }
 
 export interface ListSessionsOptions {
   kind?: SessionKind | "all";
-  /**
-   * Only the sub-agent sessions a work-board item spawned (their
-   * `originSessionId` names an item). Meaningful with `kind: "subagent"` on the
-   * sub-agent namespace manager; a session that carries any other origin —
-   * a chat parent, a briefing run — is not a work-board run.
-   */
+  // Work-board filtering applies only to child sessions whose host-written origin names an item.
   workBoardRuns?: boolean;
   routineId?: string;
   projectRoot?: string;
@@ -445,142 +370,62 @@ export interface SessionListEntry {
   title: string;
   preview: string;
   sessionKind: SessionKind;
-  /**
-   * The work-board item whose run this sub-agent session is — derived here,
-   * once, from the origin the engine wrote at spawn time. Absent on every
-   * session that is not a work-board run.
-   */
+  // Derive workBoardItemId only from a host-created run origin.
   workBoardItemId?: number;
-  /**
-   * The conversation this session was started from, as the host recorded it at
-   * creation — a sub-agent's spawning parent, a side chat's conversation. Only
-   * a value that is itself a session id is carried; the work-board item origin
-   * arrives as {@link workBoardItemId} instead.
-   */
+  // Carry conversation origins only when they are valid session ids; item origins use workBoardItemId.
   originSessionId?: string;
   routineId?: string;
   routineTitle?: string;
   routineFiredAt?: string;
-  /** Workspace/project root this conversation belongs to. */
   projectRoot?: string;
-  /** Human-readable workspace/project label captured when the session was created. */
   projectName?: string;
-  /**
-   * Checkpoint/fork provenance only. This is not a chronological previous
-   * session pointer and must not drive automatic previous-session loading.
-   */
+  // Fork provenance is not chronological continuity and must not drive previous-session loading.
   parentSessionId?: string;
-  /** Compact sequence number this session was forked from. Only set on true checkpoint forks. */
   branchedFromCompactNum?: number;
-  /** ISO time the user archived this conversation. Absent = not archived. */
   archivedAt?: string;
-  /** ISO time the user marked it unread. Absent = read. */
   unreadSince?: string;
-  /** ISO timestamp when this session was branched. Only set on true checkpoint forks. */
   branchedAt?: string;
 }
 
 export type CheckpointTrigger = "auto-compact" | "manual";
 
 export interface Checkpoint {
-  /** Unique checkpoint identifier (any non-empty string; typically a UUID) */
   id: string;
-  /** ISO timestamp when the checkpoint was created */
   triggeredAt: string;
-  /** What caused the checkpoint */
   trigger: CheckpointTrigger;
-  /**
-   * Token usage ratio at the moment of trigger (0.0–1.0).
-   * Used by the checkpoint engine to decide summary depth.
-   */
+  // Trigger-time usage ratio determines checkpoint summary depth.
   ctxUsageAtTrigger: number;
-  /**
-   * Rolling summary text generated at checkpoint time.
-   * null when context was below the 10% minimum — no summary needed.
-   * For auto-compact checkpoints, this is `renderBoundaryAsPreamble()` output.
-   */
+  // No summary below the minimum context threshold; compact checkpoints store the rendered boundary preamble.
   summary: string | null;
-  /** Number of messages in the session at trigger time */
   messageCountAtTrigger: number;
-  /**
-   * Compact checkpoint #N in the numbered checkpoint chain.
-   * Set by auto-compact and manual compact when a checkpoint is created.
-   */
   compactNum?: number;
 }
 
-/**
- * Metadata stored alongside a session's JSONL message file.
- * Fields are optional because metadata may be partial; missing kind is
- * normalized by the repository and must not imply chronological continuity.
- */
+// Metadata may be partial; missing kind normalizes without inferring chronological continuity.
 export interface SessionMetadata {
   sessionKind?: SessionKind;
   routineId?: string;
   routineTitle?: string;
   routineFiredAt?: string;
-  /** Workspace/project root this conversation belongs to. */
   projectRoot?: string;
-  /** Human-readable workspace/project label captured when the session was created. */
   projectName?: string;
-  /** Checkpoint/fork provenance parent, not a chronological previous session. */
   parentSessionId?: string;
-  /**
-   * Rolling summary carried forward from the parent session.
-   * Max 8000 chars (approx. 2000 tokens). Truncated on write if exceeded.
-   */
+  // Bound the inherited rolling summary on write.
   summaryPreamble?: string;
-  /** Checkpoints recorded inside this session (normally 0 or 1) */
   checkpoints?: Checkpoint[];
-  /**
-   * LLM-generated session title. When set, takes precedence over the
-   * auto-derived title from session content. Capped on write at
-   * MAX_SESSION_TITLE_CHARS, the same length the auto-derived title uses.
-   */
+  // Explicit titles override derived titles and share their length cap.
   title?: string;
-  /**
-   * ISO timestamp of when the user archived this conversation. Absent means
-   * not archived — the flag is the timestamp, so there is no second field to
-   * fall out of step with it.
-   */
+  // The archive timestamp is the flag; absence means unarchived.
   archivedAt?: string;
-  /**
-   * ISO timestamp of when the user marked this conversation unread. Absent
-   * means read. This is a MANUAL mark, not a computed one: nothing sets it on
-   * the user's behalf, so nothing has to clear it on their behalf either.
-   */
+  // Unread is user-managed; no automatic reader clears it.
   unreadSince?: string;
-  /**
-   * The workspace tab (a terminal or page) whose pane chat this side chat is.
-   * Host-written on the pane's first turn, cleared when the user starts the
-   * pane's chat afresh; a restored pane reopens on the newest unarchived match.
-   */
+  // Host-written pane identity restores the newest unarchived match and clears when the pane starts fresh.
   paneTabId?: string;
-  /**
-   * Compact number of the checkpoint this session was branched from.
-   * Set when a session is created via branchFromCheckpoint().
-   * Absent for normal (non-branched) sessions.
-   */
   branchedFromCompactNum?: number;
-  /**
-   * ISO timestamp when this session was branched from a checkpoint.
-   * Absent for normal (non-branched) sessions.
-   */
   branchedAt?: string;
-  /**
-   * Sub-agent resume metadata. Written on spawn (SubAgentRunner), read by the
-   * PR-C resume entry point to reconstruct the child with the SAME permission
-   * scope it was frozen with. Present only on `sessionKind === "subagent"`
-   * sessions; absent for main/routine.
-   *
-   * The scoped tool names the child was spawned with. A resume MUST re-scope
-   * the child's ToolRegistry to exactly this set (permission is frozen at the
-   * original spawn — resume re-hydrates history, it does not re-grant tools).
-   */
+  // Resume must restore the frozen permission scope from child-only host-written metadata.
   sourceTools?: string[];
-  /** Agent profile's `model:` frontmatter the child was spawned with (resume reuses it). */
   profileModel?: string;
-  /** Agent profile's `mode:` frontmatter the child was spawned with (resume reuses it). */
   profileMode?: string;
   /** Parent chat session or host-minted internal A2A origin bound to this child. */
   originSessionId?: string;
@@ -588,49 +433,25 @@ export interface SessionMetadata {
   a2aWireHandlerId?: string;
   /** Host-minted A2A origin; must match originSessionId for wire-bound tasks. */
   a2aWireInternalOrigin?: string;
-  /** Parent `agent_spawn` tool_use id that created this sub-agent. */
   originToolUseId?: string;
-  /** Host-visible spawn id emitted on the live agent-spawn event stream. */
   spawnId?: string;
-  /** User-visible sub-agent title. Stored separately from `title`, which is capped for session lists. */
+  // Keep the sub-agent display title separate from the capped session-list title.
   subAgentTitle?: string;
-  /**
-   * Number of budget continuations consumed by this sub-agent session.
-   * MAX_RESUMES applies only to this counter.
-   */
+  // Only budget continuations spend MAX_RESUMES.
   budgetResumeCount?: number;
   /** Number of question answers accepted; independent from MAX_RESUMES. */
   questionAnswerCount?: number;
-  /**
-   * Legacy compatibility alias for budgetResumeCount. Old metadata may contain
-   * only this field; the runner fail-closes on the greater compatible value.
-   */
+  // Legacy and current resume counters fail closed on the greater compatible value.
   resumeCount?: number;
-  /**
-   * Cumulative assistant rounds spent across the original spawn plus every
-   * resume segment. Initialized to 0 on spawn (the spawn's own rounds are added
-   * by the resume accounting in PR-C/PR-D). PR-D's cumulative-rounds ceiling
-   * reads this so a long resume chain cannot exceed the global round budget.
-   */
+  // Count assistant rounds cumulatively across spawn and every resume segment.
   cumulativeRounds?: number;
   /** Last durable A2A projection. Only INPUT_REQUIRED is resumable. */
   subAgentTaskState?: A2AProjectedTaskState;
-  /** Typed resume axis paired with INPUT_REQUIRED. */
   subAgentSuspensionReason?: SubAgentSuspensionReason;
-  /** DLP-masked, bounded prompt paired with an INPUT_REQUIRED suspension. */
   subAgentSuspensionPrompt?: string;
-  /**
-   * The assistant's session task list (`session_tasks` tool), in list order.
-   * Completed items stay: finishing a step is a state, not a deletion. Absent
-   * when the session has no list.
-   */
+  // Completed tasks remain in list order; completion changes state rather than deleting rows.
   tasks?: SessionTaskItem[];
-  /**
-   * The goal this conversation is working towards (`session_goal` tool),
-   * together with the revival budget it is spending. Absent when the session
-   * has no goal. The round counter rides in the sidecar precisely so a restart
-   * resumes the budget instead of granting a fresh one.
-   */
+  // Persist goal revival rounds so restart cannot reset the budget.
   goal?: SessionGoal;
 }
 
@@ -668,9 +489,7 @@ function detachProjectBinding<T extends object>(
   delete next.projectName;
 
   if (hasA2AWireIdentity(next)) {
-    // Terminal A2A outcomes are immutable. A removed workspace cancels only a
-    // live/waiting task; completed, failed, rejected, or already-canceled work
-    // keeps its first terminal projection for host observation after restart.
+    // Workspace removal cancels only live tasks; preserve the first terminal projection across restart.
     next.subAgentTaskState = asTerminalA2ATaskState(terminalTombstone)
       ?? asTerminalA2ATaskState(next.subAgentTaskState)
       ?? A2ATaskState.CANCELED;
@@ -707,9 +526,7 @@ const MEMORY_PROJECT_NAME_PREFIX = "<!-- ave:project-name:";
 const MEMORY_METADATA_PREFIX = "<!-- ave:memory-meta:";
 const MEMORY_METADATA_SUFFIX = " -->";
 const MAX_MANAGED_MEMORY_FILE_BYTES = 64 * 1024;
-// Legacy notes predate the managed V1 write ceiling. Preserve their readable
-// history while keeping a bounded main-process read; V1 files still fail closed
-// when they exceed the smaller managed ceiling.
+// Legacy notes retain a larger bounded read ceiling; managed notes still fail closed at their own cap.
 const MAX_LEGACY_MEMORY_FILE_BYTES = 512 * 1024;
 const DEFAULT_MEMORY_SELECTION_TOKEN_BUDGET = 1_000;
 const DEFAULT_MEMORY_SELECTION_MAX_ENTRIES = 6;
@@ -717,14 +534,6 @@ const MAX_PROMPT_MEMORY_INDEX_TOKENS = 400;
 const MAX_PROMPT_USER_PREFERENCES_TOKENS = 600;
 const MAX_MEMORY_SELECTION_ENTRY_TOKENS = 320;
 const MAX_MANAGED_MEMORY_TITLE_CHARS = 120;
-/**
- * Cap for a stored session title.
- *
- * 80, not 20. The auto-derived title (readSessionSummary) already slices at 80,
- * so a 20-char cap meant a title the user TYPED was held to a quarter of what
- * the same row displayed when nobody typed anything — and 20 characters is a
- * few words of Korean. One number now governs both.
- */
 const MAX_SESSION_TITLE_CHARS = 80;
 const MAX_MANAGED_MEMORY_CONTENT_CHARS = 8_000;
 const MAX_CONSOLIDATION_SOURCE_NOTES = 16;
@@ -733,7 +542,6 @@ const MAX_PROMPT_LONG_TERM_MEMORY_OVERVIEW_SCOPE_TOKENS = 190;
 export const MEMORY_KINDS: ReadonlySet<MemoryKind> = new Set<MemoryKind>([
   "preference", "constraint", "fact", "goal", "reference", "note",
 ]);
-/** Longest source text (a turn, a note) a memory capture or consolidation reads from. */
 export const MAX_MEMORY_SOURCE_CHARS = 4_000;
 const MEMORY_STATES = new Set<MemoryState>(["candidate", "active"]);
 const MEMORY_CAPTURE_TRIGGERS = new Set<MemoryCaptureTrigger>(["automatic", "explicit"]);
@@ -751,96 +559,51 @@ function getDefaultUserPrefs(): string {
   return t("be_memoryManager.defaultUserPrefs");
 }
 
-/**
- * Session-file limits. This module owns the on-disk session format, so the
- * caps it enforces when reading a session are declared here; the chat IPC
- * layer imports them to apply the same gates to an imported file and to the
- * project metadata a session is created with.
- */
+// Own session-file limits here and share them with import validation.
 export const MAX_SESSION_FILE_BYTES = 5_000_000;
-/** Max length of summaryPreamble stored in session metadata (~2000 tokens). */
 const MAX_SUMMARY_PREAMBLE_CHARS = 8_000;
 export const MAX_PROJECT_ROOT_CHARS = 2_048;
 export const MAX_PROJECT_NAME_CHARS = 120;
 const MAX_A2A_WIRE_ID_CHARS = 256;
 const ACTIVE_SESSION_STATE_FILE = ".active-session.json";
 
-/**
- * What a sub-agent's persisted `originSessionId` may name: the conversation
- * that spawned it, or the work-board item a host-orchestrated run belongs to.
- * Readers that need a *conversation* keep guarding with `isValidSessionId`;
- * the item origin is read back only so the session list can find the runs.
- */
+// Child origins may name a parent session or work-board item; conversation readers still require session ids.
 function isPersistedOriginSessionId(id: unknown): id is string {
   return isValidSessionId(id) || parseWorkBoardOriginSessionId(id) !== null;
 }
-/** The wire handler id is an A2A handler name (`shared/a2a.ts`), not a session id. */
 function isValidA2AWireHandlerId(id: unknown): id is string {
   return typeof id === "string"
     && A2A_HANDLER_ID_PATTERN.test(id)
     && maskSensitiveData(id).detections.length === 0;
 }
-/** The wire internal origin is a session id (`a2a-wire-<tag>-<uuid>`). */
 function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
     && isSafeStructuralId(id);
 }
 
-/**
- * Two separate budgets, because they fail for unrelated reasons and must not
- * spend each other. A DLP rejection means the digest itself looks sensitive —
- * eight in a row is a real dead end. A collision means some other row already
- * answers to that name, which says nothing about the next candidate. Sharing
- * one counter let a handful of collisions exhaust the DLP allowance and abort
- * `loadSession` outright, turning a file with duplicate ids into a session that
- * cannot be opened at all.
- */
+// Keep collision and DLP retry budgets independent; identity collisions do not imply sensitive digests.
 const LEGACY_ROW_ID_MAX_DLP_ATTEMPTS = 8;
 const LEGACY_ROW_ID_MAX_COLLISION_ATTEMPTS = 64;
 
-/**
- * Deterministic per-row identity for a session row read off disk that has none.
- *
- * This is the OTHER of the two row-id minters, and the division between them is
- * which row needs a name. `stampMessageId` (engine/conversation-history.ts)
- * owns rows that exist in memory — appended live, or restored into a
- * ConversationHistory — and mints a random `createDlpSafeUuid` because nothing
- * else will ever have to reproduce that name. This one owns rows that predate
- * ids in a file, and must be derived: see `stampLegacyRowIds` for why.
- *
- * Hashed rather than concatenated because the id is persisted on the next save
- * and read back. These opaque digests still pass content DLP through
- * `dlpSafeCandidate`; only complete UUID forms have structural admission.
- * The attempt counter keeps the retry deterministic, so a second read of the
- * same file lands on the same id as the first, and it is also what lets
- * `taken` be honoured without reaching for randomness.
- */
+// Derive ids for unlabelled disk rows deterministically; live in-memory rows use the separate random minter.
 function legacyRowId(sessionId: string, index: number, taken: ReadonlySet<string>): string {
   for (let collision = 0; collision < LEGACY_ROW_ID_MAX_COLLISION_ATTEMPTS; collision += 1) {
     const candidate = dlpSafeCandidate((dlpAttempt) => {
-      // One flat counter across both loops, so the first candidate is still
-      // `${sessionId}:${index}:0` and an existing session keeps the ids it
-      // already derived.
+      // Keep the candidate counter flat so existing deterministic ids remain stable.
       const step = collision * LEGACY_ROW_ID_MAX_DLP_ATTEMPTS + dlpAttempt;
       const digest = sha256Hex(`${sessionId}:${index}:${step}`)
         .slice(0, 32);
       return `row-${digest}`;
     }, LEGACY_ROW_ID_MAX_DLP_ATTEMPTS);
-    // `null` here is now unambiguous: the generator never declines, so it means
-    // the DLP scanner rejected every draw. Another collision round would only
-    // feed it more of the same.
+    // Null means every generated candidate failed DLP; another collision round cannot help.
     if (candidate === null) break;
     if (!taken.has(candidate)) return candidate;
   }
   throw new Error("[legacy-row-id] could not derive a redaction-safe row identity");
 }
 
-/**
- * Deterministic id for a row that turn recovery synthesizes on read. Same
- * reasoning as {@link legacyRowId}: the row is derived from files, two readers
- * must name it identically, and the next save persists it under that name.
- */
+// Recovered rows need deterministic ids so independent readers agree before persistence.
 function derivedRowId(sessionId: string, seed: string): string {
   const candidate = dlpSafeCandidate(
     (attempt) => `row-${sha256Hex(`${sessionId}:${seed}:${attempt}`).slice(0, 32)}`,
@@ -850,38 +613,12 @@ function derivedRowId(sessionId: string, seed: string): string {
   return candidate;
 }
 
-/**
- * Give the rows of a session written before row ids existed an identity, so the
- * transcript can address them.
- *
- * Derived, not random, and that is the whole point. `loadSession` is the ONE
- * door both readers of a session file come through — the sidebar's history read
- * and the conversation loop's resume — and they read it independently. A fresh
- * uuid here would hand each of them a different name for the same row, so the
- * id the transcript showed would resolve to nothing when the host went looking.
- * Deriving from (session, position in the file just read) makes the two reads
- * agree without either of them writing anything back.
- *
- * The counterpart is `stampMessageId` in engine/conversation-history.ts, which
- * owns every row that already lives in memory. Only rows with no usable id are
- * touched here; once a session has been written by a build that mints on
- * append, this does nothing.
- *
- * Duplicate ids are rejected the same way `ConversationHistory.restore` rejects
- * them, and for the same reason: two rows answering to one id is worse than a
- * row with none, because a lookup silently takes the first. A hand-merged or
- * tampered file can carry duplicates, and this reader must not pass them
- * through just because it happens to be the older of the two paths.
- */
+// Independent history and resume readers must derive the same identity for legacy rows.
 function stampLegacyRowIds(sessionId: string, messages: unknown[]): unknown[] {
   const taken = new Set<string>();
   const keepsOwnId = new Array<boolean>(messages.length).fill(false);
 
-  // Pass 1 reserves every id the file actually carries, before a single one is
-  // derived. In one pass a derived id for an early row could claim the name a
-  // later row already had written down, and that row — the one with real
-  // evidence of its identity — would be the one re-minted. Ordering the passes
-  // this way means a stored id only ever loses to another stored id.
+  // Reserve every stored id before deriving any; synthetic earlier rows must not displace durable later ids.
   messages.forEach((message, index) => {
     if (!isRecord(message)) return;
     const meta = isRecord(message.meta) ? message.meta : undefined;
@@ -973,7 +710,6 @@ function toolUseArtifactKey(toolUseId: string): string {
   return sha256Hex(toolUseId).slice(0, 32);
 }
 
-/** Valid trigger values for strict narrowing. */
 const VALID_CHECKPOINT_TRIGGERS = new Set<CheckpointTrigger>([
   "auto-compact",
   "manual",
@@ -1016,8 +752,7 @@ function normalizeMemoryCapture(value: unknown): MemoryCaptureV1 | null {
   ) {
     return null;
   }
-  // Caller-supplied provenance: normalise the digest here, then hold it to the
-  // strict lowercase shape every digest this app mints already has.
+  // Normalize caller digests to the host's strict lowercase provenance shape.
   const sourceDigest = value.sourceDigest.toLowerCase();
   if (!SHA256_HEX.test(sourceDigest)) return null;
   return {
@@ -1029,10 +764,7 @@ function normalizeMemoryCapture(value: unknown): MemoryCaptureV1 | null {
   };
 }
 
-/**
- * Capture provenance is meaningful only for its owning write path. This keeps
- * raw/manual records separate from reviewed automatic and explicit records.
- */
+// Capture provenance belongs only to its owning write path; manual records cannot impersonate reviewed captures.
 function hasValidCaptureSourceCombination(
   source: MemorySourceKind,
   capture: MemoryCaptureV1 | undefined,
@@ -1072,7 +804,7 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
     ) {
       return null;
     }
-    // On-disk frontmatter: normalise at the read boundary, then strict.
+    // Normalize persisted frontmatter before strict validation.
     const sourceFingerprint = raw.derivation.sourceFingerprint.toLowerCase();
     if (!SHA256_HEX.test(sourceFingerprint)) return null;
     derivation = {
@@ -1139,15 +871,7 @@ function truncateTextToTokenBudget(value: string, tokenBudget: number): string {
   return `${value.slice(0, targetChars).trimEnd()}…`;
 }
 
-/**
- * Extracts every string-valued searchable field from a session's raw
- * (already-parsed) message records into one newline-joined blob for FTS
- * indexing. Covers the same `content: string` case the pre-#1500 linear
- * scan matched (user/assistant/tool_result plain-string content) PLUS text
- * parts of array `content` (multi-part user messages) — a strict superset,
- * never a narrower match set, so this is a coverage improvement rather than
- * a regression relative to the old scan.
- */
+// Index string content and multipart text fields so search does not lose readable message text.
 function extractSearchableContent(messages: unknown[]): string {
   const parts: string[] = [];
   for (const raw of messages) {
@@ -1186,10 +910,6 @@ function matchesSessionScope(
   return true;
 }
 
-/**
- * Normalizes a raw parsed Checkpoint record — rejects entries with invalid
- * trigger values or missing required fields so corrupted data is never surfaced.
- */
 function normalizeCheckpoint(raw: unknown): Checkpoint | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -1217,12 +937,7 @@ function normalizeCheckpoint(raw: unknown): Checkpoint | null {
   };
 }
 
-/**
- * Normalizes a raw parsed SessionMetadata object.
- * Absent or invalid session kind is treated as main. Routine metadata is not
- * used to infer kind because fallback inference is intentionally unsupported.
- * Invalid checkpoint entries are silently dropped rather than failing the whole load.
- */
+// Missing or invalid kind becomes main without routine inference; discard invalid checkpoint entries individually.
 function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata {
   const checkpointsRaw = Array.isArray(raw.checkpoints) ? raw.checkpoints : undefined;
   const checkpoints: Checkpoint[] | undefined = checkpointsRaw
@@ -1238,9 +953,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
   const routineId = typeof raw.routineId === "string" ? raw.routineId : undefined;
   const projectRoot = normalizeMetadataString(raw.projectRoot, MAX_PROJECT_ROOT_CHARS);
   const projectName = normalizeMetadataString(raw.projectName, MAX_PROJECT_NAME_CHARS);
-  // Sub-agent resume metadata (PR-B). Only string[] of strings survives for
-  // sourceTools; non-negative integers for the counters. Invalid shapes drop to
-  // undefined rather than corrupting the frozen permission scope on resume.
+  // Invalid child resume fields become undefined so malformed metadata cannot widen the frozen permission scope.
   const sourceTools = Array.isArray(raw.sourceTools)
     ? raw.sourceTools.filter((n): n is string => typeof n === "string")
     : undefined;
@@ -1300,7 +1013,6 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
     raw.subAgentSuspensionPrompt,
     MAX_SUMMARY_PREAMBLE_CHARS,
   );
-  // Session tasks: only well-formed items survive; an empty list is absent.
   const tasks = Array.isArray(raw.tasks)
     ? raw.tasks.filter(isSessionTaskItem).map((item) => ({
         id: item.id,
@@ -1308,8 +1020,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
         status: item.status,
       }))
     : [];
-  // Session goal: an all-or-nothing record. A half-valid goal would mean a
-  // revival budget nobody can account for, so a malformed one is no goal.
+  // Treat goals as all-or-nothing records; partial records cannot account for revival budgets.
   const goal = isSessionGoal(raw.goal)
     ? {
         text: raw.goal.text,
@@ -1328,17 +1039,13 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
     projectRoot,
     projectName,
     parentSessionId: isValidSessionId(raw.parentSessionId) ? raw.parentSessionId : undefined,
-    // Defense-in-depth: cap on read in case file was written without truncation.
     summaryPreamble: rawPreamble !== undefined
       ? rawPreamble.slice(0, MAX_SUMMARY_PREAMBLE_CHARS)
       : undefined,
     checkpoints: checkpoints && checkpoints.length > 0 ? checkpoints : undefined,
-    // Stored title (capped on write; cap defensively on read too)
     title: rawTitle && rawTitle.length > 0 ? rawTitle.slice(0, MAX_SESSION_TITLE_CHARS) : undefined,
-    // Checkpoint branch provenance fields.
     branchedFromCompactNum: rawBranchedFromCompactNum,
     branchedAt: rawBranchedAt,
-    // Sub-agent resume metadata (PR-B).
     sourceTools: a2aWireHandlerId !== undefined
       ? sourceTools
       : sourceTools && sourceTools.length > 0
@@ -1367,17 +1074,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
   };
 }
 
-/**
- * The memory surface a system prompt is assembled from: the agent-context
- * files, the bounded prompt views of preferences and index, and the relevant
- * notes for one turn. Every member is required — a prompt builder handed an
- * object missing one has been mis-wired, and an absent reader must fail rather
- * than render as an empty section indistinguishable from empty memory.
- *
- * Declared here rather than in the prompt module because this module owns both
- * the implementations and every type they return, which keeps the type
- * dependency one-way (prompts read memory, memory does not read prompts).
- */
+// Require every prompt-memory reader; absent wiring must fail instead of masquerading as empty memory.
 export interface PromptMemorySource {
   getAgentsMd(): string;
   getAgentsCustomMd(): string;
@@ -1393,45 +1090,23 @@ export class MemoryManager implements PromptMemorySource {
   private readonly memoryDir: string;
   private readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
-  /** Completed captures awaiting their first durable transcript reference. */
   private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
   private readonly defaultWorkspaceRoot: string | undefined;
-  /** FTS5 cross-session search index (#1500) — one per MemoryManager instance,
-   *  keyed by this.aveDir (never a global singleton; mirrors sessionsDir). */
+  // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
-  /**
-   * Roots explicitly detached from persisted sessions. The guard prevents a
-   * late metadata writer holding a pre-detach snapshot from resurrecting a
-   * removed project binding while that root is absent. Re-adding the same root
-   * clears this root-wide guard so NEW sessions can bind to it again.
-   */
+  // Root guards block stale writers until re-add; only newly created sessions may bind again.
   private readonly detachedProjectRoots = new Set<string>();
-  /**
-   * Session-scoped tombstones survive a root re-add for the lifetime of this
-   * manager. They distinguish a detached, pre-removal session from a genuinely
-   * new session created after re-add, so a late writer cannot partially restore
-   * old project groupings.
-   */
+  // Session tombstones survive root re-add so old conversations remain detached.
   private readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
-  /**
-   * Monotonic root policy generation. Capturing this before lock acquisition
-   * detects detach -> allow ABA cycles even when the root-wide guard is clear
-   * again by the time a stale writer finally enters the critical section.
-   */
+  // Capture policy generation before locking to detect detach/re-add ABA races.
   private readonly projectRootGenerations = new Map<string, number>();
-  /**
-   * First terminal outcome owned by a detached wire session. The binding and
-   * state are retained together so a late writer cannot regress the outcome,
-   * swap handlers, or downgrade the task into an ordinary resumable sub-agent.
-   */
+  // Retain terminal state and binding together so late writes cannot regress or reclassify detached wire tasks.
   private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
-  /** Pane tab → its unarchived sessions; null until `findPaneSession` first asks. */
   private paneSessions: Map<string, Set<string>> | null = null;
   private persistentContextWatchers: FSWatcher[] = [];
   private persistentContextReloadTimer: ReturnType<typeof setTimeout> | undefined;
   private persistentContextPollTimer: ReturnType<typeof setInterval> | undefined;
   private persistentContextFileState = new Map<string, number>();
-  /** Pre-compact snapshots stored here to avoid polluting listSessions scan. */
   private get checkpointsDir(): string {
     return join(this.sessionsDir, ".checkpoints");
   }
@@ -1461,15 +1136,7 @@ export class MemoryManager implements PromptMemorySource {
     return this.projectRootGenerations.get(key) ?? 0;
   }
 
-  /**
-   * Stable coordination target for metadata save/detach/delete.
-   *
-   * Locking the metadata file itself is unsafe because withFileLock must touch
-   * a missing target before acquisition. A delete between detach's directory
-   * snapshot and lock acquisition could therefore recreate the deleted path.
-   * This sidecar survives session deletion and gives all three operations one
-   * inode-independent serialization point.
-   */
+  // Use a persistent sidecar lock target; touching a missing metadata path during locking could resurrect deleted state.
   private sessionMetadataLockPath(sessionId: string): string {
     return join(this.sessionsDir, ".metadata-locks", `${sessionId}.target`);
   }
@@ -1517,7 +1184,6 @@ export class MemoryManager implements PromptMemorySource {
     this.userPreferences = this.readFile("user-preferences.md");
   }
 
-  /** Watch AGENTS.md and MEMORY.md so direct file edits affect the next prompt. */
   startPersistentContextWatcher(): void {
     if (this.persistentContextWatchers.length > 0 || this.persistentContextPollTimer !== undefined) return;
     this.snapshotPersistentContextFiles();
@@ -1542,21 +1208,12 @@ export class MemoryManager implements PromptMemorySource {
       try {
         watcher.close();
       } catch {
-        /* ignore close races */
       }
     }
     this.persistentContextWatchers = [];
     this.persistentContextFileState.clear();
   }
 
-  /**
-   * Closes the FTS5 search index's SQLite handle (#1500 / E3). The read
-   * (`searchSessions`) and write (`indexSessionForSearch`) paths already
-   * open→use→close per operation, so no persistent handle normally survives a
-   * call boundary — this is a defensive no-op safety net (idempotent, cheap)
-   * kept wired into the shutdown hook alongside `stopPersistentContextWatcher()`
-   * in case a future long-lived-handle code path is added.
-   */
   closeSearchIndex(): void {
     this.searchIndex.close();
   }
@@ -1565,29 +1222,14 @@ export class MemoryManager implements PromptMemorySource {
     return this.agentsMd;
   }
 
-  /**
-   * The user's own agent context, or `""` when they have none.
-   *
-   * Kept separate from {@link getAgentsMd} rather than concatenated into it:
-   * the settings surface edits one of the two files and the merge job reads
-   * them as distinct inputs, so a single joined string would have to be split
-   * apart again by whoever needed either half.
-   */
+  // Keep user context separate from packaged context so editors and merge jobs retain distinct sources.
   getAgentsCustomMd(): string {
     return this.agentsCustomMd;
   }
 
-  /** Single-entry, stat-revalidated cache for the active project's instruction chain. */
   private projectAgentsMdCache: { root: string; sig: string; value: ProjectAgentsMd } | null = null;
 
-  /**
-   * Committed project instructions discovered for `projectRoot` (see
-   * `project-agents-md.ts`). Re-discovered when any watched path's mtime
-   * changes — every candidate file on the chain, present or not, and every
-   * imported file — so a new, edited or deleted file is visible on the next
-   * turn build with no fs.watch lifecycle to manage across project switches.
-   * Returns empty layers when the chain has no file.
-   */
+  // Revalidate every candidate and imported path, including absent files, so newly created instructions invalidate the cache.
   getProjectAgentsMd(projectRoot: string): ProjectAgentsMd {
     const root = resolve(projectRoot);
     const cached = this.projectAgentsMdCache;
@@ -1608,10 +1250,7 @@ export class MemoryManager implements PromptMemorySource {
     return this.memoryIndex;
   }
 
-  /**
-   * Prompt-only view of the global index. Saved-memory links are navigation
-   * metadata, not model context; selected note bodies are injected separately.
-   */
+  // Saved-memory links are navigation metadata, not prompt content; inject selected note bodies separately.
   getPromptMemoryIndex(): string {
     return truncateTextToTokenBudget(this.withoutSavedMemoryIndexEntries(this.memoryIndex), MAX_PROMPT_MEMORY_INDEX_TOKENS);
   }
@@ -1620,25 +1259,16 @@ export class MemoryManager implements PromptMemorySource {
     return this.userPreferences;
   }
 
-  /** Bounded prompt view; the on-disk profile remains available to its editor. */
   getPromptUserPreferences(): string {
     return truncateTextToTokenBudget(this.userPreferences, MAX_PROMPT_USER_PREFERENCES_TOKENS);
   }
 
-  /**
-   * Returns the bounded active source set for exactly one scope. A project
-   * snapshot never contains global or another project's notes; callers that
-   * need both scopes create two snapshots explicitly.
-   */
+  // Snapshots contain exactly one scope; callers needing global and project notes must request each explicitly.
   getConsolidationSnapshot(options: ProjectScopedMemoryOptions = {}): MemoryConsolidationSnapshot {
     return this.getConsolidationSnapshotForScope(this.consolidationScopeFromOptions(options));
   }
 
-  /**
-   * Reads a derived overview only when the exact bounded source fingerprint is
-   * still current. A stale overview is intentionally suppressed rather than
-   * injected into a prompt.
-   */
+  // Suppress derived overviews when their bounded source fingerprint is stale.
   getConsolidatedMemoryOverview(snapshot: MemoryConsolidationSnapshot): NoteEntry | undefined {
     if (!this.isValidConsolidationSnapshot(snapshot)) return undefined;
     const current = this.getConsolidationSnapshotForScope(snapshot.scope);
@@ -1651,11 +1281,7 @@ export class MemoryManager implements PromptMemorySource {
       : undefined;
   }
 
-  /**
-   * Bounded prompt-only view of current global plus (when selected) exact
-   * project overviews. Generated summaries never enter normal memory
-   * selection, so this is their only prompt path.
-   */
+  // Derived summaries enter prompts only through their bounded overview section, never ordinary note selection.
   getPromptLongTermMemoryOverview(options: ProjectScopedMemoryOptions = {}): string {
     const globalSnapshot = this.getConsolidationSnapshot();
     const projectSnapshot = this.getConsolidationSnapshot(options);
@@ -1664,9 +1290,7 @@ export class MemoryManager implements PromptMemorySource {
       ? `### ${globalOverview.title}\n${this.memoryBodyForPrompt(globalOverview)}`
       : "";
 
-    // The default workspace intentionally exposes global memory only. For an
-    // explicit project, give both valid scopes a bounded share so a large
-    // global overview cannot starve project context (or the reverse).
+    // Default workspaces expose global memory only; explicit projects split the bounded overview budget fairly.
     if (projectSnapshot.scope.type !== "project") {
       return truncateTextToTokenBudget(globalSection, MAX_PROMPT_LONG_TERM_MEMORY_OVERVIEW_TOKENS);
     }
@@ -1686,11 +1310,7 @@ export class MemoryManager implements PromptMemorySource {
     ].join("\n\n---\n\n");
   }
 
-  /**
-   * Compare-and-swap write for a generated overview. The same index lock as
-   * normal memory writes guards a re-read of the exact source snapshot, so a
-   * model result can never overwrite an overview after its inputs changed.
-   */
+  // Recheck source fingerprints under the index lock before committing generated overviews.
   async upsertConsolidatedMemoryIfUnchanged(
     snapshot: MemoryConsolidationSnapshot,
     content: string,
@@ -1737,8 +1357,7 @@ export class MemoryManager implements PromptMemorySource {
         visibleContent,
       ].join("\n");
       writeFileSync(join(this.memoryDir, filename), storedContent, "utf-8");
-      // Generated overviews have their own bounded prompt section and must not
-      // appear in MEMORY.md navigation/index or ordinary note selection.
+      // Keep generated overviews out of navigation indexes and ordinary memory selection.
       this.removeMemoryIndexEntryLocked(filename, indexPath);
       result = {
         status: "updated",
@@ -1754,19 +1373,14 @@ export class MemoryManager implements PromptMemorySource {
     return this.readMarkdownEntries(this.memoryDir, options);
   }
 
-  /**
-   * Global long-term memories plus unscoped legacy records. Project-scoped V1
-   * memories never cross this boundary into profile refresh or global views.
-   */
+  // Global refresh includes unscoped legacy records but never project-scoped managed memories.
   listGlobalMemoryEntries(options: Pick<MemoryReadOptions, "includeCandidates"> = {}): NoteEntry[] {
     return this.listMemoryEntries(options).filter((entry) => !entry.projectRoot);
   }
 
   /** Candidates are review-only and never enter normal prompt/list reads. */
   listMemoryCandidates(options: ProjectScopedMemoryOptions = {}): NoteEntry[] {
-    // A detached/global review surface must never enumerate every project's
-    // candidates. With a project scope, global candidates plus that exact
-    // project are visible; without one, only global candidates are visible.
+    // Candidate reviews expose global plus the selected project only; detached callers cannot enumerate projects.
     return this.readMarkdownEntries(this.memoryDir, {
       includeCandidates: true,
       ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}),
@@ -1779,27 +1393,8 @@ export class MemoryManager implements PromptMemorySource {
     return this.searchEntries(this.listMemoryEntries(options), query);
   }
 
-  /**
-   * Cross-session search — SQLite FTS5-backed (#1500 / E3). Signature and
-   * return type (`SessionSearchEntry[]`) are unchanged from the pre-#1500
-   * JSONL linear scan; only the internal implementation moved to
-   * `this.searchIndex`. Opens the index on demand (sync — no persistent
-   * handle; see `indexSessionForSearch`), queries, then closes, so a search
-   * never leaves a handle open to block a later `rmSync(aveDir)` on Windows.
-   * No-Fallback: if the index cannot be opened (corrupt/unavailable), this
-   * returns `[]` rather than silently reverting to a scan —
-   * `verifyOrRebuildSearchIndex()` (called once at boot) is the only repair
-   * path.
-   */
   searchSessions(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] {
-    // Require at least 2 Unicode code points. The FTS5 trigram tokenizer can't
-    // MATCH a query under 3 code points, but SessionSearchIndex.query() serves a
-    // 2-code-point query via a LIKE substring fallback on the same table — this
-    // restores the old linear scan's 2-syllable Korean matching (`매출`, `분기`),
-    // the single most common query shape for a CJK-first product. Only genuinely
-    // trivial (empty / 1-char / whitespace) queries are rejected here, matching
-    // the pre-#1500 `< 2` floor. Length is measured in code points (not UTF-16
-    // units) so a 2-syllable Korean query counts as 2, not more.
+    // Require two code points; exactly two use LIKE because trigram MATCH requires three.
     if ([...query.trim()].length < 2) return [];
     if (!this.searchIndex.open()) return [];
     try {
@@ -1820,11 +1415,7 @@ export class MemoryManager implements PromptMemorySource {
     );
   }
 
-  /**
-   * Deterministically select active memories for one request. It is deliberately
-   * query-aware: a project can have years of history without every note becoming
-   * a permanent system-prompt tax.
-   */
+  // Select active memory by request relevance instead of charging every note to every prompt.
   selectRelevantMemories(query: string, options: MemorySelectionOptions = {}): MemorySelection {
     const tokenBudget = Math.max(1, Math.min(options.tokenBudget ?? DEFAULT_MEMORY_SELECTION_TOKEN_BUDGET, 8_000));
     const maxEntries = Math.max(1, Math.min(options.maxEntries ?? DEFAULT_MEMORY_SELECTION_MAX_ENTRIES, 24));
@@ -1852,13 +1443,7 @@ export class MemoryManager implements PromptMemorySource {
     const context = sections.join("\n\n---\n\n");
     return { entries: selected, context, usedTokens: context ? estimateTokens(context) : 0 };
   }
-  /**
-   * Model-initiated recall (`memory_search`): exactly the memories prompt
-   * selection could inject for this scope — active, unexpired, not derived —
-   * ranked by the same scoring. Unlike prompt selection, an unmatched pinned
-   * memory is not returned for a query, and an empty query lists every visible
-   * memory, most recently updated first.
-   */
+  // Recall shares prompt eligibility and scoring, but unmatched pinned notes do not become search results.
   searchModelVisibleMemories(query: string, options: ProjectScopedMemoryOptions = {}): NoteEntry[] {
     if (memoryTextTerms(query).length === 0) {
       return this.listPromptVisibleMemories(options).sort((left, right) =>
@@ -1937,10 +1522,7 @@ export class MemoryManager implements PromptMemorySource {
         metadata.capture?.trigger,
       );
       if (existing) {
-        // Lifecycle state and provenance are collision boundaries. A save
-        // may update only a record with the same state and source, so a
-        // local automation, user edit, or import can never overwrite one
-        // another just because the titles happen to match.
+        // State and source are collision boundaries; same-title records from other lifecycle paths cannot overwrite each other.
         const mustPreserveExisting =
           metadata.state !== existing.metadata.state
           || metadata.source !== existing.metadata.source
@@ -1972,11 +1554,7 @@ export class MemoryManager implements PromptMemorySource {
     return this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString());
   }
 
-  /** Update memories/MEMORY.md. */
-  /**
-   * Promote a reviewed candidate by immutable identity. The review scope is
-   * checked against the stored metadata under the same lock as the write.
-   */
+  // Approve by immutable identity and recheck review scope under the write lock.
   async activateMemoryCandidate(
     id: string,
     options: ProjectScopedMemoryOptions = {},
@@ -2030,7 +1608,6 @@ export class MemoryManager implements PromptMemorySource {
     return activated!;
   }
 
-  /** Reject a reviewed candidate by immutable identity and selected scope. */
   async deleteMemoryCandidate(id: string, options: ProjectScopedMemoryOptions = {}): Promise<void> {
     const safeId = this.validateManagedMemoryId(id, "deleteMemoryCandidate");
     const indexPath = join(this.memoryDir, "MEMORY.md");
@@ -2079,7 +1656,6 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryIndex = this.readMemoryIndex();
   }
 
-  /** Delete a saved memory note. */
   async deleteMemory(filename: string, options: ProjectScopedMemoryOptions = {}): Promise<void> {
     const safeFilename = this.validateDeletableMemoryFilename(filename);
     const path = join(this.memoryDir, safeFilename);
@@ -2115,7 +1691,6 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryIndex = this.readMemoryIndex();
   }
 
-  /** Update AGENTS.md. */
   async updateAgentsMd(content: string): Promise<void> {
     const targetPath = join(this.aveDir, AGENTS_DOC_NAME);
     await withFileLock(targetPath, async () => {
@@ -2124,7 +1699,6 @@ export class MemoryManager implements PromptMemorySource {
     this.agentsMd = content;
   }
 
-  /** Update agents.custom.md. */
   async updateAgentsCustomMd(content: string): Promise<void> {
     const targetPath = join(this.aveDir, AGENTS_CUSTOM_DOC_NAME);
     await withFileLock(targetPath, async () => {
@@ -2133,12 +1707,7 @@ export class MemoryManager implements PromptMemorySource {
     this.agentsCustomMd = content;
   }
 
-  /**
-   * AGENTS.md compare-and-set update, for the same reason
-   * {@link updateUserPreferencesIfUnchanged} has one: the model-assisted merge
-   * waits on a provider call, and a manual edit that lands during that wait
-   * must not be silently overwritten by the answer.
-   */
+  // Compare-and-swap prevents a delayed model merge from overwriting a newer manual edit.
   async updateAgentsMdIfUnchanged(expectedContent: string, nextContent: string): Promise<boolean> {
     const didWrite = await this.replaceHomeDocIfUnchanged(
       AGENTS_DOC_NAME,
@@ -2149,7 +1718,6 @@ export class MemoryManager implements PromptMemorySource {
     return didWrite;
   }
 
-  /** agents.custom.md compare-and-set update — see {@link updateAgentsMdIfUnchanged}. */
   async updateAgentsCustomMdIfUnchanged(
     expectedContent: string,
     nextContent: string,
@@ -2163,18 +1731,7 @@ export class MemoryManager implements PromptMemorySource {
     return didWrite;
   }
 
-  /**
-   * The compare-and-set write both agent-context docs share. An absent file
-   * compares as `""`, which is what lets a first merge under keep-latest land
-   * `agents.custom.md` without a prior read seeing a file that is not there.
-   *
-   * The write goes through the shared atomic primitive, so the successor is
-   * staged and fsynced before the comparison and the destination is replaced
-   * by rename: a reader never sees half a doc, a mismatch leaves the original
-   * byte-identical, the file lands at the private mode every `~/.ave/` file
-   * gets, and the rename replaces a symlink at the path rather than writing
-   * through it.
-   */
+  // Missing docs compare as empty; commit under the shared lock only if the reviewed text remains current.
   private async replaceHomeDocIfUnchanged(
     name: string,
     expectedContent: string,
@@ -2192,7 +1749,6 @@ export class MemoryManager implements PromptMemorySource {
     return didWrite;
   }
 
-  /** Update user-preferences.md. */
   async updateUserPreferences(content: string): Promise<void> {
     const targetPath = join(this.aveDir, "user-preferences.md");
     await withFileLock(targetPath, async () => {
@@ -2201,11 +1757,7 @@ export class MemoryManager implements PromptMemorySource {
     this.userPreferences = content;
   }
 
-  /**
-   * user-preferences.md compare-and-set update.
-   * Used by background refresh so an idle LLM write cannot overwrite a newer
-   * manual edit that landed while the refresh was waiting on the model.
-   */
+  // Background preference refresh must compare-and-swap against concurrent manual edits.
   async updateUserPreferencesIfUnchanged(expectedContent: string, nextContent: string): Promise<boolean> {
     const didWrite = await this.replaceHomeDocIfUnchanged(
       "user-preferences.md",
@@ -2216,16 +1768,10 @@ export class MemoryManager implements PromptMemorySource {
     return didWrite;
   }
 
-  /** Return the ~/.ave directory path. */
   getDir(): string {
     return this.aveDir;
   }
 
-  // ─── Private ──────────────────────────────────────
-
-  // ─── Session Persistence (~/.ave/sessions/) ─
-
-  /** Save a session in JSONL format. */
   async saveSession(sessionId: string, messages: unknown[]): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`saveSession: invalid sessionId "${sessionId}"`);
@@ -2234,22 +1780,14 @@ export class MemoryManager implements PromptMemorySource {
     await withFileLock(targetPath, async () => {
       this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
     });
-    // A whole-history save is authoritative for everything a crashed turn left
-    // behind: the recovered rows are in `messages` now, so the orphaned
-    // sidecar has nothing more to say. A running turn's sidecar stays.
+    // Whole-history save supersedes orphan recovery state; retain sidecars for locally running turns.
     if (!this.isTurnJournalLive(sessionId)) {
       removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
     }
     this.indexSessionForSearch(sessionId, messages);
   }
 
-  /**
-   * Rewrite the transcript from `messages`. Temp + fsync + rename, so a process
-   * killed mid-rewrite leaves the previous complete file rather than a
-   * truncated one — the rewrite is what every append is eventually compacted
-   * into, so it must be at least as crash-safe as the appends. Caller holds the
-   * transcript's file lock.
-   */
+  // Rewrite through temp, fsync, and rename so crashes retain a complete prior transcript.
   private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
     const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
     const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
@@ -2265,25 +1803,7 @@ export class MemoryManager implements PromptMemorySource {
     }
   }
 
-  /**
-   * Make a running turn's progress durable without the cost of a save.
-   *
-   * `readMessages` yields the whole in-memory history (pass the reader, not a
-   * snapshot, from a live turn). When it extends what this
-   * process last wrote (same row ids, file untouched since), only the new rows
-   * are appended. The open result group may grow in call order while its new
-   * rows reach disk in completion order; load and the final save normalize it.
-   * Appends use the same disk transform a save uses,
-   * so an oversized or image-bearing tool_result is stored exactly as a save
-   * would store it. Otherwise (compaction rewrote the prefix, a host
-   * injection was rolled back, another writer touched the file) the transcript
-   * is rewritten from history. Either way the file contains the history, and
-   * the turn's final `saveSession` rewrites it with the same row ids, so a
-   * completed turn never carries a duplicate.
-   *
-   * No search reindex here: that is a full-text rebuild of the session row and
-   * stays with `saveSession` at the turn's end.
-   */
+  // Append only a valid extension of the last written history; otherwise atomically rewrite from the live reader.
   async appendSessionProgress(
     sessionId: string,
     readMessages: unknown[] | (() => unknown[]),
@@ -2297,11 +1817,7 @@ export class MemoryManager implements PromptMemorySource {
         if (isMissingPathError(err)) return null;
         throw err;
       });
-      // Read history only once the lock is held. A snapshot taken before
-      // waiting could be older than a save that won the lock first, and
-      // writing it would undo that save (a rolled-back host injection
-      // reappearing on disk). Read after stat as well: a supplied array may
-      // grow during that await, so ids and appended rows must share one view.
+      // Read history after acquiring the lock so a waiting writer cannot undo a newer saved snapshot.
       const messages = typeof readMessages === "function" ? readMessages() : readMessages;
       const ids = rowIdsOf(messages);
       const known = transcriptWriteStates.get(targetPath);
@@ -2325,12 +1841,7 @@ export class MemoryManager implements PromptMemorySource {
     });
   }
 
-  /**
-   * Open the turn journal for a session: from here until
-   * {@link endTurnJournal}, the sidecar is the running turn's in-flight
-   * marker. Written before the first provider call, so a process that dies
-   * at any later point leaves evidence that the turn did not finish.
-   */
+  // Persist the in-flight marker before the first provider call so any later crash remains recoverable.
   async beginTurnJournal(sessionId: string, startedAt: number): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`beginTurnJournal: invalid sessionId "${sessionId}"`);
@@ -2340,7 +1851,7 @@ export class MemoryManager implements PromptMemorySource {
     await writeTurnInflightRecord(path, { v: 1, startedAt });
   }
 
-  /** Replace the running turn's partial-round snapshot; `undefined` keeps only the in-flight marker. */
+  // Undefined partial content preserves the in-flight marker.
   async writeTurnPartial(sessionId: string, startedAt: number, partial: TurnInflightPartial | undefined): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`writeTurnPartial: invalid sessionId "${sessionId}"`);
@@ -2351,7 +1862,7 @@ export class MemoryManager implements PromptMemorySource {
     );
   }
 
-  /** Deregister the turn, leaving its recovery sidecar until persistence is confirmed. */
+  // Deregister the turn but retain recovery evidence until persistence is confirmed.
   endTurnJournal(sessionId: string): void {
     if (!isValidSessionId(sessionId)) return;
     const path = turnInflightPath(this.sessionsDir, sessionId);
@@ -2363,7 +1874,7 @@ export class MemoryManager implements PromptMemorySource {
     liveTurnJournals.delete(path);
   }
 
-  /** Remove a sidecar only after its owner confirms the transcript contains the turn. */
+  // Remove the sidecar only after its owner confirms the transcript contains the turn.
   clearTurnJournal(sessionId: string): void {
     if (!isValidSessionId(sessionId) || this.isTurnJournalLive(sessionId)) return;
     removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
@@ -2373,12 +1884,7 @@ export class MemoryManager implements PromptMemorySource {
     return liveTurnJournals.has(turnInflightPath(this.sessionsDir, sessionId));
   }
 
-  /**
-   * The transcript as the user should see it after the process that ran its
-   * last turn died: an orphaned sidecar is folded in by
-   * {@link recoverInterruptedTurn}. A sidecar whose turn is running in this
-   * process is left alone.
-   */
+  // Fold only orphaned sidecars into recovered history; live local turns keep their sidecars untouched.
   private withRecoveredInterruptedTurn(sessionId: string, messages: unknown[]): unknown[] {
     if (this.isTurnJournalLive(sessionId)) return messages;
     const raw = readUtf8FileIfPresent(turnInflightPath(this.sessionsDir, sessionId));
@@ -2396,37 +1902,17 @@ export class MemoryManager implements PromptMemorySource {
     );
   }
 
-  /**
-   * Saves a freshly-imported conversation (#1500 / E3) as a brand-new
-   * session — import is symmetric with `ave:chat:export` but NEVER
-   * overwrites an existing session; callers must pass a freshly minted
-   * sessionId (e.g. `crypto.randomUUID()`), matching the `chat.fork`
-   * handler's new-session pattern.
-   */
+  // Imports require a fresh session id and never overwrite an existing transcript.
   async saveImportedSession(sessionId: string, messages: unknown[]): Promise<void> {
     await this.saveSession(sessionId, messages);
     await this.saveSessionMetadata(sessionId, { sessionKind: "main" });
   }
 
-  /**
-   * Builds the FTS row input for one session from its messages + metadata,
-   * or `null` when the session has no searchable text (caller should drop any
-   * existing row instead of inserting an empty one). Pure — opens nothing.
-   *
-   * `timestamp` is sourced from the session JSONL's on-disk mtime (its actual
-   * last-modified time), NOT the index-write wall clock. The search UI renders
-   * this as the conversation's relative/absolute time; using index-time would
-   * make every session show as "just now" after a boot-time reindex/rebuild.
-   * Falls back to the current time only when the file mtime can't be read
-   * (e.g. a from-memory upsert of a session not yet flushed to disk).
-   */
+  // Empty searchable content removes the index row; derive timestamps from transcript mtime, not indexing time.
   private buildIndexInput(sessionId: string, messages: unknown[]): IndexedSessionInput | null {
     const content = extractSearchableContent(messages);
     if (!content) return null;
     const metadata = this.loadSessionMetadata(sessionId);
-    // Derive the title from the in-memory messages the indexer already holds —
-    // no redundant JSONL re-read+parse (B1). Same result as the disk path:
-    // title/preview come only from string-content turns.
     const summary = this.deriveSessionSummary(sessionId, messages);
     const mtimeMs = this.getFileMtimeMs(join(this.sessionsDir, `${sessionId}.jsonl`));
     const timestamp = mtimeMs >= 0 ? new Date(mtimeMs).toISOString() : new Date().toISOString();
@@ -2441,16 +1927,7 @@ export class MemoryManager implements PromptMemorySource {
     };
   }
 
-  /**
-   * Incrementally upserts one session's FTS row (#1500 / E3). Per-op
-   * open→upsert→close: the handle is NEVER held open across the call, so a
-   * caller that deletes `aveDir` right after `saveSession` (every test's
-   * teardown; a domain-unit `rm -rf ~/.ave/<feature>/`) is not blocked by an
-   * open SQLite/WAL handle on Windows (EPERM). Best-effort: failures are
-   * logged/swallowed inside `SessionSearchIndex` — the JSONL just written is
-   * the source of truth, so a transient index failure never blocks session
-   * persistence (No-Fallback applies to the *search path*, not to writes).
-   */
+  // Open and close the index per operation so persistence leaves no database handle blocking directory cleanup.
   private indexSessionForSearch(sessionId: string, messages: unknown[]): void {
     if (!this.searchIndex.open()) return;
     try {
@@ -2470,16 +1947,7 @@ export class MemoryManager implements PromptMemorySource {
     }
   }
 
-  /**
-   * Rebuild every current session search row from the JSONL source of truth.
-   *
-   * Project detach is retryable: metadata may already be detached when a
-   * process crashes before its denormalized FTS row is updated. Replacing the
-   * whole index on every detach invocation repairs that state even when the
-   * retry has zero metadata files left to change. Unlike ordinary best-effort
-   * incremental indexing, this lifecycle path throws on reset/open/count
-   * failure so workspace removal retains its durable intent for a later retry.
-   */
+  // Rebuild the complete search projection after detach so retries repair partial metadata/index updates.
   private repairAllSessionSearchRowsForProjectDetach(): void {
     const dbPath = this.searchIndex.getDbPath();
     this.searchIndex.close();
@@ -2525,21 +1993,10 @@ export class MemoryManager implements PromptMemorySource {
     }
   }
 
-  /**
-   * Boot-time integrity check → rebuild-from-JSONL recovery path (#1500 /
-   * E3, No-Fallback: this is the ONLY recovery path — search never falls
-   * back to a linear scan when the index is corrupt or missing). Safe to
-   * call every boot: a healthy index with rows already present is a no-op.
-   * Leaves the index CLOSED on exit (no persistent handle — see
-   * `indexSessionForSearch`); the sync `searchSessions` read path reopens on
-   * demand.
-   */
+  // Boot integrity repair rebuilds missing or corrupt indexes from JSONL; search never scans as a fallback.
   async verifyOrRebuildSearchIndex(): Promise<void> {
     const opened = this.searchIndex.open();
-    // A healthy populated index cannot need the only repair this method owns
-    // (rebuild an empty/corrupt index from JSONL). Avoid enumerating the entire
-    // sessions directory on every boot; large profiles can contain thousands of
-    // transcripts, and the list is only consumed by the rebuild branch below.
+    // Skip transcript enumeration for healthy populated indexes.
     if (opened && this.searchIndex.rowCount() > 0) {
       this.searchIndex.close();
       return;
@@ -2560,17 +2017,13 @@ export class MemoryManager implements PromptMemorySource {
       return;
     }
     try {
-      // No clear() here: deleteFile() above removed the DB file entirely and the
-      // reopen created a FRESH empty `sessions_fts` table (CREATE TABLE IF NOT
-      // EXISTS on a new file), so there is nothing to clear — the call was dead.
       const UUID_RE = /^[0-9a-f-]{8,}$/i;
       for (const file of sessionFiles) {
         const stem = file.replace(".jsonl", "");
         if (!UUID_RE.test(stem)) continue;
         const messages = this.loadSession(stem);
         if (!Array.isArray(messages)) continue;
-        // Keep the handle open across the whole rebuild loop (single
-        // open/close) rather than per-session — this is the one bulk path.
+        // Keep one index handle across the bulk rebuild.
         const input = this.buildIndexInput(stem, messages);
         if (input) this.searchIndex.upsertSession(input);
         else this.searchIndex.deleteSession(stem);
@@ -2581,18 +2034,11 @@ export class MemoryManager implements PromptMemorySource {
     }
   }
 
-  /** Enumerate rebuild inputs lazily; kept as a seam for scan-regression tests. */
   private listSessionJsonlFiles(): string[] {
     return readdirIfPresent(this.sessionsDir).filter((file) => file.endsWith(".jsonl"));
   }
 
-  /**
-   * Save a per-checkpoint pre-compact snapshot before compaction overwrites the main JSONL.
-   * Stored at `{sessionsDir}/.checkpoints/{sessionId}/{compactNum}.jsonl` so that
-   * {@link listSessionsPage} — the one scanner every listing funnels through,
-   * and it reads only the sessionsDir root — never picks them up.
-   * branchFromCheckpoint() loads from here instead of the mutable main session file.
-   */
+  // Store pre-compact snapshots in a separate directory so session listings cannot expose them as conversations.
   async saveCheckpointSnapshot(sessionId: string, compactNum: number, messages: unknown[]): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`saveCheckpointSnapshot: invalid sessionId "${sessionId}"`);
@@ -2604,14 +2050,12 @@ export class MemoryManager implements PromptMemorySource {
       const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
       const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
       writeFileSync(targetPath, lines, "utf-8");
-      // A checkpoint is a durable owner too; release the unpublished pin only
-      // after its write succeeds, so removing the checkpoint can reclaim quota.
+      // Release unpublished artifact pins only after durable checkpoint ownership commits.
       const unpublished = this.unpublishedOutputCaptures.get(sessionId);
       for (const id of prepared.keepCaptureIds) unpublished?.delete(id);
     });
   }
 
-  /** Load a per-checkpoint pre-compact snapshot saved by saveCheckpointSnapshot(). Returns null if not found. */
   loadCheckpointSnapshot(sessionId: string, compactNum: number): unknown[] | null {
     if (!isValidSessionId(sessionId)) return null;
     const snapshotPath = join(this.checkpointsDir, sessionId, `${compactNum}.jsonl`);
@@ -2628,7 +2072,6 @@ export class MemoryManager implements PromptMemorySource {
     return messages.map((message) => this.normalizeStoredOutputCapture(sessionId, message));
   }
 
-  /** Load a persisted session. */
   loadSession(sessionId: string): unknown[] | null {
     if (!isValidSessionId(sessionId)) return null;
     const path = join(this.sessionsDir, `${sessionId}.jsonl`);
@@ -2714,8 +2157,7 @@ export class MemoryManager implements PromptMemorySource {
     const capture = this.toolOutputArtifacts.start(sessionId, toolUseId, () => {
       this.cleanupToolOutputArtifacts(sessionId, this.loadPersistedOutputCaptureIds(sessionId));
     });
-    // Pin before finish can publish or release its disk reservation. Waiting
-    // for finish first leaves a microtask gap in which another save can prune it.
+    // Pin before finish publishes or releases its reservation; waiting first permits pruning in the microtask gap.
     let pending = this.unpublishedOutputCaptures.get(sessionId);
     if (!pending) this.unpublishedOutputCaptures.set(sessionId, pending = new Set());
     pending.add(capture.captureId);
@@ -2780,18 +2222,7 @@ export class MemoryManager implements PromptMemorySource {
     return changed ? hydrated : messages;
   }
 
-  /**
-   * Apply the row-level conversation fields to a session's metadata.
-   *
-   * `saveSessionMetadata` writes the whole file, so a field-level update has
-   * to read first or it erases everything it did not mention. The parameter is
-   * an explicit triple rather than a `Partial<SessionMetadata>`: this is the
-   * path a RENDERER reaches, and a general patch would let it set the A2A wire
-   * identity and the project binding, which it must never do.
-   *
-   * `null` clears; `undefined` leaves alone. That distinction is the whole
-   * reason the caller can unarchive and mark-read through the same call.
-   */
+  // Read-modify-write row fields so whole-sidecar persistence preserves unrelated metadata.
   async updateSessionRowFields(
     sessionId: string,
     fields: { title?: string; archivedAt?: string | null; unreadSince?: string | null },
@@ -2813,12 +2244,7 @@ export class MemoryManager implements PromptMemorySource {
     await this.saveSessionMetadata(sessionId, next);
   }
 
-  /**
-   * Replace the session's task list (`session_tasks` tool). Read-modify-write
-   * for the same reason as {@link updateSessionRowFields}: the sidecar is
-   * written whole, so the list must ride along with everything else in it.
-   * An empty list removes the field rather than storing `[]`.
-   */
+  // Task-list updates preserve unrelated metadata; an empty list removes the field.
   async saveSessionTasks(sessionId: string, tasks: SessionTaskItem[]): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`saveSessionTasks: invalid sessionId "${sessionId}"`);
@@ -2830,12 +2256,7 @@ export class MemoryManager implements PromptMemorySource {
     await this.saveSessionMetadata(sessionId, next);
   }
 
-  /**
-   * Replace the session's goal (`session_goal` tool). Read-modify-write for
-   * the same reason as {@link saveSessionTasks}. `null` removes the goal
-   * rather than storing a tombstone: a session with no goal is a session with
-   * no revival budget, and there is nothing else the absence could mean.
-   */
+  // Goal updates preserve unrelated metadata; null removes the goal without a tombstone.
   async saveSessionGoal(sessionId: string, goal: SessionGoal | null): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`saveSessionGoal: invalid sessionId "${sessionId}"`);
@@ -2852,7 +2273,6 @@ export class MemoryManager implements PromptMemorySource {
       throw new Error(`saveSessionMetadata: invalid sessionId "${sessionId}"`);
     }
     const targetPath = join(this.sessionsDir, `${sessionId}.meta.json`);
-    // Enforce length invariants on write.
     let safe: SessionMetadata = metadata.summaryPreamble !== undefined &&
       metadata.summaryPreamble.length > MAX_SUMMARY_PREAMBLE_CHARS
       ? { ...metadata, summaryPreamble: metadata.summaryPreamble.slice(0, MAX_SUMMARY_PREAMBLE_CHARS) }
@@ -2892,8 +2312,7 @@ export class MemoryManager implements PromptMemorySource {
     if (safe.title !== undefined && safe.title.length > MAX_SESSION_TITLE_CHARS) {
       safe = { ...safe, title: safe.title.slice(0, MAX_SESSION_TITLE_CHARS) };
     }
-    // Capture before the first asynchronous lock boundary. A detach and re-add
-    // can otherwise clear the Set guard before this writer enters the lock.
+    // Capture generation before locking so detach/re-add cannot clear a stale writer's guard.
     const guardedProjectKey = projectRootKey(safe.projectRoot);
     const capturedRootGeneration = guardedProjectKey
       ? this.projectRootGeneration(guardedProjectKey)
@@ -2915,9 +2334,7 @@ export class MemoryManager implements PromptMemorySource {
         && (rootIsDetached || sessionWasDetached || rootGenerationChanged),
       );
       if (shouldDetachProject && guardedProjectKey) {
-        // A write that first arrives while the root-wide guard is active must
-        // also remain detached after re-add. A generation mismatch covers the
-        // ABA case where detach and allow both completed before lock entry.
+        // Writers arriving during removal remain detached after re-add; generation checks cover the ABA window.
         if (!sessionWasDetached) {
           const nextTombstones = sessionTombstones ?? new Set<string>();
           nextTombstones.add(guardedProjectKey);
@@ -2934,11 +2351,7 @@ export class MemoryManager implements PromptMemorySource {
       writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
       this.notePaneSession(sessionId, safe);
     });
-    // Metadata (sessionKind/routineId/projectRoot/title) is denormalized into
-    // the FTS row (#1500 / E3) — re-index whenever it changes, not just on
-    // saveSession, otherwise a metadata-only update (the common create-then-
-    // tag-metadata sequence) leaves the FTS row's scope fields stale and
-    // `searchSessions`'s kind/routineId/projectRoot filters silently misclassify it.
+    // Reindex metadata-only updates too because project, kind, routine, and title fields are denormalized.
     const messages = this.loadSession(sessionId);
     if (Array.isArray(messages)) {
       this.indexSessionForSearch(sessionId, messages);
@@ -2947,11 +2360,7 @@ export class MemoryManager implements PromptMemorySource {
     }
   }
 
-  /**
-   * Allow newly-created sessions to bind to a root that the user registered
-   * again. Existing per-session tombstones intentionally remain: re-adding a
-   * folder is not an implicit reassignment of previously detached chats.
-   */
+  // Re-add permits new bindings but keeps old session tombstones; it does not reassign detached chats.
   allowProjectRoot(projectRoot: string): void {
     const key = projectRootKey(projectRoot);
     if (!key) return;
@@ -2959,13 +2368,7 @@ export class MemoryManager implements PromptMemorySource {
     this.detachedProjectRoots.delete(key);
   }
 
-  /**
-   * Preserve conversation JSONL while detaching project metadata from sessions
-   * that belonged to a removed workspace root. Each metadata file is re-read
-   * inside its file lock so concurrent detach calls are idempotent. Project
-   * fields are removed; wire tasks also receive one immutable terminal outcome
-   * while their host-visible identity and unrelated future fields remain intact.
-   */
+  // Detach project metadata without deleting transcripts; re-read under locks for idempotent concurrent cleanup.
   async detachSessionsFromProject(projectRoot: string): Promise<number> {
     const key = projectRootKey(projectRoot);
     if (!key) return 0;
@@ -3002,8 +2405,7 @@ export class MemoryManager implements PromptMemorySource {
 
     await withAllMetadataLocks(0, async () => {
       const plans: DetachPlan[] = [];
-      // Validate every metadata file while every candidate lock is
-      // held. No file is rewritten until the complete preflight succeeds.
+      // Preflight every candidate while all locks are held before rewriting any metadata.
       for (const { sessionId, targetPath } of metadataTargets) {
         try {
           const raw = readUtf8FileIfPresent(targetPath);
@@ -3023,8 +2425,7 @@ export class MemoryManager implements PromptMemorySource {
             : detachProjectBinding(parsed);
           plans.push({ sessionId, targetPath, normalized, next });
         } catch (error) {
-          // Parser diagnostics can echo private metadata fragments. Preserve a
-          // stable retryable error without exposing source text.
+          // Return stable retryable errors; parser diagnostics may echo private source text.
           const errorName = error instanceof Error ? error.name : "UnknownError";
           log.warn("detachSessionsFromProject: invalid metadata for %s (%s)", sessionId, errorName);
           throw Object.assign(new Error("workspace session metadata detach incomplete"), {
@@ -3034,9 +2435,7 @@ export class MemoryManager implements PromptMemorySource {
         }
       }
 
-      // Replace each metadata file atomically. An I/O failure may leave earlier
-      // files detached, but the root intent remains active and a retry repairs
-      // both metadata and the complete search index.
+      // Keep root intent active through partial I/O failure so retry can repair metadata and the complete index.
       for (const { sessionId, targetPath, normalized, next } of plans) {
         writeUtf8FileAtomicSync(targetPath, JSON.stringify(next, null, 2));
         const sessionTombstones = this.detachedProjectRootsBySession.get(sessionId)
@@ -3057,35 +2456,13 @@ export class MemoryManager implements PromptMemorySource {
     return detachedCount;
   }
 
-  /**
-   * Whether a conversation still exists.
-   *
-   * The transcript file is the same thing `listSessions` scans for, so this
-   * answers exactly the question the conversation list answers: no caller can
-   * be told a conversation exists that the user cannot see, or the reverse.
-   * A stat rather than a read, because the question is existence.
-   *
-   * Unlike {@link hasSessionMetadataFile} this returns false for a malformed id
-   * instead of throwing. An id that is not even well-formed names no session,
-   * so false is the complete answer, and the callers are projections that must
-   * not throw into a snapshot.
-   */
+  // Existence must match conversation listing and return false for invalid ids.
   hasSessionTranscript(sessionId: unknown): boolean {
     if (!isValidSessionId(sessionId)) return false;
     return statPathIfPresent(join(this.sessionsDir, `${sessionId}.jsonl`)) !== null;
   }
 
-  /**
-   * Make sure `sessionId` exists as a listed conversation, like `touch`.
-   *
-   * A missing transcript is created empty — exclusively, so a transcript
-   * written meanwhile is never replaced — and lists as an ordinary `main`
-   * conversation. With `bump`, an existing transcript's modification time moves
-   * to now, which is what orders the conversation list. Synchronous on purpose:
-   * a caller that stages something for this conversation does so in the same
-   * tick, and the row has to exist before the renderer re-reads the list.
-   * Returns whether the transcript was created by this call.
-   */
+  // Create missing transcripts exclusively so concurrent writers cannot be overwritten.
   touchSessionTranscript(sessionId: string, options: { bump: boolean }): boolean {
     if (!isValidSessionId(sessionId)) {
       throw new Error(`touchSessionTranscript: invalid sessionId "${sessionId}"`);
@@ -3124,10 +2501,7 @@ export class MemoryManager implements PromptMemorySource {
       if (!parsed || typeof parsed !== "object") return null;
       return normalizeSessionMetadata(parsed);
     } catch (err) {
-      // Surface metadata parse/IO failures as a warning so a
-      // corrupted .meta.json doesn't silently surface as "no metadata".
-      // Error semantics are preserved (still returns null) — only the
-      // diagnostic surface is added.
+      // Warn on metadata parse or I/O failures while retaining the null return contract.
       log.warn(`loadSessionMetadata failed for ${sessionId}: %s`, (err as Error).message);
       return null;
     }
@@ -3201,24 +2575,13 @@ export class MemoryManager implements PromptMemorySource {
     });
   }
 
-  /** List persisted sessions. */
-  /**
-   * Plain listing — the first page of {@link listSessionsPage} with no cursor.
-   * One body: every field a row carries is assembled in the page function, so
-   * a column added for pagination cannot go missing from the plain list.
-   */
+  // Assemble plain lists through pagination so row fields cannot drift between the two surfaces.
   listSessions(input: number | ListSessionsOptions = Number.POSITIVE_INFINITY): SessionListEntry[] {
     const options: ListSessionsOptions = typeof input === "number" ? { limit: input } : input;
     return this.listSessionsPage({ ...options, limit: options.limit ?? Number.POSITIVE_INFINITY });
   }
 
-  /**
-   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
-   * unarchived session whose metadata names that tab, or undefined. Answered
-   * from an index of pane tabs built by one metadata scan on first use and
-   * kept by every metadata write and session delete; only the candidates'
-   * transcript files are stat'ed, never read.
-   */
+  // Resolve pane sessions from a lazy metadata index and update it on local writes and deletes.
   findPaneSession(paneTabId: string): string | undefined {
     let newest: { id: string; mtimeMs: number } | undefined;
     for (const id of this.paneSessionIndex().get(paneTabId) ?? []) {
@@ -3241,7 +2604,6 @@ export class MemoryManager implements PromptMemorySource {
     return index;
   }
 
-  /** Keep the pane index on `sessionId`'s metadata as just written (null: removed). */
   private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
     const index = this.paneSessions;
     if (!index) return;
@@ -3255,20 +2617,7 @@ export class MemoryManager implements PromptMemorySource {
     index.set(tabId, ids);
   }
 
-  /**
-   * Sub-agents spawned by one parent session, newest first.
-   *
-   * The renderer's sub-agent panel is fed entirely by the live `agent_spawn`
-   * event stream, so it is empty after an app restart: the main process that
-   * emitted those events is gone and nothing replays them. Every field the
-   * panel needs for a row is already on disk in the child's session metadata —
-   * this reads it back so a restored conversation still shows the agents it
-   * ran, and so each child's `resumeId` (its session id) stays reachable.
-   *
-   * Transcripts are deliberately NOT loaded here. One parent can spawn many
-   * children, and reading every child's `.jsonl` to render a list would make
-   * session load pay for transcripts the user may never open.
-   */
+  // Restore child panel rows from persisted metadata; live spawn events disappear on restart.
 
   listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!originSessionId) return [];
@@ -3281,9 +2630,7 @@ export class MemoryManager implements PromptMemorySource {
         const metadata = this.loadSessionMetadata(id);
         if (metadata?.sessionKind !== "subagent") return [];
         if (metadata.originSessionId !== originSessionId) return [];
-        // `spawnId` is the panel's row identity. Metadata written before it was
-        // recorded cannot be joined to a row, so it is skipped rather than
-        // shown under a synthesized id that would split on the next live event.
+        // Skip children without stored spawnId; synthesized panel ids cannot join later live events.
         if (!metadata.spawnId) return [];
         return [{
           spawnId: metadata.spawnId,
@@ -3356,7 +2703,6 @@ export class MemoryManager implements PromptMemorySource {
           ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
           ...(workBoardItemId !== null ? { workBoardItemId } : {}),
           ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
-          // Branch provenance — already loaded from metadata above, no extra disk IO
           ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
           ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
           ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),
@@ -3370,41 +2716,13 @@ export class MemoryManager implements PromptMemorySource {
     return this.listSessions({ kind: "routine", routineId, limit });
   }
 
-  // ─── Checkpoint Chain Helpers ─────────────────────
-
-  /**
-   * Appends a checkpoint to the session's metadata.
-   * Returns the updated metadata (does NOT persist — caller must call saveSessionMetadata).
-   */
+  // Append in memory only; callers must persist the updated metadata.
   appendCheckpoint(metadata: SessionMetadata, checkpoint: Checkpoint): SessionMetadata {
     const existing = Array.isArray(metadata.checkpoints) ? metadata.checkpoints : [];
     return { ...metadata, checkpoints: [...existing, checkpoint] };
   }
 
-  /**
-   * Drop the checkpoints whose compact boundary THIS rewind discarded, and
-   * delete the pre-compact snapshots those checkpoints owned.
-   *
-   * The chain is a second record of the same conversation:
-   * `recoverLatestCheckpointUserIfMissing` re-inserts the latest checkpoint's
-   * user message when a loaded session has no renderable user row left, so a
-   * rewind back to the opening message of a session that had ever compacted
-   * would come back on reload carrying the very message the user discarded.
-   * Cutting the transcript therefore has to cut the chain that mirrors it.
-   *
-   * Read off the DISCARDED rows, never off the surviving ones. A boundary stub
-   * does not live forever: the next compaction summarizes the previous one away
-   * (`findRecentTurnPreserveStart` steps over boundary rows), so after two
-   * compactions only the newest boundary is still a row. Asking "which
-   * boundaries are still present" would therefore call checkpoint #1 missing
-   * before the user touched anything, and every rewind — even of the last
-   * message — would delete a snapshot `branchFromCheckpoint` still needs.
-   * Asking "which boundaries did this cut remove" only ever names boundaries
-   * the cut actually removed.
-   *
-   * A checkpoint with no `compactNum` owns no boundary row and no snapshot file
-   * to key on, so it is never dropped here.
-   */
+  // Prune only discarded checkpoint boundaries and their snapshots before saving rewind state.
   async pruneCheckpointsDiscardedByRewind(
     sessionId: string,
     discardedMessages: readonly unknown[],
@@ -3442,10 +2760,7 @@ export class MemoryManager implements PromptMemorySource {
       }
     }
 
-    // The preamble summarizes the conversation up to the LATEST boundary. It
-    // survives as long as that boundary's checkpoint does; losing the newest
-    // checkpoint means losing what the preamble was describing, while losing an
-    // older one leaves the description still true.
+    // Clear the preamble only when its latest checkpoint disappears; losing older checkpoints leaves it valid.
     const latestCompactNum = checkpoints
       .map((checkpoint) => checkpoint.compactNum)
       .filter((compactNum): compactNum is number => compactNum !== undefined)
@@ -3462,11 +2777,7 @@ export class MemoryManager implements PromptMemorySource {
     });
   }
 
-  /**
-   * Sets (or replaces) the summaryPreamble in session metadata.
-   * Truncates to MAX_SUMMARY_PREAMBLE_CHARS if the value exceeds the limit.
-   * Returns the updated metadata (does NOT persist — caller must call saveSessionMetadata).
-   */
+  // Cap the preamble and return updated metadata without persisting it.
   setSummaryPreamble(metadata: SessionMetadata, preamble: string): SessionMetadata {
     const truncated = preamble.length > MAX_SUMMARY_PREAMBLE_CHARS
       ? preamble.slice(0, MAX_SUMMARY_PREAMBLE_CHARS)
@@ -3474,16 +2785,7 @@ export class MemoryManager implements PromptMemorySource {
     return { ...metadata, summaryPreamble: truncated };
   }
 
-  /**
-   * Delete a session: JSONL, metadata, and sibling compact archives,
-   * snapshots, sidecars, and diff-cache state.
-   * The stable metadata lock target intentionally remains so operations that
-   * were already waiting on that session keep the same serialization point.
-   *
-   * The compact pipeline stores oversized message fragments under
-   * `sessions/<sessionId>/truncated/` and `sessions/.checkpoints/<sessionId>/`.
-   * Remove those with the transcript so no orphaned fragments remain.
-   */
+  // Delete session artifacts but retain the stable metadata lock target for waiting operations.
   async deleteSession(sessionId: string): Promise<void> {
     if (!isValidSessionId(sessionId)) {
       log.warn({ sessionId }, "unsafe caller-provided sessionId rejected in deleteSession");
@@ -3491,6 +2793,7 @@ export class MemoryManager implements PromptMemorySource {
     }
     await withFileLock(this.sessionMetadataLockPath(sessionId), async () => {
       this.detachedProjectRootsBySession.delete(sessionId);
+      await deleteCodeCheckpoints(sessionId);
       this.detachedWireTerminalTombstones.delete(sessionId);
       const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
       unlinkIfPresent(jsonlPath);
@@ -3516,9 +2819,6 @@ export class MemoryManager implements PromptMemorySource {
       } catch (err) {
         log.warn(`deleteSession: failed to remove diff cache dir ${diffCacheDir}: ${(err as Error).message}`);
       }
-      // Drop the session's FTS row too (#1500 / E3) — otherwise a deleted
-      // session lingers as an orphaned, still-searchable hit. Per-op
-      // open→delete→close (no persistent handle; mirrors indexSessionForSearch).
       if (this.searchIndex.open()) {
         try {
           this.searchIndex.deleteSession(sessionId);
@@ -3590,11 +2890,7 @@ export class MemoryManager implements PromptMemorySource {
       const message = this.normalizeStoredOutputCapture(sessionId, rawMessage);
       if (!isToolResultRecord(message)) return message;
 
-      // A view_image tool_result carries a large base64 image on its sibling
-      // `image` field. It is never re-consumed on load/resume (the Claude mapper
-      // only reads it live; the renderer serializer omits it), so persist a
-      // clone WITHOUT it — keeps the .jsonl from re-storing ~MBs every save. The
-      // live in-memory record keeps its image untouched for the ongoing turn.
+      // Persist a clone without live-only image bytes; never mutate the caller's in-memory tool result.
       const base =
         "image" in message
           ? ((): Record<string, unknown> => {
@@ -3607,8 +2903,7 @@ export class MemoryManager implements PromptMemorySource {
       const outputArtifact = normalizeToolOutputArtifactInfo(meta.outputArtifact);
       if (meta.outputArtifactUnavailable === true) return base;
       if (outputArtifact) {
-        // Persist the canonical bounded preview plus validated host reference.
-        // Provider recovery stubs are projections, never the stored preview.
+        // Persist bounded canonical previews and validated host references, never provider-recovery projections.
         keepCaptureIds.add(outputArtifact.captureId);
         const { serializedStub: _stub, truncated: _truncated, ...captureMeta } = meta;
         return {
@@ -3784,30 +3079,20 @@ export class MemoryManager implements PromptMemorySource {
     mkdirSync(this.sessionsDir, { recursive: true });
     this.restrictSessionsDirWrites();
 
-    // Atomic create-if-absent: the exclusive "wx" flag fails with EEXIST when
-    // the file already exists, so there is no check-then-write TOCTOU window.
+    // Use exclusive creation to eliminate check-then-write races.
     this.writeDefaultIfAbsent(join(this.aveDir, "AGENTS.md"), getDefaultAgentsMd());
     this.writeDefaultIfAbsent(join(this.aveDir, "user-preferences.md"), getDefaultUserPrefs());
     this.writeDefaultIfAbsent(join(this.memoryDir, "MEMORY.md"), getDefaultMemoryIndex());
   }
 
-  /**
-   * Tool-output capture refuses a sessions root that another account could
-   * write. `mkdirSync` filters its mode through the process umask, and Debian
-   * and Ubuntu logins run with 0002 for user-private groups, so the root came
-   * out group-writable and every shell output capture settled unavailable.
-   * Only an owned, real directory is tightened; a symlinked or foreign root is
-   * left as it is for the store to refuse.
-   */
+  // Enforce a private sessions-root mode explicitly; permissive umasks must not leave capture storage group-writable.
   private restrictSessionsDirWrites(): void {
     if (process.platform === "win32") return;
     let fd: number;
     try {
       fd = openSync(this.sessionsDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     } catch (error) {
-      // With O_DIRECTORY a trailing link fails ENOTDIR (Linux and darwin), not
-      // ELOOP. A sessions root moved to another disk and linked back must not
-      // stop the host booting; it is left for the store to judge.
+      // O_DIRECTORY may report a trailing link as ENOTDIR; leave linked roots for the store's authorization decision.
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ELOOP" || code === "ENOTDIR") return;
       throw error;
@@ -3818,7 +3103,6 @@ export class MemoryManager implements PromptMemorySource {
     } finally { closeSync(fd); }
   }
 
-  /** Write `content` only when `path` does not yet exist, atomically (no TOCTOU). */
   private writeDefaultIfAbsent(path: string, content: string): void {
     try {
       writeFileSync(path, content, { encoding: "utf-8", flag: "wx" });
@@ -4040,8 +3324,7 @@ export class MemoryManager implements PromptMemorySource {
     if (noteIsExpired(entry)) return false;
     const isManagedGlobal = entry.id !== undefined && !entry.projectRoot;
     if (options.scope === "global") return isManagedGlobal;
-    // Detached/global callers must not enumerate another project's V1 memory.
-    // Legacy unscoped files remain visible so an upgrade does not hide history.
+    // Detached callers cannot enumerate project-managed memory; retain visibility of unscoped legacy notes.
     if (!options.projectRoot) return !entry.projectRoot;
     if (isManagedGlobal) return true;
     return projectRootEquals(entry.projectRoot, options.projectRoot)
@@ -4573,13 +3856,7 @@ export class MemoryManager implements PromptMemorySource {
     return buf.subarray(0, 25 * 1024).toString("utf-8");
   }
 
-  /**
-   * Derive {title, preview} from a session's messages. Pure — opens nothing.
-   * Only string-content user/assistant turns feed the title/preview (tool-result
-   * records are skipped), so an in-memory array and the on-disk JSONL derive the
-   * same result — `prepareSessionMessagesForDisk` only rewrites tool-result
-   * artifacts, never string content.
-   */
+  // Derive summaries only from string user/assistant content so disk and in-memory paths agree.
   private deriveSessionSummary(
     sessionId: string,
     messages: unknown[] | null,
@@ -4597,9 +3874,7 @@ export class MemoryManager implements PromptMemorySource {
       const role = (message as Record<string, unknown>)?.role;
       const content = (message as Record<string, unknown>)?.content;
       if (typeof content !== "string" || content.trim().length === 0) continue;
-      // Continue after an interrupted turn stores the host's resume
-      // instruction as the user row; the session is still about what the user
-      // asked before it, so that row names neither the title nor the preview.
+      // Exclude host resume instructions from titles and previews; they do not describe the user's request.
       const meta = (message as Record<string, unknown>)?.meta;
       if (isRecord(meta) && meta.resumesInterruptedTurn === true) continue;
       const normalized = content.replace(/\s+/g, " ").trim();
@@ -4613,9 +3888,7 @@ export class MemoryManager implements PromptMemorySource {
     };
   }
 
-  // Disk-loading wrapper for callers without the messages in hand (listSessions).
-  // The indexer passes its in-memory array to deriveSessionSummary directly,
-  // avoiding a redundant JSONL re-read + parse on every saveSession.
+  // Reuse in-memory summaries during indexing to avoid rereading the transcript.
   private readSessionSummary(sessionId: string): { title: string; preview: string } {
     return this.deriveSessionSummary(sessionId, this.loadSession(sessionId));
   }
@@ -4623,7 +3896,6 @@ export class MemoryManager implements PromptMemorySource {
   private slugify(title: string): string {
     return title
       .toLowerCase()
-      // Keep Hangul in user-authored memory titles while the source remains ASCII.
       .replace(/[^a-z0-9\uac00-\ud7a3\s-]/g, "")
       .replace(/\s+/g, "-")
       .replace(/-+/g, "-")

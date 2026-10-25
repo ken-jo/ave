@@ -43,13 +43,7 @@ export interface RationaleHostWiringOverrides {
   ) => RationaleHostService;
 }
 
-/**
- * Prepares process-owned rationale authority for the guarded production path.
- * When guarded production activation is requested, it publishes a concrete
- * runtime only after durable audit preflight and crash recovery. Unavailable
- * preparation leaves query-loop on the legacy path.
- * Neither path resolves the reviewer until a query-loop invocation.
- */
+/** Publish guarded authority only after audit preflight and recovery; resolve the reviewer at invocation. */
 export async function wireRationaleHost(
   ctx: BootContext,
   overrides: RationaleHostWiringOverrides = {},
@@ -104,14 +98,10 @@ export async function wireRationaleHost(
       overrides.createHostService?.(serviceOptions) ??
       new RationaleHostService(serviceOptions);
 
-    // Publication is the activation boundary: no loop can observe a partially
-    // recovered service.
+    // Publish only fully recovered services.
     ctx.rationaleHostService = service;
   } catch {
-    // Fail closed without exposing raw errors or filesystem paths. With no
-    // service/factory, the query loop retains legacy batching; a
-    // `requestedSandbox=true` operation with effective sandbox `none` takes
-    // the cross-platform force-prompt one-shot permit path.
+    // Hide raw errors and paths; unavailable authority retains legacy batching and sandbox gaps force prompting.
     ctx.rationaleHostService = undefined;
     log.warn(
       "boot: foreground rationale authority unavailable; force-prompt one-shot sandbox permit fallback remains active",

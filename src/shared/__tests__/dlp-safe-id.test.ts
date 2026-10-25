@@ -11,11 +11,9 @@ import {
 import { UUID_PATTERN } from "../uuid.js";
 
 const SAFE_UUID = "abcdefab-cdef-4abc-8def-abcdefabcdef";
-// A valid v4 UUID whose serialized form carries a Luhn-valid 16-digit window
-// (first two groups + version group), so the converged detector flags it.
+// This valid UUID contains a Luhn-valid digit window that the scanner must detect.
 const UNSAFE_UUID = "00000023-0161-4299-a234-abcdefabcdef";
-// Safe on its own — its longest digit run is 8 — but a Luhn-valid 16-digit
-// window straddles the join once BOUNDARY_PREFIX is concatenated in front.
+// A safe candidate can form a Luhn-valid window across the concatenation boundary.
 const PREFIX_BOUNDARY_UUID = "20000004-ab12-4abc-8def-abcdefabcdef";
 const BOUNDARY_PREFIX = "sub-10000000";
 
@@ -124,8 +122,7 @@ describe("dlpSafeCandidate", () => {
   });
 
   it("skips a rejected draw without spending a scan on it", () => {
-    // `null` is how a caller says "this candidate is unusable for a reason the
-    // scanner cannot see" — a malformed uuid, or a name already taken.
+    // Null rejects candidates for non-scanner reasons such as malformed or already-used ids.
     const draws = vi.fn()
       .mockReturnValueOnce(null)
       .mockReturnValueOnce(SAFE_UUID);
@@ -155,10 +152,7 @@ describe("isSafeStructuralId", () => {
     expect(isSafeStructuralId("a".repeat(257))).toBe(false);
   });
 
-  // The task store and A2A handler copies rejected C0 controls and DEL; the
-  // message codec copy additionally rejected C1 controls and the Unicode line
-  // separators. The one predicate keeps the union, so every string any former
-  // copy refused is still refused.
+  // The shared predicate preserves rejection of C0, C1, DEL, and Unicode line separators.
   it("rejects C0 control characters and DEL", () => {
     expect(isSafeStructuralId("abc\u0000def")).toBe(false);
     expect(isSafeStructuralId("abc\u001fdef")).toBe(false);

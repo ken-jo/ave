@@ -95,7 +95,6 @@ describe("SharedConversationProjectionStore", () => {
       });
 
     publishReview({ name: "list_files", source: "builtin" });
-    // A name outside the identifier grammar is dropped, never forwarded.
     publishReview({ name: "evil tool C:\\private\\path", source: "mcp" });
     publishReview({ name: "x".repeat(129), source: "plugin" });
 

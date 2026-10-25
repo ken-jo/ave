@@ -10,40 +10,16 @@ const EMOJI_FONT_STACK =
   "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Twemoji Mozilla', sans-serif";
 const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 
-/**
- * Composer-adjacent status/toast surface.
- *
- * Component is intentionally presentational — all state and producer
- * wiring lives in `useStatusBar`. In chat it is rendered directly above the
- * composer so transient failures stay near the user's current input focus.
- *
- * Issue #260 — toasts originating from the notification system carry a
- * `notification` meta. When provided, `onToastClick` fires on click; the
- * caller (App.tsx) wires this to `notifyClick` IPC and `removeToast`. Other
- * toast producers (install progress, lifecycle results) leave the meta
- * undefined and their toasts remain non-clickable cosmetic spans.
- *
- * Sequential toast display: only `visibleToast` (the queue head) is rendered
- * at any time. `pendingCount` shows how many more are waiting.
- *
- * The bar sits IN FLOW — above the composer, or in the window's notice strip
- * above the canvas — so it appears and disappears as a surface, not a snap:
- * `ave-anim-notice-in/-out` fade and slide it while a grid row goes 0fr ⇄ 1fr
- * so what is below moves with it. The bar stays mounted through its exit and
- * unmounts on `animationend`. Under reduced motion the motion tokens are 1ms
- * and the same path collapses to an immediate change.
- */
+/** Render the toast queue head in flow so notices do not cover neighboring panes; notification metadata alone enables
+ * click-through IPC. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
   /** Number of toasts queued behind the visible one. */
   pendingCount?: number;
-  /**
-   * Click handler invoked when a toast that has `notification` metadata is
-   * clicked. The handler receives the full ToastItem so callers can dispatch
-   * the IPC call and dismiss the toast in a single pass.
-   */
+  /** Click handler invoked when a toast that has `notification` metadata is clicked. The handler receives the full ToastItem
+   * so callers can dispatch the IPC call and dismiss the toast in a single pass. */
   onToastClick?: (toast: ToastItem) => void;
   onToastDismiss?: (toast: ToastItem) => void;
 }
@@ -88,8 +64,8 @@ export function StatusBar(props: StatusBarProps) {
     if (event.target === event.currentTarget && leaving) setLeaving(false);
   };
 
-  // Render nothing once there is no persistent indicator, no toast and the
-  // exit has played, so the composer dock does not reserve empty space.
+  // Render nothing once there is no persistent indicator, no toast and the exit has played, so the composer dock does not
+  // reserve empty space.
   if (!hasContent && !leaving) return null;
 
   const { persistent, visibleToast, pendingCount = 0, onToastClick, onToastDismiss } =

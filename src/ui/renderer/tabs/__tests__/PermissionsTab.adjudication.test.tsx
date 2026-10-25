@@ -10,7 +10,7 @@
  */
 import "../../../../../test/renderer/setup.js";
 import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,15 +20,13 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
   ),
 }));
 
-import { PermissionsTab } from "../PermissionsTab.js";
+import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 
 function reviewerSettings(
   parentAdjudication: Record<string, unknown> = { ...MOCK_REVIEWER_PARENT_ADJUDICATION },
 ) {
   return {
     mode: "llm" as const,
-    provider: "openai" as const,
-    model: "gpt-4o-mini",
     fallbackOnError: "deny" as const,
     interactive: { autoApprove: "low" as const },
     parentAdjudication,
@@ -38,11 +36,15 @@ function reviewerSettings(
 function installApi(opts: { featureEnabled?: boolean } = {}) {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],
@@ -62,7 +64,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
         }
         return { ok: true as const, verb: "adjudication" as const, settings: reviewerSettings() };
       }),
-      reviewerProviderHasKey: vi.fn(async () => true),
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
         enabled: false,
@@ -98,6 +99,7 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
     },
     userApproval: {
       list: vi.fn(async () => []),
+      listSession: vi.fn(async () => []),
       revokeByKey: vi.fn(async () => ({ ok: true })),
       record: vi.fn(async () => ({ ok: true })),
     },
@@ -114,12 +116,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
   return { ave, aveApi };
 }
 
-async function renderTab() {
-  await act(async () => {
-    render(<PermissionsTab />);
-  });
-}
-
 describe("PermissionsTab — parent adjudication controls", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -132,7 +128,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("renders the persisted block, the three-tier chain note, and the privacy note", async () => {
     installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "true");
     expect(screen.getByTestId("parent-adjudication-chain-note").textContent).toContain("자동 레인");
@@ -151,7 +147,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("types the numeric fields against the store's bounds", async () => {
     installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     const timeout = screen.getByTestId("parent-adjudication-timeout-input");
     expect(timeout).toHaveAttribute("min", "1");
@@ -166,7 +162,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("writes the master switch through the settings feature flag", async () => {
     const { aveApi } = installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId("parent-adjudication-toggle"));
@@ -185,7 +181,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
       error: "persist-failed",
       message: "저장 실패",
     } as never);
-    await renderTab();
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId("parent-adjudication-toggle"));
@@ -199,7 +195,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("converts the timeout from seconds to the stored milliseconds on commit", async () => {
     const { ave } = installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     const timeout = screen.getByTestId("parent-adjudication-timeout-input");
     await act(async () => {
@@ -211,7 +207,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("dispatches the remaining numeric ceilings verbatim", async () => {
     const { ave } = installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.blur(screen.getByTestId("parent-adjudication-max-per-child-run-input"), {
@@ -234,7 +230,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("does not dispatch when the committed value is the persisted one", async () => {
     const { ave } = installApi();
-    await renderTab();
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.blur(screen.getByTestId("parent-adjudication-timeout-input"), {
@@ -247,7 +243,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
 
   it("disables the ceilings while the master switch is off", async () => {
     installApi({ featureEnabled: false });
-    await renderTab();
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "false");
     expect(screen.getByTestId("parent-adjudication-timeout-input")).toBeDisabled();
@@ -266,7 +262,7 @@ describe("PermissionsTab — parent adjudication controls", () => {
       }
       return { ok: false as const, error: "invalid timeoutMs '900' — expected 1..120" } as never;
     });
-    await renderTab();
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.blur(screen.getByTestId("parent-adjudication-timeout-input"), {

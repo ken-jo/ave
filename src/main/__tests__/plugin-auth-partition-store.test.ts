@@ -1,13 +1,4 @@
-/**
- * Unit tests for plugin-auth-partition-store.ts (issue #748).
- *
- * Exercises: write → read round-trip, ENOENT returns null, corrupt JSON throws,
- * unexpected schema throws, delete removes single entry, delete no-ops on ENOENT,
- * concurrent write/delete ordering on one mutation queue.
- *
- * AVE_HOME is overridden via vi.stubEnv so each test suite block points at
- * a fresh temp dir and the module reads the env at call-time (not import-time).
- */
+// AVE_HOME is read at call time and overridden per test to isolate disk state.
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
@@ -41,6 +32,14 @@ describe("readPersistedPluginAuthPartitions", () => {
   it("returns null when file does not exist (first boot)", async () => {
     const result = await readPersistedPluginAuthPartitions();
     expect(result).toBeNull();
+  });
+
+  it("returns null for the empty placeholder the Windows sandbox creates", async () => {
+    const dir = join(tmpHome, "plugins");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "auth-partitions.json"), "", "utf8");
+    await expect(readPersistedPluginAuthPartitions()).resolves.toBeNull();
+    await expect(deletePersistedPluginAuthPartitions("com.example.plugin")).resolves.toBeUndefined();
   });
 
   it("throws on corrupt JSON", async () => {
@@ -141,16 +140,14 @@ describe("deletePersistedPluginAuthPartitions", () => {
 
 describe("write queue — concurrency safety", () => {
   it("10 parallel writes all resolve and final file contains all entries", async () => {
-    // Build 10 maps, each with one unique plugin, accumulating entries like the
-    // real caller does (each call passes the full in-memory map so far).
+    // Pass cumulative snapshots, matching the caller’s concurrent persistence writes.
     const accumulated = new Map<string, Set<string>>();
     const promises: Promise<void>[] = [];
 
     for (let i = 0; i < 10; i++) {
       const pluginId = `plugin-${i}`;
       accumulated.set(pluginId, new Set([`persist:plugin-auth:${pluginId}`]));
-      // Snapshot the accumulated map at call-time by spreading into a new Map —
-      // this mirrors how rememberPluginAuthPartition passes trackedPluginAuthPartitions.
+      // Snapshot the accumulated map at call-time by spreading into a new Map — this mirrors how rememberPluginAuthPartition passes trackedPluginAuthPartitions.
       promises.push(
         writePersistedPluginAuthPartitions(new Map(accumulated)),
       );
@@ -188,9 +185,8 @@ describe("write queue — concurrency safety", () => {
   });
 
   it("write queue recovers after transient I/O error — subsequent write succeeds", async () => {
-    // Block the plugins directory path with a regular file. This forces a real
-    // mkdir/write failure on Windows and POSIX; chmod-based permission tests
-    // are not portable across Windows developer shells.
+    // Block the plugins directory path with a regular file. This forces a real mkdir/write failure on Windows and POSIX; chmod-based permission tests are
+    // not portable across Windows developer shells.
     const dir = join(tmpHome, "plugins");
     await writeFile(dir, "not a directory", "utf8");
 
@@ -200,12 +196,10 @@ describe("write queue — concurrency safety", () => {
     // Write A should reject because the dir is read-only.
     await expect(writePersistedPluginAuthPartitions(mapA)).rejects.toThrow();
 
-    // Remove the blocker so subsequent writes can create the directory.
     await unlink(dir);
 
-    // The write queue must NOT be permanently bricked after the error.
-    // __resetWriteQueueForTest() is NOT called here — we rely on the
-    // try/finally + catch-detach fix to allow recovery without a reset.
+    // The write queue must NOT be permanently bricked after the error. __resetWriteQueueForTest() is NOT called here — we rely on the try/finally +
+    // catch-detach fix to allow recovery without a reset.
     await expect(writePersistedPluginAuthPartitions(mapB)).resolves.toBeUndefined();
 
     const result = await readPersistedPluginAuthPartitions();
@@ -244,7 +238,6 @@ describe("cleanupStaleTmpFiles", () => {
     const authFile = join(dir, "auth-partitions.json");
     const staleTmp = `${authFile}.abc123.tmp`;
 
-    // Create a valid auth file and a stale tmp file simulating a prior crash.
     await writeFile(
       authFile,
       JSON.stringify({ partitions: { "com.example.plugin": ["persist:plugin-auth:com.example.plugin"] } }, null, 2) + "\n",
@@ -252,7 +245,6 @@ describe("cleanupStaleTmpFiles", () => {
     );
     await writeFile(staleTmp, "incomplete write", { encoding: "utf8", mode: 0o600 });
 
-    // Verify the tmp file exists before sweep.
     const { access } = await import("node:fs/promises");
     await expect(access(staleTmp)).resolves.toBeUndefined();
 
@@ -269,12 +261,7 @@ describe("cleanupStaleTmpFiles", () => {
 
 describe("plugin-auth-partition-store — atomic-write convergence (feature-namespace authority)", () => {
   it("fsyncs the staged bytes before commit (the 'atomic write' the store's comment claims)", async () => {
-    // Pre-convergence, doActualWrite used `writeFile`+`rename` with no fsync, so
-    // the file survived a process crash but not a power cut — the durability the
-    // module header advertised was not the durability it delivered. The shared
-    // authority opens the staging file and fsyncs it (and the parent dir on
-    // POSIX) before the rename. Count those sync() calls: 0 with the old code,
-    // >=1 after convergence.
+    // Assert staging-file fsync so persistence survives power loss, not merely process exit.
     const observer = observeFileHandleSyncs();
     try {
       await writePersistedPluginAuthPartitions(

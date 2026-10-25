@@ -1,23 +1,9 @@
-/**
- * #885 v6 — the loopback reverse projection (`mcpToolToPluginTool`). The forward
- * projection now emits ONLY `_meta.ui.visibility` + `ave/pathFields`
- * (category / version / writesToOwnSandbox / workerId / deprecation are REMOVED
- * from the wire), so the reverse projection:
- *   - sources `pathFields` from `_meta`,
- *   - NEVER populates `Tool.writesToOwnSandbox` (the untrusted self-claim is gone —
- *     the reviewer auto-LOW keys on host-computed containment instead),
- *   - registers EVERY tool at the write-equivalent baseline, ignoring any wire
- *     `category` entirely (#885 dropped the category reader — loopback emits no
- *     category and an out-of-process plugin's wire category is not trusted; host
- *     `inspectHostRisk` is the effective SOT),
- *   - carries `source: "plugin"` + `pluginId` for the §6.3 permission pipeline.
- */
+/** Reverse projection retains plugin authority and owned path fields, never wire sandbox or risk claims. */
 import { describe, it, expect, vi } from "vitest";
 import { mcpToolToPluginTool } from "../plugin-tool-from-mcp.js";
 import { manifestToolsToMcpTools } from "../plugin-server-projection.js";
 import type { PluginManifest } from "../../plugins/types.js";
 
-/** A `_meta` vendor prefix the host does not own; it must never be read as `ave/*`. */
 const UNKNOWN_META_PREFIX = "xyz.example/";
 
 const PLUGIN_ID = "com.example.files";
@@ -70,14 +56,9 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     for (const t of tools) {
       expect(t.source).toBe("plugin");
       expect(t.pluginId).toBe(PLUGIN_ID);
-      // category is HOST-derived per invocation now — the wire carries none, so
-      // the reverse projection registers the write-equivalent baseline.
       expect(t.category).toBe("write");
       expect(t.isReadOnly({})).toBe(false);
-      // workerId is host-derived (never promoted from the manifest wire).
       expect(t.workerId).toBeUndefined();
-      // the wire carries no per-tool version — `createDynamicTool` applies its
-      // "1.0.0" default (per-tool version left the Tool contract entirely).
       expect(t.version).toBe("1.0.0");
     }
   });
@@ -116,10 +97,7 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
   });
 
   it("materializes Tool.modelVisible from the wire's _meta.ui.visibility — app-only ⇒ registered but NOT model-exposed", () => {
-    // The one standard declaration the host reads back off this wire. It decides
-    // MODEL EXPOSURE only — never whether the tool is registered. An app-only tool
-    // MUST become a registry `Tool`: that is the only way its card's `tools/call`
-    // can run under inspectHostRisk → reviewer/approval → audit.
+    // Visibility controls model exposure only; app-only tools still register for risk, approval and audit.
     const manifest: PluginManifest = {
       ...MANIFEST,
       tools: [
@@ -130,21 +108,16 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     };
     const tools = manifestToolsToMcpTools(manifest).map((t) => mcpToolToPluginTool(PLUGIN_ID, t, invoke));
 
-    // Every declared tool round-trips into a registry `Tool` — app-only included.
     expect(tools.map((t) => t.name)).toEqual(["files_read", "files_toggle", "files_ui_rows"]);
     expect(tools.find((t) => t.name === "files_read")!.modelVisible).toBe(true);
     expect(tools.find((t) => t.name === "files_toggle")!.modelVisible).toBe(true);
     expect(tools.find((t) => t.name === "files_ui_rows")!.modelVisible).toBe(false);
-    // The app-visibility MUST stays with `assertAppVisibleToolInvokable` inside
-    // PluginRuntime.callFromApp (the plugin arm's single enforcement site), so this
-    // arm deliberately leaves `appInvokable` unset.
+    // callFromApp enforces app visibility; this adapter leaves appInvokable unset.
     for (const t of tools) expect(t.appInvokable).toBeUndefined();
   });
 
   it("fail-closes to the minimal governed surface when the wire carries no valid visibility", () => {
-    // The forward projection always emits visibility explicitly, so an absent /
-    // malformed declaration here means a broken producer — resolve it to ["model"]
-    // (governed, LLM-reachable) rather than silently granting the app surface.
+    // Missing or malformed visibility narrows to model-only, never grants app access.
     for (const _meta of [{}, { ui: { visibility: "app" } }, { ui: { visibility: [] } }, { ui: 7 }]) {
       const tool = mcpToolToPluginTool(
         PLUGIN_ID,
@@ -156,16 +129,11 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
   });
 
   it("#885 v6 — the wire `category` is fully ignored: absent, valid, or malformed all register write-equivalent", () => {
-    // #885 dropped the per-tool category reader: the host ignores any wire
-    // `_meta["ave/category"]` (loopback sends none; an out-of-process
-    // plugin's is not trusted), so the reverse projection pins every tool to the
-    // write-equivalent baseline unconditionally. Security invariant preserved —
-    // a wire "read" can NEVER silently downgrade a plugin tool; the host
-    // `inspectHostRisk` classifier is the effective SOT.
+    // Ignore wire category claims so a claimed read category cannot lower the host baseline.
     const wireMetas: Array<Record<string, unknown>> = [
-      { ui: { visibility: ["model"] } }, // absent category
-      { "ave/category": "read" }, // a valid-looking wire "read" is ignored
-      { "ave/category": 42 }, // malformed
+      { ui: { visibility: ["model"] } },
+      { "ave/category": "read" },
+      { "ave/category": 42 },
     ];
     for (const _meta of wireMetas) {
       const tool = mcpToolToPluginTool(
@@ -180,9 +148,7 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
   });
 
   it("IGNORES pathFields under an unknown vendor _meta prefix (fail-closed)", () => {
-    // A wire carrying pathFields ONLY under another vendor's prefix yields NO
-    // pathFields — the security-bearing extraction is never sourced from a key
-    // the host does not own (that would be fail-open).
+    // Foreign-prefix pathFields cannot supply security-bearing extraction metadata.
     const unknown = mcpToolToPluginTool(
       PLUGIN_ID,
       {

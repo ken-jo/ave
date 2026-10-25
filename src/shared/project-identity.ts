@@ -38,8 +38,7 @@ function uniqueParentQualifiers(projects: readonly ProjectIdentity[]): string[] 
     return state.parts.slice(-state.depth).join("/");
   };
 
-  // Only colliding qualifiers grow. This keeps already-distinct labels short
-  // while escalating shared parent names to the shortest unique suffix.
+  // Only colliding qualifiers grow, preserving short labels while finding the shortest unique suffix.
   for (;;) {
     const byQualifier = new Map<string, Array<(typeof states)[number]>>();
     for (const state of states) {
@@ -76,13 +75,13 @@ export function projectBasename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export function normalizeProjectRoot(value: unknown): string | undefined {
+function normalizeProjectRoot(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function normalizeProjectName(value: unknown): string | undefined {
+function normalizeProjectName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -132,18 +131,12 @@ export function disambiguateProjectNames(
   });
 }
 
-export function projectIdentityFromRoot(
+function projectIdentityFromRoot(
   projectRoot: string,
   fallbackName: string,
   isDefault = false,
 ): ProjectIdentity {
-  // No isDefault-branching: the earlier "avoid a literal folder name for the
-  // default project" special-case is dead weight now that isDefault projects
-  // are never surfaced as a selectable/displayed project at all (composer
-  // selector, sidebar grouping, and Insights all exclude/reclassify them — see
-  // 2026-07 "remove Current Project labeling" refinement). `fallbackName` is
-  // therefore only a safety net for the near-unreachable case of a root with
-  // no resolvable basename (e.g. a bare drive root).
+  // Default projects are not selectable; fallbackName only covers roots without a resolvable basename.
   return {
     projectRoot,
     projectName: projectBasename(projectRoot) || fallbackName,

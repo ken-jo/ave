@@ -1,15 +1,4 @@
-/**
- * #811 command-hooks milestone — generalized runner tests.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4 / §6 / §9.
- *
- * Covers the STEP-4 generalization of `runOneHookScript`: an arbitrary
- * local-script `command` argv (python/node/shell) executes through the SAME
- * fail-closed / env-allowlist / timeout machinery as a legacy `.sh` file.
- *
- * These spawn real interpreters; they are skipped when the interpreter is
- * absent so CI without python3/node still passes the rest of the suite.
- */
+// Generic argv uses the legacy runner's fail-closed, environment and timeout gates; interpreter-dependent cases skip when unavailable (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import {
@@ -123,7 +112,6 @@ describe("#811 generalized runner — node command hook", () => {
       { ...samplePayload, trustOrigin: "llm-tool-arg" },
     );
     expect(r.decision).toBe("allow");
-    // Proves the wire-shape JSON reached the child and parsed.
     expect(r.reason).toContain("origin=llm-tool-arg");
   });
 });

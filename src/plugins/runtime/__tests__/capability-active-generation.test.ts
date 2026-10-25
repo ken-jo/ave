@@ -336,12 +336,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
     };
   }
 
-  /**
-   * A same-id replacement which deliberately removes the blocked consumer's
-   * capability requirement. This makes prepared activation reachable while the
-   * old candidate is still waiting for its provider, rather than relying on a
-   * synthetic direct mutation of runtime state.
-   */
+  /** Remove the replacement capability requirement so prepared activation can proceed while the old consumer remains blocked. */
   async function writePreparedUnblockedReplacement(
     plugin: Pick<WrittenPlugin, "id">,
   ): Promise<{
@@ -435,8 +430,7 @@ export default async function createPlugin() {
 }
 `,
     });
-    // The consumer deliberately appears first: manifest presence must not
-    // satisfy it before the provider has successfully started.
+    // The consumer precedes its provider so manifest presence alone cannot satisfy runtime admission.
     await writeRegistry([consumer, provider]);
 
     const runtime = makeRuntime();
@@ -455,6 +449,7 @@ export default async function createPlugin() {
   it("starts a provider before a consumer even when the registry lists the consumer first", async () => {
     const providerReadyPath = join(root, "provider-ready");
     const consumerStartedPath = join(root, "consumer-started");
+    const gate = await childProcessGate(join(root, "provider-start-gate"));
     const consumer = await writePlugin({
       id: "reverse-order-consumer",
       requires: { capabilities: ["calendar-source"] },
@@ -474,12 +469,14 @@ export default async function createPlugin() {
     const provider = await writePlugin({
       id: "reverse-order-provider",
       capabilities: ["calendar-source"],
-      entrySource: `import { writeFile } from "node:fs/promises";
+      entrySource: `${gate.moduleSource}
+import { writeFile } from "node:fs/promises";
 export default async function createPlugin() {
   return {
     handlers: { reverse_order_provider_ping: async () => "pong" },
     start: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      gate.signal("provider-entered");
+      await gate.waitFor("release-provider");
       await writeFile(${JSON.stringify(providerReadyPath)}, "ready", "utf8");
     },
     stop: async () => {},
@@ -490,7 +487,14 @@ export default async function createPlugin() {
     await writeRegistry([consumer, provider]);
 
     const runtime = makeRuntime();
-    await runtime.startAll();
+    const starting = runtime.startAll();
+    try {
+      await gate.waitFor("provider-entered");
+      await expect(access(consumerStartedPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await gate.signal("release-provider");
+      await starting;
+    }
 
     expect(runtime.listPluginIds().sort()).toEqual([
       consumer.id,
@@ -502,9 +506,7 @@ export default async function createPlugin() {
   it("starts independent capability layers in parallel", async () => {
     const firstId = "parallel-start-a";
     const secondId = "parallel-start-b";
-    // Each start runs in its plugin child (§9.8 A1), so the gate is files under
-    // this test's temp root. Neither start returns until both have entered: a
-    // serial start would never let the second one in.
+    // Gate both child starts through files; serial startup cannot let both enter.
     const gate = await childProcessGate(join(root, "parallel-start-gate"));
     const entrySource = (id: string, toolName: string) => `${gate.moduleSource}
 export default async function createPlugin() {
@@ -559,7 +561,7 @@ export default async function createPlugin() {
         pluginId === provider.id ? providerPreparation.promise : undefined,
     });
 
-    // Boot must resolve without waiting for an unbounded provider preparation.
+    // Boot must not wait for unbounded provider preparation.
     await runtime.startAll();
     const consumerCard = runtime.listPluginCards().find((card) => card.id === consumer.id);
     expect(consumerCard).toMatchObject({ loadStatus: "preparing", active: false });
@@ -752,8 +754,6 @@ export default async function createPlugin() {
   });
 
   it("serializes a blocked consumer retry with a queued remove and reinstall", async () => {
-    // The consumer's start runs in its plugin child (§9.8 A1): it signals and
-    // waits through files under this test's temp root.
     const gate = await childProcessGate(join(root, "queued-retry-gate"));
     const consumer = await writePlugin({
       id: "queued-retry-consumer",
@@ -794,8 +794,7 @@ export default async function createPlugin() {
         removeSettled = true;
       });
       await nextTurn();
-      // The start retry holds the same reentrant lifecycle lock, so removal
-      // waits rather than tearing down/replacing its candidate mid-start.
+      // Removal must wait for the reentrant start-retry lock.
       expect(removeSettled).toBe(false);
 
       await gate.signal("release");
@@ -964,8 +963,7 @@ export default async function createPlugin() {
     await expect(readFile(oldStopPath, "utf8")).resolves.toBe("stopped");
     expect(oldDisposer).toHaveBeenCalledOnce();
 
-    // The old provider watcher is still allowed to settle, but must not revive
-    // the superseded requirement-bearing candidate over the active replacement.
+    // A stale provider watcher must not revive the superseded blocked consumer.
     fixture.providerPreparation.resolve();
     await expect(fixture.runtime.waitForPluginReady(fixture.provider.id)).resolves.toBeUndefined();
     await nextTurn();
@@ -1012,8 +1010,7 @@ export default async function createPlugin() {
   it("keeps an unpublished blocked candidate retryable when prepared durable commit fails", async () => {
     const oldStopPath = join(root, "prepared-durable-failure-old-stop");
     const oldDisposer = vi.fn();
-    // The fixture hook fires for every consumer incarnation: the first is the
-    // old candidate's, the second the prepared replacement's.
+    // The hook sees the old and replacement incarnations separately.
     const replacementDisposer = vi.fn();
     let consumerIncarnations = 0;
     const fixture = await makeRealLifecycleBlockedRuntime({
@@ -1046,7 +1043,6 @@ export default async function createPlugin() {
     await expect(access(oldRuntime!.pluginRoot)).resolves.toBeUndefined();
     await expect(access(oldStopPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(oldDisposer).not.toHaveBeenCalled();
-    // The uncommitted replacement is released, the old candidate is not.
     expect(replacementDisposer).toHaveBeenCalledOnce();
 
     let oldReadySettled = false;
@@ -1296,7 +1292,6 @@ export default async function createPlugin() {
       id: "restart-removal-consumer",
       requires: { capabilities: ["calendar-source"] },
     });
-    // Provider insertion first reproduces the former provider-first teardown.
     await writeRegistry([provider, consumer]);
 
     const runtime = makeRuntime();

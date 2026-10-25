@@ -1,25 +1,4 @@
-/**
- * Row addressing for the three actions that name a past message:
- * `ave:chat:rewind-to`, `ave:chat:edit-resend`, and `ave:chat:fork`.
- *
- * They share one rule — resolve the row by its durable `messageId` — and this
- * file is where that rule is held to a conversation whose ENTRY count and ROW
- * count disagree. They used to disagree silently: an ordinal walk counted rows
- * while the renderer counted entries, so a pure tool round, a compact boundary,
- * or an imported trigger each shifted the target by one and the action cut the
- * wrong turn.
- *
- * ── rewind specifically ─────────────────────────────────────────────────────
- *
- * The renderer puts the message text back in the composer; main's whole job is
- * to cut the conversation at that message and WRITE the cut. Nothing else on
- * this path saves the session (unlike edit-resend, where the replayed turn
- * saves), so a handler that truncates in memory only would look correct until
- * the next session load brought the discarded turns back.
- *
- * These tests drive the real registered IPC handlers against a history fake that
- * actually mutates, so they fail if the truncate or the write is dropped.
- */
+// Resolve actions by durable messageId; transcript entry positions and history row positions can differ.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,14 +30,6 @@ vi.mock("../../../lib/logger.js", () => ({
   createLogger: vi.fn(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() })),
 }));
 
-/**
- * A conversation shaped like the ones the ordinal walk got wrong: a pure tool
- * round (an assistant row with EMPTY content, which the transcript draws as a
- * tool group and not as a card), a compact boundary (a user row the transcript
- * draws as a checkpoint divider), and an imported trigger (a user row drawn as
- * its own card). Each of those made the renderer's count and the host's count
- * disagree by one, so a rewind cut the wrong turn.
- */
 function driftShapedHistory(): GenericMessage[] {
   return [
     { role: "user", content: "first question", meta: { messageId: "m-q1" } },
@@ -130,8 +101,6 @@ describe("ave:chat:rewind-to", () => {
   it("cuts at the named row, not at the row an ordinal walk would have counted to", async () => {
     const deps = await setup(driftShapedHistory());
 
-    // "m-q3" is the 4th user/assistant ENTRY the transcript shows, but the 8th
-    // ROW. Counting either way lands somewhere else; the id does not.
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean }>>(
       handlers, REWIND, "m-q3", "main",
     );
@@ -164,9 +133,7 @@ describe("ave:chat:rewind-to", () => {
   });
 
   it("hands the pruner the rows this rewind discarded, not the rows that survived it", async () => {
-    // What the pruner may delete is decided by which boundaries THIS rewind
-    // threw away. Handing it the survivors instead would also condemn every
-    // boundary an earlier compaction had already summarized away.
+    // Prune only boundaries removed by this rewind, not survivors of earlier compactions.
     const deps = await setup(driftShapedHistory());
 
     await invokeRegisteredHandler<Promise<{ ok: boolean }>>(handlers, REWIND, "m-q1", "main");
@@ -178,9 +145,7 @@ describe("ave:chat:rewind-to", () => {
   });
 
   it("restores the words the bubble showed, not the envelope stored around them", async () => {
-    // A drained guide is stored wrapped in a routing envelope the user never
-    // wrote, with the bare text recorded alongside it. Returning to that row
-    // must put the user's own words in the composer.
+    // Restore the user's bare text rather than the host routing envelope.
     const deps = await setup([
       { role: "user", content: "first question", meta: { messageId: "m-q1" } },
       {
@@ -324,7 +289,6 @@ describe("ave:chat:edit-resend — same rule, same fixture", () => {
     );
 
     expect(result).toEqual({ ok: false, error: "message-not-found" });
-    // Nothing was cut: the replay never got past resolving its target.
     expect(deps.conversationLoop.getHistory().getMessages()).toHaveLength(9);
   });
 
@@ -340,14 +304,6 @@ describe("ave:chat:edit-resend — same rule, same fixture", () => {
   });
 });
 
-/**
- * The seam the drift lived in, crossed for real: a genuine ConversationHistory
- * on one side, the renderer's own entry rebuild on the other, and nothing
- * mocked in between. The renderer picks the entry a user would click, reads the
- * id off it, and the registered handler resolves that id against the same
- * history. Any future divergence between how rows are stored and how entries
- * are built fails HERE rather than by cutting a user's conversation.
- */
 describe("renderer entry → host row, end to end", () => {
   beforeEach(() => {
     handlers.clear();
@@ -356,8 +312,6 @@ describe("renderer entry → host row, end to end", () => {
   function realHistoryWithDriftShapes(): ConversationHistory {
     const history = new ConversationHistory();
     history.append({ role: "user", content: "first question" });
-    // Pure tool round: an assistant row with empty content, drawn as a tool
-    // group and never as a card.
     history.append({
       role: "assistant",
       content: "",
@@ -365,7 +319,6 @@ describe("renderer entry → host row, end to end", () => {
     });
     history.append({ role: "tool_result", toolUseId: "tu-1", content: "file body" });
     history.append({ role: "assistant", content: "first answer" });
-    // Compact boundary: a user row drawn as a checkpoint divider.
     history.append({
       role: "user",
       content: "[compacted]",
@@ -385,15 +338,11 @@ describe("renderer entry → host row, end to end", () => {
     const { registerChatHandlers } = await import("../chat.js");
     registerChatHandlers(deps as never);
 
-    // Build the transcript exactly as the renderer does, from the same rows.
     const serialized = history
       .getMessages()
       .map((message, index) => serializeHistoryMessage(message, index));
     const entries = historyToEntries(serialized);
 
-    // The user clicks their LAST question. It is the 3rd user/assistant ENTRY
-    // the transcript shows and the 6th ROW — the numbers an ordinal walk on
-    // either side would have produced disagree, and neither is the answer.
     const clicked = entries.filter((e) => e.kind === "user").at(-1);
     expect(clicked?.kind === "user" ? clicked.text : "").toBe("third question");
     const messageId = clicked?.kind === "user" ? clicked.messageId : undefined;
@@ -411,15 +360,7 @@ describe("renderer entry → host row, end to end", () => {
   });
 });
 
-/**
- * Sessions written before rows carried an identity are still on disk, and two
- * readers open them: the sidebar renders a transcript from `loadSession`, and a
- * resumed loop restores its history from the same call. If those two produced
- * different identities for the same row, the id the user clicked would name
- * nothing the host could find — so `loadSession` mints one identity per row,
- * derived from the session and the row's position, and everything downstream
- * inherits it.
- */
+// Sidebar and resumed history must derive identical row ids for legacy sessions.
 describe("a session written before rows carried an identity", () => {
   const LEGACY_SESSION = "dddddddd-0000-1111-2222-333333333333";
   let dir: string;
@@ -460,7 +401,6 @@ describe("a session written before rows carried an identity", () => {
     await writeLegacySession();
     const loaded = mm.loadSession(LEGACY_SESSION) as GenericMessage[];
 
-    // The loop resumes from the same call the sidebar read.
     const history = new ConversationHistory();
     history.restore(loaded);
     expect(history.getMessages().map((m) => m.meta?.messageId)).toEqual(

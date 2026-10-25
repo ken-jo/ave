@@ -45,6 +45,47 @@ function announcement(id: number): MarketplaceAnnouncement {
   };
 }
 
+function alreadyDismissedCase(dismissedAnnouncementIds: number[]) {
+  return async () => {
+    const { api, rawApi, emit } = announcementApi({ marketplace: { dismissedAnnouncementIds } });
+    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
+    act(() => emit([announcement(1)]));
+    await act(async () => {
+      await result.current.dismiss(1);
+    });
+    expect(result.current.announcements).toEqual([]);
+    expect(rawApi.updateSettings).not.toHaveBeenCalled();
+  };
+}
+
+function failedDismissalCase(configure: (api: ReturnType<typeof announcementApi>["rawApi"]) => void) {
+  return async () => {
+    const { api, rawApi, emit } = announcementApi();
+    configure(rawApi);
+    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
+    act(() => emit([announcement(1), announcement(2)]));
+
+    let failed = false;
+    await act(async () => {
+      try {
+        await result.current.dismiss(1);
+      } catch {
+        failed = true;
+      }
+    });
+    expect(failed).toBe(true);
+
+    await act(async () => {
+      await result.current.dismiss(2);
+    });
+    expect(result.current.announcements).toEqual([]);
+    const lastCall = rawApi.updateSettings.mock.calls.at(-1)?.[0];
+    expect(
+      [...(lastCall?.marketplace?.dismissedAnnouncementIds ?? [])].sort(),
+    ).toEqual([1, 2]);
+  };
+}
+
 describe("useMarketplaceAnnouncements", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -76,35 +117,9 @@ describe("useMarketplaceAnnouncements", () => {
     });
   });
 
-  it("does not re-persist an already-dismissed id", async () => {
-    const { api, rawApi, emit } = announcementApi({ marketplace: { dismissedAnnouncementIds: [1] } });
-    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
+  it("does not re-persist an already-dismissed id", alreadyDismissedCase([1]));
 
-    act(() => emit([announcement(1)]));
-
-    await act(async () => {
-      await result.current.dismiss(1);
-    });
-
-    expect(result.current.announcements).toEqual([]);
-    expect(rawApi.updateSettings).not.toHaveBeenCalled();
-  });
-
-  it("normalizes duplicated persisted ids before comparing and writing", async () => {
-    const { api, rawApi, emit } = announcementApi({
-      marketplace: { dismissedAnnouncementIds: [7, 1, 7] },
-    });
-    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
-
-    act(() => emit([announcement(1)]));
-
-    await act(async () => {
-      await result.current.dismiss(1);
-    });
-
-    expect(result.current.announcements).toEqual([]);
-    expect(rawApi.updateSettings).not.toHaveBeenCalled();
-  });
+  it("normalizes duplicated persisted ids before comparing and writing", alreadyDismissedCase([7, 1, 7]));
 
   it("filters corrupted persisted dismissal ids before writing", async () => {
     const { api, rawApi, emit } = announcementApi({
@@ -171,65 +186,17 @@ describe("useMarketplaceAnnouncements", () => {
     ).toEqual([1, 2, 7]);
   });
 
-  it("recovers persistence after a dismiss settings write fails", async () => {
-    const { api, rawApi, emit } = announcementApi();
+  it("recovers persistence after a dismiss settings write fails", failedDismissalCase((rawApi) => {
     rawApi.updateSettings.mockRejectedValueOnce(new Error("settings unavailable"));
-    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
+  }));
 
-    act(() => emit([announcement(1), announcement(2)]));
-
-    let failed = false;
-    await act(async () => {
-      try {
-        await result.current.dismiss(1);
-      } catch {
-        failed = true;
-      }
-    });
-    expect(failed).toBe(true);
-
-    await act(async () => {
-      await result.current.dismiss(2);
-    });
-
-    expect(result.current.announcements).toEqual([]);
-    const lastCall = rawApi.updateSettings.mock.calls.at(-1)?.[0];
-    expect(
-      [...(lastCall?.marketplace?.dismissedAnnouncementIds ?? [])].sort(),
-    ).toEqual([1, 2]);
-  });
-
-  it("treats resolved IPC error envelopes as failed dismiss settings writes", async () => {
-    const { api, rawApi, emit } = announcementApi();
+  it("treats resolved IPC error envelopes as failed dismiss settings writes", failedDismissalCase((rawApi) => {
     rawApi.updateSettings.mockResolvedValueOnce({
       ok: false,
       error: "write-failed",
       message: "settings write failed",
     });
-    const { result } = renderHook(() => useMarketplaceAnnouncements(api));
-
-    act(() => emit([announcement(1), announcement(2)]));
-
-    let failed = false;
-    await act(async () => {
-      try {
-        await result.current.dismiss(1);
-      } catch {
-        failed = true;
-      }
-    });
-    expect(failed).toBe(true);
-
-    await act(async () => {
-      await result.current.dismiss(2);
-    });
-
-    expect(result.current.announcements).toEqual([]);
-    const lastCall = rawApi.updateSettings.mock.calls.at(-1)?.[0];
-    expect(
-      [...(lastCall?.marketplace?.dismissedAnnouncementIds ?? [])].sort(),
-    ).toEqual([1, 2]);
-  });
+  }));
 
   it("keeps locally dismissed announcements hidden across host pushes before persistence succeeds", async () => {
     const { api, rawApi, emit } = announcementApi();

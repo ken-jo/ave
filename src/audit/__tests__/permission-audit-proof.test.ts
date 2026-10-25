@@ -28,6 +28,9 @@ import {
   PERMISSION_AUDIT_SELF_TEST_SCHEMA,
 } from "../permission-audit-proof.js";
 
+// Refuse on Windows before IO because the proof requires POSIX ownership and mode checks.
+const posixOnly = it.skipIf(process.platform === "win32");
+
 const DATE = "2026-09-18";
 const NOW = new Date(`${DATE}T12:34:56.789Z`);
 const CHALLENGE = "c".repeat(64);
@@ -89,7 +92,13 @@ async function createValidAudit(): Promise<{ path: string; seals: ReturnType<typ
 }
 
 describe("permission audit terminal proof", () => {
-  it("emits a public receipt for a closed AuditLogger chain", async () => {
+  it.runIf(process.platform === "win32")("refuses on Windows without reading or creating audit authority", async () => {
+    const before = readdirSync(home).sort();
+    await expect(createPermissionAuditProof(CHALLENGE)).rejects.toThrow(/POSIX owner verification/);
+    expect(readdirSync(home).sort()).toEqual(before);
+  });
+
+  posixOnly("emits a public receipt for a closed AuditLogger chain", async () => {
     const { path } = await createValidAudit();
     const raw = readFileSync(path);
     const receipt = await createPermissionAuditProof(CHALLENGE, () => NOW);
@@ -111,7 +120,7 @@ describe("permission audit terminal proof", () => {
     expect(JSON.stringify(receipt)).not.toContain(home);
   });
 
-  it("rejects operation/effectDigest tampering even though the public file SHA changes cleanly", async () => {
+  posixOnly("rejects operation/effectDigest tampering even though the public file SHA changes cleanly", async () => {
     const { path } = await createValidAudit();
     const before = createHash("sha256").update(readFileSync(path)).digest("hex");
     const row = JSON.parse(readFileSync(path, "utf8")) as {
@@ -125,7 +134,7 @@ describe("permission audit terminal proof", () => {
     await expect(createPermissionAuditProof(CHALLENGE)).rejects.toThrow(/chain verification failed/);
   });
 
-  it.each(["missing", "wrong"] as const)("rejects a %s daily seal", async (kind) => {
+  posixOnly.each(["missing", "wrong"] as const)("rejects a %s daily seal", async (kind) => {
     const { seals } = await createValidAudit();
     const sealPath = join(home, "secrets", `${sealKeyName(DATE)}.safe-storage`);
     if (kind === "missing") unlinkSync(sealPath);
@@ -133,7 +142,7 @@ describe("permission audit terminal proof", () => {
     await expect(createPermissionAuditProof(CHALLENGE)).rejects.toThrow(/seal is missing or invalid/);
   });
 
-  it("rejects missing key or audit authority without creating a replacement", async () => {
+  posixOnly("rejects missing key or audit authority without creating a replacement", async () => {
     await createValidAudit();
     const secretsDir = join(home, "secrets");
     const authorityPath = join(secretsDir, "audit-hmac.key.safe-storage");
@@ -185,7 +194,7 @@ describe("permission audit terminal proof", () => {
     5_000,
   );
 
-  it("rejects unexpected permission-audit names and symlinked canonical files", async () => {
+  posixOnly("rejects unexpected permission-audit names and symlinked canonical files", async () => {
     const { path } = await createValidAudit();
     const unexpected = join(home, "audit", `${DATE}.permission-audit.backup.jsonl`);
     writeFileSync(unexpected, "", { mode: 0o600 });
@@ -229,7 +238,12 @@ describe("packaged permission audit self-test", () => {
     vi.stubEnv("AVE_SECRET_KEY_FILE", externalKey);
   });
 
-  it("creates and verifies exactly one challenge-bound row", async () => {
+  it.runIf(process.platform === "win32")("refuses a fresh profile on Windows without creating audit authority", async () => {
+    await expect(createPermissionAuditSelfTest(CHALLENGE)).rejects.toThrow(/POSIX owner verification/);
+    expect(readdirSync(process.env.AVE_HOME!)).toEqual([]);
+  });
+
+  posixOnly("creates and verifies exactly one challenge-bound row", async () => {
     const receipt = await createPermissionAuditSelfTest(CHALLENGE, () => NOW);
     const auditPath = join(home, "proof-home", "audit", receipt.file.name);
     const raw = readFileSync(auditPath);
@@ -253,7 +267,9 @@ describe("packaged permission audit self-test", () => {
 
   it("rejects a reused profile before creating audit authority", async () => {
     writeFileSync(join(process.env.AVE_HOME!, "existing"), "occupied", { mode: 0o600 });
-    await expect(createPermissionAuditSelfTest(CHALLENGE)).rejects.toThrow(/fresh AVE_HOME/);
+    await expect(createPermissionAuditSelfTest(CHALLENGE)).rejects.toThrow(
+      process.platform === "win32" ? /POSIX owner verification/ : /fresh AVE_HOME/,
+    );
     expect(readdirSync(process.env.AVE_HOME!)).toEqual(["existing"]);
   });
 

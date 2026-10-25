@@ -1,10 +1,4 @@
-/**
- * Marketplace update hook regression tests.
- *
- * Update skips are exact-version suppressions. A user skip must hide the
- * visible pill immediately, persist `name -> offered version` (a plugin's name,
- * `kind:name` for other kinds), and allow a newer version to surface again.
- */
+/** Update skips suppress the exact offered version; newer versions must surface again. */
 import "../../../../../test/renderer/setup.js";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

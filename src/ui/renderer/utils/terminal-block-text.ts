@@ -1,8 +1,4 @@
-/**
- * Text forms of a terminal command block: what Copy puts on the clipboard and
- * what "Attach to chat" puts in the composer. Pure, so both forms are tested
- * without a terminal.
- */
+/** Copy and Attach use distinct text forms of the same terminal block. */
 import type { TerminalBlock, TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -32,11 +28,8 @@ function fenceFor(body: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/**
- * The composer form: a one-line header naming the terminal tab (its label and
- * the id `terminal_read` uses), the status, duration and directory, then the
- * command and output in a fence that the output cannot close.
- */
+/** The composer form: a one-line header naming the terminal tab (its label and the id `terminal_read` uses), the status,
+ * duration and directory, then the command and output in a fence that the output cannot close. */
 export function formatBlockForChat(
   block: TerminalBlock,
   tab: { label: string; id: string },

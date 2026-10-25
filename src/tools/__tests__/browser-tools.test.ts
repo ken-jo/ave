@@ -1,12 +1,5 @@
-/**
- * The agent browser tools through the real ToolExecutor, PermissionManager,
- * ApprovalGate and approval store, over the real main-side tab registry with
- * fake guests and fake page actions.
- *
- * Covers who is asked when (agent tab vs user tab, per origin, per action),
- * the TOCTOU re-check, window scope, denied schemes, the untrusted-content
- * fence, and user takeover cancelling a pending action.
- */
+/** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
+ * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,6 +77,11 @@ function fakeActions() {
         reject(error);
       }, { once: true });
     }),
+    hover: record("hover"),
+    drag: record("drag"),
+    select: record("select"),
+    scroll: record("scroll"),
+    upload: async (target) => { calls.push({ action: "upload", tab: target.tab.handle, args: [] }); return { status: "selected", count: 1, bytes: 12, files: [{ name: "chosen.txt", bytes: 12 }] }; },
     click: record("click") as BrowserPageActions<FakeGuest>["click"],
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
@@ -138,11 +136,8 @@ describe("browser tools", () => {
     await cleanupTmpDir(aveHomeDir);
   });
 
-  /**
-   * Window 1 hosts the conversation (and its child); window 2 hosts another.
-   * Every card is answered allow, remembered for the session when the card
-   * allows remembering. `onCard` runs while the card is open.
-   */
+  /** Window 1 hosts the conversation (and its child); window 2 hosts another. Every card is answered
+   * allow, remembered for the session when the card allows remembering. `onCard` runs while the card is open. */
   function harness(options: {
     onCard?: (card: ApprovalRequest) => void;
     beforeActions?: () => void | Promise<void>;
@@ -164,6 +159,7 @@ describe("browser tools", () => {
       windowIdForHostedSession: (sessionId) => sessionId === HOST_SESSION ? 1 : sessionId === OTHER_WINDOW_SESSION ? 2 : null,
       liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION ? HOST_SESSION : undefined,
       tabs,
+      pickUploadFiles: async () => null,
       loadActions: async () => {
         await options.beforeActions?.();
         return page.actions;
@@ -194,6 +190,8 @@ describe("browser tools", () => {
             await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
               decision: "allow",
               scope: "session",
+              // As the record handler does: a session allow is the root conversation's.
+              sessionId: snapshot.sessionId,
               verdictAtApproval: snapshot.verdictAtApproval,
               nlJustification: null,
               trustOrigin: snapshot.trustOrigin,
@@ -238,7 +236,7 @@ describe("browser tools", () => {
     };
     /** A tab the agent opened through the registry's new-tab handshake. */
     const agentTab = async (url: string) => {
-      const opened = tabs.requestTabOp(1, { op: "new", url });
+      const opened = tabs.requestTabOp(1, { op: "new", url, actor: { sessionId: HOST_SESSION } });
       const guest = new FakeGuest(nextGuest += 1, "about:blank");
       tabs.guestAttached(guest, 1);
       tabs.bindTab(1, { tabId: `renderer-${guest.id}`, webContentsId: guest.id, requestId: ops.at(-1)!.requestId! });
@@ -247,8 +245,40 @@ describe("browser tools", () => {
       guest.url = url;
       return { handle: outcome.tabId, guest };
     };
-    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools };
+    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
+
+  it.each([BROWSER_TOOL.navigate, BROWSER_TOOL.tabNew])("applies domain deny rules before %s", async (name) => {
+    const { run, cards, page, agentTab, ops, manager } = harness({ mode: "allow" });
+    const tab = await agentTab("https://example.com/");
+    const initialOps = ops.length;
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: "deny" }, { kind: "user" });
+    const result = await run(name, { ...(name === BROWSER_TOOL.navigate ? { tabId: tab.handle } : {}), url: "https://evil.com/x" });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining("WebFetch(domain:evil.com)") });
+    expect(cards).toHaveLength(0);
+    expect(page.calls).toHaveLength(0);
+    expect(ops).toHaveLength(initialOps);
+  });
+
+  it.each([
+    [BROWSER_TOOL.navigate, "allow"], [BROWSER_TOOL.navigate, "ask"],
+    [BROWSER_TOOL.tabNew, "allow"], [BROWSER_TOOL.tabNew, "ask"],
+  ] as const)("retains site approval for %s with a domain %s rule", async (name, action) => {
+    const { run, cards, agentTab, manager, ops, tabs } = harness({ mode: action === "ask" ? "allow" : "default" });
+    const tab = await agentTab("https://example.com/");
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action }, { kind: "user" });
+    const initialOps = ops.length;
+    const opening = run(name, { ...(name === BROWSER_TOOL.navigate ? { tabId: tab.handle } : {}), url: "https://evil.com/x" });
+    if (name === BROWSER_TOOL.tabNew) {
+      await vi.waitFor(() => expect(ops.slice(initialOps).at(-1)?.op).toBe("new"));
+      const guest = new FakeGuest(500, "about:blank");
+      tabs.guestAttached(guest, 1);
+      tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
+    }
+    expect((await opening).isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: browserOrigin("https://evil.com") } });
+  });
 
   it("reads an agent tab without asking, but asks before the first read of a user tab", async () => {
     const { run, cards, page, userTab, agentTab } = harness();
@@ -400,7 +430,7 @@ describe("browser tools", () => {
     takeOver = () => tabs.stop(1, `renderer-${agent.guest.id}`);
     const result = await run(BROWSER_TOOL.pressKey, { tabId: agent.handle, key: "Enter" });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("the user has taken over the tab");
+    expect(result.output).toContain("paused");
     expect(page.calls).toEqual([]);
   });
 
@@ -439,7 +469,7 @@ describe("browser tools", () => {
     expect(listed.output).toContain(agent.handle);
     expect(listed.output).not.toContain(`"${elsewhere.handle}"`);
 
-    // A sub-agent reaches its parent's window; a session no window hosts reaches nothing.
+    // Hosting-window discovery does not confer authority over a parent-owned resource.
     expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle }, CHILD_SESSION)).isError).toBe(false);
     const headless = await run(BROWSER_TOOL.tabs, {}, "routine-run");
     expect(headless.isError).toBe(true);
@@ -508,8 +538,8 @@ describe("browser tools", () => {
     expect((await run(BROWSER_TOOL.click, { tabId: second.handle, ref: "e1" })).isError).toBe(false);
     expect(cards).toHaveLength(1);
     expect(page.targets.map((target) => (target as unknown as { approval: unknown }).approval)).toEqual([
-      { tabId: first.handle, origin: "https://a.example:443", documentId: expect.any(Number) },
-      { tabId: second.handle, origin: "https://a.example:443", documentId: 7 },
+      { tabId: first.handle, origin: "https://a.example:443", documentId: expect.any(Number), controlGeneration: expect.any(Number) },
+      { tabId: second.handle, origin: "https://a.example:443", documentId: 7, controlGeneration: expect.any(Number) },
     ]);
   });
 
@@ -583,17 +613,87 @@ describe("browser tools", () => {
     expect(direct.match(/<\s*browser-content/gi)).toHaveLength(1);
   });
 
-  it("cancels a pending action when the user takes over the agent's tab", async () => {
+  it("keeps observation available while takeover persistently pauses mutations", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");
     const waiting = run(BROWSER_TOOL.wait, { tabId: agent.handle, text: "Done" });
     await vi.waitFor(() => expect(page.calls.map((call) => call.action)).toEqual(["waitFor"]));
     tabs.userInput(agent.guest.id);
-    const result = await waiting;
+    page.release();
+    expect((await waiting).isError).toBe(false);
+    expect(tabs.liveTab(agent.handle)?.actions.signal.aborted).toBe(true);
+    const blocked = await run(BROWSER_TOOL.click, { tabId: agent.handle, ref: "e1" });
+    expect(blocked.isError).toBe(true);
+    expect(blocked.output).toContain("paused");
+    tabs.resume(1, "renderer-" + agent.guest.id);
+    expect((await run(BROWSER_TOOL.click, { tabId: agent.handle, ref: "e1" })).isError).toBe(false);
+  });
+
+  it("keeps approval generation stable during lease acquisition and releases the exact lease", async () => {
+    const { run, page, tabs, agentTab } = harness();
+    const agent = await agentTab("https://a.example/");
+    const tab = tabs.liveTab(agent.handle)!;
+    const generation = tab.controlGeneration;
+    expect((await run(BROWSER_TOOL.hover, { tabId: agent.handle, ref: "e1" })).isError).toBe(false);
+    expect(page.targets.at(-1)?.leaseId).toEqual(expect.any(String));
+    expect(page.targets.at(-1)?.approval?.controlGeneration).toBe(generation);
+    expect(tab.controlGeneration).toBe(generation);
+    expect(tab.lease).toBeNull();
+  });
+
+  it("always asks once for upload, including owned tabs, and accepts no host paths", async () => {
+    const { run, cards, page, agentTab, browserTools } = harness();
+    const agent = await agentTab("https://a.example/");
+    for (let call = 0; call < 2; call++) {
+      const result = await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1" });
+      expect(result.isError).toBe(false);
+      expect(browserHeader(result.output)).toMatchObject({ status: "selected", files: [{ name: "chosen.txt", bytes: 12 }] });
+    }
+    expect(cards).toHaveLength(2);
+    expect(cards.map((card) => card.allowedChoices)).toEqual([
+      ["allow-once", "deny-once"], ["allow-once", "deny-once"],
+    ]);
+    expect((await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1", path: "/tmp/secret" })).isError).toBe(true);
+    expect(page.calls.filter((call) => call.action === "upload")).toHaveLength(2);
+    const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.upload)!.toJsonSchema();
+    expect(JSON.stringify(schema)).not.toContain("token");
+  });
+
+  it("validates each new typed operand before loading or acting", async () => {
+    const { run, page, userTab } = harness();
+    const user = userTab("https://a.example/");
+    for (const [name, input] of [
+      [BROWSER_TOOL.hover, { ref: "other" }],
+      [BROWSER_TOOL.drag, { sourceRef: "e1", targetRef: "bad" }],
+      [BROWSER_TOOL.select, { ref: "e1", value: 1 }],
+      [BROWSER_TOOL.scroll, { ref: "e1", direction: "down", pixels: 2001 }],
+      [BROWSER_TOOL.screenshot, { fullPage: "true" }],
+    ] as const) expect((await run(name, { tabId: user.handle, ...input })).isError).toBe(true);
+    expect(page.calls).toEqual([]);
+  });
+
+  it("does not offer full-page capture and refuses it without invoking capture", async () => {
+    const { run, page, userTab, browserTools } = harness();
+    const user = userTab("https://a.example/");
+    const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.screenshot)!.toJsonSchema();
+    expect(schema).toMatchObject({ properties: { fullPage: { enum: [false] } } });
+    const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("the user took over this tab");
-    // The next action runs with a fresh signal.
-    expect(tabs.liveTab(agent.handle)?.actions.signal.aborted).toBe(false);
+    expect(result.output).toContain("screenshot-unavailable");
+    expect(page.calls).toEqual([]);
+    expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).isError).toBe(false);
+    expect(page.calls.map((call) => call.action)).toEqual(["screenshot"]);
+  });
+
+  it("lists actual conversation ownership without granting access to unrelated creators", async () => {
+    const { run, agentTab, tabs } = harness();
+    const agent = await agentTab("https://a.example/");
+    expect(browserHeader((await run(BROWSER_TOOL.tabs, { scope: "conversation" })).output).tabs).toEqual(expect.arrayContaining([expect.objectContaining({ tabId: agent.handle })]));
+    const record = tabs.liveTab(agent.handle)!;
+    record.owner = { sessionId: "unrelated" };
+    const result = await run(BROWSER_TOOL.hover, { tabId: agent.handle, ref: "e1" });
+    expect(result.isError).toBe(true);
+    expect(browserHeader((await run(BROWSER_TOOL.tabs, { scope: "conversation" })).output).tabs).toEqual([]);
   });
 
   it("opens an agent tab and answers once its page has loaded", async () => {
@@ -613,7 +713,7 @@ describe("browser tools", () => {
     expect(tabs.liveTab("tab-1")?.opener).toBe("agent");
   });
 
-  it("closes an agent tab once per session and a user tab only on an explicit ask", async () => {
+  it("closes owned tabs and retains a borrowed user tab after explicit release", async () => {
     const { run, cards, ops, userTab, agentTab, tabs } = harness();
     const first = await agentTab("https://a.example/");
     const second = await agentTab("https://b.example/");
@@ -631,8 +731,35 @@ describe("browser tools", () => {
     expectBrowserFence(secondClosed.output);
     expect(browserHeader(secondClosed.output)).toEqual({ closed: second.handle });
     expect(cards.length).toBe(cardsAfterFirst);
-    expect((await close(user.handle, String(user.guest.id))).isError).toBe(false);
+    const released = await run(BROWSER_TOOL.tabClose, { tabId: user.handle });
+    expect(released.isError).toBe(false);
+    expect(browserHeader(released.output)).toEqual({ released: user.handle, retained: true });
+    expect(tabs.liveTab(user.handle)).toBeDefined();
     expect(cards.length).toBe(cardsAfterFirst + 1);
     expect(cards.at(-1)!.allowedChoices).toEqual(["allow-once", "deny-once"]);
+  });
+
+  it.each(["agent", "user"] as const)("rejects a stale %s tab close after pause and resume during approval", async (kind) => {
+    let changed = false;
+    let rendererId = "";
+    const h = harness({ mode: "default", onCard: () => {
+      if (changed) return;
+      changed = true;
+      expect(h.tabs.pause(1, rendererId)).toBe(true);
+      expect(h.tabs.resume(1, rendererId)).toBe(true);
+    } });
+    const tab = kind === "agent" ? await h.agentTab("https://a.example/") : h.userTab("https://a.example/");
+    rendererId = `renderer-${tab.guest.id}`;
+    if (kind === "user") {
+      // A borrowed tab has a resumable controller while retaining user lifetime.
+      h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
+    }
+    const before = h.ops.length;
+    const result = await h.run(BROWSER_TOOL.tabClose, { tabId: tab.handle });
+    expect(changed).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("since approval");
+    expect(h.ops.slice(before)).toEqual([]);
+    expect(h.tabs.liveTab(tab.handle)).toBeDefined();
   });
 });

@@ -1,22 +1,5 @@
-/**
- * MCP servers the git marketplace installs (design §5.2, §8.1).
- *
- * A server is an entry in the MCP config (`mcp-manager`), plus, for a
- * package-local command, the package's `server/` files under
- * `~/.ave/mcp/<name>/` (`$PLUGIN_DIR`, replaced on update), plus its own
- * `~/.ave/mcp-data/<name>/` (`$DATA_DIR`, kept across updates and removed
- * on uninstall only when the user says so).
- *
- * `~/.ave/packages/mcp-installs.json` records which servers this installer
- * owns and where each came from: the MCP config has no room for provenance,
- * and a server the user configured by hand is never touched here. A record
- * file that cannot be read stops the installer rather than reading as empty,
- * which would make every installed server look hand-configured.
- *
- * Every change runs one at a time. A config swap that fails puts the
- * previous config back; the files are swapped by the artifact store, which
- * restores the previous directory when the swap's commit throws.
- */
+/** Owns recorded servers only; unreadable provenance stops changes.
+ * Config and file swaps roll back on failure; updates retain the separate data directory. */
 import AdmZip from "adm-zip";
 import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -53,14 +36,12 @@ interface McpOrigin {
 
 interface McpRecord {
   name: string;
-  /** Null for a server installed from a pasted server.json whose version is not tracked. */
   version: string | null;
   /** The spec before token substitution: what the user approved, and what a failed update restores. */
   runtime: McpRuntimeSpec;
   hasFiles: boolean;
-  /** Null for a server bound to no source (design §8.1). */
   origin: McpOrigin | null;
-  /** The consent fingerprint accepted with this install (§18.7.3); absent on a record from before slice F. */
+  /** Accepted consent fingerprint; older records may omit it. */
   consent?: ConsentFingerprint;
 }
 
@@ -129,17 +110,15 @@ async function readRecords(path: string): Promise<McpRecord[]> {
   return parseRecords(text, path);
 }
 
-/** Origins of installed MCP servers, for snapshot retention (design §2.3) and revocations (§10.4). */
 export function mcpInstallOrigins(recordsPath: string): OriginReader {
   return async () => (await readRecords(recordsPath)).flatMap((record) => (record.origin ? [{ kind: "mcp" as const, name: record.name, sourceId: record.origin.sourceId, commit: record.origin.commit }] : []));
 }
 
 export interface McpInstallerDeps {
-  /** `~/.ave/packages/mcp-installs.json`. */
   recordsPath: string;
-  /** `~/.ave/mcp-data`: each server's `$DATA_DIR` is `<dataRoot>/<name>`. */
+  /** Server data lives under <dataRoot>/<name> and survives updates. */
   dataRoot: string;
-  /** The MCP artifact store over `~/.ave/mcp`: safe extraction and a directory swap that restores on failure. */
+  /** Extraction and directory swaps restore the previous artifact on failure. */
   files: {
     installDirFor(name: string): string;
     extractZipWithCommit<T>(name: string, zipBuffer: Buffer, commit: (installDir: string, files: string[]) => Promise<T>): Promise<{ result: T }>;
@@ -152,7 +131,6 @@ export interface McpInstallerDeps {
     /** The governance decision `addConfig` applies, asked before anything is written. */
     validateConfig(config: McpServerConfig): ValidationResult;
   };
-  /** `$NODE`. */
   nodePath: string;
   now?: () => Date;
 }
@@ -198,11 +176,7 @@ export class McpInstaller implements McpInstallerPort {
     });
   }
 
-  /**
-   * The consent baseline of an installed server (§18.7.3): the stored
-   * fingerprint, or one computed from its recorded runtime for a record
-   * from before slice F. Null when this installer does not own `name`.
-   */
+  /** Uses stored consent or reconstructs it from the recorded runtime; null for unowned servers. */
   async baseline(name: string): Promise<ConsentFingerprint | null> {
     const record = (await readRecords(this.deps.recordsPath)).find((item) => item.name === name);
     if (!record) return null;
@@ -243,8 +217,6 @@ export class McpInstaller implements McpInstallerPort {
     }
   }
 
-  /** Register `record`, swapping its files first when it has any, and write the record file last. */
-  /** Returns the first connection's failure, when there was one. */
   private async apply(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<string | null> {
     this.admit(record.name, record.runtime);
     const dataDir = this.dataDir(record.name);
@@ -253,7 +225,7 @@ export class McpInstaller implements McpInstallerPort {
     try {
       return await this.register(records, previous, record, zipBuffer);
     } catch (error) {
-      // A failed first install leaves no data directory behind; an existing one is the server's data.
+      // Remove data only after a failed first install; pre-existing data belongs to the server.
       if (createdDataDir) await rm(dataDir, { recursive: true, force: true });
       throw error;
     }
@@ -275,7 +247,7 @@ export class McpInstaller implements McpInstallerPort {
     if (zipBuffer) {
       const executables = executableEntries(zipBuffer);
       const { result } = await this.deps.files.extractZipWithCommit(record.name, zipBuffer, async (installDir, files) => {
-        // The mode bits come from the zip, but only for a file extraction wrote as named, inside the install directory.
+        // Apply archive mode bits only to the named extracted file inside the install directory.
         const extracted = new Set(files);
         for (const entry of executables) {
           const target = resolve(installDir, entry);
@@ -289,7 +261,6 @@ export class McpInstaller implements McpInstallerPort {
       return result;
     }
     const connectionWarning = await register();
-    // The new version runs no package files; the previous version's go.
     if (previous?.hasFiles) await rm(this.deps.files.installDirFor(record.name), { recursive: true, force: true });
     return connectionWarning;
   }
@@ -320,7 +291,7 @@ export class McpInstaller implements McpInstallerPort {
         version: plan.version,
         runtime: resolved.runtime,
         hasFiles: resolved.packageFiles !== null,
-        // The baseline the next update is compared with: the command the user accepted (§18.7.3).
+        // Future updates compare against the command the user accepted.
         consent: mcpConsent(resolved.runtime),
         origin: {
           sourceId: plan.sourceId,

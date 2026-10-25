@@ -47,8 +47,7 @@ export function registerDevHandlers(deps: IpcDeps): void {
     }
     const llm = deps.settingsService.get("llm");
     const provider = llm.provider;
-    // The same resolution the engine budgets against. Reading the catalog
-    // alone made this panel report a threshold no compaction ever used.
+    // Resolve thresholds through the engine's budget path so the panel reports the value compaction actually uses.
     const route = resolveContextWindowForRoute(
       llm,
       deps.settingsService.get("marketplace").installedProviderPresets,

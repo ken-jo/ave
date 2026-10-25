@@ -1,10 +1,4 @@
-/**
- * Narrow host-renderer bridge for local-owner Tailnet sharing controls.
- *
- * This is intentionally a leaf: plugin frames and public/external surfaces do
- * not receive it. Mutating calls mint their own live keyboard intent in preload
- * so a renderer cannot replay or fabricate a permission decision.
- */
+/** Keep sharing controls host-only and mint mutation intent locally to prevent replay. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -42,7 +36,6 @@ async function invokeMutation(channel: string, payload: unknown): Promise<Tailne
   }
 }
 
-/** Build the private `window.aveApi.tailnetSharing` namespace. */
 export function buildTailnetSharingApiSurface(): TailnetSharingOwnerApi {
   return Object.freeze({
     async snapshot(): Promise<TailnetSharingSnapshotResult> {

@@ -1,9 +1,4 @@
-/**
- * Both halves of the sandboxed Windows child's channel, in one process over
- * real loopback sockets: the child's listen-announce-accept and the host's
- * read-connect-authenticate. Whether srt-win admits the connection between
- * the two accounts is measured on a provisioned Windows host, not here.
- */
+/** Exercise both handshake ends over real sockets; cross-account sandbox admission requires a provisioned Windows host. */
 import { describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -59,11 +54,7 @@ function refused(port: number): Promise<string> {
   });
 }
 
-/**
- * The handshake's proofs, derived here from the protocol's definition (the
- * module header of `child-loopback-link.ts`) rather than imported, so a change
- * to either side's formula fails these tests.
- */
+/** Derive handshake proofs independently from the protocol so formula drift fails tests. */
 function proof(
   nonce: string,
   side: "host" | "child",
@@ -77,7 +68,7 @@ function proof(
     .digest("hex");
 }
 
-/** Whether this host routes a second loopback address (Linux and Windows do; macOS has only 127.0.0.1). */
+/** Only Linux and Windows normally route a second loopback address. */
 async function canBind(address: string): Promise<boolean> {
   const probe = createServer();
   return new Promise((resolve) => {
@@ -88,7 +79,6 @@ async function canBind(address: string): Promise<boolean> {
 const SECOND_LOOPBACK = "127.0.0.2";
 const hasSecondLoopback = await canBind(SECOND_LOOPBACK);
 
-/** Dial `port` on 127.0.0.1 from `localAddress`. */
 function dialFrom(localAddress: string, port: number): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const socket = connect({ host: "127.0.0.1", port, localAddress }, () => resolve(socket));
@@ -96,7 +86,6 @@ function dialFrom(localAddress: string, port: number): Promise<Socket> {
   });
 }
 
-/** Dial the child and present the host's proof for this very connection. */
 async function dialAsHost(port: number, nonce: string, after = ""): Promise<Socket> {
   const socket = await dial(port);
   socket.on("error", () => undefined);
@@ -104,7 +93,7 @@ async function dialAsHost(port: number, nonce: string, after = ""): Promise<Sock
   return socket;
 }
 
-/** A listener that does not hold the nonce: records what it is sent, answers `reply`. */
+/** A nonce-free listener records the proof it receives before answering. */
 async function rogueListener(reply: (received: string, socket: Socket) => void): Promise<{ server: Server; port: number; received: () => string }> {
   let received = "";
   const server = createServer((socket) => {
@@ -141,7 +130,6 @@ describe("the child's launch arguments", () => {
 
   it("reads a launch without either of its arguments as the stdio child, whatever else it carries", () => {
     expect(parseChildLaunchArgs([])).toEqual({ transport: "stdio" });
-    // The plugin validator launches the stdio child with the entry path after it.
     expect(parseChildLaunchArgs(["C:\\plugins\\p\\plugin.mjs"])).toEqual({ transport: "stdio" });
   });
 
@@ -228,8 +216,7 @@ describe("the child accepts exactly one authenticated host", () => {
     child.destroy();
   });
 
-  // A 127.0.0.1 listener takes connections from every 127/8 address, so a
-  // peer on 127.0.0.2 can hold the very port number the host connected from.
+  // A listener on 127.0.0.1 accepts other 127/8 source addresses; port binding alone cannot identify the host.
   it.runIf(hasSecondLoopback)(
     "drops a peer on another loopback address presenting a proof for the host's port number — the earlier ports-only one, or one correct for its own address — and keeps listening",
     async () => {
@@ -237,10 +224,8 @@ describe("the child accepts exactly one authenticated host", () => {
       const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
       const { port, nonce } = await nextLine(lines);
       const presentations = [
-        // What the previous handshake checked: the ports alone, as a host on
-        // 127.0.0.1 with this port number would have sent it.
+        // A ports-only proof would accept this peer.
         (ownPort: number) => createHmac("sha256", Buffer.from(nonce, "hex")).update(`ave-loopback host ${ownPort} ${port}`).digest("hex"),
-        // Correct for the peer's own endpoints; only the address check stops it.
         (ownPort: number) => proof(nonce, "host", ownPort, port, SECOND_LOOPBACK, "127.0.0.1"),
       ];
       for (const present of presentations) {
@@ -265,7 +250,6 @@ describe("the child accepts exactly one authenticated host", () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 300 });
     const { port, nonce } = await nextLine(lines);
-    // Four silent peers hold the slots until their handshake time runs out.
     const squatters = await Promise.all(Array.from({ length: 4 }, () => dial(port)));
     for (const squatter of squatters) squatter.on("error", () => undefined);
     const stdout = new PassThrough();
@@ -325,11 +309,9 @@ describe("the child accepts exactly one authenticated host", () => {
   it("counts peers beyond the handshakes it runs at once as failed, and survives them reset mid-flight", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
-    // It may give up while the peers below are still being dialled.
     const failure = accepted.then(() => undefined, (error: Error) => error);
     const { port } = await nextLine(lines);
-    // Twelve at once, all silent: four take the handshake slots, the rest are
-    // dropped as they arrive, and the eighth failure ends the wait.
+    // Silent peers fill bounded handshake slots; cumulative failures must end the wait.
     const peers = await Promise.all(Array.from({ length: 12 }, () => dial(port).catch(() => undefined)));
     for (const peer of peers) {
       peer?.on("error", () => undefined);
@@ -354,7 +336,6 @@ describe("the host connects to the child it spawned", () => {
     const accepted = acceptHostOverLoopback({
       announce: (line) => {
         stdout.write("\r\n");
-        // Split mid-line, as a pipe may deliver it.
         stdout.write(line.slice(0, 10));
         stdout.write(line.slice(10));
       },
@@ -367,7 +348,6 @@ describe("the host connects to the child it spawned", () => {
     child.resume();
     host.write("hello");
     expect(await received).toBe("hello");
-    // What the child sends after its proof reaches the host's first reader.
     child.write("from the child");
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(await readAll(host, "from the child".length)).toBe("from the child");
@@ -470,8 +450,7 @@ describe("the host connects to the child it spawned", () => {
   });
 
   it("binds each proof to its connection: a listener that relays the host's proof to the real child is refused by the child, and the host after it still gets in", async () => {
-    // Scenario: the child announced port P with nonce N, but the host's
-    // connection reached a rogue that forwards everything to the child.
+    // A rogue relay forwards the host connection to the child.
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
     const { port: childPort, nonce } = await nextLine(lines);
@@ -512,15 +491,10 @@ describe("the stdio relay's launch argument", () => {
   });
 });
 
-/** A program the relay starts: Node, from this binary, running `source`. */
 function nodeProgram(source: string, args: readonly string[] = []): { command: string; args: string[] } {
   return { command: process.execPath, args: ["-e", source, ...args] };
 }
 
-/**
- * Play the host by hand against an in-process relay: read the announce, connect,
- * present the host's proof, send `requestLine`, and hand back the socket.
- */
 async function hostBy(lines: string[], requestLine: string): Promise<Socket> {
   const { port, nonce } = await nextLine(lines);
   return dialAsHost(port, nonce, requestLine);
@@ -528,9 +502,7 @@ async function hostBy(lines: string[], requestLine: string): Promise<Socket> {
 
 describe("the stdio relay", () => {
   it("runs the real child entry as a relay: the program gets the request's stdin, arguments and environment; the host gets its stdout and exit code", async () => {
-    // The production entry in relay mode, a real process from this binary — as
-    // the Windows sandboxed spawn launches it, minus srt-win. The program's
-    // arguments and environment carry what `cmd.exe` could not be given.
+    // Exercise the production relay entry without confinement so launch arguments and environment stay observable.
     const relay = spawn(process.execPath, [pluginChildEntryPath(), CHILD_RELAY_TRANSPORT_ARG], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", RELAY_OWN: "the relay's" },
       stdio: ["pipe", "pipe", "pipe"],
@@ -609,8 +581,7 @@ describe("the stdio relay", () => {
         announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000,
         relayEnv: { ...process.env, ELECTRON_RUN_AS_NODE: "1", Relay_Case: "inherited" }, diagnostics: new PassThrough(),
       });
-      // The program is this binary: without ELECTRON_RUN_AS_NODE an Electron
-      // binary would not run `-e`, so the probe writes only under Node itself.
+      // This probe needs a Node executable because it does not set ELECTRON_RUN_AS_NODE.
       const program = nodeProgram(
         `require("node:fs").writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.entries(process.env).filter(([k]) => k.toLowerCase() === "relay_case")))`,
       );

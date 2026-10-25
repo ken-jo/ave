@@ -10,7 +10,6 @@ import { createLogger } from "../../lib/logger.js";
 const log = createLogger("alert-predecessor");
 type Marketplace = Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstallInstalled" | "asOneOperation">;
 
-/** Both the displayed action and the click resolve against main-owned state. */
 export class AlertPredecessorAccess {
   constructor(private readonly deps: IpcDeps, private readonly marketplace: () => Promise<Marketplace>) {}
 
@@ -24,8 +23,7 @@ export class AlertPredecessorAccess {
     ]);
     const predecessor = installed.find((entry) => entry.name === pluginId);
     const successor = installed.find((entry) => entry.name === row.pluginId);
-    // The installed-only catalog lists each installed package once, under the id its view carries (a
-    // credential-shaped stored id goes out as a handle, §18.8), so it is matched by name, not by the stored id.
+    // Catalog ids may be redacted handles; match installed packages by name rather than stored source id.
     const catalogEntry = predecessor && catalog.entries.find((entry) => entry.key.kind === "plugin" && entry.key.name === pluginId);
     const grant = retirement?.successors.plugins.find((entry) => entry.pluginId === row.pluginId);
     const authorized = !!predecessor && !!successor && !!retirement && !!grant
@@ -59,18 +57,14 @@ export class AlertPredecessorAccess {
       const market = await this.marketplace();
       const predecessorId = row.blockedByPredecessor;
       if (!predecessorId) return { ok: false, error: "predecessor-not-removable" };
-      // Lock order (§18.6): the marketplace operation, then both packages' locks, then the plugin locks.
-      // Every service call below is part of this one operation, so none waits for a policy change while
-      // these plugin locks are held; and the uninstall below runs under the lease of its package's lock,
-      // so it never waits for an install that holds that package and waits for one of these plugin locks.
+      // Acquire marketplace operation, package locks, then plugin locks; retaining uninstall uses the existing package lease.
       const packages = [row.pluginId, predecessorId].map((name) => ({ kind: "plugin" as const, name }));
       return await market.asOneOperation((lease) => withResolvedPluginInstallLocks(() => [row.pluginId, predecessorId].flatMap((id) => {
         const canonical = this.deps.pluginRuntime.resolvePluginId(id);
         const installed = this.deps.pluginRuntime.resolvePluginInstallIdIfKnown(id);
         return [id, canonical, ...(installed ? [installed] : [])];
       }), async (): Promise<RemoveAlertPredecessorResult> => {
-        // Installation and removal share these locks: read authority only after
-        // admission and hold both bindings until retaining uninstall finishes.
+        // Re-read authority after lock admission and retain both bindings until uninstall completes.
         const current = (await this.deps.alertsService!.listKinds()).find((entry) => entry.kindKey === kindKey);
         if (!current || current.pluginId !== row.pluginId || current.blockedByPredecessor !== predecessorId
           || current.declaration.inherits?.[0]?.pluginId !== predecessorId) {
@@ -79,7 +73,7 @@ export class AlertPredecessorAccess {
         const resolved = await this.resolve(current, market);
         if (resolved?.state.locked) return { ok: false, error: "predecessor-policy-locked" };
         if (!resolved?.state.removable || !resolved.predecessor) return { ok: false, error: "predecessor-not-removable" };
-        // The registry's record carries the stored identity: removed by it, never resolved as a view id (§18.8).
+        // Remove by the registry's stored identity, never by a catalog view id.
         const value = await market.uninstallInstalled({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
           { retain: { reason: "superseded" }, lease });
         return { ok: true, value };

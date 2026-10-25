@@ -69,9 +69,8 @@ function readOwnedDiscovery(infoFile, ready, host) {
 }
 
 async function health(discovery, authenticated = true) {
-  // The fresh profile's per-boot credential authenticates only its owned
-  // loopback child. The owned agent ignores inherited proxies; request does
-  // not follow redirects. No arbitrary file body or file-sourced host is sent.
+  // Authenticate only the owned loopback child with its fresh profile credential.
+  // Ignore inherited proxies and refuse redirects or file-sourced request targets and bodies.
   const agent = new Agent({ keepAlive: false, proxyEnv: {} });
   try {
     return await new Promise((done, reject) => {

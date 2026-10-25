@@ -8,16 +8,13 @@ import type { AveApi } from "../../types.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { sessionUuid } from "../../../../__tests__/support/session-uuid.js";
 
-/**
- * A test double for the side-chat preload surface. Exposes an `emit` so the test
- * can push arbitrary stream frames (with arbitrary streamIds) to the subscriber,
- * plus spies for the invoke channels.
- */
+/** A test double for the side-chat preload surface. Exposes an `emit` so the test can push arbitrary stream frames (with
+ * arbitrary streamIds) to the subscriber, plus spies for the invoke channels. */
 function makeApi() {
   const handlers = new Set<(e: ChatStreamEvent) => void>();
   const abort = vi.fn<NonNullable<AveApi["sideChat"]>["abort"]>(async () => ({ ok: true }));
-  // Typed as the real invoke is — either shape — so a test can hand back the
-  // host's refusal without casting past the contract.
+  // Typed as the real invoke is — either shape — so a test can hand back the host's refusal without casting past the
+  // contract.
   const send = vi.fn(
     async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string, _surface?: unknown, _sessionId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
       ok: true,
@@ -108,8 +105,8 @@ describe("useSideChat session identity", () => {
     }
     await waitFor(() => expect(replies).toHaveLength(3));
     let hostSessionId = initialSessionId;
-    // The first transition holds the host lease while the other two requests
-    // are handled, so both receive refusal without changing the host session.
+    // The first transition holds the host lease while the other two requests are handled, so both receive refusal without
+    // changing the host session.
     for (const index of order) {
       await act(async () => {
         if (index === 0) {
@@ -1035,8 +1032,7 @@ describe("useSideChat stale-frame guard", () => {
     acceptTurn(1);
     // Turn A adopts streamId 1.
     emit({ type: "text_delta", text: "A", streamId: 1 });
-    // A late frame from a SUPERSEDED turn (streamId 2) must be dropped, not
-    // appended to the live transcript.
+    // A late frame from a SUPERSEDED turn (streamId 2) must be dropped, not appended to the live transcript.
     emit({ type: "text_delta", text: "STALE", streamId: 2 });
     emit({ type: "text_delta", text: "A", streamId: 1 });
 
@@ -1365,8 +1361,7 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
     acceptTurn(1);
     emit({ type: "text_delta", text: "hello", streamId: 1 });
 
-    // The end-of-turn drain raced a turn that had not finished: the host still
-    // has one in flight and refuses.
+    // The end-of-turn drain raced a turn that had not finished: the host still has one in flight and refuses.
     spies.send.mockResolvedValueOnce({ ok: false, error: "streaming-active" });
     await act(async () => {
       await result.current.send("drained row", { inputOrigin: "queue-auto" });
@@ -1402,9 +1397,8 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
     expect(result.current.isCurrentTurnEvent({ type: "text_delta", text: "Old tail", streamId: 1 })).toBe(false);
   });
 
-  // The abort is awaited AFTER the transcript and the composer have already
-  // committed the interrupt, so a transport failure that escaped would destroy
-  // the text the user typed.
+  // The abort is awaited AFTER the transcript and the composer have already committed the interrupt, so a transport failure
+  // that escaped would destroy the text the user typed.
   it("reports a failed abort instead of throwing", async () => {
     const { api, spies } = makeApi();
     spies.abort.mockRejectedValueOnce(new Error("render frame disposed"));

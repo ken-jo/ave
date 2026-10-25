@@ -1,13 +1,3 @@
-/**
- * buildManifestEventHints — manifest-driven event hint resolution.
- *
- * Tests:
- *  1. Old string form → neutral fallback hint {category:"system",priority:"low",title:eventType}
- *  2. New object form with hint → uses hint verbatim
- *  3. New object form without hint → neutral fallback
- *  4. Mixed old+new in same manifest → both resolved correctly
- *  5. Multiple plugins → hints from all are merged
- */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

@@ -1,9 +1,3 @@
-/**
- * Settings → Marketplace as the in-app store of the git marketplace
- * (design §15): browse every shown source's packages by kind, open a
- * package's sheet to review and install it, manage the sources, install
- * without a marketplace, and see when updates are checked (§18.9).
- */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -195,8 +189,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     void loadCatalog();
   }, [loadCatalog]);
 
-  // The events re-read the catalog with the current filters; a ref keeps a
-  // keystroke in the search box from re-subscribing and re-reading the sources.
+  // The events re-read the catalog with the current filters; a ref keeps a keystroke in the search box from re-subscribing
+  // and re-reading the sources.
   const loadCatalogRef = useRef(loadCatalog);
   useEffect(() => {
     loadCatalogRef.current = loadCatalog;
@@ -248,8 +242,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     return market.onDeepLink(take);
   }, [market]);
 
-  // The update pill asks for a review: an update installs only through it (design §15.6).
-  // An update already applied that needs the user is answered in the Updates card instead.
+  // The update pill asks for a review: an update installs only through it (design §15.6). An update already applied that
+  // needs the user is answered in the Updates card instead.
   useEffect(() => {
     const take = () => {
       const request = takeUpdateReview();
@@ -314,11 +308,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     );
   }, [api]);
 
-  /**
-   * Save an automatic-update switch (§18.9) through the settings channel. A
-   * source's or package's switch rewrites its whole map, read fresh, so a
-   * switch set back to the default is removed rather than kept.
-   */
+  /** Save an automatic-update switch (§18.9) through the settings channel. A source's or package's switch rewrites its whole
+   * map, read fresh, so a switch set back to the default is removed rather than kept. */
   const persistAutoUpdate = async (change: AutoUpdateSwitchChange): Promise<string | null> => {
     let patch: { autoUpdate?: boolean; autoUpdateSources?: Record<string, "on" | "off">; autoUpdatePackages?: Record<string, "on" | "off"> };
     if (change.scope === "global") {

@@ -1,6 +1,3 @@
-/**
- * UsageDashboard renderer tests — date range, session Top 5, projection, CSV export.
- */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
@@ -71,9 +68,7 @@ async function renderDashboard(api = usageDashboardApi(), onNavigate: (tab: any)
   return { ...result, api };
 }
 
-// Workspace stat cards + marketplace status were relocated onto the Usage
-// surface (from the former General tab). They render via WorkspaceStatsSection
-// inside UsageDashboard, keeping useWorkspaceStats as the data source.
+// Usage owns workspace statistics and marketplace status through the shared stats hook.
 function workspaceStatsApi(overrides: Record<string, unknown> = {}) {
   const { api } = makeMockAveApi({
     usage: MOCK_SUMMARY,
@@ -149,11 +144,7 @@ describe("UsageDashboard — workspace stats section", () => {
 describe("UsageDashboard", () => {
   it("builds preset ranges from the host's calendar day, not a fixed zone's", async () => {
     const { presetToDates } = await import("../../src/ui/renderer/components/UsageDashboard.js");
-    // 16:00Z is already the 4th in Seoul and still the 3rd in UTC, so a
-    // hardcoded date here would only assert that CI runs in one particular
-    // zone. Derive the expectation from the host's own calendar instead —
-    // this file runs under jsdom, where reassigning `TZ` mid-test does not
-    // take; the cross-zone proof lives in `shared/__tests__/local-date.test.ts`.
+    // Derive date expectations from the host calendar; runtime timezone reassignment does not affect this environment.
     const instant = new Date("2026-07-03T16:00:00Z");
     const pad = (n: number) => String(n).padStart(2, "0");
     const hostToday =

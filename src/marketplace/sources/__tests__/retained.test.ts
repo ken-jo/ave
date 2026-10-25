@@ -40,7 +40,6 @@ describe("snapshot retention (design §2.3)", () => {
     expect([...await retained("acme")].sort()).toEqual(["a".repeat(40), "c".repeat(40)]);
     expect([...await retained("ave")]).toEqual(["b".repeat(40)]);
     expect([...await retained("corp")]).toEqual([]);
-    // The revocation feed reads the same origins with the package each names.
     expect(await pluginRegistryOrigins(registryPath)()).toEqual([
       { kind: "plugin", name: "alpha", sourceId: "acme", commit: "a".repeat(40) },
       { kind: "plugin", name: "beta", sourceId: "ave", commit: "b".repeat(40) },

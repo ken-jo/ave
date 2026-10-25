@@ -79,9 +79,7 @@ export function useReasoningLevel({ enabled, onToggle }: ReasoningLevelOptions):
   })}`;
   const currentLabel = enabled ? budgetLabel : t("bottomActionRow.reasoningNone");
 
-  // The same names the settings tab shows, off the same ladder — the composer
-  // used to carry its own copies, and in Korean they had already drifted
-  // ("중간" here against "보통" there) for what is one setting.
+  // Share reasoning-level labels with settings so localized names cannot drift.
   const levelLabels = [t("bottomActionRow.reasoningNone"), ...(depths.length > 0 ? depths.map((d) => d.label) : [budgetLabel])];
 
   const apply = useCallback(

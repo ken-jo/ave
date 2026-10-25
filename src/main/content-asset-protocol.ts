@@ -1,25 +1,10 @@
-/**
- * `ave-content://<token>/<kind>/<name>/<path>` — the host asset scheme
- * installed content packages reach the renderer through (design §5.4): a
- * theme's preview image and the faces of an installed font. Nothing is served
- * by file path, and only files the installed-content service lists as applied
- * answer; everything else is 404.
- *
- * Web pages the app opens share the default session this scheme is handled
- * in, and a page can send a request with no Origin and no referrer (an
- * `<img referrerpolicy=no-referrer>`, a fetch from a sandboxed `srcdoc`
- * frame). So the host of every URL is a random token drawn at launch, which
- * only the app's renderer receives (in the installed-content view): a request
- * without it is 404, and a page cannot name, probe or read an installed file.
- * On top of that, the answer admits only the opaque origin of the app's
- * `file:` windows (`Access-Control-Allow-Origin: null`), and a request with an
- * http(s) origin or referrer is refused outright.
- */
+// Serve only applied installed assets behind a per-launch token; missing Origin and referrer do not authenticate a request. Allow the app’s opaque file
+// origin and reject HTTP origins or referrers.
 import { readFile } from "node:fs/promises";
 import { CONTENT_ASSET_SCHEME, CONTENT_ASSET_TOKEN } from "../shared/installed-content.js";
 import type { ServedContentFile } from "../marketplace/content/service.js";
 
-/** Registered with the other privileged schemes in one call before `app.ready` (see `early-boot-env.ts`). */
+// Registered with the other privileged schemes in one call before `app.ready` (see `early-boot-env.ts`).
 export const CONTENT_ASSET_CUSTOM_SCHEME: Electron.CustomScheme = Object.freeze({
   scheme: CONTENT_ASSET_SCHEME,
   privileges: Object.freeze({
@@ -38,7 +23,7 @@ export interface ContentAssetRequest {
   path: string;
 }
 
-/** The parts of a `ave-content:` URL, or null for anything malformed. */
+// The parts of a `ave-content:` URL, or null for anything malformed.
 export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | null {
   let url: URL;
   try {
@@ -62,7 +47,7 @@ export function parseContentAssetUrl(requestUrl: string): ContentAssetRequest | 
 
 type ContentAssetResolver = (kind: string, name: string, path: string) => ServedContentFile | null | Promise<ServedContentFile | null>;
 
-/** Who asked: the request's `Origin` header (null without one) and its referrer. */
+// Who asked: the request's `Origin` header (null without one) and its referrer.
 export interface ContentAssetRequester {
   origin: string | null;
   referrer: string;
@@ -70,7 +55,7 @@ export interface ContentAssetRequester {
 
 const WEB = /^https?:/iu;
 
-/** Answer a `ave-content:` request from the files `resolve` lists. */
+// Answer a `ave-content:` request from the files `resolve` lists.
 export async function respondToContentAsset(
   requestUrl: string,
   token: string,
@@ -100,7 +85,7 @@ export async function respondToContentAsset(
   });
 }
 
-/** Serve `ave-content:` on the default session, answering only URLs that carry `token`. */
+// Serve `ave-content:` on the default session, answering only URLs that carry `token`.
 export function installContentAssetProtocolHandler(
   protocolApi: Pick<Electron.Protocol, "handle">,
   token: string,

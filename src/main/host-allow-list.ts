@@ -1,50 +1,12 @@
-/**
- * Shared host-suffix allow-list helper.
- *
- * Two surfaces in the host enforce a "URL host belongs to this allow-list"
- * gate:
- *   - `openAuthWindow.cookieHosts` (`auth-window-service.ts`) — which cookies
- *     get returned to the plugin.
- *   - `openAuthPartitionViewer.partitionDomains` (`auth-partition-viewer-
- *     service.ts`) — which hosts the viewer may navigate to inside a plugin
- *     auth partition.
- *
- * Both must agree on the matching rules so a single drifted rule on one side
- * doesn't open a phishing window on the other. Dot-boundary suffix-match is
- * the SoT here (`webmail.example.com` allow-list lets `mail.webmail.example.com`
- * through but never `webmail.example.com.attacker.com`).
- *
- * Defensive choices:
- * - Single-label TLDs (`com`, `co.kr`) cannot appear in the allow-list — any
- *   site under such a registry suffix would silently match.
- * - IDN-punycode labels (`xn--*`) are rejected at load time. They encode
- *   Unicode and can be visually-similar homoglyphs of legitimate hosts
- *   (e.g. `xn--80ak6aa92e.com` reads as `аррӏе.com`); the operator-readable
- *   audit log would show the punycode form but the user sees the Unicode
- *   form in the window title. There is no per-plugin bypass — relaxing
- *   this requires a host-source change.
- * - The allow-list has a hard length cap so a runaway manifest entry can't
- *   turn into a wildcard.
- */
+// Auth surfaces share dot-boundary suffix matching so cookie and navigation allowlists cannot drift. Reject registry suffixes and punycode labels to
+// prevent broad grants and display-name spoofing; cap the list size.
 
 const MAX_HOSTS = 16;
 
-/**
- * Loopback literals `allowLoopback` admits verbatim. Traffic to these hosts
- * terminates on the user's own machine, so admitting them does not open the
- * cross-site blanket-match the single-label rule exists to prevent. Callers:
- * `openAuthWindow.cookieHosts` for OAuth loopback redirects
- * (`http://localhost:<port>` / `http://127.0.0.1:<port>`), where the IdP's own
- * SDK runs the local listener, and a plugin manifest's
- * `networkAccess.allowedDomains` declaring a local inference/proxy endpoint.
- * Exact literals only — `foo.localhost` carries a dot and goes through the
- * normal rules. The bracketed IPv6 spelling (`[::1]`, which is what
- * `new URL().hostname` returns) is not listed because {@link normalizeHost}
- * strips the brackets before every lookup here.
- */
+// Loopback exceptions match exact declared literals only, not subdomains; normalize IPv6 brackets before lookup.
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
-/** Block bare registry suffixes — see PSL note in the file header. */
+// Block bare registry suffixes — see PSL note in the file header.
 const FORBIDDEN_TOP_LEVELS = new Set([
   "com",
   "net",
@@ -59,15 +21,7 @@ const FORBIDDEN_TOP_LEVELS = new Set([
   "app",
 ]);
 
-/**
- * Trim, lowercase, drop a leading `.` (cookie-domain artifact), drop IPv6
- * brackets.
- *
- * The brackets are URL syntax, not part of the host: `new URL("http://[::1]/")`
- * reports `[::1]` as its hostname while an allow-list entry is written `::1`.
- * Normalizing both spellings to the bare address is what lets a declared `::1`
- * match the parsed URL at all — without it the two never compare equal.
- */
+// Normalize leading cookie-domain dots and IPv6 brackets so URL hostnames and manifest entries compare consistently.
 export function normalizeHost(raw: string): string {
   const trimmed = raw.trim().toLowerCase();
   const undotted = trimmed.startsWith(".") ? trimmed.slice(1) : trimmed;
@@ -76,33 +30,12 @@ export function normalizeHost(raw: string): string {
     : undotted;
 }
 
-/**
- * Is `host` one of the {@link LOOPBACK_HOSTS} literals — i.e. does the name
- * itself say "this machine"?
- *
- * Deliberately a literal-set membership test and not an address-range test: a
- * caller asking this question is deciding whether a DECLARATION names the
- * local machine, and an ordinary name that happens to resolve to 127.0.0.1
- * must not be able to answer yes (that is DNS rebinding, and the DNS-aware
- * layer in `network-guard.ts` is what judges resolved addresses).
- */
+// Recognize declared loopback literals, never names that happen to resolve locally; DNS rebinding belongs to the resolved-address guard.
 export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(normalizeHost(host));
 }
 
-/**
- * Normalize + validate a manifest-supplied allow-list. Throws on a list that
- * would be too broad to enforce meaningfully. The error is the audit-friendly
- * surface that surfaces in load-time logs for a malformed plugin manifest.
- *
- * `allowLoopback` is a per-surface opt-in: it admits the {@link LOOPBACK_HOSTS}
- * literals (which the single-label rule would otherwise reject) and relaxes
- * nothing else. Surfaces whose flows legitimately end on a local listener
- * (OAuth loopback redirects; a plugin manifest declaring a local inference
- * endpoint) declare it; every other consumer keeps the strict default.
- * Admitting the literal into a list is not itself reachability — whether the
- * request may go out is still the calling guard's decision.
- */
+// Loopback literal acceptance is per-surface opt-in and does not itself grant reachability; every other validation rule remains strict.
 export function normalizeAllowedHosts(
   raw: readonly string[],
   options: { readonly allowLoopback?: boolean } = {},
@@ -153,16 +86,7 @@ export function normalizeAllowedHosts(
   return out;
 }
 
-/**
- * Does `urlHost` (already lowercased via `new URL().hostname`) belong to one
- * of the allow-list hosts? Dot-boundary match — `webmail.example.com` allows
- * `mail.webmail.example.com` and `webmail.example.com` itself, but never
- * `webmail.example.com.attacker.com` or `notwebmail.example.com`.
- *
- * Allow-list MUST already be normalized via `normalizeAllowedHosts` (caller's
- * responsibility — we don't normalize here per call so the hot path stays
- * allocation-free).
- */
+// Require pre-normalized allowlists and dot-boundary suffix matching; the hot path stays allocation-free.
 export function urlHostMatchesAllowList(
   urlHost: string,
   normalizedAllowed: readonly string[],
@@ -176,10 +100,7 @@ export function urlHostMatchesAllowList(
   return false;
 }
 
-/**
- * Convenience wrapper — parse `url`, return whether its host is allowed.
- * Returns false for unparseable URLs, non-http(s) schemes, or empty hostnames.
- */
+// Convenience wrapper — parse `url`, return whether its host is allowed. Returns false for unparseable URLs, non-http(s) schemes, or empty hostnames.
 export function urlMatchesAllowList(
   url: string,
   normalizedAllowed: readonly string[],
