@@ -6,10 +6,10 @@ import { modelBoundCredentialKind } from "../shared/dlp.js";
 export const MEMORY_WRITE_MAX_TITLE_CHARS = 120;
 export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
 // Reject every reserved-marker variant the store parser accepts to prevent kind or project-scope spoofing.
-export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
+const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
 
 // Reject C0 and DEL in raw single-line titles to prevent heading/index injection and cross-field marker assembly.
-export function memoryWriteTitleHasControlChar(title: string): boolean {
+function memoryWriteTitleHasControlChar(title: string): boolean {
   for (const char of title) {
     const code = char.codePointAt(0);
     if (code !== undefined && (code < 0x20 || code === 0x7f)) return true;

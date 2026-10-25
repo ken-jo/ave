@@ -25,7 +25,7 @@ const MAX_SEND_FAILURE_RETRY_AFTER_MS = 3_600_000;
 const DEFAULT_MAX_TEXT_CHARS = 4_096;
 
 // The only coarse status values a bridge provider may render.
-export type PlatformBridgeOutboundStatus =
+type PlatformBridgeOutboundStatus =
   | "idle"
   | "running"
   | "awaiting-local-approval"
@@ -136,7 +136,7 @@ export function readPlatformBridgeDeliverySendFailure(
   };
 }
 
-export type PlatformBridgeDeliveryEnqueueResult =
+type PlatformBridgeDeliveryEnqueueResult =
   | "accepted"
   | "duplicate"
   | "conversation-mismatch"
@@ -144,7 +144,7 @@ export type PlatformBridgeDeliveryEnqueueResult =
   | "backpressure"
   | "invalid";
 
-export interface PlatformBridgeDeliveryChannelState {
+interface PlatformBridgeDeliveryChannelState {
   // Accepted projection cursor; -1 means no snapshot/event has been accepted.
   readonly lastAcceptedCursor: number;
   // Includes an in-flight provider send so the real memory bound is visible.

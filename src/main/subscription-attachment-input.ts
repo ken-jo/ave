@@ -148,7 +148,7 @@ function normalizedInlineDataUrl(
 }
 
 // Require bounded canonical base64 data URLs with matching media types so provider mapping cannot reinterpret input as a remote URL.
-export function normalizeInlineLocalDataUrl(
+function normalizeInlineLocalDataUrl(
   dataUrl: unknown,
   declaredMimeType?: unknown,
 ): Readonly<{ mimeType: string; data: string }> | null {
@@ -294,11 +294,6 @@ export function normalizeLocalUserContentParts(raw: unknown): UserContentPart[] 
   }
 
   return out.length > 0 ? out : undefined;
-}
-
-// Validate an internal attachment again at every process transport boundary.
-export function isSubscriptionPromptAttachment(value: unknown): value is SubscriptionPromptAttachment {
-  return normalizeSubscriptionPromptAttachment(value) !== null;
 }
 
 export function subscriptionAttachmentByteLength(attachment: SubscriptionPromptAttachment): number {

@@ -24,7 +24,7 @@ import type { AuditWriter } from "./audit-writer.js";
 import { emitToolStart } from "./display-mask.js";
 
 // Record per-invocation state while stage-local permission, category, and scope mutations remain coordinated at authorization boundaries.
-export interface InvocationContext {
+interface InvocationContext {
   // Permission changes across reviewer, memory, approval, and coordinated containment relaxation.
   permissionResult: PermissionCheckResult | undefined;
   source: ToolSource;
