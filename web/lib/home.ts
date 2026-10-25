@@ -119,8 +119,8 @@ const ko: HomeCopy = {
     cards: [
       {
         title: "명령 하나하나를 보고 승인",
-        body: "셸 명령은 위험도, 실행 위치, 격리 여부를 보여 주고 거절, 항상 허용, 한 번 허용 중에서 고르게 합니다.",
-        pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성(asrt), 명령마다 임시 HOME을 쓴다는 설명과 거절, 항상 허용, 한 번 허용 버튼" },
+        body: "셸 명령은 위험도, 실행 위치, 격리 여부를 보여 주고 거부▾(항상 거부) / 이번 세션 동안 허용▾(이 프로젝트에서 항상 허용 / 모든 곳에서 항상 허용) / 한 번만 허용 중에서 고르게 합니다. 기억하는 선택은 규칙 편집으로 저장할 규칙을 고칠 수 있습니다.",
+        pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성(asrt), 명령마다 임시 HOME을 쓴다는 설명과 거부, 이번 세션 동안 허용, 한 번만 허용 버튼" },
         w: 4,
         inset: true,
       },
@@ -272,8 +272,8 @@ const en: HomeCopy = {
     cards: [
       {
         title: "Approve each command",
-        body: "A shell command shows its risk, where it runs and whether it is isolated, then offers Reject, Always allow or Allow once.",
-        pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active (asrt), a temporary HOME for each command, and Reject, Always allow and Allow once" },
+        body: "A shell command shows its risk, where it runs and whether it is isolated, then offers Deny ▾ (Always deny) / Allow for session ▾ (Always allow in this project / Always allow everywhere) / Allow once. A remembered choice can have its rule changed with Edit rule.",
+        pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active (asrt), a temporary HOME for each command, and Deny, Allow for session and Allow once" },
         w: 4,
         inset: true,
       },

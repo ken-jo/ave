@@ -1423,7 +1423,7 @@ export type AveUserApprovalApi = {
     trustOrigin?: string;
     /** Propagate cache key for record/lookup key symmetry. */
     approvalCacheKey?: string;
-  }) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: "wildcard-allow-sandboxed-only" }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
   listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{

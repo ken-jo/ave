@@ -3,7 +3,8 @@ import {
   allowRefusalKey,
   defaultAllowChoice,
   exactDecisionModel,
-  isWildcardShellRuleText,
+  isWildcardRuleText,
+  wildcardWarningKey,
   networkAnswer,
   networkDecisionModel,
   oneShotDecisionModel,
@@ -63,7 +64,6 @@ describe("approval decision models", () => {
     const model = networkDecisionModel(egress(), "conversation-1");
     expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-project", "allow-everywhere"]);
     expect(model.options["allow-session"].editing).toBe("inline");
-    expect(model.warnsOnWildcardAllow).toBe(false);
     const noConversation = networkDecisionModel(egress(), undefined);
     expect(noConversation.options["allow-session"].offered).toBe(true);
     expect(noConversation.options["allow-session"].editing).toBeNull();
@@ -79,6 +79,12 @@ describe("approval decision models", () => {
     // Host rules are shell-origin: a terminal tab's Always deny names that, not an address problem.
     const tabNoRule = networkDecisionModel(egress({ terminalTabId: "terminal:0a1b2c3d-1", scopes: ["once", "tab", "always"], projectCwd: undefined, rule: null }), undefined);
     expect(tabNoRule.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.networkRuleTerminal" });
+  });
+
+  it("a network card warns on an edited wildcard host allow, with the host-rule wording", () => {
+    const model = networkDecisionModel(egress(), "conversation-1");
+    expect(model.warnsOnWildcardAllow).toBe(true);
+    expect(wildcardWarningKey(model)).toBe("toolApprovalDialog.wildcardHostAllowSandboxedOnly");
   });
 
   it("a local destination refuses the lasting allows with its own reason", () => {
@@ -158,8 +164,11 @@ describe("approval decision answers", () => {
     ["Bash(*)", true],
     ["Bash(git status)", false],
     ["Bash(git status*)", false],
-    ["Network(*.example.com)", false],
-  ])("treats %s as a wildcard shell rule: %s", (text, wildcard) => {
-    expect(isWildcardShellRuleText(text)).toBe(wildcard);
+    ["Network(*.example.com)", true],
+    ["network( *.example.com:443)", true],
+    ["Network(api.example.com)", false],
+    ["Network(api.example.com:443)", false],
+  ])("treats %s as a wildcard rule the host warns about: %s", (text, wildcard) => {
+    expect(isWildcardRuleText(text)).toBe(wildcard);
   });
 });
