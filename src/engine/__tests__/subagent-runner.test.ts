@@ -3325,3 +3325,120 @@ describe("listWorkBoardRunSessions", () => {
     });
   });
 });
+
+describe("SubAgentRunner activity ordering", () => {
+  it.each(["spawn", "resume"] as const)("preserves activity, lifecycle and terminal payload order for %s", async (entry) => {
+    const root = mkdtempSync(join(tmpdir(), "ave-subagent-activity-"));
+    vi.stubEnv("AVE_HOME", root);
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_item", description: "Read an item", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, execute: async () => ({ output: "value", isError: false }),
+    }));
+    const memory = new MemoryManager({ aveDir: join(root, "subagent") });
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(registry),
+      toolRegistry: registry,
+      subAgentMemoryManager: memory,
+    });
+    const timeline: string[] = [];
+    const activities: Array<{ toolCallCount: number; turnCount: number }> = [];
+    let terminalResult: SubAgentSpawnResult | undefined;
+    let terminalTaskState: string | undefined;
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    vi.spyOn(ConversationLoop.prototype, "fireLifecycleEvent").mockImplementation(async (name) => {
+      timeline.push(name);
+    });
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn").mockResolvedValue({
+      text: "paused", toolCalls: [], route: "default", stopReason: "round-cap",
+    });
+    const input = {
+      title: "activity child", instructions: "work", toolScope: PARENT_ALL_TOOL_SCOPE,
+      originSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
+    };
+    try {
+      const resumeId = entry === "resume" ? (await runner.spawn(input)).childSessionId : undefined;
+      timeline.length = 0;
+      const saveMetadata = memory.saveSessionMetadata.bind(memory);
+      vi.spyOn(memory, "saveSessionMetadata").mockImplementation(async (id, metadata) => {
+        timeline.push(`metadata:${metadata.subAgentTaskState}`);
+        await saveMetadata(id, metadata);
+      });
+      runTurn.mockImplementation(async (_prompt, callbacks, signal, options) => {
+        timeline.push("run");
+        expect(signal?.aborted).toBe(false);
+        expect(options).toMatchObject({ spawnDepth: 1, inputOrigin: "llm-tool-arg" });
+        expect(options?.sessionIdOverride).toMatch(/^sub-/);
+        expect(Object.hasOwn(options!, "subagentStop")).toBe(entry === "spawn");
+        const meta = { groupId: "group", toolUseId: "tool", displayOrder: 0 };
+        callbacks?.onLlmStatus?.({ phase: "retry", attempt: 2, maxAttempts: 5 });
+        callbacks?.onReasoningDelta?.("thinking");
+        callbacks?.onToolStart?.("read_item", { path: "item" }, meta);
+        callbacks?.onPermissionReview?.({
+          status: "reviewing", toolName: "read_item", groupId: "group", toolUseId: "tool", displayOrder: 0,
+        });
+        callbacks?.onToolEnd?.("read_item", "value", false, meta, undefined, 12);
+        callbacks?.onAssistantRound?.({
+          roundIndex: 0, text: "answer", thought: "thought", stopReason: "end_turn",
+          hasToolCalls: false, messageId: "message",
+        });
+        callbacks?.onError?.("notice");
+        return {
+          text: "answer", route: "default", stopReason: "end_turn",
+          // The final count comes from the turn result, even if one callback was absent.
+          toolCalls: Array.from({ length: 2 }, () => ({ name: "read_item", input: {}, result: "value" })),
+        };
+      });
+      const callbacks = {
+        onLinked: () => { timeline.push("linked"); },
+        onReady: () => { timeline.push("ready"); },
+        onActivity: (update: { entries: unknown[]; toolCallCount: number }) => {
+          timeline.push(`activity:${update.toolCallCount}`);
+          const run = runner.listRunStatuses(input.originSessionId).find((item) => item.status === "running")!;
+          expect(run.entries).toBe(update.entries);
+          activities.push({ toolCallCount: run.toolCallCount, turnCount: run.turnCount });
+        },
+        onError: (message: string) => { timeline.push(`error:${message}`); },
+        onTerminal: (result: SubAgentSpawnResult) => {
+          timeline.push("terminal");
+          terminalResult = structuredClone(result);
+          terminalTaskState = memory.loadSessionMetadata(result.childSessionId)?.subAgentTaskState;
+        },
+      };
+      const result = entry === "spawn"
+        ? await runner.spawn(input, callbacks)
+        : await runner.resume(resumeId!, "continue", input.title, callbacks, input.originSessionId);
+      expect(result.ok).toBe(true);
+      expect(terminalResult).toEqual({
+        summary: "answer", toolCallCount: 2, turnCount: 1,
+        childSessionId: result.childSessionId, entries: result.entries, ok: true, stopReason: "end_turn",
+      });
+      expect(terminalTaskState).toBe(A2ATaskState.COMPLETED);
+      expect(activities).toEqual([
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 0, turnCount: 0 },
+        { toolCallCount: 1, turnCount: 0 },
+        { toolCallCount: 1, turnCount: 1 },
+      ]);
+      expect(timeline).toEqual([
+        "linked",
+        ...(entry === "spawn" ? ["metadata:TASK_STATE_SUBMITTED", "SubagentStart"] : ["metadata:TASK_STATE_WORKING", "ready"]),
+        "run", "activity:0", "activity:0", "activity:0", "activity:0", "activity:1", "activity:1", "error:notice",
+        ...(entry === "spawn" ? ["SubagentStop"] : []),
+        "metadata:TASK_STATE_COMPLETED", "terminal",
+      ]);
+      const terminalTimeline = [...timeline];
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(timeline).toEqual(terminalTimeline);
+    } finally {
+      memory.closeSearchIndex();
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      await cleanupTmpDir(root);
+    }
+  });
+});
