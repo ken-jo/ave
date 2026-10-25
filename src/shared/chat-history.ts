@@ -8,7 +8,7 @@ import {
 } from "./tool-name-aliases.js";
 import type { ToolCategory, ToolSource } from "./permission-review-status.js";
 
-export type SerializedHistoryToolCall = {
+type SerializedHistoryToolCall = {
   id: string;
   name: string;
   input?: Record<string, unknown>;
@@ -19,14 +19,14 @@ export type SerializedHistoryToolCall = {
 };
 
 /** Persist turn-final aggregates so renderer reload can reconstruct summaries without rerunning the loop. */
-export type SerializedTurnSummary = NonNullable<MessageMeta["turnSummary"]>;
+type SerializedTurnSummary = NonNullable<MessageMeta["turnSummary"]>;
 
 /** Checkpoint metrics carried on the compactBoundary user message. */
-export type SerializedCheckpointMeta = NonNullable<MessageMeta["checkpointMeta"]>;
+type SerializedCheckpointMeta = NonNullable<MessageMeta["checkpointMeta"]>;
 /** Sub-agent report provenance carried on an injected child-delivery message. */
 type SerializedSubAgentReportMeta = NonNullable<MessageMeta["subAgentReport"]>;
-export type SerializedImportedTriggerMeta = NonNullable<MessageMeta["importedTrigger"]>;
-export type SerializedToolDisplayMeta = {
+type SerializedImportedTriggerMeta = NonNullable<MessageMeta["importedTrigger"]>;
+type SerializedToolDisplayMeta = {
   durationMs?: number;
   /** Replay cancellation distinctly from failure so stopped calls keep their halt badge. */
   cancelled?: boolean;

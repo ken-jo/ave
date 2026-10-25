@@ -13,7 +13,7 @@ import type { DeferredApprovalSource, DeferredGrantScope, RiskLevel } from "../s
 
 
 /** Keep reviewer verdicts structurally compatible with RiskVerdict. */
-export interface RiskVerdict {
+interface RiskVerdict {
   level: RiskLevel;
   reason: string;
 }
@@ -42,10 +42,10 @@ export interface HookResult {
 }
 
 /** Snapshot routine scope as an untyped record so audit shape survives runtime schema changes. */
-export type RoutineScopeSnapshot = Record<string, unknown>;
+type RoutineScopeSnapshot = Record<string, unknown>;
 
 /** prevHash links exact serialized rows; entryHash authenticates the current tail and is optional only for older rows. */
-export interface AuditCommon {
+interface AuditCommon {
   ts: string;
   auditId: string;
   toolUseId?: string;
@@ -92,7 +92,7 @@ export interface ToolExecutionAuditMetadata {
 }
 
 /** Directory fields appear only for invocations declaring an explicit path surface. */
-export interface AuditAllow extends AuditCommon {
+interface AuditAllow extends AuditCommon {
   decision: "allow";
   tool: string;
   source: ToolSource;
@@ -111,7 +111,7 @@ export interface AuditAllow extends AuditCommon {
 }
 
 /** Ask records the prompt; the eventual gesture creates a separate allow or deny row. */
-export interface AuditAsk extends AuditCommon {
+interface AuditAsk extends AuditCommon {
   decision: "ask";
   tool: string;
   source: ToolSource;
@@ -123,7 +123,7 @@ export interface AuditAsk extends AuditCommon {
 }
 
 /** Short-circuit denials currently record one reason in the plural schema. */
-export interface AuditDeny extends AuditCommon {
+interface AuditDeny extends AuditCommon {
   decision: "deny";
   tool: string;
   source: ToolSource;
@@ -133,7 +133,7 @@ export interface AuditDeny extends AuditCommon {
 }
 
 /** queueId links the deferred reviewer decision to its persisted queue entry. */
-export interface AuditDeferred extends AuditCommon {
+interface AuditDeferred extends AuditCommon {
   decision: "deferred";
   tool: string;
   source: ToolSource;
@@ -143,7 +143,7 @@ export interface AuditDeferred extends AuditCommon {
 }
 
 /** Keep user resolution append-only on the authenticated chain while queue status remains mutable. */
-export interface AuditDeferredResolve extends AuditCommon {
+interface AuditDeferredResolve extends AuditCommon {
   decision: "deferred_resolve";
   tool: string;
   source: ToolSource;
@@ -159,7 +159,7 @@ export interface AuditDeferredResolve extends AuditCommon {
 }
 
 /** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */
-export interface AuditModeChange extends AuditCommon {
+interface AuditModeChange extends AuditCommon {
   decision: "mode_change";
   fromMode: ExecutionMode;
   toMode: ExecutionMode;
@@ -169,7 +169,7 @@ export interface AuditModeChange extends AuditCommon {
 }
 
 /** Record and disable read-category plugins that attempt writes through the filesystem proxy. */
-export interface AuditManifestViolation extends AuditCommon {
+interface AuditManifestViolation extends AuditCommon {
   decision: "manifest_violation";
   pluginId: string;
   toolName: string;

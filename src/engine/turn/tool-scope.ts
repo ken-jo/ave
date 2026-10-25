@@ -111,7 +111,7 @@ export function resolveToolScope(
     };
   }
 
-export function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
+function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
 ): Set<string> {
     const includeMcp = deps.headless !== true;
     const names = new Set<string>();

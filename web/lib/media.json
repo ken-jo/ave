@@ -1,0 +1,152 @@
+{
+  "app-conversation": {
+    "w": 2400,
+    "h": 1500,
+    "x": 2
+  },
+  "app-subagents": {
+    "w": 2400,
+    "h": 1500,
+    "x": 2
+  },
+  "approval-edit": {
+    "w": 1624,
+    "h": 610,
+    "x": 2
+  },
+  "approval-shell": {
+    "w": 1624,
+    "h": 710,
+    "x": 2
+  },
+  "question-card": {
+    "w": 1168,
+    "h": 538,
+    "x": 2
+  },
+  "model-chooser": {
+    "w": 552,
+    "h": 454,
+    "x": 2
+  },
+  "settings-model": {
+    "w": 2000,
+    "h": 1438,
+    "x": 2
+  },
+  "settings-providers": {
+    "w": 2000,
+    "h": 1438,
+    "x": 2
+  },
+  "settings-permissions": {
+    "w": 2000,
+    "h": 1438,
+    "x": 2
+  },
+  "settings-sandbox": {
+    "w": 2000,
+    "h": 1438,
+    "x": 2
+  },
+  "settings-theme": {
+    "w": 2000,
+    "h": 1438,
+    "x": 2
+  },
+  "audit-log": {
+    "w": 1866,
+    "h": 724,
+    "x": 2
+  },
+  "marketplace-add": {
+    "w": 1736,
+    "h": 720,
+    "x": 2
+  },
+  "install-check": {
+    "w": 896,
+    "h": 854,
+    "x": 2
+  },
+  "install-review": {
+    "w": 1176,
+    "h": 826,
+    "x": 2
+  },
+  "install-plan": {
+    "w": 1176,
+    "h": 404,
+    "x": 2
+  },
+  "terminal-side": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "terminal-ask": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "terminal-main": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "web-main": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "browser-side": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "side-chat-target": {
+    "w": 448,
+    "h": 826,
+    "x": 1
+  },
+  "workspace-launcher": {
+    "w": 448,
+    "h": 826,
+    "x": 1
+  },
+  "browser-done": {
+    "w": 1440,
+    "h": 900,
+    "x": 1
+  },
+  "browser-approval": {
+    "w": 693,
+    "h": 310,
+    "x": 1
+  },
+  "browser-tab-approval": {
+    "w": 812,
+    "h": 310,
+    "x": 1
+  },
+  "hero-loop": {
+    "w": 1440,
+    "h": 900,
+    "video": true
+  },
+  "browser-live": {
+    "w": 2880,
+    "h": 1800,
+    "x": 2
+  },
+  "browser-live-nav": {
+    "w": 2880,
+    "h": 1800,
+    "x": 2
+  },
+  "terminal-live": {
+    "w": 2880,
+    "h": 1800,
+    "x": 2
+  }
+}

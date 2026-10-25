@@ -9,8 +9,8 @@ function hasActiveUserGesture(): boolean {
   return globalThis.navigator?.userActivation?.isActive === true;
 }
 
-export const USER_KEYBOARD_INTENT_TTL_MS = 5_000;
-export const userKeyboardIntentTokens = new Map<string, number>();
+const USER_KEYBOARD_INTENT_TTL_MS = 5_000;
+const userKeyboardIntentTokens = new Map<string, number>();
 
 function pruneExpiredUserKeyboardIntents(now = Date.now()): void {
   for (const [token, expiresAt] of userKeyboardIntentTokens) {

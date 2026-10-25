@@ -1,13 +1,32 @@
-import Link from "next/link";
-import { href, type Locale } from "@/lib/i18n";
 import { homeCopy } from "@/lib/home";
-import { docPages } from "@/lib/docs";
-import { getDownloads } from "@/lib/downloads";
-import { Button } from "./ui/button";
+import { href, type Locale } from "@/lib/i18n";
+import { counterpart, footerColumns, headerNav, page, type NavLink } from "@/lib/nav";
 
-export function Mark({ className }: { className?: string }) {
+/**
+ * Header and footer. `path` is the canonical (Korean, slashed) path of the
+ * page being shown. A link to that same page is rendered as plain text
+ * marked aria-current, so no page links to itself; the logo on the home page
+ * is the one exception.
+ */
+
+export function Item({ link, path, className }: { link: NavLink; path: string; className?: string }) {
+  if (link.canonical === path) {
+    return (
+      <span className={className} aria-current="page">
+        {link.label}
+      </span>
+    );
+  }
   return (
-    <svg viewBox="0 0 64 64" aria-hidden="true" className={className}>
+    <a className={className} href={link.href}>
+      {link.label}
+    </a>
+  );
+}
+
+function Mark() {
+  return (
+    <svg viewBox="0 0 64 64" aria-hidden="true">
       <rect width="64" height="64" rx="16" fill="currentColor" />
       <path d="M16 46 L32 16 L48 46" fill="none" stroke="#c4f04a" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
       <circle cx="32" cy="40" r="4.5" fill="#c4f04a" />
@@ -15,101 +34,84 @@ export function Mark({ className }: { className?: string }) {
   );
 }
 
-/**
- * Sticky bar (DESIGN.md 24): wordmark, section links centred, then the
- * language switch and one action. `path` is the canonical (Korean) path of the
- * current page, used for the language switch.
- */
-export function Header({ locale, path, over = false }: { locale: Locale; path: string; over?: boolean }) {
-  const c = homeCopy(locale).nav;
-  const other: Locale = locale === "ko" ? "en" : "ko";
-  const home = href(locale, "/");
-  const links = (
-    <>
-      <Link href={`${home}#models`}>{c.models}</Link>
-      <Link href={`${home}#plugins`}>{c.plugins}</Link>
-      <Link href={href(locale, "/docs/")}>{c.docs}</Link>
-    </>
-  );
+function LangSwitch({ locale, path, className }: { locale: Locale; path: string; className?: string }) {
+  const other = counterpart(locale, path);
   return (
-    <header className={over ? "site-header over" : "site-header"}>
-      <div className="frame bar">
-        <a className="skip" href="#main">
-          {locale === "ko" ? "본문으로 건너뛰기" : "Skip to content"}
-        </a>
-        <Link className="wordmark" href={home} aria-label={locale === "ko" ? "Ave 첫 화면" : "Ave home"}>
+    <a className={className} href={other.href} hrefLang={other.lang} lang={other.lang} aria-label={other.aria}>
+      {other.label}
+    </a>
+  );
+}
+
+export function Header({ locale, path }: { locale: Locale; path: string }) {
+  const c = homeCopy(locale).footer;
+  const nav = headerNav(locale);
+  const download = page(locale, "download");
+  return (
+    <header className="site-header">
+      <a className="skip" href="#main">
+        {c.skip}
+      </a>
+      <div className="wrap">
+        <a className="logo" href={href(locale, "/")} aria-label={locale === "ko" ? "Ave 홈" : "Ave home"}>
           <Mark />
           <span>Ave</span>
-        </Link>
+        </a>
         <nav className="nav" aria-label={locale === "ko" ? "주 메뉴" : "Main"}>
-          {links}
+          {nav.map((l) => (
+            <Item key={l.canonical} link={l} path={path} />
+          ))}
         </nav>
-        <div className="bar-end">
-          <Link className="lang" href={href(other, path)} hrefLang={other} lang={other} aria-label={c.langLabel}>
-            {c.lang}
-          </Link>
-          {/* Under 760 px the section links move into a menu that needs no script. */}
+        <div className="header-end">
+          <LangSwitch locale={locale} path={path} className="lang" />
+          <Item link={download} path={path} className="btn btn-primary" />
           <details className="menu">
-            <summary className="menu-button">{c.menu}</summary>
+            <summary aria-label={c.menu}>
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </summary>
             <nav className="menu-panel" aria-label={c.menu}>
-              {links}
-              <Link href={href(other, path)} hrefLang={other} lang={other} aria-label={c.langLabel}>{c.lang}</Link>
+              {nav.map((l) => (
+                <Item key={l.canonical} link={l} path={path} />
+              ))}
             </nav>
           </details>
-          <Button asChild size="sm">
-            <Link href={href(locale, "/download/")}>{c.download}</Link>
-          </Button>
         </div>
       </div>
     </header>
   );
 }
 
-/** Light multi-column close, then one line with the notice. */
 export function Footer({ locale, path }: { locale: Locale; path: string }) {
-  const h = homeCopy(locale);
-  const c = h.footer;
-  const other: Locale = locale === "ko" ? "en" : "ko";
-  const home = href(locale, "/");
+  const c = homeCopy(locale).footer;
   return (
     <footer className="site-footer">
-      <div className="frame">
-        <div className="footer-cols">
-          <div className="footer-brand">
-            <Link className="wordmark" href={home} aria-label={locale === "ko" ? "Ave 첫 화면" : "Ave home"}>
+      <div className="wrap">
+        <div className="foot-grid">
+          <div className="foot-brand">
+            <p className="logo" aria-hidden="true">
               <Mark />
               <span>Ave</span>
-            </Link>
+            </p>
+            <p>{c.tagline}</p>
           </div>
-          <nav aria-labelledby="f-ave">
-            <h2 id="f-ave">Ave</h2>
-            <ul>
-              <li><Link href={`${home}#workbench`}>{h.wb.title}</Link></li>
-              <li><Link href={`${home}#models`}>{h.models.title}</Link></li>
-              <li><Link href={`${home}#plugins`}>{h.plugins.title}</Link></li>
-              <li><Link href={`${home}#alongside`}>{h.side.title}</Link></li>
-            </ul>
-          </nav>
-          <nav aria-labelledby="f-docs">
-            <h2 id="f-docs">{c.docs}</h2>
-            <ul>
-              {docPages(locale).map((p) => (
-                <li key={p.slug}><Link href={href(locale, `/docs/${p.slug}/`)}>{p.title}</Link></li>
-              ))}
-            </ul>
-          </nav>
-          <nav aria-labelledby="f-dl">
-            <h2 id="f-dl">{c.download}</h2>
-            <ul>
-              {getDownloads(locale).map((d) => (
-                <li key={d.os}><Link href={`${href(locale, "/download/")}#${d.os}`}>{d.osLabel}</Link></li>
-              ))}
-            </ul>
-          </nav>
+          {footerColumns(locale).map((col) => (
+            <nav key={col.title} className="foot-col" aria-label={col.title}>
+              <h2>{col.title}</h2>
+              <ul>
+                {col.links.map((l) => (
+                  <li key={l.href}>
+                    <Item link={l} path={path} />
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          ))}
         </div>
-        <div className="footer-line">
-          <p className="copy">{c.copy}</p>
-          <Link href={href(other, path)} hrefLang={other} lang={other}>{c.lang}</Link>
+        <div className="foot-base">
+          <span>{c.copy}</span>
+          <LangSwitch locale={locale} path={path} />
         </div>
       </div>
     </footer>

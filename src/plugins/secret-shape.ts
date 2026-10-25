@@ -1,8 +1,8 @@
-export function looksLikeEndpointUrl(value: unknown): boolean {
+function looksLikeEndpointUrl(value: unknown): boolean {
   return typeof value === "string" && /^https?:\/\//i.test(value.trim());
 }
 
-export function isApiKeyLikeSecretField(key: string): boolean {
+function isApiKeyLikeSecretField(key: string): boolean {
   return /(?:apiKey|api_key|token|secret|key)$/i.test(key) || /(?:^|[._-])(?:apiKey|api_key|token|secret|key)(?:$|[._-])/i.test(key);
 }
 

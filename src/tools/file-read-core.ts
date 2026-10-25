@@ -14,14 +14,14 @@ import {
 
 // Text preview and read_file share this size cap.
 export const MAX_TEXT_FILE_BYTES = 2_000_000;
-export const BINARY_SAMPLE_BYTES = 8_192;
+const BINARY_SAMPLE_BYTES = 8_192;
 
 // Reject glob patterns before filesystem access; they are tool arguments, not concrete file paths.
 export function isGlobPattern(value: string): boolean {
   return /[*?[\]{}]/.test(value) || value.includes("**");
 }
 
-export type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
+type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
 
 export type AssertReadableResult =
   | { ok: true; resolved: string }

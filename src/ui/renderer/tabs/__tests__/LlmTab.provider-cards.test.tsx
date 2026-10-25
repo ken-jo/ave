@@ -139,6 +139,15 @@ const FETCH_FAILED: LlmModelListResult = {
   message: "no",
 };
 
+function listedModels(
+  vendor: string,
+  endpoint: string,
+  models: string[],
+  overrides: Partial<Extract<LlmModelListResult, { ok: true }>> = {},
+): Extract<LlmModelListResult, { ok: true }> {
+  return { ok: true, vendor, endpoint, models, fetchedAt: "2026-01-01T00:00:00.000Z", ...overrides };
+}
+
 function makeApi(overrides: MockApi = {}): MockApi {
   const api = installMockAveApi();
   api.listLlmModels = vi.fn().mockResolvedValue(FETCH_FAILED);
@@ -160,16 +169,8 @@ interface Profile {
   modelListCache?: Record<string, unknown>;
 }
 
-/**
- * An api whose settings store answers a write with the profile under test.
- *
- * The shared mock keeps its own default profile, so a row persisting the
- * catalogue it just fetched would broadcast a settings object holding none of
- * this test's providers — and cards would vanish, or lose the endpoint they
- * are configured for, mid-test and for a reason no user ever meets.
- */
-function profileApi(profile: Profile, rest: MockApi = {}) {
-  let settings: { llm: Record<string, unknown>; marketplace: Record<string, unknown> } = {
+function profileSettings(profile: Profile) {
+  return {
     llm: {
       pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
@@ -180,6 +181,18 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
       installedProviderPresets: profile.installedProviderPresets ?? [],
     },
   };
+}
+
+/**
+ * An api whose settings store answers a write with the profile under test.
+ *
+ * The shared mock keeps its own default profile, so a row persisting the
+ * catalogue it just fetched would broadcast a settings object holding none of
+ * this test's providers — and cards would vanish, or lose the endpoint they
+ * are configured for, mid-test and for a reason no user ever meets.
+ */
+function profileApi(profile: Profile, rest: MockApi = {}) {
+  let settings: { llm: Record<string, unknown>; marketplace: Record<string, unknown> } = profileSettings(profile);
   const listeners = new Set<(next: unknown) => void>();
   const publish = () => {
     for (const listener of listeners) listener(settings);
@@ -776,14 +789,7 @@ describe("LlmTab provider cards", () => {
   ])("shows the no-tools badge only for a route that withholds tools: %j", async ({ model, supportedParameters, badge }) => {
     const { api } = profileApi({ vendors: { openai: { model } } }, {
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai",
-        endpoint: "https://provider.invalid/v1/models",
-        models: [model],
-        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }] }) satisfies LlmModelListResult),
     });
     await renderTab(api, { vendor: "openai", model });
     expect(await chooserModelIds()).toContain(model);
@@ -811,14 +817,7 @@ describe("LlmTab provider cards", () => {
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
     }, {
       hasApiKey: storedKeysFor("openai-compatible"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai-compatible",
-        endpoint: `${CUSTOM_ENDPOINT}/models`,
-        models: [model],
-        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, [model], { modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }] }) satisfies LlmModelListResult),
     });
     await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
     expect(await chooserModelIds()).toContain(model);
@@ -838,10 +837,7 @@ describe("LlmTab provider cards", () => {
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
     }, {
       hasApiKey: storedKeysFor("openai-compatible"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true, vendor: "openai-compatible", endpoint: `${CUSTOM_ENDPOINT}/models`, models: [model],
-        modelEntries: [{ id: model, inputModalities: reportedInput }], fetchedAt: new Date(0).toISOString(),
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, [model], { modelEntries: [{ id: model, inputModalities: reportedInput }], fetchedAt: new Date(0).toISOString() }) satisfies LlmModelListResult),
     });
     await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
     expect(await chooserModelIds()).toContain(model);
@@ -861,10 +857,7 @@ describe("LlmTab provider cards", () => {
       },
     }, {
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
-        modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString(),
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString() }) satisfies LlmModelListResult),
       updateSettings: saveState === "pending"
         ? vi.fn(() => new Promise(() => {}))
         : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
@@ -945,10 +938,7 @@ describe("LlmTab provider cards", () => {
     const { api } = profileApi({ vendors: { openai: { model: "o4-mini" } } }, {
       hasApiKey: storedKeysFor("openai"),
       // The endpoint still answers with it; the catalog's status decides.
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true, vendor: "openai", endpoint: "https://api.openai.com/v1/models",
-        models: ["gpt-5.4", "o3", "o4-mini"], fetchedAt: "2026-10-13T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-5.4", "o3", "o4-mini"], { fetchedAt: "2026-10-13T00:00:00.000Z" }) satisfies LlmModelListResult),
     });
     // The deprecated tier sets no marker: the trigger names the model and its tier.
     await renderTab(api, { vendor: "openai", model: "o4-mini" });
@@ -1062,11 +1052,7 @@ describe("LlmTab provider cards", () => {
       vendors: { openai: { model } },
     }, {
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
-        modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://provider.invalid/v1/models", [model], { modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }] }) satisfies LlmModelListResult),
       updateSettings: saveState === "pending"
         ? vi.fn(() => new Promise(() => {}))
         : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
@@ -1317,17 +1303,10 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     const selfHosted = "http://127.0.0.1:11434/v1";
     const api = makeApi({
       hasApiKey: storedKeysFor("openai", "openai-compatible", "ollama"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: {
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: {
             "openai-compatible": { baseUrl: generic },
             ollama: { baseUrl: selfHosted },
-          },
-        },
-        marketplace: { installedProviderIds: ["ollama"], installedProviderPresets: [] },
-      }),
+          }, installedProviderIds: ["ollama"] })),
     });
     await renderTab(api, { vendor: "openai", model: "" });
 
@@ -1430,14 +1409,7 @@ describe("LlmTab grouped model search", () => {
         const entries = vendor === "openrouter" ? [...routedEntries, ...additionalEntries]
           : vendor === "openai" ? [{ id: "gpt-direct-fixture" }]
             : [{ id: "openai/gpt-gateway-fixture" }, { id: "google/gemini-gateway-fixture" }];
-        return {
-          ok: true,
-          vendor,
-          endpoint: "https://catalogue.invalid/models",
-          models: entries.map((entry) => entry.id),
-          modelEntries: entries,
-          fetchedAt: "2026-01-01T00:00:00.000Z",
-        };
+        return listedModels(vendor, "https://catalogue.invalid/models", entries.map((entry) => entry.id), { modelEntries: entries });
       }),
     });
     const result = await renderTab(api, {
@@ -1528,10 +1500,7 @@ describe("LlmTab grouped model search", () => {
   ] as const)("keeps namespace paths flat for %s", async (vendor, models) => {
     const { api } = profileApi({ installedProviderIds: [vendor] }, {
       hasApiKey: storedKeysFor(vendor),
-      listLlmModels: vi.fn(async (): Promise<LlmModelListResult> => ({
-        ok: true, vendor, endpoint: "https://catalogue.invalid/models",
-        models: [...models], fetchedAt: "2026-01-01T00:00:00.000Z",
-      })),
+      listLlmModels: vi.fn(async (): Promise<LlmModelListResult> => (listedModels(vendor, "https://catalogue.invalid/models", [...models]))),
     });
     await renderTab(api, { vendor, model: models[0], baseUrl: getVendorOption(vendor).baseUrlPlaceholder! });
     await settleModelListRequests();
@@ -1549,10 +1518,7 @@ describe("LlmTab grouped model search", () => {
       const models = ["acme/model-one", "zenith/model-two"];
       const { api } = profileApi({ installedProviderIds: ["together", "fireworks"] }, {
         hasApiKey: storedKeysFor("together", "fireworks"),
-        listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => ({
-          ok: true, vendor, endpoint: "https://catalogue.invalid/models",
-          models, fetchedAt: "2026-01-01T00:00:00.000Z",
-        })),
+        listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => (listedModels(vendor, "https://catalogue.invalid/models", models))),
       });
       await renderTab(api, {
         vendor: "together", model: models[0]!, baseUrl: getVendorOption("together").baseUrlPlaceholder!,
@@ -1789,13 +1755,7 @@ describe("LlmTab model chooser is the whole switch", () => {
    * on screen together here, so "the same" is asserted rather than assumed.
    */
   it("gives a subscription-fed row the same shape and the same one verdict as an API-key row", async () => {
-    const api = genericRowApi(vi.fn().mockResolvedValue({
-      ok: true,
-      vendor: "openai-compatible",
-      endpoint: `${CUSTOM_ENDPOINT}/models`,
-      models: ["qwen-self-hosted"],
-      fetchedAt: "2026-01-01T00:00:00.000Z",
-    } satisfies LlmModelListResult));
+    const api = genericRowApi(vi.fn().mockResolvedValue(listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, ["qwen-self-hosted"]) satisfies LlmModelListResult));
     // Connected runtime, models from the runtime, and no OpenAI key at all — so this row has no endpoint handshake of any kind
     // behind it.
     installSubscription(
@@ -1852,14 +1812,7 @@ describe("LlmTab model chooser is the whole switch", () => {
     // software; printed beside the model, it makes a self-hosted endpoint read
     // as OpenAI's. The chooser names the row the user connected instead — the
     // same name the card carries.
-    const api = genericRowApi(vi.fn().mockResolvedValue({
-      ok: true,
-      vendor: "openai-compatible",
-      endpoint: `${CUSTOM_ENDPOINT}/models`,
-      models: ["qwen-self-hosted"],
-      modelEntries: [{ id: "qwen-self-hosted", provider: "openai", ownedBy: "openai" }],
-      fetchedAt: "2026-01-01T00:00:00.000Z",
-    } satisfies LlmModelListResult));
+    const api = genericRowApi(vi.fn().mockResolvedValue(listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, ["qwen-self-hosted"], { modelEntries: [{ id: "qwen-self-hosted", provider: "openai", ownedBy: "openai" }] }) satisfies LlmModelListResult));
     await renderTab(api, { vendor: "openai-compatible", model: "qwen-self-hosted" });
 
     const card = await screen.findByTestId("llm-tab:connection:openai-compatible:toggle");
@@ -1917,19 +1870,12 @@ describe("LlmTab model chooser is the whole switch", () => {
     const ROUTED = "anthropic/claude-sonnet-4.6";
     const { api } = profileApi({ installedProviderIds: ["openrouter"] }, {
       hasApiKey: storedKeysFor("openrouter"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openrouter",
-        endpoint: "https://openrouter.ai/api/v1/models",
-        models: [ROUTED],
-        modelEntries: [{
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openrouter", "https://openrouter.ai/api/v1/models", [ROUTED], { modelEntries: [{
           id: ROUTED,
           provider: "anthropic",
           ownedBy: "anthropic",
           tags: { router: true },
-        }],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+        }] }) satisfies LlmModelListResult),
     });
     await renderTab(api, {
       vendor: "openrouter",
@@ -2095,13 +2041,7 @@ describe("LlmTab names each route's state on a row that has two", () => {
       hasApiKey: storedKeysFor("openai"),
       // The key has to actually reach something: a stored key over a dead endpoint is "needs attention", and this test is about
       // the healthy case.
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai",
-        endpoint: "https://api.openai.com/v1/models",
-        models: ["gpt-5"],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-5"]) satisfies LlmModelListResult),
     }), {
       vendor: "claude",
       model: "claude-sonnet-4-6",
@@ -2238,13 +2178,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     installSubscription([codexView({ status: { runtime: "not-configured", connection: "signed-out", models: [] } })]);
     await renderTab(makeApi({
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai",
-        endpoint: "https://api.openai.com/v1/models",
-        models: ["gpt-5"],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-5"]) satisfies LlmModelListResult),
     }), { vendor: "openai", model: "gpt-5", hasKey: true });
     const card = await screen.findByTestId("llm-tab:connection:codex");
     await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state")).toHaveTextContent(CONNECTED));
@@ -2291,14 +2225,7 @@ describe("LlmTab preset and generic custom provider are separate rows", () => {
   function bothRows() {
     return makeApi({
       hasApiKey: storedKeysFor("marketplace-provider:acme-gw", "openai-compatible"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: { "openai-compatible": { baseUrl: GENERIC_ENDPOINT, model: "local-model" } },
-        },
-        marketplace: { installedProviderIds: [], installedProviderPresets: [acme] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: { "openai-compatible": { baseUrl: GENERIC_ENDPOINT, model: "local-model" } }, installedProviderPresets: [acme] })),
     });
   }
 
@@ -2377,10 +2304,7 @@ describe("LlmTab chat-route availability", () => {
     // Out-of-band authentication must not leave a provider blocked on an inapplicable key field.
     const withoutProject = makeApi({
       hasApiKey: storedKeysFor("claude"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: { pinnedModels: [], modelListCache: {}, vendors: {} },
-        marketplace: { installedProviderIds: ["vertex-ai"], installedProviderPresets: [] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ installedProviderIds: ["vertex-ai"] })),
     });
     const { unmount } = await renderTab(withoutProject, { vendor: "claude", model: "" });
     openMenu(screen.getByTestId("llm-tab:add-provider"));
@@ -2397,14 +2321,7 @@ describe("LlmTab chat-route availability", () => {
 
     const withProject = makeApi({
       hasApiKey: storedKeysFor("claude"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: { "vertex-ai": { vertexProject: "my-gcp-project" } },
-        },
-        marketplace: { installedProviderIds: ["vertex-ai"], installedProviderPresets: [] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: { "vertex-ai": { vertexProject: "my-gcp-project" } }, installedProviderIds: ["vertex-ai"] })),
     });
     const { hooks } = await renderTab(withProject, { vendor: "claude", model: "" });
     openMenu(screen.getByTestId("llm-tab:add-provider"));
@@ -2435,13 +2352,7 @@ describe("LlmTab rows that are not the active one", () => {
     const api = genericRowApi(
       vi.fn(async (request: { vendor: string; baseUrl?: string }) =>
         request.vendor === "openai-compatible" && request.baseUrl === CUSTOM_ENDPOINT
-          ? {
-            ok: true,
-            vendor: "openai-compatible",
-            endpoint: `${CUSTOM_ENDPOINT}/models`,
-            models: ["served-by-the-endpoint"],
-            fetchedAt: "2026-01-01T00:00:00.000Z",
-          } satisfies LlmModelListResult
+          ? listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, ["served-by-the-endpoint"]) satisfies LlmModelListResult
           : FETCH_FAILED),
       CUSTOM_ENDPOINT,
       { hasApiKey: storedKeysFor("claude", "openai-compatible") },
@@ -2478,20 +2389,13 @@ describe("LlmTab rows that are not the active one", () => {
         "marketplace-provider:zenith-gw",
         "openai-compatible",
       ),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: {
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: {
             "openai-compatible": {
               baseUrl: CUSTOM_ENDPOINT,
               model: "generic-own-model",
               presetModels: { "acme-gw": "acme/chosen", "zenith-gw": "zenith/chosen" },
             },
-          },
-        },
-        marketplace: { installedProviderIds: [], installedProviderPresets: [acme, zenith] },
-      }),
+          }, installedProviderPresets: [acme, zenith] })),
       listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
     });
     await renderTab(api, {
@@ -2575,14 +2479,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     // is nothing to ask it for.
     const api = makeApi({
       hasApiKey: storedKeysFor("azure-foundry"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: { "azure-foundry": { baseUrl: "https://example-resource.example/deployments/gpt" } },
-        },
-        marketplace: { installedProviderIds: ["azure-foundry"], installedProviderPresets: [] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: { "azure-foundry": { baseUrl: "https://example-resource.example/deployments/gpt" } }, installedProviderIds: ["azure-foundry"] })),
     });
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
@@ -2601,13 +2498,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
         "marketplace-provider:declared-gw",
         "marketplace-provider:asked-gw",
       ),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: { pinnedModels: [], modelListCache: {}, vendors: {} },
-        marketplace: {
-          installedProviderIds: [],
-          installedProviderPresets: [declared, asked],
-        },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ installedProviderPresets: [declared, asked] })),
     });
     await renderTab(api, {
       vendor: "claude",
@@ -2624,14 +2515,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
   it("asks a credentialed custom provider for the list at its own endpoint", async () => {
     const api = makeApi({
       hasApiKey: storedKeysFor("openai-compatible"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          modelListCache: {},
-          vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } },
-        },
-        marketplace: { installedProviderIds: [], installedProviderPresets: [] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } } })),
     });
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
@@ -2641,10 +2525,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
   it("asks nothing for a row with no credential, and says that is what is missing", async () => {
     const api = makeApi({
       hasApiKey: storedKeysFor(),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: { pinnedModels: [], modelListCache: {}, vendors: {} },
-        marketplace: { installedProviderIds: ["openrouter"], installedProviderPresets: [] },
-      }),
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ installedProviderIds: ["openrouter"] })),
     });
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
@@ -2696,13 +2577,7 @@ describe("LlmTab says which kind of nothing a row has", () => {
   });
 
   it("says the list came back empty when the endpoint answered with none", async () => {
-    const api = genericRow(vi.fn(async () => ({
-      ok: true,
-      vendor: "openai-compatible",
-      endpoint: `${CUSTOM_ENDPOINT}/models`,
-      models: [],
-      fetchedAt: "2026-01-01T00:00:00.000Z",
-    } satisfies LlmModelListResult)));
+    const api = genericRow(vi.fn(async () => (listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, []) satisfies LlmModelListResult)));
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
     await waitFor(async () => expect(await blockerText()).toMatch(EMPTY));
@@ -2711,13 +2586,7 @@ describe("LlmTab says which kind of nothing a row has", () => {
   it("says it on the ACTIVE row too, whose own catalogue came back empty", async () => {
     // The row chat is running on is the one where an empty list matters most: with no model saved there is nothing to send,
     // and "has not answered yet" would be the wrong account of an endpoint that answered with nothing.
-    const api = genericRow(vi.fn(async () => ({
-      ok: true,
-      vendor: "openai-compatible",
-      endpoint: `${CUSTOM_ENDPOINT}/models`,
-      models: [],
-      fetchedAt: "2026-01-01T00:00:00.000Z",
-    } satisfies LlmModelListResult)));
+    const api = genericRow(vi.fn(async () => (listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, []) satisfies LlmModelListResult)));
     await renderTab(api, {
       vendor: "openai-compatible",
       baseUrl: CUSTOM_ENDPOINT,
@@ -2745,19 +2614,24 @@ describe("LlmTab says which kind of nothing a row has", () => {
     })();
   }
 
-  it("does not ask a failed endpoint again on a broadcast that changed nothing", async () => {
-    // Every settings write broadcasts one of these, and a fresh object identity each time re-ran every effect reading a row's
-    // endpoint — including the one that asks endpoints for their catalogues.
-    const api = genericRow(vi.fn(async () => FETCH_FAILED));
-    await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
+  // A fresh vendor-map identity used to re-ask failed endpoints on every settings write. Another row's edit is news, but
+  // this row's own inputs have not changed: a failed request is still an answer, not a reason to fetch on every broadcast.
+  function failedEndpointBroadcastCase(vendors: () => Record<string, unknown>) {
+    return async () => {
+      const api = genericRow(vi.fn(async () => FETCH_FAILED));
+      await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
-    await waitFor(async () => expect(await blockerText()).toMatch(FAILED));
-    const asked = (api.listLlmModels as Mock).mock.calls.length;
+      await waitFor(async () => expect(await blockerText()).toMatch(FAILED));
+      const asked = (api.listLlmModels as Mock).mock.calls.length;
 
-    await broadcast(api, { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } });
+      await broadcast(api, vendors());
 
-    expect((api.listLlmModels as Mock).mock.calls.length).toBe(asked);
-  });
+      expect((api.listLlmModels as Mock).mock.calls.length).toBe(asked);
+    };
+  }
+
+  it("does not ask a failed endpoint again on a broadcast that changed nothing", failedEndpointBroadcastCase(() => ({ "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } })));
+  it("does not ask a failed endpoint again when some other row changes", failedEndpointBroadcastCase(() => ({ "openai-compatible": { baseUrl: CUSTOM_ENDPOINT }, ollama: { baseUrl: "http://127.0.0.1:11434/v1" } })));
 
   it("does not re-ask an endpoint mid-handshake when a broadcast changed nothing", async () => {
     // The broadcast carries the same vendor content, so nothing about this row
@@ -2774,24 +2648,6 @@ describe("LlmTab says which kind of nothing a row has", () => {
     expect((api.listLlmModels as Mock).mock.calls.length).toBe(1);
   });
 
-  it("does not ask a failed endpoint again when some other row changes", async () => {
-    // Here the broadcast IS news — another vendor's block moved — so the effect
-    // legitimately re-runs. This row's own inputs did not change, and a failure
-    // is an answer: re-asking on someone else's edit is how one unreachable
-    // endpoint became a request per settings write.
-    const api = genericRow(vi.fn(async () => FETCH_FAILED));
-    await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
-
-    await waitFor(async () => expect(await blockerText()).toMatch(FAILED));
-    const asked = (api.listLlmModels as Mock).mock.calls.length;
-
-    await broadcast(api, {
-      "openai-compatible": { baseUrl: CUSTOM_ENDPOINT },
-      ollama: { baseUrl: "http://127.0.0.1:11434/v1" },
-    });
-
-    expect((api.listLlmModels as Mock).mock.calls.length).toBe(asked);
-  });
 });
 
 describe("LlmTab model lists are cached, not re-fetched", () => {
@@ -2818,13 +2674,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
 
   /** An endpoint that answers, so a request can be told from a cache read. */
   function answering(models: string[]) {
-    return vi.fn(async (request: { vendor: string; baseUrl?: string }) => ({
-      ok: true,
-      vendor: request.vendor,
-      endpoint: `${request.baseUrl ?? ""}/models`,
-      models,
-      fetchedAt: "2026-02-02T00:00:00.000Z",
-    } satisfies LlmModelListResult));
+    return vi.fn(async (request: { vendor: string; baseUrl?: string }) => (listedModels(request.vendor, `${request.baseUrl ?? ""}/models`, models, { fetchedAt: "2026-02-02T00:00:00.000Z" }) satisfies LlmModelListResult));
   }
 
   function askedCount(api: MockApi): number {
@@ -3055,13 +2905,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
       .toHaveAttribute("data-provider-sync-status", "error"));
     expect(askedCount(api)).toBe(1);
 
-    answer = {
-      ok: true,
-      vendor: "openai-compatible",
-      endpoint: `${CUSTOM_ENDPOINT}/models`,
-      models: ["works-now"],
-      fetchedAt: "2026-03-03T00:00:00.000Z",
-    };
+    answer = listedModels("openai-compatible", `${CUSTOM_ENDPOINT}/models`, ["works-now"], { fetchedAt: "2026-03-03T00:00:00.000Z" });
     fireEvent.click(screen.getByTestId("llm-tab:connection:openai-compatible:toggle"));
     fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-fixed" } });
     await waitFor(() => expect(screen.getByTestId("llm-tab:save-providers")).toBeEnabled());
@@ -3167,13 +3011,7 @@ describe("LlmTab marketplace preset rows", () => {
     const api = makeApi({
       // The launch refresh confirms the cached catalogue, so the endpoint answers here; a failure would leave the row on its
       // cached list and say so, which is a different test.
-      listLlmModels: vi.fn(async () => ({
-        ok: true,
-        vendor: "openai-compatible",
-        endpoint: "https://acme.example/v1/models",
-        models: ["acme-1", "acme-2"],
-        fetchedAt: "2026-01-02T00:00:00.000Z",
-      } satisfies LlmModelListResult)),
+      listLlmModels: vi.fn(async () => (listedModels("openai-compatible", "https://acme.example/v1/models", ["acme-1", "acme-2"], { fetchedAt: "2026-01-02T00:00:00.000Z" }) satisfies LlmModelListResult)),
       getSettings: settingsWithCache({
         [["openai-compatible", "https://acme.example/v1", "acme-gw"].join("\n")]: {
           vendor: "openai-compatible",
@@ -3245,13 +3083,7 @@ describe("LlmTab OpenAI model catalogue", () => {
   it("offers the endpoint's catalogue rather than the bundled list", async () => {
     const api = makeApi({
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai",
-        endpoint: "https://api.openai.com/v1/models",
-        models: ["gpt-from-endpoint"],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-from-endpoint"]) satisfies LlmModelListResult),
     });
     await renderTab(api, { model: "" });
 
@@ -3287,13 +3119,7 @@ describe("LlmTab OpenAI model catalogue", () => {
   it("names the endpoint and its catalogue on the row once the endpoint has answered", async () => {
     const api = makeApi({
       hasApiKey: storedKeysFor("openai"),
-      listLlmModels: vi.fn().mockResolvedValue({
-        ok: true,
-        vendor: "openai",
-        endpoint: "https://api.openai.com/v1/models",
-        models: ["gpt-from-endpoint"],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      } satisfies LlmModelListResult),
+      listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-from-endpoint"]) satisfies LlmModelListResult),
     });
     await renderTab(api, { model: "" });
 
@@ -3423,11 +3249,7 @@ describe("LlmTab OpenAI model catalogue", () => {
     // of its own. Clicking its card must show THAT endpoint, without the active provider moving.
     const api = makeApi({
       hasApiKey: storedKeysFor("openai", "openai-compatible"),
-      getSettings: vi.fn().mockResolvedValue({
-        llm: {
-          pinnedModels: [],
-          vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model: "local-27b" } },
-          modelListCache: {
+      getSettings: vi.fn().mockResolvedValue(profileSettings({ vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model: "local-27b" } }, modelListCache: {
             [["openai-compatible", CUSTOM_ENDPOINT, ""].join("\n")]: {
               vendor: "openai-compatible",
               baseUrl: CUSTOM_ENDPOINT,
@@ -3435,10 +3257,7 @@ describe("LlmTab OpenAI model catalogue", () => {
               models: ["a", "b", "c", "d"],
               fetchedAt: "2026-01-01T00:00:00.000Z",
             },
-          },
-        },
-        marketplace: { installedProviderIds: [], installedProviderPresets: [] },
-      }),
+          } })),
     });
     installSubscription([codexView()]);
     const { hooks } = await renderTab(api, { vendor: "openai", model: "", hasKey: true });
@@ -3557,13 +3376,7 @@ describe("LlmTab OpenAI model catalogue", () => {
     expect(rowOrder()).toEqual([]);
 
     await act(async () => {
-      release?.({
-        ok: true,
-        vendor: "openrouter",
-        endpoint: "https://openrouter.ai/api/v1/models",
-        models: ["a", "b"],
-        fetchedAt: "2026-01-01T00:00:00.000Z",
-      });
+      release?.(listedModels("openrouter", "https://openrouter.ai/api/v1/models", ["a", "b"]));
       await Promise.resolve();
     });
     // Once the catalogue lands, the same provider IS configured and gets one.

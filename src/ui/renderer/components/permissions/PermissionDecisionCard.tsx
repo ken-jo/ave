@@ -108,7 +108,7 @@ export function pickSummary(parsed: ParsedSummary | null, keys: string[], emptyT
   return emptyText;
 }
 
-export function formatSummaryValue(value: unknown): string {
+function formatSummaryValue(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }

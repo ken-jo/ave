@@ -2,13 +2,13 @@
 
 export const CONVERSATION_EVENT_PROTOCOL_VERSION = 1 as const;
 
-export type ConversationEventProtocolVersion =
+type ConversationEventProtocolVersion =
   typeof CONVERSATION_EVENT_PROTOCOL_VERSION;
 
 // Payloads must be structured-cloneable to isolate producers and subscribers.
-export type ConversationEventPayload = unknown;
+type ConversationEventPayload = unknown;
 
-export interface ConversationEventInput<TPayload = ConversationEventPayload> {
+interface ConversationEventInput<TPayload = ConversationEventPayload> {
   readonly sessionId: string;
   readonly channel: string;
   // Projection belongs to surface adapters, not the opaque payload.
@@ -33,7 +33,7 @@ export interface ConversationEventEnvelope<
 }
 
 /** Listeners are synchronous; adapters must queue async work and handle its rejections. */
-export type ConversationEventListener = (
+type ConversationEventListener = (
   event: ConversationEventEnvelope,
 ) => void;
 
@@ -56,7 +56,7 @@ export interface ConversationEventReplay {
   readonly events: readonly ConversationEventEnvelope[];
 }
 
-export interface ConversationEventSubscription {
+interface ConversationEventSubscription {
   readonly replay: ConversationEventReplay | undefined;
   unsubscribe(): void;
 }

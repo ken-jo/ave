@@ -3,7 +3,7 @@ import type { BrowserWindow } from "electron";
 import { sendToWindow, type SafeSendLogger } from "./safe-send.js";
 import type { IpcDeps } from "./types.js";
 
-export interface BroadcastAuditLogger {
+interface BroadcastAuditLogger {
   log: (entry: {
     timestamp: string;
     sessionId: string;

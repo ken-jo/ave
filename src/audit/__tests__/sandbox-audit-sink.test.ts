@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -8,7 +8,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const TEST_HOME = join(tmpdir(), `ave-test-sink-${randomBytes(4).toString("hex")}`);
 process.env.AVE_HOME = TEST_HOME;
 
-import { emitSandboxAudit, sandboxAuditSinkPath } from "../sandbox-audit-sink.js";
+import { emitSandboxAudit, flushSandboxAudit, sandboxAuditSinkPath } from "../sandbox-audit-sink.js";
 import { buildSandboxAuditEntry } from "../sandbox-audit.js";
 
 beforeEach(async () => {
@@ -91,6 +91,28 @@ describe("emitSandboxAudit", () => {
     const parsed = JSON.parse(raw.trim());
     expect(parsed.reviewer.userApprovalUsed?.memoryHit).toBe(true);
     expect(parsed.reviewer.userApprovalUsed?.nlJustification).toBe("테스트용 파일 정리");
+  });
+
+  it("rejects, rather than throws, when the audit home cannot be resolved", async () => {
+    // Callers fire this with `.catch(...)` and no try; a resolver failure must
+    // arrive as a rejection. The test home guard refuses the real account home
+    // synchronously, before any filesystem access.
+    process.env.AVE_HOME = join(userInfo().homedir, ".ave");
+    let result: Promise<void> | undefined;
+    try {
+      expect(() => { result = emitSandboxAudit(makeEntry()); }).not.toThrow();
+    } finally {
+      process.env.AVE_HOME = TEST_HOME;
+    }
+    await expect(result).rejects.toThrow(/refusing to resolve AVE_HOME/);
+    await flushSandboxAudit();
+  });
+
+  it("flushSandboxAudit waits for writes that were not awaited", async () => {
+    void emitSandboxAudit(makeEntry("unawaited"));
+    await flushSandboxAudit();
+    const raw = await readFile(sandboxAuditSinkPath(), "utf8");
+    expect(raw.trim().split("\n").map((line) => JSON.parse(line).tool.name)).toEqual(["unawaited"]);
   });
 
   it("sandboxAuditSinkPath returns daily-rotated path under AVE_HOME/audit/", () => {

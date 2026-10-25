@@ -14,7 +14,7 @@ export const A2A_AGENT_MAX_HOPS = 8;
 export const A2A_AGENT_TREE_MESSAGE_BUDGET = 64;
 export const A2A_AGENT_MAX_TRACKED_TREES = 100;
 
-export interface A2ASubAgentAddress {
+interface A2ASubAgentAddress {
   childSessionId: string;
   title: string;
 }

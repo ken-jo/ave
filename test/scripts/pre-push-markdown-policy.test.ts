@@ -105,6 +105,10 @@ describe("documentation impact policy", () => {
     expect(registryTest).toContain('"README.md"');
     expect(registryTest).toContain("readFile(resolve(repoRoot, relativePath)");
     referenced.add("README.md");
+    // The website renders the changelog page from CHANGELOG.md at build time.
+    const changelogReader = readFileSync(resolve(root, "web/lib/changelog.ts"), "utf8");
+    expect(changelogReader).toContain('resolve(process.cwd(), "..", "CHANGELOG.md")');
+    referenced.add("CHANGELOG.md");
     const packaged = packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root);
     for (const path of packaged) referenced.add(path);
     const all = [...inventory.consumed, ...inventory.referencedOnly];

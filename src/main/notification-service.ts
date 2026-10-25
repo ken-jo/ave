@@ -79,7 +79,7 @@ function stripControlChars(s: string): string {
   return s.replace(CONTROL_CHARS_RE, "");
 }
 
-export interface ToastPayload {
+interface ToastPayload {
   kind: NotificationKind;
   title: string;
   body: string;
@@ -89,12 +89,12 @@ export interface ToastPayload {
 }
 
 // Minimal Electron Notification surface used by the service. Exposed as an injectable factory so tests can stub it without spinning Electron.
-export interface NotificationLike {
+interface NotificationLike {
   show(): void;
   on(event: "click", handler: () => void): void;
 }
 
-export type NotificationActivationRegistration = (
+type NotificationActivationRegistration = (
   handler: (details: ActivationArguments) => void,
 ) => void;
 

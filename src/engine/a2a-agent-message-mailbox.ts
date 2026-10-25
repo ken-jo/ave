@@ -41,17 +41,13 @@ export interface A2AAgentMailboxEntry {
   approvalLabel: string;
 }
 
-export type A2AAgentMailboxDraft = Omit<A2AAgentMailboxEntry, "envelope"> & {
-  envelope: A2AAgentMessageEnvelope;
-};
-
 interface PersistedA2AAgentMailbox {
   version: typeof MAILBOX_VERSION;
   entries: A2AAgentMailboxEntry[];
   trees: A2ATreeCounter[];
 }
 
-export type A2AAgentMailboxDiagnosticReason =
+type A2AAgentMailboxDiagnosticReason =
   | "cross-origin"
   | "invalid-message"
   | "budget-exhausted";

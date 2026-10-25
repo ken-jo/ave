@@ -31,7 +31,7 @@ export const SUMMARY_TEMPLATE_HEADERS_V1 = [
   "Last Tool Boundary",
 ] as const;
 
-export type SummarySectionName = (typeof SUMMARY_TEMPLATE_HEADERS_V1)[number];
+type SummarySectionName = (typeof SUMMARY_TEMPLATE_HEADERS_V1)[number];
 
 export interface ParsedCompactSummary {
   templateVersion: 1;
@@ -54,19 +54,19 @@ export interface CompactBoundary {
   compactNum: number;
 }
 
-export type VendorOpaqueState =
+type VendorOpaqueState =
   | { vendor: "openai"; openaiCompactionItem: OpenAICompactionItem }
 
   ;
 
-export interface OpenAICompactionItem {
+interface OpenAICompactionItem {
   type: "compaction";
   encrypted_content: string;
 
   [k: string]: unknown;
 }
 
-export interface ToolCallSummary {
+interface ToolCallSummary {
   round: number;
   toolName: string;
 

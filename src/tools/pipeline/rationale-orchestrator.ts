@@ -24,7 +24,7 @@ import {
   type RationaleTicketStateRecord,
 } from "./rationale-ticket-lifecycle.js";
 
-export type RationaleEligiblePermission = PermissionCheckResult & {
+type RationaleEligiblePermission = PermissionCheckResult & {
   reviewer: {
     route: "foreground-auto";
     verdict: RiskVerdict;
