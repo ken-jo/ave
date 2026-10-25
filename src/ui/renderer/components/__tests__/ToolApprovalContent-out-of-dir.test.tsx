@@ -58,9 +58,9 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(screen.getByTestId("approval-impact-summary").textContent)
       .toContain("허용된 디렉터리 밖을 읽으려 합니다");
     expect(screen.getByTestId(TEST_IDS.approvalReviewDetails)).toBeTruthy();
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
     // A folder card's one lasting allow is its parent folder, so the middle button names it.
-    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("모든 곳에서 항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이 폴더를 항상 허용");
     expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent("한 번만 허용");
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "path-grant");
   });

@@ -70,7 +70,7 @@ describe("ToolApprovalContent allowed choices", () => {
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(makeOneShotPluginRequest(), onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
 

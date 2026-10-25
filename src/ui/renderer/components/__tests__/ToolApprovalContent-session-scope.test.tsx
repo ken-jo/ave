@@ -50,7 +50,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("에이전트가 연 탭");
 
     fireEvent.click(remember);
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
   });
 

@@ -51,6 +51,9 @@ export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> =
   "allow-once": "toolApprovalDialog.allowOnce",
 };
 
+/** A folder card's lasting allow is "Always allow this folder", not "everywhere": it grants the folder, not the tool. */
+export const FOLDER_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowFolder";
+
 function offered(rule: string | null, editing: RuleEditing, labelKey: string, needsEdit = false): DecisionOption {
   return { offered: true, reasonKey: null, rule, editing, needsEdit, labelKey };
 }
@@ -86,7 +89,7 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
 
 type EgressPayload = NonNullable<ApprovalRequest["egressHost"]>;
 
-/** A network card: an allow left as it is keeps the grant of that lifetime (revocable with the other grants); Always deny, and any allow whose rule is edited, saves a `Network(...)` host rule. A destination the rule grammar cannot name (an address literal) offers no rule; a terminal tab's allow is a tab grant only. */
+/** A network card: an allow left as it is keeps the grant of that lifetime (revocable with the other grants); Always deny, and any allow whose rule is edited, saves a `Network(...)` host rule. Host rules are shell-origin, so a terminal tab's card offers none (its allows are grants only), and a destination the rule grammar cannot name (an address literal) offers none either. */
 export function networkDecisionModel(payload: EgressPayload, sessionId: string | undefined): ApprovalDecisionModel {
   const rule = payload.rule;
   const ruleEditing = (scopeHoldsRule: boolean): RuleEditing => rule !== null && scopeHoldsRule ? "inline" : null;
@@ -100,7 +103,7 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
     variant: "network",
     options: {
       "deny-always": rule === null
-        ? refused("toolApprovalDialog.networkRuleUnavailable", label("deny-always"))
+        ? refused(terminal ? "toolApprovalDialog.networkRuleTerminal" : "toolApprovalDialog.networkRuleUnavailable", label("deny-always"))
         : offered(rule, "inline", label("deny-always")),
       "allow-session": scoped("allow-session", sessionScope, !terminal && sessionId !== undefined, terminal ? "toolApprovalDialog.decisionAllowTab" : label("allow-session")),
       "allow-project": scoped("allow-project", "project", payload.projectCwd !== undefined),
@@ -110,12 +113,14 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
   };
 }
 
-/** A card whose remembered allow is an exact tool approval (this tool with this input, for one project folder): session and project lifetimes, Always deny as an exact deny, edited in Settings. */
+/** A card whose remembered allow is an exact tool approval (this tool with this input): for the conversation, for this project folder, or everywhere (a user-global approval, owner 2026-10-25); Always deny as an exact deny, edited in Settings. */
 export function exactDecisionModel(input: {
   readonly sessionOnly: boolean;
   readonly hasSession: boolean;
   /** Why an allow cannot be remembered for this request, or null when it can. */
   readonly allowRefusalKey: string | null;
+  /** Why the exact-approval store records nothing for this request (a one-shot ask), or null when it records a deny. */
+  readonly denyRefusalKey: string | null;
   /** Settings can hold this request's exact-deny draft. */
   readonly settingsEditing: boolean;
 }): ApprovalDecisionModel {
@@ -126,25 +131,29 @@ export function exactDecisionModel(input: {
   return {
     variant: "exact",
     options: {
-      "deny-always": offered(null, input.settingsEditing ? "settings" : null, label("deny-always")),
+      "deny-always": input.denyRefusalKey !== null
+        ? refused(input.denyRefusalKey, label("deny-always"))
+        : offered(null, input.settingsEditing ? "settings" : null, label("deny-always")),
       "allow-session": input.hasSession || input.allowRefusalKey !== null ? allow("allow-session") : refused("toolApprovalDialog.sessionAllowNeedsConversation", label("allow-session")),
       "allow-project": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-project")) : allow("allow-project"),
-      "allow-everywhere": refused(input.sessionOnly ? "toolApprovalDialog.sessionOnlyRemember" : "toolApprovalDialog.exactEverywhereUnavailable", label("allow-everywhere")),
+      "allow-everywhere": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-everywhere")) : allow("allow-everywhere"),
     },
     warnsOnWildcardAllow: false,
   };
 }
 
-/** A folder-access card: allowing the parent folder for good is its one remembering allow (when the host found a safe parent). Always deny is an exact deny of this request, edited in Settings, as for an exact tool approval. */
-export function pathGrantDecisionModel(parent: string | null, parentReasonKey: string, settingsEditing: boolean): ApprovalDecisionModel {
+/** A folder-access card: always allowing the parent folder is its one remembering allow (when the host found a safe parent), labelled for the folder. Always deny is an exact deny of this request, edited in Settings, as for an exact tool approval, and refused where the exact-approval store records nothing (`denyRefusalKey`). */
+export function pathGrantDecisionModel(parent: string | null, parentReasonKey: string, settingsEditing: boolean, denyRefusalKey: string | null): ApprovalDecisionModel {
   const notFolder = (choice: RememberingChoice) => refused("toolApprovalDialog.pathGrantOnlyFolder", label(choice));
   return {
     variant: "path-grant",
     options: {
-      "deny-always": offered(null, settingsEditing ? "settings" : null, label("deny-always")),
+      "deny-always": denyRefusalKey !== null
+        ? refused(denyRefusalKey, label("deny-always"))
+        : offered(null, settingsEditing ? "settings" : null, label("deny-always")),
       "allow-session": notFolder("allow-session"),
       "allow-project": notFolder("allow-project"),
-      "allow-everywhere": parent === null ? refused(parentReasonKey, label("allow-everywhere")) : offered(parent, null, label("allow-everywhere")),
+      "allow-everywhere": parent === null ? refused(parentReasonKey, FOLDER_ALLOW_LABEL_KEY) : offered(parent, null, FOLDER_ALLOW_LABEL_KEY),
     },
     warnsOnWildcardAllow: false,
   };

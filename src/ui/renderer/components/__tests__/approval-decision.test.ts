@@ -76,6 +76,9 @@ describe("approval decision models", () => {
     const literal = networkDecisionModel(egress({ host: "203.0.113.7", rule: null }), "conversation-1");
     expect(literal.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.networkRuleUnavailable" });
     expect(literal.options["allow-everywhere"]).toMatchObject({ offered: true, editing: null });
+    // Host rules are shell-origin: a terminal tab's Always deny names that, not an address problem.
+    const tabNoRule = networkDecisionModel(egress({ terminalTabId: "terminal:0a1b2c3d-1", scopes: ["once", "tab", "always"], projectCwd: undefined, rule: null }), undefined);
+    expect(tabNoRule.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.networkRuleTerminal" });
   });
 
   it("a local destination refuses the lasting allows with its own reason", () => {
@@ -83,30 +86,39 @@ describe("approval decision models", () => {
     expect(model.options["allow-everywhere"].reasonKey).toBe("toolApprovalDialog.networkLocalScopeNotOffered");
   });
 
-  it("an exact tool approval offers session and project, refuses everywhere, and edits Always deny in Settings", () => {
-    const model = exactDecisionModel({ sessionOnly: false, hasSession: true, allowRefusalKey: null, settingsEditing: true });
-    expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-project"]);
+  it("an exact tool approval offers session, project and everywhere, and edits Always deny in Settings", () => {
+    const model = exactDecisionModel({ sessionOnly: false, hasSession: true, allowRefusalKey: null, denyRefusalKey: null, settingsEditing: true });
+    expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-project", "allow-everywhere"]);
     expect(model.options["deny-always"].editing).toBe("settings");
-    expect(model.options["allow-everywhere"].reasonKey).toBe("toolApprovalDialog.exactEverywhereUnavailable");
+    expect(model.options["allow-everywhere"]).toMatchObject({ offered: true, labelKey: "toolApprovalDialog.decisionAllowEverywhere" });
     expect(model.options["allow-session"].editing).toBeNull();
   });
 
+  it("an exact approval the host records nothing for offers no Always deny, with the one-shot reason", () => {
+    const model = exactDecisionModel({ sessionOnly: false, hasSession: true, allowRefusalKey: "toolApprovalDialog.persistentUnavailableOneShot", denyRefusalKey: "toolApprovalDialog.persistentUnavailableOneShot", settingsEditing: true });
+    expect(offeredChoices(model)).toEqual([]);
+    expect(model.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.persistentUnavailableOneShot", editing: null });
+  });
+
   it("an exact approval names the right refusal: high risk before a missing conversation, session-only scopes, no Settings", () => {
-    const high = exactDecisionModel({ sessionOnly: false, hasSession: false, allowRefusalKey: "toolApprovalDialog.persistentUnavailableHighRisk", settingsEditing: true });
+    const high = exactDecisionModel({ sessionOnly: false, hasSession: false, allowRefusalKey: "toolApprovalDialog.persistentUnavailableHighRisk", denyRefusalKey: null, settingsEditing: true });
     expect(allowRefusalKey(high)).toBe("toolApprovalDialog.persistentUnavailableHighRisk");
-    const noConversation = exactDecisionModel({ sessionOnly: true, hasSession: false, allowRefusalKey: null, settingsEditing: true });
+    const noConversation = exactDecisionModel({ sessionOnly: true, hasSession: false, allowRefusalKey: null, denyRefusalKey: null, settingsEditing: true });
     expect(allowRefusalKey(noConversation)).toBe("toolApprovalDialog.sessionAllowNeedsConversation");
-    const browser = exactDecisionModel({ sessionOnly: true, hasSession: true, allowRefusalKey: null, settingsEditing: false });
+    const browser = exactDecisionModel({ sessionOnly: true, hasSession: true, allowRefusalKey: null, denyRefusalKey: null, settingsEditing: false });
     expect(offeredChoices(browser)).toEqual(["deny-always", "allow-session"]);
     expect(browser.options["deny-always"].editing).toBeNull();
   });
 
-  it("a folder card's only lasting allow is its parent folder", () => {
-    const model = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true);
+  it("a folder card's only lasting allow is its parent folder, labelled for the folder", () => {
+    const model = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true, null);
     expect(offeredChoices(model)).toEqual(["deny-always", "allow-everywhere"]);
     expect(model.options["allow-everywhere"].rule).toBe("/Users/me/project");
+    expect(model.options["allow-everywhere"].labelKey).toBe("toolApprovalDialog.decisionAllowFolder");
+    const unrecordable = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true, "toolApprovalDialog.persistentUnavailableOneShot");
+    expect(unrecordable.options["deny-always"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.persistentUnavailableOneShot" });
     expect(defaultAllowChoice(model)).toBe("allow-everywhere");
-    const noParent = pathGrantDecisionModel(null, "toolApprovalDialog.persistentUnavailableNoParent", true);
+    const noParent = pathGrantDecisionModel(null, "toolApprovalDialog.persistentUnavailableNoParent", true, null);
     expect(allowRefusalKey(noParent)).toBe("toolApprovalDialog.persistentUnavailableNoParent");
   });
 
