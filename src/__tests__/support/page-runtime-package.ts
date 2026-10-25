@@ -9,7 +9,7 @@ export const PDF_RUNTIME_FIXTURE_ENTRIES = Object.freeze([
   "/node_modules/pdfjs-dist/package.json",
   "/node_modules/pdfjs-dist/LICENSE",
   "/node_modules/pdfjs-dist/legacy/build/pdf.mjs",
-  "/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+  "/node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs",
   "/node_modules/pdfjs-dist/standard_fonts/FoxitSans.pfb",
   "/node_modules/pdfjs-dist/cmaps/UniJIS-UTF16-H.bcmap",
   "/node_modules/pdfjs-dist/iccs/CGATS001Compat-v2-micro.icc",
@@ -42,6 +42,9 @@ export function writePageRuntimeResources(resources: string): void {
     if (pack.status !== 0) throw new Error(`asar fixture pack failed: ${pack.stderr}`);
   } finally {
     rmSync(input, { recursive: true, force: true });
+  }
+  for (const entry of PDF_RUNTIME_FIXTURE_ENTRIES) {
+    if (/\/pdfjs-dist\/(?:standard_fonts|cmaps|iccs|wasm)\//.test(entry)) writeFixtureFile(join(resources, "app.asar.unpacked"), entry.slice(1), "pdf runtime fixture");
   }
   for (const notice of ["LICENSE", "THIRD-PARTY-NOTICES.txt", "README.txt"]) {
     writeFixtureFile(resources, `licenses/canvas/${notice}`, "notice");

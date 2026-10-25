@@ -1,4 +1,4 @@
-const { readFileSync, statSync } = require("node:fs");
+const { readFileSync, readdirSync, statSync } = require("node:fs");
 const { isAbsolute, join, relative } = require("node:path");
 
 const CANVAS_TARGETS = Object.freeze({
@@ -48,7 +48,7 @@ const PDF_RUNTIME_ENTRIES = Object.freeze([
   "/node_modules/pdfjs-dist/package.json",
   "/node_modules/pdfjs-dist/LICENSE",
   "/node_modules/pdfjs-dist/legacy/build/pdf.mjs",
-  "/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+  "/node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs",
 ]);
 const PDF_RUNTIME_DIRECTORIES = Object.freeze([
   "/node_modules/pdfjs-dist/standard_fonts/",
@@ -58,6 +58,8 @@ const PDF_RUNTIME_DIRECTORIES = Object.freeze([
 ]);
 const PDF_RUNTIME_WASM = Object.freeze(["openjpeg.wasm", "qcms_bg.wasm", "jbig2.wasm"]);
 const PDF_EXCLUDED_ENTRY = /^\/node_modules\/pdfjs-dist\/(?:wasm\/quickjs-eval\.|legacy\/build\/pdf\.sandbox)/;
+/** Data the reader loads by path; unpacked so the archive budget covers code. */
+const PDF_UNPACKED_DIRECTORIES = Object.freeze(["standard_fonts", "cmaps", "iccs", "wasm"]);
 
 /** Validate pdf.js entries inside app.asar (paths as `@electron/asar` lists them, `/`-separated). */
 function assertPdfRuntimeEntries(entries) {
@@ -77,11 +79,24 @@ function assertPdfRuntimeEntries(entries) {
   if (unexpected.length > 0) throw new Error(`packaged PDF renderer includes script-evaluation files: ${unexpected.join(", ")}`);
 }
 
+/** Validate the pdf.js data the reader loads by path, unpacked beside the archive. */
+function assertPdfUnpackedData(nodeModules) {
+  const root = join(nodeModules, "pdfjs-dist");
+  for (const directory of PDF_UNPACKED_DIRECTORIES) {
+    const path = join(root, directory);
+    const files = statSync(path, { throwIfNoEntry: false })?.isDirectory()
+      ? readdirSync(path, { withFileTypes: true }).filter((entry) => entry.isFile()) : [];
+    if (files.length === 0) throw new Error(`packaged PDF renderer data missing: ${join(root, directory)}`);
+  }
+  for (const wasm of PDF_RUNTIME_WASM) requireFile(join(root, "wasm", wasm));
+}
+
 /** Notices Ave ships for the externalized page renderer packages. */
 const PAGE_RENDERER_LICENSE_NOTICES = Object.freeze(["LICENSE", "THIRD-PARTY-NOTICES.txt", "README.txt"]);
 
 module.exports = {
   assertCanvasRuntimeFiles,
   assertPdfRuntimeEntries,
+  assertPdfUnpackedData,
   PAGE_RENDERER_LICENSE_NOTICES,
 };

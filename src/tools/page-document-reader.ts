@@ -289,7 +289,8 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   if (!bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) corrupt();
   const { createCanvas, library } = await loadPdfRuntime();
   const moduleUrl = import.meta.resolve("pdfjs-dist/legacy/build/pdf.mjs");
-  library.GlobalWorkerOptions.workerSrc = import.meta.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  // The minified worker is the packaged one; the display build keeps its type declarations.
+  library.GlobalWorkerOptions.workerSrc = import.meta.resolve("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
   // pdf.js 6 has no eval-based paths (the former isEvalSupported option is gone);
   // the child also runs with --disallow-code-generation-from-strings.
   const task = library.getDocument({

@@ -75,7 +75,7 @@ describe("PDF runtime failures", () => {
 
   it("ships a pdf.js build without eval-based code paths or an eval option", () => {
     const require = createRequire(import.meta.url);
-    for (const file of ["pdfjs-dist/legacy/build/pdf.mjs", "pdfjs-dist/legacy/build/pdf.worker.mjs"]) {
+    for (const file of ["pdfjs-dist/legacy/build/pdf.mjs", "pdfjs-dist/legacy/build/pdf.worker.min.mjs"]) {
       const source = readFileSync(require.resolve(file), "utf8");
       expect(source).not.toMatch(/isEvalSupported|\bnew Function\(|\beval\(/);
     }

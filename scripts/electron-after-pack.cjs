@@ -8,7 +8,7 @@ const { assertSandboxRuntimeFiles } = require("./lib/sandbox-runtime-files.cjs")
 const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
 const { assertImageRuntimeFiles } = require("./lib/image-runtime-files.cjs");
 const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = require("./lib/ripgrep-runtime-files.cjs");
-const { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, PAGE_RENDERER_LICENSE_NOTICES } = require("./lib/page-runtime-files.cjs");
+const { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, assertPdfUnpackedData, PAGE_RENDERER_LICENSE_NOTICES } = require("./lib/page-runtime-files.cjs");
 
 // Map the packager's numeric architecture enum to native artifact directory names.
 const ARCH_DIR_BY_ENUM = { 1: "x64", 3: "arm64" };
@@ -310,6 +310,7 @@ module.exports = async function afterPack(context) {
     if (!existsSync(path)) throw new Error(`ripgrep license notice missing: ${path}`);
   }
   assertCanvasRuntimeFiles(join(electronResourcesDir(context), "app.asar.unpacked", "node_modules"), context.electronPlatformName, ARCH_DIR_BY_ENUM[context.arch]);
+  assertPdfUnpackedData(join(electronResourcesDir(context), "app.asar.unpacked", "node_modules"));
   const { listPackage } = await import("@electron/asar");
   // Read the archive itself, not Electron's archive redirection, when this runs under Electron.
   const previousNoAsar = process.noAsar;

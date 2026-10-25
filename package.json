@@ -265,9 +265,9 @@
       "!node_modules/{ai,zod,undici,adm-zip,proper-lockfile,papaparse,xlsx,jszip,fast-xml-parser}{,/**/*}",
       "!node_modules/pdfjs-dist/{build,web,image_decoders,types}{,/**/*}",
       "!node_modules/pdfjs-dist/legacy/{web,image_decoders}{,/**/*}",
-      "!node_modules/pdfjs-dist/legacy/build/{pdf.min.mjs,pdf.worker.min.mjs,pdf.sandbox.mjs,pdf.sandbox.min.mjs}",
+      "!node_modules/pdfjs-dist/legacy/build/{pdf.min.mjs,pdf.worker.mjs,pdf.sandbox.mjs,pdf.sandbox.min.mjs}",
       "!node_modules/@nodable/entities{,/**/*}",
-      "!node_modules/pdfjs-dist/wasm/{quickjs-eval.js,quickjs-eval.wasm}",
+      "!node_modules/pdfjs-dist/wasm/{quickjs-eval.js,quickjs-eval.wasm,jbig2_nowasm_fallback.js,openjpeg_nowasm_fallback.js}",
       "!node_modules/@ai-sdk{,/**/*}",
       "!node_modules/@azure/msal-*{,/**/*}",
       "!node_modules/@radix-ui{,/**/*}",
@@ -287,6 +287,7 @@
       "node_modules/better-sqlite3/**",
       "node_modules/sharp/**",
       "node_modules/@napi-rs/**",
+      "node_modules/pdfjs-dist/{standard_fonts,cmaps,iccs,wasm}/**",
       "node_modules/@img/**"
     ],
     "directories": {

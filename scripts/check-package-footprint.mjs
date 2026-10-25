@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
 import { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } from "./lib/ripgrep-runtime-files.cjs";
-import { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, PAGE_RENDERER_LICENSE_NOTICES } from "./lib/page-runtime-files.cjs";
+import { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, assertPdfUnpackedData, PAGE_RENDERER_LICENSE_NOTICES } from "./lib/page-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -463,6 +463,7 @@ assertImageRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, ima
 assertRipgrepRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 assertCanvasRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 assertPdfRuntimeEntries(entries);
+assertPdfUnpackedData(resolve(unpackedDir, "node_modules"));
 
 process.stdout.write(
   [
