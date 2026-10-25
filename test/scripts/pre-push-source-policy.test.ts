@@ -57,6 +57,7 @@ describe("test-only diff policy", () => {
     "test/e2e/example.test.ts", "test/screenshots/example.test.ts", "test/ordinary-helper.ts",
     "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
     "src/core/__mocks__/client.ts", "scripts/hooks/pre-push-source-policy.mjs",
+    "src/main/fixtures/defaults.json", "src/core/fixtures/data.json",
   ])("refuses global inputs, test helpers and non-test inputs: %s", (path) => {
     expect(isTestOnlyDiff([modified(path)])).toBe(false);
     expect(isTestOnlyDiff([modified("src/core/__tests__/route-engine.test.ts"), modified(path)])).toBe(false);
@@ -70,8 +71,11 @@ describe("test-only diff policy", () => {
     ]) expect(isTestHelperModule(path), path).toBe(true);
     for (const path of [
       "src/core/__tests__/route-engine.test.ts", "test/fixtures/example/data.json", "src/core/route-engine.ts",
-      "scripts/run-ci-suite.mjs", "src/../test/ordinary-helper.ts",
+      "scripts/run-ci-suite.mjs", "src/../test/ordinary-helper.ts", "src/main/fixtures/defaults.ts",
     ]) expect(isTestHelperModule(path), path).toBe(false);
+    expect(isTestSupportFile("src/main/fixtures/defaults.json")).toBe(false);
+    expect(isTestSupportFile("src/core/__tests__/fixtures/data.json")).toBe(true);
+    expect(isTestSupportFile("test/fixtures/example/data.json")).toBe(true);
   });
 
   it("refuses mixed diffs, unsafe paths, mode changes and unresolved changes", () => {

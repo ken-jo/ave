@@ -74,7 +74,8 @@ modules, the Vitest config, `config/`, `scripts/` (the selection itself) and
 `integration/*`, whose full run is the category merge. Failed test-only
 discovery fails CI.
 A non-test-only category PR (`integration/*` into `main`) runs the full suite.
-Main pushes use HEAD's first-parent diff with the same trusted-selection rule
+Main pushes use the push's whole `before..HEAD` diff (full when `before` is
+missing, zero or not an ancestor) with the same trusted-selection rule
 as other non-integration PRs: uncertainty falls back to full. Integration-base
 PRs retain the best traced selection, including uncertainty and wide fan-out;
 an unresolved merge-commit diff fails CI. Release tags, nightly schedules and

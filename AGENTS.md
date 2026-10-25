@@ -316,8 +316,11 @@ validates the peeled commit. A tag that does not peel to a commit is refused.
 Clear assume-unchanged and skip-worktree index
 flags so every tracked file can be verified in a complete checkout.
 
-The full suite and build run once before merge on the exact main + PR merged
-tree. CI test scope follows `scripts/run-ci-suite.mjs`. Do not manually duplicate
+CI builds the exact main + PR merged tree before merge, and its test scope
+follows `scripts/run-ci-suite.mjs`: a test-only diff (collected tests and
+fixture assets only) runs its affected tests and the must-run set, never the
+full suite; a non-test-only category merge, a helper, setup, config, script or
+workflow change off integration bases, and untrusted selections run it whole. Do not manually duplicate
 the full trio around a push. After failure, rerun only failed or invalidated
 checks. No CI workflow and no release gate runs Playwright. The suite
 (`bun run test:ui-e2e`) is local and seeds only fixture plugins from

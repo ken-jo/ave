@@ -1,7 +1,7 @@
 import type { PrePushChange } from "./pre-push-source-policy.mjs";
 
 export const GLOBAL_INPUT_TIER: "global-input";
-export const FULL_SUITE_DEFERRED: "full suite deferred to CI";
+export const FULL_SUITE_DEFERRED: "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks";
 export const FROZEN_LOCKFILE_ARGS: readonly string[];
 
 export function selectScopedTier<T extends PrePushChange>(entries: T[], unresolvedReasons?: readonly string[]): {

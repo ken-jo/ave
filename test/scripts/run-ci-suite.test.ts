@@ -41,11 +41,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 const root = resolve(import.meta.dirname, "../..");
 const spawnSyncImplementation = vi.mocked(spawnSync).getMockImplementation()!;
 
-function withGitOutputs(outputs: string[], check: () => void) {
+function withGitOutputs(outputs: (string | { stdout: string; status: number })[], check: () => void) {
   const gitRun = vi.mocked(spawnSync);
   gitRun.mockClear();
-  for (const stdout of outputs) {
-    gitRun.mockReturnValueOnce({ pid: 1, output: [], stdout, stderr: "", status: 0, signal: null });
+  for (const output of outputs) {
+    const { stdout, status } = typeof output === "string" ? { stdout: output, status: 0 } : output;
+    gitRun.mockReturnValueOnce({ pid: 1, output: [], stdout, stderr: "", status, signal: null });
   }
   try {
     check();
@@ -325,47 +326,99 @@ describe("CI test selection fallbacks", () => {
   });
 });
 
-describe("event rules over the first-parent diff", () => {
+describe("event rules over the pull request merge and the whole push", () => {
   const changedTest = "src/core/__tests__/route-engine.test.ts";
+  const before = "b".repeat(40);
+  const mainPush = { ref: "refs/heads/main", before };
+  const isAncestor = { stdout: "", status: 0 };
 
-  it.each([
-    { event: "pull_request", refs: { headRef: "integration/test-speed", baseRef: "main" }, parents: "head first second", rule: "test-only category merge" },
-    { event: "push", refs: { ref: "refs/heads/main" }, parents: "head first second", rule: "main push: trusted first-parent selection" },
-    { event: "push", refs: { ref: "refs/heads/main" }, parents: "head first", rule: "main push: trusted first-parent selection" },
-  ])("selects a test-only $event with $parents", ({ event, refs, parents, rule }) => {
-    withGitOutputs([`${parents}\n`, `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
-      const plan = planCiSuite(event, refs);
+  it("selects a test-only category merge over the merge commit's first parent", () => {
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+      const plan = planCiSuite("pull_request", { headRef: "integration/test-speed", baseRef: "main" });
       expect(plan.mode).toBe("affected");
-      expect(plan.reason).toContain(rule);
+      expect(plan.reason).toContain("test-only category merge");
       expect(plan.reason).toContain("test-only diff");
       expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
       expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
 
+  it("selects a test-only main push over before..HEAD", () => {
+    withGitOutputs([isAncestor, `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+      const plan = planCiSuite("push", mainPush);
+      expect(plan.mode).toBe("affected");
+      expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
+      expect(plan.reason).toContain("test-only diff");
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+      const calls = vi.mocked(spawnSync).mock.calls;
+      expect(calls[0][1]).toEqual(["merge-base", "--is-ancestor", before, "HEAD"]);
+      expect(calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", before, "HEAD", "--"]);
+    });
+  });
+
+  it("classifies a multi-commit push as a whole: an earlier source commit makes a test-only tip non-test-only", () => {
+    // Commit 1 changes src/tools/agent-guide.ts, commit 2 only a test. HEAD's
+    // first parent alone would read as test-only; before..HEAD carries both.
+    const source = "src/tools/agent-guide.ts";
+    const guideTest = "src/tools/__tests__/workflow-tools.test.ts";
+    expect(trackedTests).toContain(guideTest);
+    const coverage = [{ source, tests: [guideTest] }];
+    const diff = `:100644 100644 aaaa bbbb M\0${source}\0:100644 100644 cccc dddd M\0${changedTest}\0`;
+    withGitOutputs([isAncestor, diff, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
+      const plan = planCiSuite("push", mainPush);
+      expect(plan.mode).toBe("affected");
+      expect(plan.reason).not.toContain("test-only diff");
+      expect(plan.tests).toEqual(expect.arrayContaining([guideTest, changedTest]));
+    });
+  });
+
   it("uses trusted selection for a code push to main", () => {
     const source = "src/core/route-engine.ts";
     const coverage = [{ source, tests: [changedTest] }];
-    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
-      const plan = planCiSuite("push", { ref: "refs/heads/main" });
+    withGitOutputs([isAncestor, `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
+      const plan = planCiSuite("push", mainPush);
       expect(plan.mode).toBe("affected");
-      expect(plan.reason).toContain("main push: trusted first-parent selection");
+      expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
       expect(plan.reason).not.toContain("test-only diff");
       expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
     });
   });
 
   it("falls back to full for an untrusted main push", () => {
-    withGitOutputs(["head first\n", ":100644 100644 aaaa bbbb M\0vitest.config.ts\0", trackedTests.join("\0")], () => {
-      expect(planCiSuite("push", { ref: "refs/heads/main" })).toMatchObject({
+    withGitOutputs([isAncestor, ":100644 100644 aaaa bbbb M\0vitest.config.ts\0", trackedTests.join("\0")], () => {
+      expect(planCiSuite("push", mainPush)).toMatchObject({
         mode: "full", reason: expect.stringContaining("vitest.config.ts is a global test or build input"),
       });
     });
   });
 
-  it("falls back to full when a main push has no first parent", () => {
-    withGitOutputs(["head\n"], () => {
-      expect(planCiSuite("push", { ref: "refs/heads/main" })).toMatchObject({ mode: "full", reason: expect.stringContaining("no first parent") });
+  it.each([
+    { name: "missing", value: undefined, reason: "no before commit" },
+    { name: "malformed", value: "HEAD~1", reason: "no before commit" },
+    { name: "zero", value: "0".repeat(40), reason: "zero before commit" },
+  ])("runs full for a main push whose before commit is $name, without reading git", ({ value, reason }) => {
+    withGitOutputs([], () => {
+      expect(planCiSuite("push", { ref: "refs/heads/main", before: value })).toMatchObject({
+        mode: "full", reason: expect.stringContaining(reason), tests: [],
+      });
+    });
+  });
+
+  it("plans over the same base ci.yml's documentation classifier diffs from", () => {
+    const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+    const build = workflow.split("\n  build:\n")[1]!.split(/\n  [a-z][a-z0-9-]+:\n/)[0]!;
+    const classifierBase = /BASE_SHA: (\$\{\{ [^}]+ \}\})\n/u.exec(build.slice(build.indexOf("id: docs-impact")))?.[1];
+    const plan = build.slice(build.indexOf("name: Plan the suite"));
+    expect(classifierBase).toBe("${{ github.event.pull_request.base.sha || github.event.before }}");
+    expect(plan.split(/^      - /m)[0]).toContain(`AVE_CI_DIFF_BASE: ${classifierBase}`);
+    expect(readFileSync(join(root, "scripts/run-ci-suite.mjs"), "utf8")).toContain("before: process.env.AVE_CI_DIFF_BASE");
+  });
+
+  it("runs full for a force push whose before commit is not an ancestor of HEAD", () => {
+    withGitOutputs([{ stdout: "", status: 1 }], () => {
+      expect(planCiSuite("push", mainPush)).toEqual({
+        mode: "full", reason: `the push's before commit ${before} is not an ancestor of HEAD`, tests: [],
+      });
     });
   });
 });
@@ -593,10 +646,26 @@ describe("unresolved pull request diffs", () => {
 describe("the must-run set", () => {
   it("names security, permissions, sandbox, contract, IPC and naming tests that all exist", () => {
     expect(Object.keys((mustRunDocument as { groups: object }).groups).sort())
-      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security"]);
+      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security", "tree-invariants"]);
     expect(mustRunTests).toContain("src/permissions/__tests__/runner-decisions.test.ts");
     expect(mustRunTests).toContain("src/ipc/__tests__/channel-inventory.test.ts");
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
+  });
+
+  it("holds every test that scans the tracked tree, so a test-only diff runs those invariants", () => {
+    // A test-only pull request that adds a tsx-child test without listing it
+    // above breaks this file's out-of-process invariant without touching this
+    // file; the must-run set is the one place that makes such suites run.
+    const treeScanners = trackedTests.filter((test) => /["'`]ls-files["'`]/u.test(readText(test) ?? ""));
+    expect(treeScanners).toEqual(expect.arrayContaining([
+      "test/scripts/run-ci-suite.test.ts", "test/scripts/pre-push-tier.test.ts",
+      "test/scripts/repository-identity.test.ts", "test/scripts/pre-push-markdown-policy.test.ts",
+    ]));
+    expect(mustRunTests).toEqual(expect.arrayContaining(treeScanners));
+    const added = "src/core/__tests__/route-engine.test.ts";
+    const plan = select([{ ...modified(added), status: "A", oldMode: "000000" }]);
+    expect(plan.reason).toContain("test-only diff");
+    expect(plan.tests).toEqual(expect.arrayContaining(treeScanners));
   });
 
   it("holds every test that runs repository code in a tsx child or an esbuild bundle", () => {

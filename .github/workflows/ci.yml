@@ -2,7 +2,7 @@ name: CI
 # Test-only diffs (collected tests and fixture assets only) run affected tests
 # on every PR base and main push, never the full suite. Test helper and setup
 # modules, the Vitest config, config/, scripts/ and .github/ are never
-# test-only. Main pushes use trusted first-parent selection, like
+# test-only. Main pushes use trusted selection over before..HEAD, like
 # non-integration PRs;
 # uncertainty falls back to full. Integration-base PRs keep traced selection.
 # Non-test-only category PRs, release tags, nightly schedules and manual
@@ -159,6 +159,13 @@ jobs:
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        # The same base the documentation classifier diffs from. A push plans
+        # over everything since `before`, so a multi-commit or rebase-merged
+        # push is classified as a whole; scripts/run-ci-suite.mjs plans full
+        # when it is missing, zero or not an ancestor of HEAD. A pull request
+        # plans over its merge commit's first parent.
+        env:
+          AVE_CI_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
@@ -279,7 +286,7 @@ jobs:
         # Test-only diffs always keep changed tests, fixture readers, triggered
         # locks and the must-run set; a test helper or setup module is never
         # test-only and runs full off integration bases. Other main pushes use trusted selection
-        # from HEAD's first-parent diff, with uncertainty falling back to full.
+        # over the push's before..HEAD diff, with uncertainty falling back to full.
         # Non-test-only category merges, tags, schedule and dispatch run full.
         # Integration-base PRs retain best traced selection on uncertainty and
         # fail on an unresolved diff. Local pre-push is unchanged.

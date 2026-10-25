@@ -15,8 +15,10 @@
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
 // Pre-push tiers (the log names the tier and why). Every pull request's CI
-// runs the full suite and the build, so a push runs them only on request; the
-// log line of every scoped tier says "full suite deferred to CI":
+// runs the build and the test scope scripts/run-ci-suite.mjs picks (full, or
+// affected tests only; a test-only diff is never run whole), so a push runs
+// the full suite only on request; the log line of every scoped tier says
+// "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks":
 //   none          a new branch at a commit the remote's default or
 //                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks

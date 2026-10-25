@@ -33,5 +33,5 @@ export declare function ciSuiteArguments(plan: CiSuitePlan, coverage: boolean, s
 export declare function isCategoryMergeToMain(headRef: string | undefined, baseRef: string | undefined): boolean;
 export declare function planCiSuite(
   eventName: string | undefined,
-  refs?: { headRef?: string; baseRef?: string; ref?: string },
+  refs?: { headRef?: string; baseRef?: string; ref?: string; before?: string },
 ): CiSuitePlan;

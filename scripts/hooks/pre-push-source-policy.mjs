@@ -209,15 +209,18 @@ export function isTestSupportFile(path) {
   return isCanonicalGitPath(path) && safeCliPath.test(path) && !isFullCheckGlobalInput(path) &&
     !isCollectedVitestFile(path) && !path.split("/").some((segment) => deniedTestTreeSegments.has(segment)) &&
     (/^(?:src|test)\/(?:[^/]+\/)*__tests__\/.+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path) ||
-      /^(?:src|test)\/(?:.*\/)?fixtures\/.+/.test(path));
+      // Fixtures belong to a test tree: anywhere under test/, and in src/ only
+      // under a __tests__ directory (src/main/fixtures/ is product data).
+      /^(?:test\/|src\/(?:.*\/)?__tests__\/)(?:.*\/)?fixtures\/.+/.test(path));
 }
 
 const testModuleExtension = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
-const testHelperLocation = /^test\/|(?:^|\/)(?:__tests__|__mocks__|fixtures)\//;
+const testHelperLocation = /^test\/|(?:^|\/)(?:__tests__|__mocks__)\//;
 
 /**
  * A test helper or setup module: an importable file in a test tree (anything
- * under test/, or under a __tests__, __mocks__ or fixtures directory) that
+ * under test/, or under a __tests__ or __mocks__ directory, fixtures there
+ * included) that
  * Vitest does not collect. One helper can change what any number of tests
  * observe, and the import graph only sees the importers it can trace, so CI
  * never treats a helper change as test-only and runs the full suite for it on

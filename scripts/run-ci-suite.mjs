@@ -5,7 +5,7 @@
 // - A test-only diff on any PR base or main push always keeps the affected
 //   selection, including changes above the usual fan-out limit.
 // - A non-test-only category PR (integration/* -> main) runs the full suite.
-// - Main pushes and other non-integration PRs use trusted selection; uncertain
+// - Main pushes (over before..HEAD) and other non-integration PRs use trusted selection; uncertain
 //   inputs, failed discovery and excessive fan-out fall back to the full suite.
 // - Integration-base PRs keep their best traced selection even above the fan-out limit.
 // - Tags, schedules and manual dispatches run the full suite. Only schedules
@@ -25,9 +25,13 @@
 // silently dropping importers. A deletion-only test diff runs the must-run set
 // and any triggered locks/readers.
 //
-// Both a PR merge commit and a main push are diffed against HEAD's first
-// parent. An unresolved integration-base PR diff fails; other unresolved diffs
-// use the full suite. The summary records the event rule and tracing outcome.
+// A PR merge commit is diffed against HEAD's first parent. A main push is
+// diffed over everything it pushed, `before..HEAD` (the push event's `before`,
+// the same base ci.yml's documentation classifier uses), so a multi-commit or
+// rebase-merged push is classified as a whole; a missing, zero (new branch) or
+// non-ancestor (force-pushed) `before` runs the full suite. An unresolved
+// integration-base PR diff fails; other unresolved diffs use the full suite.
+// The summary records the event rule and tracing outcome.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -407,14 +411,35 @@ function trackedVitestFiles() {
   return git(["ls-files", "-z", "--", "src", "test"]).split("\0").filter((path) => path && isCollectedVitestFile(path)).sort();
 }
 
-/** The pull request's change set, or a reason it cannot be read. */
-function firstParentChanges(pullRequest) {
+function rawDiff(base, what) {
+  const entries = parseGitRawDiff(git(["diff", "--no-renames", "--raw", "-z", base, "HEAD", "--"]));
+  return entries === null ? { reason: `${what} could not be parsed` } : { entries };
+}
+
+/** The pull request merge commit's change set, or a reason it cannot be read. */
+function pullRequestChanges() {
   const parents = git(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ").slice(1);
-  if (pullRequest && parents.length !== 2) return { reason: `HEAD has ${parents.length} parent(s), not a pull request merge commit` };
-  if (parents.length === 0) return { reason: "HEAD has no first parent for the main push diff" };
-  const entries = parseGitRawDiff(git(["diff", "--no-renames", "--raw", "-z", parents[0], "HEAD", "--"]));
-  if (entries === null) return { reason: "the merge commit's diff could not be parsed" };
-  return { entries };
+  if (parents.length !== 2) return { reason: `HEAD has ${parents.length} parent(s), not a pull request merge commit` };
+  return rawDiff(parents[0], "the merge commit's diff");
+}
+
+const FULL_SHA = /^[0-9a-f]{40}$/u;
+
+/**
+ * Everything a push to main delivered: `before..HEAD`. HEAD's first parent
+ * alone would hide the earlier commits of a multi-commit or rebase-merged
+ * push, so a production change followed by a test-only commit would read as
+ * test-only. A missing or zero `before` (the branch was created) or one that
+ * is not an ancestor of HEAD (a force push) has no trustworthy base.
+ */
+function pushChanges(before) {
+  if (typeof before !== "string" || !FULL_SHA.test(before)) return { reason: "the push has no before commit to diff against" };
+  if (/^0+$/u.test(before)) return { reason: "the push created the branch (zero before commit)" };
+  const ancestry = spawnSync("git", ["merge-base", "--is-ancestor", before, "HEAD"], { encoding: "utf8" });
+  if (ancestry.error || ancestry.status !== 0) {
+    return { reason: `the push's before commit ${before} is not an ancestor of HEAD` };
+  }
+  return rawDiff(before, "the push's before..HEAD diff");
 }
 
 function discoverRelatedTests(paths) {
@@ -440,7 +465,7 @@ export function isCategoryMergeToMain(headRef, baseRef) {
   return baseRef === "main" && typeof headRef === "string" && headRef.startsWith("integration/");
 }
 
-export function planCiSuite(eventName, { headRef, baseRef, ref } = {}) {
+export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
   if (typeof eventName !== "string" || eventName.length === 0) {
     throw new Error("GITHUB_EVENT_NAME is unset: the CI suite needs the triggering event");
   }
@@ -451,7 +476,7 @@ export function planCiSuite(eventName, { headRef, baseRef, ref } = {}) {
   }
   let changes;
   try {
-    changes = firstParentChanges(!mainPush);
+    changes = mainPush ? pushChanges(before) : pullRequestChanges();
   } catch (error) {
     changes = { reason: error instanceof Error ? error.message : String(error) };
   }
@@ -483,7 +508,7 @@ export function planCiSuite(eventName, { headRef, baseRef, ref } = {}) {
     },
     discoverRelated: discoverRelatedTests,
   });
-  const rule = mainPush ? "main push: trusted first-parent selection" : isCategoryMergeToMain(headRef, baseRef)
+  const rule = mainPush ? "main push: trusted selection over before..HEAD" : isCategoryMergeToMain(headRef, baseRef)
     ? "test-only category merge" : `pull request into ${baseRef}`;
   return { ...plan, reason: `${rule}; ${plan.reason}` };
 }
@@ -529,6 +554,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
         headRef: process.env.GITHUB_HEAD_REF,
         baseRef: process.env.GITHUB_BASE_REF,
         ref: process.env.GITHUB_REF,
+        before: process.env.AVE_CI_DIFF_BASE,
       });
     const eventName = process.env.GITHUB_EVENT_NAME;
     const coverage = runsCoverage(eventName);
