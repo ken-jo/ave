@@ -1,19 +1,4 @@
-/**
- * Plugin UI Host — webview registration flow (#447 register-before-attach)
- *
- * Verifies that PluginUiHostView:
- *   1. Mounts <webview> with the shell URL initially so preload runs in the
- *      right renderer world.
- *   2. Registers the webview as soon as its webContentsId is available,
- *      including the cold-boot path where did-attach is missed by the host.
- *   3. Falls back to error text when asset URLs are missing.
- *   4. Shows error text when registration fails.
- *   5. Ignores failed child-frame navigations without retiring the guest.
- *   6. Carries the guest's focus out to the pane frame around it.
- *
- * JSDOM has no real Electron webview — tests assert JSX shape and event
- * handling only, not actual Electron IPC or preload execution.
- */
+// Initial guest attachment must load the real shell and register before entry resolution.
 import "./setup.js";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { act } from "@testing-library/react";
@@ -51,12 +36,7 @@ function mountHost(view: PluginUiExtensionView | null): HTMLElement {
   return container;
 }
 
-/**
- * Fire a synthetic did-attach event. The host reads the webContentsId via
- * the canonical `node.getWebContentsId()` accessor (#498), not via an
- * `e.webContentsId` payload (which the real Electron event doesn't carry),
- * so the helper stubs the method on the webview element.
- */
+// Attachment events expose no id payload; model the webview accessor the runtime actually uses.
 function fireDidAttach(webview: Element, webContentsId: number) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (webview as any).getWebContentsId = () => webContentsId;
@@ -84,12 +64,8 @@ afterEach(() => {
 
 describe("PluginUiHostView — webview attach flow", () => {
   it("mounts webview with src=shellUrl from the start (preload only runs at first attach)", async () => {
-    // #498: `<webview preload>` runs ONLY at first guest attach — subsequent
-    // navigations do NOT re-execute preload, so the shell src must already
-    // be the real shell URL on initial mount or `avePlugin` will be missing
-    // in the new main world. The race vs registerPluginWebview is absorbed
-    // by the host's `pendingEntryUrlResolvers` queue + the shell's 6s retry
-    // budget.
+    // Preload runs only on first guest attach; mount with the real shell URL.
+    // Host pending-entry handling absorbs registration timing.
     const registerPluginWebview = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("aveApi", {
       pluginShellUrl: SHELL_URL,
@@ -104,8 +80,6 @@ describe("PluginUiHostView — webview attach flow", () => {
     expect(webview?.getAttribute("src")).toBe(SHELL_URL);
     expect(webview?.getAttribute("preload")).toBe(PRELOAD_URL);
 
-    // did-attach still fires registerPluginWebview so the host can resolve
-    // the shell's getEntryUrl request once the binding lands.
     await act(async () => {
       fireDidAttach(webview!, 42);
       await new Promise((r) => setTimeout(r, 0));
@@ -126,11 +100,7 @@ describe("PluginUiHostView — webview attach flow", () => {
       pluginPreloadUrl: PRELOAD_URL,
       registerPluginWebview,
     });
-    // Model the real accessor: Electron THROWS on a guest that is not attached
-    // yet. The previous stub returned an id unconditionally, so it certified a
-    // path production never takes — the host called it from `did-start-loading`
-    // and from a microtask queued in the ref callback, and both threw on every
-    // mount (measured: 90 uncaught exceptions over 27s on a cold boot).
+    // The real accessor throws before attachment; unconditional ids would hide lifecycle errors.
     let attached = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (HTMLElement.prototype as any).getWebContentsId = () => {
@@ -150,10 +120,8 @@ describe("PluginUiHostView — webview attach flow", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // Nothing has attached yet, so nothing may have been read or registered.
     expect(registerPluginWebview).toHaveBeenCalledTimes(0);
 
-    // did-attach missed; the guest lifecycle events still carry the handshake.
     attached = true;
     await act(async () => {
       webview!.dispatchEvent(new Event("dom-ready"));
@@ -167,7 +135,6 @@ describe("PluginUiHostView — webview attach flow", () => {
       entryUrl: VIEW.entryUrl,
     });
 
-    // Later guest events must not re-register.
     await act(async () => {
       webview!.dispatchEvent(new Event("did-finish-load"));
       await new Promise((r) => setTimeout(r, 0));
@@ -195,10 +162,7 @@ describe("PluginUiHostView — webview attach flow", () => {
     const first = container.querySelector("webview");
     expect(first).not.toBeNull();
 
-    // `activePluginView` is `pluginViews.find(...)`, so any upstream refresh
-    // hands down a fresh object with identical contents. That must not tear
-    // the guest down: doing so re-runs ensurePluginPartition and remounts,
-    // and on repeated churn becomes the ~0.7s mount/unmount flicker loop.
+    // Equivalent view objects must not remount the guest or restart partition setup.
     await act(async () => {
       root.render(<PluginUiHostView view={{ ...VIEW, extension: { ...VIEW.extension } }} />);
       await new Promise((r) => setTimeout(r, 0));
@@ -251,7 +215,6 @@ describe("PluginUiHostView — webview attach flow", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // After failed registration: error text replaces the webview.
     expect(container.querySelector("webview")).toBeNull();
     expect(container.textContent).toMatch(/unknown-plugin-id/);
   });
@@ -315,17 +278,7 @@ describe("PluginUiHostView — webview attach flow", () => {
 });
 
 describe("PluginUiHostView — webview security attributes", () => {
-  /**
-   * These are the RENDERER's request. Main enforces the same three values at
-   * `will-attach-webview` (`src/main/plugin-webview-attach.ts`), which is what
-   * actually holds — a `webpreferences` string is ignored key-by-key when
-   * mistyped, and it is a DOM attribute in a renderer that may itself be the
-   * thing compromised.
-   *
-   * Pinned anyway so the two sides cannot silently disagree. A request that
-   * drifts from what main enforces is how a future reader concludes the wrong
-   * one is authoritative.
-   */
+  // Renderer preference requests are not enforcement; main must validate all three at guest attachment.
   it("requests the isolated, unprivileged configuration", () => {
     vi.stubGlobal("aveApi", {
       pluginShellUrl: SHELL_URL,
@@ -341,8 +294,7 @@ describe("PluginUiHostView — webview security attributes", () => {
   });
 
   it("runs the plugin in its own session partition", () => {
-    // Storage siloing, and the key main's attach guard matches on to decide
-    // that this frame is a plugin frame at all.
+    // The partition isolates storage and identifies plugin frames to the main attach guard.
     vi.stubGlobal("aveApi", {
       pluginShellUrl: SHELL_URL,
       pluginPreloadUrl: PRELOAD_URL,
@@ -355,18 +307,7 @@ describe("PluginUiHostView — webview security attributes", () => {
 });
 
 describe("PluginUiHostView — focus follow-through", () => {
-  /**
-   * A click inside the guest happens in ANOTHER renderer process: no click and
-   * no bubbling focus event reaches host DOM, so the frame's focus capture
-   * cannot see it and the focus border stays on whichever pane had it. The
-   * <webview> host element taking DOM focus is the one thing that does cross,
-   * and `focus` does not bubble — so it is re-raised as `focusin`, which is the
-   * event the frame's `onFocus` listens for.
-   *
-   * The real gesture is a mouse click in the guest, which jsdom cannot produce;
-   * what is pinned here is the host-side half — the element's own focus event
-   * reaching the frame's handler.
-   */
+  // Guest clicks do not bubble into host DOM; capture focus on the host element to update pane ownership.
   it("raises the webview's own focus into the frame's onFocus", () => {
     vi.stubGlobal("aveApi", {
       pluginShellUrl: SHELL_URL,
@@ -402,18 +343,7 @@ describe("PluginUiHostView — focus follow-through", () => {
 });
 
 describe("PluginUiHostView — panel width", () => {
-  /**
-   * The panel used to be clamped to the chat reading column (--reading-column-max).
-   * That clamp was compensation: the plugin UIs were authored for a ~800px
-   * detached window, so the host pinned the panel narrow rather than let their
-   * non-adapting layouts show. Measured consequence — at a 2200px window the
-   * shell had 1960px available and the webview still rendered at 912px.
-   *
-   * The plugins now cap their own content column, so the clamp only wasted
-   * width. Pinned here because nothing else can see it: typecheck, build and
-   * every other test pass either way, and the regression is invisible until
-   * someone opens a plugin panel on a wide screen.
-   */
+  // Plugin panes must use available host width rather than a reading-column clamp.
   it("hands the plugin the full pane instead of the reading column", () => {
     vi.stubGlobal("aveApi", {
       pluginShellUrl: SHELL_URL,
@@ -423,11 +353,10 @@ describe("PluginUiHostView — panel width", () => {
 
     const container = mountHost(VIEW);
 
-    // Assert the shell rendered first. Without this, a shell that failed to
-    // render at all would satisfy the "no clamp" check and read as a pass.
+    // Assert the shell exists before testing absence of a width clamp.
     expect(container.querySelector('[data-testid="plugin-page-shell"]')).not.toBeNull();
 
-    // The clamp lives on the shell's inner column, not on the testid node.
+    // Inspect the inner column because it owns the clamp.
     expect(container.querySelector('[class*="max-w-(--reading-column-max)"]')).toBeNull();
   });
 });

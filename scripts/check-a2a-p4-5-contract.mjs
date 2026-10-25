@@ -472,8 +472,7 @@ for (const [needle, label] of [
   ["`TaskNotFoundError`", "TaskNotFound behavior"],
   ["`TaskNotCancelableError`", "TaskNotCancelable behavior"],
   ["`historyLength` follows A2A v1.0 exactly", "GetTask historyLength"],
-  // Verification is app-complete (owner decision 2026-10-09): the section
-  // must name its in-app proofs, not an external evidence gate.
+  // Verification must name in-app proofs; external evidence is not a gate.
   ["In-app verification (owner decision 2026-10-09)", "in-app verification section"],
   ["src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts", "two-host in-app round trip"],
   ["They are neither required nor optional legacy fields", "strict snapshot evidence removal"],

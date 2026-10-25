@@ -141,14 +141,7 @@ try {
     if (added.length > 0) {
       fail("new issues exceed the reviewed baseline", added.map(formatKnipIssue));
     } else if (resolved.length > 0) {
-      // The ratchet only turns if BOTH directions are enforced. Reporting a
-      // resolved entry and passing anyway leaves the debt figure frozen at
-      // whatever it was the last time somebody remembered to regenerate: work
-      // that genuinely removed unused code does not lower it, so the number
-      // stops describing the repo and starts describing the last update.
-      //
-      // Nothing here asks anyone to clean up debt they did not touch. It fires
-      // only once an entry is ALREADY gone, and the fix is to record that.
+      // Reject stale baseline entries as well as growth so resolved debt is recorded.
       fail(
         `the baseline still lists ${resolved.length} entr${resolved.length === 1 ? "y" : "ies"}`
         + " that no longer exist — run `bun run check:knip:update` to record the removal",

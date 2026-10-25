@@ -16,9 +16,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
       // Hold the response to exercise the supported cross-channel ordering deterministically.
       ipcMain.handle(channel, () => new Promise((resolve) => { state.resolveAlertSnapshot = resolve; }));
     }, ALERTS.listOpen);
-    // Alert cards belong to the Suggestions conversation. Main creates it before
-    // staging a real card; these cards are pushed straight to the renderer, so
-    // the test creates it and opens it.
+    // Injected cards bypass main-process conversation creation; create and open Suggestions explicitly.
     writeFileSync(join(ctx.aveHome, "sessions", `${SUGGESTIONS_SESSION_ID}.jsonl`), "");
     await ctx.page.reload();
     await expect.poll(() => ctx.app.evaluate(() =>
@@ -44,7 +42,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
       win.webContents.send(payload.channels.dismiss, payload.withdrawnId);
       win.webContents.send(payload.channels.show, payload.refreshed);
     }, { channels: OVERLAY_V1, withdrawnId: withdrawn.id, refreshed });
-    // Both pushes share a transport: seeing the second also observes the dismissal.
+    // Shared transport ordering means the second push also observes dismissal.
     await expect(ctx.page.getByText(refreshed.summary, { exact: true })).toBeVisible();
 
     await ctx.app.evaluate((_main, cards) => {
@@ -52,7 +50,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
       if (!state.resolveAlertSnapshot) throw new Error("No pending alert snapshot");
       state.resolveAlertSnapshot(cards);
     }, [old, withdrawn, control]);
-    // The untouched control proves the snapshot was processed before assertions.
+    // The untouched card proves the snapshot arrived before assertions.
     await expect(ctx.page.getByTestId("routine-card-indicator")).toHaveText("2/2");
     await expect(ctx.page.getByText(refreshed.summary, { exact: true })).toBeVisible();
     await expect(ctx.page.getByText(withdrawn.title, { exact: true })).toHaveCount(0);

@@ -1,16 +1,4 @@
-/**
- * fetch-uv.mjs — uv standalone binary 다운로드 스크립트
- *
- * GitHub releases (astral-sh/uv) 에서 필요한 플랫폼 바이너리만 다운로드한다.
- * 이미 존재하면 skip (idempotent).
- *
- * 사용:
- *   node scripts/fetch-uv.mjs                  # current platform only
- *   node scripts/fetch-uv.mjs --target linux-x64
- *   node scripts/fetch-uv.mjs --all
- *
- * postinstall 훅으로 자동 실행됨. 개발 환경에서는 현재 플랫폼 바이너리만 받는다.
- */
+// postinstall downloads only the current platform binary; --target and --all select others.
 
 import { existsSync } from "node:fs";
 import { mkdir, chmod, rename, readFile, writeFile } from "node:fs/promises";
@@ -23,9 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
-// ─── 버전/대상 결정 ───────────────────────────────────────
-
-const DEFAULT_VERSION = "0.7.3"; // uv 안정 버전 (2026-04-13 기준)
+const DEFAULT_VERSION = "0.7.3"; // Pin downloads to a reproducible version.
 const METADATA_FILE = "uv.meta.json";
 
 function usage() {
@@ -85,8 +71,6 @@ function parseArgs() {
 const CLI_ARGS = parseArgs();
 const UV_VERSION = DEFAULT_VERSION;
 
-// ─── 유틸 ─────────────────────────────────────────────────
-
 function log(msg) {
   process.stdout.write(`[fetch-uv] ${msg}\n`);
 }
@@ -114,10 +98,6 @@ function selectedTargets() {
   return [...new Map(selected.map((target) => [target.dir, target])).values()];
 }
 
-/**
- * HTTP(S) GET → Response (리다이렉트 자동 추적)
- * Node.js 18+ 내장 fetch 사용
- */
 async function fetchWithRedirect(url) {
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -126,22 +106,15 @@ async function fetchWithRedirect(url) {
   return resp;
 }
 
-/**
- * tar.gz 스트림에서 <name>.tar.gz/uv (또는 uv.exe) 단일 파일을 추출한다.
- * Node.js 내장 zlib + tar 없이 처리: gunzip 후 tar 헤더를 직접 파싱.
- *
- * 경량 구현: 외부 의존성 0.
- */
+// Parse the decompressed tar directly without external tools.
 async function extractTarGz(buffer, targetBin) {
-  // gunzip
   const { gunzipSync } = await import("node:zlib");
   const tarBuf = gunzipSync(buffer);
 
-  // tar 파싱 (POSIX ustar, 512-byte 블록)
+  // Tar records use 512-byte blocks.
   let offset = 0;
   while (offset + 512 <= tarBuf.length) {
     const header = tarBuf.subarray(offset, offset + 512);
-    // null 블록 = EOF
     if (header.every((b) => b === 0)) break;
 
     const name = readCString(header, 0, 100);
@@ -152,7 +125,6 @@ async function extractTarGz(buffer, targetBin) {
     offset += 512;
 
     if (typeflag === "0" || typeflag === "\0") {
-      // 파일 항목
       const basename = name.split("/").pop() ?? name;
       if (basename === targetBin || basename === "uv" || basename === "uv.exe") {
         const fileData = tarBuf.subarray(offset, offset + size);
@@ -173,11 +145,7 @@ function readCString(buf, start, maxLen) {
   return buf.subarray(start, end).toString("utf8");
 }
 
-/**
- * ZIP에서 uv.exe 추출 (PKZIP 로컬 파일 헤더 파싱).
- */
 async function extractZip(buffer, targetBin) {
-  // End of Central Directory record 탐색 (오프셋 -22부터)
   const EOCD_SIG = 0x06054b50;
   let eocdOffset = buffer.length - 22;
   while (eocdOffset >= 0) {
@@ -203,7 +171,6 @@ async function extractZip(buffer, targetBin) {
 
     const basename = filename.split("/").pop() ?? filename;
     if (basename === targetBin || basename === "uv.exe" || basename === "uv") {
-      // 로컬 파일 헤더
       const LFH_SIG = 0x04034b50;
       if (buffer.readUInt32LE(localHeaderOffset) !== LFH_SIG) {
         throw new Error("ZIP 로컬 파일 헤더 손상");
@@ -217,10 +184,8 @@ async function extractZip(buffer, targetBin) {
       const compressedData = buffer.subarray(dataOffset, dataOffset + compressedSize);
 
       if (compressionMethod === 0) {
-        // STORED
         return compressedData;
       } else if (compressionMethod === 8) {
-        // DEFLATE
         const { inflateRawSync } = await import("node:zlib");
         return inflateRawSync(compressedData);
       } else {
@@ -232,11 +197,6 @@ async function extractZip(buffer, targetBin) {
   throw new Error(`ZIP에서 '${targetBin}' 바이너리를 찾을 수 없습니다.`);
 }
 
-// ─── 다운로드 + 추출 ──────────────────────────────────────
-
-/**
- * SHA256 hex digest of a buffer.
- */
 function sha256Hex(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
@@ -296,12 +256,7 @@ async function validateCachedTarget(target, destDir, destBin) {
   return { valid: true, reason: "ok" };
 }
 
-/**
- * Verify downloaded archive SHA256.
- *
- * UV_TARGETS가 지원 플랫폼, 아카이브 이름, known-good SHA256의 단일 기준이다.
- * 새 uv 버전으로 올릴 때는 DEFAULT_VERSION과 UV_TARGETS archiveSha256을 같이 갱신한다.
- */
+// Update DEFAULT_VERSION and UV_TARGETS archive hashes together.
 async function verifyArchiveSha256(target, archiveBuffer) {
   const archiveName = target.archive;
   const actual = sha256Hex(archiveBuffer);
@@ -354,12 +309,10 @@ async function downloadTarget(target) {
     fail(`알 수 없는 아카이브 타입: ${target.type}`);
   }
 
-  // 임시 파일에 쓰고 rename (원자적 쓰기)
   const tmpBin = destBin + ".tmp";
   await writeFile(tmpBin, fileData);
   await rename(tmpBin, destBin);
 
-  // Unix: chmod +x
   if (process.platform !== "win32" && target.bin !== "uv.exe") {
     await chmod(destBin, 0o755);
   }
@@ -377,8 +330,6 @@ async function downloadTarget(target) {
 
   log(`  OK: ${path.relative(PROJECT_ROOT, destBin)} (${(fileData.length / 1024).toFixed(0)} KB)`);
 }
-
-// ─── 메인 ─────────────────────────────────────────────────
 
 async function main() {
   const targets = selectedTargets();

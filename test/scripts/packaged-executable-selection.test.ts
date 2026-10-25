@@ -8,12 +8,7 @@ import {
   pickBestByExactSuffix,
 } from "../../scripts/lib/packaged-executable-selection.mjs";
 
-/**
- * The installer smoke (scripts/smoke-packaged-app.mjs, run by
- * build-installers.yml) picks the Linux executable to launch with this module.
- * An unpacked tree can hold several candidates; launching the wrong one smokes
- * a binary that is not the one being shipped.
- */
+// Selecting the wrong executable can make a packaged smoke pass against another artifact.
 describe("Linux packaged executable selection", () => {
   const preferences: string[] = linuxExecutablePreferenceSuffixes("arm64", "/");
 
@@ -54,11 +49,7 @@ describe("Linux packaged executable selection", () => {
   });
 });
 
-/**
- * scripts/smoke-windows-nsis-installer.mjs and the packaged escape gate launch
- * the `win-unpacked` executable electron-builder names after `build.productName`.
- * A filter keyed to any other name finds nothing and the smoke has no binary.
- */
+// Derive the executable name from the artifact product metadata.
 describe("Windows packaged executable selection", () => {
   let releaseDir: string;
 

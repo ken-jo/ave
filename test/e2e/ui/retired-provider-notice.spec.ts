@@ -71,8 +71,7 @@ test('a retired profile stays blocked until an explicit model choice', async ({ 
   await expect(send).toBeEnabled();
 });
 
-// The deprecated tier (design model-capability-catalog §6.1): the catalog marks
-// the saved model deprecated. Chat keeps working; the window only says so.
+// Deprecated saved models keep working; the notice only reports catalog status.
 for (const locale of ['en', 'ko'] as const) {
   test.describe(`deprecated model notice (${locale})`, () => {
     test.use({ seedLlmProvider: 'openai', seedLocale: locale });
@@ -80,7 +79,6 @@ for (const locale of ['en', 'ko'] as const) {
     test('tells about a deprecated model without blocking chat', async ({ app, mainWindow, t }, testInfo) => {
       await forceWideMainWindow(app);
       await mainWindow.evaluate(async () => {
-        // o4-mini is `deprecated` in the bundled catalog.
         await (window as unknown as { aveApi: AveApi }).aveApi.updateSettings({
           llm: { provider: 'openai', vendors: { openai: { model: 'o4-mini' } } },
         } as never);
@@ -96,7 +94,6 @@ for (const locale of ['en', 'ko'] as const) {
       await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A turn on a deprecated model');
       await expect(mainWindow.getByRole('button', { name: t('bottomActionRow.sendButton'), exact: true })).toBeEnabled();
 
-      // Measured at a phone-like width: the notice and the page do not overflow.
       await app.evaluate(({ BrowserWindow }) => {
         for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(420, 900);
       });
@@ -119,7 +116,6 @@ for (const locale of ['en', 'ko'] as const) {
       await testInfo.attach('deprecated-notice-narrow', { body: await notice.screenshot(), contentType: 'image/png' });
       await forceWideMainWindow(app);
 
-      // The action opens the chooser, whose trigger names the model's tier.
       await mainWindow.getByTestId('deprecated-model-notice-action').click();
       await expect(mainWindow.getByTestId(TEST_IDS.llmModelSelect))
         .toContainText(t('llmTab.modelDeprecatedPlaceholder', { model: 'o4-mini' }));

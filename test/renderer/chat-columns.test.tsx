@@ -80,7 +80,7 @@ describe("chat columns", () => {
     expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(thumbnailToggle);
     fireEvent.click(panelToggle);
-    // pagehide writes a change still inside the save delay, so no real-time wait.
+    // pagehide flushes pending saves without a real-time delay.
     await act(async () => { window.dispatchEvent(new Event("pagehide")); });
     const layout = vi.mocked(first.api.updateSettings).mock.calls
       .map(([patch]) => (patch as { system?: { mainLayout?: { thumbnailOpenIds: string[]; panelOpenIds: string[] } } }).system?.mainLayout)

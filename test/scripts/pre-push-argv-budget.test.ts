@@ -1,11 +1,4 @@
-/**
- * Every argument list the pre-push hook spawns stays inside a fixed
- * command-line budget. After a large merge the app-fast tier's Vitest file
- * list grew to about 50 KB, and Windows refused the single `bun.exe` spawn
- * with ENAMETOOLONG (CreateProcess caps a command line at 32,767 characters).
- * The hook now splits a list over the budget into consecutive runs that
- * together carry exactly the same files; spawning is mocked throughout.
- */
+// Chunk hook argument lists below the Windows command-line limit without dropping files.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,8 +15,7 @@ import {
 const hook = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
 const directRun = (chunk: string[]) => ["run", "test:vitest", "--", "run", ...chunk];
 
-// File arguments whose command line, with `prefix`, totals exactly `target`
-// characters: equal-width files, then one padded to land on the boundary.
+// Pad the final file argument to reach the exact command-line boundary.
 function filesTotalling(command: string, prefix: string[], target: number): string[] {
   const files: string[] = [];
   let length = commandLineLength(command, prefix);
@@ -89,7 +81,7 @@ describe("command-line budget", () => {
 });
 
 describe("pre-push Vitest spawns under the budget", () => {
-  // Hook Git context must be stripped on every chunk (pre-push-markdown-policy.test.ts).
+  // Strip hook Git context from every chunk.
   const STRIPPED = Object.freeze({ STRIPPED: "1" });
   let envs: unknown[] = [];
   const sandbox = (runs: string[][], reports: Map<string, object> | null = null) => (envs = [], runInNewContext(
@@ -136,7 +128,6 @@ describe("pre-push Vitest spawns under the budget", () => {
     const tests = filesTotalling("bun", directRun([]), 40_000).map((file) => file.slice(2));
     const selection = { tests, narrowed: [{ source: "src/lib/shared.ts", related: 300, direct: 1 }], sources: ["src/lib/shared.ts"] };
     const runs: string[][] = [];
-    // Only the last chunk's report counts tests: the sum still passes.
     const reports = new Map<string, object>([["report-0000.json", { numTotalTests: 0, numPassedTests: 0 }]]);
     sandbox(runs, reports)("/fixture", [], [], selection, null);
     const vitestRuns = runs.filter((args) => args[1] === "test:vitest");

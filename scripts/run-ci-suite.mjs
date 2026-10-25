@@ -1,37 +1,6 @@
 #!/usr/bin/env node
-// CI test selection rules (the build and typechecks stay in the workflow).
-// The Vitest stage is planned once in ci.yml's build job, run by its vitest
-// shards and reported by build-and-test:
-// - A test-only diff on any PR base or main push always keeps the affected
-//   selection, including changes above the usual fan-out limit.
-// - A non-test-only category PR (integration/* -> main) runs the full suite.
-// - Main pushes (over before..HEAD) and other non-integration PRs use trusted selection; uncertain
-//   inputs, failed discovery and excessive fan-out fall back to the full suite.
-// - Integration-base PRs keep their best traced selection even above the fan-out limit.
-// - Tags, schedules and manual dispatches run the full suite. Only schedules
-//   and dispatches instrument coverage and enforce global thresholds.
-//
-// Selection includes changed collected tests, transitive importers, tests that
-// read changed paths (including through test helpers), triggered lock suites,
-// and config/ci-must-run-tests.json. Test-only means collected Vitest files
-// and fixture assets only; the shared source policy owns that classification.
-// A test helper or setup module, the Vitest config and setup files, config/,
-// scripts/ (this selection included) and .github/ are never test-only: each
-// runs the full suite on every base but integration/*, whose full run is the
-// category merge.
-// Deleted tests drop from the selection. Renames are deletion + addition.
-// Fixture assets are traced through the tests and test helpers that read them.
-// Test-only discovery failure fails CI instead of running the whole suite or
-// silently dropping importers. A deletion-only test diff runs the must-run set
-// and any triggered locks/readers.
-//
-// A PR merge commit is diffed against HEAD's first parent. A main push is
-// diffed over everything it pushed, `before..HEAD` (the push event's `before`,
-// the same base ci.yml's documentation classifier uses), so a multi-commit or
-// rebase-merged push is classified as a whole; a missing, zero (new branch) or
-// non-ancestor (force-pushed) `before` runs the full suite. An unresolved
-// integration-base PR diff fails; other unresolved diffs use the full suite.
-// The summary records the event rule and tracing outcome.
+// Plan test selection once; shards consume that exact file list.
+// Test-only diffs stay affected-only; category merges and untrusted selections use the full suite.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -52,19 +21,10 @@ import {
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
-/**
- * Above this many changed and related test files the selection is most of the
- * suite, and a full run is worth its extra minutes on a non-integration base.
- */
+// Broad affected selections use the full suite on non-integration bases.
 export const AFFECTED_TEST_LIMIT = 600;
 
-/**
- * A module that computes what it imports: `import(expression)`,
- * `require(expression)`, `import.meta.glob` or `require.context`. The import
- * graph cannot see what such a module loads, so a change to it keeps the full
- * suite on a non-integration base. A literal specifier, with or without a
- * bundler comment before it, is traced.
- */
+// Computed imports escape the module graph and require full checks on non-integration bases.
 const COMPUTED_IMPORT = /\bimport\.meta\.glob\b|\brequire\.context\b|\b(?:import|require)\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*(?!["'\s)/]|`[^`$]*`)/u;
 
 export function loadsComputedImport(text) {
@@ -73,22 +33,13 @@ export function loadsComputedImport(text) {
 
 const REPO_PATH_LITERAL = /["'`]((?:src|test|scripts|config|resources|docs)\/[^"'`\s$]*)["'`]/gu;
 const RELATIVE_PATH_LITERAL = /["'`](\.{1,2}\/[^"'`\s$]+)["'`]/gu;
-// Split directory joins can hide the complete fixture path. Retain readers
-// that name a fixture directory on a fixture diff, including helper readers.
+// Retain fixture-directory readers when split path joins hide the complete changed path.
 const FIXTURE_DIRECTORY_LITERAL = /["'`](?:[^"'`$\r\n]*\/)?fixtures(?:\/[^"'`$\r\n]*)?["'`]/u;
-// A top-level directory joined onto the repository root (`join(root, "src")`),
-// the start of a tree scan: it names every path below it.
+// A root-level directory join names every path below that directory.
 const ROOTED_DIRECTORY_LITERAL = /\b(?:resolve|join)\(\s*[\w.]*(?:root|ROOT|Root|cwd\(\)|__dirname|dirname)[^)]*?["'`](src|test|scripts|config|resources|docs)\/?["'`]/gu;
 const MODULE_EXTENSION = /\.(?:tsx?|mts|cts|mjs|cjs|jsx?)$/u;
 
-/**
- * The repository paths a test names in string literals: repository-rooted
- * ("src/plugins/runtime/index.ts", "src/ui/renderer/"), a top-level directory
- * joined onto the root (`join(root, "src")` names "src/"), and relative to the
- * test ("../fixtures/x.json"). A test that names a path reads it, scans it or
- * pins it; `vitest related` sees none of that unless the test also imports
- * it.
- */
+// Literal file reads and tree scans reach inputs outside the import graph.
 export function namedRepositoryPaths(testPath, text) {
   const paths = new Set();
   for (const [, literal] of text.matchAll(REPO_PATH_LITERAL)) paths.add(literal);
@@ -99,7 +50,6 @@ export function namedRepositoryPaths(testPath, text) {
   return [...paths];
 }
 
-/** Whether a named path is the changed file, the same module, or a directory holding it. */
 export function namesChangedPath(named, changedPath) {
   if (named === changedPath) return true;
   if (named.replace(MODULE_EXTENSION, "") === changedPath.replace(MODULE_EXTENSION, "")) return true;
@@ -107,14 +57,7 @@ export function namesChangedPath(named, changedPath) {
   return changedPath.startsWith(directory);
 }
 
-/**
- * A test that runs repository code outside the Vitest module graph: a child
- * process loaded through tsx (`--import tsx`, `tsx/esm`) or an esbuild bundle
- * (`entryPoints:`). Whatever that child or bundle imports is invisible to
- * `vitest related`, so every such test belongs to the must-run set
- * (test/scripts/run-ci-suite.test.ts holds the set to this, through
- * testRunsRepoCodeOutOfProcess).
- */
+// Tests executing repository code in children or bundles belong in the must-run set.
 const OUT_OF_PROCESS_CODE = /["'`]--import["'`]\s*,\s*["'`]tsx["'`]|--import[= ]tsx\b|\btsx\/(?:esm|cjs)\b|require\.resolve\(\s*["'`]tsx["'`]|\bentryPoints\s*:/u;
 
 export function runsRepoCodeOutOfProcess(text) {
@@ -124,14 +67,7 @@ export function runsRepoCodeOutOfProcess(text) {
 const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["'](\.{1,2}\/[^"']+)["']/gu;
 const HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx", ".json"];
 
-/**
- * Whether a test runs repository code out of process itself or through a
- * test helper it imports: a non-test module under a `__tests__/` directory
- * (support code, fixtures), followed through the helpers it imports in turn.
- * src/__tests__/support/image-preparation-runtime.ts bundles a child with
- * esbuild for the tests that import it, which a scan of the test body alone
- * misses. Production modules are not followed: the import graph sees them.
- */
+// Follow helper imports too: they can bundle or spawn code absent from the test body.
 export function testRunsRepoCodeOutOfProcess(testPath, readText) {
   const seen = new Set();
   const pending = [testPath];
@@ -158,12 +94,7 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
   return false;
 }
 
-/**
- * Expand the must-run document into the tracked test files it names. An entry
- * ending in "/" selects every collected test under that prefix; any other
- * entry is one collected test. An entry that selects nothing is a stale
- * document and is refused.
- */
+// Directory entries expand to collected tests; stale entries selecting nothing fail.
 export function expandMustRunTests(document, trackedTests) {
   const groups = document?.groups;
   if (!groups || typeof groups !== "object" || Array.isArray(groups)) {
@@ -191,27 +122,20 @@ export function expandMustRunTests(document, trackedTests) {
   return [...selected].sort();
 }
 
-/** The events whose run instruments coverage and enforces its thresholds. */
 export const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
 
 export function runsCoverage(eventName) {
   return COVERAGE_EVENTS.includes(eventName);
 }
 
-/** Parallel Vitest shards for a full run without coverage. ci.yml plans once,
- *  then runs one job per shard (`vitest --shard=<index>/<count>`); the shards
- *  together run exactly the planned files. An affected selection and a
- *  coverage run stay one job: coverage thresholds describe the whole suite,
- *  and a few affected files gain nothing from a second runner's setup. */
+// Full runs without coverage may shard; affected and coverage runs stay in one job.
 export const FULL_RUN_SHARDS = 4;
 
 export function ciShardCount(plan, coverage) {
   return plan.mode === "full" && !coverage ? FULL_RUN_SHARDS : 1;
 }
 
-/** `<index>/<count>` from AVE_CI_SHARD, or null when the job runs the whole
- *  plan. Malformed values fail: a shard that silently ran everything, or
- *  nothing, would misreport what the aggregate check covered. */
+// Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
   if (value === undefined || value === "") return null;
   const match = /^([1-9]\d*)\/([1-9]\d*)$/u.exec(value);
@@ -221,8 +145,7 @@ export function parseCiShard(value) {
   return Number(match[2]) === 1 ? null : `${match[1]}/${match[2]}`;
 }
 
-/** A plan written by `--write-plan`, read back by each shard so every shard
- *  splits the same file list. */
+// Every shard consumes the same written plan rather than recomputing selection.
 export function readPlanFile(text) {
   const plan = JSON.parse(text);
   const valid = plan !== null && typeof plan === "object"
@@ -237,7 +160,6 @@ function full(reason) {
   return { mode: "full", reason, tests: [] };
 }
 
-/** Keep traceable inputs even when the shared local policy refuses the change set. */
 function traceableInputs(changes, trackedTests) {
   const testFiles = new Set();
   const relatedFiles = new Set();
@@ -253,10 +175,7 @@ function traceableInputs(changes, trackedTests) {
   return { testFiles: [...testFiles].sort(), relatedFiles: [...relatedFiles].sort() };
 }
 
-/** Follow test helpers as well as test bodies when a fixture is read as text.
- * Match changed paths before opening their targets, retaining importers of
- * deleted or renamed helpers. Discovery also traces the current module graph.
- */
+// Follow helper readers and match paths before opening them to retain deleted or renamed targets.
 function testNamesChangedPath(test, changedPaths, readText) {
   const fixtureChanged = changedPaths.some((path) => path.includes("/fixtures/"));
   const seen = new Set();
@@ -282,17 +201,8 @@ function testNamesChangedPath(test, changedPaths, readText) {
   return false;
 }
 
-/**
- * Decide the run for one change set.
- *
- * - changes: `git diff --raw` entries ({ status, oldMode, newMode, path })
- * - trackedTests: every collected Vitest file in the tree
- * - mustRunTests: the expanded must-run set
- * - readText(path): a changed module's source, or null
- * - discoverRelated(paths): per-module `vitest related` coverage,
- *   [{ source, tests }], or null when discovery failed
- * - baseRef: an integration/* base keeps the best traced selection on uncertainty
- */
+// Related-test discovery returns null on failure, not an empty successful result.
+// Integration bases retain the best traced selection when coverage is uncertain.
 export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, baseRef }) {
   const integrationBase = typeof baseRef === "string" && baseRef.startsWith("integration/");
   const testOnly = isTestOnlyDiff(changes);
@@ -303,8 +213,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
     if (!scoped) return full(fast.reason);
     if (!testOnly) fullReasons.push(fast.reason);
   }
-  // Never test-only (isTestOnlyDiff refuses it), and never trusted selection:
-  // a helper reaches tests the import graph and text readers may not show.
+  // Helpers reach tests outside import and literal-reader graphs, so their changes are not test-only.
   const helper = changes.find(({ path }) => isTestHelperModule(path));
   if (helper) {
     const reason = `${helper.path} is a test helper or setup module, which runs the full suite`;
@@ -332,8 +241,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
   if (fast.relatedFiles.length > 0) {
     const coverage = discoverRelated(fast.relatedFiles);
     const reason = coverage === null ? "related test discovery failed"
-      // An unused helper may have no importers. The shared validator still
-      // checks the complete record set and every returned test path.
+      // Unused helpers may have no importers; report records and returned paths must still validate.
       : getRelatedCoverageFullReason(testOnly ? [] : fast.relatedFiles, coverage, testOnly ? fast.relatedFiles : []);
     if (reason) {
       if (testOnly) throw new Error(`test-only selection cannot resolve importers: ${reason}`);
@@ -416,7 +324,6 @@ function rawDiff(base, what) {
   return entries === null ? { reason: `${what} could not be parsed` } : { entries };
 }
 
-/** The pull request merge commit's change set, or a reason it cannot be read. */
 function pullRequestChanges() {
   const parents = git(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(" ").slice(1);
   if (parents.length !== 2) return { reason: `HEAD has ${parents.length} parent(s), not a pull request merge commit` };
@@ -425,13 +332,8 @@ function pullRequestChanges() {
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
 
-/**
- * Everything a push to main delivered: `before..HEAD`. HEAD's first parent
- * alone would hide the earlier commits of a multi-commit or rebase-merged
- * push, so a production change followed by a test-only commit would read as
- * test-only. A missing or zero `before` (the branch was created) or one that
- * is not an ancestor of HEAD (a force push) has no trustworthy base.
- */
+// Compare every delivered commit, not just the final parent, so earlier production changes cannot hide.
+// Missing or non-ancestral before commits provide no trusted base.
 function pushChanges(before) {
   if (typeof before !== "string" || !FULL_SHA.test(before)) return { reason: "the push has no before commit to diff against" };
   if (/^0+$/u.test(before)) return { reason: "the push created the branch (zero before commit)" };
@@ -456,11 +358,7 @@ function discoverRelatedTests(paths) {
   }
 }
 
-/**
- * A category branch (`integration/<category>`) reaches main through one pull
- * request, and a non-test-only diff makes that merge the full-suite gate (the
- * pre-push tier and the sub-branch PRs into the category ran scoped checks).
- */
+// Non-test-only category merges run the full suite after scoped sub-branch checks.
 export function isCategoryMergeToMain(headRef, baseRef) {
   return baseRef === "main" && typeof headRef === "string" && headRef.startsWith("integration/");
 }
@@ -526,7 +424,6 @@ function writeSummary(plan, coverage) {
   appendFileSync(summaryPath, `${lines.join("\n")}\n`);
 }
 
-/** The node arguments of the Vitest stage: the coverage gate, or a plain run of the plan's files (none: all). */
 export function ciSuiteArguments(plan, coverage, shard = null) {
   if (coverage && shard !== null) throw new Error("a coverage run cannot be sharded: its thresholds describe the whole suite");
   if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
@@ -542,9 +439,7 @@ function runPlan(plan, coverage, shard) {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    // `--write-plan <file>` plans and stops: ci.yml's build job writes the
-    // plan once and sizes the shard matrix from it. AVE_CI_PLAN_FILE runs a
-    // written plan, so the shards never plan again.
+    // Write the plan once; shards read it without replanning.
     const writePlanAt = process.argv[2] === "--write-plan" ? process.argv[3] : undefined;
     if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
     const planFile = process.env.AVE_CI_PLAN_FILE;

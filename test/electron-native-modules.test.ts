@@ -31,10 +31,7 @@ const tempDirs: string[] = [];
 const spawnedChildren = createChildTracker();
 
 afterEach(async () => {
-  // The lock-contention cases guard child liveness with an inner timeout that is
-  // shorter than vitest's. On a saturated machine that timeout is what fires
-  // first, and it rejects before the test reaches its own cleanup — so the child,
-  // still blocked acquiring the lock, outlives the directory it is polling.
+  // Await child termination before removing lock directories, including inner timeout failures.
   await spawnedChildren.reap();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -50,8 +47,7 @@ describe("ensureElectronNativeModules", () => {
       env: { ELECTRON_RUN_AS_NODE: "0", AVE_TEST_MARKER: "present" },
     })).toEqual({ loaded: true });
 
-    // Only the Electron load-probe runs — v13 ships an N-API prebuild, so there
-    // is no ABI rebuild to attempt.
+    // Shipped native prebuilds need only a load probe, never an ABI rebuild.
     expect(spawnSync).toHaveBeenCalledTimes(1);
     expect(spawnSync.mock.calls[0]).toEqual([
       "/repo/electron",
@@ -76,8 +72,7 @@ describe("ensureElectronNativeModules", () => {
       spawnSync,
     })).toThrow("reinstall better-sqlite3 (bun install --force)");
 
-    // A prebuild load failure cannot be repaired by a rebuild, so the probe
-    // runs exactly once and no rebuild spawn or lock acquisition follows.
+    // A failing prebuild probe cannot be repaired by rebuilding; do not acquire a rebuild lock.
     expect(spawnSync).toHaveBeenCalledTimes(1);
   });
 

@@ -1,15 +1,6 @@
 import { test, expect } from "./fixtures";
 
-/**
- * Regression: a leading action-bar button used to be pushed beyond the right
- * edge of the input action bar when the permission chip grew wide.
- *
- * The command menu (persona, commands, plugins, skills) is an Electron native
- * menu, so its geometry is intentionally not observable from the renderer.
- * This spec keeps the user-visible invariant: fixed controls remain inside the
- * action bar and the variable permission slot is the part that yields under
- * narrow widths.
- */
+// Native command-menu geometry is outside the renderer; assert that fixed action controls stay visible.
 
 const COMMAND_BUTTON = '[data-testid="slash-picker-trigger"]';
 const ACTION_BAR = '[data-testid="input-action-bar"]';

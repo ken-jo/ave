@@ -51,7 +51,6 @@ describe("pre-push related test coverage", () => {
       readJsonFile: () => ({ numTotalTests: 0 }),
     });
     expect(() => runFastChecks("/fixture", [], [], selection, null)).toThrow(message);
-    // No lock suite was triggered and no test file changed: no unscoped Vitest run.
     expect(runs.every((args) => args.at(-1) !== "run")).toBe(true);
   });
 
@@ -107,8 +106,7 @@ describe("pre-push related test coverage", () => {
       untestedConsumers: [untested.source],
       untestedModules: [],
     });
-    // A changed module with no related test is reported, not escalated: the
-    // scoped tier runs its path-naming, must-run and lock-suite tests instead.
+    // Missing related tests are reported; scoped path-naming, must-run and lock suites still run.
     expect(select([{ source: "src/lib/changed.ts", tests: [] }, tested])("/fixture", ["src/lib/changed.ts"], [tested.source]))
       .toEqual({
         tests: ["src/ui/__tests__/panel.test.tsx"],

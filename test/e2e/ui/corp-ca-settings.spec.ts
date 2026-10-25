@@ -1,20 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 
-/**
- * Corporate root CA controls — real-Electron round trip.
- *
- * Same reason as the hardware-acceleration spec next door, and more sharply:
- * these three values are read straight off the settings FILE at boot, before
- * `SettingsService` is constructed, because the certificate has to be in the
- * TLS trust store before the first outbound request. A control that persisted
- * only into the in-memory store would pass every unit test and still leave the
- * user with the state that made this work necessary — a setting they can see
- * and change that the next launch never reads.
- *
- * The name is also the first TEXT setting in this group, so it gets its own
- * check: typing is not persisting, and the commit path is what has to work.
- */
+// Boot reads certificate settings directly before service construction; verify persistence to that file.
 test('the two switches round-trip through the real settings service', async ({ app, mainWindow }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'startup');
 
@@ -24,7 +11,6 @@ test('the two switches round-trip through the real settings service', async ({ a
   ] as const) {
     const toggle = settingsPage.getByTestId(testId);
     await expect(toggle).toBeVisible();
-    // Nothing is forcing these in this harness, so the env notice stays absent.
     await expect(settingsPage.getByTestId(`${testId}-forced`)).toHaveCount(0);
 
     const before = await toggle.getAttribute('aria-checked');
@@ -49,7 +35,7 @@ test('the two switches round-trip through the real settings service', async ({ a
       .toBe(expected);
   }
 
-  // The help copy is unconditional — neither switch can affect this process.
+  // These controls affect only the next launch.
   await expect(settingsPage.getByTestId('startup-corp-ca-help')).toBeVisible();
   await expect(settingsPage.getByTestId('startup-corp-ca-debug-help')).toBeVisible();
 
@@ -59,8 +45,7 @@ test('the two switches round-trip through the real settings service', async ({ a
 test('the certificate name persists only once it is committed', async ({ app, mainWindow }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'startup');
 
-  // The switch above may have been left off by the previous test; the name
-  // field is disabled while the feature is off, so make sure it is on first.
+  // Enable the feature first because its name field is disabled while off.
   const enabled = settingsPage.getByTestId('startup-corp-ca-enabled');
   if ((await enabled.getAttribute('aria-checked')) !== 'true') {
     await enabled.click();
@@ -85,8 +70,7 @@ test('the certificate name persists only once it is committed', async ({ app, ma
   const expected = before === 'E2E Root CA' ? 'E2E Root CA 2' : 'E2E Root CA';
 
   await field.fill(expected);
-  // Half-typed text must not reach the file the next launch reads, so nothing
-  // is written until the commit below.
+  // Do not persist half-typed values to the file the next launch reads.
   expect(await readName()).toBe(before);
 
   await settingsPage.getByTestId('startup-corp-ca-common-name-save').click();

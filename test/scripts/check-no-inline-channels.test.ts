@@ -129,11 +129,7 @@ describe("check-no-inline-channels", () => {
   });
 
   it("fails loudly when a listed target is missing rather than skipping it", () => {
-    // The target list is a hand-written enumeration, so a target that does not
-    // exist is a stale list, not a clean tree — and the gate says so instead of
-    // scanning one file fewer. That also means BASE_FILES above must carry
-    // every entry of that list: a target added to the script without a fixture
-    // beside it fails all of these at once, on a message about the fixture.
+    // Missing configured targets are stale policy, not a clean scan.
     const root = createRoot();
     rmSync(join(root, "src/boot/bootstrap-status.ts"));
 

@@ -10,11 +10,6 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-/**
- * Parse a JSON file, naming it in the error. Every gate that reads a ledger
- * or a package.json — this one, the shape gate, the pre-push runner — asks
- * the same question; the answer lives here beside the ledger writer.
- */
 export function readJsonFile(path, label = basename(path)) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -123,12 +118,8 @@ function replaceStagedBaseline(from, to, runtime) {
   }
 }
 
-/**
- * Replace the reviewed baseline without exposing a truncated target. The
- * staging file is unique, resides on the target filesystem, and is flushed
- * before rename. Failed updates leave the prior baseline intact and remove the
- * uncommitted staging file.
- */
+// Stage and flush on the target filesystem before atomic replacement.
+// Failed updates preserve the old baseline and remove staging files.
 export function writeKnipBaselineAtomicSync(
   filePath,
   content,

@@ -13,11 +13,7 @@ const junctions: Array<{ path: string; target: string }> = [];
 type Row = { entry: string; file: string; build: "webpack" | "copy"; sandbox: boolean; runsIn: string };
 const realTable = (): Record<string, Row> => JSON.parse(readFileSync(resolve(process.cwd(), TABLE), "utf-8"));
 
-/**
- * A repo root with this tree's preload table, webpack config and build-asset
- * list, and a `dist/src` holding every preload the table names, each requiring
- * only `electron` unless overridden (null leaves it unbuilt).
- */
+// A null bundle models an unbuilt fixture tree.
 function createRoot(options: { dist?: Record<string, string | null>; table?: (table: Record<string, Row>) => void; webpackTail?: string } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "ave-sandboxed-preloads-"));
   roots.push(root);

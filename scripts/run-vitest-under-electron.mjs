@@ -14,24 +14,14 @@ const DEFAULT_NORMALIZER_PATH = fileURLToPath(
 const DEFAULT_GENERATOR_PATH = fileURLToPath(
   new URL("./generate-ave-icons.cjs", import.meta.url),
 );
-/** Written last by the generator, so its presence means a run completed. */
+// The generator writes the manifest last, marking completed output.
 const GENERATED_ASSETS_MANIFEST = join("build", "generated-assets.json");
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Generated branding assets that the suite reads but the tree does not hold.
- *
- * `src/main/__tests__/{app-icon-assets,desktop-packaging,tray-icon}.test.ts`
- * read the outputs of `generate-ave-icons.cjs`. Most of those are ignored by
- * git (#1974), so a fresh worktree has none of them, and only `bun run test`
- * (through `test:prepare`) used to create them: a direct
- * `test:vitest -- run …` then failed on assets rather than on code. The
- * manifest is the generator's own list of what it writes, so it is the
- * authority on what "complete" means here.
- */
+// Fresh worktrees lack ignored branding assets required by tests; use the generator manifest as inventory.
 export function missingGeneratedAssets({
   cwd = process.cwd(),
   manifestPath = GENERATED_ASSETS_MANIFEST,
@@ -50,12 +40,7 @@ export function missingGeneratedAssets({
   return listed.filter((entry) => !existsSync(join(cwd, entry)));
 }
 
-/**
- * Fill an ABSENCE of generated assets before the suite starts (≈0.7 s, once
- * per fresh worktree). Present files are trusted as they are: `test:prepare`
- * and `bun run build` remain the regeneration authority, and
- * `check-generated-assets.mjs` still guards the tracked ones for drift.
- */
+// Generate only missing assets; build preparation and drift checks own regeneration.
 export function ensureGeneratedAssets({
   cwd = process.cwd(),
   manifestPath = GENERATED_ASSETS_MANIFEST,
@@ -144,15 +129,13 @@ export function createElectronVitestInvocation(
   const normalizerOption = electronNodeNormalizerArgument(normalizerPath);
   return {
     command: electronPath,
-    // Startup environment options can be disabled by the parent application.
-    // The required initializer must also reach fresh test worker processes.
+    // Parent applications can disable startup environment options; fresh workers still need the initializer.
     args: [normalizerOption, vitestPath, ...args],
     options: {
       cwd,
       env: {
         ...env,
-        // Electron-as-Node processes a test starts itself (process.execPath)
-        // load the initializer too, so their console children stay hidden.
+        // Child test processes inherit the initializer so their console children remain hidden.
         ...(platform === "win32" ? {
           NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions(env.NODE_OPTIONS), normalizerPath),
         } : {}),

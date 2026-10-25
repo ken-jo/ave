@@ -57,39 +57,8 @@ import {
 import { API, SignatureKind, SymbolFlags, TypeFlags, type Checker, type Project, type Symbol as TsSymbol } from "typescript/unstable/sync";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-/**
- * Every place the app hands a frame a preload, or says what sandbox a preload
- * runs in, takes both from the one table (`src/shared/preload-bundles.json`).
- * `scripts/check-sandboxed-preloads.mjs` checks each built preload against the
- * table's sandbox, so a site that named its own `sandbox` or preload could run
- * a preload in a sandbox the gate never checked it for.
- *
- * Read with the TypeScript compiler (`typescript/unstable/sync`): windows are
- * found by their resolved Electron type, and electron is followed through
- * imports, `require` and awaited dynamic imports. Within the sites below, a
- * form the audit cannot read is a problem rather than a pass — a computed key,
- * a helper-built object, a non-literal value, a window class used as a value or
- * handed to `Reflect.construct`, an unbound dynamic import of electron, HTML
- * with an interpolated tag name or an interpolation that could carry markup.
- * Code that reaches Electron outside these forms is not seen here; main's
- * attach guards are what enforce a guest's preferences.
- *   - `new BrowserWindow` / `BrowserView` / `WebContentsView` with a preload
- *     spreads `preloadPreferences(id)` (directly or through a `const`) into a
- *     literal `webPreferences`, and names neither `sandbox` nor `preload`; one
- *     without a preload names no `preload` and at most `sandbox: true`; one
- *     with `webviewTag: true` registers a `will-attach-webview` guard on itself;
- *   - `registerPreloadScript` takes `preloadBundlePath(id)`; `setPreloads` is
- *     refused;
- *   - a guest's `sandbox` is assigned from `PRELOAD_BUNDLES.<id>.sandbox`, or
- *     `true` beside a `delete` of its preload;
- *   - every `<webview>` it can see (JSX, `createElement`, `document.createElement`
- *     with `setAttribute`, an HTML string literal, or HTML written to
- *     `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
- *     `parseFromString`, `createContextualFragment`, `setHTMLUnsafe` or
- *     `dangerouslySetInnerHTML`) is in a file mapped to the
- *     table row of the preload its guest runs, and its literal `webpreferences`
- *     request agrees with that row's sandbox.
- */
+// Preload and sandbox choices must come from src/shared/preload-bundles.json.
+// Unreadable sites fail this audit; runtime attachment guards enforce guest preferences.
 
 type Row = { entry: string; file: string; build: "webpack" | "copy"; sandbox: boolean; runsIn: string };
 type Table = Record<string, Row>;
@@ -99,17 +68,13 @@ type Audit = { sites: Site[]; problems: string[]; files: number };
 const ROOT = process.cwd();
 const TABLE: Table = JSON.parse(readFileSync(resolve(ROOT, "src/shared/preload-bundles.json"), "utf-8"));
 
-/**
- * The files that create a `<webview>`, by the table row of the preload their
- * guests run (null: no table preload — main's guard strips it — and sandboxed).
- */
+// A null row denotes guests whose preloads are stripped and whose sandbox is enforced.
 const WEBVIEW_SITES: Record<string, string | null> = {
   "src/plugin-ui-host.tsx": "pluginPreload",
   "src/floating-dock-window.js": "pluginPreload",
   "src/ui/renderer/components/McpAppView.tsx": "mcpAppPreload",
   "src/ui/renderer/components/ChatSidePanelPreview.tsx": null,
-  // Browser tab pages, mounted once per window in the web-surface layer: the
-  // same side-browser partition and sandboxed request as the preview's guest.
+  // Browser tabs use the preview guest partition and sandbox policy.
   "src/ui/renderer/components/WebSurfaceLayer.tsx": null,
   "src/main/link-window-service.ts": null,
   "src/main/auth-window-service.ts": null,
@@ -124,7 +89,7 @@ const ATTACH_GUARDS = "src/main/plugin-webview-attach.ts";
 const HTML_SINK_PROPERTIES = new Set(["innerHTML", "outerHTML"]);
 const HTML_SINK_CALLS: Record<string, number> = { insertAdjacentHTML: 1, write: 0, writeln: 0, parseFromString: 0, createContextualFragment: 0, setHTMLUnsafe: 0 };
 
-/** The compiler's path form, on every platform: forward slashes (as in `scripts/lib/ts7-ast.mjs`). */
+// Compiler paths use forward slashes on every platform.
 const toWire = (path: string): string => path.split("\\").join("/");
 
 function listSources(root: string): string[] {
@@ -154,14 +119,12 @@ const unwrap = (node: Expression): Expression => {
 const literalText = (node: Node | undefined): string | null =>
   node && (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
 
-/** A property's key, or null when it is computed. */
 function keyOf(name: Node): string | null {
   if (isIdentifier(name)) return name.text;
   if (isStringLiteral(name) || isNumericLiteral(name)) return name.text;
   return null;
 }
 
-/** `require("electron")` or `import("electron")`, by kind; null for anything else. */
 function isElectronLoad(node: Node): "require" | "import" | null {
   const expression = unwrap(node as Expression);
   if (!isCallExpression(expression) || literalText(expression.arguments[0]) !== "electron") return null;
@@ -169,7 +132,7 @@ function isElectronLoad(node: Node): "require" | "import" | null {
   return isIdentifier(expression.expression) && expression.expression.text === "require" ? "require" : null;
 }
 
-/** The node's parent past parentheses and type assertions, and the node it is reached through. */
+// Return both the unwrapped parent and the node through which it is reached.
 function usage(node: Node): { child: Node; parent: Node } {
   let child = node;
   let parent = node.parent;
@@ -226,7 +189,6 @@ class FileAudit {
     return symbol.declarations.some((declaration) => toWire(declaration.path).endsWith(ELECTRON_DTS)) ? symbol.name : null;
   }
 
-  /** The table id `fn("<id>")` names, through one `const` alias at most; null when it is not that form. */
   tableCall(node: Expression, fn: "preloadPreferences" | "preloadBundlePath"): string | null {
     let expression = unwrap(node);
     if (isIdentifier(expression)) {
@@ -241,7 +203,6 @@ class FileAudit {
     return literalText(expression.arguments[0]);
   }
 
-  /** Imports and requires of electron: window-class locals and module namespaces. */
   collectElectronBindings(): void {
     const isElectronRequire = (node: Expression | undefined): boolean => {
       if (!node) return false;
@@ -276,8 +237,7 @@ class FileAudit {
       if (isVariableDeclaration(node) && node.initializer && isIdentifier(unwrap(node.initializer)) && (unwrap(node.initializer) as { text?: string }).text === "Reflect" && !isIdentifier(node.name)) {
         this.report(node, "Reflect.construct taken out of Reflect, where the test cannot follow it");
       }
-      // A window class destructured from anything (a callback's parameter, a
-      // re-export) is followed as one, wherever the object came from.
+      // Follow destructured window classes even through parameters or re-exports.
       if (isBindingElement(node) && node.name && isIdentifier(node.name)) {
         const imported = node.propertyName ? keyOf(node.propertyName) : node.name.text;
         if (imported !== null && WINDOW_CLASSES.has(imported)) this.windowLocals.add(node.name.text);
@@ -401,7 +361,7 @@ class FileAudit {
     }
   }
 
-  /** `cond ? {} : { preload: undefined }`: a branch that only ever clears the preload. */
+  // A clearing branch may omit preload or set it to undefined.
   onlyClearsPreload(node: Expression): boolean {
     const expression = unwrap(node);
     if (!isConditionalExpression(expression)) return false;
@@ -412,12 +372,7 @@ class FileAudit {
     });
   }
 
-  /**
-   * The guard a `<const>.webContents.on("will-attach-webview", handler)` on
-   * this window runs: a guard function from `plugin-webview-attach.ts`, or an
-   * inline handler that strips the guest's preload and sets `sandbox = true`.
-   * Null when there is no such handler, or it does neither.
-   */
+  // Accept an imported attach guard or an inline guard that strips preload and enables sandbox.
   attachGuard(node: Node): string | null {
     const declaration = node.parent;
     if (!isVariableDeclaration(declaration) || !isIdentifier(declaration.name)) return null;
@@ -529,7 +484,6 @@ class FileAudit {
     this.report(node, `sets a guest's sandbox to ${this.text(node.right)}, not from the preload table, while leaving its preload in place`);
   }
 
-  /** Whether the function around `node` deletes `<object>.preload`. */
   deletesPreload(node: Node, object: string): boolean {
     let scope: Node = node;
     while (!isSourceFile(scope) && !isArrowFunction(scope) && !isFunctionExpression(scope) && !isFunctionDeclaration(scope) && !isMethodDeclaration(scope)) scope = scope.parent;
@@ -651,11 +605,7 @@ class FileAudit {
     site.id = this.webviewSites[this.rel];
   }
 
-  /**
-   * `require("electron")` / `import("electron")`: followed when bound by a
-   * declaration (`const e = …`, `const { BrowserWindow } = await …`) or read
-   * for one member; anything else hands the module to code the audit cannot see.
-   */
+  // Follow bound module imports and single-member reads; other uses escape the audit.
   electronLoad(node: Node, kind: "require" | "import"): void {
     let { child, parent } = usage(node);
     if (kind === "import") {
@@ -673,12 +623,11 @@ class FileAudit {
     this.report(node, `passes the electron module around: ${this.text(parent)}`);
   }
 
-  /** `Reflect.construct(target, …)` and other `construct(…)` calls: the target must be a class that is provably not Electron's. */
+  // Construct targets must be provably outside the audited window classes.
   construct(node: Node): void {
     if (!isCallExpression(node) || !node.arguments[0]) return;
     const target = node.arguments[0];
-    // Provable when the target has construct signatures and every one of them
-    // returns a concrete type that is not one of Electron's.
+    // Every construct signature must return a concrete type outside the audited classes.
     const type = this.checker.getTypeAtLocation(target);
     const signatures = type && !(type.flags & (TypeFlags.Any | TypeFlags.Unknown)) ? this.checker.getSignaturesOfType(type, SignatureKind.Construct) : [];
     const provable = signatures.length > 0 && signatures.every((signature) => {
@@ -690,13 +639,7 @@ class FileAudit {
     if (!provable) this.report(node, `construct(${this.text(target)}, …) with a target the test cannot prove is not an Electron window`);
   }
 
-  /**
-   * HTML written into a DOM sink. A literal is read (a `<webview` in it is a
-   * webview site); a template or concatenation must have no interpolation in a
-   * tag-name position and only interpolations that cannot carry markup
-   * (numbers, booleans, string literal types without `<`). Anything else is
-   * refused: it could write a `<webview>` the audit cannot see.
-   */
+  // HTML sinks may interpolate only values proven unable to carry markup, never tag names.
   html(value: Node, sink: string): void {
     const parts: (string | Node)[] = [];
     const flatten = (node: Node): void => {
@@ -731,7 +674,7 @@ class FileAudit {
       }
       markup += "\u0000";
     }
-    // A literal `<webview` is already a site through the string scan; one assembled from parts is not.
+    // Literal webview tags are found by the string scan; assembled tags need expression analysis.
     if (parts.some((part) => typeof part !== "string") && /<\s*webview\b/iu.test(markup)) this.webview(value, { file: this.rel, kind: "html-webview", id: null });
   }
 
@@ -764,7 +707,7 @@ class FileAudit {
     this.report(node, `passes the electron module around: ${this.text(parent)}`);
   }
 
-  /** A window class used anywhere but `new X(…)`, `X.member`, `instanceof X` or a type is a value the audit cannot follow. */
+  // Class values escaping construction, member reads, instanceof or types cannot be followed.
   windowReference(node: Node, name: string): void {
     const { child, parent } = usage(node);
     if (isNewExpression(parent) && parent.expression === child) return;
@@ -786,7 +729,6 @@ class FileAudit {
   }
 }
 
-/** Every preload site under `root/src`, and every way one departs from the table or cannot be proven. */
 function auditPreloadSites(root: string, table: Table = TABLE, webviewSites: Record<string, string | null> = WEBVIEW_SITES): Audit {
   const files = listSources(root).map(toWire);
   const audit: Audit = { sites: [], problems: [], files: 0 };
@@ -823,11 +765,7 @@ function auditPreloadSites(root: string, table: Table = TABLE, webviewSites: Rec
   return audit;
 }
 
-/**
- * Codex's round-5 probes, kept: each is a site the earlier text scan passed.
- * Written into a scratch tree that holds this repo's tsconfig, the table and
- * its helpers, and a link to `node_modules`, so they resolve the way `src` does.
- */
+// Resolve scratch probes against repository options, helpers and dependencies.
 const PROBES: Record<string, { source: string; problem: string }> = {
   "src/probes/computed-sandbox.ts": {
     source: `import { BrowserWindow } from "electron";
@@ -948,7 +886,6 @@ export const View = () => createElement("webview", { src: "about:blank", webpref
 `,
     problem: "createElement with a tag the test cannot read: tag",
   },
-  // Round 6.
   "src/probes/dynamic-reflect.ts": {
     source: `export const open = async () => {
   const e = await import("electron");
@@ -1032,7 +969,6 @@ export const open = (Ctor: new () => object) => make(Ctor, []);
   },
 };
 
-/** Forms the audit must accept: if one of these is refused, the rules over-reach. */
 const CLEAN_PROBE = {
   path: "src/probes/clean.tsx",
   source: `import { BrowserWindow } from "electron";
@@ -1047,7 +983,6 @@ export const plain = () => new BrowserWindow({ show: false, webPreferences: { sa
 `,
 };
 
-/** The probes that must sit in a file WEBVIEW_SITES maps, and to which row. */
 const PROBE_WEBVIEW_SITES: Record<string, string | null> = {
   "src/probes/dynamic-webview.tsx": "pluginPreload",
   "src/probes/spread-webview.tsx": "pluginPreload",
@@ -1122,8 +1057,7 @@ describe("preload sites follow the preload table", () => {
     let scratch: string;
     let probes: Audit;
     beforeAll(() => {
-      // Inside the repo's ignored .cache, so the probes resolve node_modules by
-      // walking up, as src does — no link into node_modules to clean up.
+      // Keep probes under .cache so dependency lookup matches src without extra links.
       mkdirSync(resolve(ROOT, ".cache"), { recursive: true });
       scratch = mkdtempSync(join(ROOT, ".cache", "preload-sites-"));
       for (const path of ["tsconfig.json", "package.json", "src/main/preload-bundles.ts", "src/main/main-paths.ts", "src/shared/preload-bundles.ts", "src/shared/preload-bundles.json"]) {

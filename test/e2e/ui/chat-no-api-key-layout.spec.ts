@@ -8,17 +8,7 @@ import {
 } from "./seeded-electron";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-/**
- * The no-API-key affordance is a zero-height chip in the composer's reserved
- * top strip, mirrored across from the project selector (it used to be a
- * transcript card).
- *
- * These tests pin that the card is gone, the chip sits in the strip (not in the
- * scrolling transcript), and the composer is bottom-docked on an empty
- * conversation. An empty conversation used to lift the composer into the middle
- * of the column and animate it down on first send; that placement is retired,
- * so `margin-bottom` is measured to be 0 rather than trusting the attribute.
- */
+// Keep the no-key chip in the reserved strip without moving the empty-conversation composer.
 test.describe("chat no-API-key layout", () => {
   test.skip(!builtMainExists(), "dist/src/main/main.js not built; run bun run build first");
 
@@ -69,9 +59,7 @@ test.describe("chat no-API-key layout", () => {
         hasLiftAttr: composerDock?.hasAttribute("data-composer-centered-lift") ?? false,
         chipInsideScroll: Boolean(chipEl?.closest(".ave-chat-scroll")),
         overlapsComposer,
-        // Mirrored: the chip starts to the right of where the selector ends.
         chipRightOfSelector: chipBox.left >= selectorBox.right,
-        // Both live in the strip directly above the composer card.
         chipAboveComposer: chipBox.bottom <= composerBox.top,
         sameStrip: Math.abs(chipBox.top - selectorBox.top) <= 12,
         composerBottom: composerBox.bottom,
@@ -90,7 +78,6 @@ test.describe("chat no-API-key layout", () => {
     expect(metrics?.chipRightOfSelector, JSON.stringify(metrics)).toBe(true);
     expect(metrics?.chipAboveComposer, JSON.stringify(metrics)).toBe(true);
     expect(metrics?.sameStrip, JSON.stringify(metrics)).toBe(true);
-    // Even on a short viewport the composer stays fully on screen.
     expect(metrics?.composerBottom, JSON.stringify(metrics)).toBeLessThanOrEqual(
       metrics?.viewportHeight ?? 0,
     );
@@ -126,7 +113,6 @@ test.describe("chat no-API-key layout", () => {
     expect(metrics?.placement).toBe("bottom");
     expect(metrics?.hasLiftAttr, JSON.stringify(metrics)).toBe(false);
     expect(metrics?.marginBottom, JSON.stringify(metrics)).toBe(0);
-    // Docked: the composer sits in the lower part of the window, not mid-column.
     expect(metrics?.composerTop, JSON.stringify(metrics)).toBeGreaterThan(
       (metrics?.viewportHeight ?? 0) * 0.6,
     );
@@ -149,7 +135,7 @@ test.describe("chat no-API-key layout", () => {
     await expect(ctx.page.locator('[data-testid="composer-api-key-chip:settings"]')).toBeVisible();
     await expect(ctx.page.locator('[data-testid="composer-api-key-chip:marketplace"]')).toBeVisible();
 
-    // The popover is an overlay: opening it must not move the composer.
+    // Opening the overlay must not move the composer.
     const composerTopBefore = await ctx.page.evaluate(() =>
       document.querySelector('[data-testid="composer-input-bar"]')!.getBoundingClientRect().top,
     );

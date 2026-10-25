@@ -1,19 +1,4 @@
-/**
- * Write the plugin host protocol schema, or check the committed copy.
- *
- *   node --import tsx scripts/generate-plugin-host-protocol-schema.ts          write it
- *   node --import tsx scripts/generate-plugin-host-protocol-schema.ts --check  fail if it differs
- *
- * The generator is `scripts/lib/plugin-host-protocol-schema.ts`. This file is
- * only its command line, and it runs unconditionally: an "am I the entry
- * module" guard would compare two spellings of one path — argv keeps a
- * symlink, a junction, a `subst` drive or a short name that `import.meta.url`
- * has already resolved — and a mismatch would skip the check and exit 0, a
- * gate that passes by not running.
- *
- * Every run prints exactly one outcome line. Only `wrote …` and `… matches its
- * sources` exit 0.
- */
+// Run unconditionally: path spelling differences must not let an entry-module guard skip verification.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +9,6 @@ import {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Do what `args` asks, and return the outcome line; every other outcome throws. */
 function run(args: readonly string[]): string {
   const check = args.length === 1 && args[0] === "--check";
   if (args.length > 0 && !check) {
@@ -43,7 +27,7 @@ function run(args: readonly string[]): string {
   } catch {
     throw new Error(`${path} is missing; run bun run generate:plugin-host-protocol-schema`);
   }
-  // A copy saved with CRLF is the same schema; the blob is LF (.gitattributes).
+  // Accept CRLF working copies; committed blobs remain LF.
   if (committed.replace(/\r\n/g, "\n") !== text) {
     throw new Error(
       `${path} differs from what the sources generate. Run `
@@ -56,7 +40,6 @@ function run(args: readonly string[]): string {
 try {
   console.log(`${LABEL} ${run(process.argv.slice(2))}`);
 } catch (error) {
-  // One line, not a stack: this is a gate's verdict, read in a build log.
   const message = error instanceof Error ? error.message : String(error);
   console.error(message.startsWith(LABEL) ? message : `${LABEL} ${message}`);
   process.exitCode = 1;

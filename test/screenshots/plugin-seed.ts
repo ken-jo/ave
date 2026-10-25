@@ -7,30 +7,12 @@ import {
 import path from 'node:path';
 import fs from 'node:fs';
 
-/**
- * Plugin side-loader for the screenshot harness.
- *
- * It installs only the fixture plugins under `test/fixtures/e2e-plugins`, so a
- * capture reads nothing outside this repository: no sibling plugin checkout,
- * no built bundle from elsewhere, no interpreter from the operator's own
- * `~/.ave`. A scenario that names a plugin this table does not hold fails the
- * run rather than capturing an empty frame. Keys whose subject is another
- * plugin repository's own UI are out of scope (see
- * `PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE` in matrix.ts).
- */
+// Seed only repository fixtures; unknown plugin IDs must fail.
 const SCREENSHOT_FIXTURE_PLUGINS: Readonly<Record<string, FixturePlugin>> = {
   [VIEW_FIXTURE.manifest.id]: VIEW_FIXTURE,
 };
 
-/**
- * Write `permissions.reviewer.mode` into the isolated profile's
- * `~/.ave/settings.json`.
- *
- * `disabled` carries the `disabledMigratedAt` marker because without it
- * `migrateLegacyDisabledMode` rewrites `disabled` -> `strict` (defer every
- * HIGH) at load, which is the opposite of what the caller asked for — see
- * src/permissions/permission-settings-store.ts.
- */
+// Without disabledMigratedAt, legacy migration changes disabled mode to strict.
 export function seedReviewerMode(
   aveHomeForTest: string,
   mode: 'disabled' | 'rule' | 'llm' | 'strict',
@@ -38,8 +20,7 @@ export function seedReviewerMode(
   const aveHomeSettingsPath = path.join(aveHomeForTest, 'settings.json');
   let aveHomeSettings: Record<string, unknown> = {};
   try {
-    // Read directly and treat ENOENT like malformed JSON — avoids the
-    // exists-then-read TOCTOU race (CodeQL js/file-system-race).
+    // Read directly to avoid an existence-check race.
     aveHomeSettings = JSON.parse(fs.readFileSync(aveHomeSettingsPath, 'utf-8')) as Record<string, unknown>;
   } catch {
     aveHomeSettings = {};
@@ -60,15 +41,7 @@ export function seedReviewerMode(
   });
 }
 
-/**
- * Write the permission execution mode into the isolated profile's
- * `permissions.json`.
- *
- * The WHOLE `PermissionsFile` shape is written on purpose: `readPermissionsFile`
- * discards the file unless `version === 1` and `rules` is an array, and a
- * discarded file leaves the manager on `default` — a partial seed would look
- * like it worked while the mode never changed.
- */
+// Permissions require a complete version-1 document with a rules array.
 export function seedExecutionMode(
   aveHomeForTest: string,
   mode: 'default' | 'strict' | 'auto' | 'allow',
@@ -81,19 +54,7 @@ export function seedExecutionMode(
   );
 }
 
-/**
- * Install the requested fixture plugins into the isolated `~/.ave/plugins/`
- * and write the registry, so the host loads them as local-dev installs at
- * boot. A local-dev install holds no host-secret grant (design §10.3).
- *
- * The LLM permission reviewer is disabled unless `disableReviewer` is false:
- * a plugin panel's mount-time tool call would otherwise open the approval
- * dock over the panel. `plugin-permission-grant` keeps it on, because that
- * dock is its capture target. `disabled` carries the migration marker; see
- * `seedReviewerMode`.
- *
- * @param pluginIds fixture plugin ids to install (an empty list writes an empty registry).
- */
+// Local captures grant no host secrets and disable review unless explicitly requested.
 export async function seedFixturePlugins(
   aveHomeForTest: string,
   pluginIds: readonly string[],

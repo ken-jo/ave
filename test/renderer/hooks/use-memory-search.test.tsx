@@ -1,6 +1,3 @@
-/**
- * D5 — use-memory-search hook tests.
- */
 import "../setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
@@ -30,15 +27,12 @@ describe("useMemorySearch", () => {
     const { api } = makeMockAveApi();
     const { result } = renderHook(() => useMemorySearch(api as unknown as AveApi));
 
-    // Rapid keystrokes
     act(() => { result.current.setQuery("a"); });
     act(() => { result.current.setQuery("ab"); });
     act(() => { result.current.setQuery("abc"); });
 
-    // IPC not called yet (debounce still pending)
     expect(api.memorySearchEntries).not.toHaveBeenCalled();
 
-    // Advance past debounce and flush promises
     await act(async () => {
       vi.advanceTimersByTime(300);
       await Promise.resolve();

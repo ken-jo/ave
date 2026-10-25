@@ -16,11 +16,9 @@ const baseExclude = [
   "dist/**",
   "plugins/**",
   ".claude/**",
-  // Playwright E2E specs run under the `playwright test` runner,
-  // not vitest. Excluded here to avoid double-execution + import errors.
+  // UI specs require their own runner; collecting them here causes import errors.
   "test/e2e/**",
-  // Screenshot-capture harness is also a Playwright suite (own config under
-  // test/screenshots/playwright.config.ts) — vitest must never collect it.
+  // The screenshot harness has its own runner configuration.
   "test/screenshots/**",
 ];
 const rendererTestGlobs = [
@@ -30,18 +28,8 @@ const rendererTestGlobs = [
   `src/ui/renderer/**/__tests__/${testFileGlob}`,
 ];
 
-/**
- * Renderer split — test infrastructure.
- *
- * Renderer tests (jsdom + RTL) live under test/renderer/**.
- * All other tests (main/boot/ipc-bridge) continue to run under the default
- * node environment.
- */
-// The app's no-op seam and the test runner's guard that takes its place (see
-// both files). Matched on the file itself — device and inode — when a module
-// loads, so every way of reaching the seam (a relative or absolute specifier,
-// a link of another name, `vi.importActual`) loads the guard, and no build,
-// which never runs this configuration, ever bundles it.
+// Match the isolation seam by file identity so aliases and links also load the test guard.
+// This configuration never runs in production builds.
 const AVE_HOME_GUARD_SEAM_PATH = rootPath("src/shared/ave-home-test-guard.ts");
 const AVE_HOME_GUARD_SEAM = statSync(AVE_HOME_GUARD_SEAM_PATH, { bigint: true });
 const AVE_HOME_GUARD_SEAM_REAL = realpathSync.native(AVE_HOME_GUARD_SEAM_PATH);
@@ -51,13 +39,11 @@ function isAveHomeGuardSeam(id: string): boolean {
   const file = id.split("?")[0];
   if (!path.isAbsolute(file)) return false;
   try {
-    // A file system without inode numbers reports 0 for every file; the real
-    // path is the identity there.
+    // Filesystems without inode numbers use the real path as identity.
     if (AVE_HOME_GUARD_SEAM.ino === 0n) return realpathSync.native(file) === AVE_HOME_GUARD_SEAM_REAL;
     const stat = statSync(file, { bigint: true });
     return stat.ino === AVE_HOME_GUARD_SEAM.ino && stat.dev === AVE_HOME_GUARD_SEAM.dev;
   } catch (error) {
-    // Not a file on disk (a virtual module): not the seam.
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") return false;
     throw error;
@@ -75,8 +61,6 @@ function vitestMaxWorkers(value: string | undefined): number {
 }
 
 export default defineConfig({
-  // This file lives under config/; anchor every path at the repository root
-  // so the config behaves the same from any working directory.
   root: ROOT,
   plugins: [{
     name: "document-input-guard",
@@ -88,51 +72,25 @@ export default defineConfig({
     name: "ave-home-isolation-guard",
     enforce: "pre",
     load(id) {
-      // The seam's module becomes the guard's exports, so the guard stays one
-      // module with its own imports resolved from where it lives.
+      // Preserve the guard module identity and resolve its imports from its own directory.
       if (isAveHomeGuardSeam(id)) return `export * from ${JSON.stringify(AVE_HOME_GUARD)};\n`;
       return null;
     },
   }],
   test: {
     globalSetup: [rootPath("config/vitest.globalSetup.ts")],
-    // Boot integration fixtures assert calls recorded by their beforeAll setup.
-    // Individual suites own mock cleanup between cases.
+    // Boot fixtures retain calls from beforeAll; each suite owns mock cleanup.
     clearMocks: false,
     testTimeout: 45000,
     hookTimeout: 45000,
-    // Cap concurrent workers. Default = CPU count, which on 8-10 core macs
-    // multiplied by per-test subprocess fanout (shell-tools.test.ts /
-    // executor.test.ts / script-hook-runner.test.ts each spawn shell
-    // children) saturates the CPU and causes timing flakes:
-    //   - shell stdout chunks arrive late → assertion sees partial output
-    //   - script hooks receive stdin slowly → decision flips to deny
-    //   - executor Layer-1 approvals race the audit-log subprocess
-    // maxWorkers=4 keeps moderate parallelism for the rest of the suite
-    // while leaving headroom for each test's spawned subprocesses.
-    // AVE_VITEST_MAX_WORKERS lets a host whose CPU budget is not its core
-    // count (a CI runner under a cgroup CPU quota) size the pool to that
-    // budget; anything but a positive integer is refused, not ignored.
+    // Limit workers to leave CPU headroom for subprocess-heavy tests.
+    // AVE_VITEST_MAX_WORKERS must be a positive integer and can reflect a host CPU quota.
     maxWorkers: vitestMaxWorkers(process.env.AVE_VITEST_MAX_WORKERS),
-    // The vm pools (the jsdom project) retain VM contexts until a worker is
-    // recycled; a worker whose heap passes this limit is replaced. Vitest
-    // reads it from this root block only, not per project, and the forks
-    // pool ignores it. Three CI workers at 2 GiB of heap stay well inside the
-    // runner slice's 12 GiB MemoryHigh (jsdom's native memory sits outside
-    // the heap, hence the margin).
+    // VM pools retain contexts until recycling; only this root setting limits their heap.
+    // Leave memory headroom for native allocations outside the heap.
     vmMemoryLimit: "2048MB",
-    // Node v25 enabled experimental WebStorage by default. Its
-    // `localStorage` getter trips `Warning: --localstorage-file was
-    // provided without a valid path` and shadows the jsdom implementation,
-    // so tests that touch localStorage (e.g. use-role-presets) start to
-    // fail with `localStorage.setItem is not a function` despite running
-    // in a jsdom environment. Forcing `--no-experimental-webstorage` on
-    // every worker fork restores the pre-v25 behaviour where jsdom owns
-    // the `localStorage` global, and is a no-op on Node versions where
-    // webstorage is not on by default (e.g. v22 on Windows CI).
-    // `--no-experimental-webstorage` is a Node v25+ flag. Older runtimes,
-    // including Electron's current embedded Node, reject it as "bad option"
-    // before Vitest can collect a test file. Gate on the active test runtime.
+    // Disable native WebStorage so the DOM test environment owns localStorage.
+    // Gate the flag on the active runtime: older versions reject it before test collection.
     execArgv: (() => {
       const major = parseInt(process.versions.node.split(".")[0], 10);
       return [
@@ -162,12 +120,7 @@ export default defineConfig({
         test: {
           name: "node",
           environment: "node",
-          // Backend tests were authored against the original Korean strings
-          // (dialogs, tool descriptions, prompts). After the i18n migration
-          // these resolve through t() with English as the default; this setup
-          // pins the runtime locale to Korean for node tests so the existing
-          // Korean assertions stay valid. Tests that specifically exercise the
-          // i18n default (English) set the locale explicitly themselves.
+          // Pin the locale for tests asserting Korean strings; default-locale tests set their own.
           setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
           include: [
             `src/**/__tests__/${testFileGlob}`,
@@ -184,20 +137,10 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
-          // A fresh VM context per file inside a reused worker, instead of a
-          // fresh worker process per file. The default pool started a process
-          // and loaded jsdom (~0.9 s) for each of the ~300 renderer files; on
-          // the renderer component suite this ran 127 s -> 40 s with every
-          // test passing. Each file still gets its own module graph and
-          // globals (vitest.globalSetup.ts accepts vm pools for that reason).
-          // The node project stays on forks: under vm its native-module,
-          // sandbox and mock-identity suites fail and it gains ~14%.
+          // Reuse workers while giving each renderer file fresh globals and a module graph.
+          // Backend tests require forks for native modules, confinement and mock identity.
           pool: "vmForks",
-          // Renderer tests were authored against the original Korean UI
-          // strings. After the i18n migration those strings resolve through
-          // t() with English as the default; this setup pins the runtime
-          // locale to Korean for renderer tests so the existing Korean
-          // assertions stay valid (and also verify the Korean catalog wiring).
+          // Pin Korean to preserve renderer string assertions and exercise the catalog.
           setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
@@ -208,8 +151,7 @@ export default defineConfig({
   resolve: {
     dedupe: ["react", "react-dom"],
     extensions: [".ts", ".tsx", ".mjs", ".js", ".jsx", ".json"],
-    // Pin react / ajv / pino to their concrete entry files so vitest resolves a
-    // single copy regardless of how the importer specifies them.
+    // Resolve concrete entries to keep one module instance across import spellings.
     alias: {
       "react/jsx-dev-runtime": rootPath("node_modules/react/jsx-dev-runtime.js"),
       "react/jsx-runtime": rootPath("node_modules/react/jsx-runtime.js"),

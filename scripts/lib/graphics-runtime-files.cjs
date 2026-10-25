@@ -1,9 +1,7 @@
 const { statSync } = require("node:fs");
 const { join } = require("node:path");
 
-// The rendering engine includes its EGL/GLES implementation in the executable.
-// These separate libraries still support its native software-rendering paths
-// and remain required regardless of the selected hardware-acceleration mode.
+// Software rendering still needs these libraries regardless of hardware-acceleration settings.
 const GRAPHICS_RUNTIME_FILES = {
   linux: [
     "libvk_swiftshader.so",

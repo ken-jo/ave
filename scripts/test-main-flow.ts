@@ -24,8 +24,7 @@ async function main() {
   const runtime = new PluginRuntime({
     encryption: createNodeSecretEncryption(),
     hostRoot: projectRoot,
-    // Every `entry` plugin runs in a child (§9.8 A1); a source checkout has no
-    // emitted child entry, so the flow bundles the same one the tests do.
+    // Source checkouts need the same bundled plugin child entry used by tests.
     childEntryPath: await buildChildEntry("test-main-flow"),
     registryPath: resolve(projectRoot, "plugins/registry.json"),
     createHostApi: createNoopHostApiForTests,

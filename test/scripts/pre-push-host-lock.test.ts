@@ -1,11 +1,5 @@
-/**
- * Parallel writers on one host each ran the full pre-push tier at once; the
- * load average passed 190 and load-sensitive tests timed out. The full tier
- * now holds one exclusive host lock and the fast tier one of a few shared
- * slots. These suites pin that the lock orders runs without skipping any:
- * a second run waits and says for whom, a dead owner's lock is reclaimed, and
- * a run that cannot get its turn fails instead of passing.
- */
+// Full checks require an exclusive host lock; scoped checks share bounded slots.
+// Wait for live owners, reclaim dead locks, and fail when acquisition times out.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,8 +29,7 @@ interface LockPause {
   fail?: boolean;
 }
 
-// A process that holds the named lock until `release` appears. Filesystem
-// barriers pause actual syscalls in the child, without changing the lock API.
+// Filesystem barriers pause real child syscalls without changing the lock API.
 function holder(directory: string, name: string, slots?: number, pause?: LockPause) {
   const script = join(directory, `holder-${Math.random().toString(36).slice(2)}.mjs`);
   writeFileSync(script, `
@@ -106,9 +99,7 @@ function pollingClock() {
   return { now: () => clock, sleep: (durationMs: number) => { clock += durationMs; } };
 }
 
-// Inject publication errnos at the actual filesystem boundary in an isolated
-// process. Model destinations that reject replacement even when empty:
-// recovery must inspect ownership before removing a generation and retrying.
+// Inject publication errors where empty destinations reject replacement; recovery must verify ownership.
 function publicationProbe(directory: string, mode: "full" | "pool" | "empty" | "write" | "absent" | "vanished", errno: string) {
   const script = join(directory, "publication-probe.mjs");
   writeFileSync(script, `
@@ -166,7 +157,7 @@ process.stdout.write(JSON.stringify({ ran, denied, during, logs, pid: process.pi
 
 describe("pre-push host lock", () => {
   it("makes a second full run wait for the first, says who holds it, and releases both", async () => {
-    // Keep real processes and polling here to prove OS ownership and cross-process handoff.
+    // Real processes and polling prove OS ownership and cross-process handoff.
     const directory = lockDirectory();
     const first = holder(directory, "full");
     await waitFor(first.held, "the first holder");
@@ -177,9 +168,7 @@ describe("pre-push host lock", () => {
     first.release();
     expect(await first.exited).toBe(0);
     await waitFor(second.held, "the second holder");
-    // The holder logs before it writes its marker, but the log crosses a pipe
-    // this process reads asynchronously while the marker is a file it reads
-    // synchronously, so the marker can be visible first; wait for the line.
+    // A synchronous marker read can precede delivery of the earlier log through its pipe.
     await waitFor(() => /acquired the full host lock after \d+s/.test(second.output()), "the acquired message");
     second.release();
     expect(await second.exited).toBe(0);
@@ -243,13 +232,11 @@ describe("pre-push host lock", () => {
     )).toThrow(new RegExp(`\\[PRE_PUSH_HOST_LOCK_TIMEOUT\\] waited \\d+s for the full-tier host lock \\(held by PID ${process.pid}: .*no checks ran and the push is refused`));
     expect(ran).toBe(false);
     expect(log[0]).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
-    // The live owner's lock is left alone.
     expect(existsSync(join(lock, "owner-live-owner.json"))).toBe(true);
   });
 
   it("names the holder even when the first acquisition round alone outlasts the timeout", () => {
-    // A loaded host can spend longer than the timeout in one round; the notice
-    // must not depend on getting a second round in before the deadline.
+    // Emit the waiting notice even if one polling round consumes the timeout.
     const directory = lockDirectory();
     const lock = join(directory, "ave-prepush-full.lock");
     mkdirSync(lock);
@@ -324,9 +311,7 @@ describe("pre-push host lock", () => {
     expect(report).toMatchObject({ ran: 0, ownerPreserved: false, remaining: [] });
     expect(report.error).toContain("PRE_PUSH_HOST_LOCK_TIMEOUT");
     expect(report.logs[0]).toContain("unknown PID");
-    // It kept retrying until the deadline. How many attempts fit in the
-    // window depends on the host's load (a full pre-push run on a busy host
-    // saw exactly 3 in 40 ms), so the claim is "more than one", not a rate.
+    // Retry counts vary with host load; assert repeated attempts rather than a rate.
     expect(report.denied).toBeGreaterThan(1);
   });
 

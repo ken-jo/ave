@@ -36,8 +36,7 @@ test("budget-suspended sub-agent renders waiting in the workspace rail", async (
       },
     },
   ] satisfies Array<Omit<AgentSpawnEvent, "parentSessionId">>;
-  // A tile keeps only the frames its own conversation spawned, so the injected
-  // frames have to name the conversation this window is showing.
+  // Frames must name this tile's conversation to pass ownership filtering.
   const parentSessionId = await mainWindow.evaluate(
     async () => (await (window as unknown as {
       aveApi: { chatSessions: () => Promise<{ current: string }> };

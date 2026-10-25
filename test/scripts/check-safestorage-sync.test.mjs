@@ -6,7 +6,6 @@ import process from "node:process";
 import test from "node:test";
 import { SAFE_STORAGE_OWNERS, checkSyncSafeStorage, runSyncSafeStorageCli, scanSafeStorageText } from "../../scripts/check-safestorage-sync.mjs";
 
-/** A root with an installed electron of `version` (null: none) and `files`. */
 function fixtureRoot(version, files) {
   const root = mkdtempSync(join(tmpdir(), "safestorage-sync-"));
   if (version !== null) {
@@ -98,7 +97,6 @@ test("fails clearly when no electron is installed", () => {
   }
 });
 
-/** The sync members `text` reaches, as `kind:method@line`. */
 function reached(text) {
   return scanSafeStorageText(text).sites.map((site) => `${site.kind}:${site.method}@${site.line}`);
 }
@@ -107,7 +105,7 @@ test("counts a member reached across lines, with optional chaining and through a
   assert.deepEqual(reached("const v = safeStorage\n  .encryptString(x);\n"), ["call:encryptString@1"]);
   assert.deepEqual(reached("safeStorage?.decryptString(b);\n"), ["call:decryptString@1"]);
   assert.deepEqual(reached("this.safeStorage\n  ?.\n  isEncryptionAvailable();\n"), ["call:isEncryptionAvailable@1"]);
-  // A reference is a later call.
+  // The alias is called later, outside its declaration.
   assert.deepEqual(reached("register(safeStorage.encryptString);\n"), ["call:encryptString@1"]);
 });
 
@@ -132,7 +130,6 @@ test("counts a sync member destructured out of safeStorage, and fails on it from
   }
 });
 
-/** Every alias reason the gate reports for `text` at `rel`. */
 function aliasesOf(text, rel = "src/main/other.ts") {
   return scanSafeStorageText(text, rel).aliases.map((alias) => `${alias.reason}@${alias.line}`);
 }
@@ -188,7 +185,7 @@ test("lets the three owners use safeStorage, and holds even them to no exports",
   const owner =
     'import { safeStorage } from "electron";\n' +
     "export const adapter = { encryptString: (v) => safeStorage.encryptString(v) };\n" +
-    // Destructuring an async member is neither an alias (owners may) nor a sync site.
+    // An async destructuring owner is neither a synchronous call nor a callable alias.
     "const { encryptStringAsync } = safeStorage;\n";
   const files = Object.fromEntries(SAFE_STORAGE_OWNERS.map((rel) => [rel, owner]));
   const root = fixtureRoot("45.0.0", files);
@@ -216,7 +213,7 @@ test("does not take a test file's electron mock for a use, but counts its sync r
     assert.deepEqual(found.aliases, [], `${rel} tripped the alias rule`);
     assert.deepEqual(found.sites.map((site) => site.method), ["encryptString"]);
   }
-  // The same text outside a test file is a use.
+  // Count uses outside test declarations too.
   assert.notDeepEqual(aliasesOf(mock), []);
 });
 

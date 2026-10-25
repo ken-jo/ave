@@ -1,19 +1,5 @@
 #!/usr/bin/env node
-/**
- * ASRT runtime smoke — proves the esbuild-external fix is correct.
- *
- * Imports the REAL @anthropic-ai/sandbox-runtime from node_modules (the same
- * dynamic-import path asrt-sandbox.ts uses), initializes a minimal TRUSTED
- * config, wraps a command, and spawns the returned argv with shell:false. It
- * asserts:
- *   1. echo-ok        — the wrapped `echo asrt-ok` actually runs, stdout has it.
- *   2. vendor-resolved — no "vendor not found" / module-resolution error (i.e.
- *      ASRT located its Seatbelt/seccomp machinery filesystem-relative).
- *   3. network-deny    — a curl to a NON-allowed domain is BLOCKED
- *      (deny-by-default), proving network egress is sandboxed.
- *
- * Not bundled — run with node/bun directly against node_modules.
- */
+// Run unbundled against installed dependencies to verify command execution, vendor resolution and network denial.
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,15 +32,13 @@ try {
 
   const writeDir = mkdtempSync(join(tmpdir(), "asrt-smoke-"));
 
-  // Minimal TRUSTED config: deny-by-default network (empty allowedDomains),
-  // write only to a temp dir.
+  // Deny network access and allow writes only inside the temporary directory.
   await SandboxManager.initialize(
     { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [writeDir], denyWrite: [] } },
     undefined,
     false,
   );
 
-  // ── 1+2: echo-ok + vendor-resolved ──────────────────────────────────────
   const echoWrapped = await SandboxManager.wrapWithSandboxArgv("echo asrt-ok");
   console.log(`[smoke] echo argv[0]=${echoWrapped.argv[0]} argc=${echoWrapped.argv.length}`);
   const echoRes = await runArgv(echoWrapped.argv, echoWrapped.env);
@@ -71,14 +55,12 @@ try {
   console.log(`[smoke] echo exit=${echoRes.code} stdout=${JSON.stringify(echoRes.stdout.trim())}`);
   if (echoRes.stderr.trim()) console.log(`[smoke] echo stderr=${JSON.stringify(echoRes.stderr.trim().slice(0, 400))}`);
 
-  // ── 3: network deny-by-default (BONUS) ───────────────────────────────────
-  // curl a non-allowed domain; under deny-by-default it must fail to connect.
+  // A non-allowed destination must fail to connect.
   const netWrapped = await SandboxManager.wrapWithSandboxArgv(
     "curl -sS --max-time 8 https://example.com -o /dev/null -w '%{http_code}'",
   );
   const netRes = await runArgv(netWrapped.argv, netWrapped.env);
   SandboxManager.cleanupAfterCommand();
-  // BLOCKED == non-zero exit / no 200. ALLOWED == exit 0 with 200.
   const looksAllowed = netRes.code === 0 && /\b200\b/.test(netRes.stdout);
   results.networkDeny = !looksAllowed;
   console.log(`[smoke] network curl exit=${netRes.code} stdout=${JSON.stringify(netRes.stdout.trim())} blocked=${results.networkDeny}`);

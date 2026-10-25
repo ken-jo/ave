@@ -14,11 +14,7 @@ const REPO_ROOT = resolve(HERE, "../../..");
 const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 const CLEANUP_RM_OPTIONS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
 
-/**
- * Workspace-rail UX redesign (vertical resize, browser de-nest + search Popover,
- * file-source segment, subagent viewer). Drives the packaged renderer against a
- * real, allow-listed project folder.
- */
+// Exercise workspace split sizing, source selection and grouped agent transcripts against a real project.
 test.describe("workspace rail UX redesign", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
 
@@ -83,18 +79,14 @@ test.describe("workspace rail UX redesign", () => {
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
-    // Directory is the default source; the project file is listed there.
     await expect(page.getByTestId("chat-side-panel-file-source-directory")).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "architecture.md" })).toBeVisible();
 
-    // No chat has run, so there are no session artifacts → the segment is disabled
-    // with a 0 count.
     const sessionSeg = page.getByTestId("chat-side-panel-file-source-session");
     await expect(sessionSeg).toBeDisabled();
     await expect(page.getByTestId("chat-side-panel-file-source-session-count")).toHaveText("0");
 
-    // R3: the segment strip is compact — its total footprint stays ~24-28px so
-    // it does not crowd the narrow file pane. Each button is 24px (h-6).
+    // Keep source selectors compact enough for narrow file panes.
     const dirBtnBox = await page.getByTestId("chat-side-panel-file-source-directory").boundingBox();
     expect(dirBtnBox).not.toBeNull();
     expect(dirBtnBox!.height).toBeLessThanOrEqual(26);
@@ -102,8 +94,7 @@ test.describe("workspace rail UX redesign", () => {
     expect(stripBox).not.toBeNull();
     expect(stripBox!.height).toBeLessThanOrEqual(30);
 
-    // R3: no dead search — the search box is not rendered on the Directory
-    // segment (ProjectRootsBrowser has no query wiring).
+    // Directory mode has no query wiring and must not expose an inert search field.
     await expect(page.getByTestId("chat-preview-search")).toHaveCount(0);
 
     const shot = await page.getByTestId(TEST_IDS.chatSidePanel).screenshot();
@@ -151,8 +142,7 @@ test.describe("workspace rail UX redesign", () => {
     await expect(splitLayout).toBeVisible();
     const before = await splitLayout.evaluate((el) => (el as HTMLElement).style.gridTemplateRows);
 
-    // Keyboard-drive the splitter (deterministic vs a pixel drag) and confirm it
-    // moved, then persisted the new ratio.
+    // Drive the splitter by keyboard for deterministic persisted-ratio checks.
     const splitter = page.getByTestId("chat-side-panel-file-splitter");
     await splitter.focus();
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowDown");
@@ -161,7 +151,6 @@ test.describe("workspace rail UX redesign", () => {
       .not.toBe(before);
     const afterDrag = await splitLayout.evaluate((el) => (el as HTMLElement).style.gridTemplateRows);
 
-    // Restart the app against the same user-data dir; the split ratio survives.
     await app.close();
     await launch();
     await page.setViewportSize({ width: 1400, height: 840 });
@@ -175,7 +164,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("browser tab: single address bar and searchable visited-page list", async () => {
-    // Two local HTML artifacts supply distinct visited rows without a network request.
+    // Local artifacts provide distinct visited rows without network requests.
     await app.close();
     const browserSessionId = "b2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
     const sessionsDir = resolve(tempHome, ".ave", "sessions");
@@ -201,9 +190,7 @@ test.describe("workspace rail UX redesign", () => {
     await page.getByTestId(chatSidePanelLauncherTestId("browser")).click();
 
     const panel = page.getByTestId(TEST_IDS.chatSidePanel);
-    // Exactly ONE address bar (the duplicated viewer header is suppressed).
     await expect(panel.getByTestId("chat-side-panel-browser-address")).toHaveCount(1);
-    // The visited-page list occupies the upper pane and owns its search field.
     await expect(panel.getByTestId("chat-side-panel-browser-split-layout")).toBeVisible();
     const visited = panel.getByTestId("chat-side-panel-browser-visited");
     await expect(visited).toBeVisible();
@@ -227,13 +214,10 @@ test.describe("workspace rail UX redesign", () => {
     await page.setViewportSize({ width: 1400, height: 840 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(page.getByTestId(chatSidePanelLauncherTestId("subagent"))).toBeVisible();
-    // side-chat is a first-class launcher item alongside sub-agent — both are
-    // live surfaces, both openable from the same empty-state picker.
     await expect(page.getByTestId(chatSidePanelLauncherTestId("side-chat"))).toBeVisible();
 
     await page.getByTestId(chatSidePanelLauncherTestId("subagent")).click();
     await expect(page.getByTestId("chat-side-panel-tab-subagent")).toBeVisible();
-    // No spawns in a fresh session → empty state.
     await expect(page.getByTestId("chat-side-panel-subagent-empty")).toBeVisible();
 
     const shot = await page.getByTestId(TEST_IDS.chatSidePanel).screenshot();
@@ -241,20 +225,13 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("subagent tab: a spawn + its resume (shared childSessionId) render as ONE unified, live-growing transcript", async () => {
-    // Inject the real `ave:agent-spawn:event` stream (the same channel the main
-    // process forwards on) so the renderer's live spawn hook + the viewer's
-    // groupSubAgentSessions run end-to-end without a real LLM. The original spawn
-    // and its resume are two separate agent_spawn calls (two spawnIds/toolUseIds)
-    // that share ONE childSessionId — the viewer must unify them into a single
-    // row whose transcript concatenates both segments.
+    // Inject production spawn events to verify original and resumed calls form one logical transcript.
     await page.setViewportSize({ width: 1400, height: 840 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("subagent")).click();
     await expect(page.getByTestId("chat-side-panel-tab-subagent")).toBeVisible();
 
-    // A tile keeps only the frames its own conversation spawned, so every
-    // injected frame has to name the conversation this window is showing —
-    // exactly what the real spawn path stamps.
+    // Every frame must name the displayed conversation to pass tile ownership filtering.
     const parentSessionId = await page.evaluate(
       async () => (await (window as unknown as {
         aveApi: { chatSessions: () => Promise<{ current: string }> };
@@ -269,8 +246,7 @@ test.describe("workspace rail UX redesign", () => {
     };
 
     const CHILD = "e2e-child-session";
-    // 1) original spawn runs to an INCOMPLETE finish (learns its childSessionId
-    //    on `done`, the first phase to carry the join key).
+    // The done frame first supplies the child-session join key.
     await sendSpawn({ spawnId: "e2e-orig", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "E2E research", instructions: "E2E prompt", toolUseId: "tu-orig" });
     await sendSpawn({
       spawnId: "e2e-orig",
@@ -290,9 +266,7 @@ test.describe("workspace rail UX redesign", () => {
     await expect(detail).toContainText("E2E prompt");
     await expect(detail).toContainText("ORIGINAL_SEGMENT");
 
-    // 2) a resume (separate spawnId, SAME childSessionId) starts and streams a
-    //    growing tail. The unified transcript's prefix (the original segment)
-    //    must stay stable while the tail grows — no flicker / re-mount.
+    // Resumes use a new spawn id with the same child session; retain the original prefix while the tail grows.
     await sendSpawn({ spawnId: "e2e-resume", type: "start", taskState: "TASK_STATE_INPUT_REQUIRED", title: "(sub-agent)", instructions: "resume prompt", toolUseId: "tu-resume", childSessionId: CHILD });
     await sendSpawn({
       spawnId: "e2e-resume",
@@ -303,7 +277,6 @@ test.describe("workspace rail UX redesign", () => {
       entries: [{ kind: "assistant", text: "RESUME_TAIL_A", streaming: false }],
     });
 
-    // Still ONE row; prefix stable, first tail chunk appended.
     await expect(page.getByTestId("chat-side-panel-subagent-row")).toHaveCount(1);
     await expect(detail).toContainText("ORIGINAL_SEGMENT");
     await expect(detail).toContainText("RESUME_TAIL_A");
@@ -322,8 +295,6 @@ test.describe("workspace rail UX redesign", () => {
       ],
     });
 
-    // Final assertion: ONE row, and the concatenated transcript is ordered
-    // original → resume tail A → resume tail B (stable prefix, grown tail).
     await expect(page.getByTestId("chat-side-panel-subagent-row")).toHaveCount(1);
     await expect(detail).toContainText("RESUME_TAIL_B");
     const order = await detail.evaluate((el) => {
@@ -339,7 +310,6 @@ test.describe("workspace rail UX redesign", () => {
     expect(order.orig).toBeGreaterThan(order.prompt);
     expect(order.tailA).toBeGreaterThan(order.orig);
     expect(order.tailB).toBeGreaterThan(order.tailA);
-    // The row carries the ORIGINAL's title (one logical agent = one name).
     await expect(page.getByTestId("chat-side-panel-subagent-row")).toContainText("E2E research");
 
     const shot = await page.getByTestId(TEST_IDS.chatSidePanel).screenshot();
