@@ -14,6 +14,12 @@ const web = resolve(root, "web");
 const pub = resolve(web, "public");
 const read = (path: string) => readFileSync(path, "utf8");
 const SITE = "https://ave.agent-connector.ai";
+/** The Worker config that serves the static export. */
+const workerConfig = () => JSON.parse(read(resolve(web, "wrangler.jsonc")).replace(/^\s*\/\/.*$/gmu, "")) as {
+  name: string;
+  assets: { directory: string };
+  routes: { pattern: string; custom_domain: boolean }[];
+};
 
 // The site's sources are read as text: they belong to the web package, not to
 // the app's TypeScript program.
@@ -106,19 +112,16 @@ describe("machine-readable files the app fetches", () => {
     for (const file of files) {
       expect((JSON.parse(read(join(schemas, file))) as { $id?: string }).$id).toBe(`${schemaOrigin}/schemas/${file}`);
     }
-    // This export serves those files only while it is hosted at the schema origin. A site
-    // move must keep that origin serving or redirecting /schemas/, so it fails here first.
-    expect(SITE, "schema $ids must stay resolvable at their origin").toBe(schemaOrigin);
+    // The site may move; the schema origin must stay a route of the Worker serving /schemas/.
+    const served = workerConfig().routes.map((route) => route.pattern);
+    expect(served, "schema $ids must stay resolvable: the Worker that serves /schemas/ must keep the schema origin as a route")
+      .toContain(new URL(schemaOrigin!).host);
   });
 });
 
 describe("hosting", () => {
   it("serves the static export at the canonical host from the ave-web Worker", () => {
-    const config = JSON.parse(read(resolve(web, "wrangler.jsonc")).replace(/^\s*\/\/.*$/gmu, "")) as {
-      name: string;
-      assets: { directory: string };
-      routes: { pattern: string; custom_domain: boolean }[];
-    };
+    const config = workerConfig();
     expect(config.name).toBe("ave-web");
     expect(config.assets.directory).toBe("./out");
     expect(config.routes).toEqual([{ pattern: new URL(SITE).host, custom_domain: true }]);
