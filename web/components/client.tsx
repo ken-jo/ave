@@ -3,51 +3,31 @@
 import { useEffect, useState } from "react";
 
 /**
- * Marks the document as scripted (so entrance styles apply) and reveals each
- * [data-reveal] block once as it enters the viewport. Without script, or with
- * reduced motion, everything is simply visible.
- *
- * Also closes the small-screen menu (a <details>) on a tap outside it, on
- * Escape and after a link in it is chosen. The menu opens and works without
- * script; this only adds the expected ways to close it (DESIGN.md 23).
+ * Small page behaviours that need script; the pages work without it.
+ * - The small-screen menu (a <details>) closes on a tap outside it, on
+ *   Escape, and after one of its links is chosen.
+ * - The language switch keeps the part of the page you are reading: it
+ *   carries the current #hash over to the other language's page.
  */
-export function Motion() {
+export function SiteScripts() {
   useEffect(() => {
-    const root = document.documentElement;
-    const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
-    let io: IntersectionObserver | null = null;
-    if (!("IntersectionObserver" in window)) {
-      blocks.forEach((b) => b.classList.add("in"));
-    } else {
-      io = new IntersectionObserver(
-        (entries) => {
-          for (const e of entries) {
-            if (e.isIntersecting) {
-              e.target.classList.add("in");
-              io?.unobserve(e.target);
-            }
-          }
-        },
-        { rootMargin: "0px 0px -12% 0px", threshold: 0.05 },
-      );
-      blocks.forEach((b) => io?.observe(b));
-      root.classList.add("js-ready");
-    }
-
     const openMenus = () => Array.from(document.querySelectorAll<HTMLDetailsElement>("details.menu[open]"));
     const onPointer = (e: PointerEvent) => {
       for (const m of openMenus()) {
-        const panel = m.querySelector(".menu-panel");
-        const summary = m.querySelector("summary");
-        const t = e.target as Node;
-        if (!panel?.contains(t) && !summary?.contains(t)) m.open = false;
+        if (!m.contains(e.target as Node)) m.open = false;
       }
     };
-    // A chosen link closes the menu after the click has navigated or scrolled.
     const onClick = (e: MouseEvent) => {
-      const link = e.target instanceof Element ? e.target.closest(".menu-panel a") : null;
-      const menu = link?.closest<HTMLDetailsElement>("details.menu");
+      const target = e.target instanceof Element ? e.target : null;
+      const menuLink = target?.closest(".menu-panel a");
+      const menu = menuLink?.closest<HTMLDetailsElement>("details.menu");
       if (menu) menu.open = false;
+      const lang = target?.closest<HTMLAnchorElement>("a[hreflang]");
+      if (lang && location.hash) {
+        const url = new URL(lang.href);
+        url.hash = location.hash;
+        lang.href = url.toString();
+      }
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -57,12 +37,11 @@ export function Motion() {
       }
     };
     document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKey);
-    document.addEventListener("click", onClick);
     return () => {
-      io?.disconnect();
       document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("click", onClick);
+      document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -81,6 +60,7 @@ export function CopyButton({ text, label, done }: { text: string; label: string;
           setCopied(true);
           setTimeout(() => setCopied(false), 1600);
         } catch {
+          // Clipboard access can be refused (insecure context, permissions); the command stays selectable.
           setCopied(false);
         }
       }}
