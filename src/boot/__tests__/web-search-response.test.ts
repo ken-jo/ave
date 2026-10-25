@@ -1,12 +1,4 @@
-/**
- * web_search provider-response validation.
- *
- * The external search-provider boundary is untrusted. These tests pin the
- * shape guards that replaced the previous `as any` + `?? []` parsing: a
- * well-formed response normalizes to `{title,snippet,url}` hits, and a
- * shape-mismatched response throws {@link WebSearchShapeError} so the tool can
- * surface `isError:true` with a diagnostic instead of a silent empty result.
- */
+/** Malformed provider responses must surface an error rather than a silent empty result. */
 import { describe, it, expect } from "vitest";
 import {
   parseTavilyResponse,

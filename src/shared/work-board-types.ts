@@ -1,16 +1,4 @@
-/**
- * Shared work-board type definitions and constants — safe to import from both
- * main-process and renderer (no Node.js built-in imports).
- *
- * The main-process work-board store re-exports these as its public type
- * boundary. The renderer imports from here to avoid pulling Node.js
- * `fs/path/os/crypto` modules into the webpack renderer bundle.
- *
- * A WorkItem is a row on the personal board walking the 3-state lifecycle
- * (planned → in_progress → completed, any-to-any via transition) with an
- * optional due date. `overdue` is a derived projection — status ∈
- * {planned, in_progress} AND due_at < now — computed locally in the store.
- */
+/** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
 import type {
   WorkProposal,
@@ -30,23 +18,11 @@ export type {
   WorkProposalUntrustedText,
 };
 
-/**
- * Hard cap on persisted work items. Hitting the cap means add() throws —
- * the LLM receives a clear error and can prompt the user to complete or
- * remove old items.
- */
 export const MAX_ITEMS = 200;
 
-// ── Status & priority alphabets ─────────────────────────────────────────────
-
-/** The 3 lifecycle states actually persisted to disk. */
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
 
-/**
- * Stored states plus the locally-derived `overdue` projection. `overdue` is
- * never persisted — it is computed (status ∈ {planned, in_progress} AND
- * due_at < now) on every store read.
- */
+/** Overdue is computed on every read from incomplete status and due_at. */
 export type WorkItemStatusResolved =
   | "planned"
   | "in_progress"
@@ -58,18 +34,7 @@ export type WorkItemStatusResolved =
  */
 export type WorkItemPriority = "high" | "medium" | "low";
 
-/**
- * Agent-orchestration run lifecycle for a single item, owned by the
- * {@link WorkBoardEngine} plan→approve→execute sequence. Distinct from the
- * board's 3-state lifecycle (`status`): an item can be `planned` (board status)
- * while its `runStatus` walks `planning → awaiting_approval → executing →
- * completed`. `idle` is the implicit default for items that have never been
- * run (the field is absent on disk for those — there is no fallback default,
- * consumers treat absent as "never run").
- *
- * `denied` = the user rejected (or let time out) the plan-approval prompt.
- * `error` = the engine threw during plan or execute.
- */
+/** Run lifecycle is independent of board status; absent means never run, denied means approval rejected or expired, and error means planning or execution threw. */
 export type WorkItemRunStatus =
   | "idle"
   | "planning"
@@ -79,13 +44,7 @@ export type WorkItemRunStatus =
   | "denied"
   | "error";
 
-// ── Work item record ────────────────────────────────────────────────────────
-
-/**
- * Stored board row. This is the exact JSON shape persisted by the work-board
- * store. Timestamps are ISO-8601 strings. `due_at` / `completed_at` are absent
- * (omitted) when unset — there is no remote contract forcing `null`.
- */
+/** Persist ISO timestamps; unset optional fields are omitted rather than null. */
 export interface WorkItem {
   id: number;
   title: string;
@@ -93,48 +52,27 @@ export interface WorkItem {
   status: WorkItemStatusStored;
   priority: WorkItemPriority;
   due_at?: string;
-  /** Workspace/project root this work item belongs to. */
   projectRoot?: string;
-  /** Human-readable workspace/project label captured when the item was created. */
   projectName?: string;
   created_at: string;
   updated_at: string;
   completed_at?: string;
-  // ── Agent-orchestration run fields (WorkBoardEngine, P2) ──
-  // All optional so existing `board.json` rows load unchanged (absent ⇒ never
-  // run). These are engine-written only — they are deliberately NOT part of
-  // `WorkItemUpdateInput`, so a user/LLM patch cannot forge a run result.
-  /** Plan→approve→execute lifecycle. Absent ⇒ never run (treated as `idle`). */
+  // Run fields are engine-written and absent until first run; user/model patches must not forge results.
   runStatus?: WorkItemRunStatus;
-  /** Captured plan text produced by the plan-mode child agent. */
   plan?: string;
-  /** Captured execution OUTPUT produced by the execute-mode child agent. */
   output?: string;
   /** The execute child's `childSessionId` — links the run to its isolated session for audit/trace. */
   runSessionId?: string;
-  /** ISO-8601 instant the run fields were last written. */
   runUpdatedAt?: string;
-  /** Current run's id — links the latest run to its transcript file. */
   runId?: string;
-  /**
-   * Append-only index of past runs (newest last), each pointing to a persisted
-   * transcript `sessions/<id>/<runId>.jsonl`. Re-running archives the prior run
-   * here instead of discarding it, so run history accumulates.
-   */
+  /** Archive prior runs in this append-only index so reruns retain transcript history. */
   runHistory?: WorkItemRunHistoryEntry[];
 }
 
-/**
- * A `WorkItem` decorated with its locally-computed `status_resolved`. Returned
- * by every store read so consumers never re-derive the overdue projection.
- */
 export interface WorkItemResolved extends WorkItem {
   status_resolved: WorkItemStatusResolved;
 }
 
-// ── Store / IPC payloads ────────────────────────────────────────────────────
-
-/** Input for creating a work item. */
 export interface WorkItemCreateInput {
   title: string;
   detail?: string;
@@ -144,17 +82,11 @@ export interface WorkItemCreateInput {
   due_at?: string;
   /** Initial stored status. Omit → "planned". */
   status?: WorkItemStatusStored;
-  /** Workspace/project root this item belongs to. */
   projectRoot?: string;
-  /** Human-readable workspace/project label captured when the item was created. */
   projectName?: string;
 }
 
-/**
- * Patch for updating a work item. Every field is optional; at least one must be
- * supplied. `detail` / `due_at` set to `null` clears the field; an ISO string
- * sets it.
- */
+/** Require at least one patch field; null clears detail or due_at. */
 export interface WorkItemUpdateInput {
   title?: string;
   detail?: string | null;
@@ -162,24 +94,18 @@ export interface WorkItemUpdateInput {
   priority?: WorkItemPriority;
 }
 
-/** Filter for listing work items. Empty filter returns all items. */
 export interface WorkItemListFilter {
   /** Match against `status_resolved` (so `"overdue"` is selectable). */
   status?: WorkItemStatusResolved;
   priority?: WorkItemPriority;
-  /** Keep only items whose `due_at` is on/before this ISO instant. */
   due_before?: string;
-  /** Keep only items that belong to this workspace/project root. */
   projectRoot?: string;
   /** Include legacy items without projectRoot when filtering by projectRoot. */
   includeUnscoped?: boolean;
   limit?: number;
 }
 
-// ── Result envelopes ────────────────────────────────────────────────────────
-//
-// Each operation maps store outcomes into a discriminated `status` envelope so
-// an LLM caller can branch on the result without parsing exception messages.
+// Discriminated outcomes let callers branch without parsing exception messages.
 
 export type WorkItemListResult =
   | { status: "ok"; items: WorkItemResolved[] }
@@ -223,12 +149,7 @@ export type WorkItemDeleteResult =
   | { status: "not_found"; itemId: number }
   | { status: "invalid"; itemId: number; reason: string };
 
-// ── Report payloads ───────────────────────────────────────────────────────
-//
-// Renderer-safe wire shapes for the `WORK_BOARD.generateReport` channel. The
-// host-side reporter (work-board/work-report.ts) only ever returns `ok` /
-// `empty`; the IPC boundary adds the `error` variant when the underlying LLM
-// call throws, so the renderer branches on exactly one discriminated shape.
+// The reporter returns ok or empty; IPC adds error when model work throws.
 
 export type WorkBoardReportKind = "daily" | "weekly";
 
@@ -237,48 +158,21 @@ export type WorkBoardReportResult =
   | { status: "empty"; kind: WorkBoardReportKind; period: string; reason: string }
   | { status: "error"; kind: WorkBoardReportKind; reason: string };
 
-// ── Briefing payloads ───────────────────────────────────────────────────────
-//
-// A briefing is the report surface run in the opposite direction. A report
-// summarizes what is ALREADY on the board; a briefing goes and LOOKS at the
-// user's work, and files what it finds back onto the board.
-//
-// What it files are proposals, not work items. A surveyed action item is a
-// machine's claim about what needs doing, and a proposal is already the shape
-// the board has for exactly that: reviewable, dismissable, expiring on its own,
-// and one click from becoming a real item. Writing straight into the planned
-// column would put unreviewed model output into the work the user has
-// committed to.
+// Briefings file reviewable proposals, never committed work items from unreviewed model output.
 
-/** Which window a briefing surveys. */
 export type WorkBoardBriefingKind = "daily" | "weekly";
 
-/**
- * The `pluginId` every briefing-filed proposal carries.
- *
- * Reserved for the host: a plugin id is a directory name under the plugins
- * root, and a dotted `ave.` name is not one — so no installed plugin can post
- * a card that claims to have come from the user's own briefing.
- */
+/** Reserve the dotted host ID so no installed plugin can impersonate briefing provenance. */
 export const BRIEFING_PROPOSAL_SOURCE_ID = "ave.briefing";
 
-/** Display name stored on briefing-filed proposals. */
 export const BRIEFING_PROPOSAL_SOURCE_LABEL = "Briefing";
 
-/** Proposal kind each briefing window files under. */
 export const BRIEFING_PROPOSAL_KINDS: Record<WorkBoardBriefingKind, string> = {
   daily: "daily-briefing",
   weekly: "weekly-briefing",
 };
 
-/**
- * Outcome of one briefing run. `filed` and `refreshed` carry proposal ids
- * rather than counts so the IPC layer can name each changed card in the
- * `proposalChanged` fan-out; the renderer reads `filed.length` for its result
- * line. `refreshed` is what duplicate suppression produced — an action item
- * whose key was already on the board updated its existing card in place
- * instead of adding a second one.
- */
+/** Return proposal IDs for change-event fan-out; refreshed duplicates update existing cards rather than adding another. */
 export type WorkBoardBriefingResult =
   | {
       status: "ok";
@@ -289,29 +183,15 @@ export type WorkBoardBriefingResult =
   | { status: "empty"; kind: WorkBoardBriefingKind; reason: string }
   | { status: "error"; kind: WorkBoardBriefingKind; reason: string };
 
-// ── Bus events ──────────────────────────────────────────────────────────────
-
-/**
- * Pre-due nudge payload emitted on the plugin event bus as
- * `work_board.work_item.due_soon`, consumed by a subscribed
- * work-item-due-soon detector. Intentionally slim (a pointer, not content):
- * the host emits it when a work item's `due_at` enters the next-24h window.
- */
+/** Emit only a pointer when due_at enters the next 24 hours; do not include item content. */
 export interface WorkItemDueSoonEventPayload {
   itemId: number;
   title: string;
-  /** ISO instant the nudge was emitted. */
   notifiedAt: string;
 }
 
-/**
- * Slim event payload emitted whenever a WorkItem is created, updated,
- * transitioned, completed, reopened, or removed so the renderer can refresh
- * its board view without re-listing on a timer.
- */
 export interface WorkItemChangedEventPayload {
   itemId: number;
-  /** The operation that produced this change. */
   change:
     | "created"
     | "updated"
@@ -319,41 +199,17 @@ export interface WorkItemChangedEventPayload {
     | "completed"
     | "reopened"
     | "removed";
-  /** ISO-8601 timestamp the change was applied. */
   changedAt: string;
 }
 
-/**
- * Progress event streamed by the {@link WorkBoardEngine} while a single item's
- * plan→approve→execute run is in flight. Unlike {@link WorkItemChangedEventPayload}
- * (which fires on persisted board mutations), these are transient liveness
- * events so the renderer can show a per-item running indicator with the live
- * plan / output text and the current phase.
- *
- * `phase` mirrors the run lifecycle:
- *   - `planning`          — plan-mode child agent is running; `text` carries the latest turn text.
- *   - `awaiting_approval` — the plan-approval prompt is shown; the run is blocked on the user.
- *   - `executing`         — execute-mode child agent is running; `text` carries the latest turn text.
- *   - `denied`            — the user rejected (or timed out) the plan approval; the run stopped.
- *   - `done`              — the run finished successfully (execute output persisted).
- *   - `error`             — the run threw; `message` carries the failure reason.
- */
-/**
- * The `originSessionId` a work-board run's sub-agent children are spawned
- * under. The engine writes it at spawn time and the session list reads it back
- * to recognise those children as one item's conversation, so the two sides
- * share this one composer/parser rather than each spelling the format.
- *
- * Only an item id qualifies: the briefing runs use their own origin prefix and
- * must never resolve to an item.
- */
+/** Transient progress is distinct from persisted mutations; planning/executing carry text, denied/error carry reasons, and done means output persisted. */
+/** Engine and session lists share item-origin composition; briefing prefixes must never resolve to item origins. */
 const WORK_BOARD_ORIGIN_PREFIX = "work-board:";
 
 export function workBoardOriginSessionId(itemId: number): string {
   return `${WORK_BOARD_ORIGIN_PREFIX}${itemId}`;
 }
 
-/** The item id an origin names, or `null` for anything that is not an item origin. */
 export function parseWorkBoardOriginSessionId(origin: unknown): number | null {
   if (typeof origin !== "string" || !origin.startsWith(WORK_BOARD_ORIGIN_PREFIX)) return null;
   const rest = origin.slice(WORK_BOARD_ORIGIN_PREFIX.length);
@@ -362,10 +218,6 @@ export function parseWorkBoardOriginSessionId(origin: unknown): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-/**
- * Lifecycle phase of an in-flight run — shared by the live {@link WorkBoardRunEvent}
- * and the persisted {@link RunTranscriptEvent}.
- */
 export type WorkBoardRunPhase =
   | "planning"
   | "awaiting_approval"
@@ -374,11 +226,7 @@ export type WorkBoardRunPhase =
   | "done"
   | "error";
 
-/**
- * One line of a persisted run transcript (`sessions/<itemId>/<runId>.jsonl`).
- * The renderer reads these to render a run's accumulated conversation; the
- * main-side append writer lives in `work-board/run-transcript.ts`.
- */
+/** Transcript lines live at sessions/<itemId>/<runId>.jsonl and accumulate the run conversation. */
 export interface RunTranscriptEvent {
   ts: string;
   phase: WorkBoardRunPhase;
@@ -388,19 +236,13 @@ export interface RunTranscriptEvent {
   message?: string;
 }
 
-/**
- * One entry in a work item's run history (the `board.json` index). Points at
- * the persisted transcript `sessions/<itemId>/<runId>.jsonl`. Re-running an
- * item appends here instead of discarding the prior run, so history accumulates.
- */
+/** Keep prior run transcript pointers on rerun instead of discarding history. */
 export interface WorkItemRunHistoryEntry {
   runId: string;
   startedAt: string;
   endedAt?: string;
   status: WorkItemRunStatus;
-  /** Plan text captured for this run (if it reached approval). */
   plan?: string;
-  /** Short preview of the run's output (if it completed). */
   outputPreview?: string;
 }
 
@@ -409,68 +251,31 @@ export interface WorkBoardRunEvent {
   phase: WorkBoardRunPhase;
   /** 1-based child-agent turn number (planning / executing phases). */
   turn?: number;
-  /** Latest child-agent turn text (planning / executing phases). */
   text?: string;
   /** Failure reason (error phase) or denial reason (denied phase). */
   message?: string;
   /** The execute child's session id, set on the terminal `done` event. */
   runSessionId?: string;
-  /** ISO-8601 timestamp the event was emitted. */
   at: string;
 }
 
-/**
- * Renderer-facing name for the run-progress wire payload. It is structurally
- * identical to {@link WorkBoardRunEvent} (the engine's per-phase event) — the
- * IPC layer forwards the engine event verbatim over {@link WORK_BOARD.runProgress},
- * so there is exactly one wire shape, not a divergent copy. The alias gives the
- * preload bridge + renderer a stable consumer-facing type name without
- * importing the engine module (which pulls Node built-ins).
- */
+/** IPC forwards the engine event unchanged; this renderer-safe alias must remain the same wire shape. */
 export type RunProgressEventPayload = WorkBoardRunEvent;
 
-/**
- * Result envelope returned by the `WORK_BOARD.run` channel — the terminal
- * outcome of one plan→approve→execute run. Mirrors the engine's `RunItemResult`
- * but lives here so the renderer can type the `runWorkBoardItem` return without
- * importing the engine (Node-built-in-free). The IPC handler forwards the
- * engine result verbatim; `not_found` is the unknown-id outcome.
- */
+/** IPC forwards the engine result unchanged; not_found means an unknown item ID. */
 export interface WorkItemRunResult {
   status: "completed" | "denied" | "not_found" | "error" | "already_running";
-  /** Captured execution OUTPUT (completed). */
   output?: string;
-  /** Captured plan text (completed / denied). */
   plan?: string;
-  /** The execute child's session id (completed). */
   runSessionId?: string;
-  /**
-   * Failure / denial reason (error / denied), or the busy explanation when
-   * `status === "already_running"` (a concurrent run of the same item is in
-   * flight — no second sub-agent was spawned).
-   */
+  /** already_running reports the concurrent run without spawning another child. */
   reason?: string;
 }
 
-// ── Recommended-work proposals ──────────────────────────────────────────────
-//
-// A proposal is a plugin's recommendation that the user consider a piece of
-// work. It is NOT a work item: work items are user-owned rows the user creates
-// and the host never deletes behind their back, while a proposal is
-// machine-authored, author-revocable, and expires on its own. They therefore
-// live in a separate file (`proposals.json`) rather than as a fourth board
-// status, and a proposal only becomes a WorkItem when the user accepts it.
-//
-// A proposal carries TEXT AND A KEY. It carries no action: the card's start
-// button drives the host's own WorkBoardEngine plan → approve → execute
-// sequence, so there is no plugin-supplied action for the host to run.
+// Proposals are author-revocable and expire separately from user-owned work items; only user acceptance creates an item.
+// Proposals carry text and identity, never plugin actions; starting one uses the host plan/approve/execute flow.
 
-// The plugin-facing half of this vocabulary — what a plugin hands over and
-// what it gets back — is declared in `plugins/public-contract.ts`, which is the
-// import-free module plugins vendor at an app release tag. Importing FROM it
-// here (rather than restating the shapes) keeps one definition: a proposal the
-// plugin composed and a proposal the store persisted are the same type, not two
-// that agree today.
+// Import the plugin public-contract shapes rather than restating them so submitted and persisted proposals stay identical.
 
 /** Longest a declared kind id may be, and the shape it must take. */
 export const PROPOSAL_KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -490,7 +295,6 @@ export const PROPOSAL_STATE_MAX = 400;
 /** Cap on one evidence / blocker line. */
 export const PROPOSAL_LINE_MAX = 200;
 export const PROPOSAL_TASK_BRIEF_MAX = 2000;
-/** Kind label shown in the install disclosure and on the card. */
 export const PROPOSAL_KIND_LABEL_MAX = 60;
 
 /** Shortest a proposal may ask to live. */
@@ -513,11 +317,7 @@ export type WorkProposalDismissResult =
   | { status: "dismissed"; proposalId: string }
   | { status: "not_found"; proposalId: string };
 
-/**
- * Emitted to renderer windows whenever the proposal set changes — a plugin
- * posted or withdrew one, or the user dismissed or accepted one — so the board
- * re-lists without polling. Slim on purpose: a pointer, not content.
- */
+/** Proposal changes emit pointers so renderer windows refresh without polling. */
 export interface WorkProposalChangedEventPayload {
   proposalId: string;
   change: "posted" | "withdrawn" | "dismissed" | "accepted";

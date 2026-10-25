@@ -242,10 +242,7 @@ describe("marketplace package assets", () => {
   });
 });
 
-/**
- * The row the marketplace seeds for Telegram, verbatim. It is the contract this
- * parser exists to accept, so the test carries it whole rather than a reduction.
- */
+/** Keep the full marketplace seed row to verify compatibility with the producer’s actual payload. */
 const TELEGRAM_CONNECTION_ROW = {
   type: "messaging-connection",
   connectionId: "telegram",

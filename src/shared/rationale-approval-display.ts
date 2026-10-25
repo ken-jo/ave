@@ -1,11 +1,4 @@
-/**
- * Narrow, renderer-safe view of a host-audited foreground rationale.
- *
- * This object is explanatory data only. It contains no ticket, nonce, action
- * digest, or executable input and can never grant permission by itself. The
- * main process HMAC-binds this exact display object to the one-shot approval
- * request before it crosses the renderer boundary.
- */
+/** Display data grants no permission; main binds this exact object to the one-shot approval request with an HMAC. */
 import { isRecord, hasExactKeys } from "./is-record.js";
 import type { RiskLevel } from "./permission-review-status.js";
 
@@ -68,26 +61,13 @@ const SCOPE_ALIGNMENTS = new Set<RationaleApprovalDisplayScopeAlignment>([
   "unknown",
 ]);
 
-/**
- * Unicode Cc covers the C0/C1 control ranges; Cf covers invisible format
- * characters, including directional overrides and isolates. Neither belongs
- * in a sealed approval fact because it can visually reorder or hide the
- * surrounding consent context. Zl/Zp are rejected too: a renderer card is a
- * bounded single-line fact/list surface, not a second layout channel.
- */
+/** Reject controls, invisible formatting, and line separators that could hide or reorder consent context. */
 const UNSAFE_RATIONALE_APPROVAL_DISPLAY_UNICODE =
   /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const HAS_UNSAFE_RATIONALE_APPROVAL_DISPLAY_UNICODE =
   /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
-/**
- * Normalize host-projected explanation text before it is sealed for display.
- *
- * This deliberately preserves ordinary Unicode (including Korean) while
- * replacing controls and invisible format characters with ordinary spacing.
- * The parser below rejects those characters if they arrive in a forged or
- * otherwise unnormalized renderer payload instead of silently widening it.
- */
+/** Normalize host text before sealing; the parser rejects unnormalized renderer input instead of silently accepting it. */
 export function normalizeRationaleApprovalDisplayText(value: string): string {
   return value
     .normalize("NFC")
@@ -100,11 +80,7 @@ function hasUnsafeRationaleApprovalDisplayUnicode(value: string): boolean {
   return HAS_UNSAFE_RATIONALE_APPROVAL_DISPLAY_UNICODE.test(value);
 }
 
-/**
- * Field caps shared by the parser and the emission-side sealer. One definition:
- * a cap the sealer trims to but the parser rejects at (or vice versa) would be
- * exactly the silent divergence that produced unrenderable sealed displays.
- */
+/** The sealer and parser must share field caps. */
 export const RATIONALE_DISPLAY_CAPS = Object.freeze({
   toolName: 256,
   targetItems: 32,
@@ -139,10 +115,7 @@ function isDisplayList(
   );
 }
 
-/**
- * Strict parser shared by the main process and renderer. Invalid display data
- * must never be treated as an approval-capable rationale card.
- */
+/** Invalid display data must never become an approval-capable rationale card. */
 export function parseRationaleApprovalDisplay(
   value: unknown,
 ): RationaleApprovalDisplay | null {
@@ -250,18 +223,12 @@ function sealText(
   maxLength: number,
   maskText: (value: string) => string,
 ): string {
-  // Normalize BEFORE masking so the DLP detectors see canonical text, then
-  // never re-normalize after — the mask token is plain ASCII and a second
-  // pass could only disturb what the detectors already approved.
+  // Normalize before DLP masking and never afterward, so detectors see canonical text and approved mask tokens remain intact.
   const masked = maskText(normalizeRationaleApprovalDisplayText(value));
-  // Plain boolean, not the type-guard: `isDisplayText` narrows its argument to
-  // string, so on a value that is ALREADY a string the false branch narrows to
-  // `never` and the length check below stops compiling.
+  // Use a plain boolean here; a type guard would narrow an already-string false branch to never.
   const fits = (candidate: string): boolean => isDisplayText(candidate, maxLength);
   if (fits(masked)) return masked;
-  // Visible truncation repairs LENGTH violations only. Any other invalidity
-  // (emptied, unsafe characters) is total loss, and dressing total loss as a
-  // truncation — "…" — would claim a prefix survived when nothing did.
+  // Only length violations may show a surviving prefix; other invalidity must show total loss.
   if (masked.length > maxLength) {
     const truncated = truncateVisibly(masked, maxLength);
     if (fits(truncated)) return truncated;
@@ -269,16 +236,7 @@ function sealText(
   return REDACTED_DISPLAY_TEXT;
 }
 
-/**
- * Cap an over-long masked string WITHOUT hiding that it was cut.
- *
- * A silent tail cut is a distortion, not a repair: a truncated path or URL
- * reads as a COMPLETE, different value, and the user approves that other
- * value. The ellipsis makes every cut visible. The character
- * before it is checked for a lone high surrogate so a code point is never
- * split in half — a lone surrogate would render as U+FFFD and
- * read as corruption rather than truncation.
- */
+/** Make every truncation visible and avoid splitting surrogate pairs; silently shortened paths or URLs could misrepresent what is approved. */
 function truncateVisibly(value: string, maxLength: number): string {
   let head = value.slice(0, Math.max(0, maxLength - 1));
   const last = head.charCodeAt(head.length - 1);
@@ -292,34 +250,14 @@ function sealList(
   maxLength: number,
   maskText: (value: string) => string,
 ): readonly string[] {
-  // Input lists are parse-guaranteed (constructor throws past the cap), so
-  // this slice drops nothing today. It exists for the day that guarantee
-  // weakens — and if that day comes, silent item-dropping is the same failure
-  // shape as silent truncation and must gain a visible marker too.
+  // Construction guarantees the list cap; if that weakens, dropped items need a visible marker.
   const sealed = values
     .slice(0, maxItems)
     .map((value) => sealText(value, maxLength, maskText));
   return sealed.length >= 1 ? sealed : [REDACTED_DISPLAY_TEXT];
 }
 
-/**
- * DLP-mask a display WITHOUT ever producing one the renderer cannot parse.
- *
- * The display entering emission is parse-guaranteed (built by
- * `createRationaleApprovalDisplay`, which throws otherwise) — masking was the
- * one mutation applied after that guarantee, and the mask token
- * ("[REDACTED:TOKEN]", 16 chars) can push a near-cap field over its length
- * limit, at which point the renderer's parse returned null and the approval
- * card rendered with no tool identity at all.
- *
- * Masking is therefore applied per FIELD and re-validated with the same
- * validators the parser uses; a field the mask rendered invalid degrades to
- * `REDACTED_DISPLAY_TEXT` rather than degrading the whole card. Enum, boolean
- * and status fields are never free text, never masked, and pass through
- * verbatim — host-determined facts stay exactly as the host wrote them. The
- * closing `createRationaleApprovalDisplay` makes totality a construction
- * guarantee: if this function can return, its result parses.
- */
+/** Mask and revalidate each free-text field so expanded mask tokens cannot invalidate the card. Preserve host enums, booleans, and statuses verbatim; construction guarantees the result parses. */
 export function sealMaskedRationaleApprovalDisplay(
   display: RationaleApprovalDisplay,
   maskText: (value: string) => string,
@@ -338,8 +276,6 @@ export function sealMaskedRationaleApprovalDisplay(
     scopeAlignment: display.scopeAlignment,
     scopeReasons: sealList(display.scopeReasons, caps.listItems, caps.listLength, maskText),
     rationaleStatus: display.rationaleStatus,
-    // The ready/failed invariants (suggestion text XOR null) are preserved
-    // from the input display, which already satisfies them.
     suggestion: display.rationaleStatus === "ready"
       ? sealText(display.suggestion ?? "", caps.suggestionLength, maskText)
       : null,

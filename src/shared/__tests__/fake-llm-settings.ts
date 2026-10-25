@@ -1,13 +1,4 @@
-/**
- * Test helper — produces an `LLMSettings` shape compatible with the
- * per-vendor schema. Used by engine + hook + ipc tests that stub
- * `settingsService.get("llm")` and need a complete vendors map.
- *
- * CTRL simplification: sampling overrides removed — those fields no longer
- * exist on LLMVendorSettings. `outputTokenLimit` is not one of them: it is the
- * host-owned output ceiling that survives, and the transport forwards it as the
- * request's native output limit.
- */
+/** Output limits remain host-owned and are forwarded as native request limits. */
 import {
   freshAllVendorBlocks,
   type LLMVendor,
@@ -15,15 +6,10 @@ import {
 
 export function fakeLlmSettings(overrides: {
   provider?: LLMVendor;
-  /** Shorthand: override the active route's model without spelling out the block. */
   model?: string;
-  /**
-   * Selects a marketplace provider preset. The model then lands in that
-   * preset's own slot, which is where the route reads it — the block's single
-   * `model` belongs to the generic custom-provider row.
-   */
+  /** Preset models belong in the preset slot; the generic block model names a different route. */
   marketplaceProviderPresetId?: string;
-  /** Per-vendor output ceiling, set on the ACTIVE vendor's block. */
+  /** Set the output ceiling on the active vendor block. */
   outputTokenLimit?: number;
 } = {}) {
   const provider: LLMVendor = overrides.provider ?? "openai";

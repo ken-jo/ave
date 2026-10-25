@@ -1,6 +1,3 @@
-/**
- * Sprint 4-B §B-7 — createCallLlmForPlugin per-plugin rate-limit + audit.
- */
 import { describe, expect, it, vi } from "vitest";
 import { createCallLlm, createCallLlmForPlugin } from "../conversation.js";
 

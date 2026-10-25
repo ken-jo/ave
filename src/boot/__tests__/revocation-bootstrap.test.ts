@@ -1,8 +1,4 @@
-/**
- * Boot feeds the revocation registry from the snapshots on disk before any
- * plugin loads (design §10.4): each installed package gets its own bound
- * source's revocations, read at that source's pin.
- */
+/** Load each package’s revocations from its bound source and pin before plugins start. */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,7 +77,7 @@ describe("feedRevocationsFromSnapshots", () => {
 
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "block", sourceId: "acme", action: "disable", reason: "meeting revoked by acme" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "2.0.0")).toEqual({ kind: "allow" });
-    // `sampleportal` is bound to ave, and a sideloaded plugin to no source: acme cannot revoke either.
+    // A source cannot revoke packages bound elsewhere or installed without a source.
     expect(revocationRegistry.evaluate("plugin", "sampleportal", "1.0.0")).toEqual({ kind: "allow" });
     expect(revocationRegistry.evaluate("plugin", "sideloaded", "1.0.0")).toEqual({ kind: "allow" });
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=0" }));

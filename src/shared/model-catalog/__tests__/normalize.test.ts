@@ -6,7 +6,6 @@ import {
   pruneModelsDevDocument,
 } from "../normalize.js";
 
-/** One provider with the given model records, keyed by their ids. */
 function sourceWith(...models: Array<Record<string, unknown>>): Record<string, unknown> {
   return { alpha: { id: "alpha", npm: "x", env: ["X"], models: Object.fromEntries(models.map((model) => [model.id as string, model])) } };
 }

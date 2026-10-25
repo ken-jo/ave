@@ -36,9 +36,8 @@ describe("marketplace package sections", () => {
   it("reads a declared kind this build does not know as no package type", () => {
     expect(marketplacePackageTypeOf({ pluginType: "messaging-connection" }))
       .toBe("messaging-connection");
-    // A row from a catalog that predates the field is a plugin...
+    // Missing kind preserves legacy plugin classification; unknown explicit kinds are rejected.
     expect(marketplacePackageTypeOf({})).toBe("plugin");
-    // ...and a row that named a kind this build has never heard of is not.
     expect(marketplacePackageTypeOf({ unsupportedPackageKind: "workflow-pack" }))
       .toBeUndefined();
   });

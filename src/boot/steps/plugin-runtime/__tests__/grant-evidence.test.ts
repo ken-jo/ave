@@ -1,8 +1,4 @@
-/**
- * What a host-secret grant reads from disk (design §10.3), against real files:
- * the official snapshot's pins at the source's current pin, and a legacy
- * install's verified receipt.
- */
+/** Read current official snapshot pins and verified receipts from disk for host-secret grant evidence. */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +27,6 @@ describe("grantEvidenceReader", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  /** The official source pinned at `commit`, whose snapshot pins `sha` for meeting@1.0.0. */
   function pinOfficial(commit: string, sha: string): void {
     const dir = join(marketplacesRoot, "ave");
     mkdirSync(join(dir, "snapshots"), { recursive: true });

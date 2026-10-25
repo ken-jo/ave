@@ -4,31 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome } from "./ave-home.js";
 
-/**
- * The application-owned scratch directory.
- *
- * Why a dedicated directory rather than the whole temp root: an agent needs
- * somewhere to stage intermediate files without asking — holding a scratch
- * write behind an approval only taught models to relocate the same write into
- * the project. But the platform temp root is shared space. On Linux `/tmp` is
- * world-writable, so a directory the app merely *names* there can be created
- * first by another local account, and every file the agent then stages lands
- * in a directory that account controls. The scratch root is therefore a
- * directory the app CREATES with `0o700`, VERIFIES before it is ever offered
- * (a real directory, not a symlink, owned by this account, not group/world
- * accessible) and REFUSES otherwise. The refusal is reported, never silently
- * downgraded to "use the temp root instead".
- *
- * The path is advertised to the model in the environment block of the system
- * prompt and seeded into the Layer 1 default allow-list
- * (`permissions/allowed-directories.ts`), both only while verification holds.
- *
- * The name carries the uid (POSIX) and a digest of the application home, so
- * two accounts sharing `/tmp` do not contend for one name, and an isolated
- * instance booted with its own `AVE_HOME` (the way tests and bench runs are
- * isolated) gets its own scratch directory rather than sharing, advertising
- * and cleaning the one the user's live app is staging work in.
- */
+/** Use a verified app-owned private scratch directory, never the shared temp root; include account and app-home identity. */
 export type AveScratchState =
   | { ok: true; path: string }
   | { ok: false; path: string; reason: string };
@@ -49,15 +25,7 @@ function reject(path: string, reason: string): AveScratchState {
   return { ok: false, path, reason };
 }
 
-/**
- * Inspect the scratch directory without creating it. Every offer of the path —
- * to the model and to the allow-list — goes through this check, so a directory
- * that was fine at boot and was replaced afterwards stops being offered from
- * the next check on. It is a per-call `lstat`, not a guarantee across the gap
- * to the write itself; against another unprivileged account that gap is
- * closed by the sticky bit and `0o700`, and a same-account or root swap is
- * outside what this control claims.
- */
+/** Recheck every offer and refuse replaced links or unsafe ownership; same-account and root races remain outside this control. */
 export function verifyAveScratchDir(path = aveScratchDir()): AveScratchState {
   let stat: Stats;
   try {
@@ -74,15 +42,7 @@ export function verifyAveScratchDir(path = aveScratchDir()): AveScratchState {
   return { ok: true, path };
 }
 
-/**
- * Create the scratch directory with `0o700` and verify it. `mkdir` with
- * `recursive: true` does not fail on an existing directory, which is exactly
- * why the verification follows rather than trusting the create: a pre-existing
- * directory another account planted is reported here instead of being used.
- * On Windows `mode` is not a permission; the per-user `%LOCALAPPDATA%\Temp`
- * DACL is what protects the directory there, and the ownership check is
- * skipped because `getuid` does not exist.
- */
+/** Verify even preexisting directories; on Windows protection comes from the per-user temp DACL, not POSIX mode bits. */
 export function ensureAveScratchDir(path = aveScratchDir()): AveScratchState {
   try {
     mkdirSync(path, { recursive: true, mode: SCRATCH_MODE });

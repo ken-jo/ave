@@ -1,10 +1,4 @@
-/**
- * What a run resolved about its model, kept with the run (issue #2501): the
- * catalog it resolved against and the effective values with where each came
- * from. Carried on the turn summary and on the audit `turn` row, so a past
- * turn's window, output limit, reasoning level and prices can be read back as they
- * were — not re-derived from today's settings and today's catalog.
- */
+/** Persist the resolved catalog, effective values, and their sources with each run so historical settings are not re-derived from current state. */
 import type { ContextWindowSource, ResolvedContextWindow, ResolvedOutputTokenLimit } from "./context-budget.js";
 import type { ResolvedModelPricing } from "./model-pricing.js";
 
@@ -15,12 +9,10 @@ export interface RequestGenerationControls {
 }
 
 export interface RunModelSettings {
-  /** `sha256` of the model catalog the run resolved against. */
   readonly modelCatalogSha256: string;
   readonly contextWindow: {
     readonly tokens: number;
     readonly source: ContextWindowSource;
-    /** `<provider>/<id>` when the catalog answered. */
     readonly catalogEntry?: string;
     /** The prompt cap below the window that bounded the compaction budget, when one did. */
     readonly inputLimit?: { readonly tokens: number; readonly source: NonNullable<ResolvedContextWindow["inputLimitSource"]> };
@@ -40,27 +32,14 @@ export interface RunModelSettings {
     readonly source: "model-catalog" | "endpoint-report" | "request-shape" | "host-fallback";
     readonly suppressed?: "chat-completions-tool-turn";
   };
-  /**
-   * Present only when the turn sent no tool definitions because the catalog
-   * says the model takes none (`toolCall: false`). Absent means the turn's
-   * tools were sent as usual.
-   */
+  /** Present only when catalog toolCall:false suppressed all tool definitions; absence means tools were sent normally. */
   readonly tools?: {
     readonly sent: false;
     readonly source: "model-catalog";
-    /** The catalog entry that said so, `<provider>/<id>`. */
     readonly catalogEntry: string;
   };
-  /**
-   * The rates the turn's requests are priced at and who stated them (a user
-   * correction or the catalog entry), or `unknown`. A past turn's cost can be
-   * read back at the rates it ran under; a record from a build before slice 7
-   * may name the retired hand-kept table (`RecordedModelPricing`).
-   */
+  /** Record the actual rates and their source, or unknown, so past costs remain reproducible. */
   readonly pricing: ResolvedModelPricing;
-  /**
-   * The output that would still have fit the context window after the turn's
-   * projected next input. Diagnostics only: requests are never clamped by it.
-   */
+  /** Diagnostics only; requests are never clamped to this projected remaining window. */
   readonly remainingContextOutputTokens?: number;
 }

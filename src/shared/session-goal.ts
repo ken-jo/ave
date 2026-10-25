@@ -1,18 +1,4 @@
-/**
- * Session goal — the objective the user registers for one chat session, and
- * the revival budget that keeps the session working towards it after each
- * turn ends (`session_goal` LLM tool, `/goal` slash command). Shared between
- * main (store + metadata sidecar + revival driver) and the renderer (composer
- * chip).
- *
- * `round` counts the revivals already spent and `ceiling` is the budget they
- * are spent from; both live with the goal in the sidecar, so a restart resumes
- * the same budget rather than handing the session a fresh 50.
- *
- * "Ceiling reached" is derived from those two numbers rather than stored as a
- * status: a status plus a counter would be two facts about one thing, and the
- * pair can disagree.
- */
+/** Persist round and ceiling together so restarts retain the revival budget; derive ceiling exhaustion rather than storing a competing status. */
 import { isRecord } from "./is-record.js";
 
 const SESSION_GOAL_STATUSES = ["running", "paused", "complete"] as const;
@@ -20,10 +6,8 @@ const SESSION_GOAL_STATUSES = ["running", "paused", "complete"] as const;
 type SessionGoalStatus = (typeof SESSION_GOAL_STATUSES)[number];
 
 export interface SessionGoal {
-  /** What the session is working towards, as the user wrote it. */
   text: string;
   status: SessionGoalStatus;
-  /** Revivals already spent on this goal. */
   round: number;
   /** Revival budget. Raised when the user chooses to continue past it. */
   ceiling: number;
@@ -68,11 +52,7 @@ export function isSessionGoalAtCeiling(goal: SessionGoal): boolean {
   return goal.round >= goal.ceiling;
 }
 
-/**
- * Whether one more revival may be spent. The single predicate both the
- * main-process driver and the renderer chip read, so what the chip says is
- * running is what actually revives.
- */
+/** Main and renderer share this predicate so the displayed running state matches actual revival eligibility. */
 export function canReviveSessionGoal(goal: SessionGoal): boolean {
   return goal.status === "running" && !isSessionGoalAtCeiling(goal);
 }

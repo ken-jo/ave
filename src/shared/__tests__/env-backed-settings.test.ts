@@ -12,8 +12,7 @@ describe("env-backed settings registry", () => {
   it("reports only the variables set to the exact ON value", () => {
     expect(envForcedSettingsPaths({
       AVE_LOCAL_API: "1",
-      // Not the ON value: the resolvers leave these in the user's hands, so a
-      // surface that called them forced would be describing the wrong state.
+      // Report a setting as forced only when the environment actually overrides user choice.
       AVE_A2A: "0",
       AVE_A2A_REMOTE: "true",
       AVE_A2A_REMOTE_RECEIVER: "",
@@ -42,9 +41,7 @@ describe("env-backed settings registry", () => {
   });
 
   it("reports the update check forced only when the variable turns it OFF", () => {
-    // The host rule is `(setting ?? true) && env`, so an ON value cannot
-    // override a setting that says off — reporting it as forced would tell the
-    // user the switch is dead when it still works.
+    // An environment opt-in does not force a setting that the user may still disable.
     for (const on of ["1", "true", "yes", ""]) {
       expect(envForcedValueForSettingsPath("marketplace.updateCheckEnabled", {
         AVE_MARKETPLACE_UPDATE_CHECK: on,
@@ -65,16 +62,13 @@ describe("env-backed settings registry", () => {
     expect(envForcedValueForSettingsPath("marketplace.offlineCacheEnabled", {
       AVE_MARKETPLACE_USE_CACHE: "no",
     })).toBe(false);
-    // Unset is the only value that leaves the decision to the setting.
     expect(envForcedValueForSettingsPath("marketplace.offlineCacheEnabled", {})).toBeUndefined();
     expect(envForcedSettingsPaths({ AVE_MARKETPLACE_USE_CACHE: "off" }))
       .toEqual(["marketplace.offlineCacheEnabled"]);
   });
 
   it("reports the corporate CA switch forced only by the variable that skips it", () => {
-    // The variable's NAME is the negative: AVE_SKIP_CORP_CA=1 means "do not
-    // do this", so it forces the setting OFF. Reading it as an ON gate would
-    // invert what the notice tells the user.
+    // The negative skip variable forces the setting off, not on.
     expect(envForcedValueForSettingsPath("system.corpCaEnabled", { AVE_SKIP_CORP_CA: "1" }))
       .toBe(false);
     expect(envForcedValueForSettingsPath("system.corpCaEnabled", { AVE_SKIP_CORP_CA: "0" }))
@@ -83,13 +77,10 @@ describe("env-backed settings registry", () => {
   });
 
   it("carries the certificate name itself, not a boolean", () => {
-    // The only text entry in the registry. The value IS the forced setting,
-    // so the resolver reads the name from here rather than re-reading the
-    // variable and disagreeing about when it applies.
+    // Text overrides use the registry’s resolved value so applicability checks cannot diverge.
     expect(envForcedValueForSettingsPath("system.corpCaCommonName", {
       AVE_CORP_CA_CN: "  Acme Root CA  ",
     })).toBe("Acme Root CA");
-    // Set to nothing is not a name to search for.
     expect(envForcedValueForSettingsPath("system.corpCaCommonName", { AVE_CORP_CA_CN: "   " }))
       .toBeUndefined();
     expect(envForcedSettingsPaths({ AVE_CORP_CA_CN: "Acme Root CA", AVE_CORP_CA_DEBUG: "1" }))
@@ -97,9 +88,7 @@ describe("env-backed settings registry", () => {
   });
 
   it("carries the cleanup window as a number, parsed by the setting's own rule", () => {
-    // The only numeric entry. It answers with the value the timer will be armed
-    // with, not with "the variable is set" — a value the setting itself would
-    // reject is not a forced value either.
+    // Numeric overrides must satisfy the same bounds as the timer setting.
     expect(envForcedValueForSettingsPath("system.shutdownCleanupTimeoutMs", {
       AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS: "45000",
     })).toBe(45_000);
@@ -120,9 +109,7 @@ describe("env-backed settings registry", () => {
       .toBe(30_000);
     expect(resolveEnvBackedNumber("system.shutdownCleanupTimeoutMs", undefined, {}, 15_000))
       .toBe(15_000);
-    // A boolean gate asked for a number is a wiring mistake, not a forced
-    // value: the setting still decides rather than the timer being armed with
-    // something that was never a duration.
+    // A type-mismatched registry lookup must leave the setting in control.
     expect(resolveEnvBackedNumber(
       "system.localApiServer", 30_000, { AVE_LOCAL_API: "1" }, 15_000,
     )).toBe(30_000);
@@ -138,7 +125,6 @@ describe("env-backed settings registry", () => {
     const vars = ENV_BACKED_SETTINGS.map((entry) => entry.envVar);
     expect(new Set(paths).size).toBe(paths.length);
     expect(new Set(vars).size).toBe(vars.length);
-    // Every path is `group.key`, which is what the patch builders split on.
     for (const path of paths) expect(path).toMatch(/^[a-z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]*$/);
   });
 });

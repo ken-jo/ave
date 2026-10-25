@@ -36,8 +36,7 @@ export function tokenizeShell(command: string): TokenizeResult {
         return;
       }
       case "redirected":
-        // Only the risk projection needs this redirection-only leaf. The
-        // execution walker retains the compound owner and its opening scope.
+        // The risk projection uses a redirection-only leaf; the execution walker retains the compound owner and opening scope.
         leaves.push(commandLeaf({ kind: "command", source: statement.source, words: [], assignments: [],
           assignmentScope: "current", redirects: statement.redirects }));
         redirectWords(statement.redirects);

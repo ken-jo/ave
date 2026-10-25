@@ -1,7 +1,4 @@
-/**
- * Unit tests for sandboxConfinementForPlatform — the honest, no-overclaim
- * per-platform confinement profile that drives the settings toggle text.
- */
+/** Settings confinement text must reflect measured platform capabilities without overclaiming. */
 import { describe, it, expect } from "vitest";
 import {
   describeShellSandboxStatus,

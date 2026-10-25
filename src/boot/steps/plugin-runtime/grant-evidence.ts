@@ -1,12 +1,4 @@
-/**
- * What a host-secret grant reads from disk (design §10.3 condition 3), for
- * the HostApi factory: the official snapshot's pins, and the artifact sha256
- * of a `legacy` install's verified receipt.
- *
- * Only a `legacy` entry needs its receipt, and only the §16.3 migration writes
- * one, into the live registry; so the receipt's plugin root comes from that
- * registry entry's manifest path, resolved inside the plugins directory.
- */
+/** Verify legacy receipts under the live registry’s contained plugin root; official grants use current snapshot pins. */
 import { dirname } from "node:path";
 import { OFFICIAL_MARKETPLACE } from "../../../marketplace/sources/official.js";
 import { pinnedArtifactReader } from "../../../marketplace/sources/sync.js";
@@ -24,7 +16,6 @@ export interface GrantEvidenceReader {
 
 export function grantEvidenceReader(input: {
   paths: Pick<PluginPaths, "cacheRoot" | "pluginsRoot" | "registryPath">;
-  /** `~/.ave/marketplaces`. */
   marketplacesRoot: string;
 }): GrantEvidenceReader {
   return {

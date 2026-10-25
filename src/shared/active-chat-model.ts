@@ -6,25 +6,12 @@ import {
 } from "./llm-vendor-defaults.js";
 import type { ActiveChatRuntime, SubscriptionRuntimeId } from "./subscription-runtime.js";
 
-/**
- * Why no model is active. Each one is a state a person can act on, and the
- * composer, Settings and the send path all read the same answer.
- */
+/** Share actionable missing-model states across UI and send validation. */
 type ActiveChatModelUnavailableReason =
-  /** The active API route has no credential (and cannot run without one). */
   | "no-connected-provider"
-  /** The saved provider was retired; the user has to pick a new one. */
   | "retired-provider"
-  /** The route is connected but the user has not selected a model. */
   | "no-model-selected";
 
-/**
- * The model chat would run on right now, or an explicit "none".
- *
- * Fresh vendor blocks have no selected model. Saved selections also need a
- * connected route before they can answer a turn. This union gives the UI and
- * the send path the same explicit answer for both conditions.
- */
 export type ActiveChatModel =
   | { readonly kind: "none"; readonly reason: ActiveChatModelUnavailableReason }
   | {
@@ -48,14 +35,7 @@ export interface ActiveChatModelSettings {
   activeChatRuntime: ActiveChatRuntime;
 }
 
-/**
- * Resolve the active chat model.
- *
- * `apiRouteConnected` is the caller's answer to "can the active API route
- * authenticate": main reads the secret store, which is the only place that
- * knows. A selected subscription runtime is reported as such; whether it has
- * finished signing in is the subscription readiness policy's question.
- */
+/** Main owns the credential check; subscription sign-in readiness is a separate policy. */
 export function resolveActiveChatModel(
   llm: ActiveChatModelSettings,
   apiRouteConnected: boolean,

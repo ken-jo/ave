@@ -1,12 +1,4 @@
-/**
- * The plugin UI extension label — one derivation for the main-window sidebar
- * (`ui/renderer/api-client.ts`, consumed by App/Sidebar/command-actions), the
- * main process (app menu, floating dock) and the plugin-shell bundle.
- *
- * The fallback chain is pinned once here, step by step, and the type-level
- * checks below pin that both consumer types still satisfy the shared parameter,
- * so the shared function cannot narrow away from its callers.
- */
+/** Share locale fallback derivation across main, renderer, and plugin-shell consumers. */
 import { describe, it, expect } from "vitest";
 import {
   getPluginViewDescription,
@@ -18,8 +10,7 @@ import { normalizePluginLocaleTag } from "../plugin-localized-text.js";
 import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
 import type { PluginUiExtension } from "../../ui/renderer/types.js";
 
-// Both consumer types must remain assignable to the shared parameter. These
-// red at typecheck (not at runtime) if either shape drifts away from it.
+// Type checks pin both consumer shapes to the shared helper’s parameter contract.
 const _hostViewIsAssignable: PluginViewLabelSource = {} as PluginUiExtensionView;
 const _rendererViewIsAssignable: PluginViewLabelSource = {} as PluginUiExtension;
 void _hostViewIsAssignable;
@@ -67,7 +58,7 @@ describe("getPluginViewLabel — own fields", () => {
 });
 
 describe("getPluginViewLabel — locales", () => {
-  // The shape of the reported bug: the entry's own fields are Korean.
+  // Localized titles must outrank a short name authored in another language.
   const meeting = view({
     displayName: "미팅",
     title: "회의 기록",
@@ -105,8 +96,6 @@ describe("getPluginViewLabel — locales", () => {
   });
 
   it("a localized title beats an own displayName in another language", () => {
-    // Without this an English UI would show the Korean short name even though
-    // the plugin declared an English title.
     const item = view({ displayName: "미팅", title: "회의", locales: { en: { title: "Meeting Recorder" } } });
     expect(getPluginViewLabel(item, "en")).toBe("Meeting Recorder");
   });

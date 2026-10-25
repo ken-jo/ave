@@ -1,13 +1,4 @@
-/**
- * Boot step — Work Board persistence + due-soon scanner (§4.2, extracted from
- * boot.ts C18).
- *
- * Runs the one-shot idempotent migration of a legacy plugin-owned board BEFORE
- * the store loads, reconciles interrupted runs, seeds first-run sample items,
- * and prepares the deferred due-soon scanner. The scanner itself is started
- * later by main.ts via `services.startWorkBoardDueSoon` (after IPC + plugins are
- * up); the interval handle lives on the context so `shutdown()` can clear it.
- */
+/** Migrate before loading the store; main starts the scanner after IPC and plugins are ready. */
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { migrateLegacyPluginBoardToWorkBoard } from "./work-board-migration.js";
 import { seedSampleWorkBoard } from "../../work-board/sample-data.js";
@@ -22,35 +13,21 @@ import type { BootContext } from "../context.js";
 const log = createLogger("ave");
 
 export async function setupWorkBoard(ctx: BootContext): Promise<void> {
-  // Work board persistence (~/.ave/work-board/board.json). One-shot,
-  // idempotent migration of a legacy plugin-owned board runs BEFORE the
-  // store loads so the store's first read picks up the migrated file. The
-  // migration is a no-op once the host board exists (P2 wires the
-  // runner/engine; the store is pure persistence here).
   const workBoardMigrated = await migrateLegacyPluginBoardToWorkBoard();
   const workBoardStore = new WorkBoardStore();
   await workBoardStore.load().catch((err) => {
     log.warn("boot: work-board load failed (non-fatal): %s", (err as Error).message);
   });
-  // Reset runs interrupted by a prior process exit (persisted active runStatus
-  // with no in-flight run) so those items are re-runnable + don't show a stuck
-  // "running" badge.
+  // Reset persisted active runs with no in-flight execution so interrupted items can run again.
   await workBoardStore
     .reconcileInterruptedRuns()
     .catch((err) =>
       log.warn("boot: work-board run reconcile failed (non-fatal): %s", (err as Error).message),
     );
 
-  // Due-soon nudge: a 60-min tick scans the board and emits
-  // `work_board.work_item.due_soon` on the plugin bus for any subscribed
-  // due-soon consumer. Deferred-started (after IPC + plugins are up)
-  // via services.startWorkBoardDueSoon; the timer is cleared on shutdown.
   const workBoardStorage = createDirStorage(openFeatureNamespace("work-board").dir);
 
-  // First-run onboarding: seed clearly-labelled sample items so a brand-new
-  // board demonstrates the agentic flow (create → approve → execute → output)
-  // for the user guide. One-time (keyed by a marker file) and skipped when the
-  // board was migrated or already has items — a real board is never seeded.
+  // Seed labeled samples once, only for an empty, unmigrated board.
   await seedSampleWorkBoard({
     store: workBoardStore,
     marker: workBoardStorage,
@@ -74,9 +51,7 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
 
   ctx.workBoardStore = workBoardStore;
   ctx.workBoardStorage = workBoardStorage;
-  // Deferred due-soon scanner handle. main.ts calls this AFTER
-  // registerIpcHandlers() so the initial scan + 60-min tick emit onto a fully
-  // wired plugin bus. The interval is cleared in `shutdown()`.
+  // Defer initial scanning until IPC is wired; shutdown owns the timer.
   ctx.startWorkBoardDueSoon = () => {
     runDueSoonScan();
     ctx.dueSoonTimer = setInterval(runDueSoonScan, DUE_SOON_TICK_MS);

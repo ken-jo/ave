@@ -1,11 +1,3 @@
-/**
- * wireAnnouncementCheck — boot-time marketplace announcement poller.
- *
- * Verifies: it pushes the active set on first run, drops dismissed ids before
- * pushing, dedupes identical pushes, and re-fires when the dismissed set
- * changes (so a dismiss clears the banner without the next identical server
- * response resurrecting it).
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 import type { SettingsService } from "../../data/settings-store.js";
@@ -54,9 +46,7 @@ function harness(opts: {
     setDismissed: (ids: number[]) => {
       dismissed = ids;
     },
-    // Real timers here: an interval would outlive the test and log after the
-    // worker closed (main CI 2026-10-19, "Closing rpc while onUserConsoleLog
-    // was pending"). Interval behavior is covered by the fake-timer cases.
+    // Real timers prevent intervals from logging after the worker closes; fake-timer cases cover intervals.
     run: () =>
       wireAnnouncementCheck({
         intervalMs: 0,
@@ -222,17 +212,14 @@ describe("wireAnnouncementCheck", () => {
         settingsService,
         listAnnouncements,
       });
-      // Boot run.
       await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
       expect(
         (send.mock.calls[0][1] as MarketplaceAnnouncement[]).map((a) => a.id),
       ).toEqual([2, 1]);
 
-      // Identical interval run → deduped, no new push.
       await vi.advanceTimersByTimeAsync(1000);
       expect(send).toHaveBeenCalledTimes(1);
 
-      // User dismisses id 1 (settings mutates); next interval re-fires with [2].
       dismissed = [1];
       await vi.advanceTimersByTimeAsync(1000);
       await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));

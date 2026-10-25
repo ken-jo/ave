@@ -29,10 +29,7 @@ const SIMPLE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_PROVEN_INTEGER = 9_223_372_036_854_775_807n;
 const MIN_PROVEN_INTEGER = -9_223_372_036_854_775_808n;
 
-/**
- * Use BigInt so JavaScript never rounds a condition. The real-shell contract
- * tests pin this signed 64-bit subset; values outside it remain unknown.
- */
+/** Use BigInt to preserve the proven signed 64-bit subset; values outside it remain unknown. */
 export function parseProvenShellInteger(value: string | undefined): bigint | undefined {
   if (value === undefined || !/^[+-]?[0-9]+$/.test(value)) return undefined;
   const unsigned = value.replace(/^[+-]/, "").replace(/^0+(?=\d)/, "");
@@ -151,8 +148,7 @@ export function analyzeShellTestExpression(
         } else if (INTEGER_BINARY.has(operator)) {
           const leftInteger = parseProvenShellInteger(left);
           const rightInteger = parseProvenShellInteger(right);
-          // Unlike test/[ operands, [[ operands are recursively interpreted as
-          // arithmetic. Unknown strings may execute array subscript expansions.
+          // Double-bracket operands recurse into arithmetic, where unknown strings can execute subscript expansions.
           if (form === "double-bracket" && (leftInteger === undefined || rightInteger === undefined)) {
             return fail("unproven arithmetic test operand", leftInteger === undefined ? leftIndex : rightIndex);
           }
@@ -190,9 +186,7 @@ export function analyzeShellTestExpression(
   const parsed = parse(expressionIndices);
   if (!parsed.ok) return parsed;
   const expression = merge(parsed.expression, { status: parsed.expression.status, dataIndices, pathIndices: new Set() });
-  // `[[` has pattern and expression semantics distinct from scalar `test`.
-  // Its origin is retained for role classification, but v1 never prunes a
-  // branch from a flattened double-bracket expression.
+  // Preserve double-bracket origin for role classification; flattened expressions must not prune branches.
   if (form === "double-bracket") expression.status = "unknown";
   return { ok: true, expression };
 }

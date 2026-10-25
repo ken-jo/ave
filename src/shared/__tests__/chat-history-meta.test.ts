@@ -172,10 +172,7 @@ describe("serializeHistoryMessage createdAt + turnSummary projection", () => {
   });
 
   it("keeps a parent-answered outcome on the reloaded tool result row", () => {
-    // A call the parent agent decided never raised a dock, so this row is the
-    // only place the transcript records that someone other than the user
-    // answered it. Dropping it on replay would make a reloaded session read as
-    // if the call had simply run.
+    // Retain parent-agent approval decisions on replay; no user dock recorded that decision elsewhere.
     for (const status of ["parent_approved", "parent_denied"] as const) {
       const tool: GenericMessage = {
         role: "tool_result",

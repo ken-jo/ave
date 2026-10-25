@@ -7,11 +7,7 @@ import type { ToolCategory, ToolSource } from "./permission-review-status.js";
 /** Whether this host process can present and settle a local approval request. */
 export type ApprovalSurface = "interactive" | "unavailable";
 
-/**
- * Safe, machine-readable description of an authorization boundary that stopped
- * a turn. Raw tool arguments, commands, paths, prompts, and reviewer prose are
- * deliberately absent: this shape is emitted by native CLI and owner streams.
- */
+/** Public authorization metadata excludes arguments, commands, paths, prompts, and reviewer prose. */
 export interface AuthorizationRequiredState {
   readonly kind: "tool" | "directory" | "host-execution";
   readonly toolName: string;
@@ -25,10 +21,7 @@ export interface AuthorizationRequiredState {
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
 }
 
-/**
- * Host-private control carried by one ToolResult. A structural lookalike from
- * a plugin, MCP server, model, or test double is not authority to stop a turn.
- */
+/** Only host-minted controls may stop a turn; structural lookalikes from untrusted sources grant no authority. */
 export interface AuthorizationRequiredControl {
   readonly type: "authorization_required";
   readonly state: AuthorizationRequiredState;
@@ -40,9 +33,7 @@ const issuedStates = new WeakSet<object>();
 export function issueAuthorizationRequiredControl(
   state: AuthorizationRequiredState,
 ): AuthorizationRequiredControl {
-  // Rebuild the public state field by field. Even a mistaken internal caller
-  // passing an object with extra command/path/prompt fields cannot make those
-  // fields part of CLI or owner-stream terminal metadata.
+  // Rebuild allow-listed fields so extra internal properties cannot leak into terminal metadata.
   const safeState: AuthorizationRequiredState = Object.freeze({
     kind: state.kind,
     toolName: state.toolName,
@@ -86,17 +77,7 @@ export function authorizationRequiredStateForOutput(
     : undefined;
 }
 
-/**
- * Host-issued authority for one windowless turn that the local owner started
- * from this process's own command line. It selects the unattended policy lane
- * for that turn — reviewer-routed asks, deferred directory holds, and a
- * fail-closed answer to explicit host execution — without changing the loop's
- * tool, plugin, MCP, or egress scope, which stays owned by the routine-only
- * `headless` loop flag. A turn that arrives through a remote surface never
- * carries it, so an attached client cannot borrow the owner's unattended lane
- * from a retained session. A structural lookalike from chat input, a plugin,
- * an MCP server, a model, or a test double is not this authority.
- */
+/** One locally minted authority selects unattended policy for one CLI turn without widening tool, plugin, MCP, or egress scope. Remote turns cannot inherit it. */
 export interface UnattendedTurnAuthority {
   readonly kind: "native-exec";
 }
@@ -117,12 +98,7 @@ export function isIssuedUnattendedTurnAuthority(
     && issuedUnattendedTurnAuthorities.has(value);
 }
 
-/**
- * Spend the authority on exactly one turn. A second use — a replayed options
- * object on a retained session, a steering re-run, a test double — is refused
- * the same way a lookalike is, so "later turns do not inherit it" holds even
- * when the caller keeps a reference.
- */
+/** Consume once; retained references, steering reruns, and lookalikes cannot authorize another turn. */
 export function consumeUnattendedTurnAuthority(value: unknown): boolean {
   if (!isIssuedUnattendedTurnAuthority(value)) return false;
   issuedUnattendedTurnAuthorities.delete(value);
