@@ -46,9 +46,12 @@ import {
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
 import {
+  DEFAULT_LOCALE,
+  isDefaultVisibleLocale,
+  normalizeLocale,
   normalizeLocaleSetting,
   type Locale,
-} from "../i18n/index.js";
+} from "../i18n/locale.js";
 import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { type InlineViewKey } from "../shared/view-key.js";
@@ -932,7 +935,7 @@ export class SettingsService {
         this.secretStatesChanged(changed);
       },
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion);
+    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion, options.systemLocale);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
     // Migration write-back (appearance v2, one-time markers): persist so the next load is clean.
@@ -1658,10 +1661,11 @@ export class SettingsService {
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key, while the IPC handler uses vendor-specific `llm.apiKey.<vendor>`
   // secrets. Keep callers on the explicit `getSecret(...)` path so future vendor checks cannot accidentally return false for configured credentials.
 
-  private loadSettings(appVersion: string | undefined): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(appVersion: string | undefined, systemLocale: string | undefined): { settings: AppSettings; writeBack: boolean } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
-      // Fresh installs stay English-first while non-English language packs move toward marketplace delivery. Stored user choices are still preserved by the migration/read path below.
+      const locale = normalizeLocale(systemLocale);
+      defaults.appearance.language = isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };
     }

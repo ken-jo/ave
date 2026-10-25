@@ -570,7 +570,8 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   applies as inline custom properties with its shell's shadow stack and
   `color-scheme`.
 - **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
-  and `ko` stay compiled in; an installed language registers its locale
+  and `ko` are visible built-ins without installing packages. A package can
+  overlay a compiled locale or add another locale; an installed language registers its locale
   with its native and English names, and its messages are layered over
   English, so a key it does not translate reads in English.
   - A package translates the interface only. `messages.json` may use

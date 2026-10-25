@@ -1,7 +1,7 @@
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -231,8 +231,29 @@ it.runIf(process.platform === "win32")("replaces inherited foreign access when c
     sid: after.currentUserSid, accessControlType: 0, fileSystemRights: 2032127,
     inheritanceFlags: 3, propagationFlags: 0, isInherited: false,
   })]);
-  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }],
-    { capSidPath: join(parent, "absent-cap-fixture") })).resolves.toBeUndefined();
+}, 45_000);
+
+it.runIf(process.platform === "win32")("admits a private runtime directory claimed from Administrators", async (context) => {
+  if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
+  const fixture = realHostFixture();
+  await fixture.prime();
+  // Admission walks every ancestor: root the fixture in the real profile, not a runner temp tree owned by an image account.
+  const base = process.env.LOCALAPPDATA!;
+  const parent = realpathSync(mkdtempSync(join(base, "ave-owner-admit-")));
+  roots.push(parent);
+  const trust = { capSidPath: join(parent, "absent-cap-fixture") };
+  const refusal = await assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }], trust)
+    .then(() => "", (error: unknown) => String(error));
+  if (refusal.includes("untrusted owner")) {
+    const chain: string[] = [];
+    for (let path = parent; dirname(path) !== path; path = dirname(path)) chain.push(path);
+    const owners = readWindowsDirectoryDacls(chain).map(({ path, ownerSid }) => `${path}=${ownerSid}`);
+    context.skip(`An ancestor of ${base} is not admissible: ${owners.join(", ")}`);
+  }
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  setOwner(directory, "S-1-5-32-544");
+  await claimPrivateOwnership([directory]);
+  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)).resolves.toBeUndefined();
 }, 45_000);
 
 it.runIf(process.platform === "win32")("keeps a directory the account already owns without asking for WRITE_OWNER", async () => {

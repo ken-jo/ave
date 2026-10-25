@@ -137,14 +137,12 @@ describe("AppearanceTab — bundle card grid", () => {
     expect(onOpenMarketplace).toHaveBeenLastCalledWith("theme");
   });
 
-  it("recommends the matching system language pack without installing it", async () => {
+  it("lists Korean without installed packages or a marketplace recommendation", async () => {
     const originalLanguage = navigator.language;
     Object.defineProperty(navigator, "language", {
       configurable: true,
       value: "ko-KR",
     });
-    // The renderer suite renders in Korean; a Korean UI has nothing to recommend, so this scenario runs under the English
-    // default.
     const originalLocale = getLocale();
     setLocale("en");
     const onOpenMarketplace = vi.fn();
@@ -155,10 +153,12 @@ describe("AppearanceTab — bundle card grid", () => {
       const { getByTestId, queryByTestId } = renderWithBundle(DEFAULT_BUNDLE_ID, onOpenMarketplace);
       await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
 
-      expect(queryByTestId("language-option-ko")).toBeNull();
-      expect(getByTestId("appearance-tab:language-recommendation"))
-        .toHaveTextContent("Korean language pack matches your system language.");
-      fireEvent.click(getByTestId("appearance-tab:language-recommendation-open:ko"));
+      expect(getByTestId("language-option-ko")).toHaveTextContent("한국어");
+      expect(getByTestId("language-option-ko")).toHaveAttribute("data-marketplace-installed", "false");
+      expect(queryByTestId("appearance-tab:language-recommendation")).toBeNull();
+      fireEvent.click(getByTestId("language-option-ko"));
+      expect(getLocale()).toBe("ko");
+      fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
       expect(onOpenMarketplace).toHaveBeenCalledWith("language");
     } finally {
       setLocale(originalLocale);

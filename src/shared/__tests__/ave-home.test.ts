@@ -585,6 +585,13 @@ describe("ensureAveHomePrivate", () => {
     rmdirSync(link);
     checkJunctionRefusal(dir, link);
   });
+  it.runIf(process.platform === "win32")("refuses a subscription-runtimes junction and leaves its target DACL unchanged", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const link = join(dir, "subscription-runtimes");
+    rmdirSync(link);
+    checkJunctionRefusal(dir, link);
+  });
   it.runIf(process.platform === "win32")("refuses an existing home owned by another account and leaves its DACL unchanged", (context) => {
     requireRestorePrivilege(context);
     const dir = home();
@@ -643,9 +650,11 @@ describe("ensureAveHomePrivate", () => {
     expect(after.protected).toBe(true);
     expect(after.rules).toEqual([expect.objectContaining({ ...OWNER_RULE, sid: token.currentUserSid })]);
     expect(after.rules?.some(({ sid }) => sid === "S-1-5-32-545")).toBe(false);
-    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
+    // SetSecurityInfo marks the DACL auto-inherited (AI); the SID may render as an alias such as LA, so match one OI|CI FullControl allow.
+    const access = sddl(dir, "Access");
+    expect(access).toMatch(/^D:PAI\(A;OICI;FA;;;[^;)]+\)$/);
     expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
-    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
+    expect(sddl(dir, "Access")).toBe(access);
   });
   it.runIf(process.platform === "win32")("refuses a swapped junction on the write handle and leaves its target DACL unchanged", () => {
     const dir = home();

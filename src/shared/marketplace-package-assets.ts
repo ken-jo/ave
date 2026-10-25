@@ -1,6 +1,6 @@
 import {
-  isMarketplaceEligibleLocale,
-  type MarketplaceEligibleLocale,
+  isOfficialPackageLocale,
+  type OfficialPackageLocale,
 } from "../i18n/locale.js";
 import {
   type MarketplacePackageType,
@@ -127,7 +127,7 @@ export interface MarketplaceThemePackageAsset {
 
 export interface MarketplaceLanguagePackPackageAsset {
   type: "language-pack";
-  locale: MarketplaceEligibleLocale;
+  locale: OfficialPackageLocale;
   displayName?: string;
   nativeName?: string;
   englishName?: string;
@@ -605,7 +605,7 @@ function languagePackAsset(
   locale: unknown,
   metadata?: Record<string, unknown>,
 ): MarketplaceLanguagePackPackageAsset | undefined {
-  if (!isMarketplaceEligibleLocale(locale)) return undefined;
+  if (!isOfficialPackageLocale(locale)) return undefined;
   if (!metadata) return { type: "language-pack", locale };
   const displayName = cleanString(
     metadata.displayName ?? metadata.display_name ?? metadata.name,
