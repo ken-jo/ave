@@ -1339,6 +1339,31 @@ separate policy bypass.
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 
+On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
+program-files roots and the system directory) are omitted unless a grant
+strictly beneath the machine root contains the target: ordinary ACLs already
+refuse users writes there. Denies inside writable workspaces remain protected.
+A missing deny target can create placeholders and change its parent's DACL,
+requiring `WRITE_DAC` on machine-owned directories that ordinary users cannot
+change. Read denies are never omitted this way; one the helper cannot stamp
+fails sandbox initialization. Write grants equal to or above a machine root are
+refused before policy narrowing. Unproven path identities retain the deny. Administrative policy
+protection outside grants instead lives at the read boundary:
+all administrative section readers share a non-following, handle-based reader.
+The file must belong to Administrators or SYSTEM. Its parent must belong to
+Administrators, SYSTEM or the trusted installer service. The file's DACL may not
+grant another principal write, deletion or ownership/security changes. The parent
+may not grant delete-child, deletion or ownership/security changes; add-file
+rights, which ProgramData's default inheritance gives Users, cannot replace an
+existing file and are allowed. The file and
+parent handles reject reparse points, remain pinned against replacement, and
+must have matching final parent paths; bytes and security descriptors come from
+those same handles. Marketplace reads recheck trust even if file timestamps are
+unchanged, because a parent DACL change does not change file timestamps.
+Untrusted or malformed policy locks editing and requires approval. Settings
+shows the path and cause, and the audit logger records the failure without policy
+contents. Other platforms retain their existing read behavior.
+
 ### Structured File Transfers
 
 `copy_path({sourcePath, destinationPath})` copies ordinary binary/text files or complete directory trees, including hidden ordinary entries and empty directories. `extract_archive({archivePath, destinationPath})` extracts tar and gzip-compressed tar, detected from content. Both are builtin write tools registered through `createFileTools()` in [file-tools.ts](../../src/tools/file-tools.ts). ZIP extraction and archive creation are unsupported. Shell recursive-copy and archive-mutation denials remain in force; denial guidance describes the supported alternatives and explicitly limits the tar alternative to extraction.

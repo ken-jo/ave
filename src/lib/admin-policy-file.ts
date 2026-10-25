@@ -1,5 +1,29 @@
-import { lstat, stat } from "node:fs/promises";
+import { lstat, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { readWindowsAdminPolicy } from "../shared/windows-admin-policy.js";
+import type { AuditLogger } from "../audit/audit-logger.js";
+
+let policyAuditLogger: Pick<AuditLogger, "log"> | undefined;
+
+export function initAdminPolicyAudit(logger: Pick<AuditLogger, "log">): void {
+  policyAuditLogger = logger;
+}
+
+export function auditAdminPolicyFailure(reason: string): void {
+  policyAuditLogger?.log({ timestamp: new Date().toISOString(), sessionId: "policy", type: "error", output: reason });
+}
+
+export async function readAdminPolicyFile(filePath: string): Promise<Buffer> {
+  try {
+    return await (process.platform === "win32" ? readWindowsAdminPolicy(filePath) : readFile(filePath));
+  } catch (error) {
+    if (!(await isAdminPolicyFileAbsent(filePath, error))) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "unknown";
+      auditAdminPolicyFailure(`invalid policy file at ${filePath}: ${code === "untrusted-policy" ? (error as Error).message : `read failed (${code})`}`);
+    }
+    throw error;
+  }
+}
 
 async function hasDirectoryAncestor(filePath: string): Promise<boolean> {
   let parent = dirname(filePath);

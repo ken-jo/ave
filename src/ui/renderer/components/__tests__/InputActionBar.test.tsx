@@ -33,6 +33,7 @@ const setMode = vi.fn();
 const reviewerDispatch = vi.fn();
 // The permission card's sandbox row reads the host-decided shell status.
 const sandboxCapability = vi.fn();
+const relaunchApp = vi.fn();
 type ShellStatusFixture = {
   state: string;
   setting: boolean;
@@ -45,6 +46,7 @@ const shellStatus = (overrides: Partial<ShellStatusFixture> = {}): { shell: Shel
 sandboxCapability.mockResolvedValue(shellStatus());
 vi.mock("../../api-client.js", () => ({
   getApi: () => ({
+    relaunchApp,
     getSettings,
     updateSettings,
     onSettingsUpdated,
@@ -385,6 +387,7 @@ describe("InputActionBar (unified bar)", () => {
       statusRow: {
         ...defaultStatusRow,
         sandboxCapability: {
+          workerRestartPending: false,
           platform: "darwin", enabled: false, available: true, kind: "full", reason: "",
           shellExecutionPlan: getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
             platform: "darwin", requestedSandbox: false,
@@ -905,6 +908,8 @@ describe("model card (status-row model cell)", () => {
 
 describe("permission card sandbox checkbox", () => {
   beforeEach(() => {
+    relaunchApp.mockReset();
+    relaunchApp.mockResolvedValue({ ok: true });
     sandboxCapability.mockReset();
     updateSettings.mockReset();
     sandboxCapability.mockResolvedValue(shellStatus());
@@ -919,6 +924,50 @@ describe("permission card sandbox checkbox", () => {
     );
     return view;
   }
+
+  async function togglePending() {
+    sandboxCapability.mockResolvedValueOnce(shellStatus()).mockResolvedValue(shellStatus({ state: "pending-on", setting: true }));
+    updateSettings.mockResolvedValue({ ok: true });
+    const view = await openCard();
+    await act(async () => { fireEvent.click(view.getByTestId("permission-quick-picker-sandbox-checkbox")); });
+    await view.findByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") });
+    return view;
+  }
+
+  it("prompts for a pending change and focuses Later without restarting", async () => {
+    const view = await togglePending();
+    const later = view.getByRole("button", { name: t("permissionsTab.sandboxRestartLater") });
+    expect(later).toHaveFocus();
+    fireEvent.click(later);
+    await waitFor(() => expect(view.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull());
+    expect(relaunchApp).not.toHaveBeenCalled();
+    expect(view.getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent("재시작 후 켜짐");
+  });
+
+  it("restarts only after the dialog confirmation", async () => {
+    const view = await togglePending();
+    expect(relaunchApp).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(view.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(relaunchApp).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("does not prompt when the toggle returns to its boot value", async () => {
+    sandboxCapability.mockResolvedValueOnce(shellStatus({ state: "pending-on", setting: true })).mockResolvedValue(shellStatus());
+    updateSettings.mockResolvedValue({ ok: true });
+    const view = await openCard();
+    await act(async () => { fireEvent.click(view.getByTestId("permission-quick-picker-sandbox-checkbox")); });
+    expect(view.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull();
+    expect(relaunchApp).not.toHaveBeenCalled();
+    expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } });
+  });
+
+  it("shows a refused restart reason inside the confirmation dialog", async () => {
+    relaunchApp.mockResolvedValue({ ok: false, error: "plugin-install-in-progress" });
+    const view = await togglePending();
+    await act(async () => { fireEvent.click(view.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(view.getByRole("alert")).toHaveTextContent(t("permissionsTab.sandboxRestartPluginBusy"));
+    expect(view.getByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeTruthy();
+  });
 
   it("sits at the foot of the card as a labelled checkbox whose status text describes it", async () => {
     sandboxCapability.mockResolvedValue(shellStatus({ state: "on", setting: true }));
@@ -1000,7 +1049,7 @@ describe("permission card sandbox checkbox", () => {
 
     await waitFor(() => expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("pending-off"));
     expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } });
-    expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("false");
+    expect(getByTestId("permission-quick-picker-sandbox-checkbox").getAttribute("aria-checked")).toBe("false");
   });
 
   it("keeps the stored state and says the save failed when the host refuses the write", async () => {

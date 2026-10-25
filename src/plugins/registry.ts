@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "./lifecycle-log.js";
 import { isCommittedAtomicWriteError, isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import { FileLockReleaseError, withFileLock, withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import { resolveTrustedRegistryManifestPath } from "./registry-manifest-trust.js";
@@ -479,7 +480,7 @@ export function updatePluginRegistry<T = void>(
   if ((registryMutationContext.getStore()?.size ?? 0) > 0) {
     throw new Error("Nested plugin registry mutation is not allowed");
   }
-  return withRegistryTransaction(registryPath, mutator);
+  return withInstalledStateMutation(() => withRegistryTransaction(registryPath, mutator));
 }
 
 export function migratePluginRegistry(registryPath: string): Promise<void> {

@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
@@ -995,12 +996,15 @@ export class SettingsService {
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
-    this.settings[key] = value;
-    if (key === "llm" || key === "marketplace") this.providerConfigChanged();
-    await this.commit();
-    for (const listener of this.changeListeners.get(key) ?? []) {
-      try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
-    }
+    const persist = async () => {
+      this.settings[key] = value;
+      if (key === "llm" || key === "marketplace") this.providerConfigChanged();
+      await this.commit();
+      for (const listener of this.changeListeners.get(key) ?? []) {
+        try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+      }
+    };
+    return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
   /** Observes durable writes through set; callbacks must not block the writer. */
@@ -1026,6 +1030,12 @@ export class SettingsService {
       telemetry?: Partial<TelemetrySettings>;
     },
   ): Promise<AppSettings> {
+    return partial.marketplace
+      ? withInstalledStateMutation(() => this.patchSettings(partial))
+      : this.patchSettings(partial);
+  }
+
+  private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1367,31 +1377,33 @@ export class SettingsService {
   private async replaceMarketplaceProviderPresets(
     installedProviderPresets: readonly MarketplaceInstalledProviderPreset[],
   ): Promise<AppSettings> {
-    const previousSettings = this.getAll();
-    const nextMarketplace = normalizeMarketplace({
-      ...this.settings.marketplace,
-      installedProviderPresets,
+    return withInstalledStateMutation(async () => {
+      const previousSettings = this.getAll();
+      const nextMarketplace = normalizeMarketplace({
+        ...this.settings.marketplace,
+        installedProviderPresets,
+      });
+      const providerPresetSecretInvalidationIds = marketplaceProviderPresetSecretInvalidationIds(
+        this.settings.marketplace.installedProviderPresets,
+        nextMarketplace.installedProviderPresets,
+      );
+      this.settings.marketplace = nextMarketplace;
+      const prunedLlm = pruneLazyLlmVendorBlocks(
+        this.settings.llm,
+        nextMarketplace.installedProviderIds,
+        nextMarketplace.installedProviderPresets,
+        { inferInstalledFromCustom: false },
+      );
+      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = withoutMarketplaceDefaultModels(
+        this.settings.llm,
+        nextMarketplace.installedProviderPresets,
+        this.settings.appliedMigrations ??= [],
+      );
+      this.providerConfigChanged();
+      await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
+      return this.getAll();
     });
-    const providerPresetSecretInvalidationIds = marketplaceProviderPresetSecretInvalidationIds(
-      this.settings.marketplace.installedProviderPresets,
-      nextMarketplace.installedProviderPresets,
-    );
-    this.settings.marketplace = nextMarketplace;
-    const prunedLlm = pruneLazyLlmVendorBlocks(
-      this.settings.llm,
-      nextMarketplace.installedProviderIds,
-      nextMarketplace.installedProviderPresets,
-      { inferInstalledFromCustom: false },
-    );
-    this.settings.llm = prunedLlm.llm;
-    this.settings.llm = withoutMarketplaceDefaultModels(
-      this.settings.llm,
-      nextMarketplace.installedProviderPresets,
-      this.settings.appliedMigrations ??= [],
-    );
-    this.providerConfigChanged();
-    await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    return this.getAll();
   }
 
   /** Save the change just made in memory, then delete the preset keys it invalidated (`providerIds`: presets that moved or went). Called

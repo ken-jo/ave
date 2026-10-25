@@ -1,5 +1,8 @@
 // Release services must have no side effects until the user opts in.
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { setAppRelaunchRequested } from "../app-relaunch-state.js";
+import { createRequire } from "node:module";
+import { relaunchDesktopHost } from "../../boot/desktop-relaunch.js";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 
 import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
@@ -35,6 +38,7 @@ function fakeUpdater() {
     downloads: 0,
     installs: 0,
     autoDownload: undefined as boolean | undefined,
+    autoInstallOnAppQuit: true,
     on(event: string, cb: (p: unknown) => void) {
       (listeners[event] ??= []).push(cb);
     },
@@ -57,6 +61,7 @@ function fakeUpdater() {
     downloads: number;
     installs: number;
     autoDownload?: boolean;
+    autoInstallOnAppQuit: boolean;
   };
 }
 
@@ -90,10 +95,85 @@ function createTestAutoUpdater(
   });
 }
 
+function downloadedQuitHandler(updater: UpdaterLike) {
+  const { BaseUpdater } = createRequire(import.meta.url)("electron-updater/out/BaseUpdater.js") as {
+    BaseUpdater: { prototype: { addQuitHandler: (this: unknown) => void } };
+  };
+  let quit!: (exitCode: number) => void;
+  const install = vi.fn();
+  Object.assign(updater, { app: { onQuit: (handler: typeof quit) => { quit = handler; } },
+    _logger: { info: vi.fn() }, install, quitHandlerAdded: false, quitAndInstallCalled: false });
+  BaseUpdater.prototype.addQuitHandler.call(updater);
+  return { install, quit: () => quit(0) };
+}
+
 const HOST_RENDERER_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/index.html";
 const PLUGIN_SHELL_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/plugin-ui-shell.html";
 
 describe("auto-updater", () => {
+  afterEach(() => { setAppRelaunchRequested(false); });
+
+  it("suppresses the dependency quit installer for a downloaded update during reserved relaunch", async () => {
+    const { win } = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(win, updater);
+    await service.triggerCheck();
+    updater.emit("update-downloaded", { version: "3.0.0" });
+    const downloaded = downloadedQuitHandler(updater);
+    try {
+      setAppRelaunchRequested(true);
+      relaunchDesktopHost({ relaunch: vi.fn(), quit: () => { service.stop(); downloaded.quit(); } } as never, false);
+      expect(downloaded.install).not.toHaveBeenCalled();
+      expect(updater.autoInstallOnAppQuit).toBe(false);
+      expect(updater.installs).toBe(0);
+    } finally {
+      service.stop();
+    }
+  });
+
+  it("keeps the dependency automatic installer active for an ordinary quit", async () => {
+    const { win } = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(win, updater);
+    try {
+      await service.triggerCheck();
+      updater.emit("update-downloaded", { version: "3.0.0" });
+      const downloaded = downloadedQuitHandler(updater);
+      downloaded.quit();
+      expect(downloaded.install).toHaveBeenCalledExactlyOnceWith(true, false);
+    } finally {
+      service.stop();
+    }
+  });
+
+  it("restores automatic installation when relaunch scheduling fails", async () => {
+    const { win } = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(win, updater);
+    await service.triggerCheck();
+    updater.emit("update-downloaded", { version: "3.0.0" });
+    try {
+      setAppRelaunchRequested(true);
+      expect(updater.autoInstallOnAppQuit).toBe(false);
+      setAppRelaunchRequested(false);
+      expect(updater.autoInstallOnAppQuit).toBe(true);
+    } finally {
+      service.stop();
+    }
+  });
+
+  it("refuses a downloaded update while relaunch is reserved", async () => {
+    const { win } = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(win, updater);
+    await service.triggerCheck();
+    updater.emit("update-downloaded", { version: "3.0.0" });
+    setAppRelaunchRequested(true);
+    await expect(service._testOnly.installNow()).resolves.toEqual({ ok: false, reason: "relaunch-in-progress" });
+    expect(updater.installs).toBe(0);
+    expect(isAppUpdateInstallRequested()).toBe(false);
+  });
+
   beforeEach(() => {
     clearAppUpdateInstallRequested();
   });

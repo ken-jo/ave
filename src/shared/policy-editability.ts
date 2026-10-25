@@ -2,6 +2,11 @@
 
 export type PolicySource = "defaults" | "user" | "admin" | "merged";
 
+export interface AdminPolicyDiagnostic {
+  adminStatus?: "invalid";
+  adminReason?: string;
+}
+
 export function isPolicyUserEditable(policy: {
   source: PolicySource;
   managed?: boolean;

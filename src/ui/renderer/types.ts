@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -479,6 +480,7 @@ export type NotificationClickPayload = {
 };
 
 export type AveApi = {
+  relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
   /**
    * Deterministic file:// URL of the bundled `plugin-preload.js`. Computed in
    * the host preload from `__dirname` (= `dist/src/`) so the plugin <webview>
@@ -1707,7 +1709,7 @@ export type AvePolicyApi = {
      * `managed`/`source`.
      */
     editable: boolean;
-  }>;
+  } & AdminPolicyDiagnostic>;
   set: (patch: unknown) => Promise<{ ok: boolean; policy?: unknown; error?: string; message?: string }>;
 };
 

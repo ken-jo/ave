@@ -1,6 +1,7 @@
 /** Owns recorded servers only; unreadable provenance stops changes.
  * Config and file swaps roll back on failure; updates retain the separate data directory. */
 import AdmZip from "adm-zip";
+import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -159,9 +160,11 @@ export class McpInstaller implements McpInstallerPort {
   constructor(private readonly deps: McpInstallerDeps) {}
 
   private serial<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(run, run);
-    this.queue = next.catch(() => undefined);
-    return next;
+    return withInstalledStateMutation(() => {
+      const next = this.queue.then(run, run);
+      this.queue = next.catch(() => undefined);
+      return next;
+    });
   }
 
   private dataDir(name: string): string {

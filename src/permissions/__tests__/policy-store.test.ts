@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, parse, resolve } from "node:path";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
@@ -63,7 +64,11 @@ function writeFile(path: string, obj: object): void {
 }
 
 describe("policy-store", () => {
+  const nativePlatform = process.platform;
+  afterEach(() => setProcessPlatform(nativePlatform));
   beforeEach(() => {
+    // In-memory fixtures cover parsing and precedence; native trust has its own suite.
+    setProcessPlatform("linux");
     for (const path of Object.keys(files)) delete files[path];
     for (const path of Object.keys(readErrors)) delete readErrors[path];
     symbolicLinks.clear();
@@ -330,6 +335,19 @@ describe("policy-store", () => {
   });
 
   describe("invalid administrative policy", () => {
+    it("surfaces an empty policy reason without exposing policy contents", async () => {
+      files[ADMIN_PATH] = "";
+      const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+      expect(loaded).toMatchObject({ adminStatus: "invalid", managed: true, requireExplicitApproval: true });
+      expect(loaded.adminReason).toBe(`invalid policy file at ${ADMIN_PATH}: empty file; not valid JSON`);
+    });
+
+    it("surfaces a sanitized parse failure for malformed policy", async () => {
+      files[ADMIN_PATH] = "PRIVATE_POLICY_CONTENT";
+      const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+      expect(loaded.adminStatus).toBe("invalid");
+      expect(loaded.adminReason).toBe(`invalid policy file at ${ADMIN_PATH}: not valid JSON`);
+    });
     const invalidCases: Array<{ label: string; contents: string; readCode?: string }> = [
       { label: "unreadable file", contents: '{"version":1}', readCode: "EACCES" },
       { label: "denied read", contents: '{"version":1}', readCode: "EPERM" },

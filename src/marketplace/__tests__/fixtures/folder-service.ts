@@ -21,6 +21,7 @@ import { policySource, type TestPolicySource } from "./policy.js";
 
 export interface FolderServiceHarness {
   service: MarketplaceService;
+  installers: InstallerPorts;
   registry: SourceRegistry;
   syncer: SourceSyncer;
   policy: TestPolicySource;
@@ -199,5 +200,5 @@ export async function folderService(options: {
       },
     },
   });
-  return { service, registry, syncer, policy, gitCalls, fetches, plugins, content, installed, approvals, onInstalled, onUninstall, root: options.root, workRoot };
+  return { service, installers, registry, syncer, policy, gitCalls, fetches, plugins, content, installed, approvals, onInstalled, onUninstall, root: options.root, workRoot };
 }

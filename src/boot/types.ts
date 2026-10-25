@@ -67,6 +67,7 @@ export function offEvent(type: string, handler: EventHandler): void {
 }
 
 export interface AppServices {
+  relaunchApp?: () => void;
   pythonRuntime?: PythonRuntimeBootstrapper;
   pythonPath?: string;
   pluginRuntime: PluginRuntime;

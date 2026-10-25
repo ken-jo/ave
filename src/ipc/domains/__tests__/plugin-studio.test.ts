@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import AdmZip from "adm-zip";
@@ -12,6 +12,8 @@ import { previewStudioConnector } from "../../../studio/connector.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
+import { registerAppHandlers } from "../app.js";
 
 const { handlers } = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>() }));
 vi.mock("electron", () => ({
@@ -43,6 +45,7 @@ beforeEach(async () => {
   } } as never, async () => ({ store: content, reload } as never));
 });
 afterEach(async () => {
+  setAppRelaunchRequested(false);
   _resetAveHomePrivacyForTest();
   __resetSandboxRequestedAtBootForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
@@ -58,6 +61,56 @@ async function invoke(channel: string, event: unknown, ...args: unknown[]): Prom
 }
 
 describe("plugin Studio IPC", () => {
+  async function reviewedPreview(): Promise<string> {
+    const studio = new PluginStudioStore();
+    const draft = await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
+      files: [{ path: "skills/review/SKILL.md", text: "---\nname: review\ndescription: Review work\n---\nReview work.\n" }] });
+    await studio.reviewDraft("team-kit", draft.treeDigest);
+    const preview = await invoke(CHANNELS.pluginStudio.previewInstallDraft, hostFrameEvent(), "team-kit") as { value: { previewId: string } };
+    return preview.value.previewId;
+  }
+
+  function registerRelaunch() {
+    const event = hostFrameEvent();
+    Object.assign(event.sender, { mainFrame: event.senderFrame });
+    const relaunchApp = vi.fn();
+    registerAppHandlers({ auditLogger: { log: vi.fn() }, relaunchApp,
+      getMainWindow: () => ({ webContents: event.sender, isDestroyed: () => false }) } as never);
+    return { relaunchApp, request: () => invoke(CHANNELS.app.relaunch, event, { intent: { inputOrigin: "user-keyboard", userActivation: true } }) };
+  }
+
+  it("refuses a reviewed local install after reserving relaunch without creating installed files", async () => {
+    const previewId = await reviewedPreview();
+    const relaunch = registerRelaunch();
+    expect(await relaunch.request()).toEqual({ ok: true });
+    expect(await invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), previewId, []))
+      .toMatchObject({ ok: false, message: expect.stringMatching(/restart/i) });
+    expect(content.list()).toEqual([]);
+    await expect(readdir(join(root, "packages"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(activate).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("refuses relaunch throughout a local install activation", async () => {
+    const previewId = await reviewedPreview();
+    const relaunch = registerRelaunch();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(activate).mockImplementationOnce(async () => { entered(); await held; return { retired: Promise.resolve() }; });
+    const pending = invoke(CHANNELS.pluginStudio.installFromFile, hostFrameEvent(), previewId, []);
+    await started;
+    try {
+      expect(await relaunch.request()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunch.relaunchApp).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+    }
+    expect(await relaunch.request()).toEqual({ ok: true });
+  });
+
   it("previews a reviewed draft while home privacy refuses extension starts", async () => {
     const studio = new PluginStudioStore();
     const draft = await studio.writeDraft({ name: "team-kit", version: "1.0.0", description: "A team plugin",
