@@ -1805,6 +1805,10 @@ refused, and Ave never sets it. The macOS profile also denies process-info on ot
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
 process's environment.
+Every rule of the macOS profile folds the `subpath` and `literal` filters that
+share a parent directory into one regex for that parent. The regex matches the
+same paths, and sandbox-exec, which compiles the profile on every wrap, compiles
+it several times faster.
 
 To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
 explanatory preamble (everything before the first `diff --git`) and run

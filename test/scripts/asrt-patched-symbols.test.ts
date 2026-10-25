@@ -173,6 +173,17 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(wrap).toMatch(/\n\s+ttys,\n/u);
   });
 
+  it("folds each macOS rule's sibling path filters into one regex", () => {
+    const macos = readInstalled("dist/sandbox/macos-sandbox-utils.js");
+    expect(functionBody(macos, /\nfunction renderRule\(/u)).toContain(
+      "...(pathFilterCompaction ? compactPathFilters(filters) : [...filters]).map(f => `  ${f}`),",
+    );
+    expect(functionBody(macos, /\nexport function compactPathFilters\(/u)).toMatch(/SBPL_STRING_MAX_BYTES/u);
+    expect(readInstalled("dist/sandbox/macos-sandbox-utils.d.ts")).toMatch(
+      /export declare function compactPathFilters\(filters: Iterable<string>\): string\[\];/u,
+    );
+  });
+
   it("validates ttys at both manager entry points and hands them to the macOS wrap", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
     expect(manager).toMatch(/import \{ assertPtySlavePaths, [^}]*\} from '\.\/macos-sandbox-utils\.js';/u);

@@ -22,7 +22,7 @@ import {
   resetAsrtSandbox,
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
-import { asrtCanInitialize } from "./test-helpers.js";
+import { asrtCanInitialize, profileOfWrappedArgv, profileRules } from "./test-helpers.js";
 
 const MARKER = ".ave-pinned-write-root";
 let home: string;
@@ -62,11 +62,12 @@ describe("pinned write roots", () => {
           pinWriteRoots: true,
         },
       });
-      const profile = argv.join("\n");
+      // A rule's path filters, with the ones that share a parent folded into one regex expanded again.
+      const filters = new Set(profileRules(profileOfWrappedArgv(argv)).flatMap((rule) => rule.filters));
       for (const root of [tempDir, dataDir]) {
         const real = realpathSync(root);
-        expect(profile, `no marker deny for ${real}`).toContain(`(subpath "${join(real, MARKER)}")`);
-        expect(profile, `no literal pin for ${real}`).toContain(`(literal "${real}")`);
+        expect(filters.has(`(subpath ${JSON.stringify(join(real, MARKER))})`), `no marker deny for ${real}`).toBe(true);
+        expect(filters.has(`(literal ${JSON.stringify(real)})`), `no literal pin for ${real}`).toBe(true);
       }
     },
   );

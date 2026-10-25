@@ -2114,6 +2114,9 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   이전 설정으로 열린 터널이 남지 않는다. 샌드박스
   프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
   들어가지 않는다.
+  macOS 프로필의 각 규칙은 같은 부모 디렉터리를 가진 `subpath`·`literal` 필터를
+  부모마다 정규식 하나로 접는다. 정규식은 같은 경로에 맞고, 감쌀 때마다 프로필을
+  다시 컴파일하는 sandbox-exec 는 몇 배 빨리 컴파일한다.
   `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch` 를 재생성할 때는
   첫 `diff --git` 앞의 설명을 보관하고
   `bun patch @anthropic-ai/sandbox-runtime@0.0.80` 을 실행한다. 설치된 패키지의
