@@ -1448,7 +1448,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       requestId: "req-global", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
     });
     expect(result).toMatchObject({ ok: true });
-    const entry = recordApprovalMock.mock.calls[0]![3] as Record<string, unknown>;
+    const entry = (recordApprovalMock.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
     expect(entry).toMatchObject({ decision: "allow", scope: "global" });
     expect(entry).not.toHaveProperty("projectCwd");
 
