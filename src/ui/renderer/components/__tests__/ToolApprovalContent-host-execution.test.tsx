@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { t } from "../../../../i18n/runtime.js";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
 
@@ -24,7 +23,7 @@ function request(host: boolean): ApprovalRequest {
 
 describe("explicit host execution approval", () => {
   it("shows the exact host warning, reason, environment and full command before consent", () => {
-    const { container } = render(<ToolApprovalContent conversationLabel="conversation" open request={request(true)} onDecide={() => undefined} />);
+    const { container } = renderApproval(request(true), () => undefined);
     const warning = container.querySelector('[data-testid="tool-approval-host-execution"]');
     expect(warning?.textContent).toContain(t("shellExecution.hostWarning"));
     expect(warning?.textContent).toContain("Use the configured host client");
@@ -35,7 +34,7 @@ describe("explicit host execution approval", () => {
   });
 
   it("does not derive the host execution warning from model-provided arguments", () => {
-    const { container } = render(<ToolApprovalContent conversationLabel="conversation" open request={request(false)} onDecide={() => undefined} />);
+    const { container } = renderApproval(request(false), () => undefined);
     expect(container.querySelector('[data-testid="tool-approval-host-execution"]')).toBeNull();
     expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent).toContain(t("shellExecution.temporaryHome"));
   });
@@ -49,7 +48,7 @@ describe("explicit host execution approval", () => {
       platform: "darwin", requestedSandbox: true,
       activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "darwin" },
     }));
-    const { container } = render(<ToolApprovalContent conversationLabel="conversation" open request={fallback} onDecide={() => undefined} />);
+    const { container } = renderApproval(fallback, () => undefined);
     expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent)
       .toContain(t("shellExecution.sandboxUnavailable"));
     expect(container.querySelector('[data-testid="tool-approval-host-execution"]')).toBeNull();

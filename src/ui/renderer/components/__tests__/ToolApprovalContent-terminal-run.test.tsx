@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
@@ -65,7 +65,7 @@ describe("ToolApprovalContent terminal_run card", () => {
   it("shows the exact command and names the terminal by its tab label and directory", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     showActiveSurface({ kind: "terminal", tabId: "terminal:3fa91c0e-2", label: "Terminal 2", cwd: "/workspace/project/app" });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest()} onDecide={vi.fn()} />);
+    renderApproval(terminalRunRequest(), vi.fn());
     const target = screen.getByTestId("approval-terminal-target");
     // The exact command is on the always-visible line, not only behind the details toggle.
     expect(target).toHaveTextContent("npm test -- --watch=false");
@@ -76,7 +76,7 @@ describe("ToolApprovalContent terminal_run card", () => {
   it("names a terminal that is not the active one by its id rather than guessing a label", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     showActiveSurface({ kind: "terminal", tabId: "terminal:3fa91c0e-1", label: "Terminal 1" });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest()} onDecide={vi.fn()} />);
+    renderApproval(terminalRunRequest(), vi.fn());
     const target = screen.getByTestId("approval-terminal-target");
     expect(target).toHaveTextContent("terminal:3fa91c0e-2");
     expect(target).not.toHaveTextContent("Terminal 1");
@@ -85,7 +85,7 @@ describe("ToolApprovalContent terminal_run card", () => {
   it("names a look-alike letter in a mixed-script word by code point, so it cannot pass as the letter it imitates", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     // A Cyrillic a in place of the Latin one.
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "open p\u0430ypal.com" } })} onDecide={vi.fn()} />);
+    renderApproval(terminalRunRequest({ args: { command: "open p\u0430ypal.com" } }), vi.fn());
     const notes = screen.getAllByTestId("approval-terminal-note");
     expect(notes).toHaveLength(1);
     expect(notes[0]).toHaveTextContent("U+0430");
@@ -93,19 +93,17 @@ describe("ToolApprovalContent terminal_run card", () => {
 
   it("does not warn about a word written in one script, such as a Korean filename", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "cat \ubcf4\uace0\uc11c.txt" } })} onDecide={vi.fn()} />);
+    renderApproval(terminalRunRequest({ args: { command: "cat \ubcf4\uace0\uc11c.txt" } }), vi.fn());
     expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent("cat \ubcf4\uace0\uc11c.txt");
     expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
   });
 
   it("says when the terminal's directory is outside the allowed folders, and only then", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    const { unmount } = render(
-      <ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ evaluationContext: evaluationContext(["/elsewhere"]) })} onDecide={vi.fn()} />,
-    );
+    const { unmount } = renderApproval(terminalRunRequest({ evaluationContext: evaluationContext(["/elsewhere"]) }), vi.fn());
     expect(screen.getByTestId("approval-terminal-note")).toHaveTextContent("/workspace/project/app");
     unmount();
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ evaluationContext: evaluationContext(["/workspace/project"]) })} onDecide={vi.fn()} />);
+    renderApproval(terminalRunRequest({ evaluationContext: evaluationContext(["/workspace/project"]) }), vi.fn());
     expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
   });
 
@@ -113,14 +111,7 @@ describe("ToolApprovalContent terminal_run card", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     const request = terminalRunRequest({ evaluationContext: evaluationContext(["/private/tmp/work"]) });
     const memory = request.approvalMemory as Extract<NonNullable<ApprovalRequest["approvalMemory"]>, { kind: "key" }>;
-    render(
-      <ToolApprovalContent
-        conversationLabel="conversation"
-        open
-        request={{ ...request, approvalMemory: { ...memory, scope: { kind: "terminal-command", lane: "agent", terminalSessionId: "fixture-agent", sandboxGeneration: "0", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/tmp/Work/app", cwdForMatch: "/private/tmp/work/app" } } }}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval({ ...request, approvalMemory: { ...memory, scope: { kind: "terminal-command", lane: "agent", terminalSessionId: "fixture-agent", sandboxGeneration: "0", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/tmp/Work/app", cwdForMatch: "/private/tmp/work/app" } } }, vi.fn());
     expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
     expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent("/tmp/Work/app");
   });
@@ -129,7 +120,7 @@ describe("ToolApprovalContent terminal_run card", () => {
     const onDecide = vi.fn();
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest()} onDecide={onDecide} />);
+    renderApproval(terminalRunRequest(), onDecide);
     const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
     expect(remember).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project/app");

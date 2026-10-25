@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import {
   createElicitationResolverFactory,
@@ -41,13 +41,7 @@ function makeElicitationRequest(): ApprovalRequest {
 describe("ToolApprovalContent MCP elicitation form", () => {
   it("uses pre-supplied values and explicit choices without rendering typeable controls", () => {
     const onDecide = vi.fn();
-    const { container } = render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeElicitationRequest()}
-        onDecide={onDecide}
-      />,
-    );
+    const { container } = renderApproval(makeElicitationRequest(), onDecide);
 
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(container.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"], [role="textbox"]')).toBeNull();
@@ -69,13 +63,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
 
   it("preserves optional boolean false in elicitation content", () => {
     const onDecide = vi.fn();
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeElicitationRequest()}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeElicitationRequest(), onDecide);
 
     fireEvent.click(screen.getByTestId(TEST_IDS.approveButton));
 
@@ -102,9 +90,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
         },
       },
     };
-    const { container } = render(
-      <ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={onDecide} />,
-    );
+    const { container } = renderApproval(request, onDecide);
 
     expect(container.querySelector('input, textarea, [contenteditable="true"], [role="textbox"]')).toBeNull();
     expect(screen.getByTestId("mcp-elicitation-input-unavailable")).toBeVisible();
@@ -121,13 +107,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
       url: "https://example.com/oauth",
       elicitationId: "e1",
     };
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={request}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(request, onDecide);
 
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
@@ -154,26 +134,20 @@ describe("ToolApprovalContent MCP elicitation form", () => {
       approvalGate: {
         requestAndWait: async (gateRequest) => {
           let captured: { elicitationContent?: Record<string, unknown> } | undefined;
-          render(
-            <ToolApprovalContent conversationLabel="conversation"
-              open
-              request={{
-                id: gateRequest.id,
-                category: "agent-action",
-                kind: "agent-action",
-                toolName: gateRequest.toolName,
-                toolCategory: "meta",
-                args: gateRequest.args,
-                reason: gateRequest.reason,
-                source: "mcp",
-                createdAt: gateRequest.createdAt,
-                requireExplicit: true,
-              }}
-              onDecide={(_choice, _purpose, extras) => {
-                captured = extras as { elicitationContent?: Record<string, unknown> } | undefined;
-              }}
-            />,
-          );
+          renderApproval({
+            id: gateRequest.id,
+            category: "agent-action",
+            kind: "agent-action",
+            toolName: gateRequest.toolName,
+            toolCategory: "meta",
+            args: gateRequest.args,
+            reason: gateRequest.reason,
+            source: "mcp",
+            createdAt: gateRequest.createdAt,
+            requireExplicit: true,
+          }, (_choice, _purpose, extras) => {
+            captured = extras as { elicitationContent?: Record<string, unknown> } | undefined;
+          });
           sawUnsupportedNotice = screen.queryByTestId("mcp-elicitation-unsupported") !== null;
           answer();
           const approve = screen.getByTestId(TEST_IDS.approveButton) as HTMLButtonElement;
@@ -249,13 +223,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
         properties: { tags: { type: "array" } },
       },
     };
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={request}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(request, onDecide);
 
     expect(screen.queryByTestId("mcp-elicitation-form")).not.toBeInTheDocument();
     expect(screen.getByTestId("mcp-elicitation-unsupported")).toBeTruthy();

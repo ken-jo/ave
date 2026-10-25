@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { cleanup, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { ApprovalMemory } from "../../../../shared/permissions-events.js";
 
@@ -28,7 +28,7 @@ function request(toolName: string, approvalMemory: ApprovalMemory | undefined): 
 }
 
 function scopeLine(req: ApprovalRequest): string {
-  render(<ToolApprovalContent conversationLabel="conversation" open request={req} onDecide={vi.fn()} />);
+  renderApproval(req, vi.fn());
   return screen.getByTestId("allow-always-exact-scope").textContent ?? "";
 }
 

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
@@ -32,13 +32,7 @@ function makeAgentActionRequest(
 describe("ToolApprovalContent external agent-action affordances", () => {
   it("keeps the three decisions visible but disables persistence for local-api actions", () => {
     const onDecide = vi.fn();
-    const { container } = render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeAgentActionRequest("local-api")}
-        onDecide={onDecide}
-      />,
-    );
+    const { container } = renderApproval(makeAgentActionRequest("local-api"), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
@@ -54,13 +48,7 @@ describe("ToolApprovalContent external agent-action affordances", () => {
   });
 
   it("keeps persistence visible but disabled for user-keyboard agent actions", () => {
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeAgentActionRequest("user-keyboard")}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval(makeAgentActionRequest("user-keyboard"), vi.fn());
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
@@ -73,13 +61,7 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     ["omitted legacy source", null],
   ] as const)("forces one-shot approval for remote-wire agent actions with %s", (_label, source) => {
     const onDecide = vi.fn();
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeAgentActionRequest("a2a-remote-wire", "a2a-send", source)}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeAgentActionRequest("a2a-remote-wire", "a2a-send", source), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
@@ -91,13 +73,7 @@ describe("ToolApprovalContent external agent-action affordances", () => {
 
   it("keeps persistence visible but disabled for plugin agent actions", () => {
     const onDecide = vi.fn();
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={makeAgentActionRequest("a2a-remote-wire", "a2a-send", "plugin")}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval(makeAgentActionRequest("a2a-remote-wire", "a2a-send", "plugin"), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();

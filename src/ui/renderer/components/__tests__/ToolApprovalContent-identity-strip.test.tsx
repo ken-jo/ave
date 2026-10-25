@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import {
   createRationaleApprovalDisplay,
@@ -74,7 +74,7 @@ function rationaleRequest(args: Record<string, unknown>): ApprovalRequest {
 
 describe("ToolApprovalContent identity strip", () => {
   it("names the tool on a plain request (unchanged behavior)", () => {
-    render(<ToolApprovalContent conversationLabel="conversation" open request={baseRequest()} onDecide={vi.fn()} />);
+    renderApproval(baseRequest(), vi.fn());
     expect(screen.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");
   });
 
@@ -82,7 +82,7 @@ describe("ToolApprovalContent identity strip", () => {
     // The request-level name is display-untrusted for sealed cards; only the HMAC-sealed display.toolName may render.
     // Diverging names prove which source the strip reads.
     const request = { ...rationaleRequest(sealedDisplayArgs()), toolName: "request-level-name" };
-    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={vi.fn()} />);
+    renderApproval(request, vi.fn());
     expect(screen.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");
     expect(screen.getByTestId("approval-tool-identity")).not.toHaveTextContent("request-level-name");
     expect(screen.queryByTestId("approval-identity-unverified")).toBeNull();
@@ -94,13 +94,7 @@ describe("ToolApprovalContent identity strip", () => {
   });
 
   it("names the tool even when the sealed display is INVALID", () => {
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={rationaleRequest({ garbage: true })}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval(rationaleRequest({ garbage: true }), vi.fn());
     // The bug this pins: identity came only from the sealed table, so a parse
     // failure produced a card that could not say what it was approving. With
     // no sealed name available the request name renders — explicitly marked,
@@ -110,13 +104,7 @@ describe("ToolApprovalContent identity strip", () => {
   });
 
   it("offers ONLY deny when the sealed display is invalid", () => {
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={rationaleRequest({ garbage: true })}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval(rationaleRequest({ garbage: true }), vi.fn());
     // Fail-closed means the allow options are not presented at all — a permanently disabled button teaches users to distrust
     // the panel.
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
@@ -126,24 +114,18 @@ describe("ToolApprovalContent identity strip", () => {
 
   it("renders a path-grant request inside the same frame, identity strip included", () => {
     // Path grants share approval framing while allow-always retains parent-directory semantics.
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={{
-          ...baseRequest(),
-          kind: "out-of-allowed-dir",
-          toolName: "write_file",
-          toolCategory: "write",
-          outOfAllowedDir: {
-            candidatePath: "/workspace/out/report.md",
-            suggestedParent: "/workspace/out",
-            currentAllowed: ["/workspace/project"],
-            adjacencyWarnings: [],
-          },
-        }}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval({
+      ...baseRequest(),
+      kind: "out-of-allowed-dir",
+      toolName: "write_file",
+      toolCategory: "write",
+      outOfAllowedDir: {
+        candidatePath: "/workspace/out/report.md",
+        suggestedParent: "/workspace/out",
+        currentAllowed: ["/workspace/project"],
+        adjacencyWarnings: [],
+      },
+    }, vi.fn());
     expect(screen.getByTestId("tool-approval-panel")).toBeInTheDocument();
     expect(screen.getByTestId("approval-tool-identity")).toHaveTextContent("write_file");
     // The one generic decision row serves path grants too.
@@ -160,24 +142,18 @@ describe("ToolApprovalContent identity strip", () => {
     // before the frame unification and must stay absent (review MAJOR).
     const onDecide = vi.fn();
     const { allowedChoices: _unconstrained, ...openChoices } = baseRequest();
-    render(
-      <ToolApprovalContent conversationLabel="conversation"
-        open
-        request={{
-          ...openChoices,
-          kind: "out-of-allowed-dir",
-          toolName: "write_file",
-          toolCategory: "write",
-          outOfAllowedDir: {
-            candidatePath: "/workspace/out/report.md",
-            suggestedParent: "/workspace/out",
-            currentAllowed: ["/workspace/project"],
-            adjacencyWarnings: [],
-          },
-        }}
-        onDecide={onDecide}
-      />,
-    );
+    renderApproval({
+      ...openChoices,
+      kind: "out-of-allowed-dir",
+      toolName: "write_file",
+      toolCategory: "write",
+      outOfAllowedDir: {
+        candidatePath: "/workspace/out/report.md",
+        suggestedParent: "/workspace/out",
+        currentAllowed: ["/workspace/project"],
+        adjacencyWarnings: [],
+      },
+    }, onDecide);
     const panel = screen.getByTestId("tool-approval-panel");
     // Focus the parent-grant decision, as a keyboard user would before committing.
     screen.getByTestId(TEST_IDS.allowAlwaysButton).focus();

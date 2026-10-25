@@ -15,9 +15,8 @@
  * assertions match the Korean catalog.
  */
 import "../../../../../test/renderer/setup.js";
-import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 
 function makeRequest(
@@ -38,9 +37,7 @@ function makeRequest(
 }
 
 function renderSandboxSummary(req: ApprovalRequest) {
-  const { container } = render(
-    <ToolApprovalContent conversationLabel="conversation" open request={req} onDecide={() => undefined} />,
-  );
+  const { container } = renderApproval(req, () => undefined);
   return {
     container,
     summary: container.querySelector<HTMLElement>(
