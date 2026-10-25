@@ -11,7 +11,7 @@ export const MAX_ROUTINE_SOURCE_LENGTH = 140;
 export type RoutineExecution = "llm-session" | "notification-only";
 
 /** Missing plugin scope means deny-all; inherit must be explicit and snapshots active plugins at fire time. */
-export type RoutinePluginScope =
+type RoutinePluginScope =
   | { mode: "deny-all" }
   | { mode: "allow"; ids: string[] }
   | { mode: "inherit" };

@@ -89,7 +89,7 @@ const GROK_BUILD_GOVERNED_AGENT_PROFILE_META = Object.freeze({
 
 // Reconstruct a narrow `session/new` object rather than forwarding an object that can carry runtime-owned profile or MCP configuration. Kimi receives
 // the legacy shape exactly; the stock Grok Build client receives only Ave's governed profile and no model-selection override.
-export function buildAcpSubscriptionSessionNewParams(
+function buildAcpSubscriptionSessionNewParams(
   provider: AcpSubscriptionProviderId,
   workspaceDir: string,
   mcpServers: readonly AcpSubscriptionMcpServerConfig[],

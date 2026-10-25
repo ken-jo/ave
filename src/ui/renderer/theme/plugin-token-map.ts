@@ -147,12 +147,3 @@ export function bundleToPluginTokens(bundle: ThemeBundle): Record<AveTokenName, 
   };
   return { ..._INVARIANT, ...bundleTokens } as Record<AveTokenName, string>;
 }
-
-/**
- * @deprecated Use `bundleToPluginTokens(bundle)` instead.
- *
- * Legacy shim kept so existing callers (ThemeProvider tests that import
- * `resolvePluginTokens` from the barrel) continue to compile during the
- * transition. Will be removed in the next sprint.
- */
-export { bundleToPluginTokens as resolvePluginTokens };

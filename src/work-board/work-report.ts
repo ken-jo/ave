@@ -16,30 +16,30 @@ import type {
   WorkItemListFilter,
 } from "../shared/work-board-types.js";
 
-export interface CallLlm {
+interface CallLlm {
   (prompt: string, opts?: { maxTokens?: number; systemPrompt?: string }): Promise<string>;
 }
 
-export interface ReportBoardReader {
+interface ReportBoardReader {
   list(filter?: WorkItemListFilter): Promise<WorkItemListResult>;
 }
 
-export type ReportStorage = Pick<WorkBoardStorage, "write" | "mkdir">;
+type ReportStorage = Pick<WorkBoardStorage, "write" | "mkdir">;
 
-export type ReportKind = WorkBoardReportKind;
+type ReportKind = WorkBoardReportKind;
 
 /** The reporter throws generation errors; only IPC wraps them into error envelopes. */
-export type ReportResult =
+type ReportResult =
   | { status: "ok"; kind: ReportKind; period: string; markdown: string }
   | { status: "empty"; kind: ReportKind; period: string; reason: string };
 
-export interface DailyReportInput {
+interface DailyReportInput {
   date?: string;
   projectRoot?: string;
   includeUnscoped?: boolean;
 }
 
-export interface WeeklyReportInput {
+interface WeeklyReportInput {
   weekIso?: string;
   weekOffset?: number;
   projectRoot?: string;
@@ -48,7 +48,7 @@ export interface WeeklyReportInput {
 
 type ReportProjectOptions = Pick<DailyReportInput, "projectRoot" | "includeUnscoped">;
 
-export const REPORT_GENERATED_EVENT = "work_board.report.generated";
+const REPORT_GENERATED_EVENT = "work_board.report.generated";
 
 const DAILY_DIR = "reports/daily";
 const WEEKLY_DIR = "reports/weekly";

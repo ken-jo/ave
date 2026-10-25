@@ -1,7 +1,7 @@
 /** Settings, renderer hooks, and sidebar validation share this value set. */
 export type SidebarTab = "chats" | "projects";
 
-export const SIDEBAR_TABS: readonly SidebarTab[] = ["chats", "projects"];
+const SIDEBAR_TABS: readonly SidebarTab[] = ["chats", "projects"];
 
 export const DEFAULT_SIDEBAR_TAB: SidebarTab = "chats";
 

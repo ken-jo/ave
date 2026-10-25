@@ -40,7 +40,7 @@ const MAX_HISTORY_MESSAGES = 64;
 const MAX_CARD_DESCRIPTION_CHARS = 512;
 const DEFAULT_CARD_DESCRIPTION = "Host-managed local sub-agent profile.";
 
-export interface A2ALoopbackDiscovery {
+interface A2ALoopbackDiscovery {
   protocolVersion: typeof A2A_PROTOCOL_VERSION;
   agentCardPaths: readonly string[];
 }

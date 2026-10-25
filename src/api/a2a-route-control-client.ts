@@ -13,8 +13,8 @@ import { createA2AStrictTransport } from "./a2a-remote-transport.js";
 
 const RESOLVE_PATH = "/api/v1/a2a/routes/resolve";
 
-export interface A2ARouteControlAuthHandle { take(): string; zeroize(): void; }
-export interface A2ARouteControlAuthResolver { prepare(): Promise<A2ARouteControlAuthHandle>; }
+interface A2ARouteControlAuthHandle { take(): string; zeroize(): void; }
+interface A2ARouteControlAuthResolver { prepare(): Promise<A2ARouteControlAuthHandle>; }
 export interface CreateA2ARouteControlClientOptions {
   baseUrl: string;
   authResolver: A2ARouteControlAuthResolver;

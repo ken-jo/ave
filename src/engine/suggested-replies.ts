@@ -50,7 +50,7 @@ export interface StreamingFilter {
   finish(): StreamingFilterResult;
 }
 
-export interface StreamingFilterResult {
+interface StreamingFilterResult {
   trailing: string;
   suggestedReply: string | null;
 }

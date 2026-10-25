@@ -102,7 +102,7 @@ export interface RequestAnchor {
   createdAt: number;
   expiresAt: number;
 }
-export type RationaleTaint =
+type RationaleTaint =
   | "none"
   | "file-content"
   | "app-emitted"
@@ -282,7 +282,7 @@ export interface HostAnchorRoundCas {
   isCurrentReservation(receipt: HostAnchorRoundReservationReceipt): boolean;
 }
 
-export function validateHostAnchorRoundReservationReceipt(
+function validateHostAnchorRoundReservationReceipt(
   receipt: HostAnchorRoundReservationReceipt,
   anchor: RequestAnchor,
   action: ActionIdentity,
