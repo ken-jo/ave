@@ -51,8 +51,7 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-// These drive the POSIX owner, mode and inode guards, which never run on Windows:
-// the key reader refuses there before opening the file.
+// These owner/mode/inode guards are POSIX-only; Windows refuses keys before open.
 describe.skipIf(process.platform === "win32")("external key file invariants", () => {
   it("rejects a different owner and special permission bits before reading", () => {
     let reads = 0;

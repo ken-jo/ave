@@ -45,12 +45,10 @@ describe.skipIf(process.platform !== "win32")("Windows fixture ancestor ACL mask
     const host = fixtureAclHost.current!;
     const { pid, starts } = host;
     expect(pid).toBeDefined();
-    // The grant is removed before its fixture root is deleted.
     const root = roots.at(-1)!;
     root.granted = true;
     icacls(root.path, "/grant", `${AUTHENTICATED_USERS}:(M)`);
     await expect(assertCodexExecutableLocation(executable)).rejects.toThrow("Executable path is writable by another account");
-    // Same host process, fresh descriptor read: nothing was cached between requests.
     expect(host.pid).toBe(pid);
     expect(host.starts).toBe(starts);
   });
@@ -60,7 +58,6 @@ describe.skipIf(process.platform !== "win32")("Windows fixture ancestor ACL mask
     const clean = [1, 2, 3].map((index) => writeNativeExecutable(join(root, `clean-${index}`, "codex.exe")));
     const shared = join(root, "shared");
     const exposed = writeNativeExecutable(join(shared, "codex.exe"));
-    // The grant is removed before its fixture root is deleted.
     roots.unshift({ path: shared, granted: true });
     icacls(shared, "/grant", `${AUTHENTICATED_USERS}:(M)`);
     const requests = (paths: string[]) => paths.map((path) => ({ path, kind: "executable" as const }));

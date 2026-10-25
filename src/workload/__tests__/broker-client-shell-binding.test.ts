@@ -191,7 +191,6 @@ describe("workload broker shell response binding", () => {
   it("rejects a response split inside a multibyte UTF-8 scalar before binding", async () => {
     const malformed: ResponseFactory = (request) => Buffer.concat([
       Buffer.from(`{"version":"ave-workload-response/v2","id":"${request.id}","ok":true,"result":{"output":"`),
-      // First three bytes of a four-byte emoji, followed by the JSON quote.
       Buffer.from([0xf0, 0x9f, 0x99]),
       Buffer.from(`","isError":false}}\n`),
     ]);

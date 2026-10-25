@@ -176,10 +176,7 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-// The broker is the Linux route: it listens on an AF_UNIX socket path and
-// authenticates its capability file by uid, 0400/0700 modes and O_NOFOLLOW,
-// none of which exist on native Windows. There loading fails closed, which
-// the win32-only case below pins.
+// The broker requires Linux sockets and POSIX ownership/mode/no-follow checks; native Windows must fail closed.
 const itPosixBroker = it.skipIf(process.platform === "win32");
 
 describe("brokered workload runtime", () => {

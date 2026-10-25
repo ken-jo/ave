@@ -1,12 +1,3 @@
-/**
- * SystemPromptBuilder requestable plugin catalog section.
- *
- * Verifies:
- *   - Enabled, runtime-loaded plugins outside the current turn scope appear
- *     under the request_plugin catalog
- *   - Active plugin (in scope) is omitted from catalog
- *   - Empty cards → section omitted
- */
 import { describe, it, expect } from "vitest";
 
 import { SystemPromptBuilder } from "../system-prompt-builder.js";

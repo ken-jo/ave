@@ -20,8 +20,7 @@ beforeEach(() => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("host authority secret store", () => {
-  // A configured external key is refused on Windows, where owner-only key
-  // protection cannot be proven from POSIX uid and mode bits.
+  // Reject external keys on Windows when POSIX owner-only protection cannot be proven.
   const withExternalKey = it.skipIf(process.platform === "win32");
 
   withExternalKey("preserves identity across restart and never regenerates it after wrong-key decryption", () => {

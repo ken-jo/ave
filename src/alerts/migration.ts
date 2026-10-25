@@ -13,13 +13,9 @@ export interface AlertMigrationPorts {
   /** Registry presence includes packages undergoing replacement. */
   isInstalled(pluginId: string): Promise<boolean>;
   hasPendingCleanup(pluginId: string): boolean;
-  /**
-   * Never waits for a contended lifecycle lock. Check isCurrent under the lock
-   * before writing: null means deferred or obsolete, false means no copy is
-   * needed, and true means config was persisted. Only terminal stages consume.
-   */
+  /** Never wait on a lifecycle lock; recheck currency before writing. Null defers, false skips copying, true persists; only terminal stages consume. */
   applyConfig(pluginId: string, entries: readonly ConfigInheritDeclaration[], config: PluginConfigRecord, isCurrent: () => boolean): Promise<boolean | null>;
-  /** Schedules a restart outside any registration lifecycle hook. */
+  /** Schedule restarts outside registration lifecycle hooks. */
   configApplied(pluginId: string): void;
   warn(message: string): void;
 }
@@ -42,7 +38,7 @@ function inheritedToggle(config: PluginConfigRecord, rule: AlertInheritRule): bo
   return rule.listed === "enabled" ? listed : !listed;
 }
 
-/** Only unset saved keys are filled; defaults do not count as a user write. */
+/** Fill only unset saved keys; defaults are not user writes. */
 export function inheritedConfig(
   current: PluginConfigRecord,
   entries: readonly ConfigInheritDeclaration[],
@@ -63,7 +59,7 @@ export function inheritedConfig(
   return changed ? next : null;
 }
 
-/** Runs only inside the alerts service's serialized mutation lane. */
+/** Run only in the service's serialized mutation lane. */
 export class AlertMigration {
   private readonly declarations = new Map<string, Declaration>();
   private readonly warned = new Set<string>();
@@ -93,9 +89,7 @@ export class AlertMigration {
     const installed = await this.ports.installed();
     const records = structuredClone(this.ports.records.get());
     for (const [predecessor, record] of Object.entries(records)) {
-      // Host mappings have no consumedBy entry. Eligible existing host choices
-      // are written before any record can be removed. A not-yet-registered host
-      // kind keeps its mapping pending until the host creates that choice.
+      // Write eligible host choices before consuming records; unregistered kinds keep mappings pending.
       let hostTerminal = true;
       let settings = this.choices.get();
       let changed = false;
@@ -158,7 +152,6 @@ export class AlertMigration {
           if (applied) this.ports.configApplied(pluginId);
         }
         if (!kindsTerminal || !isCurrent()) continue;
-        // Writes above settled before binding this version's whole declaration.
         record.consumedBy = [...record.consumedBy, pluginId];
         await this.ports.records.set({ ...this.ports.records.get(), [predecessor]: record });
         declaration.consumedHere.add(predecessor);

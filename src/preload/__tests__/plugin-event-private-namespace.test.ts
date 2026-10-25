@@ -1,18 +1,4 @@
-/**
- * `aveApi.onPluginEvent` private-namespace gate — behavioural coverage.
- *
- * The main-side plugin event bridge (`boot/steps/ipc-bridge.ts`) forwards every
- * declared event type verbatim, so this preload gate is the enforcement point
- * for the private-namespace rule on the renderer delivery path. It was
- * previously an open-coded copy of `classifySubscription`'s private branch and
- * had no test at all: refining the classifier left the copy behind silently,
- * and deleting the copy's branch reddened nothing.
- *
- * These assertions run the real preload surface with a mocked `ipcRenderer`,
- * so they red both when the gate stops rejecting and when
- * `classifySubscription` — the single authority the gate now calls — changes
- * what counts as private.
- */
+/** Renderer delivery must use the shared private-namespace classifier; main forwards declared event names verbatim. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockOn, mockRemoveListener, mockInvoke } = vi.hoisted(() => ({
@@ -94,7 +80,6 @@ describe("onPluginEvent private-namespace gate", () => {
   });
 
   it("does not reject a merely prefix-similar public event type", () => {
-    // "auditorium" starts with "audit" as a STRING but not as a NAMESPACE.
     expect(subscribe("auditorium.opened").registered).toBe(true);
     expect(subscribe("memory.shared").registered).toBe(true);
   });

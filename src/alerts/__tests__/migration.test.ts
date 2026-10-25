@@ -99,7 +99,6 @@ describe("retirement inheritance and binding", () => {
     h.put(retirement({
       config: { disabledDetectors: [], osNotificationIntents: ["work-item-due-soon"], osNotificationsEnabled: true },
       successors: {
-        // A pending successor retains the record so the later pass can actually read it.
         plugins: [{ pluginId: PLUGIN }, { pluginId: "later" }],
         hostKinds: [{ kind: "@host:due-soon", enabled,
           osNotification: { key: "osNotificationIntents", listed: "enabled", values: ["work-item-due-soon"], masterKey: "osNotificationsEnabled" } }],
@@ -124,8 +123,7 @@ describe("retirement inheritance and binding", () => {
     await h.service.registerHostKinds();
     expect(h.settings.kinds["@host:due-soon"]).toMatchObject({ enabled: false, osNotification: false, seenByUser: true });
 
-    // Host mappings have no consuming-version entry. Plugin successors bind
-    // the whole declaration they publish when they consume this same record.
+    // Host mappings have no consuming-version entry; plugin successors bind their complete declaration.
     await h.service.register(PLUGIN, manifest([], [{ pluginId: "sampleassistant", to: "migrated", value: true }]));
     expect(h.records["sampleassistant"]!.consumedBy).toEqual([PLUGIN]);
     expect(h.configs[PLUGIN]).toEqual({ migrated: true });

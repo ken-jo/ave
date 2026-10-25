@@ -1,9 +1,3 @@
-/**
- * #237 Option B — validatePluginFrame guard tests
- *
- * Verifies that the plugin webview frame validator correctly accepts plugin-ui-shell
- * file:// frames and rejects host renderer frames or remote origins.
- */
 import { describe, it, expect, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 

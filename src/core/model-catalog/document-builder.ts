@@ -1,4 +1,3 @@
-/** Normalize and format catalog documents for publication. */
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { normalizeModelsDevProviders, type CatalogDiagnostic } from "../../shared/model-catalog/normalize.js";
 import {
@@ -10,10 +9,9 @@ import {
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { modelCatalogSha256 } from "./document.js";
 
-/** What the generator knows about where its input came from; the rest of the provenance is computed. */
 export type ModelCatalogSource = Omit<ModelCatalogProvenance, "source" | "inputSha256" | "schemaVersion">;
 
-/** Normalize pruned provider data; the caller decides whether diagnostics are acceptable. */
+/** The caller decides whether normalization diagnostics are acceptable. */
 export function buildModelCatalogDocument(args: {
   input: unknown;
   providerIds: readonly string[];
@@ -35,13 +33,7 @@ export function buildModelCatalogDocument(args: {
   return { document: { ...content, sha256: modelCatalogSha256(content) }, diagnostics };
 }
 
-/**
- * Canonical JSON laid out for review: objects shallower than `compactDepth`
- * are indented with one key per line, and every value at that depth is one
- * canonical line. With the depth at a model record, a refresh's diff is one
- * line per changed model instead of one line per changed field of a 2 MB
- * file, or one line for the whole file. Ends with a newline.
- */
+/** Keep canonical model records on one line for reviewable diffs and terminate with a newline. */
 export function formatCatalogJson(value: unknown, compactDepth: number): string {
   const layout = (node: unknown, depth: number): string => {
     if (depth >= compactDepth || node === null || typeof node !== "object" || Array.isArray(node)) {

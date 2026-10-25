@@ -1,4 +1,3 @@
-/** Existing isolated-shell fixtures establish their trusted tab without a host PTY. */
 import {
   __reserveTerminalTabForTest, spawnTerminal as spawnLane, writeTerminal as writeLane,
   resizeTerminal as resizeLane, typeAgentTerminalCommand, verifyAgentTerminalShell,

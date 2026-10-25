@@ -1,9 +1,4 @@
-/**
- * `--serve` drives the real `main()` of the headless host against a stubbed
- * boot: the question is only what the serve sequence does when the optional
- * Tailnet surface fails to start, so everything beneath the windowless host is
- * replaced and the listener, the Tailnet start and the shutdown are observed.
- */
+/** Stub boot dependencies to isolate --serve behavior when the optional observer fails. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const startTailnetSurface = vi.fn<() => Promise<unknown>>();
@@ -58,7 +53,6 @@ afterEach(() => {
   startTailnetSurface.mockReset();
 });
 
-/** Run `--serve` until it reports ready, then stop it the way an operator would. */
 async function serveUntilReady(): Promise<number> {
   const { main } = await import("../headless-host.js");
   const exit = main();
@@ -74,10 +68,9 @@ describe("headless --serve", () => {
     const code = await serveUntilReady();
 
     expect(code).toBe(0);
-    // The CLI contract is unchanged: one ready line naming the listener.
     expect(JSON.parse(stdout.join("").trim())).toMatchObject({ type: "server-ready", port: 47_001 });
     expect(stderr.join("")).toBe("headless: tailnet surface failed to start; serving the local API without it\n");
-    // A fixed line: a start error can carry configuration paths.
+    // Start errors may contain configuration paths; report a fixed line.
     expect(stderr.join("")).not.toContain("/Users/");
   });
 

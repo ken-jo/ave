@@ -1,8 +1,4 @@
-/**
- * The suggestion ledger keeps one acceptance per (plugin, declared source) for
- * 30 days, and the window has to survive a restart: a watcher that re-emits
- * on every boot must not earn a fresh suggestion each time.
- */
+/** Persist acceptance windows so a boot-time watcher cannot earn another suggestion after restart. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,12 +16,10 @@ beforeEach(async () => {
   dir = join(home, "alerts");
 });
 
-/** Every ledger a case made: `record` queues its write, and a case may end before it lands. */
 const made: SuggestionLedger[] = [];
 
 afterEach(async () => {
-  // Settle the queued writes before removing their directory: a write still
-  // landing in alerts/ while `rm` empties it fails the removal with ENOTEMPTY.
+  // Drain queued writes before removing their directory to avoid ENOTEMPTY races.
   await Promise.all(made.splice(0).map((l) => l.flush()));
   vi.restoreAllMocks();
   await rm(home, { recursive: true, force: true });
@@ -109,7 +103,6 @@ describe("SuggestionLedger", () => {
     let target = dir;
     const l = new SuggestionLedger(() => target);
     await l.load();
-    // A file where the namespace directory should be: the write cannot land.
     const blocker = join(home, "blocker");
     await writeFile(blocker, "not a directory");
     target = join(blocker, "alerts");

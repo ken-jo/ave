@@ -1,18 +1,4 @@
-/**
- * Narrow host-renderer bridge for the local-owner Telegram connection.
- *
- * This is intentionally a leaf: plugin frames and public/external surfaces do
- * not receive it. Mutating calls mint their own live keyboard intent in preload
- * so a renderer cannot replay or fabricate an owner decision.
- *
- * The bot token travels one way only: there is no read-back channel, and no
- * reply shape carries it, the webhook secret, or a Telegram id.
- *
- * One reply does carry a secret, by design. `createPairingCode` returns the raw
- * code once, because the owner has to read it off the screen and send it to the
- * bot themselves. It is short-lived and attempt-limited, and no other reply —
- * the snapshot included — can hand it back afterwards.
- */
+/** Mint host-only mutation intent locally. Tokens have no readback; pairing codes appear once and are short-lived and attempt-limited. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -55,7 +41,6 @@ function intentOnly(channel: string): Promise<TelegramConnectionMutationResult> 
   return invokeMutation(channel, { intent: ipcUserKeyboardIntent() });
 }
 
-/** Build the private `window.aveApi.telegramConnection` namespace. */
 export function buildTelegramConnectionApiSurface(): TelegramConnectionOwnerApi {
   return Object.freeze({
     async snapshot(): Promise<TelegramConnectionSnapshotResult> {

@@ -1,9 +1,3 @@
-/**
- * AuditLogger.log() + logTurn() — format invariants, timestamp validity,
- * sessionId, redaction marker, retention semantics.
- *
- * UQ-QUALITY SEV-2 #2
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   existsSync,
@@ -27,7 +21,6 @@ beforeEach(() => {
   testHome = mkdtempSync(join(tmpdir(), "ave-audit-fmt-"));
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  // The logger's default directory, `<AVE_HOME>/audit`.
   vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
@@ -109,7 +102,6 @@ describe("AuditLogger.log() — format invariants", () => {
     const files = readdirSync(auditDir).filter((f) => f.endsWith(".jsonl"));
     const raw = readFileSync(join(auditDir, files[0]), "utf-8");
     const lines = raw.split("\n").filter(Boolean);
-    // Each line must be individually parseable
     for (const line of lines) {
       expect(() => JSON.parse(line)).not.toThrow();
     }
@@ -119,7 +111,6 @@ describe("AuditLogger.log() — format invariants", () => {
   it("does not throw when the audit dir is temporarily missing (swallow error)", async () => {
     const logger = new AuditLogger();
     rmSync(auditDir, { recursive: true, force: true });
-    // Must not throw — audit failure must not propagate
     expect(() => logger.log({ timestamp: new Date().toISOString(), sessionId: "s", type: "turn" })).not.toThrow();
     await expect(logger.flush()).resolves.toBeUndefined();
   });
@@ -165,7 +156,6 @@ describe("AuditLogger.isShadowChannelWritable() — shadow dataset detectability
     const dir = mkdtempSync(join(tmpdir(), "ave-shadow-probe-"));
     const logger = new AuditLogger(dir);
     rmSync(dir, { recursive: true, force: true });
-    // The probe must surface the silently-undeliverable dataset, never throw.
     expect(() => logger.isShadowChannelWritable()).not.toThrow();
     expect(logger.isShadowChannelWritable()).toBe(false);
   });

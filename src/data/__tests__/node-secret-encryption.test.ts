@@ -7,9 +7,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createNodeSecretEncryption, SecretKeyFileError } from "../node-secret-encryption.js";
 import { SecretDocumentStore, SecretEncryptionUnavailableError } from "../secret-document-store.js";
 
-// The external key reader proves owner-only protection through the POSIX uid,
-// mode bits and O_NOFOLLOW, none of which exist on Windows, so it refuses every
-// key file there before opening it. Tests that need a working key are POSIX-only.
+// Working key tests require POSIX ownership, mode bits, and O_NOFOLLOW; Windows refuses before open.
 const posixOnly = it.skipIf(process.platform === "win32");
 
 let root: string;

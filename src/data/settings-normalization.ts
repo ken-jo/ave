@@ -143,25 +143,11 @@ function normalizeSubscriptionChatRuntimeModel(value: unknown): string | undefin
   return model;
 }
 
-/**
- * Normalizes the runtime discriminator independently from API-key provider
- * settings. Invalid or removed subscription providers fail closed to the API
- * boundary; the retained API vendor blocks and their secrets are untouched.
- */
-/**
- * Upper bound on `llm.pinnedModels`.
- *
- * A pin list is a shortcut, and a shortcut longer than a screen is just the
- * catalogue again. The cap also bounds what a corrupted or hand-edited settings
- * file can push into the chooser.
- */
+/** Invalid subscription runtimes fall back to the API boundary without changing vendor secrets. */
+/** Cap pin lists to bound corrupted-profile rendering. */
 const MAX_PINNED_MODELS = 24;
 
-/**
- * A stored pin list, made safe to render: strings only, trimmed, de-duplicated,
- * order preserved, capped. Anything else on disk is dropped rather than
- * repaired — a pin is a model id or it is nothing.
- */
+/** Keep only trimmed unique string ids in original order, within the cap. */
 function normalizePinnedModels(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -177,11 +163,7 @@ function normalizePinnedModels(input: unknown): string[] {
   return out;
 }
 
-/**
- * `llm.modelCatalogRefresh`: `"auto"` or `"off"`; anything else reads as
- * absent, and absent is the documented default, on (design
- * `model-capability-catalog.md` §7).
- */
+/** Auto or absent enables refresh; off disables it. */
 function normalizeModelCatalogRefresh(input: unknown): "auto" | "off" {
   return input === "off" ? "off" : "auto";
 }
@@ -252,28 +234,7 @@ function marketplaceProviderPresetUsesSeededModelOptions(
   return modelDiscoveryPolicyUsesSeededOptions(preset?.modelDiscoveryPolicy);
 }
 
-/**
- * Drop a marketplace preset's address back out of the generic
- * openai-compatible block.
- *
- * A preset's endpoint used to be MIRRORED into `vendors["openai-compatible"]`
- * so that consumers reading the active vendor block would reach the preset's
- * address. But the generic custom provider is a different row that persists
- * its OWN endpoint in that same block, so the two were writing over each
- * other: selecting a preset overwrote the generic row's endpoint, saving the
- * generic row's endpoint was reverted by the next normalization, and clearing
- * the preset had to scrub the block — wiping the generic row again.
- *
- * The preset registry (`marketplace.installedProviderPresets`) is now the only
- * owner of a preset's address, so nothing writes one here any more. This
- * removes the value an older install still carries.
- *
- * Narrow on purpose: only the address of the preset that is SELECTED right now
- * can be a mirror, because that is the only one the old code ever wrote here.
- * A generic block holding some other installed preset's URL is a person who
- * typed that address into the custom-provider row themselves — rewriting it
- * would delete a setting they made deliberately.
- */
+/** Remove only the selected preset's legacy endpoint mirror; other custom-row URLs may be deliberate user settings. */
 export function withoutMirroredMarketplaceProviderPresetEndpoint(
   llm: LLMSettings,
   installedProviderPresets: readonly MarketplaceInstalledProviderPreset[] | undefined,
@@ -295,24 +256,13 @@ export function withoutMirroredMarketplaceProviderPresetEndpoint(
   return { ...llm, vendors };
 }
 
-/**
- * Rewrite renamed built-in vendor ids in settings exactly as they were read
- * from disk, before any normalization runs.
- *
- * Normalization drops every vendor id this build does not know, so an install
- * still on an old id would otherwise lose its selected provider, its vendor
- * block, its fallback entries, its price corrections, its cached model list and
- * its installed-provider record in a single load. Where the file already holds
- * the new id as well, the new id's value wins and the old one is dropped.
- */
+/** Rename provider ids before normalization drops unknown ids; existing new-id values win. */
 export function withRenamedLlmVendorIds(
   stored: Record<string, any>,
   renames: Readonly<Record<string, LLMVendor>>,
 ): Record<string, any> {
   const renamedId = (id: unknown): unknown =>
     typeof id === "string" && Object.hasOwn(renames, id) ? renames[id] : id;
-  // A row that would duplicate one already stored under the new id is dropped
-  // rather than renamed, so the new id's row wins.
   const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
     const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
     const present = new Set(rows.filter(isRecord).map((row) => rowKey(row[idField], row)));
@@ -323,7 +273,6 @@ export function withRenamedLlmVendorIds(
       return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
     });
   };
-  // Model-list cache entries are keyed by vendor + endpoint + credential scope.
   const cacheKeyOf = (entry: Record<string, unknown>, vendor: string): string =>
     llmModelListCacheKey(
       vendor,
@@ -384,20 +333,7 @@ export function withRenamedLlmVendorIds(
   return next;
 }
 
-/**
- * Give the selected marketplace preset its own model slot.
- *
- * The `openai-compatible` block's single `model` used to serve every row
- * reached through that vendor — the generic custom provider and every
- * marketplace preset — so whichever row was picked last overwrote the rest.
- * Presets now keep theirs in `presetModels` (see {@link llmRouteModel}).
- *
- * The stored value belongs to the row that is active on this install, which is
- * the only row the user can have chosen it for: with a preset selected it moves
- * to that preset and the generic row starts empty, so its chooser shows the
- * endpoint's own catalogue rather than a model borrowed from a gateway. With no
- * preset selected the value already belongs to the generic row and stays put.
- */
+/** Move the active preset's legacy model into its own slot; preserve the generic model when no preset is selected. */
 export function withMarketplaceProviderPresetModelSlot(llm: LLMSettings): LLMSettings {
   const presetId = llm.marketplaceProviderPresetId?.trim();
   if (!presetId) return llm;
@@ -601,7 +537,6 @@ function normalizeLlmModelListCache(
       endpoint: entry.endpoint.trim(),
       models,
       ...(modelEntries ? { modelEntries } : {}),
-      // A list the cap cut short no longer names every id the endpoint served.
       ...(entry.complete === true && models.length < MAX_CACHED_LLM_MODEL_IDS ? { complete: true } : {}),
       fetchedAt,
     };
@@ -625,21 +560,15 @@ export function mergeLlmPatch(
       if (!isLLMVendor(vendorId) || !incoming) continue;
       const v = vendorId;
       if (!isLlmProviderEnabled(v, installedProviderIds)) continue;
-      // Spread carries explicit `undefined` keys through (e.g. clearing `seed`).
-      // Omitting a key from the patch leaves the previous value intact —
-      // omit ≠ clear by design.
+      // Explicit undefined clears a setting; an omitted patch key preserves it.
       const previous = getLlmVendorSettings(vendors, v);
       const merged: LLMVendorSettings = { ...previous, ...incoming };
-      // An output limit arriving through a patch is the user's: stamp it, so
-      // a later load tells it from the default older builds wrote back.
+      // Mark patched output limits as user choices so load can distinguish old persisted defaults.
       if (Object.hasOwn(incoming, "outputTokenLimit")) {
         if (incoming.outputTokenLimit !== undefined) merged.outputTokenLimitSetByUser = true;
         else delete merged.outputTokenLimitSetByUser;
       }
-      // `presetModels` is a store keyed by preset, not a single value: a patch
-      // naming one preset's model must not delete every other preset's. A key
-      // set to an empty string still clears that one, which is what an
-      // unconfigured route means — the normalizer drops it.
+      // Merge preset model entries independently; empty strings clear only their own route.
       if (incoming.presetModels) {
         merged.presetModels = { ...previous.presetModels, ...incoming.presetModels };
       }
@@ -653,10 +582,7 @@ export function mergeLlmPatch(
     if (!isLLMVendor(vendorId)) continue;
     vendors[vendorId] = getLlmVendorSettings(vendors, vendorId);
   }
-  // Coerce stale on-disk `provider` (e.g. a since-removed vendor name) to the
-  // base provider — `vendors[provider]` would otherwise be undefined and
-  // crash refreshProvider/stream-collector at first turn. The type guard
-  // narrows `partial.provider` so the assignment below is cast-free.
+  // Coerce unknown stored providers before runtime consumers index vendor blocks.
   const requestedProvider: LLMVendor = isLLMVendor(partial.provider)
     ? partial.provider
     : base.provider;
@@ -680,10 +606,7 @@ export function mergeLlmPatch(
   if (removedActiveMarketplaceProviderPreset) {
     activeProvider = DEFAULT_LLM_VENDOR;
   }
-  // Clearing or losing a preset leaves the generic openai-compatible block
-  // exactly as the user saved it. It used to be reset to defaults here, which
-  // was only ever undoing the preset address this code had mirrored in — with
-  // the mirror gone, that reset would destroy the generic row's own endpoint.
+  // Clearing a preset must preserve the user's generic provider settings.
   vendors[activeProvider] = getLlmVendorSettings(vendors, activeProvider);
   const fallbackChain = (partial.fallbackChain ?? base.fallbackChain)
     .filter((entry) =>
@@ -717,33 +640,21 @@ export function mergeLlmPatch(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
     modelCatalogRefresh: normalizeModelCatalogRefresh(partial.modelCatalogRefresh ?? base.modelCatalogRefresh),
-    // The retired-provider marker is set by the settings load only. A patch
-    // whose provider selection is accepted resolves it. A missing provider or
-    // preset that gets coerced to the default does not authorize that default.
+    // Only accepted explicit selection clears retired-provider state; coercion does not authorize the default.
     ...(base.retiredProvider && !isProviderSelectionAccepted
       ? { retiredProvider: base.retiredProvider }
       : {}),
-    // `llm.hostResolverMap` is deliberately NOT carried forward. The manual
-    // Chromium host-resolver map was removed with the private-endpoint access
-    // path, so a value still on disk from an older build is inert. Dropping it
-    // here means the next settings write erases it rather than leaving a
-    // user-authored internal-hostname mapping persisted with nothing acting on
-    // it. Do not reintroduce the key.
+    // Drop the inert legacy host-resolver map rather than retaining internal hostnames.
   };
 }
 
 const LLM_VENDOR_SETTING_KEYS = [
   "model",
   "outputTokenLimit",
-  // A block whose only content is a preset's model is still configuration:
-  // without this the openai-compatible block is pruned the moment chat moves
-  // to another vendor, and every preset's model goes with it.
+  // Preset models alone still make the generic block configured; do not prune them when switching vendors.
   "presetModels",
-  // A route whose only customization is the window its endpoint serves is
-  // still configured: pruning it would put that route back on the fallback
-  // window the moment chat moved to another vendor.
+  // A custom endpoint window alone still counts as route configuration.
   "contextWindow",
-  // Likewise the catalog entry a self-hosted route was named as.
   "catalogModel",
   "imageInput",
   "baseUrl",
@@ -897,14 +808,7 @@ function uniqueValidProviderPresets(value: unknown): MarketplaceInstalledProvide
   return result;
 }
 
-/**
- * Rebuild every installed connection through the asset parser.
- *
- * The settings file is an external boundary like any other, and this is the one
- * place a stored connection is re-read. Rebuilding rather than trusting the
- * record is what keeps a credential VALUE from surviving in settings if one
- * were ever written there: the parser only names declaration fields.
- */
+/** Reparse stored connections at the disk boundary so credential values cannot survive in settings. */
 function uniqueValidMessagingConnections(
   value: unknown,
 ): MarketplaceInstalledMessagingConnection[] {
@@ -975,8 +879,6 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.installedProviderPresets = uniqueValidProviderPresets(
     raw.installedProviderPresets,
   );
-  // Legacy: read only by the first-boot migration (design §16.3), whose theme
-  // packages carry these ids; a compiled id never needed one.
   merged.installedThemeBundleIds = uniqueValidList(
     raw.installedThemeBundleIds,
     (id: unknown): id is string => isThemeId(id) && !isBundleId(id),
@@ -994,7 +896,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.offlineCacheEnabled = typeof raw.offlineCacheEnabled === "boolean"
     ? raw.offlineCacheEnabled
     : DEFAULT_SETTINGS.marketplace.offlineCacheEnabled;
-  // Automatic-update switches (design §18.7.2, §18.9): unset means the default decides.
+  // Unset update switches defer to defaults.
   if (typeof raw.autoUpdate === "boolean") merged.autoUpdate = raw.autoUpdate;
   else delete merged.autoUpdate;
   const sources = autoUpdateSwitches(raw.autoUpdateSources, (id) => (SOURCE_ID_RE.test(id) ? id : null));
@@ -1006,11 +908,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   return merged;
 }
 
-/**
- * A switch map keeps each entry whose key normalizes and whose value is
- * `on` or `off`, in a null-prototype map; anything that is not a plain
- * object is unset.
- */
+/** Accept only plain objects with normalized keys and on/off values in a null-prototype map. */
 function autoUpdateSwitches(
   input: unknown,
   normalizeKey: (key: string) => string | null,
@@ -1024,71 +922,36 @@ function autoUpdateSwitches(
   return switches;
 }
 
-/**
- * UX Track 3 — coerce on-disk `appearance` block into AppearanceSettings v2.
- *
- * Detects whether the on-disk value is v1 (has `theme`/`chatTheme`/`codeTheme`)
- * or v2 (has `schemaVersion: 2`). v1 inputs are migrated; v2 inputs are
- * validated and returned as-is. Unknown bundleId falls back to DEFAULT_BUNDLE_ID.
- *
- * Settings load must never crash boot over a UI-only field.
- */
+/** Migrate old appearance shapes and validate current ones; malformed UI settings must never crash boot. */
 
-/** @internal — v1 legacy axis validation sets, used in migration only. */
 const VALID_THEMES_V1: readonly ThemePreference[] = ["system", "light", "dark", "high-contrast"];
 const VALID_CHAT_THEMES_V1: readonly ChatThemePreference[] = ["default", "lg", "purple", "orange", "blue"];
 
 
-/**
- * Migrate a v1 tri-axis appearance object to a v2 bundleId.
- *
- * Migration matrix (12 cases, per spec §3):
- *  dark + default/auto  → tokyo-night
- *  dark + lg            → violet-dark
- *  light + default/auto → forest
- *  light + lg           → violet-light
- *  system + default     → DEFAULT_BUNDLE_ID (renderer may apply followSystem)
- *  system + lg          → violet-dark + followSystem:true (renderer tracks OS scheme)
- *  * + purple|orange|blue → midnight (closest dark accent coercion)
- *  high-contrast + *    → high-contrast (HC always wins)
- *  code override (dark+default+light / light+default+dark) → bundle wins, code override ignored
- *  dark + lg + dark     → violet-dark
- *  invalid/unknown      → DEFAULT_BUNDLE_ID
- *
- * Note: "system" is intentionally NOT resolved via window.matchMedia here.
- * This function runs in the Electron main process where `window` is undefined.
- * System-theme users get DEFAULT_BUNDLE_ID (or violet-dark+followSystem),
- * and the renderer's followSystem toggle can track the OS scheme from there.
- */
+/** Do not resolve system appearance in main, where window is unavailable; the renderer tracks the OS scheme. */
 function migrateAppearanceV1ToV2(
   legacy: AppearanceSettingsV1,
 ): AppearanceSettings {
   const theme = VALID_THEMES_V1.includes(legacy.theme) ? legacy.theme : "system";
   const chatTheme = VALID_CHAT_THEMES_V1.includes(legacy.chatTheme) ? legacy.chatTheme : "default";
 
-  // High-contrast always wins — accessibility first.
   if (theme === "high-contrast") {
     return { schemaVersion: 2, bundleId: "high-contrast" };
   }
 
-  // Accent-only chat themes (purple/orange/blue) → midnight (closest dark accent).
   if (chatTheme === "purple" || chatTheme === "orange" || chatTheme === "blue") {
     return { schemaVersion: 2, bundleId: "midnight" };
   }
 
-  // Violet pair (migrated from legacy "lg" chat theme).
   if (chatTheme === "lg") {
     if (theme === "light") return { schemaVersion: 2, bundleId: "violet-light" };
     if (theme === "dark")  return { schemaVersion: 2, bundleId: "violet-dark" };
-    // system: default to violet-dark; renderer followSystem will track OS from here.
     return { schemaVersion: 2, bundleId: "violet-dark", followSystem: true };
   }
 
-  // Default chat (no overlay) — preserve explicit legacy shell; "system" → DEFAULT.
   if (theme === "light") return { schemaVersion: 2, bundleId: "forest" };
   if (theme === "dark")  return { schemaVersion: 2, bundleId: "tokyo-night" };
 
-  // system or unknown → DEFAULT_BUNDLE_ID
   return { schemaVersion: 2, bundleId: DEFAULT_BUNDLE_ID };
 }
 
@@ -1102,21 +965,13 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
   }
   const obj = input as Record<string, unknown>;
 
-  // v2 path — schemaVersion:2 present.
   if (obj.schemaVersion === 2) {
-    // A compiled-in bundle id or an installed theme's package name (design
-    // §5.2): whether that theme is still installed is decided where it is
-    // applied, since the content ledger is read after settings. Anything else
-    // falls through to DEFAULT_BUNDLE_ID via `isThemeId` — the same predicate
-    // the patch path in settings-store uses, so the two write paths cannot
-    // accept different value sets.
+    // Accept compiled or package theme ids here; installation is checked later after the ledger loads.
     const bundleId = isThemeId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
     const followSystem = typeof obj.followSystem === "boolean" ? obj.followSystem : undefined;
     const result: AppearanceSettings = {
       schemaVersion: 2,
       bundleId,
-      // Coerce any stored/legacy value to a supported locale; missing →
-      // English default for the global build.
       language: normalizeLocaleSetting(obj.language),
     };
     if (followSystem !== undefined) result.followSystem = followSystem;
@@ -1125,7 +980,6 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
     return result;
   }
 
-  // v1 path — has legacy keys.
   if (typeof obj.theme === "string" || typeof obj.chatTheme === "string" || typeof obj.codeTheme === "string") {
     const legacy: AppearanceSettingsV1 = {
       theme: (typeof obj.theme === "string" && (VALID_THEMES_V1 as readonly string[]).includes(obj.theme)
@@ -1134,7 +988,6 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
         ? obj.chatTheme : "default") as ChatThemePreference,
       codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
     };
-    // Preserve any stored language across the v1→v2 migration; default English.
     return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
   }
 
@@ -1156,35 +1009,16 @@ function normalizeAppearanceFont(input: unknown): AppearanceFontSettings | undef
     && (FONT_SIZE_SCALE_VALUES as readonly number[]).includes(o.sizeScale)) {
     out.sizeScale = o.sizeScale as FontSizeScale;
   } else if (o.sizeScale === 1.25) {
-    // The top step of the ladder before it moved down one (0.875–1.25). A
-    // profile that chose the largest size keeps the largest size rather than
-    // landing on the default because its number fell off the ladder.
+    // Map the former largest font step to the new largest step rather than silently resetting it.
     out.sizeScale = FONT_SIZE_SCALE_VALUES[FONT_SIZE_SCALE_VALUES.length - 1]!;
   }
-  // Empty object → treat as undefined so defaults serialize cleanly.
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * §B1 / Critic F4 mitigation — coerce on-disk `webView` block back to
- * the WebViewSettings shape.
- *
- * If the field is missing entirely (existing installs), apply the default
- * `"in-app"`. If a *partial-but-invalid* value is on disk (e.g. user hand-
- * edited to `"yes"`, `null`, `42`), only that field is replaced with the
- * default — the rest of settings.json is preserved by the normal per-section
- * spread pattern in loadSettings(). A warn log emits once per load so a
- * silent corruption is still observable.
- */
+/** Replace only malformed web-view fields with defaults and warn once per load. */
 const VALID_WEBVIEW_FLOWS: readonly WebViewPreferredFlow[] = ["in-app", "system-browser"];
 
-/**
- * Single authority for the accepted `webView.preferredFlow` value set. Both
- * write paths use it: `normalizeWebView` (disk load) and the `webView` branch
- * of `SettingsService.patch` (IPC/renderer). Before this predicate existed the
- * patch path did a bare spread with no validation, so an out-of-enum value
- * persisted to settings.json and was only dropped on the *next* load.
- */
+/** Share the accepted flow predicate across disk load and patches so invalid values cannot persist. */
 export function isWebViewPreferredFlow(value: unknown): value is WebViewPreferredFlow {
   return typeof value === "string" && (VALID_WEBVIEW_FLOWS as readonly string[]).includes(value);
 }
@@ -1209,49 +1043,28 @@ export function normalizeWebView(input: unknown): WebViewSettings {
 
 const VALID_CLOSE_BEHAVIORS: readonly SystemCloseBehavior[] = ["hide-to-tray", "quit"];
 
-/**
- * The saved main-window layout, asked by both settings paths. A refused layout
- * is logged with the rule it broke — a structured value's "invalid" alone
- * would not say which part of it — and the window starts in the default one.
- */
+/** Report the violated layout rule and use the default for refused layouts. */
 export function normalizeMainLayout(value: unknown): MainLayoutSnapshot | undefined {
   if (value === undefined) return undefined;
   const parsed = parseMainLayout(value);
   if (parsed.ok) return parsed.layout;
-  // The reason only, never the value: page addresses may carry tokens.
+  // Log reasons only; page addresses may contain tokens.
   log.warn(`system.mainLayout refused: ${parsed.reason}; the window starts in the default layout`);
   return undefined;
 }
 
-/** The active-view shape test, asked by both settings paths. */
 export function isActiveViewKey(value: unknown): boolean {
   return typeof value === "string" && isInlineViewKey(value);
 }
 
-/**
- * The close-behavior shape test. Both settings paths ask it — the disk read
- * here and the patch path in settings-store — so it is written once.
- */
 export function isCloseBehavior(value: unknown): value is SystemCloseBehavior {
   return typeof value === "string" && (VALID_CLOSE_BEHAVIORS as readonly string[]).includes(value);
 }
 
 const MAX_PROJECT_ROOT_LIST = 200;
-/** Labels are display text for a sidebar row, not prose. */
 const MAX_PROJECT_LABEL_CHARS = 60;
 
-/**
- * De-duplicates, trims, and caps a list of project roots on both the patch and
- * normalize paths. De-dup keys on `projectRootKey` (the same case/slash-
- * insensitive root-identity SoT the sidebar's pin lookup uses via
- * `projectRootEquals`) rather than raw string equality, so e.g.
- * "C:\\ws\\alpha" and "c:/ws/alpha/" are recognized as the same root instead
- * of accumulating as separate entries.
- *
- * Serves BOTH the pinned and the archived list. Two copies of this would be
- * two chances for pin and archive to disagree about what counts as the same
- * folder — and they must agree, since a row can be both.
- */
+/** Deduplicate pinned and archived roots by the shared case/slash-insensitive identity. */
 export function normalizeProjectRootList(raw: unknown[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1268,13 +1081,7 @@ export function normalizeProjectRootList(raw: unknown[]): string[] {
   return out;
 }
 
-/**
- * Trims, caps, and drops empty entries from the project label map.
- *
- * A label is what the user typed to rename a folder ROW; it never renames the
- * folder on disk. Keyed by `projectRootKey` so the lookup matches the same
- * root identity the pin and archive lists use.
- */
+/** Labels rename rows only, never disk folders; key them by shared project-root identity. */
 export function normalizeProjectLabels(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out: Record<string, string> = {};
@@ -1284,9 +1091,7 @@ export function normalizeProjectLabels(raw: unknown): Record<string, string> {
     const key = projectRootKey(root);
     if (!key) continue;
     const trimmed = label.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").trim();
-    // An empty label is the ABSENCE of a custom name, so it is dropped rather
-    // than stored — otherwise "clear my rename" and "rename to nothing" would
-    // be two states that look identical to the row.
+    // Drop empty labels so clearing a rename has one representation.
     if (!trimmed) continue;
     out[key] = trimmed.slice(0, MAX_PROJECT_LABEL_CHARS);
     count += 1;
@@ -1295,12 +1100,6 @@ export function normalizeProjectLabels(raw: unknown): Record<string, string> {
   return out;
 }
 
-/**
- * The per-tab-kind vertical-split percent keys, iterated identically in the
- * update-patch and normalize paths so a new split-bearing tab kind is added in
- * exactly one place. `satisfies` pins each entry to a real `SystemSettings`
- * field, so a typo can never silently no-op.
- */
 export const SIDE_PANEL_SPLIT_KEYS = [
   "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
@@ -1333,9 +1132,6 @@ export function normalizeSystem(input: unknown): SystemSettings {
     archivedProjectRoots?: unknown;
     projectLabels?: unknown;
   } & Record<(typeof SIDE_PANEL_SPLIT_KEYS)[number], unknown>;
-  // Each field is normalized independently: a missing/invalid field falls
-  // back to its default while a valid sibling is preserved (mirrors the
-  // per-field patch path in `update`).
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
   acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
@@ -1362,8 +1158,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
   if (normalizedCorpCaCommonName !== null) {
     result.corpCaCommonName = normalizedCorpCaCommonName;
   } else if (rawCorpCaCommonName !== undefined && rawCorpCaCommonName !== "") {
-    // The value is logged by shape, not by content: a hand-edited profile can
-    // put anything here, and this line goes to a file the user may share.
+    // Log rejected shapes rather than contents because shared logs may contain arbitrary profile data.
     log.warn(
       "system.corpCaCommonName invalid (not a usable certificate name), using default",
     );
@@ -1396,15 +1191,11 @@ export function normalizeSystem(input: unknown): SystemSettings {
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
-  // Not `acceptNormalizedField`: its warning prints the rejected value, and a
-  // saved layout holds page addresses that may carry tokens. The reason alone
-  // is logged (`normalizeMainLayout`).
+  // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);
   if (storedLayout) result.mainLayout = storedLayout;
   const rawSettingsTab = obj.settingsTab;
   if (rawSettingsTab !== undefined) {
-    // `normalizeSettingsTab` already folds retired ids and anything
-    // unrecognized onto the default, so an invalid value is not a separate arm.
     result.settingsTab = normalizeSettingsTab(rawSettingsTab);
   }
   const rawArchivedProjectRoots = obj.archivedProjectRoots;
@@ -1431,17 +1222,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
   return result;
 }
 
-/**
- * Coerce on-disk `features` block to FeatureFlags shape.
- * Missing or invalid fields are silently dropped, so each flag falls back to
- * its value in DEFAULT_SETTINGS.features.
- */
-/**
- * Coerce on-disk / patch `diagnostics` block to DiagnosticsSettings.
- * Invalid fields fall back to DEFAULT_SETTINGS.diagnostics; logRetentionDays is
- * clamped to [LOG_RETENTION_MIN_DAYS, LOG_RETENTION_MAX_DAYS] via the shared SOT
- * (a non-integer or out-of-range value can never persist).
- */
+/** Use shared diagnostics bounds so invalid retention values cannot persist. */
 export function normalizeDiagnostics(input: unknown): DiagnosticsSettings {
   const base = DEFAULT_SETTINGS.diagnostics;
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -1458,12 +1239,7 @@ export function normalizeDiagnostics(input: unknown): DiagnosticsSettings {
   return result;
 }
 
-/**
- * Coerce the stored `upstreamProxy` block. A field of the wrong type falls
- * back to its default; a manual URL that carries a user name or password
- * (hand-edited file) loses them, since credentials live only in the secret
- * store; over-long strings are dropped rather than truncated.
- */
+/** Strip proxy URL userinfo because credentials belong only in the secret store; drop oversized values rather than truncate them. */
 export function normalizeUpstreamProxy(input: unknown): UpstreamProxySettings {
   const result: UpstreamProxySettings = { ...DEFAULT_UPSTREAM_PROXY };
   if (!input || typeof input !== "object" || Array.isArray(input)) return result;
@@ -1479,23 +1255,7 @@ export function normalizeUpstreamProxy(input: unknown): UpstreamProxySettings {
   return result;
 }
 
-/**
- * Telemetry + crash-reporting block, normalized at both store boundaries.
- *
- * This block was a blind spread on BOTH sides — the disk read and the patch —
- * so a hand-edited profile or a misbehaving caller could put anything in it.
- * That mattered less while nothing but a yes/no consent prompt wrote here; it
- * matters now that the settings surface does, because these fields decide
- * whether the app talks to a remote host at all. A non-boolean `enabled` is
- * not a subtle bug: `enabled !== true` reads it as off, so the value would
- * silently mean the opposite of what a truthy string looks like it means.
- *
- * The two URL-shaped fields are validated for SHAPE only. What makes an
- * endpoint acceptable — https, and a host on the allowlist — is
- * `validateTelemetryEndpoint`'s question, asked where the request is about to
- * be made and against an allowlist this layer cannot see. Re-deciding it here
- * would be a second, weaker copy of a security rule.
- */
+/** Validate telemetry shapes at both boundaries; request-time endpoint policy owns HTTPS and host authorization. */
 export function normalizeTelemetry(input: unknown): TelemetrySettings {
   const result: TelemetrySettings = { ...DEFAULT_SETTINGS.telemetry };
   if (!input || typeof input !== "object" || Array.isArray(input)) return result;
@@ -1524,13 +1284,7 @@ export function normalizeTelemetry(input: unknown): TelemetrySettings {
 
 export const TELEMETRY_TEXT_KEYS = ["endpoint", "sentryDsn", "crashReportEndpoint"] as const;
 
-/**
- * Coerce an on-disk `homeDocs` block to HomeDocsSettings.
- *
- * A hand-edited profile carrying a truthy string where the boolean belongs
- * would otherwise switch on a mode that moves the user's AGENTS.md aside on
- * the next packaged update.
- */
+/** Require real booleans; truthy strings must not enable document moves on update. */
 export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
   const result: HomeDocsSettings = { ...DEFAULT_SETTINGS.homeDocs };
   if (!input || typeof input !== "object" || Array.isArray(input)) return result;
@@ -1539,19 +1293,7 @@ export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
   return result;
 }
 
-/**
- * Assign one of the telemetry URL/DSN fields, with an explicit CLEAR arm.
- *
- * These cannot go through {@link acceptNormalizedField}: emptying the field is
- * how a user says "stop sending anywhere", and that has to DELETE the key, not
- * be rejected as an unusable value. Every consumer reads absent as off, so a
- * stored `""` would be a falsy value sitting where anything checking presence
- * reads it as configured.
- *
- * The warning names the field and never the value. An endpoint or a DSN can
- * carry userinfo, a query-string secret, or a fragment token, and this line
- * goes to a log file the user may hand to someone else.
- */
+/** Clearing an endpoint deletes its key; warn by field name only because URLs and DSNs may contain secrets. */
 export function acceptTelemetryText(
   target: TelemetrySettings,
   key: (typeof TELEMETRY_TEXT_KEYS)[number],
@@ -1570,17 +1312,7 @@ export function acceptTelemetryText(
   else target[key] = trimmed;
 }
 
-/**
- * Chat block, normalized at both store boundaries (disk load and patch).
- *
- * `subAgentMaxRounds` reaches `SubAgentRunner` as a live round budget and a
- * scaled executor wall clock, so a `NaN`, a fraction, or a `0` from a
- * hand-edited settings.json is not an inert bad value — it is a sub-agent that
- * cannot run. There is deliberately NO upper clamp: the budget is uncapped by
- * design (a ceiling above it only shows up as an agent stopped mid-task), and
- * the timer-delay bound that used to be implicit is enforced where the timer
- * is armed instead (`resolveEffectiveCeilingMs`).
- */
+/** Round budgets require valid positive integers and have no upper clamp; enforce timer bounds where timers are armed. */
 export function normalizeChat(input: unknown): ChatSettings {
   const result: ChatSettings = { ...DEFAULT_SETTINGS.chat };
   if (!input || typeof input !== "object" || Array.isArray(input)) return result;
@@ -1590,13 +1322,10 @@ export function normalizeChat(input: unknown): ChatSettings {
   if (isProcessingDisplayLevel(chat.processingDisplayLevel)) {
     result.processingDisplayLevel = chat.processingDisplayLevel;
   }
-  // Missing or malformed values keep the full-view default above.
   if (typeof chat.subAgentMaxRounds === "number" && Number.isFinite(chat.subAgentMaxRounds)) {
     result.subAgentMaxRounds = Math.max(1, Math.floor(chat.subAgentMaxRounds));
   }
-  // `0` is the OFF value and must survive, so this floors at 0 rather than 1.
-  // A fraction or a negative from a hand-edited settings.json reads as "off"
-  // instead of firing a notification on every round.
+  // Preserve zero as off; invalid fractional or negative notification intervals also read as off.
   if (
     typeof chat.progressNudgeRounds === "number"
     && Number.isFinite(chat.progressNudgeRounds)
@@ -1613,12 +1342,10 @@ export function normalizeA2ARemote(input: unknown): A2ARemoteSettings {
   if (typeof value.routeControlBaseUrl === "string") {
     try {
       const url = new URL(value.routeControlBaseUrl);
-      // Route-control snapshots bind canonical URL bytes. Require serializer
-      // identity (including the root slash) instead of silently rewriting a
-      // near-canonical value that would later compare unequal on the wire.
+      // Require canonical serialized URLs, including root slashes, so route-control byte bindings stay valid.
       if (url.protocol === "https:" && !url.port && !url.username && !url.password && !url.search && !url.hash && !value.routeControlBaseUrl.includes("?") && !value.routeControlBaseUrl.includes("#") && isIP(url.hostname) === 0 && url.hostname !== "localhost" && !url.hostname.endsWith(".localhost")
         && (url.pathname === "/" || url.pathname === "") && url.toString() === value.routeControlBaseUrl) result.routeControlBaseUrl = value.routeControlBaseUrl;
-    } catch { /* invalid remains fail-closed empty */ }
+    } catch { /* Invalid input must remain fail-closed empty. */ }
   }
   if (isCanonicalA2APublicHttpsOrigin(value.receiverPublicOrigin)) {
     result.receiverPublicOrigin = value.receiverPublicOrigin;
@@ -1739,23 +1466,12 @@ export function sanitizeStoredPluginConfigs(input: unknown): Record<string, Plug
   return out;
 }
 
-/**
- * A stored app version is a complete SemVer version, judged by the same
- * validator the marketplace applies to version ranges. The `"unknown"`
- * sentinel the version resolver can return is not a version and must never be
- * persisted as one.
- */
+/** Persist only complete SemVer versions, never the resolver's unknown sentinel. */
 function isStoredAppVersion(value: unknown): value is string {
   return typeof value === "string" && isSemver(value);
 }
 
-/**
- * The identities in the alert blocks — plugin ids, source ids, config keys —
- * are compared exactly by their readers, so they are validated as stored and
- * never rewritten. Trimming `" sample "` into `sample` would let a second
- * record overwrite the first under the same id, or accept a successor id no
- * plugin carries.
- */
+/** Validate alert identities exactly as stored; trimming can merge records or invent unmatched successor ids. */
 function isStoredPluginId(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
@@ -1774,14 +1490,7 @@ function isStoredConfigKey(value: unknown): value is string {
   }
 }
 
-/**
- * What a malformed kind entry becomes: off, no OS notification, never seen,
- * and consented to the lowest visibility. Dropping the entry instead would
- * let the kind resolve again from its declaration, and a declaration may say
- * `defaultEnabled: true` for a plugin the user already has — a damaged file
- * must not turn a kind on. The lowest visibility makes any declared level an
- * escalation, which leaves the kind off until the user visits it.
- */
+/** Malformed choices must remain stored as disabled, unseen, lowest-visibility entries; dropping them could reenable declared defaults. */
 const FAIL_CLOSED_ALERT_KIND_CHOICE: Readonly<AlertKindChoice> = Object.freeze({
   enabled: false,
   osNotification: false,
@@ -1800,9 +1509,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
     && typeof obj.osNotification === "boolean"
     && typeof obj.seenByUser === "boolean"
     && isAlertVisibility(obj.visibility)
-    // A damaged mark is a damaged entry: read as absent, it would turn a
-    // repaired or escalated entry back into one a later retirement may
-    // switch on.
+    // Damaged marks remain fail-closed; treating them as absent could reenable repaired entries.
     && (!Object.hasOwn(obj, "repaired") || obj.repaired === true)
     && (!Object.hasOwn(obj, "escalated") || obj.escalated === true)
   ) {
@@ -1824,20 +1531,7 @@ function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice 
   return choice;
 }
 
-/**
- * Coerce the on-disk `alerts` block to AlertSettings. The master switch falls
- * back to its default. A kind entry is kept only under a key that follows the
- * `<pluginId>:<kind>` grammar; an entry whose choice fields are out of shape
- * is stored as {@link FAIL_CLOSED_ALERT_KIND_CHOICE} rather than repaired
- * field by field, because a repaired choice would read as one the user made.
- * `absentSinceAppVersion` is kept only as a real version string.
- *
- * With the running `appVersion`, an entry whose plugin has been absent for two
- * minor releases is dropped: a reinstall after that starts from the kind's
- * declaration. A repaired entry is kept whatever its age, because dropping it
- * would let the kind resolve from its declaration again — the outcome the
- * repair exists to prevent. Without a stable release version nothing is dropped.
- */
+/** Validate kind keys and fail closed on malformed choices. Prune absent entries only after two stable minor releases; repaired entries never age out. */
 export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
   const base = DEFAULT_SETTINGS.alerts;
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -1873,10 +1567,7 @@ export function normalizeAlertSettings(input: unknown, appVersion?: string): Ale
   return result;
 }
 
-/**
- * An inherit rule names at least one value: with none, a `listed: "disabled"`
- * rule would read as on for every former user whatever they had chosen.
- */
+/** Inheritance rules need at least one value; an empty disabled list would enable all former users. */
 function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const obj = input as Record<string, unknown>;
@@ -1946,7 +1637,7 @@ export function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPlugi
   } catch {
     return undefined;
   }
-  // Sanitising trims keys; a config it had to change was not written by the host.
+  // Sanitization that changes config keys means the record was not host-written.
   if (!isDeepStrictEqual(config, obj.config)) return undefined;
   return {
     config,
@@ -1958,16 +1649,7 @@ export function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPlugi
   };
 }
 
-/**
- * Coerce the on-disk `retiredPluginConfigs` block. A record is what a
- * retirement wrote for one plugin, and a successor reads it as the user's
- * former choices, so a record with any field out of shape is dropped whole:
- * a half-repaired record would hand a successor choices nobody made.
- *
- * The load never removes a well-formed record, whatever its age: whether
- * every successor has inherited and the retired package is gone is the
- * alerts service's question, not one the settings file can answer.
- */
+/** Drop malformed retirement records whole; only the alerts service may remove valid records after inheritance. */
 export function normalizeRetiredPluginConfigs(input: unknown): Record<string, RetiredPluginConfigRecord> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};

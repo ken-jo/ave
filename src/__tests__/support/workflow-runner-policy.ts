@@ -2,31 +2,8 @@ import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { readsAnySecret, workflowExpressions } from "./workflow-secret-policy.js";
 
-/**
- * The fork-safety rule for `.github/workflows/`, shared by the suites that pin
- * workflow structure.
- *
- * In a public repository anyone can open a pull request from a fork, and
- * GitHub also sends `pull_request_target`, `issue_comment`, review and other
- * events for it to this repository. A job such an event starts must never land
- * on a self-hosted runner (a fork's package.json postinstall would run on the
- * owner's machine) and must never hand fork code a write token or a secret.
- *
- * Events are trusted by allow-list, so an event added later counts as
- * fork-reachable until it is listed here: push, schedule, workflow_dispatch
- * and repository_dispatch need write access to the repository.
- *
- * Every job in every workflow runs on a pinned GitHub-hosted label: the
- * repository registers no self-hosted runner, and a job that named one would
- * reopen the path for a fork pull request. A matrix runner counts only when
- * every matrix entry names a hosted label.
- *
- * This check reads the workflow files on the default branch. A fork pull
- * request runs its own edited copy, so registering no self-hosted runner is
- * what keeps an edited `runs-on` from reaching one.
- */
+/** Fork-reachable jobs must never receive private runners, write tokens, or secrets. Treat unlisted events as untrusted. */
 
-/** Events only a user with write access can start. */
 export const TRUSTED_EVENTS: ReadonlySet<string> = new Set([
   "push",
   "schedule",
@@ -34,8 +11,7 @@ export const TRUSTED_EVENTS: ReadonlySet<string> = new Set([
   "repository_dispatch",
 ]);
 
-/** The GitHub-hosted labels a job may name: pinned images, and ubuntu-latest
- *  for the Linux-only gates that do not ship or test a platform build. */
+/** Allow only pinned hosted images and the Linux-only latest image. */
 const HOSTED_LABELS: ReadonlySet<string> = new Set([
   "ubuntu-latest",
   "ubuntu-24.04",
@@ -56,31 +32,17 @@ type Job = {
   strategy?: { matrix?: Record<string, unknown> };
 };
 
-/** Text that names the pull request's own code: anything under the head of
- *  the event payload (`github.event.pull_request.head.*`, or
- *  `.pull_request.head` read from `$GITHUB_EVENT_PATH`), a `.head` field or
- *  pipe read from a pull request the API returned (`.head.sha`,
- *  `.head.repo.clone_url`, jq `'.head | .sha'`), the head branch
- *  (`github.head_ref`, `$GITHUB_HEAD_REF`), a `refs/pull/...` ref or a
- *  `pull/<n>/head|merge` refspec. */
+/** Recognize pull-request head references from event payloads, API responses, branches, and refspecs. */
 const PULL_REQUEST_CODE_REFERENCE =
   /pull_request\.head\b|(?:^|[\s'"(|])\.head\s*(?:\||\.[A-Za-z_])|\bgithub\.head_ref\b|\bGITHUB_HEAD_REF\b|\brefs\/pull\/|(?:^|[\s:'"+])pull\/\S[^\n]*?\/(?:head|merge)\b/imu;
 
-/** A git or gh invocation anywhere in a script. */
 const GIT_OR_GH = /\b(?:git|gh)\b/u;
 
-/** A script that writes a value a later step reads: an output, the job's
- *  environment or its PATH. */
 const RUNNER_FILE_WRITE = /\bGITHUB_(OUTPUT|ENV|PATH)\b/gu;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/u;
 
-/** True when an expression in `value` (or any string nested in it) reads the
- *  `steps` context in a way that can carry a tainted step's value: exactly
- *  `steps.<id>.outputs.<name>` of a tainted id, or, while any step is
- *  tainted, any other shape (`toJSON(steps)`, `steps.a.outputs['x']`,
- *  `steps['a']`, `steps.*.outputs.x`, `steps.a.outcome`). Context and
- *  property names are case-insensitive, as in Actions. */
+/** Propagate step-output taint case-insensitively; unsupported steps expressions are tainted while any step is tainted. */
 function readsTaintedSteps(value: unknown, tainted: ReadonlySet<string>): boolean {
   if (tainted.size === 0) return false;
   if (typeof value === "string") {
@@ -99,37 +61,7 @@ function readsTaintedSteps(value: unknown, tainted: ReadonlySet<string>): boolea
   return Object.values(value).some((child) => readsTaintedSteps(child, tainted));
 }
 
-/** The pull_request_target violations of one job's steps. A lint, not the
- *  boundary: {@link pullRequestTargetAllowListViolations} is.
- *
- *  A step "names pull request code" when its script, its own env, the env it
- *  inherits from the job and the workflow, or (for an action) its `with:`
- *  names {@link PULL_REQUEST_CODE_REFERENCE}, or reads a tainted step's
- *  outputs ({@link readsTaintedSteps}). The whole step is one unit, so a
- *  variable set on one line, or in `env:`, and used on another counts.
- *
- *  - A run step that names pull request code and invokes git or gh anywhere,
- *    or that runs `gh pr checkout`, is refused.
- *  - An action other than actions/checkout (which has its own rule) whose
- *    `with:` or env names pull request code is refused: actions/github-script
- *    given `head.sha` can fetch and run it.
- *  - A step that names pull request code and writes `$GITHUB_ENV` or
- *    `$GITHUB_PATH` is refused outright: every later step inherits those.
- *  - One that writes `$GITHUB_OUTPUT` taints its outputs; a later run step
- *    that reads them and invokes git or gh is refused as above, an action that
- *    reads them is refused, and a step that reads them and writes an output
- *    taints its own in turn. A job output that maps a tainted step output is
- *    refused, since this check does not follow `needs.<job>.outputs`.
- *
- *  Reading a tainted output in an `if:` is allowed: a condition only gates.
- *
- *  What this cannot see: a value passed through any other channel, such as a
- *  file one step writes (`$RUNNER_TEMP/sha`, the workspace, a cache or an
- *  artifact) and a later step reads with `cat`; a command that fetches code
- *  without git or gh (curl of a tarball, a package manager); a reference
- *  built from pieces at run time. The allow-list of pull_request_target
- *  workflows, pinned by content hash, is what covers those: no such workflow
- *  changes without a reviewed update to the list. */
+/** Reject head-code execution and tainted environment or output flows. This lint cannot track files or assembled references; content pins enforce the boundary. */
 function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[]): string[] {
   const reasons: string[] = [];
   const tainted = new Set<string>();
@@ -164,21 +96,7 @@ function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[
   return reasons;
 }
 
-/** Every workflow allowed to run on `pull_request_target`, with the sha256
- *  (LF line endings) of the workflow file and of every repository file it
- *  executes, keyed by repository path. Such a workflow runs with the base
- *  repository's token and permissions while the pull request is a fork's, and
- *  the step lint above cannot see every channel a head reference can travel
- *  through. So a new or edited one fails until this list is updated, and the
- *  update is in the diff for a reviewer to see.
- *
- *  The executed files are derived by the gate ({@link pullRequestTargetExecutedFiles}),
- *  so the pinned set cannot go stale: a script the workflow starts to run, or
- *  a module one of them starts to import, fails as unpinned. cluster-detector
- *  checks out the live base SHA (never the pull request) into `.cluster-policy`
- *  and runs its scripts from there, so these files run as they are on the base
- *  branch; the pin makes every change to them, merged by anyone, a deliberate
- *  review point for code that runs with this workflow's token. */
+/** Pin privileged workflow bytes and every executed repository file; reject newly executed or imported files until pinned. */
 export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "cluster-detector.yml": {
     ".github/workflows/cluster-detector.yml": "17639cbf71170c65865a07d577472d405233fafe99017ab22a8edb7a570abc56",
@@ -187,39 +105,27 @@ export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, Readonly<Rec
   },
 };
 
-/** The sha256 {@link PULL_REQUEST_TARGET_WORKFLOWS} pins for `source`. */
 function workflowContentHash(source: string): string {
   return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");
 }
 
-/** Every token in a `run:` script that ends in a script extension. Each must
- *  resolve to a repository file: one that does not (a typo, an absolute
- *  path, a path built from a variable) fails rather than going unpinned. */
+/** Every script token must resolve to a repository file; reject dynamic or absolute paths. */
 const RUN_SCRIPT_TOKEN = /([^\s"'=();|&<>`]*\.(?:mjs|cjs|js|mts|cts|ts|sh|py|ps1))(?=$|[\s"';)|&<>`])/gmu;
 
-/** The two spellings of the workspace root a script path may start with,
- *  resolved to the repository root. */
 const WORKSPACE_ROOT = /\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE\b/gu;
 
-/** An interpreter or launcher invocation in a `run:` script. */
 const INTERPRETER = /(?:^|[\s;&|(`])(node|bun|npm|npx|pnpm|yarn|tsx|deno|python3?|bash|sh|pwsh|powershell)(?=$|\s)/mu;
 
-/** package.json indirection: a package manager running a script, a binary
- *  or an install (whose lifecycle scripts run too). Never followed. */
+/** Do not follow package-manager indirection or lifecycle scripts. */
 const PACKAGE_SCRIPT = /(?:^|[\s;&|(`])(?:npm|npx|pnpm|yarn|bunx)(?=$|\s)|(?:^|[\s;&|(`])bun\s+(?!\S+\.(?:mjs|cjs|js|mts|cts|ts)(?=$|[\s"';)|&]))/mu;
 
-/** A static relative import or require in a JavaScript or TypeScript module. */
 const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["'](\.{1,2}\/[^"']+)["']/gmu;
 
-/** In a pinned module, code this derivation cannot follow: a dynamic import
- *  or require whose target is not a string literal, a child process started
- *  on an interpreter (or on this Node), and `fork`. */
+/** Reject dynamic module targets and interpreter child processes that cannot be pinned. */
 const UNFOLLOWABLE_MODULE_CODE =
   /\bimport\s*\(\s*(?!["'])|\brequire\s*\(\s*(?!["'])|\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*(?:["'`](?:node|bun|deno|tsx|python3?|bash|sh|pwsh|powershell)["'`]|process\.(?:execPath|argv0))|\bfork\s*\(/u;
 
-/** In a pinned module, code that runs something this check cannot pin: a
- *  shell command string (`exec`/`execSync`), a child process whose program is
- *  not a string literal, a worker, a shell, or code built from a string. */
+/** Reject shell commands, dynamic programs, workers, and generated code that cannot be pinned. */
 const UNPINNABLE_MODULE_CODE: readonly (readonly [RegExp, string])[] = [
   [/(?:^|[^.\w$]|\b(?:child_process|childProcess|cp)\.)exec(?:Sync)?\s*\(/mu, "runs a shell command string (exec/execSync)"],
   [/(?:^|[^.\w$])(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*(?!["'])/mu, "starts a child process whose program is not a string literal"],
@@ -229,31 +135,23 @@ const UNPINNABLE_MODULE_CODE: readonly (readonly [RegExp, string])[] = [
   [/\bnew\s+Function\s*\(/u, "builds a function from a string"],
 ];
 
-/** The gh subcommands a pull_request_target workflow may run, in a `run:`
- *  step or a pinned module: read-only API calls and pull request reads. */
+/** Privileged workflows may use only read-only CLI API and pull-request subcommands. */
 function allowedGhSubcommand(first: string | undefined, second: string | undefined): boolean {
   return first === "api" || (first === "pr" && (second === "view" || second === "diff"));
 }
 
-/** Every gh invocation in a script, with its first two arguments. */
 const RUN_GH = /(?:^|[\s;&|(`$])gh(?=$|\s)(?:[ \t]+([^\s;&|)]+))?(?:[ \t]+([^\s;&|)]+))?/gmu;
 
-/** A remote download piped into an interpreter. */
 const PIPED_DOWNLOAD = /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|node|python3?|deno|bun|pwsh)(?=$|[\s;&|)])/mu;
 
-/** A child process started on gh in a module: its args array literal, or the
- *  identifier that holds it. */
 const MODULE_GH_CALL = /(?:^|[^.\w$])(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*["']gh["']\s*,\s*(\[[^\]]*\]|[A-Za-z_$][\w$]*)/gmu;
 
-/** The first two string elements of an array literal's text. */
 function leadingStrings(array: string): [string | undefined, string | undefined] {
   const match = /^\[\s*["']([^"']*)["']\s*(?:,\s*["']([^"']*)["'])?/u.exec(array);
   return [match?.[1], match?.[2]];
 }
 
-/** The gh calls in `content` that run anything but an allowed subcommand. An
- *  args identifier counts only when the same function (no `function` or `=>`
- *  between) declares it from an array literal. */
+/** Resolve argument identifiers only within the same function and only from literal arrays. */
 function moduleGhProblems(content: string): string[] {
   const problems: string[] = [];
   for (const match of content.matchAll(MODULE_GH_CALL)) {
@@ -277,7 +175,6 @@ function moduleGhProblems(content: string): string[] {
   return problems;
 }
 
-/** In a pinned shell script, a `source` or `.` include. */
 const SHELL_INCLUDE = /(?:^|[\s;&|])(?:source|\.)\s+\S/mu;
 
 function normalizeRepoPath(path: string): string {
@@ -294,24 +191,7 @@ function normalizeRepoPath(path: string): string {
   return parts.join("/");
 }
 
-/** The repository files a workflow executes, sorted, the workflow itself
- *  first, and every way the derivation could not follow one. It fails closed:
- *
- *  - every script path a `run:` step names must resolve to a repository file
- *    (an actions/checkout `path:` prefix and the workspace root map back to
- *    the repository root); an absolute or variable-built path is a problem;
- *  - a `run:` step that invokes an interpreter or launcher must resolve at
- *    least one file;
- *  - package.json indirection (`npm run`, `yarn <script>`, `npx`, an install)
- *    is a problem outright; package.json is never followed;
- *  - every local action's action.yml is included;
- *  - every static relative import of an included module is included,
- *    transitively, and must resolve; a non-literal dynamic import or require,
- *    or a child process started on an interpreter, in an included module is a
- *    problem, as is a `source` in an included shell script.
- *
- *  `readFile` answers a repository path's content, or undefined when there is
- *  no such file. */
+/** Fail closed on unresolved scripts, launcher targets, package-manager indirection, local actions, and transitive imports. */
 export function pullRequestTargetExecutedFiles(
   name: string,
   source: string,
@@ -353,9 +233,7 @@ export function pullRequestTargetExecutedFiles(
       }
     }
     let resolved = 0;
-    // A path-like token without an extension (`./bin/check`,
-    // `.cluster-policy/tools/run`) may be an executable; it must resolve to a
-    // repository file, which is then pinned.
+    // Extensionless path tokens may be executables and must also resolve to pinned files.
     for (const token of run.split(/[\s"'=();|&<>`]+/u)) {
       const pathLike = token.startsWith("./") || token.startsWith("../")
         || checkoutRoots.some((root) => token.startsWith(`${root}/`));
@@ -430,9 +308,7 @@ export function pullRequestTargetExecutedFiles(
   return { files: [`.github/workflows/${name}`, ...[...found].sort()], problems };
 }
 
-/** The allow-list violations of one workflow, if it runs on
- *  pull_request_target: unlisted, or its pinned files differ from the files
- *  it executes, or one of them changed since it was listed. */
+/** Privileged workflows must match their allow-list entry and complete executed-file hashes. */
 export function pullRequestTargetAllowListViolations(
   source: string,
   name: string,
@@ -463,14 +339,12 @@ export function pullRequestTargetAllowListViolations(
   return violations;
 }
 
-/** True when the workflow reads the `secrets` context anywhere, in any form. */
 function workflowReadsSecrets(workflow: { jobs: Record<string, Job> } & Record<string, unknown>): boolean {
   if (readsAnySecret(workflow)) return true;
   return Object.values(workflow.jobs).some((job) =>
     readsAnySecret(job.if, true) || (job.steps ?? []).some((step) => readsAnySecret(step.if, true)));
 }
 
-/** The events a workflow's `on:` names, whatever its form. */
 export function workflowEvents(on: unknown): string[] {
   if (typeof on === "string") return [on];
   if (Array.isArray(on)) return on.map(String);
@@ -478,9 +352,7 @@ export function workflowEvents(on: unknown): string[] {
   throw new Error("workflow has no `on:` triggers");
 }
 
-/** The labels `${{ matrix.<key> }}` can take: every value of that key in the
- *  matrix, its `include` entries among them; null when the matrix cannot be
- *  read statically (a computed matrix or key). */
+/** Computed runner matrices are unverifiable; enumerate every static value including include entries. */
 function matrixLabels(job: Job, key: string): unknown[] | null {
   const matrix = job.strategy?.matrix;
   if (matrix === null || typeof matrix !== "object") return null;
@@ -518,8 +390,6 @@ function grantsWrite(permissions: unknown): boolean {
   return Object.values(permissions).some((level) => level === "write");
 }
 
-/** Every violation of the runner and fork-safety rules in one workflow, as
- *  `<name>:<job> <reason>`; empty for a compliant workflow. */
 export function workflowRunnerViolations(source: string, name: string): string[] {
   const workflow = parseYaml(source, { merge: true }) as {
     on?: unknown;

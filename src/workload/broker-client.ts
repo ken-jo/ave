@@ -69,8 +69,7 @@ function operationDeadlineMs(
     : typeof record.waitMs === "number"
       ? record.waitMs
       : TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs;
-  // The transport budget includes a short bounded interval for connect,
-  // framing, and broker-side cleanup after the operation deadline fires.
+  // Include bounded connect, framing, and cleanup time beyond the operation deadline.
   return Math.min(
     requested + TOOL_TIMEOUT_POLICY.workloadBrokerTransportGraceMs,
     WORKLOAD_BROKER_LIMITS.maximumTimeoutMs
@@ -128,11 +127,7 @@ async function exchangeOneLine(
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
       socket = createConnection({ path: socketPath });
-      // Keep the write side open until the broker responds. A half-close after
-      // the request would be indistinguishable from cancellation to a broker
-      // that monitors client EOF while a long-running operation is active.
-      // Abort/deadline paths destroy the socket, which is the explicit
-      // cancellation signal for this one-request connection.
+      // Keep writes open until reply; client EOF means cancellation, so aborts destroy the one-request socket.
       socket.on("connect", () => socket?.write(request));
       socket.on("data", (chunk: Buffer) => {
         total += chunk.byteLength;

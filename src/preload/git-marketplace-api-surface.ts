@@ -1,10 +1,4 @@
-/**
- * Narrow host-renderer bridge for the git marketplace (design §13).
- *
- * A leaf like the git runtime's: plugin frames and public surfaces never
- * receive it. Every answer is checked as a `GitMarketplaceResult` envelope;
- * a rejected invoke reads as `unavailable`, never as a thrown error.
- */
+/** Keep the marketplace bridge host-only; validate envelopes and map invoke rejection to unavailable. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -35,7 +29,6 @@ function subscribe<T>(channel: string, parse: (payload: unknown) => T | null, li
   return () => ipcRenderer.removeListener(channel, handler);
 }
 
-/** Build the private `window.aveApi.gitMarketplace` namespace. */
 export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
   return Object.freeze({
     listSources: () => call(channels.sourcesList),

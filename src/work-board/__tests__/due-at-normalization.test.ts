@@ -1,37 +1,26 @@
-/**
- * Re-anchoring due dates that were stamped as midnight in a fixed zone.
- *
- * The board used to write a picked day as `${day}T00:00:00+09:00`. That is an
- * absolute instant, so nothing on disk changed meaning when the board moved to
- * the host calendar — but the day it DISPLAYS under did, and the user picked a
- * day. These tests pin which values move and which are left exactly alone.
- */
+/** Migrate only legacy fixed-zone picker midnights; retain the selected civil day rather than its shifted display instant. */
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { normalizeBoardDueDates, normalizeDueAt } from "../board-file.js";
 import { localDateKey, localDayStart } from "../../shared/local-date.js";
 import type { WorkItem } from "../../shared/work-board-types.js";
 
-// What the old panel wrote for a user who picked 2026-06-16.
 const KST_MIDNIGHT_JUN16 = "2026-06-16T00:00:00+09:00";
 
 describe("normalizeDueAt", () => {
   it("keeps the picked day on a host west of where it was stamped", () => {
     withTz("America/Los_Angeles", () => {
-      // Untouched, this instant is 2026-06-15 09:00 in Los Angeles — the picker
-      // would show the 15th for a date the user set to the 16th.
+      // The legacy instant displays as the previous day west of its fixed zone.
       expect(localDateKey(new Date(KST_MIDNIGHT_JUN16))).toBe("2026-06-15");
 
       const normalized = normalizeDueAt(KST_MIDNIGHT_JUN16);
       expect(localDateKey(new Date(normalized))).toBe("2026-06-16");
-      // And it is that day's local midnight, not merely somewhere inside it.
       expect(normalized).toBe("2026-06-16T07:00:00.000Z");
     });
   });
 
   it("leaves a due date that carries a real time of day alone", () => {
     withTz("America/Los_Angeles", () => {
-      // 14:30 in Seoul was never a day-picker value; its instant is the point.
       const withTime = "2026-06-16T14:30:00+09:00";
       expect(normalizeDueAt(withTime)).toBe(withTime);
     });
@@ -45,7 +34,6 @@ describe("normalizeDueAt", () => {
 
   it("leaves a value with no explicit offset alone", () => {
     withTz("America/Los_Angeles", () => {
-      // Nothing says what zone the writer meant, so guessing would be inventing.
       expect(normalizeDueAt("2026-06-16T00:00:00")).toBe("2026-06-16T00:00:00");
     });
   });
@@ -57,11 +45,7 @@ describe("normalizeDueAt", () => {
   });
 
   it("never touches a value this code wrote, so the day survives host hopping", () => {
-    // The current format is `localDayStart(day).toISOString()` — always `Z`.
-    // Re-anchoring one would make the stored bytes follow whichever host opened
-    // the board last: written on a UTC host as the 16th and re-stamped by a
-    // Seoul host, it read as the 15th back on the original host. The
-    // single-host idempotency case below cannot see this; only a round trip can.
+    // Never re-anchor current Z timestamps; multi-zone round trips would move their stored day repeatedly.
     const seeded = withTz("UTC", () => localDayStart("2026-06-16")!.toISOString());
     expect(seeded).toBe("2026-06-16T00:00:00.000Z");
 
@@ -74,8 +58,6 @@ describe("normalizeDueAt", () => {
   });
 
   it("still migrates the legacy +09:00 stamp in every zone", () => {
-    // The guard above must not have switched the migration off. In each zone the
-    // legacy value moves, and moves to that zone's midnight for the picked day.
     for (const zone of ["UTC", "America/New_York", "America/Los_Angeles", "Europe/London"]) {
       withTz(zone, () => {
         const migrated = normalizeDueAt(KST_MIDNIGHT_JUN16);
@@ -84,7 +66,6 @@ describe("normalizeDueAt", () => {
         expect(localDateKey(new Date(migrated))).toBe("2026-06-16");
       });
     }
-    // Seoul is the one zone where it is already correct and stays byte-identical.
     withTz("Asia/Seoul", () => {
       expect(normalizeDueAt(KST_MIDNIGHT_JUN16)).toBe(KST_MIDNIGHT_JUN16);
     });
@@ -95,7 +76,6 @@ describe("normalizeDueAt", () => {
       withTz(zone, () => {
         const once = normalizeDueAt(KST_MIDNIGHT_JUN16);
         expect(normalizeDueAt(once)).toBe(once);
-        // And the day survives every extra pass, which is the actual invariant.
         expect(localDateKey(new Date(once))).toBe("2026-06-16");
       });
     }

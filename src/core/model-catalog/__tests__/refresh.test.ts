@@ -1,13 +1,4 @@
-/**
- * The model catalog refresh and the boot selection it feeds (design §7),
- * offline: the transport is a fixture, DNS answers a public address, and the
- * cache lives in a temporary directory.
- *
- * The refresh is an external-boundary fallback (AGENTS.md): every way the
- * download can fail must leave the last good copy — or, with none, the bundled
- * snapshot — in force, never nothing. Failure cases check catalog bytes and,
- * where relevant, next-boot selection separately from attempted-check metadata.
- */
+/** Download failures must preserve the last verified cache or bundled snapshot; inspect both bytes and next-boot selection. */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,7 +31,6 @@ const LICENSE = {
   text: "MIT License\n\nCopyright (c) 2025 models.dev\n",
 };
 
-/** A models.dev download listing `openai` and `anthropic`, one model each. */
 function rawDocument(openaiContext = 400_000): Record<string, unknown> {
   return {
     openai: { id: "openai", name: "OpenAI", models: { "gpt-fixture": { id: "gpt-fixture", limit: { context: openaiContext, output: 128_000 } } } },
@@ -58,7 +48,6 @@ function documentFrom(raw: Record<string, unknown>, fetchedAt: string): ModelCat
   }).document;
 }
 
-/** The "bundled snapshot" these tests boot against: older than any refresh below. */
 const BUNDLED = documentFrom(rawDocument(272_000), "2026-01-01T00:00:00Z");
 const loadBundled = async () => BUNDLED;
 
@@ -97,7 +86,6 @@ function cacheFiles(): Record<string, string> {
   return Object.fromEntries(readdirSync(dir).filter((name) => !name.startsWith(".")).sort().map((name) => [name, readFileSync(join(dir, name), "utf-8")]));
 }
 
-/** A good refresh at `at`, so a failure after it has a last good copy to keep. */
 async function seedGoodCopy(at = NOW): Promise<string> {
   const { fetchImpl } = respondWith(() => json(rawDocument(), { etag: "\"v1\"" }));
   const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => at });
@@ -148,7 +136,6 @@ describe("refreshModelCatalogCache", () => {
     expect(calls[0]!.init.method).toBe("GET");
     expect(Object.keys(calls[0]!.init.headers as Record<string, string>).sort()).toEqual(["accept"]);
     expect(calls[0]!.init.body).toBeUndefined();
-    // Through the guard: the host was resolved and checked before the request.
     expect(lookupMock).toHaveBeenCalled();
 
     const sha256 = (result as { sha256: string }).sha256;
@@ -305,7 +292,6 @@ describe("refreshModelCatalogCache", () => {
       const started = Date.now();
       const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE, timeoutMs: 50 });
 
-      // The refresh's own deadline, not the guard's 15 s default, ended it.
       expect(Date.now() - started).toBeLessThan(3000);
       expect(result).toMatchObject({ status: "failed", reason: expect.stringMatching(/request failed/) });
       expect(cacheFiles()).toEqual(before);
@@ -531,7 +517,6 @@ describe("selectBootModelCatalog", () => {
 
     it("a sha256 pins that cached copy", async () => {
       const sha256 = await seedGoodCopy();
-      // A later refresh moves the pointer; the pin still names the first copy.
       const { fetchImpl } = respondWith(() => json(rawDocument(500_000)));
       await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
       expect(await selectBootModelCatalog({ env: { AVE_MODEL_CATALOG: sha256 }, dir, loadBundled })).toMatchObject({ origin: "pinned", document: { sha256 } });

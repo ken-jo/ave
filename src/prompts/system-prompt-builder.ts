@@ -26,8 +26,6 @@ import { shellExecutionEnvironmentPrompt } from "../shared/shell-execution-envir
 
 const log = createLogger("system-prompt");
 
-// ─── Types ──────────────────────────────────────────
-
 type ToolProvenanceEntry = Pick<ToolSchemaEntry | ToolCatalogEntry, "source" | "pluginId" | "mcpServerId">;
 
 type RequestablePluginCatalogCard = {
@@ -35,9 +33,7 @@ type RequestablePluginCatalogCard = {
   name: string;
   description: string;
   sampleTools: string[];
-  /** Enabled and loaded enough to be selectable via request_plugin. */
   active?: boolean;
-  /** Runtime instance exists, so request_plugin can put it into turn scope. */
   runtimeLoaded?: boolean;
   loadStatus?: "loaded" | "preparing" | "failed" | "disabled";
 };
@@ -46,16 +42,10 @@ function isRequestablePluginCatalogCard(
   card: RequestablePluginCatalogCard,
   activatablePluginIds?: ReadonlySet<string>,
 ): boolean {
-  // A card with no exposable tools or no runtime instance can never be put
-  // into turn scope, regardless of allow-listing.
+  // Never advertise cards with no exposable tools or live runtime instance.
   if (card.runtimeLoaded === false) return false;
   if (card.sampleTools.length === 0) return false;
-  // Session-scoped on-demand activation — an allow-listed plugin the user has
-  // toggled OFF is still activatable via request_plugin for THIS session
-  // (its tools stay registered; only the per-turn scope hides them). List it as
-  // requestable so the routine LLM can ask for it. Main chat passes no
-  // allow-list ⇒ empty set ⇒ this branch never fires and disabled cards stay
-  // hidden (behaviour unchanged).
+  // Only allow-listed sessions may request disabled plugins for that session; ordinary chat keeps them hidden.
   if (activatablePluginIds?.has(card.id)) return true;
   if (card.active === false) return false;
   if (card.loadStatus && card.loadStatus !== "loaded") return false;
@@ -90,107 +80,47 @@ function renderToolGroups<T extends ToolProvenanceEntry>(
 }
 
 export interface PromptSource {
-  /** 소스 번호 (①~⑫) */
   id: number;
-  /** 소스 이름 */
   name: string;
-  /** 콘텐츠 생성 함수 — 빈 문자열이면 생략됨 */
   build: () => string;
-  /** 갱신 주기 힌트 */
   refresh: "static" | "per-turn" | "on-change" | "conditional";
 }
 
 export interface SystemPromptBuilderDeps {
   memoryManager: PromptMemorySource;
   toolRegistry: ToolRegistry;
-  /**
-   * request_plugin candidate catalog provider. Empty/undefined omits the section.
-   *
-   * The registry is a PARAMETER, not something the provider may close over: a
-   * sub-agent's builder is created with `createIsolated({ toolRegistry: <scoped
-   * view> })`, and the advertised plugin surface must be bounded by the SAME
-   * registry the child is frozen with. A closure over the boot-time global
-   * registry silently advertises plugins the child cannot call.
-   */
+  /** Pass the builder's own registry into catalog callbacks so isolated children cannot advertise globally available tools. */
   getPluginCards?: (toolRegistry: ToolRegistry) => RequestablePluginCatalogCard[];
-  /**
-   * Session-scoped on-demand activation allow-list. Plugin ids returned here are
-   * treated as requestable in the catalog even when the user has toggled them
-   * OFF (registry `enabled:false`), because the session can activate them via
-   * request_plugin for its lifetime only. Routine sessions pass their
-   * `allowedPluginIds`; main chat omits this (⇒ disabled plugins stay hidden).
-   */
+  /** Session allow-lists may expose disabled plugins for temporary activation only. */
   getActivatablePluginIds?: () => ReadonlySet<string>;
-  /**
-   * Lightweight skill index provider. Only name/description/triggers are
-   * surfaced here; a skill's body enters the context only as the result of an
-   * explicit `skill_load` call, never through the system prompt.
-   */
+  /** Expose skill metadata only; bodies enter context through explicit skill_load results. */
   getAvailableSkills?: () => SkillCatalogEntry[];
-  /**
-   * MCP-app model context (`ui/update-model-context`) — returns the rendered
-   * `<mcp-app-context>` section for the ACTIVE session's cards, or "" when no card has
-   * pushed any. Decoupled through this callback exactly like `getAvailableSkills`:
-   * the builder stays a pure assembler and never imports the store.
-   *
-   * This callback IS the "deferred to the next turn" semantic of the spec. The app writes
-   * its slot whenever it likes; the model sees it only when the NEXT prompt is built, and
-   * a write can never start a turn because nothing pushes — the builder PULLS.
-   */
+  /** Pull active-session card context at next prompt build; slot writes must never start turns. */
   getAppModelContext?: (sessionId: string) => string;
-  /**
-   * MCP server-level guidance provider — returns each connected + approved
-   * server's discovery `instructions`. Rendered as an inert, untrusted-metadata
-   * section (server-authored third-party text, never host/user guidance). DATA
-   * only: the builder never imports the MCP layer, keeping prompts/ off
-   * engine/mcp — the boot wiring pulls it from mcpManager.
-   */
+  /** Render approved-server instructions as untrusted metadata through callbacks, without importing network layers. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
 }
-
-// ─── Builder ────────────────────────────────────────
 
 export class SystemPromptBuilder {
   private readonly sources: PromptSource[] = [];
   private readonly deps: SystemPromptBuilderDeps;
   private toolScope: {
     activePluginIds: Set<string>;
-    /** Tool-Level Deferral — individually loaded plugin/mcp tool names. */
     activeToolNames?: Set<string>;
     includeBuiltins: boolean;
     includeMcp: boolean;
     includeEgress: boolean;
-    /** Tool-Level Deferral — retained for persisted/test scope compatibility. */
     deferral?: boolean;
   } | null = null;
   private indexedDocsContext: string = "";
   private projectContext: ProjectIdentity | null = null;
-  /**
-   * Session id used to scope per-session sections (MCP App Context).
-   * Set per-turn by ConversationLoop before `build()` so those sections
-   * scope to the right session without leaking across sessions.
-   */
+  /** Bind the active session before each build so app context cannot leak across sessions. */
   private appContextSessionId: string | null = null;
   private activeRolePrompt: ActiveRolePrompt | null = null;
-  /**
-   * Current session title injected as inert continuity context.
-   * Title mutation is host-managed after the turn; the final answer must not
-   * emit hidden title tags. Null when no title has been assigned yet.
-   */
+  /** Titles are host-managed inert context; final answers must not emit hidden title tags. */
   private sessionTitle: string | null = null;
 
-  /**
-   * Routine session mode flag (default false).
-   * When true, the Routine Summary Tag Instruction section (id=9.8) is
-   * included in the built prompt, instructing the LLM to append a
-   * <summary>…</summary> tag at the end of its response. This tag is then
-   * parsed by RoutineEngine to produce the OverlayCard summary — avoiding
-   * raw truncation of full content.
-   *
-   * Must NOT be enabled on the main chat ConversationLoop — only set via
-   * setRoutineMode(true) on the ConversationLoop instance created by
-   * createRoutineConversationLoop().
-   */
+  /** Enable summary-tag output only for isolated routine loops, never main chat. */
   private routineMode: boolean = false;
 
   constructor(deps: SystemPromptBuilderDeps) {
@@ -198,29 +128,14 @@ export class SystemPromptBuilder {
     this.initSources(deps);
   }
 
-  /**
-   * Sub-agents need a fresh builder: mutable project/session state must never
-   * be shared with the parent, while host-provided catalog callbacks stay intact.
-   */
+  /** Child builders need fresh mutable project/session state while preserving host catalog callbacks. */
   createIsolated(overrides: Pick<SystemPromptBuilderDeps, "memoryManager" | "toolRegistry">): SystemPromptBuilder {
     return new SystemPromptBuilder({ ...this.deps, ...overrides });
 
   }
-  /**
-   * The per-turn context: what the model needs for this turn that changes
-   * between turns while the system prompt must not — the clock, the session
-   * title, the staged-origin warning for a turn a non-user actor placed, and
-   * the memory notes ranked against this turn's input.
-   *
-   * It travels as request-only text inside the user message that starts a
-   * round, after that message's own content and after the cache breakpoint,
-   * so the system prompt and every earlier row stay a reusable prefix.
-   */
+  /** Put changing clock, title, origin, and ranked notes after the cache breakpoint so earlier prompt bytes remain reusable. */
   buildTurnContext(memoryQuery: string, originSource: string | null): string {
-    // The model's clock is the user's clock: a user anywhere asks for
-    // "tomorrow 9am" and means their own 9am. The offset is computed from the
-    // same instant rather than named, so the string stays self-describing
-    // across DST.
+    // Compute the user-local offset from the same instant so clock text remains correct across DST.
     const parts = [
       "<turn-context>",
       "Host-supplied context for this turn. It is not a message from the user.",
@@ -230,19 +145,12 @@ export class SystemPromptBuilder {
     if (this.sessionTitle) {
       parts.push(t("be_systemPromptBuilder.currentSessionTitle", { title: this.sessionTitle }));
     }
-    // A turn whose text a non-user actor placed (a plugin overlay trigger, an
-    // MCP App message, a server prompt). Resolved from `shared/staged-origins`,
-    // the same table the force-ask gate reads, so a staged origin cannot ship
-    // with the gate and without this warning. The warning tells the model that
-    // imperatives inside the body are data, and ApprovalGate still gates every
-    // destructive operation for these origins.
+    // Resolve staged warnings from the permission gate's origin table; imperatives remain data and destructive tools remain gated.
     const staged = stagedOriginForSource(originSource);
     if (staged) {
       const { tag, lineKeys } = staged.guidance;
       parts.push([
         `<${tag} priority="high">`,
-        // Only the leading line names the provenance, so `{source}` is bound
-        // there; the rest are static policy lines.
         ...lineKeys.map((key, index) => (index === 0 ? t(key, { source: originSource ?? "" }) : t(key))),
         `</${tag}>`,
       ].join("\n"));
@@ -267,21 +175,10 @@ export class SystemPromptBuilder {
     return parts.join("\n");
   }
 
-  /**
-   * The host environment block of the system prompt. Every line is stable for
-   * the session (the scratch directory is re-verified on each build and drops
-   * out only if it stops verifying), so it stays inside the cached prefix and
-   * every round of a turn — tool rounds included — sees it. The clock is not
-   * here; it rides in the turn context.
-   */
+  /** Keep stable host facts in the cached prefix; reverify scratch ownership on each build and keep the clock in turn context. */
   private buildEnvironment(): string {
     const applicationHome = aveHome();
-    // Operational paths must round-trip into tool arguments. JSON keeps
-    // path characters literal; escaped brackets cannot close this section.
-    // The scratch directory is offered only while it still verifies as
-    // the app-owned `0o700` directory boot created: a path the model is
-    // told it may write to freely must be one the host actually vouches
-    // for on this turn, not one it vouched for at boot.
+    // Encode operational paths as JSON and advertise scratch only while its private ownership still verifies.
     const scratch = verifyAveScratchDir();
     const applicationPaths = JSON.stringify({
       applicationHome,
@@ -299,26 +196,18 @@ export class SystemPromptBuilder {
         ? "scratchDirectory is application-owned disposable space for intermediate files (downloads, build output, temporary scripts). Stage such work there rather than in the project; writes under it need no approval, and it is not backed up."
         : "No application scratch directory is available on this host (its directory did not verify as application-owned). Stage intermediate files inside the project's working directory and say so when they are left behind.",
       shellExecutionEnvironmentPrompt(getHostShellExecutionPlan(), !execTurnRequested(process.argv)),
-      // The host locale is a statement about the PERSON at the keyboard, so
-      // it belongs here only while there is one. A headless one-shot run has
-      // no interactive user: its request arrives on stdin, frequently in a
-      // different language from the machine's, and the request itself is the
-      // only language signal that run has.
+      // Only interactive runs may use host locale as a person-language hint.
       ...(execTurnRequested(process.argv)
         ? [t("be_systemPromptBuilder.headlessResponseLanguage")]
         : [
             `Locale: ${Intl.DateTimeFormat().resolvedOptions().locale}`,
-            // Naming the locale is not the same as saying what to do with it,
-            // and the packaged documents in the system prompt are written in
-            // one fixed language regardless of who is reading. State that the
-            // person's own message decides, with the locale as the fallback.
+            // The request language wins over packaged documents, with locale only as fallback.
             t("be_systemPromptBuilder.interactiveResponseLanguage"),
           ]),
       "</environment>",
     ].join("\n");
   }
 
-  /** 매 턴마다 호출 — 전체 시스템 프롬프트 조립 */
   build(): string {
     const sections: string[] = [];
 
@@ -329,11 +218,7 @@ export class SystemPromptBuilder {
       }
     }
 
-    // Dev-only per-source size dump. Gated EXACTLY like AVE_DEV_PREFLIGHT_OVERRIDE
-    // in auto-compact.ts: ignored under production NODE_ENV, otherwise enabled when
-    // AVE_DEV_PROMPT_SOURCE_DUMP is set. Logs sizes/labels ONLY — never prompt
-    // content — so memory/user content is not leaked into logs. Measurement
-    // enabler for the TPM base-size work; no behavior change to the prompt itself.
+    // Log source sizes and labels only, never prompt contents; measurement must not change the assembled prompt.
     if (this.isPromptSourceDumpEnabled()) {
       const breakdown = this.getSourceSizeBreakdown();
       for (const entry of breakdown.sources) {
@@ -349,34 +234,13 @@ export class SystemPromptBuilder {
     return sections.join("\n\n");
   }
 
-  /**
-   * Dev-only gate for the per-source size dump. Mirrors
-   * `readDevPreflightOverride()` in auto-compact.ts: production NODE_ENV always
-   * disables it; otherwise it is enabled when `AVE_DEV_PROMPT_SOURCE_DUMP` is
-   * set to a non-empty value.
-   */
+  /** Production disables source-size dumping regardless of the debug flag. */
   private isPromptSourceDumpEnabled(): boolean {
     if (process.env.NODE_ENV === "production") return false;
     return Boolean(process.env.AVE_DEV_PROMPT_SOURCE_DUMP);
   }
 
-  /**
-   * Pure per-source size breakdown of the assembled system prompt.
-   *
-   * Iterates the SAME source list `build()` concatenates — generically, with no
-   * per-plugin/per-source branching — and reports the byte (char) and estimated
-   * token cost of each non-empty source. Used to size which sources dominate the
-   * per-round system-prompt base (loaded tool descriptions, input_schema,
-   * memory, AGENTS.md, skills catalog, …) for the TPM base-size work.
-   *
-   * `totalChars` equals `build().length` for the same builder state so callers
-   * can assert the per-source `chars` sum reconciles with the assembled prompt
-   * (entries sum + "\n\n" join separators = totalChars).
-   *
-   * Pure: when `scope` is provided it is applied to the tool-scope only for the
-   * duration of the measurement and restored before returning (no net state
-   * change). When omitted, the current builder state is measured as-is.
-   */
+  /** Measure the same nonempty source list as build, including join separators; restore temporary tool scope before returning. */
   getSourceSizeBreakdown(scope?: {
     activePluginIds: Set<string>;
     activeToolNames?: Set<string>;
@@ -406,8 +270,6 @@ export class SystemPromptBuilder {
         });
       }
       sources.sort((a, b) => b.chars - a.chars);
-      // totalChars matches build().length: per-source chars + "\n\n" (2 chars)
-      // join separators between the kept (non-empty) sections.
       const joinChars = sources.length > 1 ? (sources.length - 1) * 2 : 0;
       const totalChars = sources.reduce((sum, s) => sum + s.chars, 0) + joinChars;
       const totalEstTokens = sources.reduce((sum, s) => sum + s.estTokens, 0);
@@ -417,18 +279,15 @@ export class SystemPromptBuilder {
     }
   }
 
-  /** 외부에서 소스 추가 */
   addSource(source: PromptSource): void {
     this.sources.push(source);
     this.sources.sort((a, b) => a.id - b.id);
   }
 
-  /** 등록된 소스 목록 (디버깅용) */
   listSources(): Array<{ id: number; name: string; refresh: string }> {
     return this.sources.map((s) => ({ id: s.id, name: s.name, refresh: s.refresh }));
   }
 
-  /** 인덱싱된 문서 정보를 시스템 프롬프트에 동적으로 업데이트 */
   setIndexedDocsContext(context: string): void {
     this.indexedDocsContext = context;
   }
@@ -437,10 +296,7 @@ export class SystemPromptBuilder {
     this.projectContext = project;
   }
 
-  /**
-   * 매 턴 직전 호출되어 Tool Schemas 섹션이
-   * 노출할 tool 집합을 제한한다. null → 모든 도구 노출 (default 동작).
-   */
+  /** Null tool scope exposes all tools; otherwise limit schemas to the current turn. */
   setToolScope(scope: {
     activePluginIds: Set<string>;
     activeToolNames?: Set<string>;
@@ -452,18 +308,11 @@ export class SystemPromptBuilder {
     this.toolScope = scope;
   }
 
-  /**
-   * Per-round session id, used to scope per-session sections (MCP App
-   * Context) to the correct ChatSession. Pass `null` to clear.
-   */
   setActiveSessionId(sessionId: string | null): void {
     this.appContextSessionId = sessionId && sessionId.length > 0 ? sessionId : null;
   }
 
-  /**
-   * Per-turn role prompt selected by the user in the composer. ConversationLoop
-   * sets this immediately before build() and clears it immediately after.
-   */
+  /** Set the selected role immediately before build and clear it immediately afterward. */
   setActiveRolePrompt(rolePrompt: ActiveRolePrompt | null): void {
     const prompt = rolePrompt?.systemPromptAdd.trim();
     if (!rolePrompt || !prompt) {
@@ -476,11 +325,6 @@ export class SystemPromptBuilder {
     };
   }
 
-  /**
-   * Per-turn session title. ConversationLoop sets this before
-   * `build()` so the LLM can use the title as inert continuity context.
-   * Pass `null` to clear (no title yet — first turn of a new session).
-   */
   setSessionTitle(title: string | null): void {
     if (title === null) {
       this.sessionTitle = null;
@@ -490,12 +334,7 @@ export class SystemPromptBuilder {
     this.sessionTitle = sanitized.length > 0 ? sanitized : null;
   }
 
-  /**
-   * Strips characters that could break the prompt template or enable prompt
-   * injection: CR, LF, double-quotes, backslashes, and angle brackets
-   * (which could mutate prompt-template XML tags). Caps at 50 chars so
-   * an abnormally long user-renamed title cannot bloat the prompt.
-   */
+  /** Strip template-breaking title characters and cap length to prevent prompt injection and bloat. */
   private sanitizeTitle(t: string): string {
     return t.replace(/[\r\n"\\<>]/g, " ").slice(0, 50).trim();
   }
@@ -504,17 +343,10 @@ export class SystemPromptBuilder {
     return name.replace(/[\r\n"\\<>]/g, " ").slice(0, 80).trim() || "role";
   }
 
-  /**
-   * Routine session mode. When true the Routine Summary Tag Instruction
-   * (id=9.8) is emitted, instructing the LLM to terminate its response with
-   * a <summary>…</summary> tag for OverlayCard display. Call with true only
-   * on the ConversationLoop created by createRoutineConversationLoop().
-   */
+  /** Only routine loops may request the final summary tag used by overlay extraction. */
   setRoutineMode(enabled: boolean): void {
     this.routineMode = enabled;
   }
-
-  // ─── Private ──────────────────────────────────────
 
   private initSources(deps: SystemPromptBuilderDeps): void {
     const { memoryManager, toolRegistry } = deps;
@@ -526,7 +358,6 @@ export class SystemPromptBuilder {
       build: () => t("be_systemPromptBuilder.roleDefinition"),
     });
 
-    // ①-b Active role preset (per-turn, user-selected)
     this.sources.push({
       id: 1.5,
       name: "Active Role Prompt",
@@ -549,11 +380,7 @@ export class SystemPromptBuilder {
       refresh: "on-change",
       build: () => {
         const content = memoryManager.getAgentsMd();
-        // `agents.custom.md` is the user's own content, split out from the live
-        // doc by keep-latest so a packaged update can replace AGENTS.md without
-        // taking their edits with it. It is emitted LAST inside the same block
-        // so that on conflict the model reads the user's sentence after the
-        // packaged one — the split must not quietly demote what they wrote.
+        // Emit custom user text last within the global block so packaged updates cannot demote personal edits.
         const custom = memoryManager.getAgentsCustomMd().trim();
         if (!content && !custom) return "";
         return [
@@ -574,12 +401,7 @@ export class SystemPromptBuilder {
       },
     });
 
-    // Project AGENTS.md (id=2.2) — the active project's committed, team-shared
-    // AGENTS.md, injected as a distinct layer immediately BELOW the global
-    // personal file (id=2) and above the rolling summary. Emitted only when a
-    // project root is bound. Provenance-labeled and framed as project-provided
-    // conventions that rank below the personal file, the user, and the
-    // safety/permission gates. The global file is never merged or mutated.
+    // Keep project conventions distinct and below personal guidance, user instructions, and permission gates; never mutate the global file.
     this.sources.push({
       id: 2.2,
       name: "Project AGENTS.md",
@@ -604,17 +426,7 @@ export class SystemPromptBuilder {
       },
     });
 
-    // Employee Profile — SSO/LDAP 의존
-    // Org Context — 서버 인프라 의존
-
-    // ④-b Tool Use Strategy (정적) — 매 라운드 다시 보내지는 호출 규칙만 둔다:
-    // 독립 호출은 한 메시지에 함께, 결과가 다음 호출을 정하면 기다리고, 정보가
-    // 충분하면 멈춘다. host 는 LLM 이 나열한 tool_call 순서를 보존한다. 도구별
-    // 사용법(session_tasks 호출 순서, routine_schedule, agent_*, skill_*)은 각 도구
-    // 설명과 skills 카탈로그 절에 있으므로 여기서 반복하지 않는다.
-    //
-    // id=4.5: Org Context (id=4) 와 충돌하지 않도록 분수형 id 사용.
-    // 정렬은 1 < 2 < 3 < 4 < 4.5 < 5 < 6 ... 로 자연스럽게 삽입된다.
+    // Keep only shared call-order rules here; tool-specific procedures belong beside their schemas.
     this.sources.push({
       id: 4.5,
       name: "Tool Use Strategy",
@@ -622,20 +434,7 @@ export class SystemPromptBuilder {
       build: () => t("be_systemPromptBuilder.toolUseStrategy"),
     });
 
-    // ④-b Completion Discipline (static)
-    //
-    // Separate from Tool Use Strategy above, which governs how to GATHER
-    // information; this governs the one claim that ends a turn. Measured
-    // failure it answers: runs that declared the work done — "verified by
-    // review", "created and tested" — with no execution anywhere in their
-    // closing rounds. Nothing else in the prompt says a completion claim has a
-    // precondition, so the model was free to treat reading its own output as
-    // confirmation of it.
-    //
-    // id=4.55 sits between Tool Use Strategy (4.5) and Staged Origin Guidance
-    // (4.6), keeping the "how to work" block contiguous. Ids are the sort key
-    // AND how `listSources` / `sourceBreakdown` name a section, so reusing 4.6
-    // would report two sections under one id.
+    // Require execution evidence for completion claims; source ids are unique sort and reporting keys.
     this.sources.push({
       id: 4.55,
       name: "Completion Discipline",
@@ -643,16 +442,9 @@ export class SystemPromptBuilder {
       build: () => t("be_systemPromptBuilder.completionDiscipline"),
     });
 
-    // ④-c Staged-origin guidance is not a prompt source: it applies to one
-    // turn, so it travels in that turn's context (buildTurnContext).
+    // Staged-origin guidance belongs to turn context, not the cached system prefix.
 
-    // ④-c Available Skills Catalog (per-turn, lightweight)
-    //
-    // Progressive disclosure: expose only dispatch metadata so the model can
-    // decide whether a skill is relevant. A body reaches the model only as the
-    // `skill_load` tool_result (behind the body-hash approval gate), so this
-    // section — and the cached prompt prefix — never changes because a skill
-    // was read.
+    // Keep only dispatch metadata resident; body loading must not rewrite the cached prefix.
     const { getAvailableSkills } = deps;
     if (getAvailableSkills) {
       this.sources.push({
@@ -661,35 +453,20 @@ export class SystemPromptBuilder {
         refresh: "per-turn",
         build: () => {
           const allSkills = getAvailableSkills();
-          // Scope symmetry with tools (skill-loading-policy.md §1): only user
-          // skills (no plugin owner) and skills whose owning plugin is in the
-          // current turn scope are catalogued. An out-of-scope plugin's skill is
-          // surfaced again once `request_plugin` brings its plugin into scope —
-          // exactly as its Tools are. This removes the case where the model sees
-          // (or loads) a skill that references Tools it currently cannot call.
+          // Catalog only user skills and skills owned by plugins in current tool scope; see skill-loading-policy.md.
           const activePluginIds = this.toolScope?.activePluginIds ?? new Set<string>();
           const inScope = allSkills.filter(
             (s) => !s.pluginOwner || activePluginIds.has(s.pluginOwner.pluginId),
           );
           if (inScope.length === 0) return "";
-          // Deterministic priority: user skills first, then plugin skills;
-          // alphabetical within each band. Query-relevance is intentionally NOT
-          // applied to the resident catalog (skill-loading-policy.md §3): the
-          // catalog is kept stable and the model narrows via skill_load, since
-          // re-ordering it per turn would break Claude prompt-cache stable-prefix
-          // reuse. Query scoring stays in the reactive skill_load/tool_search
-          // path, not here.
+          // Keep user-first alphabetical ordering stable for prefix caching; relevance scoring belongs in reactive lookup.
           const ordered = inScope.slice().sort((a, b) => {
             const ap = a.pluginOwner ? 1 : 0;
             const bp = b.pluginOwner ? 1 : 0;
             if (ap !== bp) return ap - bp;
             return a.name.localeCompare(b.name);
           });
-          // Token budget (skill-loading-policy.md §2): bound the always-present
-          // metadata fixed cost, not just an entry count. The 80-entry cap stays
-          // as a cheap pre-filter; the token budget is the authoritative bound.
-          // At least one entry is always shown, and overflow stays reachable via
-          // skill_list.
+          // Token budget is authoritative after the count prefilter; show at least one entry and expose overflow through skill_list.
           const skills: SkillCatalogEntry[] = [];
           let catalogTokens = 0;
           for (const s of ordered) {
@@ -725,17 +502,7 @@ export class SystemPromptBuilder {
       });
     }
 
-    // ④-e MCP App Context (per-turn, only while a card in THIS session has pushed one)
-    //
-    // The `ui/update-model-context` slots of the active session's MCP-app cards. Read
-    // HERE, at prompt build — which is what makes the spec's "deferred until the next
-    // model turn" a structural fact rather than a policy: the app writes its slot through
-    // a gated IPC that holds no reference to the conversation loop, and the content
-    // surfaces only when the next turn is assembled. An app can never wake the model.
-    //
-    // The block itself is fenced and labelled by the store (mcp/mcp-app-model-context.ts)
-    // as UNTRUSTED APP DATA — the same "data, never instructions" framing the App Message
-    // Origin Guidance above and the skills catalog below already carry.
+    // Pull only the active session's fenced untrusted card slots on the next turn; app writes cannot wake the model.
     const { getAppModelContext } = deps;
     if (getAppModelContext) {
       this.sources.push({
@@ -750,11 +517,7 @@ export class SystemPromptBuilder {
       });
     }
 
-    // ④-f MCP Server Guidance (per-turn) — each connected + approved server's
-    // discovery `instructions`, surfaced read-only as UNTRUSTED third-party
-    // metadata (server-authored, never host/user guidance), the same "data,
-    // never instructions" framing the skill catalog and MCP App Context carry.
-    // The builder never imports the MCP layer; the boot wiring pulls the data.
+    // Server discovery instructions remain untrusted metadata, never host or user guidance.
     const { mcpServerGuidanceProvider } = deps;
     if (mcpServerGuidanceProvider) {
       this.sources.push({
@@ -762,11 +525,7 @@ export class SystemPromptBuilder {
         name: "MCP Server Guidance",
         refresh: "per-turn",
         build: () => {
-          // `instructions` originates from untrusted server wire data. Guard the
-          // type here too (defense-in-depth beside the boundary coercion in
-          // mcp-client) so a non-string can never reach `.trim()` and abort the
-          // whole prompt build. Bound the server count like the MCP App Context
-          // slot cap.
+          // Recheck instruction types and bound server count so malformed server data cannot abort prompt construction.
           const servers = mcpServerGuidanceProvider()
             .filter(
               (server) =>
@@ -781,16 +540,14 @@ export class SystemPromptBuilder {
           ];
           for (const server of servers) {
             const trimmed = server.instructions.trim();
-            // Per-server char cap so one server cannot bloat every turn (mirrors
-            // the MCP App Context per-slot char cap).
+            // Cap each server's text to prevent per-turn prompt bloat.
             const capped =
               trimmed.length > MAX_MCP_GUIDANCE_CHARS
                 ? `${trimmed.slice(0, MAX_MCP_GUIDANCE_CHARS)}…`
                 : trimmed;
             lines.push("");
             lines.push(`server "${server.serverId}":`);
-            // Neutralize the body against its OWN closing tag so server text
-            // cannot break out of the inert fence.
+            // Neutralize the body's closing tag so server text cannot escape its data fence.
             lines.push(neutralizeFenceClose(capped, "ave-mcp-server-guidance"));
           }
           lines.push("</ave-mcp-server-guidance>");
@@ -799,7 +556,6 @@ export class SystemPromptBuilder {
       });
     }
 
-    // ⑤ Tool Schemas (매 턴)
     this.sources.push({
       id: 5,
       name: "Tool Schemas",
@@ -823,12 +579,7 @@ export class SystemPromptBuilder {
       },
     });
 
-    // ⑤-b Tool Catalog (per-turn, Tool-Level Deferral)
-    //
-    // Lists in-scope plugin/MCP tools that are NOT loaded (deferred) as a
-    // compact name + 1-line catalog. The model promotes a tool into the live
-    // tool set by calling `tool_search({ query })`. Loaded tools (Source 5)
-    // are excluded by getToolCatalogForScope, so no duplication.
+    // List only scoped deferred tools; tool_search promotes them and loaded schemas must not duplicate them.
     this.sources.push({
       id: 5.5,
       name: "Tool Catalog",
@@ -854,18 +605,13 @@ export class SystemPromptBuilder {
       },
     });
 
-    // request_plugin 카탈로그.
-    // LLM이 "이 턴에 필요한 플러그인"을 판단해 request_plugin 호출 가능하도록
-    // system prompt에 힌트를 노출. 현재 턴 scope에 이미 들어온 plugin과
-    // 사용자/registry가 비활성화한 plugin은 제외한다.
     const { getPluginCards, getActivatablePluginIds } = deps;
     this.sources.push({
       id: 65,
       name: "Requestable Plugin Catalog",
       refresh: "per-turn",
       build: () => {
-        // `this.deps.toolRegistry`, not a captured one — `createIsolated`
-        // overrides exactly this field for a scoped sub-agent.
+        // Use this builder's registry because child isolation overrides that field.
         const cards = getPluginCards?.(this.deps.toolRegistry) ?? [];
         if (cards.length === 0) return "";
         const active = this.toolScope?.activePluginIds ?? new Set<string>();
@@ -883,18 +629,14 @@ export class SystemPromptBuilder {
       },
     });
 
-    // ⑦ Memory / notes / Indexed Docs (파일 변경 시)
     this.sources.push({
       id: 7,
       name: "Memory & Knowledge",
       refresh: "on-change",
-      // Query-ranked memory notes are not here: they follow the user's input,
-      // so they travel in the per-turn context (buildTurnContext) and this
-      // section stays byte-stable between turns.
+      // Ranked notes travel after user input in turn context, keeping resident memory byte-stable.
       build: () => {
         const prefs = memoryManager.getPromptUserPreferences();
-        // Default workspaces use only the global derived overview. Explicit
-        // project summaries are strictly opt-in via an exact project binding.
+        // Use global overview by default; project summaries require an exact opt-in binding.
         const longTermMemoryScope = this.projectContext?.projectRoot && this.projectContext.isDefault !== true
           ? {
               projectRoot: this.projectContext.projectRoot,
@@ -928,7 +670,6 @@ export class SystemPromptBuilder {
             "</ave-long-term-memory-overview>",
           ].join("\n"));
         }
-        // 인덱싱된 문서 요약 정보 추가 (ConversationLoop에서 주입)
         if (this.indexedDocsContext) {
           const docsContext = this.indexedDocsContext;
           parts.push(`<indexed-knowledge>\n${docsContext}\n</indexed-knowledge>`);
@@ -938,7 +679,6 @@ export class SystemPromptBuilder {
       },
     });
 
-    // ⑨ OS / Environment — stable host facts; the clock is in the turn context.
     this.sources.push({
       id: 9,
       name: "OS / Environment",
@@ -946,35 +686,17 @@ export class SystemPromptBuilder {
       build: () => this.buildEnvironment(),
     });
 
-    // The compaction summary is not a prompt source: it lives in the boundary
-    // row of the conversation (structured-compact renderCompactSummaryMessage),
-    // so a compaction rewrites history only and this prompt stays a stable prefix.
+    // Keep compaction summaries in structured history boundaries so rewriting history preserves the system prefix.
 
-    // ⑨-b Conversation Continuity Guard (per-turn)
-    //
-    // Earlier continuous-backend builds asked the LLM to append hidden
-    // <title>...</title> and [checkpoint] markers to the streamed final answer.
-    // That made title/checkpoint extraction depend on user-visible text and
-    // could truncate the answer when the model emitted metadata before closing
-    // Markdown. Checkpoints are now host-managed at the next turn's preflight
-    // boundary, so this section explicitly forbids those markers instead.
+    // Forbid model-emitted title and checkpoint markers; the host owns this metadata outside visible answers.
     this.sources.push({
       id: 9.9,
       name: "Conversation Continuity Guard",
       refresh: "per-turn",
-      // The session title is set once, after the first turn; it travels in the
-      // turn context so this section stays byte-stable for the whole session.
       build: () => t("be_systemPromptBuilder.conversationContinuityGuard"),
     });
 
-    // ⑨-c Routine Summary Tag Instruction (conditional — routine sessions only)
-    //
-    // Emitted ONLY when routineMode=true. Instructs the LLM to append a
-    // <summary>…</summary> tag at the end of its final answer so the host can
-    // extract a clean one-sentence summary for OverlayCard display without
-    // truncating the full response body. id=9.8 sits between Conversation Meta
-    // Guard (9.9) block and the environment section (9), ordered just
-    // before the guard so the LLM processes the annotation rule last.
+    // Only routine mode requests final summary tags for overlay extraction.
     this.sources.push({
       id: 9.8,
       name: "Routine Summary Tag Instruction",
@@ -985,19 +707,13 @@ export class SystemPromptBuilder {
       },
     });
 
-    // Suggested Replies — ghost-text contract. Renderer parses + filters the
-    // <suggested_replies> block out of the user-visible stream; this section
-    // just instructs the model to emit it. See
-    // `docs/architecture/proposals/suggested-replies-ghost-text.md`.
+    // Keep the suggested-replies wire contract aligned with docs/architecture/proposals/suggested-replies-ghost-text.md.
     this.sources.push({
       id: 9.85,
       name: "Suggested Replies",
       refresh: "static",
       build: () => t("be_systemPromptBuilder.suggestedRepliesInstruction"),
     });
-
-    // Active Session Context — 서버 인프라 의존
-    // Feature Flags — 서버 인프라 의존
 
     this.sources.sort((a, b) => a.id - b.id);
   }
@@ -1021,13 +737,7 @@ function renderSkillCatalogRecord(skill: SkillCatalogEntry): string {
     sanitizeSkillCatalogText(skill.description),
     MAX_SKILL_DESCRIPTION_CHARS,
   );
-  // The author's keyword hints. Count and length are already bounded on the
-  // record (`MAX_SKILL_TRIGGERS` / `MAX_SKILL_TRIGGER_CHARS`, applied where
-  // front matter is parsed); what is left to do here is what the surrounding
-  // text also needs — strip the characters that would break out of the
-  // trusted block, and re-apply the ceiling because sanitizing can only
-  // shorten. Both bounds are re-asserted rather than assumed: this renders
-  // into a prompt, and it is the last place to be wrong about that.
+  // Strip trusted-block delimiters from skill triggers and reassert count and length limits at rendering.
   const triggers = skill.triggers
     .slice(0, MAX_SKILL_TRIGGERS)
     .map((trigger) => truncateSkillCatalogText(sanitizeSkillCatalogText(trigger), MAX_SKILL_TRIGGER_CHARS))
@@ -1040,19 +750,10 @@ function renderSkillCatalogRecord(skill: SkillCatalogEntry): string {
   return JSON.stringify(record);
 }
 
-// ─── Constants ──────────────────────────────────────
-
 const MAX_SKILL_CATALOG_ENTRIES = 80;
-// Authoritative bound on the always-present skill-catalog metadata cost
-// (skill-loading-policy.md §2). Under progressive disclosure each skill's
-// name+description is a few-dozen-token fixed cost paid every session, so the
-// catalog is token-budgeted, not only entry-capped. ~6000 tokens ≈ 60–100
-// scoped skills at name+description size — comfortably above a realistic active
-// scope while capping pathological catalogs; overflow is reachable via
-// skill_list. The 80-entry cap remains a cheap pre-filter.
+// Budget resident skill metadata by tokens after the count prefilter; overflow remains reachable via skill_list.
 const SKILL_CATALOG_TOKEN_BUDGET = 6000;
-// MCP Server Guidance caps (mirror the MCP App Context slot bounds): a
-// compromised connected server cannot bloat every main-chat turn.
+// Bound server guidance so a compromised connection cannot bloat every turn.
 const MAX_MCP_GUIDANCE_SERVERS = 16;
 const MAX_MCP_GUIDANCE_CHARS = 8192;
 const MAX_SKILL_NAME_CHARS = 96;

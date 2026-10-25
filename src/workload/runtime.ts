@@ -306,11 +306,7 @@ function requireCapabilityState(
   return state;
 }
 
-/**
- * Activate the exclusive broker route before any host or tool service boots.
- * A configured launch either completes its exact-binding handshake or throws;
- * there is intentionally no degraded local execution mode.
- */
+/** Complete exact broker binding before host boot or throw; never degrade to local execution. */
 export async function initializeWorkloadBroker(
   config: WorkloadBrokerBootConfig,
   signal?: AbortSignal,
@@ -330,7 +326,7 @@ export function isWorkloadBrokerActive(): boolean {
   return activeState !== undefined;
 }
 
-/** Exact designation predicate; false never grants a local-path alternative. */
+/** A false designation never authorizes local-path execution. */
 export function isActiveWorkloadBrokerCwd(cwd: string): boolean {
   return activeState !== undefined && activeState.document.workload.cwd === cwd;
 }
@@ -347,11 +343,7 @@ export function isIssuedActiveBrokeredWorkloadCapability(
   return state === activeState && Date.parse(state.document.expiresAt) > Date.now();
 }
 
-/**
- * Resolve a model-supplied path only in the bound Linux workload namespace.
- * The controller host's cwd, HOME, platform separators, and filesystem never
- * participate in this mapping.
- */
+/** Resolve model paths only in the bound workload namespace, excluding controller-host filesystem and environment. */
 export function resolveBrokeredWorkloadPath(
   capability: BrokeredWorkloadCapability,
   inputPath: string,
@@ -420,11 +412,7 @@ function errorResult(error: unknown): ToolExecutionResult {
   };
 }
 
-/**
- * Execute only through the bound workload broker. Revalidation happens before
- * every operation; any failure becomes a typed tool error and never reaches a
- * local shell or filesystem fallback.
- */
+/** Revalidate before every broker operation; failures return typed errors without local execution fallback. */
 export async function executeBrokeredWorkloadRequest<K extends WorkloadToolOperation>(
   capability: BrokeredWorkloadCapability,
   operation: K,
@@ -459,7 +447,7 @@ export async function executeBrokeredWorkloadRequest<K extends WorkloadToolOpera
   }
 }
 
-/** Test isolation only; production never deactivates or swaps an active route. */
+/** Production routes are never deactivated or swapped; reset is test-only. */
 export function __resetActiveWorkloadBrokerForTests(): void {
   activeState = undefined;
   issuedCapabilities = new WeakMap();

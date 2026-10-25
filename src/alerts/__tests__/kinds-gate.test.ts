@@ -1,8 +1,3 @@
-/**
- * Registration writes the user's choices, the predecessor rule decides when a
- * successor stays silent, and `alert.*` events reach only the plugins entitled
- * to them.
- */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

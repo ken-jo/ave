@@ -4,11 +4,6 @@ import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { SystemPromptBuilder } from "../system-prompt-builder.js";
 
-/**
- * A complete {@link PromptMemorySource} double. Every member the builder calls
- * is required, so a test supplies only the readers its assertion is about and
- * inherits empty-but-real values for the rest.
- */
 export function makePromptMemorySource(
   overrides: Partial<PromptMemorySource> = {},
 ): PromptMemorySource {

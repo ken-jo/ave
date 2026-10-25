@@ -1,15 +1,8 @@
-/**
- * IPC Bridge — Permissions + Policy handler tests (B2)
- *
- * Strategy: mock electron's ipcMain to capture handler registrations,
- * then invoke each handler directly with mock arguments.
- */
+/** Invoke captured IPC handlers with mocked services. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";
 import { t } from "../i18n/runtime.js";
 import { invokeRegisteredHandler, invokeRegisteredHandlerWithEvent } from "./test-helpers.js";
-
-// ─── Mock electron ────────────────────────────────────
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -22,8 +15,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ─── Mock policy-store ───────────────────────────────
-
 const mockLoadPolicy = vi.fn();
 const mockSavePolicy = vi.fn();
 
@@ -31,8 +22,6 @@ vi.mock("../permissions/policy-store.js", () => ({
   loadPolicy: mockLoadPolicy,
   savePolicy: mockSavePolicy,
 }));
-
-// ─── Mock PermissionManager ──────────────────────────
 
 function makeMockPM() {
   return {
@@ -47,8 +36,6 @@ function makeMockPM() {
   };
 }
 
-// ─── Mock ConversationLoop ────────────────────────────
-
 function makeMockLoop(pm: ReturnType<typeof makeMockPM>) {
   return {
     permissionManager: pm,
@@ -62,8 +49,6 @@ function makeMockLoop(pm: ReturnType<typeof makeMockPM>) {
   };
 }
 
-// ─── Mock ApprovalGate ───────────────────────────────
-
 function makeMockGate() {
   return {
     resolve: vi.fn(),
@@ -75,8 +60,6 @@ function makeMockGate() {
   };
 }
 
-// ─── Build minimal AppServices stub ──────────────────
-
 function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) {
   const defaultPluginManifest = { id: "meeting", config: {} };
   return {
@@ -85,14 +68,10 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       listToolNames: vi.fn(() => []),
       listPluginIds: vi.fn(() => []),
       restartAll: vi.fn(),
-      // US-3c.2: config:set now calls restartPlugin(pluginId) instead of
-      // restartAll() so only the affected plugin is restarted.
       restartPlugin: vi.fn(async () => "started"),
       setConfigOverride: vi.fn(),
       listUiExtensions: vi.fn(() => []),
-      // §9.2 Track B — config:set IPC handler reads the manifest to detect
-      // `format: "secret"` keys. The runtime returns the same manifest object
-      // for the lifetime of one active incarnation.
+      // The runtime reuses each incarnation's manifest to classify secret config keys.
       getPluginManifest: vi.fn(() => defaultPluginManifest),
     } as any,
     pluginMarketplace: { list: vi.fn(), install: vi.fn(), uninstall: vi.fn() } as any,
@@ -129,8 +108,7 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() } as any,
     toolRegistry: {
       setDenyRules: vi.fn(),
-      // Spied on by the "delegates post-restart ToolRegistry resync" test
-      // — the IPC handler must NOT mutate ToolRegistry directly.
+      // Only the runtime lifecycle callback may resync the tool registry.
       unregisterByPlugin: vi.fn(),
       register: vi.fn(),
     } as any,
@@ -146,12 +124,9 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
   };
 }
 
-// ─── Setup: register handlers before each test ───────
-
 async function setupHandlers(pm = makeMockPM(), gate = makeMockGate()) {
   handlers.clear();
   vi.clearAllMocks();
-  // Re-import to re-run ipcMain.handle registrations
   const { registerIpcHandlers } = await import("../ipc-bridge.js");
   registerIpcHandlers(makeServices(pm, gate), () => null);
   return { pm, gate };
@@ -161,8 +136,6 @@ const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 const modePayload = (mode: string) => ({ mode, intent: USER_INTENT });
 const rulePayload = (pattern: string, action: string) => ({ pattern, action, intent: USER_INTENT });
 const policyPayload = (patch: Record<string, unknown>) => ({ patch, intent: USER_INTENT });
-
-// ─── Tests ───────────────────────────────────────────
 
 describe("ave:permission:add-rule", () => {
   it("action=allow → calls addAlwaysAllowedPersist with pattern", async () => {
@@ -198,7 +171,6 @@ describe("ave:permission:add-rule", () => {
   it("no permissionManager → returns { ok: false }", async () => {
     const pm = makeMockPM();
     const { pm: _p } = await setupHandlers(pm);
-    // Simulate missing PM by overwriting conversationLoop.permissionManager after setup
     handlers.clear();
     const { registerIpcHandlers } = await import("../ipc-bridge.js");
     const services = makeServices(pm);
@@ -254,8 +226,7 @@ describe("ave:policy:get", () => {
     expect(mockLoadPolicy).toHaveBeenCalled();
   });
 
-  // An admin-dir policy that never sets managed:true is still unwritable —
-  // savePolicy blocks on the file's existence, which `source` records.
+  // An existing admin policy remains unwritable even without managed:true.
   it("reports editable:false for an admin-dir policy with managed:false", async () => {
     const fakePolicy = {
       version: 1,
@@ -459,7 +430,6 @@ describe("ave:plugins:config:*", () => {
     expect(result).toEqual({ ok: true, config: { apiKey: "secret" } });
     expect(services.settingsService.setPluginConfig).toHaveBeenCalledWith("meeting", { apiKey: "secret" });
     expect(services.pluginRuntime.setConfigOverride).toHaveBeenCalledWith("meeting", { apiKey: "secret" });
-    // US-3c.2: targeted restart — only the affected plugin is restarted.
     expect(services.pluginRuntime.restartPlugin).toHaveBeenCalledWith(
       "meeting",
       { skipPreparation: true },
@@ -467,13 +437,7 @@ describe("ave:plugins:config:*", () => {
     expect(services.pluginRuntime.restartAll).not.toHaveBeenCalled();
   });
 
-  // Contract: the IPC `ave:plugins:config:set` handler delegates the
-  // post-restart ToolRegistry resync to the runtime's `onEnable` callback
-  // (wired in `boot/steps/plugin-runtime.ts`) — it no longer calls
-  // `syncPluginToolRegistry` directly. This test pins that contract: the
-  // handler must NOT touch `deps.toolRegistry` on its own and must rely
-  // entirely on `restartPlugin` (which fires onEnable on success per
-  // `src/plugins/runtime/__tests__/lifecycle.test.ts`).
+  // Config IPC delegates tool-registry resync to restartPlugin and its onEnable callback.
   it("delegates post-restart ToolRegistry resync to the runtime onEnable hook (no direct registry mutation in the IPC handler)", async () => {
     const pm = makeMockPM();
     handlers.clear();
@@ -491,23 +455,17 @@ describe("ave:plugins:config:*", () => {
       "meeting",
       { skipPreparation: true },
     );
-    // The IPC handler must not bypass the runtime's lifecycle contract by
-    // mutating the ToolRegistry on its own — that's onEnable's job, and the
-    // runtime layer's lifecycle tests verify it fires.
     expect(services.toolRegistry.unregisterByPlugin).not.toHaveBeenCalled();
     expect(services.toolRegistry.register).not.toHaveBeenCalled();
   });
 
-  // §9.2 Track B — US-B5
   it("strips `format:'secret'` keys from cleartext pluginConfigs at save time", async () => {
     const pm = makeMockPM();
     handlers.clear();
     vi.clearAllMocks();
     const { registerIpcHandlers } = await import("../ipc-bridge.js");
     const services = makeServices(pm);
-    // Manifest declares apiKey as a secret. The IPC handler MUST drop
-    // it from the payload before calling setPluginConfig so the
-    // cleartext settings.json never sees it.
+    // Secret manifest keys must never reach cleartext pluginConfigs.
     const manifest = {
       id: "meeting",
       name: "Meeting",
@@ -531,15 +489,12 @@ describe("ave:plugins:config:*", () => {
     ) as { ok: boolean; config: unknown };
 
     expect(result.ok).toBe(true);
-    // setPluginConfig is the only path that lands on disk for cleartext
-    // pluginConfigs — verify it never received the secret key.
     const savedArg = (services.settingsService.setPluginConfig as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as Record<string, unknown>;
     expect(savedArg).toEqual({ endpoint: "https://api.example.com" });
     expect("apiKey" in savedArg).toBe(false);
     expect(JSON.stringify(savedArg)).not.toContain("sk-LEAK");
   });
 
-  // §9.2 Track B — US-B5: secret writes go through settingsService.setSecret
   it("config:secret:set persists via setSecret and never via setPluginConfig", async () => {
     const pm = makeMockPM();
     handlers.clear();
@@ -572,7 +527,6 @@ describe("ave:plugins:config:*", () => {
       "plugin.meeting.apiKey",
       "sk-LIVE",
     );
-    // The secret value must NOT pass through setPluginConfig.
     const setPluginConfigMock = services.settingsService.setPluginConfig as unknown as { mock: { calls: unknown[][] } };
     for (const call of setPluginConfigMock.mock.calls) {
       const arg = call[1];
@@ -627,7 +581,6 @@ describe("ave:policy:set", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe("managed");
     expect(result.message).toContain("IT 관리");
-    // gate.setPolicy must NOT have been called
     expect(gate.setPolicy).not.toHaveBeenCalled();
   });
 
@@ -640,7 +593,6 @@ describe("ave:policy:set", () => {
     const services = makeServices(pm);
     services.approvalGate = undefined as any;
     registerIpcHandlers(services, () => null);
-    // Should not throw even with no gate
     const result = await invokeRegisteredHandler(handlers, "ave:policy:set", policyPayload({})) as { ok: boolean };
     expect(result.ok).toBe(true);
   });
@@ -663,7 +615,6 @@ describe("ave:permission:set-mode", () => {
     expect(pm.setModePersist).toHaveBeenCalledWith("auto");
   });
 
-  // §F8: whitelist validation
   it("invalid mode → returns { ok: false, error: 'invalid-mode' } without calling setModePersist", async () => {
     const { pm } = await setupHandlers();
     const result = await invokeRegisteredHandler(handlers, "ave:permission:set-mode", modePayload("turbo")) as { ok: boolean; error: string };
@@ -680,7 +631,6 @@ describe("ave:permission:set-mode", () => {
   });
 });
 
-// §F8: add-rule validation
 describe("ave:permission:add-rule — F8 validation", () => {
   it("empty pattern → returns { ok: false, error: 'invalid-pattern' }", async () => {
     const { pm } = await setupHandlers();
@@ -709,7 +659,6 @@ describe("ave:permission:add-rule — F8 validation", () => {
   });
 });
 
-// §F8: policy:set validation
 describe("ave:policy:set — F8 validation", () => {
   it("patch with 'managed' key → returns { ok: false, error: 'invalid-patch' } without calling savePolicy", async () => {
     await setupHandlers();

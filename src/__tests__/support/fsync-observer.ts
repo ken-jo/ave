@@ -1,24 +1,9 @@
-/**
- * Test support: count the `sync()` (fsync) calls a write path makes.
- *
- * Wraps `fs.promises.open` so every FileHandle it hands back tallies its
- * `sync()` invocations. A durability-claiming write that routes through the
- * feature-namespace atomic-write authority opens its staging file and fsyncs
- * the bytes (and, on POSIX, the parent directory) before the rename, so the
- * counter lands >= 1. A pre-convergence `writeFile`+`rename` copy fsyncs
- * nothing, so the counter stays 0 — which is what makes a `>= 1` assertion go
- * red when the fix is reverted.
- *
- * Shared rather than inlined per test so the three converged stores assert the
- * same guarantee against one observer, and so the duplicate-body test gate does
- * not see the same ~10-line wrapper copied across files.
- */
+/** Count FileHandle.sync calls so durability assertions fail for unsynced rename-only writes. */
 import { promises as fsp } from "node:fs";
 
 export interface FileHandleSyncObserver {
-  /** Number of FileHandle.sync() calls counted so far. */
   calls(): number;
-  /** Restore the original `fs.promises.open`. Always call in a `finally`. */
+  /** Restore the patched open function in finally. */
   restore(): void;
 }
 
