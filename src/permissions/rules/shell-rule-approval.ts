@@ -1,7 +1,9 @@
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
-import type { ShellRuleApproval } from "../../shared/permissions-events.js";
+import type { ShellRuleApproval, ShellRuleDialect } from "../../shared/permissions-events.js";
 import { analyzeShellForRules, evaluateShellRules } from "./shell-rule-matcher.js";
-import { formatRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
+import { canonicalRuleSpecifier, formatRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
+import { inspectPowerShellCommand, powerShellRuleShape } from "./powershell-exfiltration.js";
+import { evaluatePowerShellSubject } from "./rule-scopes.js";
 import { parseShellCommand, suggestShellPrefix } from "./shell-prefix-policy.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
@@ -9,24 +11,28 @@ import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
 
-// Derive the one exact rule a bash card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25, five-choice shell card).
-export function buildShellRuleApproval(command: string, projectCwd: string, rememberAllowed: boolean, sessionId?: string): ShellRuleApproval {
-  const parsed = parseShellCommand(command);
-  const shape = analyzeShellForRules(parsed, projectCwd);
-  const floor = isDestructiveShellText(command)
-    || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
-    || shellExfiltrationSignal(parsed, projectCwd) !== null || shellSensitivePathSignal(parsed, projectCwd) !== null;
-  let exactRule: string | null = null;
-  if (rememberAllowed && !floor && shape.ok && shape.commands.length === 1 && shape.commands[0]) {
-    const tokens = suggestShellPrefix(shape.commands[0].argv, false);
-    if (tokens) {
-      const pattern = formatRuleSpecifier({ kind: "bash", tokens, wildcard: false });
-      // The rule must cover this whole invocation and disclose no secret.
-      if (maskSensitiveData(pattern).masked === pattern && suggestionCovers(pattern, command, projectCwd)) exactRule = pattern;
-    }
-  }
+// Derive the one exact rule a shell card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25). `Bash(...)` for bash and `PowerShell(...)` for PowerShell, each in the canonical form its matcher compares.
+export function buildShellRuleApproval(
+  dialect: ShellRuleDialect,
+  command: string,
+  projectCwd: string,
+  saves: { allow: boolean; deny: boolean },
+  sessionId?: string,
+): ShellRuleApproval {
+  const candidate = saves.allow
+    ? dialect === "bash" ? exactBashRule(command, projectCwd) : exactPowerShellRule(command, projectCwd)
+    : null;
+  // The rule must cover this whole invocation and disclose no secret.
+  const exactRule = candidate !== null && maskSensitiveData(candidate).masked === candidate && suggestionCovers(dialect, candidate, "allow", command, projectCwd)
+    ? candidate : null;
+  const denyCandidate = saves.deny ? literalCommandRule(dialect, command) : null;
+  const denyRule = denyCandidate !== null && maskSensitiveData(denyCandidate).masked === denyCandidate && suggestionCovers(dialect, denyCandidate, "deny", command, projectCwd)
+    ? denyCandidate : null;
   return {
+    dialect,
     exactRule,
+    denyRule,
+    denyAllowed: saves.deny,
     projectCwd,
     projectRoot: projectRuleRoot(projectCwd),
     sessionAllowed: exactRule !== null && Boolean(sessionId),
@@ -34,22 +40,89 @@ export function buildShellRuleApproval(command: string, projectCwd: string, reme
   };
 }
 
-function suggestionCovers(pattern: string, command: string, cwd: string): boolean {
+function exactBashRule(command: string, projectCwd: string): string | null {
+  const parsed = parseShellCommand(command);
+  const shape = analyzeShellForRules(parsed, projectCwd);
+  const floor = isDestructiveShellText(command)
+    || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
+    || shellExfiltrationSignal(parsed, projectCwd) !== null || shellSensitivePathSignal(parsed, projectCwd) !== null;
+  if (floor || !shape.ok || shape.commands.length !== 1 || !shape.commands[0]) return null;
+  const tokens = suggestShellPrefix(shape.commands[0].argv, false);
+  return tokens ? formatRuleSpecifier({ kind: "bash", tokens, wildcard: false }) : null;
+}
+
+function exactPowerShellRule(command: string, projectCwd: string): string | null {
+  const signals = inspectPowerShellCommand(command, projectCwd);
+  if (signals.exfiltration !== null || signals.sensitive !== null || signals.ordinaryAsk !== undefined || isDestructiveShellText(command)) return null;
+  const shape = powerShellRuleShape(command);
+  if (!shape.ok || shape.opaque !== null || shape.commands.length !== 1) return null;
+  const tokens = literalTokens(shape.commands[0]!);
+  if (tokens === null) return null;
+  const pattern = formatRuleSpecifier({ kind: "powershell", tokens, wildcard: false });
   try {
-    return shellRuleCoversCommand(pattern, "allow", command, cwd);
+    // The literal argv must also be a storable rule (no syntax the grammar refuses).
+    return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
+  } catch {
+    return null;
+  }
+}
+
+// The argv when every word is literal text, else null.
+function literalTokens(argv: readonly (string | null | undefined)[]): string[] | null {
+  return argv.every((word): word is string => typeof word === "string") ? [...argv] as string[] : null;
+}
+
+// The literal argv of a single simple command as a rule, whatever its floors: the suggestion "Always deny" stores.
+function literalCommandRule(dialect: ShellRuleDialect, command: string): string | null {
+  let tokens: string[] | null = null;
+  if (dialect === "bash") {
+    const shape = analyzeShellForRules(parseShellCommand(command));
+    if (shape.ok && shape.hidden.length === 0 && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!.argv);
+  } else {
+    const shape = powerShellRuleShape(command);
+    if (shape.ok && shape.opaque === null && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!);
+  }
+  if (tokens === null || tokens.length === 0) return null;
+  const pattern = formatRuleSpecifier({ kind: dialect, tokens: [...tokens], wildcard: false });
+  try {
+    return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
+  } catch {
+    return null;
+  }
+}
+
+function suggestionCovers(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
+  try {
+    return shellRuleCoversCommand(dialect, pattern, action, command, cwd);
   } catch {
     // A candidate the store would refuse is simply not offered.
     return false;
   }
 }
 
-// Reuse the strict store validator and matcher for edited dock values.
-export function shellRuleCoversCommand(pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
+// Reuse the strict store validator and matcher for a rule a card saves: true when `pattern` is a storable rule of the call's own shell dialect and, as `action`, decides this command (an allow covers it, a deny refuses it). Throws RuleSpecifierError for text outside the rule language.
+export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
   if (maskSensitiveData(pattern).masked !== pattern) return false;
-  validatePermissionRule({ pattern, action });
+  const rule = validatePermissionRule({ pattern, action });
   const spec = parseRuleSpecifier(pattern);
-  if (spec.kind !== "bash") return false;
-  const input = { pattern, spec };
-  const result = evaluateShellRules(command, { allow: action === "allow" ? [input] : [], deny: action === "deny" ? [input] : [], ask: [] }, cwd);
+  if (dialect === "bash") {
+    if (spec.kind !== "bash") return false;
+    const input = { pattern, spec };
+    const result = evaluateShellRules(command, { allow: action === "allow" ? [input] : [], deny: action === "deny" ? [input] : [], ask: [] }, cwd);
+    return result.decision === action;
+  }
+  if (spec.kind !== "powershell") return false;
+  const signals = inspectPowerShellCommand(command, cwd);
+  const result = evaluatePowerShellSubject({
+    command,
+    exactAllowOnly: false,
+    floorSignal: signals.exfiltration ?? signals.sensitive ?? signals.ordinaryAsk ?? null,
+  }, [rule]);
   return result.decision === action;
+}
+
+// The wildcard allow warning a card shows for an edited rule (owner 2026-10-25): a wildcard allow applies only to sandboxed runs, because a shell without a sandbox runs unasked only on an exact rule.
+export function isWildcardShellRule(pattern: string): boolean {
+  const spec = parseRuleSpecifier(pattern);
+  return (spec.kind === "bash" || spec.kind === "powershell") && spec.wildcard;
 }

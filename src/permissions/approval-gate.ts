@@ -161,8 +161,12 @@ interface EgressHostApproval {
   readonly scopes: readonly EgressGrantScope[];
   // `local`: this machine or a private network (loopback, RFC 1918, ULA…). `unverified`: the upstream proxy resolves the name; Ave could not check the address. For both the card warns, and only Allow once / This conversation (a terminal: This tab) are offered.
   readonly network: EgressGrantNetwork;
-  // Set when a workspace terminal tab asks: the card is that tab's banner, drawn in the window that owns the tab (never another one), and the request names no conversation. Its second scope is `tab`, a shell call's is `conversation`.
+  // Set when a workspace terminal tab asks: the card is that tab's banner, drawn in the window that owns the tab (never another one), and the request names no conversation. Its second scope is `tab`, a shell call's is `session`.
   readonly terminalTabId?: string;
+  // The exact `Network(<host>:<port>)` host rule "Always deny" stores unless edited (owner 2026-10-25), host-derived; null for a destination the rule grammar cannot name (an address literal).
+  readonly rule: string | null;
+  // A shell call's working directory: where a project host rule is saved. Set only when This project is offered.
+  readonly projectCwd?: string;
 }
 
 export interface ApprovalRequest {
@@ -629,6 +633,14 @@ interface PendingEntry {
   egressScopes?: readonly EgressGrantScope[];
   // A workspace terminal tab's egress ask: only the window that owns the tab may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
   egressTerminalTabId?: string;
+  // An `egress-host` ask's destination and host rule context, kept host-side for a card's rule save (`getRequestSnapshot`).
+  egressRule?: {
+    host: string;
+    port: number;
+    network: EgressGrantNetwork;
+    rule: string | null;
+    projectCwd?: string;
+  };
   // approval cache key captured server-side at request emit time. The userApprovalRecord IPC handler reads this via ApprovalGate.getRequestSnapshot instead of trusting the renderer to echo it back. Optional because non-tool kinds (out-of-allowed-dir, agent-action) do not propagate a cache key.
   approvalCacheKey?: string;
   // Captured with approvalCacheKey; see ApprovalRequest.
@@ -1522,7 +1534,7 @@ export class ApprovalGate {
       hasOneShotApprovalChoiceContract;
     // A regular builtin command dock may save an escape rule and then answer allow-once. Its native action still uses the same authenticated receipt.
     const hasShellRuleApprovalContract = !forceExplicit && requestedChoices === undefined &&
-      req.source === "builtin" && req.toolName === "bash" && req.toolCategory === "shell" &&
+      req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
     if (
@@ -1618,10 +1630,18 @@ export class ApprovalGate {
     const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
       ? req.args as Record<string, unknown> : undefined;
     const shellRuleCwd = req.evaluationContext?.executionCwd;
-    const shellRule = req.source === "builtin" && req.toolName === "bash" &&
+    // A shell card saves only the exact rule for this one command, which the person reads on the card; floors, destructive and secret-bearing commands have no such rule (`buildShellRuleApproval`), and a deny or ask rule still wins over a saved allow. So a save is open to every card with the shell-rule contract (Plan B and explicit host included, owner 2026-10-25), whether or not the exact-approval store (Store B) may record this request, and never to a one-shot (a high-risk verdict included), rationale, remote-controller or ask-all request.
+    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract && !highRiskOneShot &&
+      req.mode !== "ask_all" && remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
+    const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
+    const shellRule = req.source === "builtin" && shellRuleDialect !== undefined &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
-      ? buildShellRuleApproval(rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId)
+      ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
+        allow: shellRuleSaveAllowed,
+        // A deny only narrows, so "Always deny" stays on one-shot cards too; never for a remote controller.
+        deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
+      }, req.sessionId)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
@@ -1964,6 +1984,13 @@ export class ApprovalGate {
               ...(fullReq.egressHost.terminalTabId === undefined
                 ? {}
                 : { egressTerminalTabId: fullReq.egressHost.terminalTabId }),
+              egressRule: {
+                host: fullReq.egressHost.host,
+                port: fullReq.egressHost.port,
+                network: fullReq.egressHost.network,
+                rule: fullReq.egressHost.rule,
+                ...(fullReq.egressHost.projectCwd === undefined ? {} : { projectCwd: fullReq.egressHost.projectCwd }),
+              },
             }),
         approvalCacheKey: fullReq.approvalCacheKey,
         approvalMemory: fullReq.approvalMemory,
@@ -2098,6 +2125,13 @@ export class ApprovalGate {
   }
 
   // Whether `contents` is the live window that owns this terminal tab (its asks' only surface).
+  // Whether `contents` may record a rule for this pending request: any desktop renderer, except that a terminal tab's egress ask is recorded only from the window that owns the tab (as it is answered).
+  mayRecordFrom(requestId: string, contents: WebContents | undefined): boolean {
+    const entry = this.pending.get(requestId);
+    if (!entry) return false;
+    return entry.egressTerminalTabId === undefined || this.isTerminalOwner(entry.egressTerminalTabId, contents);
+  }
+
   private isTerminalOwner(terminalTabId: string, contents: WebContents | undefined): boolean {
     if (contents === undefined || contents.isDestroyed()) return false;
     return this.resolveSurface?.(undefined, terminalTabId) === contents;
@@ -2277,6 +2311,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
     workingDirectoryIdentity: string | undefined;
     riskCeilingAtApproval: RiskLevel | undefined;
     verdictAtApproval: RiskVerdict["level"];
@@ -2296,6 +2331,11 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      egress: entry.egressRule === undefined ? undefined : {
+        ...entry.egressRule,
+        scopes: entry.egressScopes ?? [],
+        ...(entry.egressTerminalTabId === undefined ? {} : { terminalTabId: entry.egressTerminalTabId }),
+      },
       workingDirectoryIdentity: entry.workingDirectoryIdentity,
       riskCeilingAtApproval: entry.riskCeilingAtApproval,
       verdictAtApproval: entry.verdictAtApproval,

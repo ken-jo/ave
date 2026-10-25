@@ -19,7 +19,7 @@ function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalReques
     reason: "The sandboxed bash command wants to connect to github.com:443.",
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
+    egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "session", "project", "always"] },
     ...overrides,
   } as ApprovalRequest;
 }
@@ -50,7 +50,7 @@ describe("EgressHostApprovalCard", () => {
   it("offers only the scopes the host sent, brackets an IPv6 target, and omits the revoke hint for short grants", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "::1", port: 8080, network: "local", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "::1", port: 8080, rule: null, network: "local", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
@@ -64,7 +64,7 @@ describe("EgressHostApprovalCard", () => {
   it("warns that a local or private destination is one, and shows it in canonical form", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "127.0.0.1", port: 11434, network: "local", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "127.0.0.1", port: 11434, rule: null, network: "local", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
@@ -77,7 +77,7 @@ describe("EgressHostApprovalCard", () => {
   it("says when the upstream proxy resolves the name and Ave could not check it", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "intranet.corp.test", port: 443, network: "unverified", scopes: ["once", "session"] } })}
+        request={egressRequest({ egressHost: { host: "intranet.corp.test", port: 443, rule: "Network(intranet.corp.test:443)", network: "unverified", scopes: ["once", "session"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
@@ -88,7 +88,7 @@ describe("EgressHostApprovalCard", () => {
   });
 
   it("shows no local warning for a public destination", () => {
-    render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
+    render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
     expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();
   });
 

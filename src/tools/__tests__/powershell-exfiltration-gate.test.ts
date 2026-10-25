@@ -109,10 +109,11 @@ describe("shell floors cover powershell in allow mode", () => {
     expect(allowed.execute).toHaveBeenCalledTimes(1);
   });
 
-  it("powershell carries no project rule scope: Bash(...) rules never apply to it", async () => {
+  // Owner 2026-10-25: PowerShell has exact PowerShell(<command>) rules, so it carries the project rule scope; Bash(...) rules still never apply to it.
+  it("powershell carries the project rule scope of its working directory", async () => {
     const { context } = await run("powershell", "Get-ChildItem");
     expect(context?.ruleSubject).toMatchObject({ dialect: "powershell" });
-    expect(context?.projectRulesCwd).toBeUndefined();
+    expect(context?.projectRulesCwd).toBe(context?.ruleSubject?.kind === "shell" ? context.ruleSubject.cwd : "missing");
   });
 
   it.each([

@@ -103,6 +103,10 @@ export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): Sand
     abortSignalOf: egressInvocationAbortSignal,
     workerAllowedDomains: workerEgressAllowedDomains,
     grants: egressGrantStore(),
+    // Host rules live in the permission manager; without one no rule exists to consult.
+    networkRule: deps.permissionManager === undefined
+      ? async () => undefined
+      : (subject) => deps.permissionManager!.networkRuleDecision(subject),
     shellAskEnabled: deps.shellAskEnabled,
     requester: () => requester,
     audit: (entry) => {

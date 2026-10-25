@@ -3,7 +3,7 @@ import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
-import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
@@ -27,7 +27,6 @@ import {
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
-  isShellRuleSaveScope,
   type PermissionReviewSuggestionPayload,
   type PermissionReviewSuggestionReason,
 } from "../../shared/permissions-events.js";
@@ -1231,50 +1230,20 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (body.rule !== undefined) {
-      // A bash card's save choice (owner 2026-10-25, five-choice shell card): the host stores the exact `Bash(<command>)` rule it derived from the live command, at the chosen scope. The renderer names only the scope; a pattern or any other field is refused, never used.
-      const rule = payloadRecord(body.rule);
-      const context = snapshot.shellRule;
-      const ruleScope = rule.scope;
-      if (!context || Object.keys(rule).some((key) => key !== "scope") || !isShellRuleSaveScope(ruleScope) ||
-        decision !== "allow" || (ruleScope === "session") !== (scope === "session")) {
-        return { ok: false, error: "invalid-rule", message: "A command rule names only its scope (session, project or always) on a live shell request" };
+      // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
+      if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
+        return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
       }
-      const pattern = context.exactRule;
-      const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
-      if (pattern === null || (ruleScope === "session" ? !context.sessionAllowed : !context.persistentAllowed)) {
-        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
-      }
-      // Re-check against the live command with the store's own validator, so a stale or tampered snapshot cannot save a rule that does not match it exactly.
-      try {
-        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, "allow", command, context.projectCwd)) {
-          return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
-        }
-      } catch (error) {
-        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
-      }
-      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
-      const pm = conversationLoop.permissionManager;
-      if (!pm) return { ok: false, error: "no-permission-manager" };
-      try {
-        if (ruleScope === "session") {
-          if (!snapshot.sessionId) return { ok: false, error: "missing-session", message: "This request has no conversation session" };
-          pm.addSessionShellRule(snapshot.sessionId, pattern);
-        } else {
-          await pm.addRulePersist({ pattern, action: "allow" }, ruleScope === "project"
-            ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
-        }
-      } catch (error) {
-        // A rule that validated but could not be stored: corrupt file, lock or I/O.
-        return { ok: false, error: "rule-save-failed", message: errorMessage(error) };
-      }
+      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, conversationLoop.permissionManager);
+      if (!saved.ok) return saved;
       auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
-        output: `[approval:remembered] store=rules decision=allow scope=${ruleScope} rule=${JSON.stringify(pattern)} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+        output: `[approval:remembered] store=rules decision=${saved.action} scope=${saved.scope} rule=${JSON.stringify(saved.pattern)} edited=${saved.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
       });
       broadcastPermissionConfigChanged(deps);
-      return { ok: true };
+      return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };
     }
     // A bash card remembers an allow only as its exact command rule, at any scope.
     if (decision === "allow" && snapshot.shellRule) {

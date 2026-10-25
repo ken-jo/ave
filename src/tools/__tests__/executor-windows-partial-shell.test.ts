@@ -334,9 +334,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     // No once/deny narrowing: the renderer shows the full grid.
     expect(card.allowedChoices).toBeUndefined();
     expect(card.reviewerVerdict).toBeUndefined();
-    // This session (the conversation is known), This project and Always (persistent saves allowed), all for the exact rule.
+    // Allow for session (the conversation is known), this project and everywhere (persistent saves allowed), and Always deny, all for the exact rule.
     expect(card.shellRule).toEqual({
+      dialect: "bash",
       exactRule: "Bash(echo plan-b)",
+      denyRule: "Bash(echo plan-b)",
+      denyAllowed: true,
       projectCwd: expect.any(String),
       projectRoot: expect.any(String),
       sessionAllowed: true,
@@ -371,6 +374,36 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(observedPermit).toBeDefined();
     expect(result[0]?.is_error).toBeUndefined();
+  });
+
+  // Owner 2026-10-25: headless follows exact rules. A background Plan B shell runs on its exact rule, on the policy-lane permit, and is denied without one; neither path raises a card or consults the reviewer.
+  it.each([true, false])("runs a headless Plan B shell only on its exact rule (rule %s)", async (withRule) => {
+    partialWindowsAsrt();
+    let observedPermit: unknown;
+    const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
+    pm.setMode("allow");
+    pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow" }] : [{ pattern: "Bash(echo *)", action: "allow" }]);
+    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    pm.dispatchReviewer = vi.fn() as never;
+    const requestAndWait = vi.fn();
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
+      [{ id: "partial-shell-headless", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
+    );
+
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    if (withRule) {
+      expect(execute).toHaveBeenCalledOnce();
+      expect(observedPermit).toBeDefined();
+      expect(result[0]?.is_error).toBeUndefined();
+    } else {
+      expect(execute).not.toHaveBeenCalled();
+      expect(result[0]?.is_error).toBe(true);
+    }
   });
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {

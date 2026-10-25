@@ -124,6 +124,8 @@ export type EgressDecisionBasis =
   | "extension-allowlist"
   /** A shell reached a host a standing grant covers. */
   | "grant"
+  /** A `Network(...)` host rule decided it (deny, or allow for a public destination). */
+  | "rule"
   | "prompt"
   /** Refused before any lookup: unattributed, wrong kind of identity, or a rule. */
   | "policy"

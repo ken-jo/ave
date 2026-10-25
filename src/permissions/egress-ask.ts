@@ -72,6 +72,8 @@ export interface EgressAskDeps {
   // The hosts a worker may reach: its extension's declared domains plus the model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`, optionally `:port`). `undefined` pluginId is a worker no extension owns.
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
+  // The `Network(...)` host rule deciding a shell's or terminal's destination (`PermissionManager.networkRuleDecision`), consulted before grants: a deny refuses, an ask skips the grants and asks, an allow (public destinations only) lets it through.
+  readonly networkRule: (subject: { host: string; port: number; sessionId?: string; projectCwd?: string }) => Promise<{ decision: "deny" | "ask" | "allow"; pattern: string } | undefined>;
   // `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked.
   readonly shellAskEnabled: () => boolean;
   // The approval surface, once the conversation layer has one; undefined before.
@@ -94,6 +96,7 @@ export const EGRESS_DENY_REASONS = {
   noSurface: "host needs approval; no approval surface is available",
   failed: "network approval failed",
   reserved: "link-local, metadata, unspecified, multicast and broadcast addresses are never reachable from the sandbox",
+  denyRule: "denied by host rule",
 } as const;
 
 interface Decision {
@@ -339,6 +342,15 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const grantDestination = { ...destination, network };
         const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
         const key = holdKey(token, destination, strength);
+        const ruled = await deps.networkRule({
+          host: destination.host,
+          port: destination.port,
+          ...(owner.kind === "shell" && owner.context.sessionId !== undefined ? { sessionId: owner.context.sessionId } : {}),
+          ...(owner.kind === "shell" && owner.context.workspaceRoot !== undefined ? { projectCwd: owner.context.workspaceRoot } : {}),
+        });
+        if (ruled?.decision === "deny") return { owner, decision: deny("rule", `${EGRESS_DENY_REASONS.denyRule} ${ruled.pattern}`) };
+        // A host rule lets through public destinations only, as a persistent grant does: a name that resolves to this machine, a private network or an unchecked address is asked about instead.
+        if (ruled?.decision === "allow" && network === "public") return { owner, decision: pass(allow("rule", null)) };
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
@@ -347,7 +359,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           }
         }
         for (;;) {
-          const granted = await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
+          // An ask rule is a per-connection card: no grant stands in for it.
+          const granted = ruled?.decision === "ask" ? undefined : await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
           if (granted !== undefined) {
             if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
             return { owner, decision: pass(allow("grant", granted)) };

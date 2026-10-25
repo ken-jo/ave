@@ -16,7 +16,7 @@ function shellRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
     reason: "Review shell command", createdAt: Date.now(), requireExplicit: false,
     reviewerVerdict: { level: "medium", reason: "Review shell command" },
     persistentAllowAllowed: true, persistentApprovalCwd: "/workspace/project",
-    shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
+    shellRule: { dialect: "bash", denyRule: null, denyAllowed: true, exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
     ...overrides,
   };
 }
@@ -58,7 +58,7 @@ describe("shell approval five choices", () => {
     expect(onDecide).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith(expect.objectContaining({
-      rule: { scope }, decision: "allow", scope: scope === "session" ? "session" : "persistent",
+      rule: { action: "allow", scope }, decision: "allow", scope: scope === "session" ? "session" : "persistent",
     }));
     expect(JSON.stringify(record.mock.calls[0])).not.toContain("pattern");
     finishSave?.({ ok: true });
@@ -77,7 +77,7 @@ describe("shell approval five choices", () => {
 
   it("disables only This session when the request has no conversation", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest({ shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: true } }), vi.fn());
+    renderApproval(shellRequest({ shellRule: { dialect: "bash", denyRule: null, denyAllowed: true, exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: true } }), vi.fn());
     expect(screen.getByTestId(SAVE_BUTTONS.session)).toBeDisabled();
     expect(screen.getByTestId(SAVE_BUTTONS.project)).toBeEnabled();
     expect(screen.getByTestId(SAVE_BUTTONS.always)).toBeEnabled();
@@ -85,7 +85,7 @@ describe("shell approval five choices", () => {
 
   it("keeps a command with no exact rule to Deny and Allow once, and says why", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { exactRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
+    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { dialect: "bash", denyRule: null, denyAllowed: true, exactRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
     for (const testId of Object.values(SAVE_BUTTONS)) expect(screen.getByTestId(testId)).toBeDisabled();
     expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();

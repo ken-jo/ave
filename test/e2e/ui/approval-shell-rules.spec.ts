@@ -35,7 +35,10 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
         ? ["allow-once", "allow-always", "deny-once", "deny-always"]
         : ["allow-once", "deny-once"],
       shellRule: {
+        dialect: "bash",
         exactRule: input.persistentAllowed ? "Bash(npm test)" : null,
+        denyRule: "Bash(npm test)",
+        denyAllowed: true,
         projectCwd: "/workspace/project",
         projectRoot: "/workspace/project",
         sessionAllowed: input.persistentAllowed,

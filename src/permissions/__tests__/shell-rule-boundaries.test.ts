@@ -81,7 +81,7 @@ describe("bounded rule consent", () => {
   });
 
   it.each(["printf ready", "git status --short", "git -c core.pager=less log"])("defaults to the complete exact argv: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation")).toMatchObject({ exactRule: `Bash(${command})`, persistentAllowed: true, sessionAllowed: true });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject({ exactRule: `Bash(${command})`, persistentAllowed: true, sessionAllowed: true });
     expect(suggestShellPrefix(command.split(" "))).toEqual(command.split(" "));
   });
 
@@ -97,7 +97,7 @@ describe("bounded rule consent", () => {
     const spec = parseRuleSpecifier(pattern);
     if (spec.kind !== "bash") throw new Error("Expected shell rule");
     expect(evaluateShellRules(command, { allow: [{ pattern, spec }], ask: [], deny: [] }, project).decision).toBeNull();
-    expect(buildShellRuleApproval(command, project, true, "conversation")).toMatchObject({ exactRule: null, persistentAllowed: false });
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject({ exactRule: null, persistentAllowed: false });
     const manager = new PermissionManager(permissionsFile);
     manager.setRules([{ pattern, action: "allow" }]);
     expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe("ask");

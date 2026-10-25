@@ -10,7 +10,7 @@ const request: ApprovalRequest = {
   toolCategory: "network", args: { host: "downloads.example.com", port: 443 },
   reason: "A sandboxed command requested a connection", createdAt: 0,
   requireExplicit: true, allowedChoices: ["allow-once", "deny-once"],
-  egressHost: { host: "downloads.example.com", port: 443, network: "public", scopes: ["once", "always"] },
+  egressHost: { host: "downloads.example.com", port: 443, rule: "Network(downloads.example.com:443)", network: "public", scopes: ["once", "always"] },
 };
 
 afterEach(cleanup);

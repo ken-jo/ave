@@ -23,7 +23,7 @@ function terminalAsk(id: string, overrides: Partial<NonNullable<ApprovalRequest[
     reason: `A command in workspace terminal ${tabId} wants to connect to github.com:443.`,
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
+    egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
   } as unknown as ApprovalRequest;
 }
 
@@ -31,7 +31,7 @@ const shellAsk: ApprovalRequest = {
   ...terminalAsk("shell-1"),
   toolName: "bash",
   sessionId: "session-1",
-  egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
+  egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "session", "project", "always"] },
 } as ApprovalRequest;
 
 function surface(queue: ApprovalRequest[], overrides: Partial<ApprovalSurfaceContextValue> = {}): ApprovalSurfaceContextValue {

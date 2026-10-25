@@ -892,7 +892,7 @@ export function ToolApprovalContent({
           source: request.source ?? "builtin",
           decision: "allow",
           scope: shellAction === "session" || (!shellRule && rememberIsSessionOnly) ? "session" : "persistent",
-          ...(shellAction === undefined ? {} : { rule: { scope: shellAction } }),
+          ...(shellAction === undefined ? {} : { rule: { action: "allow" as const, scope: shellAction } }),
           verdictAtApproval: finalVerdict as UserApprovalVerdict,
           nlJustification: null,
           trustOrigin: request.trustOrigin,
