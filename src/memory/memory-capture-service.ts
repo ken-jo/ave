@@ -23,7 +23,6 @@ const MAX_TITLE_CHARS = 120;
 const MAX_CONTENT_CHARS = 1_200;
 const MAX_EVIDENCE_CHARS = 320;
 
-/** Reasons that make a turn ineligible as an automatic long-term-memory source. */
 export type MemoryCaptureTaintReason =
   | "non-keyboard-origin"
   | "attachment"
@@ -32,7 +31,6 @@ export type MemoryCaptureTaintReason =
   | "staged-guidance"
   | "overlay-origin";
 
-/** A post-turn request contains only the user-authored textual evidence. */
 export interface AutomaticMemoryCaptureRequest extends ProjectScopedMemoryOptions {
   sessionId: string;
   input: string;
@@ -41,14 +39,11 @@ export interface AutomaticMemoryCaptureRequest extends ProjectScopedMemoryOption
   taintReasons?: readonly MemoryCaptureTaintReason[];
 }
 
-/** An explicit user save still goes through the same model-review boundary. */
 export interface ExplicitMemoryCaptureRequest extends ProjectScopedMemoryOptions {
   content: string;
-  /** A user-provided label is reference data, not an instruction to persist verbatim. */
   title?: string;
 }
 
-/** Capture owns its request and host validation; the shared reviewer owns model access. */
 export interface MemoryCaptureReviewer {
   review(
     task: "capture",
@@ -57,7 +52,6 @@ export interface MemoryCaptureReviewer {
   ): Promise<string>;
 }
 
-/** Narrow post-turn seam; the hook never needs access to storage or a model. */
 export interface AutomaticMemoryCaptureSubmitter {
   enqueueAutomatic(request: AutomaticMemoryCaptureRequest): void;
   scheduleFallbackDrain(): void;
@@ -87,11 +81,7 @@ interface ReviewedCapture {
   confidence: number;
 }
 
-/**
- * Host-owned, asynchronous memory gate. The active chat model is a reviewer,
- * not a writer: it receives only a bounded trusted user utterance and returns
- * a strict JSON proposal. The host independently validates and writes it.
- */
+// The model reviews bounded user evidence into a JSON proposal; the host validates and persists it.
 export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
   private readonly pending: PendingCapture[] = [];
   private memoryReviewer: MemoryCaptureReviewer | undefined;
@@ -109,7 +99,6 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     this.memoryReviewer = deps.memoryReviewer;
   }
 
-  /** Bound after the conversation's shared reviewer is ready; never accepts a model caller. */
   setMemoryReviewer(memoryReviewer: MemoryCaptureReviewer | undefined): void {
     this.memoryReviewer = memoryReviewer;
   }
@@ -146,11 +135,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     });
   }
 
-  /**
-   * Explicit user saves never bypass review, even when automatic capture is off.
-   * The caller owns only the requested text and scope; model output remains a
-   * bounded proposal and the host owns source, lifecycle state, and persistence.
-   */
+  // Explicit saves still require review and host validation even when automatic capture is disabled.
   async captureExplicit(request: ExplicitMemoryCaptureRequest): Promise<MemoryCaptureResult> {
     if (this.closed) return { status: "skipped", reason: "shutdown" };
     const source = normalizeSourceText(request.content);
@@ -171,7 +156,6 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     });
   }
 
-  /** Serial idle work, intentionally called by the single maintenance coordinator. */
   async runOnIdle(): Promise<void> {
     if (this.closed) return;
     if (this.running) return this.running;
@@ -181,7 +165,6 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     return this.running;
   }
 
-  /** No-idle-scheduler installations still make progress after a quiet turn. */
   scheduleFallbackDrain(): void {
     if (this.closed || this.fallbackTimer || this.pending.length === 0) return;
     this.fallbackTimer = setTimeout(() => {
@@ -240,8 +223,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     }
 
     const conflict = this.hasProtectedTitleConflict(reviewed.title, pending.scope);
-    // A direct user save is already an explicit approval. It is still LLM-refined
-    // and host-validated, but only unattended capture is diverted to review.
+    // Explicit user saves already carry approval; only unattended capture goes to pending review.
     const state = pending.trigger === "automatic" && (mode === "review" || reviewed.action === "candidate" || conflict)
       ? "candidate"
       : "active";

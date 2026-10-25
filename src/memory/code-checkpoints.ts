@@ -80,8 +80,7 @@ function deferUnavailable(active: ActiveTurn, error: unknown): void {
     pendingUnavailable.set(key, pending);
   }
   pending.turns.set(active.messageId, active.admitted || pending.turns.get(active.messageId) === true);
-  // Dropping the oldest ID is safe: the newer placeholders sit in every
-  // restore range that reaches it, so that range is refused anyway.
+  // Evicting the oldest placeholder is safe because every restore reaching it also contains a newer refusal.
   if (pending.turns.size > CODE_CHECKPOINT_POLICY.maxSessionTurns) pending.turns.delete(pending.turns.keys().next().value!);
 }
 
@@ -270,8 +269,7 @@ async function sweepImages(turns: Turn[]): Promise<void> {
 }
 
 async function save(turns: Turn[], retained?: Turn): Promise<void> {
-  // A session limit prunes only that session; shared quotas prune globally.
-  // Removing only session prefixes keeps surviving restore ranges complete.
+  // Prune only the target session for session limits; shared quotas prune globally without breaking surviving ranges.
   for (;;) {
     const overfull = turns.find((turn) =>
       turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns,
@@ -480,8 +478,7 @@ export async function checkpointFileMutation<T>(
       }
     }
     const removeUnchanged = async () => {
-      // Failed no-op operations do not claim an edit. Partial effects remain guarded
-      // by their intended after-hash, never by arbitrary bytes read after execution.
+      // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
       for (const change of changes) {
         const current = await snapshot(change.path).catch(() => undefined);
         if (current && hash(current.bytes) === change.beforeHash) {
@@ -543,8 +540,7 @@ export async function restoreCodeCheckpoint(
       const changed = new Set([...plan].filter(([, change]) =>
         change.beforeHash !== change.afterHash,
       ).map(([path]) => path));
-      // Stage every replacement before changing any target. Do not create missing
-      // parent directories: their removal is an external change and must refuse.
+      // Stage all replacements before mutation; missing parent directories are external changes and must cause refusal.
       const staged = new Map<string, string>();
       try {
         for (const [path, change] of plan) {
@@ -572,8 +568,7 @@ export async function restoreCodeCheckpoint(
             if (present.has(path)) await retryOnFileLock(() => unlink(path));
           } else await renameFile(staged.get(path)!, path);
         }
-        // Keep the restored baseline guarded on repeat calls. Later points no
-        // longer describe the current code and cannot act as forward restores.
+        // Guard the restored baseline on repeat calls; later points are not forward-restore authority.
         for (const turn of suffix) {
           turn.changes = [];
           turn.consumed = turn !== turns[index];

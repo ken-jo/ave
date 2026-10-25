@@ -1,13 +1,4 @@
-/**
- * Every streamed turn announces its input on the shared timeline.
- *
- * `user.message` is the uniform turn-input event: one emission point in
- * `runStreamedTurn` for every origin, so a surface that did not submit the
- * turn (e.g. the desktop renderer during a chat-platform-bridge turn) renders
- * the user row from the same stream it already consumes — no per-transport
- * side channel. These pin the emission order, the host-resolved origin, and
- * the `displayText` preference for folded replay rows.
- */
+// Every streamed turn announces its input once so non-submitting surfaces can render the same row.
 import { describe, expect, it, vi } from "vitest";
 import type { PlatformConversationEvent } from "../../../engine/conversation-platform-protocol.js";
 import { runStreamedTurn, STREAM_TURN_OPTIONS } from "../chat-stream.js";
@@ -33,8 +24,6 @@ describe("runStreamedTurn user.message emission", () => {
       origin: "platform-bridge",
       ownerDetail: { text: "안녕, 데스크톱" },
     });
-    // The row identity rides with the input so a surface can bind the bubble it
-    // draws to the row the host stores, instead of counting to it later.
     const announced = events[1] as { ownerDetail: { messageId?: unknown } };
     expect(typeof announced.ownerDetail.messageId).toBe("string");
   });

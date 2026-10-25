@@ -1,11 +1,4 @@
-/**
- * A deliberately narrow, shared adapter for background memory review.
- *
- * The injected caller is the active chat one-shot path. It accepts text and
- * bounded generation settings only: this service never receives a tool list,
- * a memory manager, or a persistence callback. The model can therefore make
- * a proposal but cannot exercise tool, storage, or permission authority.
- */
+// The shared reviewer accepts bounded text only; no tool, storage, or permission capability crosses this seam.
 
 const MEMORY_REVIEW_TASKS = [
   "capture",
@@ -19,10 +12,7 @@ export type MemoryReviewTask = (typeof MEMORY_REVIEW_TASKS)[number];
 
 type MemoryReviewerLane = "foreground" | "background";
 
-/**
- * Recaps are user-visible and therefore jump ahead of idle maintenance work.
- * A merge is too: the user pressed a button and is watching a spinner for it.
- */
+// User-visible recaps and merges take priority over queued idle maintenance.
 const MEMORY_REVIEWER_TASK_LANES: Readonly<Record<MemoryReviewTask, MemoryReviewerLane>> = {
   capture: "background",
   preference: "background",
@@ -31,14 +21,7 @@ const MEMORY_REVIEWER_TASK_LANES: Readonly<Record<MemoryReviewTask, MemoryReview
   merge: "foreground",
 };
 
-/**
- * Host-owned output ceilings for bounded background reviewer calls.
- *
- * `merge` is the outlier because its output is a whole document rather than a
- * compact profile: a ceiling sized like the others would truncate the merged
- * doc mid-section and the user would apply an instruction set that stops
- * partway through.
- */
+// Merges need a whole-document output ceiling; truncation could produce incomplete standing instructions.
 export const MEMORY_REVIEWER_MAX_TOKENS: Readonly<Record<MemoryReviewTask, number>> = {
   capture: 380,
   preference: 1_600,
@@ -48,25 +31,17 @@ export const MEMORY_REVIEWER_MAX_TOKENS: Readonly<Record<MemoryReviewTask, numbe
 };
 
 export interface MemoryReviewerCallOptions {
-  /** Requested output budget; normalized to the task's host-owned ceiling. */
   maxTokens?: number;
-  /** Trusted task-specific output contract supplied by the host caller. */
   systemPrompt?: string;
   signal?: AbortSignal;
 }
 
-/**
- * The active chat's guarded one-shot LLM seam.
- *
- * Its intentionally narrow shape makes tools and storage capabilities
- * unrepresentable at this boundary.
- */
+// The injected generation type makes tools and storage authority unrepresentable.
 type MemoryReviewerGenerateText = (
   prompt: string,
   options: MemoryReviewerCallOptions,
 ) => Promise<string>;
 
-/** Backwards-readable name for the active chat's injected one-shot caller. */
 export type ActiveChatOneShot = MemoryReviewerGenerateText;
 
 export interface MemoryReviewerServiceOptions {
@@ -93,11 +68,7 @@ const TASK_INSTRUCTIONS: Readonly<Record<MemoryReviewTask, string>> = {
     "Combine the supplied documents into one document, preserving every instruction the user wrote. Do not add guidance that appears in neither.",
 };
 
-/**
- * Builds the non-bypassable common reviewer boundary around a caller's trusted
- * task output contract. This is instruction-level defense in depth; the
- * capability boundary is the narrow {@link MemoryReviewerGenerateText} type above.
- */
+// Wrap trusted task contracts with shared reviewer instructions; the narrow caller type owns capability isolation.
 function buildMemoryReviewerSystemPrompt(
   task: MemoryReviewTask,
   taskSystemPrompt?: string,
@@ -122,14 +93,7 @@ type QueuedReview = {
   detachAbortListener?: () => void;
 };
 
-/**
- * Serializes every reviewer call through one transport-safe execution lane.
- *
- * Recaps are foreground work, so they dequeue before waiting maintenance
- * work. A recap never interrupts a provider call already in flight: the
- * transport remains strictly serial. An individual active call is still
- * abortable when its caller supplies an AbortSignal.
- */
+// Prioritize foreground work without interrupting active provider calls; keep the transport strictly serial.
 export class MemoryReviewerService {
   private readonly foregroundQueue: QueuedReview[] = [];
   private readonly backgroundQueue: QueuedReview[] = [];
@@ -141,7 +105,6 @@ export class MemoryReviewerService {
     this.resolveActiveChatOneShot = resolveActiveChatOneShot;
   }
 
-  /** Number of reviewer calls currently running or waiting to run. */
   get pendingCount(): number {
     return this.outstanding;
   }
@@ -188,8 +151,7 @@ export class MemoryReviewerService {
   private async execute(entry: QueuedReview): Promise<void> {
     try {
       throwIfAborted(entry.options.signal);
-      // Resolve here, not when queued, so the current login/provider runtime
-      // is always used for the next call.
+      // Resolve the current provider when executing, not when queued.
       const oneShot = this.resolveActiveChatOneShot();
       if (!oneShot) throw new MemoryReviewerUnavailableError();
 

@@ -1,12 +1,4 @@
-/**
- * The session goal's sidecar round trip.
- *
- * The revival budget is only a budget because it survives a restart: if the
- * round counter came back at zero the ceiling would be advisory. These read
- * the goal back off disk through a second MemoryManager, which is what a
- * restart actually is, and check that writing the goal does not disturb the
- * rest of the metadata file (which is written whole).
- */
+// Persist revival rounds across restart so a fresh manager cannot reset the goal budget.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,8 +64,6 @@ describe("session goal sidecar", () => {
   it("drops a malformed goal instead of reading a budget nobody can account for", async () => {
     await mm.saveSessionMetadata(SESSION, {
       sessionKind: "main",
-      // A negative round would let the ceiling be outrun; a missing status
-      // would leave the driver with nothing to test. Neither is a goal.
       goal: { text: "x", status: "running", round: -1, ceiling: 50 } as never,
     });
     expect(new MemoryManager({ aveDir: dir }).loadSessionMetadata(SESSION)?.goal).toBeUndefined();

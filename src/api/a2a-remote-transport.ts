@@ -11,10 +11,7 @@ import {
   type A2ARemoteTransportRequest,
   type A2ARemoteTransportResponse,
 } from "./a2a-remote-contracts.js";
-// One classifier, not two: this transport and the SSRF guard were both
-// answering "can a packet to this address leave the machine and arrive?", and
-// their two copies had drifted apart on multicast, on reserved space, and on
-// every IPv6 address outside global unicast.
+// Use the shared reachability classifier so transport and SSRF validation agree on reserved and non-unicast addresses.
 import { isGloballyRoutableAddress } from "../core/network-guard.js";
 
 export interface A2ADnsAnswer {
@@ -206,8 +203,7 @@ export function createA2AStrictTransport(
         req.once("socket", (socket) => {
           socket.once("secureConnect", () => {
             if (settled) return;
-            // Irreversible data-plane commit fence: set immediately before the
-            // first possible body write, not on the later `finish` event.
+            // Set the irreversible commit fence immediately before the first possible body write.
             bodyCommitted = true;
             req.end(body);
           });

@@ -1,9 +1,4 @@
-/**
- * The permission card's sandbox checkbox writes `features.osToolSandbox`
- * through the ordinary settings channel. Plugin-worker confinement is its own
- * setting (proxy-egress PR 6), so that write must leave it exactly as stored,
- * in memory and on disk, in both directions.
- */
+// Shell isolation and plugin-worker confinement are independent settings.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

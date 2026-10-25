@@ -700,8 +700,7 @@ describe("A2ASubAgentHandler", () => {
 
   it("rejects a distinct concurrent continuation before the task FIFO or authorizer", async () => {
     const approval = deferred<boolean>();
-    // Reads carry their own consent step; only the mutation is held pending so
-    // the assertion still isolates the task FIFO from the read path.
+    // Approve reads separately so the pending mutation isolates the per-task FIFO.
     const authorizeOperation = vi.fn(async (descriptor: A2AWireAuthorizationDescriptor) =>
       descriptor.operation === "send-message" ? await approval.promise : true);
     const { handler, runner, store } = makeHarness(HANDLER_ID, { authorizeOperation });
@@ -1499,8 +1498,7 @@ describe("A2ASubAgentHandler", () => {
     ) as A2ATask;
 
     expect(canceled.status.state).toBe(A2ATaskState.CANCELED);
-    // No cancel consent: the runner already stopped. The task body still leaves
-    // the host, so the idempotent return costs a disclosure approval instead.
+    // Re-cancel skips execution consent but still needs approval to disclose the stored task.
     expect(authorizeOperation.mock.calls.map(([descriptor]) => descriptor.operation))
       .toEqual(["get-task"]);
     expect(runner.cancelA2AWireRun).not.toHaveBeenCalled();

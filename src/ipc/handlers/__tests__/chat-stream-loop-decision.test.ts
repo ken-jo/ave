@@ -1,11 +1,3 @@
-/**
- * Loop decisions reach the platform stream.
- *
- * `--exec --exec-output=stream-json` serialises the closed event union
- * verbatim, so a decision that stops at the callback boundary is a decision no
- * headless reader can ever see. These pin the mapping and the shared-projection
- * verdict for the new kind.
- */
 import { describe, expect, it, vi } from "vitest";
 
 import type { PlatformConversationEvent } from "../../../engine/conversation-platform-protocol.js";

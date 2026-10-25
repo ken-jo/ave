@@ -1,24 +1,3 @@
-/**
- * E4 cluster-review — settings.update shortcut/startup reconcile.
- *
- * Covers:
- *  - MINOR-2 (security M1 drift): a combined patch that changes shortcuts/system
- *    AND fails the reviewer rewire must STILL reconcile the OS state — the
- *    shortcuts/system fields are already persisted by `patch`, so the early
- *    return on rewire failure must not skip the reconcile.
- *  - MINOR-3 (security M2 / critic M2): a login-item apply failure
- *    (reconcileStartupLaunch → applied:false) is surfaced via
- *    notifyStartupLaunchFailureIfNeeded, not silently dropped.
- *  - What's-Missing §6b: the shortcutStartupSignature gate triggers the reconcile
- *    ONLY when shortcuts/system launch fields change — an unrelated patch does
- *    not reconcile.
- *
- * MUTATION CONTRACT:
- *  - Removing the reconcile call from the rewire-fail early-return makes the
- *    "reconciles on combined patch even when rewire fails" test fail.
- *  - Reverting the signature gate to always-fire makes the "does NOT reconcile"
- *    test fail.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -50,15 +29,10 @@ vi.mock("../../../main/startup-launch.js", () => ({
   notifyStartupLaunchFailureIfNeeded: (...a: unknown[]) => notifyStartupLaunchFailureIfNeeded(...a),
 }));
 
-// Shared fixture (test-helpers.ts) — no senderFrame set, so validateSender's
-// `!frame` early-allow applies, same as this file's former inline `invoke`.
+// A frame-less internal event uses validateSender's trusted-call seam.
 const invoke = makeAppIpcInvoker(handlers);
 
-/**
- * Key-based settings mock. `shortcuts`/`system` flip to their "after" value once
- * `patch` runs, reproducing the prev→new signature transition the handler
- * detects. `flip` selects which blocks change.
- */
+// Apply patches by key so shortcut/system comparisons see the actual before/after values.
 function makeDeps(opts: {
   flip: "shortcuts" | "none";
   rewireThrows?: boolean;
@@ -144,10 +118,7 @@ describe("settings.update shortcut/startup reconcile", () => {
   });
 
   it("MINOR-2: reconciles even when a combined patch fails the reviewer rewire", async () => {
-    // Combined patch: changes the active LLM (forces the rewire) AND the shortcut
-    // block. The rewire throws → handler early-returns reviewer-rewire-failed, but
-    // the shortcuts/system fields are already persisted, so the reconcile must
-    // still fire.
+    // Settings may persist before reviewer rewiring fails; shortcut/startup reconciliation must still run.
     const deps = makeDeps({ flip: "shortcuts", rewireThrows: true, llmChanges: true });
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
@@ -158,7 +129,6 @@ describe("settings.update shortcut/startup reconcile", () => {
     });
 
     expect(result).toMatchObject({ ok: false, error: "reviewer-rewire-failed" });
-    // The drift fix — reconcile ran on the early-return path.
     expect(reconcileGlobalShortcuts).toHaveBeenCalledOnce();
     expect(reconcileStartupLaunch).toHaveBeenCalledOnce();
     expect(notifyStartupLaunchFailureIfNeeded).toHaveBeenCalledOnce();
@@ -169,7 +139,6 @@ describe("settings.update shortcut/startup reconcile", () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
-    // A patch that touches only an unrelated field.
     await invoke("ave:settings:update", { chat: { fontScale: 1.1 } });
 
     expect(reconcileGlobalShortcuts).not.toHaveBeenCalled();
@@ -187,7 +156,6 @@ describe("settings.update shortcut/startup reconcile", () => {
       shortcuts: { toggleWindow: "Alt+Space", enabled: true },
     });
 
-    // Guard against a double reconcile (early-return + tail both firing).
     expect(reconcileGlobalShortcuts).toHaveBeenCalledTimes(1);
     expect(reconcileStartupLaunch).toHaveBeenCalledTimes(1);
   });

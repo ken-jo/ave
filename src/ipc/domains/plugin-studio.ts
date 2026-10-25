@@ -45,7 +45,6 @@ function result<T>(run: () => Promise<T>): Promise<StudioResult<T>> {
     message: error instanceof Error ? error.message : "Studio operation failed" }));
 }
 
-/** One host-renderer domain for draft operations and local package review. */
 export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promise<InstalledContentRuntime | null>): void {
   const store = new PluginStudioStore((serverId) => {
     if (!deps.mcpManager) throw new Error("Connector manager is unavailable");

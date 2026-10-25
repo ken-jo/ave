@@ -1,20 +1,4 @@
-/**
- * Removing a workspace root must sweep the PLUGIN surface too.
- *
- * `ipc/domains/workspace.ts` hand-enumerates the live scope owners it revokes
- * on a workspace-root removal — chat loop, side-chat loop, routine engine,
- * sub-agent runner. The plugin-surface permission scope
- * (`boot/plugin-surface-permissions.ts`) holds session-scope directory grants
- * keyed by plugin subject, taken through the same executor approval flow, and
- * it was not in that list and had no revoke to call. A grant a plugin earned
- * under a root therefore survived the root's removal for the app's lifetime,
- * while every other owner lost it.
- *
- * This suite drives the REAL producers on both ends: the grant is taken through
- * the scope's own `onSessionDirectoryGrant` sink — the exact callback
- * `tools/invocation-runner.ts` invokes on an `allow-session` decision — and the
- * removal runs through the real `workspace:removeRoot` IPC handler.
- */
+// Root removal must revoke plugin grants as well as chat, side-chat, and routine scopes.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,7 +139,6 @@ describe("workspace-root removal sweeps the plugin surface scope", () => {
     setActivePluginSurfacePermissionScope(scope);
 
     const pluginContext = { origin: "ui" as const, ownerPluginId: "local-indexer" };
-    // The REAL grant sink: invocation-runner calls exactly this on allow-session.
     scope
       .createPermissionContext(pluginContext, { headless: false, trustOrigin: "plugin-emitted" })
       .onSessionDirectoryGrant?.(granted);

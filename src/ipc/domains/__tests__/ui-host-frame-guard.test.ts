@@ -1,12 +1,4 @@
-/**
- * UI-domain native context menus are host-renderer-only surfaces.
- *
- * `hostWindowForUiEvent` used to re-type the plugin-shell rejection by hand
- * instead of calling `validateHostRendererSender`, so a change to what counts
- * as a plugin frame landed in `gated.ts` and silently missed this domain.
- * These tests drive the registered IPC handlers, so they fail if the handler
- * stops consulting the shared guard.
- */
+// Native context menus must use the shared host-renderer sender guard.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invokeRegisteredHandlerWithEvent } from "../../../__tests__/test-helpers.js";
 
@@ -29,7 +21,6 @@ vi.mock("electron", () => ({
 
 vi.mock("../../../i18n/index.js", () => ({ t: (key: string) => key }));
 
-/** An event whose frame URL and top-level URL are the same document. */
 function uiEvent(frameUrl: string) {
   return {
     senderFrame: { url: frameUrl },

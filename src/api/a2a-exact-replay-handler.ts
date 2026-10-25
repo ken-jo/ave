@@ -118,9 +118,7 @@ function parseExtensions(value: A2AWireRequestContext["extensions"]): Readonly<{
     }
     seen.add(uri);
     if (uri === A2A_EXACT_SEND_REPLAY_URI) {
-      // This profile is advertised optional. A caller may activate only the
-      // exact URI token; rewriting `;required` into the optional token would
-      // silently change negotiation semantics.
+      // Only the exact optional profile URI activates this contract; rewriting requiredness changes negotiation semantics.
       if (required) throw extensionRequired();
       exact = true;
     }

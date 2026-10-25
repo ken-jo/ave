@@ -1,14 +1,4 @@
-/**
- * `ave:mcp:call-tool` — the gated MCP-App `tools/call` IPC.
- *
- * Proves the chokepoint's own invariants (the per-backend visibility MUST is proved
- * in `mcp/__tests__/mcp-ui-tool-call.test.ts`, where it is enforced):
- *   - an unauthorized sender frame is rejected BEFORE anything else runs
- *   - the tool must be OWNED by the card's server (cross-server-call-denied), for the
- *     loopback arm AND the external arm
- *   - an allowed call reaches the backend and comes back as an outcome
- *   - a denial from the gate (or the tool) is an outcome, never a throw
- */
+// Tool calls must clear sender, server-ownership, visibility, and permission gates.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 
@@ -29,10 +19,6 @@ const CHANNEL = "ave:mcp:call-tool";
 const LOOPBACK_GENERATION = "generation-acme-1";
 const invoke = makeAppIpcInvoker(handlers);
 
-/**
- * One first-party plugin (`acme-cards`) running as a loopback MCP server, and one
- * external MCP server (`github`) whose `query` tool is registered gated + app-visible.
- */
 async function setup() {
   handlers.clear();
   vi.clearAllMocks();

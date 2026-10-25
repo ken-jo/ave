@@ -1,7 +1,3 @@
-/**
- * Usage domain IPC handlers.
- * Covers: ave:usage:*
- */
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -11,22 +7,17 @@ import { resolvePricingOverrides, type PricingOverride } from "../../shared/pric
 
 export function registerUsageHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
-  // Read per call, not captured: a price correction saved in Settings has to
-  // change the next Usage query, not the next app launch.
+  // Read price corrections per call so saved changes affect the next query without restart.
   const pricingOverrides = () => deps.settingsService.get("llm")?.pricingOverrides;
 
-  // read-only, sender guard optional
   ipcMain.handle(CHANNELS.usage.summary, async (_e, days?: number) => handleUsageSummary(days, auditLogger, pricingOverrides()));
 
-  // read-only; sender guard optional but added for cross-window consistency
   ipcMain.handle(CHANNELS.usage.range, async (e, opts: { dateFrom: string; dateTo: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.range, e); return UNAUTHORIZED_FRAME; }
     return handleUsageRange(opts, auditLogger, pricingOverrides());
   });
 
-  // The renderer's estimate and per-turn cost read the same corrections the
-  // usage summary does. Resolved here, in main, because the environment that
-  // can force the list is main's.
+  // Resolve shared pricing corrections in main, where environment overrides are authoritative.
   ipcMain.handle(CHANNELS.usage.pricingOverrides, (e): readonly PricingOverride[] | typeof UNAUTHORIZED_FRAME => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.pricingOverrides, e); return UNAUTHORIZED_FRAME; }
     return resolvePricingOverrides(pricingOverrides());

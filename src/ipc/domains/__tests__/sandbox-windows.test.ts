@@ -1,13 +1,3 @@
-/**
- * Windows srt-win consent IPC handlers + the win32 sandboxCapability reconcile.
- *
- * Covers sandboxWindowsStatus / sandboxWindowsInstall handler shapes and the
- * main-side win32 capability reconcile (fs+network partial confinement). The
- * live UAC/WFP behaviour is NOT CI-testable — these tests mock ASRT's Windows
- * API to assert the HANDLER contract: the shapes returned for each user/WFP
- * state, the {cancelled:true} pass-through,
- * and the sender-frame guard on the mutating install handler.
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -25,7 +15,6 @@ import {
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 
-// Mutable ASRT mock state — each test sets the desired group/WFP/install result.
 const asrtState = vi.hoisted(() => ({
   userStatus: {} as {
     provisioned?: boolean;
@@ -66,10 +55,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ASRT 0.0.67 surface: explicit srt-win descriptor (resolveSrtWin), the single
-// `srt-win status` spawn (checkWindowsSandboxStatusAsync), and the ASYNC install
-// (installWindowsSandboxAsync). WindowsSandboxError is a real class so the
-// adapter's `instanceof` install_timeout branch stays callable.
+// Use the exported status/install surface and real error class so descriptor changes fail the test.
 class MockWindowsSandboxError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -328,7 +314,6 @@ describe("sandboxWindowsInstall", () => {
     await setup();
     const result = await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT });
     expect(result).toEqual({ outcome: "cancelled", cancelled: true });
-    // The single UAC was attempted with the canonical proxy port range.
     expect(asrtState.installCalls).toHaveLength(1);
     expect(asrtState.installCalls[0].proxyPortRange).toEqual([60080, 60089]);
   });
@@ -409,13 +394,11 @@ describe("sandboxCapability win32 reconcile", () => {
     expect(result.available).toBe(true);
     expect(result.kind).toBe("partial");
     expect(result.potentialReason).toContain("srt-win");
-    // Against the host only: one shared sandbox account, no isolation between
-    // plugins (owner decision 2026-10-10).
+    // The shared sandbox account isolates from the host, not between plugins.
     expect(result.potentialReason).toContain("plugins are not isolated from each other");
     expect(result.runtime.available).toBe(false);
     expect(result.runtime.kind).toBe("none");
     expect(result.runtime.reason).toContain("shell sandbox not requested at boot");
-    // Partial — fs + egress confined, process not confined.
     expect(result.confines).toEqual({ filesystem: true, process: false, network: true });
   });
 
@@ -623,8 +606,7 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
   it("reports a boot/plan contradiction as an error on the shell row, logged and audited, not a failed snapshot", async () => {
     setProcessPlatform("darwin");
     const capability = await import("../../../permissions/sandbox-capability.js");
-    // Activated boot with the shell requested, but no capability published:
-    // the shell plan is plain, which the boot contract rules out.
+    // Requested shell isolation with no published capability must not produce a plain execution plan.
     capability.setShellSandboxRequestedAtBoot(true);
     capability.setSandboxBootOutcome({
       action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [], causes: [],
@@ -641,7 +623,6 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     };
 
     expect(result.shell).toEqual({ state: "error", setting: true, envForced: false, causes: [] });
-    // The rest of the snapshot is intact.
     expect(result.platform).toBe("darwin");
     expect(result.available).toBe(true);
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({

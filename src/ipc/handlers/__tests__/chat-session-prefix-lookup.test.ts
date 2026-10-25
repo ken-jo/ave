@@ -1,15 +1,4 @@
-/**
- * The `/load <partial-session-id>` lookup query, checked against the REAL
- * `ave:chat:sessions` handler.
- *
- * The renderer's `/load` branch (src/ui/renderer/hooks/use-send-message.ts) and
- * the engine dispatcher (src/engine/turn/commands.ts) resolve the same partial
- * id. The renderer can only reach sessions through this handler, so the shared
- * `SESSION_ID_PREFIX_LOOKUP_QUERY` is only worth anything if the handler
- * actually honours it — that is what these tests pin. The renderer half (that
- * `/load` really sends this query, and really finds the rows it unlocks) is
- * pinned end-to-end in src/ui/renderer/__tests__/App-handle-ask.test.tsx.
- */
+// Renderer and engine partial-id lookup must use the same session-list handler options.
 import { describe, expect, it, vi } from "vitest";
 import type { IpcDeps } from "../../types.js";
 import { handleChatSessions } from "../chat.js";
@@ -47,8 +36,6 @@ describe("session-id prefix lookup query vs the real chat-sessions handler", () 
   });
 
   it("is strictly wider than the handler's own defaults", () => {
-    // The pre-consolidation renderer passed NO options and silently inherited
-    // these. If the handler defaults ever widen to match, this test says so.
     const { deps, listSessionsPage } = depsWithListSpy();
 
     handleChatSessions(deps, undefined);

@@ -32,7 +32,6 @@ const MUTATION_CHANNELS = [
 
 const ALL_CHANNELS = [CHANNELS.telegramConnection.snapshot, ...MUTATION_CHANNELS] as const;
 
-/** A minimal valid payload per channel, so only the tested gate can fail. */
 const VALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.freeze({
   [CHANNELS.telegramConnection.connect]: { intent, botToken: BOT_TOKEN },
   [CHANNELS.telegramConnection.disconnect]: { intent },
@@ -44,7 +43,6 @@ const VALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.
   [CHANNELS.telegramConnection.revokeApproval]: { intent, id: APPROVAL_ID },
 });
 
-/** Well-formed enough to reach the guard, wrong enough for it to reject. */
 const INVALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.freeze({
   [CHANNELS.telegramConnection.connect]: { intent, botToken: "not-a-bot-token" },
   [CHANNELS.telegramConnection.disconnect]: { intent, extra: true },
@@ -165,13 +163,11 @@ describe("Telegram connection owner IPC boundary", () => {
   it("checks the sender before the service and the service before the intent", async () => {
     const disabled = await setupDisabled();
 
-    // No service AND a plugin frame: the frame check must answer first.
     const handler = handlers.get(CHANNELS.telegramConnection.connect)!;
     await expect(Promise.resolve(handler(PLUGIN_FRAME as never, { intent, botToken: BOT_TOKEN })))
       .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     expect(disabled.log).toHaveBeenCalledTimes(1);
 
-    // No service AND no intent: the service check must answer first.
     await expect(invokeFileIpcHandler(handlers, CHANNELS.telegramConnection.connect, {}))
       .resolves.toEqual({ ok: false, error: "telegram-connection-disabled" });
   });
@@ -180,7 +176,6 @@ describe("Telegram connection owner IPC boundary", () => {
     const f = await setup();
 
     for (const channel of MUTATION_CHANNELS) {
-      // Payload is invalid too; the intent gate must still be the one to answer.
       const { intent: _dropped, ...withoutIntent } = INVALID_PAYLOAD[channel]!;
       await expect(invokeFileIpcHandler(handlers, channel, withoutIntent))
         .resolves.toEqual({ ok: false, error: "user-keyboard-required" });
@@ -200,7 +195,7 @@ describe("Telegram connection owner IPC boundary", () => {
       await expect(invokeFileIpcHandler(handlers, channel, INVALID_PAYLOAD[channel]))
         .resolves.toEqual({ ok: false, error: "telegram-connection-input-invalid" });
     }
-    // A renderer must not be able to name a conversation on the approve channel.
+    // The renderer cannot select the approval's conversation.
     await expect(invokeFileIpcHandler(
       handlers,
       CHANNELS.telegramConnection.approveCurrentConversation,

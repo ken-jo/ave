@@ -4,9 +4,7 @@ import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import { initPiiRedactionPolicy } from "../../shared/dlp.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
 
-// The renderer history payload is one of the surfaces `privacy.piiRedactEnabled`
-// governs, so every case here has to say which side of the toggle it is on.
-// Restore the shipped default afterwards: the policy is process-wide.
+// PII redaction policy is process-wide; set it explicitly and restore the shipped default after each case.
 afterEach(() => initPiiRedactionPolicy(() => false));
 
 describe("chat history IPC serialization", () => {

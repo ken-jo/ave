@@ -18,7 +18,6 @@ interface ReceiptRecord {
   keyDigest: string;
   intentDigest: string;
   conversationDigest: string;
-  /** Start of the current replay-protection window. */
   acceptedAt: number;
   expiresAt: number;
   state: ReceiptState;
@@ -37,7 +36,6 @@ export interface TailnetControllerReceiptReservation {
   intentDigest: string;
   /** SHA-256 of the private conversation ID; never the raw conversation ID. */
   conversationDigest: string;
-  /** Fresh UUID for the currently-running controller broker process. */
   ownerId: string;
 }
 
@@ -49,11 +47,8 @@ export type TailnetControllerReceiptReserveResult =
   | { kind: "capacity-exhausted" };
 
 export interface CreateTailnetControllerReceiptStoreOptions {
-  /** Overrides the user-data default; intended for integration and tests. */
   filePath?: string;
-  /** Returns an epoch timestamp in milliseconds. */
   now?: () => number;
-  /** How long a completed receipt blocks a replay after it settles. */
   ttlMs?: number;
   /** Maximum retained receipts. Unresolved reservations are never expired. */
   maxReceipts?: number;
@@ -92,13 +87,7 @@ function unavailableReceiptError(): Error {
   return new Error("tailnet-controller-receipt-store-reservation-invalid");
 }
 
-/**
- * Durable, plaintext-free idempotency receipts for native Tailnet controller
- * submissions. A receipt is persisted before command submission. A record left
- * in `reserved` is deliberately never expired: it represents an outcome that
- * cannot be safely reconstructed after a crash or an arbitrarily long local
- * approval/model turn. It is treated as unknown rather than replayed.
- */
+// Persist plaintext-free receipts before submission; unresolved reservations never expire or replay after a crash.
 export class TailnetControllerReceiptStore {
   private readonly filePath: string;
   private readonly now: () => number;
@@ -114,11 +103,7 @@ export class TailnetControllerReceiptStore {
     if (!Number.isSafeInteger(this.maxReceipts) || this.maxReceipts < 1) throw new Error("tailnet-controller-receipt-store-capacity-invalid");
   }
 
-  /**
-   * Reserve a receipt before calling the command port. Every input is already a
-   * digest or locally-generated owner UUID, so request plaintext never enters
-   * the durable state file.
-   */
+  // Reserve before command submission; inputs are digests or local UUIDs, never request plaintext.
   reserve(input: Readonly<TailnetControllerReceiptReservation>): TailnetControllerReceiptReserveResult {
     this.assertReservation(input);
     const state = this.loadAndPrune();
@@ -149,7 +134,6 @@ export class TailnetControllerReceiptStore {
     return { kind: "reserved" };
   }
 
-  /** Remove a reservation when no command was accepted by the runtime. */
   releaseReserved(input: Readonly<Pick<TailnetControllerReceiptReservation, "keyDigest" | "ownerId">>): void {
     this.assertKeyAndOwner(input);
     const state = this.loadAndPrune();
@@ -162,7 +146,6 @@ export class TailnetControllerReceiptStore {
     });
   }
 
-  /** Mark a submitted command's outcome known without persisting its result. */
   settle(input: Readonly<Pick<TailnetControllerReceiptReservation, "keyDigest" | "ownerId">>): void {
     this.assertKeyAndOwner(input);
     const state = this.loadAndPrune();
@@ -193,10 +176,7 @@ export class TailnetControllerReceiptStore {
     const state = this.load();
     const now = this.now();
     if (!isNonNegativeSafeInteger(now)) throw invalidStoreError();
-    // A reserved record means this process may be waiting indefinitely for a
-    // local-only decision or an in-flight model/tool turn. Pruning it would
-    // turn an idempotent retry into a second remote submission. Only a known
-    // terminal outcome can age out of the durable idempotency fence.
+    // Only terminal receipts may expire; unresolved local approval or tool work must keep the replay fence.
     const receipts = state.receipts.filter(
       (record) => record.state === "reserved" || record.expiresAt > now,
     );

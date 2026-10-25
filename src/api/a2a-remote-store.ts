@@ -27,9 +27,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 
 const LEGACY_STORE_VERSION = 2;
 const STORE_VERSION = 3;
-// Migration-only fingerprint of the one v2 exact-replay identifier. It is not
-// an endpoint or fallback. Owner: A2A remote-store v3 migration. Remove this
-// fingerprint when LEGACY_STORE_VERSION support is removed.
+// Migration-only fingerprint; remove with LEGACY_STORE_VERSION support.
 const LEGACY_EXACT_REPLAY_URI_SHA256 = "5421517490a2ae18b9c5159c04fd37147fee68e1d36d8cd1fc9cdc474012aec4";
 const DEFAULT_FILE = "client-state.json";
 const DEFAULT_QUARANTINE_FILE = "client-state.quarantine.json";
@@ -84,20 +82,10 @@ export interface A2ARemoteTaskProjection {
   state: A2ATaskState;
   updatedAt: string;
   terminal: boolean;
-  /** What the remote agent said, when it said anything readable. */
   reply?: A2ARemoteReply;
 }
 
-/**
- * The remote agent's reply, reduced to text a person can read on the task card.
- *
- * Built from the agent's status message, its artifacts and the agent turns in
- * history (A2A v1.0 Task, §4.1.1; GetTask is issued with `historyLength: 0`, so
- * artifacts and the status message carry the reply there). Text parts are kept,
- * structured data is shown as JSON, and a file is named, never fetched or
- * linked. Every reply passes the canonical DLP mask before it is projected, and
- * is capped so one chatty agent cannot fill the renderer.
- */
+// Project status, artifacts, and agent history through DLP masking and a size cap; name files without fetching or linking them.
 export interface A2ARemoteReply {
   text: string;
   truncated: boolean;
@@ -120,7 +108,6 @@ function agentText(message: A2AMessage | undefined): string | null {
   return text.length > 0 ? text : null;
 }
 
-/** Project a Task's (or a direct Message reply's) readable content; null when there is none. */
 export function projectA2ARemoteReply(source: { task?: A2ATask; message?: A2AMessage }): A2ARemoteReply | null {
   const sections: string[] = [];
   const task = source.task;
@@ -183,7 +170,6 @@ export interface A2ARemoteAttemptRecord {
   stage: A2ARemoteDeliveryState;
   resolved?: A2ARemoteResolvedFields;
   outcomeCode?: string;
-  /** Durable lower bound for a user-triggered retry after -32092. */
   retryNotBefore?: string;
   updatedAt: string;
 }
@@ -299,10 +285,7 @@ function migrateStoreState(value: unknown): { state: StoreState; migrated: boole
   return { state: migrated as StoreState, migrated: true };
 }
 
-/**
- * One host-owned atomic state file binds client journal records to encrypted
- * initial-Send payload records. Plain request bytes never enter this state.
- */
+// The atomic state file binds journal records to encrypted send payloads; plaintext request bytes never enter it.
 export class A2ARemoteDurableStore {
   private readonly fileName: string;
   private readonly now: () => Date;
@@ -938,7 +921,6 @@ export class A2ARemoteDurableStore {
     });
   }
 
-  /** Persist a deterministic pre-secret/pre-payload loser without widening send authority. */
   async recordNotSent(
     prepared: A2ARemotePreparedAttempt,
     outcomeCode: typeof INTENDED_CREDENTIAL_REVISION_CONFLICT,
@@ -1070,10 +1052,7 @@ export class A2ARemoteDurableStore {
         record.retryNotBefore = new Date(this.now().getTime() + 1_000).toISOString();
       }
       if (update.outcomeCode !== undefined) record.outcomeCode = update.outcomeCode;
-      // NOT_SENT carries no resolved route: the schema requires it, and the
-      // restart path already drops it. A `resolved` -> NOT_SENT transition
-      // (the socket CAS lost) used to keep it, so the next load quarantined the
-      // very record that proves nothing was sent.
+      // NOT_SENT must drop its resolved route or restart validation quarantines the record.
       if (stage === "NOT_SENT") delete record.resolved;
       record.updatedAt = this.now().toISOString();
       if (update.deletePayload) {
@@ -1121,9 +1100,7 @@ export class A2ARemoteDurableStore {
         if (source.prepared.payloadRecordId) {
           const payloadRecordId = source.prepared.payloadRecordId;
           next.payloads = next.payloads.filter((item) => item.id !== payloadRecordId);
-          // Scrub stale pointers in the same durable write. This lets restart
-          // validation distinguish an intentional terminal deletion from a
-          // missing/corrupt active payload while retaining all semantic proof.
+          // Delete payload pointers atomically so restart validation can distinguish terminal cleanup from corruption.
           this.scrubPayloadBinding(source);
         }
       }
@@ -1291,9 +1268,7 @@ export class A2ARemoteDurableStore {
     return await this.withLock((state) => {
       const value = state.tasks.find((item) => item.handle === handle && item.ownerDigestSha256 === sha256Hex(ownerId));
       if (!value) return null;
-      // The full Task is already stored, encrypted; only state used to come
-      // out, so everything the agent replied was invisible. A Task that no
-      // longer decrypts still projects its state, just without a reply.
+      // A task that no longer decrypts still projects state without a reply.
       const task = this.decryptTask(state, value);
       const reply = task ? projectA2ARemoteReply({ task }) : null;
       return structuredClone({
@@ -1346,14 +1321,8 @@ export class A2ARemoteDurableStore {
         item.prepared.taskHandle === handle && item.prepared.operation === operation);
       if (!latest) return { kind: "none" };
       if (latest.prepared.ownerDigestSha256 !== sha256Hex(ownerId)) return { kind: "blocked", outcome: "task-owner-mismatch" };
-      // A NOT_SENT attempt provably never reached a socket: every transition
-      // into it starts from `prepared` or `resolved`, and `in-flight` is
-      // persisted before the request is written — a restart turns a left-over
-      // `prepared`/`resolved` into NOT_SENT and a left-over `in-flight` into
-      // `outcome-unknown`. So it releases the Task's action slot, and the owner
-      // can try again with a fresh operation; exactly-once holds because
-      // nothing that may have been sent is ever released here. Everything else
-      // stays blocked and is reported as unknown delivery.
+      // NOT_SENT releases the action slot because in-flight is persisted before any socket write.
+      // Potentially sent attempts remain blocked with unknown delivery.
       if (latest.stage === "NOT_SENT") return { kind: "none" };
       if (latest.stage === "settled" && latest.outcomeCode === "success") {
         const task = state.tasks.find((item) => item.handle === handle && item.ownerDigestSha256 === sha256Hex(ownerId));

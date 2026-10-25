@@ -1,13 +1,4 @@
-/**
- * Alerts IPC handlers — `ave:alerts:*`, host renderer only.
- *
- * The renderer reads registered kinds and changes their switches through the
- * service. It also reports what the user did with an alert card — accepted or
- * dismissed, after which the identity stays closed for its lifetime — and a
- * window that appeared or reloaded after an alert was raised pulls the cards
- * already staged. Nothing here raises an alert: that is a plugin's HostApi
- * call, and a renderer frame is never one.
- */
+// Renderer calls may answer or dismiss staged alerts but cannot raise plugin alerts.
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { ALERTS } from "../../contract/app-contract.js";
@@ -78,8 +69,7 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
       return UNAUTHORIZED_FRAME;
     }
     const cards = alertsService?.listOpen() ?? [];
-    // Alert cards are addressed to the dedicated Suggestions conversation;
-    // cards staged before it existed (or after it was deleted) need it now.
+    // Ensure the Suggestions conversation exists before returning cards addressed to it.
     if (cards.length > 0) ensureSuggestionsSession(deps.memoryManager);
     return cards;
   });

@@ -1,8 +1,3 @@
-/**
- * The git marketplace IPC boundary (design §13): host renderer only, every
- * answer an envelope, requests checked before the service sees them, and
- * the service built once, on the first request.
- */
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
@@ -30,7 +25,6 @@ const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 const resumeListeners = new Set<() => void>();
 
-/** The folder dialog and the file manager, as main calls them for *Choose folder…* and *Show in Finder* (§18.9). */
 const desktop = vi.hoisted(() => ({
   showOpenDialog: vi.fn(async (..._args: unknown[]): Promise<{ canceled: boolean; filePaths: string[] }> => ({ canceled: true, filePaths: [] })),
   showItemInFolder: vi.fn((_path: string) => undefined),
@@ -57,9 +51,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-/** The app's shutdown hooks, run by the test instead of `before-quit`. */
 const shutdownHooks = new Map<string, () => void>();
-/** The plugin port's install-state preparation, which needs the whole plugin runtime, is not under test here. */
 vi.mock("../plugins.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins.js")>()),
   pluginLifecycleServices: () => ({ ensureInstallStateReady: async () => {}, uninstall: async () => {}, retirement: {} }),
@@ -71,12 +63,7 @@ vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
   }),
 }));
 
-/**
- * Holds the update history's next save of a finished apply check until the
- * test releases it, so a test can act while that check is still in flight.
- * Every other save, and every save while nothing is held, goes straight
- * through to the real store.
- */
+// Hold only completed apply-check saves so the test can observe an in-flight check.
 const historySave = vi.hoisted(() => ({ held: null as Promise<void> | null }));
 vi.mock("../../../marketplace/updates/history.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../marketplace/updates/history.js")>();
@@ -95,7 +82,6 @@ vi.mock("../../../marketplace/updates/history.js", async (importOriginal) => {
   };
 });
 
-/** Hold apply-check saves until the returned release is called. */
 function holdApplyCheckSaves(): () => void {
   let release!: () => void;
   historySave.held = new Promise<void>((resolve) => {
@@ -109,7 +95,6 @@ function holdApplyCheckSaves(): () => void {
 
 const channels = CHANNELS.gitMarketplace;
 
-/** `window` stands for the app window broadcasts reach; none by default. */
 async function setup(overrides: Record<string, unknown> = {}, window: unknown = null) {
   handlers.clear();
   const service = {
@@ -162,9 +147,8 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
       Object.assign(marketplace, partial.marketplace ?? {});
     }),
   };
-  /** The conversation's idle gate, idle unless a test says otherwise. */
   const activity = { isBusy: vi.fn(() => false), onIdle: vi.fn(() => () => {}) };
-  // A lifetime of its own: the app's shared one (`getMarketplaceLifetime`) would outlive this test's shutdown.
+  // Use a private lifetime; the app's shared lifetime would outlive test shutdown.
   const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
     { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings, conversationSurfaceRuntime: { activity } } as never,
@@ -177,7 +161,6 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
   return { service, create, onBuilt, registration, home, marketplace, lifetime, settings, activity };
 }
 
-/** Every setup() home, removed after its test: they used to pile up in the temp directory. */
 const setupHomes: string[] = [];
 
 beforeEach(() => {
@@ -191,7 +174,7 @@ afterEach(() => {
 
 describe("git marketplace IPC boundary", () => {
   it("removes the kept artifacts when keeping is turned off, and only then", async () => {
-    // The environment decides over the setting when set; this case is about the setting.
+    // Clear the environment override to isolate the setting.
     const saved = process.env.AVE_MARKETPLACE_USE_CACHE;
     delete process.env.AVE_MARKETPLACE_USE_CACHE;
     try {
@@ -222,7 +205,6 @@ describe("git marketplace IPC boundary", () => {
     await expect(invokeFileIpcHandler(handlers, channels.sourcesList)).resolves.toEqual({ ok: true, value: [] });
     await invokeFileIpcHandler(handlers, channels.catalogList, {});
     expect(create).toHaveBeenCalledTimes(1);
-    // The close is registered once, for the one marketplace built.
     expect(onBuilt).toHaveBeenCalledTimes(1);
   });
 
@@ -249,7 +231,6 @@ describe("git marketplace IPC boundary", () => {
     state.setPendingGitMarketplaceLink({ action: "add", url: "acme/tools" });
     await expect(invokeAppIpcHandlerFromFrame(handlers, channels.deepLinkTake, "file:///app/plugin-ui-shell.html"))
       .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
-    // A refused frame does not consume the link.
     await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: { action: "add", url: "acme/tools" } });
     expect(create).not.toHaveBeenCalled();
   });
@@ -258,20 +239,17 @@ describe("git marketplace IPC boundary", () => {
     const { registration, service } = await setup();
     const state = await import("../../../main/app-state.js");
     state.setBootInstallNotice(null);
-    // Before the window starts it, Retry has nothing to run.
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({
       ok: false,
       error: "the marketplace boot pass has not started",
     });
     expect(service.discover).not.toHaveBeenCalled();
 
-    // The pass, its apply check and the first update list: what Retry would otherwise join.
     await registration.startBackground();
     expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] });
     expect(service.discover).toHaveBeenCalledTimes(1);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
     expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] });
-    // The boot pass ends with its apply check and the list after it; a Retry during it would join it.
     await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
 
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: true });
@@ -286,7 +264,6 @@ describe("git marketplace IPC boundary", () => {
     const release = holdApplyCheckSaves();
     try {
       const started = registration.startBackground();
-      // The boot's apply check has recorded its time and is held saving it: the pass awaits it, so both are in flight.
       await vi.waitFor(async () => {
         const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { running: boolean; applyCheckAt: string | null } };
         expect(status.value).toMatchObject({ running: true, applyCheckAt: expect.any(String) });
@@ -309,7 +286,6 @@ describe("git marketplace IPC boundary", () => {
     registration.settingsChanged();
     expect(service.updates).not.toHaveBeenCalled();
 
-    // The boot's discovery, then the list after the boot installs.
     await registration.startBackground();
     expect(service.updates).toHaveBeenCalledTimes(2);
     registration.settingsChanged();
@@ -335,12 +311,9 @@ describe("git marketplace IPC boundary", () => {
         },
       }]),
     });
-    // Automatic updates off: the update waits for the user.
     marketplace.autoUpdate = false;
-    // Before the window starts it there is no scheduler; the card says why.
     await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toEqual({ ok: false, code: "unavailable", message: "update checks have not started" });
 
-    // The boot's apply check has ended, not only recorded its time: Check now starts its own.
     await registration.startBackground();
     const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { applyCheckAt: string | null; running: boolean } };
     expect(status).toMatchObject({ ok: true, value: { running: false } });
@@ -348,7 +321,6 @@ describe("git marketplace IPC boundary", () => {
     const checked = await invokeFileIpcHandler(handlers, channels.updatesCheck) as { ok: true; value: { running: boolean; discovery: { result: string }; packages: unknown[] } };
     expect(checked).toMatchObject({ ok: true, value: { running: false, discovery: { result: "ok" }, packages: [{ key: { name: "meeting" }, state: "manual" }] } });
     expect(service.discover).toHaveBeenCalledTimes(2);
-    // Remembered in ~/.ave/marketplaces/updates.json.
     expect(JSON.parse(readFileSync(join(home, "marketplaces", "updates.json"), "utf8"))).toMatchObject({ version: 1, discovery: { result: "ok" } });
 
     for (const channel of [channels.updatesStatus, channels.updatesCheck]) {
@@ -357,7 +329,6 @@ describe("git marketplace IPC boundary", () => {
     }
     expect(service.discover).toHaveBeenCalledTimes(2);
 
-    // Waking from sleep runs a due check; nothing is due an instant after a check.
     expect(resumeListeners.size).toBe(1);
     resumeListeners.forEach((listener) => listener());
     expect(service.discover).toHaveBeenCalledTimes(2);
@@ -366,21 +337,16 @@ describe("git marketplace IPC boundary", () => {
   it("answers every scheduler request with its declared refusal once the app has stopped the scheduler", async () => {
     shutdownHooks.clear();
     const { registration, service } = await setup();
-    // This scheduler's own boot pass: the recorded bootstrap status is process-wide and may still be an earlier test's.
+    // Bootstrap status is process-wide; use this scheduler's own boot pass.
     await registration.startBackground();
     expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" });
-    // One hook closes the domain's event boundary and stops the scheduler in the same step.
     await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
     shutdownHooks.get("git-marketplace-events")!();
     const discoveries = service.discover.mock.calls.length;
 
-    // Retry: the {ok:false,error} envelope it declares, not a rejection across IPC.
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: false, error: "the update scheduler has stopped" });
-    // Check now: the marketplace envelope, `unavailable`.
     await expect(invokeFileIpcHandler(handlers, channels.updatesCheck)).resolves.toEqual({ ok: false, code: "unavailable", message: "the update scheduler has stopped" });
-    // The status still answers with what the scheduler knew.
     await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toMatchObject({ ok: true });
-    // A settings write rechecks nothing and leaves no rejection behind.
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
     try {
@@ -392,7 +358,6 @@ describe("git marketplace IPC boundary", () => {
     expect(unhandled).not.toHaveBeenCalled();
     expect(service.discover.mock.calls.length).toBe(discoveries);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
-    // Nor does a scheduler start again after the shutdown.
     await registration.startBackground();
     expect(service.discover.mock.calls.length).toBe(discoveries);
   });
@@ -402,7 +367,6 @@ describe("git marketplace IPC boundary", () => {
     const consents = [{ name: "search", digest: "a".repeat(64), approvalDigest: "b".repeat(64) }, { kind: "hook", index: 0, digest: "c".repeat(64), approvalDigest: null }];
     const approveComponents = vi.fn(async () => {});
     const { registration, service } = await setup({ approveComponents });
-    // No scheduler yet: nothing is approved.
     await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", consents)).resolves.toMatchObject({ ok: false, code: "unavailable" });
     await registration.startBackground();
     expect(service.updates).toHaveBeenCalledTimes(2);
@@ -411,13 +375,11 @@ describe("git marketplace IPC boundary", () => {
     expect(answer).toMatchObject({ ok: true, value: { packages: [] } });
     expect(approveComponents).toHaveBeenCalledWith(key, "install-1", consents);
 
-    // A review that went stale answers with its code and reason; the renderer reloads the review.
     approveComponents.mockRejectedValueOnce(new MarketplaceError("PLAN_EXPIRED", "agent plugin notes changed since it was reviewed", { detail: { reason: "package-changed" } }));
     await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-0", consents)).resolves.toEqual({
       ok: false, code: "PLAN_EXPIRED", message: "agent plugin notes changed since it was reviewed", detail: { reason: "package-changed" },
     });
 
-    // A request that names a component twice, an extension's component, or no digest the review showed is refused before the service.
     for (const bad of [[consents[0], consents[0]], [{ kind: "extension", component: "hook", localId: "x", approvalDigest: null }], [{ name: "search", digest: "a".repeat(64) }], []]) {
       await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", bad)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
     }
@@ -443,7 +405,6 @@ describe("git marketplace IPC boundary", () => {
     expect(settings.patch).toHaveBeenCalledTimes(1);
     expect({ ...(marketplace.skippedPluginUpdates as object) }).toEqual({ meeting: "1.2.0" });
 
-    // An upgrade or a reinstall skips nothing.
     executeInstall.mockResolvedValueOnce(result({ action: "replace", direction: "upgrade", from: "1.0.0" }));
     await invokeFileIpcHandler(handlers, channels.installExecute, "p2");
     expect(settings.patch).toHaveBeenCalledTimes(1);
@@ -491,11 +452,9 @@ describe("git marketplace IPC boundary", () => {
       },
       refreshPluginEventBridge: vi.fn(),
     };
-    // The port the domain builds, with the domain's boundary over this registration's lifetime.
     const port = pluginInstaller(deps as never, whileRunning(lifetime.signal));
     const plan = { name: "calendar" } as never;
     try {
-      // While the app runs, a landed install is announced and the bridge refreshed.
       const first = port.install(plan, { stage: false, switchSource: false } as never);
       await vi.waitFor(() => expect(installGitPlugin).toHaveBeenCalledTimes(1));
       land();
@@ -508,7 +467,6 @@ describe("git marketplace IPC boundary", () => {
       await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
       shutdownHooks.get("git-marketplace-events")!();
       land();
-      // The install itself completes and answers; nothing after it reaches the host or the bridge.
       await expect(second).resolves.toEqual({ action: "install", staged: false });
       expect(announced).toHaveBeenCalledTimes(1);
       expect(deps.refreshPluginEventBridge).toHaveBeenCalledTimes(1);
@@ -572,7 +530,6 @@ describe("git marketplace IPC boundary", () => {
   });
 
   describe("source refusals the renderer turns into advice (§18.4, §18.8)", () => {
-    /** The renderer's sentence for an envelope, in both catalogs. */
     const sentences = (answer: unknown) => {
       const parsed = parseGitMarketplaceResult(answer);
       if (parsed.ok) throw new Error("expected a failure");
@@ -636,10 +593,9 @@ describe("git marketplace IPC boundary", () => {
     });
 
     describe("a token in any string main hands the renderer (§18.8)", () => {
-      // Real token shapes, assembled here so no whole token sits in the source.
+      // Assemble credential-shaped fixtures at runtime so no complete token appears in source.
       const TOKENS = [`gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`, `sk${"-proj-"}${"Z9y8X7w6".repeat(8)}`];
       const leaks = (text: string) => TOKENS.some((token) => text.toLowerCase().includes(token.toLowerCase()));
-      /** `value` with every string in it, at any depth, replaced by `token`. */
       const poison = (value: unknown, token: string): unknown =>
         typeof value === "string" ? token
           : Array.isArray(value) ? value.map((item) => poison(item, token))
@@ -647,7 +603,7 @@ describe("git marketplace IPC boundary", () => {
               : value;
       const fields = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(([code, reasons]) =>
         Object.entries(reasons as Record<string, Record<string, string>>).flatMap(([reason, declared]) =>
-          // A number or an issuer (one of a fixed list) cannot hold a token; every string field can.
+          // Only string fields can contain credentials; exercise every string-bearing field.
           Object.entries(declared).filter(([, kind]) => kind !== "number" && kind !== "credential-issuer").flatMap(([field]) => TOKENS.map((token) => ({ code, reason, declared, field, token })))));
 
       it.each(fields)("$code $reason: a token in $field never crosses, identifier or not", async ({ code, reason, declared, field, token }) => {
@@ -671,7 +627,6 @@ describe("git marketplace IPC boundary", () => {
         const harness = await folderService({ root, folders: { fs: new FakeVolume("linux").file("/m/SKILL.md", skill), platform: "linux", limits: TEST_FOLDER_LIMITS } });
         const network = await folderService({ root: mkdtempSync(join(root, "win-")), folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
         try {
-          // Real answers of each shape, every string in them then replaced by a token.
           const preview = await harness.service.previewSource({ input: "/m", auth: "none" });
           if (preview.type === "confirm") throw new Error("unexpected confirmation");
           const confirm = await network.service.previewSource({ input: "\\\\server\\share\\m", auth: "none" });
@@ -689,9 +644,7 @@ describe("git marketplace IPC boundary", () => {
               setEnabled: vi.fn(async () => poison(added, token)),
               refresh: vi.fn(async () => poison(synced, token)),
               repairSource: vi.fn(async () => poison(synced, token)),
-              // A key the scheduler can match, so the package and its name reach the status and its broadcasts.
               updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: `Meeting ${token}`, from: "1.0.0", to: "1.1.0" }]),
-              // An unmet required install's labels reach the Updates card the same way (§10.2).
               autoUpdateContext: vi.fn(async () => ({
                 policy: "user",
                 requiredInstalls: [{ source: "corp", kind: "skill", name: "audit" }],
@@ -723,7 +676,6 @@ describe("git marketplace IPC boundary", () => {
                 expect(leaks(JSON.stringify(answer))).toBe(false);
               }
               expect(answers.at(-1)).toMatchObject({ value: { unmetRequired: [{ reason: "source-unreachable", sourceLabel: expect.stringMatching(/^Corp /u), installedFrom: { label: expect.stringMatching(/^Team /u) } }] } });
-              // The scheduler's broadcasts (its status, the boot status and notice) cross scrubbed too.
               expect(sent.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([channels.updateStatusChanged, channels.bootInstallsApplied, CHANNELS.bootstrap.status]));
               expect(leaks(JSON.stringify(sent.mock.calls))).toBe(false);
             });
@@ -755,7 +707,6 @@ describe("git marketplace IPC boundary", () => {
           });
           const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
           expect(await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: name })).toMatchObject({ ok: true, value: { id: name } });
-          // Each request names what the renderer was handed, exactly as a renderer would.
           const listed = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
           const id = listed.value.find((source) => source.id.startsWith("test-"))!.id;
           expect(id).toBe(name);
@@ -772,7 +723,6 @@ describe("git marketplace IPC boundary", () => {
       });
 
       describe("an identifier with a credential's shape is refused where it enters, with its reason in both languages", () => {
-        // Assembled here: one fits a source id and a package name, one an MCP server's key.
         const NAME_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
         const KEY_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
         const refusal = async (volume: FakeVolume, act: (harness: Awaited<ReturnType<typeof folderService>>) => Promise<unknown>) => {
@@ -793,7 +743,7 @@ describe("git marketplace IPC boundary", () => {
 
         it.each([
           ["a token", () => NAME_TOKEN, "glpat-", "a GitLab token", "GitLab 토큰"],
-          // Ordinary words under a reserved prefix are reserved too (§18.8): the sentence says which prefix, and what to do.
+          // Reserved credential prefixes remain reserved even when followed by ordinary words.
           ["an ordinary name under a GitLab prefix", () => "glpat-rotation-documentation-for-local-marketplaces", "glpat-", "a GitLab token", "GitLab 토큰"],
           ["a digest under an OpenAI prefix", () => `sk-${createHash("sha224").update("ordinary task inputs").digest("hex")}`, "sk-", "an OpenAI API key", "OpenAI API 키"],
           ["a reserved part after a word", () => "docs-glpat-rotation-documentation-for-local", "glpat-", "a GitLab token", "GitLab 토큰"],
@@ -806,7 +756,7 @@ describe("git marketplace IPC boundary", () => {
             const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
             return invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: id() });
           });
-          // The prefix crosses unmasked: alone it is no credential.
+          // A prefix alone is not a credential and remains visible.
           expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "reserved-prefix", prefix } });
           noToken(answer);
           expect(sentences(answer)).toEqual({
@@ -824,7 +774,7 @@ describe("git marketplace IPC boundary", () => {
             en: "Versions with a part starting with “glpat-” are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to change the version.",
             ko: "“glpat-”로 시작하는 부분이 있는 버전은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
           }],
-          // A key under `sk-ant-` that also carries OpenAI's signature is named by the more specific row (§18.8).
+          // When credential signatures overlap, prefer the more specific classification.
           ["a package version under an overlapping prefix", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-sk${"-ant-api03-"}${"a".repeat(12)}T3Blbk${"FJ"}${"b".repeat(12)}\ndescription: d\n---\n`), { reason: "version-reserved-prefix", prefix: "sk-ant-", issuer: "anthropic" }, {
             en: "Versions with a part starting with “sk-ant-” are reserved because they look like an Anthropic API key, so Ave does not offer this package. Ask the package's author to change the version.",
             ko: "“sk-ant-”로 시작하는 부분이 있는 버전은 Anthropic API 키처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
@@ -858,7 +808,6 @@ describe("git marketplace IPC boundary", () => {
           const skill = "---\nname: note\ndescription: d\n---\n";
           const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/n/SKILL.md", skill);
           try {
-            // An earlier build stored the id as typed: write it the way the registry does, then reopen.
             const first = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
             const preview = await first.service.previewSource({ input: "/m", auth: "none" });
             if (preview.type === "confirm") throw new Error("unexpected confirmation");
@@ -869,7 +818,6 @@ describe("git marketplace IPC boundary", () => {
             first.service.close();
             const list = join(root, "marketplaces", "sources.json");
             writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(NAME_TOKEN)));
-            // Its data moves with it, the snapshot naming it, so the source reads as healthy and holds a package.
             const data = join(root, "marketplaces", NAME_TOKEN);
             renameSync(join(root, "marketplaces", "team"), data);
             for (const file of readdirSync(join(data, "snapshots"))) {
@@ -894,7 +842,6 @@ describe("git marketplace IPC boundary", () => {
               expect(await harness.registry.readState(NAME_TOKEN)).toMatchObject({ enabled: true });
               expect((await harness.syncer.readSnapshot(NAME_TOKEN))?.packages).toHaveLength(1);
               expect(listed.value.find((source) => source.id === "notes")).toMatchObject({ status: { state: expect.not.stringMatching("id-holds-credential") } });
-              // Served to no one, and named back by nothing but its handle.
               const catalog = (await invokeFileIpcHandler(handlers, channels.catalogList, {})) as { ok: true; value: { entries: Array<{ key: { sourceId: string } }> } };
               expect(catalog.value.entries.map((entry) => entry.key.sourceId)).toEqual(["notes"]);
               for (const answer of [
@@ -908,17 +855,14 @@ describe("git marketplace IPC boundary", () => {
                   ko: "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
                 });
               }
-              // Refreshing everything syncs the other sources and never this one (the official source's git fails here, as in every folder harness).
               const synced = vi.spyOn(harness.syncer, "sync");
               await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
               expect(synced.mock.calls.map(([id]) => id)).toContain("notes");
               expect(synced.mock.calls.map(([id]) => id)).not.toContain(NAME_TOKEN);
-              // Nor by the stored id itself, were a request to carry it; refused before its state changes.
               const statePath = join(root, "marketplaces", NAME_TOKEN, "state.json");
               const stateBefore = readFileSync(statePath, "utf8");
               expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, NAME_TOKEN, false)).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
               expect(readFileSync(statePath, "utf8")).toBe(stateBefore);
-              // The masked id it would otherwise have shown names nothing.
               expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, "[REDACTED:TOKEN]")).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
               expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, row.id)).toMatchObject({ ok: true });
               const after = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
@@ -948,7 +892,6 @@ describe("git marketplace IPC boundary", () => {
         const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
         try {
           await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
-          // Each token alone and behind or before a name's separator, and the formats whose edges the detector once missed.
           const mixed = "A1b2C3d4".repeat(43);
           const appToken = `gh${"s_"}123456_eyJ${"hbGciOiJSUzI1NiJ9"}.eyJ${"pc3MiOiIxMjM0NTYifQ"}.${mixed.slice(0, 342)}`;
           const googleDash = `AI${"za"}${mixed.slice(0, 34)}-`;
@@ -974,7 +917,6 @@ describe("git marketplace IPC boundary", () => {
       const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
       try {
         await harness.registry.add({ id: "acme", origin: "custom", url: "https://github.com/acme/market", auth: { kind: "none" } });
-        // The add a held git preview makes (the preview itself fetches): the registry's refusal crosses as it is.
         await setup({
           addSource: vi.fn(() => harness.registry.add({ id: "acme-ssh", origin: "custom", url: "git@github.com:Acme/Market.git", auth: { kind: "ssh" } })),
         });
@@ -991,7 +933,7 @@ describe("git marketplace IPC boundary", () => {
     });
 
     it("masks a token pasted as the ssh account of an address a refusal names, in the envelope and both sentences", async () => {
-      // Built here, never written out whole: normalization keeps an ssh account name, and this one is token-shaped.
+      // Normalization retains SSH account names, including credential-shaped names.
       const token = `ghp_${"a".repeat(36)}`;
       const pasted = `ssh://${token}@github.com/acme/market`;
       const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
@@ -1010,7 +952,6 @@ describe("git marketplace IPC boundary", () => {
         for (const answer of [duplicate, direct]) {
           expect(JSON.stringify(answer)).not.toContain(token);
           const { en, ko } = sentences(answer);
-          // Scrubbed once, in main: the sentence shows the envelope's marker as it arrived.
           expect(en).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
           expect(ko).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
           expect(`${en}\n${ko}`).not.toContain(token);
@@ -1035,7 +976,6 @@ describe("git marketplace IPC boundary", () => {
     expect(service.repairSource).toHaveBeenCalledWith("ave");
     expect(service.refresh).not.toHaveBeenCalled();
 
-    // Repair names one source, and no other intent exists.
     await expect(invokeFileIpcHandler(handlers, channels.sourcesRefresh, undefined, "repair")).resolves.toMatchObject({ ok: false, code: "invalid-request" });
     await expect(invokeFileIpcHandler(handlers, channels.sourcesRefresh, "ave", "wipe")).resolves.toMatchObject({ ok: false, code: "invalid-request" });
     expect(service.repairSource).toHaveBeenCalledTimes(1);
@@ -1088,7 +1028,7 @@ describe("git marketplace IPC boundary", () => {
     ["a space", "authorization header", '{"authorization header":'],
     ["an escaped tab", "authorization\\tvalue", '{"authorization\\tvalue":'],
     ["an NBSP", `authorization${String.fromCharCode(0xa0)}header`, `{"authorization${String.fromCharCode(0xa0)}header":`],
-    // An escaped separator inside the key is the first separator: the value is masked from there.
+    // An escaped key separator still marks where masking begins.
     ["an escaped colon", "authorization\\u003aheader", '{"authorization\\u003a'],
     ["an escaped equals sign", "authorization\\u003dheader", '{"authorization\\u003d'],
   ])("masks the value of a quoted key with %s after the word in a failure it answers with (§18.8)", async (_label, key, masked) => {
@@ -1220,7 +1160,6 @@ describe("git marketplace IPC boundary", () => {
   });
 
   it.each(DIAGNOSTIC_SECRET_PROBES)("scrubs the $id spelling from the envelope it answers with", async ({ text, secret, address, kept }) => {
-    // An address goes through the real normalizer, whose refusal quotes it; any other text is a failure's message.
     await setup({
       previewSource: vi.fn(async (request: { input: string }) => {
         if (address) return normalizeSourceUrl(request.input);
@@ -1321,7 +1260,6 @@ describe("git marketplace IPC boundary", () => {
     expect(service.catalog).not.toHaveBeenCalled();
     expect(service.previewDirectMcp).not.toHaveBeenCalled();
 
-    // Only the fields the contract names reach the service.
     await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "acme/tools", auth: "token", token: "t0k", extra: 1 });
     expect(service.previewSource).toHaveBeenCalledWith({ input: "acme/tools", auth: "token", token: "t0k" });
     await invokeFileIpcHandler(handlers, channels.installPlan, { sourceId: "acme", kind: "plugin", name: "x", version: "1.2.0", switchSource: true });
@@ -1392,7 +1330,6 @@ describe("revocationSink", () => {
 });
 
 describe("a package installed from a source stored under a credential-shaped id (§18.8)", () => {
-  // Assembled here so no whole token sits in the source.
   const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
 
   it.each([
@@ -1410,7 +1347,6 @@ describe("a package installed from a source stored under a credential-shaped id 
       const preview = await harness.service.previewSource({ input: folder, auth: "none" });
       if (preview.type === "confirm") throw new Error("a local folder needs no confirmation");
       await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
-      // As an earlier build stored it: the source under the token, then reopened.
       harness.service.close();
       const marketplaces = join(root, "marketplaces");
       const list = join(marketplaces, "sources.json");
@@ -1439,7 +1375,6 @@ describe("a package installed from a source stored under a credential-shaped id 
       if (removeFirst) {
         await expect(invokeFileIpcHandler(handlers, channels.sourcesRemove, handle)).resolves.toMatchObject({ ok: true, value: { orphanedPackages: [{ sourceId: handle, kind: "skill", name: "note" }] } });
       }
-      // The sheet reads detail first: refused for the quarantine either way, so it can say why beside Uninstall.
       const detail = await invokeFileIpcHandler(handlers, channels.packageDetail, entry.key);
       expect(detail).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
       expect(JSON.stringify(detail)).not.toContain(TOKEN);
@@ -1466,7 +1401,6 @@ describe("folder dialogs (§18.9)", () => {
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["/Users/example/market"] });
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: { pick: expect.stringMatching(/^pick-[0-9a-f]{32}$/u), display: "/Users/example/market" } });
     expect(desktop.showOpenDialog.mock.calls.at(-1)?.at(-1)).toMatchObject({ properties: ["openDirectory", "dontAddToRecent"] });
-    // A folder named like a token is shown scrubbed, as every answer to the tab is (§18.8); its pick names it.
     const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [`/Users/example/${token}`] });
     const masked = await invokeFileIpcHandler(handlers, channels.sourcesPickFolder);
@@ -1480,7 +1414,7 @@ describe("folder dialogs (§18.9)", () => {
     const marketplace = (displayName: string) => ({
       "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName, packages: [] })}\n`,
     });
-    // A Windows name cannot hold the mask's `:`, so there the masked text names no folder at all.
+    // The mask contains a colon, which cannot be part of a Windows filename.
     const SIBLING_POSSIBLE = process.platform !== "win32";
     let root: string;
     let parent: string;
@@ -1489,7 +1423,6 @@ describe("folder dialogs (§18.9)", () => {
       harness = undefined;
       root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-"));
       parent = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-parent-"));
-      // The chosen folder, named like a token, and (where a name can hold it) a sibling literally named as its masked text.
       writeFolderFiles(join(parent, TOKEN), marketplace("Team Folder"));
       if (SIBLING_POSSIBLE) writeFolderFiles(join(parent, scrubDiagnosticSecrets(TOKEN)), marketplace("Different Folder"));
       const built = await folderService({ root, folders: nodeFolders() });
@@ -1520,7 +1453,6 @@ describe("folder dialogs (§18.9)", () => {
     }
 
     it("reads and adds the folder main chose, never the sibling its masked display names", async () => {
-      // Real canonical paths and sibling identities are the evidence in this case.
       const chosen = await choose(join(parent, TOKEN));
       expect(chosen.display).toBe(join(parent, scrubDiagnosticSecrets(TOKEN)));
       const preview = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none" });
@@ -1528,9 +1460,8 @@ describe("folder dialogs (§18.9)", () => {
       expect(JSON.stringify(preview)).not.toContain(TOKEN);
       const added = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: (preview as { value: { previewId: string } }).value.previewId, id: "team" });
       expect(added).toMatchObject({ ok: true, value: { id: "team", transport: "folder" } });
-      // Main stored the folder it chose.
       expect(harness!.registry.get("team")).toMatchObject({ transport: "folder", path: realpathSync.native(join(parent, TOKEN)) });
-      // The masked text typed as an address is the user's text: it names the sibling, or (on Windows) no folder.
+      // A typed masked address names the literal sibling, not the originally redacted folder.
       const typed = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: chosen.display, auth: "none" });
       if (SIBLING_POSSIBLE) expect(typed).toMatchObject({ ok: true, value: { marketplace: { displayName: "Different Folder" } } });
       else expect(typed).toMatchObject({ ok: false });
@@ -1613,7 +1544,6 @@ describe("folder dialogs (§18.9)", () => {
 
       await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, git.id)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
       await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, "nowhere")).resolves.toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
-      // Only an id crosses the bridge: a path is not a source.
       await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, added.path)).resolves.toMatchObject({ ok: false });
       expect(desktop.showItemInFolder).not.toHaveBeenCalled();
 
@@ -1634,7 +1564,6 @@ describe("folder dialogs (§18.9)", () => {
       const preview = await harness.service.previewSource({ input: "C:\\m", auth: "none" });
       if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
       await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
-      // The helper breaks after the add (a damaged install): the next reveal cannot classify the drive.
       volume.queryDosDevice = async () => {
         throw new Error("Windows folder classifier is missing: C:\\Ave\\resources\\windows-path-kind\\x64\\ave-path-kind.exe. Reinstall Ave.");
       };

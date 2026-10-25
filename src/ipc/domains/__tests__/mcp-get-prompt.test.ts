@@ -1,16 +1,3 @@
-/**
- * `ave:mcp:get-prompt` — the gated MCP `prompts/get` IPC.
- *
- * What this channel must guarantee:
- *   - an unauthorized sender frame is rejected BEFORE anything reaches a server
- *   - it never starts a turn: the outcome is an ENVELOPE the renderer must send
- *     through `chat:send`, not conversation state mutated here
- *   - the returned text is always wrapped in the `mcp-prompt:` provenance
- *     envelope, with the leading slash stripped and the fence neutralized
- *   - a bad serverId, an empty render, or a server error fail closed with a
- *     sanitized code (no server message, no host path)
- *   - per-server rate limiting applies (it reaches out on the user's behalf)
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { USER_PROMPT_RATE_LIMIT_MAX_CALLS } from "../../../boot/steps/plugin-runtime/trigger-gate.js";
@@ -34,7 +21,7 @@ const invoke = makeAppIpcInvoker(handlers);
 async function setup(getPrompt?: ReturnType<typeof vi.fn>) {
   handlers.clear();
   vi.clearAllMocks();
-  // Fresh serverId per test — the rate limiter is a module singleton.
+  // Unique server ids isolate the module-wide rate limiter.
   const serverId = `hr-mcp-${Math.random().toString(36).slice(2, 10)}`;
   const getPromptMock =
     getPrompt ??
@@ -116,18 +103,11 @@ describe("ave:mcp:get-prompt — outcome", () => {
     const { serverId } = await setup(hostile);
     const result = (await invoke(CHANNEL, serverId, "evil", {})) as { ok: boolean; envelope: string };
     expect(result.ok).toBe(true);
-    // Exactly one real closing fence — the host's own.
     expect(result.envelope.split("</mcp-prompt>").length - 1).toBe(1);
-    // The leading-slash strip is NOT asserted here: `renderMcpPrompt` always
-    // prefixes a line with `prompt: ` or `[role] `, so no server input can make the
-    // body start with `/` at this layer — an assertion here could not fail. The rule
-    // is pinned where it lives, on the builder (`shared/__tests__/staged-origins`).
+    // Prompt prefixes prevent a leading slash here; the staged builder owns the slash-stripping test.
   });
 
-  // The clip the CLIENT applied is invisible to the renderer unless the handler
-  // forwards it: the render only knows about blocks it was handed, so a server
-  // returning 500 blocks would otherwise be silently reduced to 64 with the user
-  // told nothing.
+  // Forward client-side clipping metadata so the renderer can disclose omitted blocks.
   it("reports blocks the client dropped before the render saw them", async () => {
     const { serverId } = await setup(
       vi.fn(async () => ({
@@ -184,14 +164,10 @@ describe("ave:mcp:get-prompt — outcome", () => {
     );
     const failed = (await invoke(CHANNEL, boom.serverId, "p", {})) as { ok: boolean; error: string };
     expect(failed).toEqual({ ok: false, error: "prompt-failed" });
-    // The server's message never reaches the renderer.
     expect(JSON.stringify(failed)).not.toContain("secret");
   });
 
-  // The audit row is the ONLY consumer that ever sees a server's error text — the
-  // renderer gets a bare code — so if it is not asserted here, it is not asserted
-  // anywhere. Two properties: a credential the server echoed back does not persist in
-  // the row, and the row cannot be padded until it buries its neighbours.
+  // Server errors reach only audit storage, where credentials must be redacted and message length bounded.
   it("scrubs and bounds the server error it writes to the audit log", async () => {
     const leak = `Authorization: Bearer sk-live-abcdef0123456789 ${"x".repeat(400)}`;
     const boom = await setup(vi.fn(async () => { throw new Error(leak); }));
@@ -207,7 +183,6 @@ describe("ave:mcp:get-prompt — outcome", () => {
     expect(row).toBeDefined();
     expect(row).not.toContain("sk-live-abcdef0123456789");
     expect(row).toContain("[REDACTED:TOKEN]");
-    // Bounded — the failure survives, a 400-character tail does not.
     expect(row).toContain("failed");
     expect(row!.length).toBeLessThan(300);
   });
@@ -215,9 +190,7 @@ describe("ave:mcp:get-prompt — outcome", () => {
   it("rate limits repeated prompt fetches for one server", async () => {
     const { serverId } = await setup();
     let limited: unknown = null;
-    // Derived from the bucket, not a magic number: the cap is now a function of the
-    // per-turn attachment bound, and a hardcoded loop stops proving anything the
-    // moment that moves — this test failed exactly that way when it did.
+    // Derive the request count from the bucket policy so the test tracks attachment-limit changes.
     for (let i = 0; i <= USER_PROMPT_RATE_LIMIT_MAX_CALLS && !limited; i++) {
       const out = (await invoke(CHANNEL, serverId, "p", {})) as { ok: boolean; error?: string };
       if (out.ok === false && out.error === "rate-limited") limited = out;
