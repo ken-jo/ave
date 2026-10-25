@@ -1,6 +1,11 @@
 const path = require("node:path");
+const { EsbuildPlugin } = require("esbuild-loader");
 
 const isProduction = process.env.NODE_ENV !== "development";
+const rendererMinifier = process.env.AVE_BUILD_MINIFIER ?? "terser";
+if (rendererMinifier !== "terser" && rendererMinifier !== "esbuild") {
+  throw new Error("AVE_BUILD_MINIFIER must be terser or esbuild");
+}
 const rootDir = __dirname;
 const distSrcDir = path.resolve(rootDir, "dist/src");
 
@@ -43,9 +48,21 @@ const base = {
   context: rootDir,
   cache: {
     type: "filesystem",
+    cacheDirectory: path.resolve(rootDir, ".cache/webpack"),
+    version: rendererMinifier,
     buildDependencies: {
       config: [__filename],
+      typescript: [path.resolve(rootDir, "tsconfig.json")],
+      dependencies: [path.resolve(rootDir, "bun.lock")],
     },
+  },
+  // A restored checkout can reuse timestamps; validate snapshot contents.
+  snapshot: {
+    buildDependencies: { timestamp: false, hash: true },
+    resolveBuildDependencies: { timestamp: false, hash: true },
+    module: { timestamp: false, hash: true },
+    contextModule: { timestamp: false, hash: true },
+    resolve: { timestamp: false, hash: true },
   },
   module: {
     rules: [tsRule],
@@ -85,6 +102,9 @@ const renderer = {
   },
   optimization: {
     minimize: isProduction,
+    ...(rendererMinifier === "esbuild" ? {
+      minimizer: [new EsbuildPlugin({ target: "es2022", format: "esm", legalComments: "inline" })],
+    } : {}),
     splitChunks: {
       chunks: "initial",
       cacheGroups: {
