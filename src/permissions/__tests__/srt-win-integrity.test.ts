@@ -226,8 +226,12 @@ describe("Windows helper integrity", () => {
     const { source } = fixture();
     const executable = prepareSrtWinExecutable(source);
     directories.push(dirname(executable));
+    // Core cmdlets and .NET only. In this minimal environment a Utility cmdlet
+    // such as Write-Output would make PowerShell scan every installed module
+    // first, which took 40 s or more on the hosted runner.
     const script = [
       "$ErrorActionPreference='Stop'",
+      "$PSModuleAutoLoadingPreference='None'",
       "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User",
       "$acl=[System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY)",
       "if (!$acl.AreAccessRulesProtected) { throw 'Inherited grants' }",
@@ -250,7 +254,7 @@ describe("Windows helper integrity", () => {
       "if ($grants.Count -ne 1 -or ($grants[0].FileSystemRights -band $rx) -ne $rx) { throw 'Missing runner or consent access' }",
       "}",
       "}",
-      "Write-Output 'private-image-protected'",
+      "[Console]::Out.WriteLine('private-image-protected')",
     ].join("; ");
     const output = execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
       "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
