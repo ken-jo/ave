@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -34,7 +34,7 @@ afterEach(() => { vi.unstubAllGlobals(); setLocale(originalLocale); });
 describe("shell approval five choices", () => {
   it("offers exactly the five choices and shows the exact rule read-only", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
     const pattern = screen.getByTestId("approval-shell-rule-pattern");
     expect(pattern.tagName).toBe("CODE");
@@ -53,7 +53,7 @@ describe("shell approval five choices", () => {
     const record = vi.fn(() => new Promise((resolve) => { finishSave = resolve; }));
     const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.click(screen.getByTestId(testId));
     expect(onDecide).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledTimes(1);
@@ -68,7 +68,7 @@ describe("shell approval five choices", () => {
   it("answers Allow once and Deny without saving anything", () => {
     const record = vi.fn(); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
     expect(onDecide).toHaveBeenLastCalledWith("deny-once");
     fireEvent.click(screen.getByTestId(TEST_IDS.approveButton));
@@ -77,7 +77,7 @@ describe("shell approval five choices", () => {
 
   it("disables only This session when the request has no conversation", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: true } })} onDecide={vi.fn()} />);
+    renderApproval(shellRequest({ shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: true } }), vi.fn());
     expect(screen.getByTestId(SAVE_BUTTONS.session)).toBeDisabled();
     expect(screen.getByTestId(SAVE_BUTTONS.project)).toBeEnabled();
     expect(screen.getByTestId(SAVE_BUTTONS.always)).toBeEnabled();
@@ -85,7 +85,7 @@ describe("shell approval five choices", () => {
 
   it("keeps a command with no exact rule to Deny and Allow once, and says why", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { exactRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } })} onDecide={vi.fn()} />);
+    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { exactRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
     for (const testId of Object.values(SAVE_BUTTONS)) expect(screen.getByTestId(testId)).toBeDisabled();
     expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();
@@ -96,7 +96,7 @@ describe("shell approval five choices", () => {
   it("keeps the request pending and allows retry after a rejected rule save", async () => {
     const record = vi.fn().mockResolvedValueOnce({ ok: false, error: "invalid-rule" }).mockResolvedValueOnce({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toBeVisible());
     expect(onDecide).not.toHaveBeenCalled();
@@ -110,14 +110,14 @@ describe("shell approval five choices", () => {
   ])("tells a $error apart in the dock", async ({ error, message, key }) => {
     const record = vi.fn().mockResolvedValue({ ok: false, error, message });
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     fireEvent.click(screen.getByTestId(SAVE_BUTTONS.project));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toHaveTextContent(`${t(key)} (${message})`));
   });
 
   it.each(["en", "ko"] as const)("localizes the five choices in %s", (locale) => {
     setLocale(locale); vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     expect(screen.getByTestId(SAVE_BUTTONS.session)).toHaveTextContent(t("toolApprovalDialog.allowForSession"));
     expect(screen.getByTestId(SAVE_BUTTONS.project)).toHaveTextContent(t("toolApprovalDialog.allowForProject"));
     expect(screen.getByTestId(SAVE_BUTTONS.always)).toHaveTextContent(t("toolApprovalDialog.allowAlways"));

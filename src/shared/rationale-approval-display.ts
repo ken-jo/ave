@@ -6,8 +6,8 @@ export const RATIONALE_APPROVAL_DISPLAY_VERSION = 1 as const;
 export const RATIONALE_APPROVAL_DISPLAY_KIND =
   "rationale-approval-display" as const;
 
-export type RationaleApprovalDisplayStatus = "ready" | "failed";
-export type RationaleApprovalDisplayScopeAlignment =
+type RationaleApprovalDisplayStatus = "ready" | "failed";
+type RationaleApprovalDisplayScopeAlignment =
   | "aligned"
   | "unclear"
   | "outside"

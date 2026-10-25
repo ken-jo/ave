@@ -62,7 +62,7 @@ export interface UpdaterLike {
 
 // Keep the last good state on transient feed or download errors; log failures without inventing a renderer state.
 
-export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 // macOS self-install requires matching developer signing; unsigned builds need manual installation. Cache the immutable running signature.
 let _canSelfInstall: boolean | null = null;

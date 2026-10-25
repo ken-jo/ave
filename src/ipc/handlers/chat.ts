@@ -182,7 +182,7 @@ export function resolveChatNewProjectPayload(raw: unknown, defaultWorkspaceRoot 
   return defaultWorkspaceProjectPayload(defaultWorkspaceRoot);
 }
 
-export function normalizePersonaPromptId(
+function normalizePersonaPromptId(
   inputOrigin: ChatInputOrigin,
   value: unknown,
 ): { ok: true; personaPromptId?: string } | { ok: false; error: string } {

@@ -15,7 +15,7 @@ import { countLines, MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.j
 import { isValidToolUseId, MAX_TOOL_USE_ID_UTF8_BYTES } from "../shared/tool-use-id.js";
 import type { ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 
-export const READ_TOOL_RESULT_CHUNK_TOOL = "read_tool_result_chunk";
+const READ_TOOL_RESULT_CHUNK_TOOL = "read_tool_result_chunk";
 export const TOOL_RESULT_CHUNK_READER_METADATA_KEY = "toolResultChunkReader";
 
 export interface ReadableToolResult {

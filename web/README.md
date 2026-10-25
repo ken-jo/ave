@@ -10,14 +10,25 @@ the canonical host. Korean lives at `/`, English under `/en/`.
 
 ```
 /                 home (ko)        /en/                 home (en)
+/browser/ /terminal/ /models/ /plugins/ /security/   feature pages (and /en/…)
 /download/        installers       /en/download/
 /docs/            guide index      /en/docs/
 /docs/<slug>/     guide pages      /en/docs/<slug>/
+/changelog/       CHANGELOG.md     /en/changelog/
+404.html          not found        en/404.html
 ```
 
-Guide pages are data in `lib/docs.ts`; one template renders them. Home copy is
-in `lib/home.ts`. Pages that existed before this structure are redirected by
-`public/_redirects`.
+Copy is data: home in `lib/home.ts`, feature pages in `lib/features.ts`,
+download, docs index, changelog and not-found in `lib/pages.ts`, the guide in
+`lib/docs.ts`; `lib/nav.ts` owns every destination and label. The changelog
+page parses the repository's `CHANGELOG.md` at build time (`lib/changelog.ts`).
+Screenshots are in `public/media/` with their sizes in `lib/media.json`
+(`DESIGN.md`, "Media"). Pages that existed before this structure are
+redirected by `public/_redirects`.
+
+`bun run build` exports to `out/`, moves the not-found pages to `404.html` and
+`en/404.html`, and checks the export's link graph
+(`scripts/lib/web-export.mjs`); a broken rule fails the build.
 
 ## Files the app reads
 
@@ -56,4 +67,6 @@ The release workflow refreshes these aliases on every tag
 under `releases/`, and each one downloads under its versioned file name
 (`Content-Disposition`). See `docs/guides/release-r2.md`.
 
-The home page names the visitor's system on its main button when it can tell.
+While no release is published, `RELEASE_PUBLISHED` in `lib/downloads.ts` stays
+false and the download page shows "release in preparation" instead of these
+links.

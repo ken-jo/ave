@@ -10,6 +10,7 @@ import {
   canonicalizePathForMatch,
   caseFoldForMatch,
   isSensitivePath,
+  sensitiveEntryOnSandboxFloor,
   type SensitiveEntry,
 } from "../sensitive-paths.js";
 
@@ -69,7 +70,8 @@ describe("sensitive paths — one table, two projections", () => {
         hostDeniesAsSensitive(target, allowedRoot),
         `host guard must hard-block ${target}`,
       ).toBe(entry.access !== "read-only");
-      expect(sandboxDenies(target), `shared sandbox floor must protect ${target}`).toBe(true);
+      // The macOS floor leaves out rows only another OS creates; every other floor protects every row.
+      expect(sandboxDenies(target), `shared sandbox floor must protect ${target}`).toBe(sensitiveEntryOnSandboxFloor(entry));
     }
   });
 
@@ -181,7 +183,8 @@ describe("sensitive paths — one table, two projections", () => {
   ])("denies the credential store ~/%s/... on both surfaces", (...segments) => {
     const target = join(HOME, ...segments);
     expect(hostDeniesAsSensitive(target, HOME)).toBe(true);
-    expect(sandboxDenies(target)).toBe(true);
+    // A Windows profile location is off the macOS floor only; the host guard above still denies it there.
+    expect(sandboxDenies(target)).toBe(!(process.platform === "darwin" && segments[0] === "AppData"));
   });
 
   it("keeps ordinary home files readable on both surfaces", () => {

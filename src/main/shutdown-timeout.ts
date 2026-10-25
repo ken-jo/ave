@@ -45,10 +45,6 @@ function warnOnceOnUnusableEnvValue(env: NodeJS.ProcessEnv): void {
   );
 }
 
-export function __resetShutdownTimeoutWarnLatchesForTest(): void {
-  invalidEnvWarnedOnce = false;
-}
-
 // Abort cleanup on deadline or rejection; callers must honor cancellation so ongoing writes cannot race forced process exit.
 export async function runCleanupWithHardTimeout(
   cleanup: (signal: AbortSignal) => Promise<void> | void,

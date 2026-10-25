@@ -13,7 +13,7 @@ import { expandShellTildePaths } from "../shared/home-tilde.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
 
-export type ShellPathPolicyViolationKind =
+type ShellPathPolicyViolationKind =
   | "dynamic-path"
   | "invalid-path"
   | "recursive-traversal"

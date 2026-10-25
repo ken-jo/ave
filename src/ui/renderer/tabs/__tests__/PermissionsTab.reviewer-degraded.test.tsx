@@ -113,6 +113,21 @@ describe("PermissionsTab — reviewer prompt-only Settings UI", () => {
     delete (window as unknown as { ave?: unknown }).ave;
   });
 
+  function promptPanelCase(mode: "llm" | "rule") {
+    return async () => {
+      installApi({ mode, degraded: false });
+      await act(async () => {
+        render(<PermissionsTab />);
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
+      expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
+      expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
+    };
+  }
+
   it("shows the prompt panel, not a degraded reviewer banner, when mode=llm and reviewerDegradedToRule=true", async () => {
     installApi({ mode: "llm", degraded: true });
     await act(async () => {
@@ -125,29 +140,6 @@ describe("PermissionsTab — reviewer prompt-only Settings UI", () => {
     expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
   });
 
-  it("shows the prompt panel when reviewerDegradedToRule=false (llm wired normally)", async () => {
-    installApi({ mode: "llm", degraded: false });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
-    );
-    expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
-    expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
-    expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
-  });
-
-  it("shows the prompt panel when persisted mode is rule", async () => {
-    installApi({ mode: "rule", degraded: false });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
-    );
-    expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
-    expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
-    expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
-  });
+  it("shows the prompt panel when reviewerDegradedToRule=false (llm wired normally)", promptPanelCase("llm"));
+  it("shows the prompt panel when persisted mode is rule", promptPanelCase("rule"));
 });

@@ -23,7 +23,7 @@ export interface SharedConversationEventEnvelope {
   readonly event: SharedConversationProjectionEvent;
 }
 
-export interface SharedConversationReplay {
+interface SharedConversationReplay {
   readonly conversationId: string;
   readonly afterCursor: number | null;
   readonly oldestRetainedCursor: number | null;

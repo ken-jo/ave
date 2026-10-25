@@ -2,7 +2,7 @@
 import type { WorkBoardStorage } from "./storage.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
-export const ACTIVITY_FILE = "activity.jsonl";
+const ACTIVITY_FILE = "activity.jsonl";
 
 export interface ActivityEvent {
   ts: string;

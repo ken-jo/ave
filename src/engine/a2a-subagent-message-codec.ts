@@ -364,7 +364,7 @@ export function canonicalizeAgentMessage(
   }
 }
 
-export type InboundA2ASubAgentMessageFailureReason =
+type InboundA2ASubAgentMessageFailureReason =
   | "invalid-message"
   | "unsupported-role"
   | "unsupported-part"

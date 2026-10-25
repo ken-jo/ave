@@ -218,7 +218,7 @@ export function parseWorkBoardOriginSessionId(origin: unknown): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-export type WorkBoardRunPhase =
+type WorkBoardRunPhase =
   | "planning"
   | "awaiting_approval"
   | "executing"
@@ -237,7 +237,7 @@ export interface RunTranscriptEvent {
 }
 
 /** Keep prior run transcript pointers on rerun instead of discarding history. */
-export interface WorkItemRunHistoryEntry {
+interface WorkItemRunHistoryEntry {
   runId: string;
   startedAt: string;
   endedAt?: string;

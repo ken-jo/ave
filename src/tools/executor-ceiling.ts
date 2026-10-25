@@ -3,7 +3,7 @@
 import type { Tool } from "./base.js";
 import { MAX_TIMER_DELAY_MS, resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
-export type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
+type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
 
 // Leave time for shell timeout cleanup and retryable error formatting before the executor ceiling fires.
 const SHELL_CEILING_GRACE_MS = TOOL_TIMEOUT_POLICY.shellCeilingGraceMs;

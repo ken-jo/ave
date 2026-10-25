@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { Footer, Header } from "@/components/chrome";
-import { DocArticle } from "@/components/pages";
+import { DocView } from "@/components/docs";
 import { DOC_SLUGS, docPage } from "@/lib/docs";
 
 export const dynamicParams = false;
@@ -25,11 +24,5 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
   const { slug } = await params;
   const page = docPage("en", slug);
   if (!page) notFound();
-  return (
-    <>
-      <Header locale="en" path={`/docs/${slug}/`} />
-      <DocArticle locale="en" page={page} />
-      <Footer locale="en" path={`/docs/${slug}/`} />
-    </>
-  );
+  return <DocView locale="en" page={page} />;
 }

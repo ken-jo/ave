@@ -1,18 +1,13 @@
 import type { Metadata } from "next";
-import { Footer, Header } from "@/components/chrome";
-import { DownloadPage } from "@/components/pages";
+import { DownloadView } from "@/components/download";
+import { pagesCopy } from "@/lib/pages";
 
 export const metadata: Metadata = {
   title: "Download",
+  description: pagesCopy("en").download.lead,
   alternates: { canonical: "/en/download/", languages: { ko: "/download/", en: "/en/download/" } },
 };
 
 export default function Page() {
-  return (
-    <>
-      <Header locale="en" path="/download/" />
-      <DownloadPage locale="en" />
-      <Footer locale="en" path="/download/" />
-    </>
-  );
+  return <DownloadView locale="en" />;
 }

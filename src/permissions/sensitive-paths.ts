@@ -88,8 +88,8 @@ export interface SensitiveEntry {
   readonly rotations?: true;
   // The configured primary session store is readable, but never tool-writable.
   readonly access?: "read-only";
-  // A Windows location (`%APPDATA%`, `%LOCALAPPDATA%`). Windows paths are case-insensitive, so its glob matches case-insensitively on EVERY platform — a command scanned on a POSIX host (a PowerShell script, a staged copy) must not slip past by spelling `appdata\roaming` in lower case. Stores that sit at the same place under the profile on every OS (`.ssh`, `.aws`, `.kube/config`, …) are the POSIX rows above, which the anchor-free host guard already matches under `C:/Users/<name>/`.
-  readonly windows?: true;
+  // The one OS whose software keeps this store at this path; absent when a store can sit here on any OS (the macOS-named rows stay untagged too: they cost nothing to keep and ported tools may reuse them). `win32` marks a Windows location (`%APPDATA%`, `%LOCALAPPDATA%`): Windows paths are case-insensitive, so its glob matches case-insensitively on EVERY platform — a command scanned on a POSIX host (a PowerShell script, a staged copy) must not slip past by spelling `appdata\roaming` in lower case. Stores that sit at the same place under the profile on every OS (`.ssh`, `.aws`, `.kube/config`, …) are untagged rows, which the anchor-free host guard already matches under `C:/Users/<name>/`. `linux` marks a snap or Flatpak home, packaging that exists only on Linux. The host guard keeps every row on every OS (it catches staged copies); only the macOS Seatbelt floor drops a row tagged for another OS — see sensitiveEntryOnSandboxFloor.
+  readonly platform?: "win32" | "linux";
   // Why this is secret. Kept next to the row so neither side drifts alone.
   readonly why: string;
 }
@@ -171,16 +171,16 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".config", "microsoft-edge-beta"], kind: "dir", why: "Edge Beta profiles (Linux)" },
   { anchor: "home", segments: [".config", "microsoft-edge-dev"], kind: "dir", why: "Edge Dev profiles (Linux)" },
   // Snap and Flatpak keep each app's whole home under one per-app directory.
-  { anchor: "home", segments: ["snap", "firefox"], kind: "dir", why: "Firefox snap home (Linux)" },
-  { anchor: "home", segments: ["snap", "chromium"], kind: "dir", why: "Chromium snap home (Linux)" },
-  { anchor: "home", segments: ["snap", "brave"], kind: "dir", why: "Brave snap home (Linux)" },
-  { anchor: "home", segments: ["snap", "thunderbird"], kind: "dir", why: "Thunderbird snap home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "org.mozilla.firefox"], kind: "dir", why: "Firefox Flatpak home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "org.chromium.Chromium"], kind: "dir", why: "Chromium Flatpak home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "com.google.Chrome"], kind: "dir", why: "Chrome Flatpak home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "com.brave.Browser"], kind: "dir", why: "Brave Flatpak home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "com.microsoft.Edge"], kind: "dir", why: "Edge Flatpak home (Linux)" },
-  { anchor: "home", segments: [".var", "app", "org.mozilla.Thunderbird"], kind: "dir", why: "Thunderbird Flatpak home (Linux)" },
+  { anchor: "home", segments: ["snap", "firefox"], kind: "dir", platform: "linux", why: "Firefox snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "chromium"], kind: "dir", platform: "linux", why: "Chromium snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "brave"], kind: "dir", platform: "linux", why: "Brave snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "thunderbird"], kind: "dir", platform: "linux", why: "Thunderbird snap home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.firefox"], kind: "dir", platform: "linux", why: "Firefox Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.chromium.Chromium"], kind: "dir", platform: "linux", why: "Chromium Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.google.Chrome"], kind: "dir", platform: "linux", why: "Chrome Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.brave.Browser"], kind: "dir", platform: "linux", why: "Brave Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.microsoft.Edge"], kind: "dir", platform: "linux", why: "Edge Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.Thunderbird"], kind: "dir", platform: "linux", why: "Thunderbird Flatpak home (Linux)" },
   // Mail clients: saved account passwords (logins.json + key4.db)
   { anchor: "home", segments: [".thunderbird"], kind: "dir", why: "Thunderbird profiles (Linux)" },
   { anchor: "home", segments: ["Library", "Thunderbird"], kind: "dir", why: "Thunderbird profiles (macOS)" },
@@ -191,34 +191,34 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".psql_history"], kind: "file", why: "psql history (may hold DSNs)" },
   { anchor: "home", segments: [".viminfo"], kind: "file", why: "editor history + register contents" },
   // Windows credential stores under the profile (%APPDATA%, %LOCALAPPDATA%)
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (roaming)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (local)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", windows: true, why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", windows: true, why: "user CryptoAPI/CNG private keys" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (web and app credentials, roaming)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (local)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", platform: "win32", why: "Windows Credential Manager blobs (roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", platform: "win32", why: "Windows Credential Manager blobs (local)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", platform: "win32", why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", platform: "win32", why: "user CryptoAPI/CNG private keys" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", platform: "win32", why: "Windows Vault (web and app credentials, roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", platform: "win32", why: "Windows Vault (local)" },
   {
     anchor: "home",
     segments: ["AppData", "Local", "Microsoft", "PowerShell", "secretmanagement"],
     kind: "dir",
-    windows: true,
+    platform: "win32",
     why: "PowerShell SecretStore vault",
   },
-  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", windows: true, why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
-  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome", "User Data"], kind: "dir", windows: true, why: "Chrome profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge", "User Data"], kind: "dir", windows: true, why: "Edge profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"], kind: "dir", windows: true, why: "Brave profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Chromium", "User Data"], kind: "dir", windows: true, why: "Chromium profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Vivaldi", "User Data"], kind: "dir", windows: true, why: "Vivaldi profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Opera Software"], kind: "dir", windows: true, why: "Opera profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome SxS", "User Data"], kind: "dir", windows: true, why: "Chrome Canary profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Beta", "User Data"], kind: "dir", windows: true, why: "Chrome Beta profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Dev", "User Data"], kind: "dir", windows: true, why: "Chrome Dev profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"], kind: "dir", windows: true, why: "Edge Beta profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"], kind: "dir", windows: true, why: "Edge Dev profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"], kind: "dir", windows: true, why: "Edge Canary profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Thunderbird"], kind: "dir", windows: true, why: "Thunderbird profiles (Windows)" },
-  { anchor: "home", segments: ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"], kind: "dir", windows: true, why: "Firefox profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", platform: "win32", why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome", "User Data"], kind: "dir", platform: "win32", why: "Chrome profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge", "User Data"], kind: "dir", platform: "win32", why: "Edge profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"], kind: "dir", platform: "win32", why: "Brave profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Chromium", "User Data"], kind: "dir", platform: "win32", why: "Chromium profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Vivaldi", "User Data"], kind: "dir", platform: "win32", why: "Vivaldi profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Opera Software"], kind: "dir", platform: "win32", why: "Opera profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome SxS", "User Data"], kind: "dir", platform: "win32", why: "Chrome Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Beta", "User Data"], kind: "dir", platform: "win32", why: "Chrome Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Dev", "User Data"], kind: "dir", platform: "win32", why: "Chrome Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"], kind: "dir", platform: "win32", why: "Edge Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"], kind: "dir", platform: "win32", why: "Edge Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"], kind: "dir", platform: "win32", why: "Edge Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Thunderbird"], kind: "dir", platform: "win32", why: "Thunderbird profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"], kind: "dir", platform: "win32", why: "Firefox profiles (Windows)" },
   // Ave hook scripts — supply-chain / re-exec protection
   {
     anchor: "home",
@@ -293,9 +293,14 @@ const READ_ONLY_NAMESPACE_PATTERNS = new Set(sensitiveEntryGlobs(
 
 // Patterns matched case-insensitively on every platform (Windows locations).
 const CASE_INSENSITIVE_PATTERNS: ReadonlySet<string> = new Set([
-  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.windows === true)),
+  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.platform === "win32")),
   ...WINDOWS_UNANCHORED_PATTERNS,
 ]);
+
+// Whether the OS sandbox floor built on `platform` carries this row. Seatbelt compiles the profile again for every wrap and its compile time grows with the path filters, so macOS leaves out rows whose store only another OS's software creates: nothing on macOS writes a secret there, and the host guard still denies the path. Linux and Windows keep every row, so their floors stay exactly as they were.
+export function sensitiveEntryOnSandboxFloor(entry: SensitiveEntry, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "darwin" || entry.platform === undefined;
+}
 
 // Patterns use minimatch-compatible glob syntax: double-star — matches any path (including path separators) single-star — matches any single path segment Ordering: credential store patterns first, then OS expansion, then Ave-specific.
 export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([

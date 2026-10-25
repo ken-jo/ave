@@ -64,19 +64,19 @@ const SNIPPET_TOKENS = 20;
 const TRIGRAM_MIN_CODEPOINTS = 3;
 const LIKE_ESCAPE = "\\";
 
-export function codePointLength(s: string): number {
+function codePointLength(s: string): number {
   return [...s].length;
 }
 
 // Escape user text as one FTS phrase so operators and quotes remain literal.
-export function escapeFtsQuery(raw: string): string {
+function escapeFtsQuery(raw: string): string {
   return `"${raw.replace(/"/g, '""')}"`;
 }
 
 const LIKE_EXCERPT_RADIUS = 100;
 
 // LIKE cannot use snippet(); derive a bounded excerpt centered on the first match.
-export function excerptAroundMatch(content: string, needle: string): string {
+function excerptAroundMatch(content: string, needle: string): string {
   const idx = content.toLowerCase().indexOf(needle.toLowerCase());
   if (idx < 0) return content.slice(0, LIKE_EXCERPT_RADIUS * 2);
   const start = Math.max(0, idx - LIKE_EXCERPT_RADIUS);
@@ -86,7 +86,7 @@ export function excerptAroundMatch(content: string, needle: string): string {
 }
 
 // Escape percent, underscore, and the escape character before adding substring wildcards.
-export function escapeLikePattern(raw: string): string {
+function escapeLikePattern(raw: string): string {
   return raw.replace(/[\\%_]/g, (ch) => `${LIKE_ESCAPE}${ch}`);
 }
 

@@ -1,13 +1,13 @@
 import { t } from "../i18n/index.js";
 import { escapeHtml } from "./escape-html.js";
 
-export const RENDER_HTML_WINDOW_MIN_WIDTH = 420;
-export const RENDER_HTML_WINDOW_MAX_WIDTH = 1600;
-export const RENDER_HTML_WINDOW_DEFAULT_WIDTH = 960;
-export const RENDER_HTML_WINDOW_MIN_HEIGHT = 240;
-export const RENDER_HTML_WINDOW_MAX_HEIGHT = 1400;
-export const RENDER_HTML_WINDOW_DEFAULT_HEIGHT = 640;
-export const RENDER_HTML_WINDOW_MAX_HTML_BYTES = 2 * 1024 * 1024;
+const RENDER_HTML_WINDOW_MIN_WIDTH = 420;
+const RENDER_HTML_WINDOW_MAX_WIDTH = 1600;
+const RENDER_HTML_WINDOW_DEFAULT_WIDTH = 960;
+const RENDER_HTML_WINDOW_MIN_HEIGHT = 240;
+const RENDER_HTML_WINDOW_MAX_HEIGHT = 1400;
+const RENDER_HTML_WINDOW_DEFAULT_HEIGHT = 640;
+const RENDER_HTML_WINDOW_MAX_HTML_BYTES = 2 * 1024 * 1024;
 export const RENDER_HTML_PARTITION = "ave-render-html";
 
 export const RENDER_HTML_THEME_TOKEN_NAMES = [
@@ -33,7 +33,7 @@ export const RENDER_HTML_THEME_TOKEN_NAMES = [
   "info",
 ] as const;
 
-export type RenderHtmlThemeTokenName = (typeof RENDER_HTML_THEME_TOKEN_NAMES)[number];
+type RenderHtmlThemeTokenName = (typeof RENDER_HTML_THEME_TOKEN_NAMES)[number];
 export type RenderHtmlThemeTokens = Partial<Record<RenderHtmlThemeTokenName, string>>;
 
 export type OpenHtmlPreviewWindowPayload = {
@@ -51,7 +51,7 @@ export type OpenHtmlPreviewWindowResult =
   | { ok: true; windowId: number }
   | { ok: false; error: string };
 
-export function clampRenderHtmlWindowSize(
+function clampRenderHtmlWindowSize(
   value: unknown,
   min: number,
   max: number,
@@ -108,7 +108,7 @@ function normalizeThemeTokens(candidate: unknown): RenderHtmlThemeTokens | undef
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-export function buildRenderHtmlThemeStyle(themeTokens?: RenderHtmlThemeTokens): string {
+function buildRenderHtmlThemeStyle(themeTokens?: RenderHtmlThemeTokens): string {
   const merged = { ...DEFAULT_RENDER_HTML_THEME_TOKENS, ...(themeTokens ?? {}) };
   const declarations = RENDER_HTML_THEME_TOKEN_NAMES
     .map((name) => `--${name}:${merged[name]};`)
@@ -122,7 +122,7 @@ export function buildRenderHtmlThemeStyle(themeTokens?: RenderHtmlThemeTokens): 
   );
 }
 
-export function buildRenderHtmlCspMeta(allowScripts: boolean): string {
+function buildRenderHtmlCspMeta(allowScripts: boolean): string {
   const directives = [
     "default-src 'none'",
     allowScripts ? "script-src 'unsafe-inline' 'unsafe-eval'" : "",

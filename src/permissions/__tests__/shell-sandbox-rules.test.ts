@@ -13,9 +13,14 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
+import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 
 let dir: string;
 let manager: PermissionManager;
+// Audit writes are queued, not awaited, by the code under test; teardown must
+// drain them before removing the directory they write into.
+const auditLoggers: AuditLogger[] = [];
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "shell-sandbox-rules-")));
   const home = join(dir, "home");
@@ -27,7 +32,9 @@ beforeEach(() => {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));
+  await flushSandboxAudit();
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -138,7 +145,9 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
     gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
   });
   gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
+  const auditLogger = new AuditLogger();
+  auditLoggers.push(auditLogger);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
   const executionMode = options.executionMode ?? "host";
   const input = executionMode === "host"
     ? { command: "printf ready", executionMode, justification: "Read the host environment" }

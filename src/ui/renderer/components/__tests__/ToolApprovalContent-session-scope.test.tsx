@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
@@ -41,7 +41,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
     const onDecide = vi.fn();
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={browserRequest("agent")} onDecide={onDecide} />);
+    renderApproval(browserRequest("agent"), onDecide);
 
     const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
     expect(remember).toHaveTextContent("이번 세션 동안 허용");
@@ -59,7 +59,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
     const { sessionId: _omitted, ...request } = browserRequest("agent");
-    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={onDecide} />);
+    renderApproval(request, onDecide);
     const remember = screen.getByTestId(TEST_IDS.allowAlwaysButton);
     expect(remember).toBeDisabled();
     const reason = "이 요청은 대화에 속하지 않아 세션 동안 허용할 수 없습니다. 한 번만 허용하세요.";
@@ -72,7 +72,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
 
   it("names the user's own tabs for a user-tab scope", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={browserRequest("user")} onDecide={vi.fn()} />);
+    renderApproval(browserRequest("user"), vi.fn());
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("직접 연 탭");
   });
 
@@ -84,7 +84,7 @@ describe("ToolApprovalContent session-only browser scope", () => {
       persistentAllowAllowed: false,
       requireExplicit: true,
     };
-    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={vi.fn()} />);
+    renderApproval(request, vi.fn());
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.queryByTestId("allow-always-exact-scope")).toBeNull();
     const target = screen.getByTestId("approval-browser-target");

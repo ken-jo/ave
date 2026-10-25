@@ -2,7 +2,7 @@
 import type { WorkBoardStorage } from "./storage.js";
 import { workBoardProjectStorageKey } from "./project-storage.js";
 
-export const MEMORIES_DIR = "memories";
+const MEMORIES_DIR = "memories";
 export const USER_FILE = "memories/USER.md";
 export const MEMORY_FILE = "memories/MEMORY.md";
 const PROJECT_MEMORIES_DIR = "memories/projects";

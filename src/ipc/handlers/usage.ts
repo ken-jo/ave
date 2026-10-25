@@ -39,7 +39,7 @@ export async function handleUsageRange(
   return getUsageRange(opts, new Date(), pricingOverridesFor(settingOverrides));
 }
 
-export interface UsageDailySummaryItem {
+interface UsageDailySummaryItem {
   title?: string;
   preview?: string;
   text?: string;

@@ -1,18 +1,13 @@
 import type { Metadata } from "next";
-import { Footer, Header } from "@/components/chrome";
-import { DocsIndex } from "@/components/pages";
+import { DocsIndexView } from "@/components/docs";
+import { pagesCopy } from "@/lib/pages";
 
 export const metadata: Metadata = {
   title: "Docs",
+  description: pagesCopy("en").docs.lead,
   alternates: { canonical: "/en/docs/", languages: { ko: "/docs/", en: "/en/docs/" } },
 };
 
 export default function Page() {
-  return (
-    <>
-      <Header locale="en" path="/docs/" />
-      <DocsIndex locale="en" />
-      <Footer locale="en" path="/docs/" />
-    </>
-  );
+  return <DocsIndexView locale="en" />;
 }
