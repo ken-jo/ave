@@ -16,7 +16,7 @@ import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
-import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
@@ -1025,7 +1025,7 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
   const electronUserData = electronUserDataDirs(userDataDir, homes);
   const raw = [
     // The sensitive-path table, projected to literal absolute paths Projected from the single authority, SENSITIVE_PATH_ENTRIES in src/permissions/sensitive-paths.ts, which the in-process host-tool guard projects into globs. Do NOT hand-add a `join(home, …)` entry here — add a row to that table and BOTH surfaces deny it.
-    ...SENSITIVE_PATH_ENTRIES.flatMap((entry) => {
+    ...SENSITIVE_PATH_ENTRIES.filter((entry) => sensitiveEntryOnSandboxFloor(entry)).flatMap((entry) => {
       let paths: string[];
       switch (entry.anchor) {
         case "ave-home":
