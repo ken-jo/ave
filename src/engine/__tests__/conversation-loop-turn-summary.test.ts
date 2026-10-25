@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
@@ -10,6 +12,8 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { MemoryManager } from "../../memory/memory-manager.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
@@ -20,6 +24,13 @@ import {
   A2A_INPUT_REQUIRED_CONTROL_KIND,
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
 } from "../../tools/agent-send.js";
+
+/** Real filesystem I/O can schedule a lock retry after fake time ran out. */
+const retrySleep = vi.hoisted(() => ({ skip: false }));
+vi.mock("../../shared/abortable-deadline.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/abortable-deadline.js")>();
+  return { ...actual, sleep: (ms: number, signal?: AbortSignal) => retrySleep.skip ? Promise.resolve() : actual.sleep(ms, signal) };
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -482,25 +493,34 @@ describe("ConversationLoop onTurnSummary", () => {
 
   it("omits primary route settings when a fallback keeps the same vendor and model", async () => {
     vi.useFakeTimers();
+    let signalPrimaryStarted!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const settings = fakeLlmSettings({ provider: "openai", model: "gpt-3.5-turbo" });
     settings.vendors.openai.catalogModel = "openai/gpt-4.1";
     const primary: LLMProvider = {
       vendor: "openai",
-      async *streamTurn() { yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
+      async *streamTurn() { signalPrimaryStarted(); yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
     };
     const fallback = new FallbackProvider(primary, [{ provider: "openai", model: "gpt-3.5-turbo", baseUrl: "https://fallback.invalid/v1" }], () => "fixture-key", () => new FakeProvider([[
       { type: "text_delta", text: "fallback answer" },
       { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } },
     ]]));
+    const memoryManager = new MemoryManager({ aveDir: aveHome() });
+    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
     const loop = createLoopWithRegistry(fallback, new ToolRegistry(), {
+      memoryManager,
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
     const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    await Promise.race([primaryStarted, turn]);
     await vi.advanceTimersByTimeAsync(30_000);
     expect((await turn).text).toBe("fallback answer");
     expect(summary).toMatchObject({ vendorProvider: "openai", vendorModel: "gpt-3.5-turbo" });
     expect(summary?.modelSettings).toBeUndefined();
+    expect(beginJournal).toHaveBeenCalledOnce();
+    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    expect(persisted?.some((message) => message.role === "assistant" && message.content === "fallback answer")).toBe(true);
   });
 
   it("records a user price correction as the run's pricing and keeps reported reasoning tokens per request", async () => {
@@ -717,9 +737,12 @@ describe("ConversationLoop onTurnSummary", () => {
   it("attributes fallback-served turns to the provider/model that actually streamed", async () => {
     vi.useFakeTimers();
     const toolRegistry = new ToolRegistry();
+    let signalPrimaryStarted!: () => void;
+    const primaryStarted = new Promise<void>((resolve) => { signalPrimaryStarted = resolve; });
     const primary: LLMProvider = {
       vendor: "claude",
       streamTurn: async function* () {
+        signalPrimaryStarted();
         yield { type: "error", error: "500 internal server error", classification: "network",
         };
       },
@@ -744,6 +767,7 @@ describe("ConversationLoop onTurnSummary", () => {
       isPermissionAuditChainReady: () => false,
     };
     const loop = createLoopWithRegistry(provider, toolRegistry, {
+      disableSessionPersistence: false,
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: () => "test-key",
@@ -760,6 +784,8 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     }, undefined, { inputOrigin: "user-keyboard" },
     );
+    // Checkpoint I/O must finish before advancing the provider's retry clock.
+    await primaryStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await pending;
     vi.useRealTimers();
@@ -781,7 +807,6 @@ describe("ConversationLoop onTurnSummary", () => {
   });
 
   async function sameIdentityFallbackRecords(resumePrimary = false) {
-    vi.useFakeTimers();
     const model = "gpt-5.4-mini";
     const llm = fakeLlmSettings({ model });
     const primarySent: StreamTurnParams[] = [];
@@ -815,7 +840,11 @@ describe("ConversationLoop onTurnSummary", () => {
       jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
       execute: async () => ({ output: "value", isError: false }),
     }));
+    const memoryManager = new MemoryManager({ aveDir: aveHome() });
+    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
+    const endJournal = vi.spyOn(memoryManager, "endTurnJournal");
     const loop = createLoopWithRegistry(provider, registry, {
+      memoryManager,
       settingsService: {
         get: () => ({ ...llm, modelListCache: {
           [llmModelListCacheKey("openai", llm.vendors.openai.baseUrl)]: {
@@ -828,9 +857,10 @@ describe("ConversationLoop onTurnSummary", () => {
       auditLogger: auditLogger as never,
     });
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
-    const pending = loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
-    await vi.advanceTimersByTimeAsync(5_000);
-    await pending;
+    retrySleep.skip = true;
+    try {
+      await loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+    } finally { retrySleep.skip = false; }
     expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
     expect(primarySent[0]?.model).toBe(model);
     expect(primarySent[0]?.outputTokenLimit).toBe(4_096);
@@ -840,6 +870,13 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(fallbackSent[0]?.outputCeiling).toBeUndefined();
     expect(onTurnSummary).toHaveBeenCalledTimes(1);
     expect(auditLogger.logTurn).toHaveBeenCalledTimes(1);
+    expect(beginJournal).toHaveBeenCalledOnce();
+    expect(endJournal).toHaveBeenCalledOnce();
+    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    expect(persisted?.some((message) => message.role === "user" && message.content === "reply")).toBe(true);
+    expect(persisted?.findLast((message) => message.role === "assistant")?.meta?.turnSummary).toMatchObject({
+      vendorProvider: "openai", vendorModel: model,
+    });
     return { summary: onTurnSummary.mock.calls[0]![0], audit: auditLogger.logTurn.mock.calls[0]![0] };
   }
 
@@ -847,6 +884,16 @@ describe("ConversationLoop onTurnSummary", () => {
     const record = (await sameIdentityFallbackRecords())[surface];
     expect(record).toBeDefined();
     expect(record.modelSettings).toBeUndefined();
+  });
+
+  it("persists fallback turns and summaries after quarantining a corrupt checkpoint ledger", async () => {
+    const storage = join(aveHome(), "code-checkpoints");
+    await mkdir(storage, { recursive: true });
+    await writeFile(join(storage, "turns.json"), "{");
+    const { summary, audit } = await sameIdentityFallbackRecords();
+    expect(summary).toBeDefined();
+    expect(audit).toBeDefined();
+    expect((await readdir(storage)).some((name) => name.startsWith("turns.json.corrupt-"))).toBe(true);
   });
 
   it("records a later primary request after a fallback tool round", async () => {

@@ -11,8 +11,8 @@ import { sleep } from "../shared/abortable-deadline.js";
  *
  * Three ladders defend against this class and they CANNOT be merged into one:
  * `replaceStagedFile` (lib/atomic-file.ts) is synchronous and waits with
- * `Atomics.wait`; `retryOnTransientFsLock` (below)
- * is asynchronous and waits with `setTimeout`; `renameWithTransientRetry`
+ * `Atomics.wait`; `retryOnTransientFsLock` and its one-file sibling
+ * `retryOnFileLock` (below) are asynchronous and wait with `setTimeout`; `renameWithTransientRetry`
  * (tools/file-tools.ts) is asynchronous inside a tool turn. This module owns
  * what they can share — the delay curve, the attempt budgets, and the
  * retryable code sets — so they can never again disagree by accident. They
@@ -175,4 +175,30 @@ export async function retryOnTransientFsLock<T>(
       await wait(delayMs(attempt));
     }
   }
+}
+
+/**
+ * Bounded retry for ONE-FILE ops (a rename onto a file, an unlink, a read) on
+ * the background budget. Only {@link RENAME_FILE_LOCK_CODES} retry, and only
+ * on Windows: elsewhere those codes are real permission errors and fail at once.
+ */
+export async function retryOnFileLock<T>(op: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await op();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = process.platform === "win32" && code !== undefined && RENAME_FILE_LOCK_CODES.has(code) && attempt < BACKGROUND_ATTEMPTS;
+      if (!retryable) throw error;
+      await sleep(transientFsLockDelayMs(attempt));
+    }
+  }
+}
+
+/**
+ * Rename one file onto another, retrying Windows file locks. Whatever sits at
+ * `to`, a link included, is replaced and never followed.
+ */
+export function renameFile(from: string, to: string): Promise<void> {
+  return retryOnFileLock(() => fsRename(from, to));
 }
