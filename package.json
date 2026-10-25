@@ -126,7 +126,7 @@
     "@ai-sdk/otel": "^1.0.150",
     "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
-    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.0.0",
