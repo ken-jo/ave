@@ -1339,11 +1339,16 @@ separate policy bypass.
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 
-On Windows, sandbox deny targets beneath machine roots (`ProgramData`, the
-program-files roots and the system directory) are omitted. A missing deny target
-can create placeholders and change its parent's DACL, requiring `WRITE_DAC` on
-machine-owned directories that ordinary users cannot change. Drive roots are
-not excluded. Administrative policy protection instead lives at the read boundary:
+On Windows, sandbox write denies beneath machine roots (`ProgramData`, the
+program-files roots and the system directory) are omitted unless a grant
+strictly beneath the machine root contains the target: ordinary ACLs already
+refuse users writes there. Denies inside writable workspaces remain protected.
+A missing deny target can create placeholders and change its parent's DACL,
+requiring `WRITE_DAC` on machine-owned directories that ordinary users cannot
+change. Read denies are never omitted this way; one the helper cannot stamp
+fails sandbox initialization. Write grants equal to or above a machine root are
+refused before policy narrowing. Unproven path identities retain the deny. Administrative policy
+protection outside grants instead lives at the read boundary:
 all administrative section readers share a non-following, handle-based reader.
 The file must belong to Administrators or SYSTEM. Its parent must belong to
 Administrators, SYSTEM or the trusted installer service. The file's DACL may not

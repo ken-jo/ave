@@ -6,7 +6,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
@@ -499,6 +499,7 @@ export function buildPerCommandSandboxCustomConfig(
       ),
       _baseTrustedSettings?.userDataDir,
       windowsGrants,
+      "read",
     );
   }
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
@@ -534,6 +535,7 @@ export function buildPerCommandSandboxCustomConfig(
       ])],
       _baseTrustedSettings?.userDataDir,
       windowsGrants,
+      "write",
     );
   }
   if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
@@ -968,15 +970,9 @@ function windowsProfileHome(): string | undefined {
   return isHomeAnchor(home, process.platform) ? home : undefined;
 }
 
-// Windows stamping creates missing deny targets: omit machine roots, POSIX rows and profile rows disjoint from grants. Worker wraps restate overlapping denies.
-function windowsDenyTargets<T extends FilesystemPathEntry>(
-  entries: readonly T[],
-  userDataDir: string | undefined,
-  grants: readonly FilesystemPathEntry[],
-): (T | string)[] {
-  if (process.platform !== "win32") return [...entries];
+function windowsMachineRoots(): string[] {
   const drive = process.env.SystemDrive ?? "C:";
-  const machineRoots = [
+  return [
     process.env.ProgramData ?? "C:\\ProgramData",
     process.env.ProgramFiles ?? `${drive}\\Program Files`,
     process.env["ProgramFiles(x86)"] ?? `${drive}\\Program Files (x86)`,
@@ -984,23 +980,49 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     process.env["CommonProgramFiles(x86)"], process.env.CommonProgramW6432,
     process.env.SystemRoot ?? process.env.windir ?? `${drive}\\Windows`, process.env.windir,
   ].filter((path): path is string => Boolean(path));
-  // Missing denies create placeholders and stamp parent DACLs. Machine roots require WRITE_DAC an ordinary token lacks; admin policy is protected by trust-on-read instead.
-  entries = entries.filter((entry) => {
-    const path = (typeof entry === "string" ? entry : entry.path).replace(/^\\\\\?\\/, "");
-    return !machineRoots.some((root) => {
-      const subpath = win32.relative(root, path);
-      return subpath === "" || (!subpath.startsWith(`..\\`) && subpath !== ".." && !win32.isAbsolute(subpath));
-    });
-  });
-  const literals = entries.filter((entry) => typeof entry !== "string");
-  const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
-  const homes = sensitiveDenyHomes();
+}
+
+function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
+  if (process.platform !== "win32") return;
+  for (const grant of grants) {
+    for (const root of windowsMachineRoots()) {
+      if (isGrantPathWithin(grant, root)) {
+        throw new Error(`Windows write grant ${grant} contains machine root ${root}`);
+      }
+    }
+  }
+}
+
+// Windows stamping creates missing deny targets and changes parent DACLs. Write denies under a machine root are omitted unless a grant strictly beneath that root contains them: ordinary ACLs already deny Users writes there. Read denies are never omitted for this; one srt-win cannot stamp fails init. POSIX rows and profile rows disjoint from grants are omitted. Worker wraps restate overlapping denies.
+function windowsDenyTargets<T extends FilesystemPathEntry>(
+  entries: readonly T[],
+  userDataDir: string | undefined,
+  grants: readonly FilesystemPathEntry[],
+  kind: "read" | "write",
+): (T | string)[] {
+  if (process.platform !== "win32") return [...entries];
+  const machineRoots = windowsMachineRoots();
   // Only the OS profile has the DACL that makes a disjoint deny redundant; a HOME elsewhere keeps every row. An unresolved profile drops nothing.
   const profile = windowsProfileHome();
   // Match runtime home expansion before judging whether a deny is disjoint.
   const expandedGrants = grants.map((entry) => typeof entry === "string" ? entry : entry.path).map((grant) => profile === undefined ? grant
     : grant === "~" ? profile
       : /^~[\\/]/.test(grant) ? profile + grant.slice(1) : grant);
+  if (kind === "write") entries = entries.filter((entry) => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    try {
+      if ([path, ...expandedGrants, ...machineRoots].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
+        .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
+      return !machineRoots.some((root) => isGrantPathWithin(root, path)
+        && !expandedGrants.some((grant) => isGrantPathWithin(grant, path) && !isGrantPathWithin(grant, root)));
+    } catch {
+      // An unproven identity must never remove a deny.
+      return true;
+    }
+  });
+  const literals = entries.filter((entry) => typeof entry !== "string");
+  const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
+  const homes = sensitiveDenyHomes();
   const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
   const directories = new Set(
     [
@@ -1140,6 +1162,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // Refuse the grants as requested, before the write policy can narrow one
   // away: a root withdrawn for its Git-scan budget would otherwise pass
   // silently, so the refusal would depend on how full the directory is.
+  assertWindowsMachineRootWriteGrants(trustedSettings.allowWrite ?? []);
   if (srtWinPath !== undefined) {
     assertPrivateHelperGrants(trustedSettings.allowRead ?? [], trustedSettings.allowWrite ?? []);
   }
@@ -1200,6 +1223,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   const allowWrite = writeRootsOutsideReadDenies(mandatory.allowWrite, sharedFloor);
   const allowRead =
     trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
+  assertWindowsMachineRootWriteGrants(allowWrite);
   if (srtWinPath !== undefined) assertPrivateHelperGrants(allowRead ?? [], allowWrite);
   // The caller's own spellings stay in the grant set: the mandatory policy resolves `~` against the real home, while ASRT expands it against the profile, and a deny overlapping either one must be kept.
   const windowsGrants = [...allowWrite, ...(trustedSettings.allowWrite ?? []), ...(allowRead ?? [])];
@@ -1208,9 +1232,10 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
       asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
       trustedSettings.userDataDir,
       windowsGrants,
+      "read",
     ),
     allowWrite,
-    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants),
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, "write"),
     ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
