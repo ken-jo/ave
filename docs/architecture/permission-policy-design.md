@@ -322,15 +322,78 @@ Shell rules are dialect-scoped: `Bash(...)` rules match bash and
 `PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
 user, project or session scope. A `PowerShell(...)` rule matches the parsed
 command with a literal identity (case folded only for a known cmdlet's name
-and `-Parameter` names; native programs, unknown commands and every value
-verbatim; aliases never merge identities and are resolved only for floor
-classification and for deny/ask matching, where a path, `Module\` qualifier and
+and unquoted named `-Parameter` options; native programs, unknown commands
+and every value verbatim, including quoted parameter-looking data; aliases
+never merge identities and are resolved only for floor classification and for deny/ask matching, where a path, `Module\` qualifier and
 executable extension are also dropped) and authorizes an unsandboxed call
-only as an exact rule, with the same strictness as Bash. Encoded code (a
-UTF-16LE base64 payload anywhere in the input, an `-EncodedCommand` operand
-that cannot be read, or code a pipeline feeds a shell on stdin) gets the
-forced modal and no allow rule covers it; decoded scripts are floored and shown
-on the card, and every scan bound fails closed.
+only as an exact rule, with the same strictness as Bash. Exact allows also
+require the literal-command proof below.
+
+### Literal-command proof
+
+Unsandboxed shell execution has one automatic allow path: an exact
+`Bash(<command>)` or `PowerShell(<command>)` rule whose command the host proves
+literal. This covers sandbox-off, unavailable or excluded execution, an
+unsandboxed retry, an explicit host request and the Windows Plan B. Without
+that proof and exact match, foreground execution asks and headless execution
+denies, subject to the earlier deny/ask rules and mandatory floors. In this
+unsandboxed lane, headless execution converts every remaining ask to deny,
+including visible floors and unreadable restrictions, while retaining the
+reason and layer. Stored rules never turn an unproven command into an allow.
+Wildcard allows apply only to sandboxed execution.
+
+The proof checks these conditions in order:
+
+1. Check `MAX_LITERAL_COMMAND_LENGTH` (10,000 characters), defined in the
+   shared launcher-policy module below, before parsing. Over-limit input is
+   unproven and cannot reach the parser for exact-rule proof.
+2. Require successful parsing in the selected dialect, with no lexer or proof
+   budget exhausted, unsupported syntax or unresolved command boundary.
+3. Require every word to be literal. Plain and literally quoted arguments are
+   accepted and stored as canonical quoted argv. Variables, command
+   substitutions, globs and escape expansion are unproven, including inside
+   quotes when that dialect expands them. Thus `git commit -m 'msg'` can have
+   a saved exact rule, while a quoted active expansion cannot.
+4. Reject code carriers by program identity and option or operand role, without
+   inspecting payload contents. Shell and interpreter inline-code options
+   (`-c`, `-e`, `-Command`, the `-enc`/`-EncodedCommand` family and
+   `cmd /c`), stdin code, script-file execution and wrapper-supplied code are
+   never proven. A literal encoded operand does not change this.
+5. Reject nested dialects. The proof never recurses into a child command string
+   or decoded text to admit the outer command.
+
+The centralized launcher list in
+[shell-prefix-values.ts](../../src/permissions/rules/shell-prefix-values.ts)
+is authoritative. Recognition compares exact basenames with case folding on
+Windows. It includes `pwsh`, `powershell`, `pwsh-preview`, `cmd`, the
+supported POSIX shells and interpreters, and their supported `.exe` forms.
+A similar prefix or numeric suffix does not make another program a launcher.
+An unlisted name such as `ksh93` remains an ordinary literal program, subject
+to the other proof conditions and floors. This list identifies code-carrier
+syntax; it does not certify other programs' effects. Carrier option and wrapper roles are owned by
+[shell-prefix-policy.ts](../../src/permissions/rules/shell-prefix-policy.ts);
+[powershell-exfiltration.ts](../../src/permissions/rules/powershell-exfiltration.ts)
+owns the PowerShell proof shape.
+
+The approval card offers an exact rule only for one proven literal simple
+command and validates the proposed rule against the live request before saving
+it. A pipeline, redirect or compound command receives no exact-rule offer.
+Literal quoted data retains its argument identity: quoted whitespace is not collapsed
+or treated as a separator. Deny and ask matching retains its separate
+conservative normalization and precedence.
+
+For sandboxed execution, the sandbox's filesystem and egress controls remain
+the boundary. Visible-text destructive, credential-exfiltration and
+sensitive-path floors still apply before an automatic allow. There is no
+base64 scan, UTF-16LE text heuristic, payload recursion or encoded-content
+floor above the sandbox. A literal data command such as
+`printf %s '<encoded-looking data>'` can match an exact allow when it passes
+the same proof and visible-text floors.
+
+The card may decode a literal operand of a recognized `-enc`-family option
+for display only. It does not scan other arguments, recurse into code strings
+or use decoded text for floors, proof, rule identity or approval. Display
+success, failure or limits cannot change the permission decision.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
@@ -1024,7 +1087,7 @@ model's shell-environment description and the tool result say the sandbox is
 unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
-only on an exact allow rule for that command: `Bash(<command>)`, or
+only on an exact allow rule for that proven literal command: `Bash(<command>)`, or
 `PowerShell(<command>)` matched on the parsed command's canonical form with the
 same strictness (owner decision 2026-10-25). Otherwise it asks on the shared
 decision row of the approval card (owner decision 2026-10-25, unified approval

@@ -1561,10 +1561,13 @@ dock grants, allow mode, the reviewer and the judge never stand in for that
 rule: everything else asks on the dock. With nobody to ask (a headless or
 routine turn) the same exact rule still runs the command — sandbox-off bash,
 the Plan B and an explicit host request alike — and without one the call is
-denied and audited (I5). A `PowerShell(...)` rule is matched on the parsed
+denied and audited (I5). Every remaining unsandboxed headless ask, including a
+visible floor or unreadable restriction, becomes deny with its reason and layer
+preserved. A `PowerShell(...)` rule is matched on the parsed
 command with a literal identity: case is folded only for a known cmdlet's
-name and its `-Parameter` names (before a `:`); a native program, an unknown
-command and every value stay verbatim (`git branch -d` and `-D`, `git clean
+name and its unquoted named `-Parameter` options (before a `:`); a native
+program, an unknown command and every value stay verbatim, including quoted
+parameter-looking data (`git branch -d` and `-D`, `git clean
 -n` and `-N`, `java -Dfoo=SAFE` are distinct rules). An alias never merges
 two identities (`sc`, `curl`, `wget`, `ls`, `rm` and `cat` differ by edition):
 aliases are resolved only to classify the command against the floors. A deny
@@ -1572,52 +1575,25 @@ or ask rule compares a normalized name on both sides, since matching more only
 narrows: the directory path, a `Module\` qualifier, trailing dots and an
 executable extension are dropped, case is folded and an alias resolves to its cmdlet, so
 `PowerShell(git push *)` refuses `git.exe push` and `C:\Git\bin\git.exe push`,
-and `PowerShell(gci *)` refuses `Get-ChildItem`. Encoded code is found without any launcher list or
-option grammar, by three rules over the words each shell's own lexer produced
-(at every depth, and the raw input itself):
+and `PowerShell(gci *)` refuses `Get-ChildItem`.
 
-1. **A UTF-16LE payload anywhere.** Any base64 run, whitespace inside it
-   allowed (as .NET ignores it), that decodes to UTF-16LE text is encoded code,
-   wherever it sits: after `-EncodedCommand`, behind any launcher, or in a data
-   position such as `printf %s <payload>`. Text means at least 8 code units and
-   at least 90% of them tab, LF, CR or printable ASCII (U+0020–U+007E). ASCII in
-   UTF-16LE has a zero high byte, which hashes, JWTs, UTF-8 data and ordinary
-   commit messages never produce, so they do not trip it. The decoded text is
-   scanned again, recursively, and the destructive, exfiltration and secret
-   floors run on it.
-2. **An unreadable `-EncodedCommand` operand.** An `-e*`-family flag (`-e`,
-   `-ec`, `-enc…`, behind any number of hyphens, en dashes, em dashes or
-   horizontal bars, or `/`) after a PowerShell name (a basename starting with
-   `pwsh` or `powershell`: `pwsh-preview`, `powershell_ise`, full paths) or a
-   dynamic program name, before `-Command`/`-File`, whose operand is missing,
-   non-literal (a concatenation, variable, subexpression or splat) or not
-   UTF-16LE text. The operand is not resolved. `node -e`, `grep -e` and
-   `printf %s -enc x` stay ordinary.
-3. **Code read from stdin.** A pipeline stage that runs what it reads as code:
-   a shell or interpreter after `|` with no inline-code or script option
-   (`| sh`, `| bash -s -- -c x`, `| pwsh -`, `| python3 -`, `base64 -d | sh`),
-   `| iex`, `xargs` into a shell, or `/dev/stdin` as a script.
+Exact allows additionally require the host's
+[literal-command proof](permission-policy-design.md#literal-command-proof).
+The input limit is checked before parsing; parse failures, exhausted lexer or
+proof budgets, expansions and unsupported syntax remain unproven. Plain words
+and literal quoted arguments are normalized to canonical argv, so
+`git commit -m 'msg'` can be remembered. Code carriers and nested dialects
+never match an exact allow, even with literal code operands. Launcher identity
+uses one exact basename list, including `pwsh-preview` and the supported
+`.exe` forms, with case folding on Windows; it never uses name prefixes or
+version-suffix guesses.
 
-A code string a shell will run (`bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`),
-including a value glued to its option (`--command=…`, `/c"…"`), is lexed in its
-own dialect and goes through the same rules within the same bounds; the stdin
-rule and this recursion share rule 2's launcher predicate, so `pwsh-preview`
-and the like are not missed. Whitespace anywhere inside a base64 run is ignored
-(as .NET's FromBase64String does), so a payload split into arbitrary chunks
-still decodes. Every bound fails closed: an input over a hard 16 KB length cap
-is hidden without being scanned, and exhausting the shared work budget, the
-recursion depth, the decoded-byte bound, or the lexer's own budget makes the
-input encoded code too; the base64 scan is linear in the input, so an ordinary
-long argument list is not mistaken for it. Encoded code gets the
-forced modal on both lanes, before any sandboxed allow; no allow rule covers it,
-the card offers no exact rule, and the card shows each decoded script. Literal
-script-file execution (`pwsh ./x.ps1`, `pwsh -f`) is outside these rules and
-decides as any opaque code does. A here-string, `--%` stop-parsing or a cmd
-`%VAR%` expansion makes a word non-literal, so its command has no exact rule; a
-non-literal code argument such as `pwsh -c $code` is the ordinary opaque-code
-ask. The host builds the card's rule from
-the parsed command and matches it again before saving; a command that is not
-one literal simple command has no exact rule.
+For sandboxed commands the sandbox is the boundary. Only the visible-text
+floors remain above it; encoded-looking data does not add a permission floor.
+The card decodes only a literal `-enc`-family operand for display. That decoded
+text neither authorizes execution nor feeds permission decisions. The host
+builds the card's exact rule from proven literal argv and matches it against
+the live command again before saving.
 
 Remembered approvals saved for unsandboxed shells before this decision stay
 silently inert: they are not migrated, the card does not mark them, and they

@@ -20,7 +20,7 @@ design must be reported explicitly.
 | Rule | Matches |
 |---|---|
 | `Bash(<prefix> *)` | every command whose static argv starts with the prefix tokens, including the bare prefix |
-| `Bash(<exact>)` | exactly that static argv |
+| `Bash(<exact>)` / `PowerShell(<exact>)` | exactly that proven literal argv, including canonical literal quoting |
 | `Edit(<path-glob>)` | absolute or project-relative path, using `*`, `**`, and `?`; trailing `/**` also covers the directory itself |
 | `WebFetch(domain:<host>[:port])` / `WebFetch(domain:*.<host>[:port])` | exact host, or strict subdomains; omitted port covers all ports |
 | `Mcp(<server>)` / `Mcp(<server>:<tool>)` | every tool of a server, or one tool |
@@ -31,19 +31,19 @@ design must be reported explicitly.
 
 **2. Shell decision order.** A persistent shell allow rule authorizes execution outside the sandbox. The host evaluates the actual per-invocation execution plan, rather than a remembered approval or a global setting alone:
 
-1. Explicit deny rules deny. The destructive/irreversible and sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Credential-exfiltration floors have the same behavior.
+1. Explicit deny rules deny. The destructive/irreversible and sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Credential-exfiltration floors have the same behavior. An unsandboxed headless request that would ask under any floor or unreadable restriction denies with its reason and layer preserved.
 2. Explicit ask rules ask. A restriction whose command cannot be inspected also asks.
 3. A command that will actually run sandboxed is allowed without asking.
-4. A command that will run outside the sandbox runs unasked only on an exact allow rule for it (user, project or This session): `Bash(<command>)`, or `PowerShell(<command>)` for PowerShell; otherwise it asks, in every mode (owner decision 2026-10-25, unsandboxed shell exact-rule requirement). This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry, an explicit host request and the Windows Plan B. The reviewer and judge are not consulted for it. Headless, a matching exact rule runs it; without one it is denied and audited.
+4. A command that will run outside the sandbox runs unasked only on an exact allow rule for its proven literal argv (user, project or This session): `Bash(<command>)`, or `PowerShell(<command>)` for PowerShell; otherwise it asks, in every mode (owner decision 2026-10-25, unsandboxed shell exact-rule requirement). This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry, an explicit host request and the Windows Plan B. The reviewer and judge are not consulted for it. Headless, a matching exact rule runs it; without one it is denied and audited.
 5. Prefix rules never authorize an unsandboxed command, whether or not a sandbox is active for other commands. This is checked at evaluation time; stored prefixes remain visible and revocable, and still match as deny and ask rules.
 
 Store A action-key rules and remembered dock grants are not exact shell rules, so they no longer authorize a plain-shell invocation; broad tool or glob allows never did. Such remembered approvals stay silently inert: no migration and no card marker (owner decision 2026-10-25).
 
-**Exact PowerShell rules (owner decision 2026-10-25).** `PowerShell(<command>)` follows the same contract as `Bash(<command>)`. The host builds the card's rule from the parsed command and matches it again before saving. Matching uses a literal identity: case is folded only for a known cmdlet's name and its `-Parameter` names (before a `:`); native programs, unknown commands and every value stay verbatim (`git -d` ≠ `git -D`, `java -Dfoo=SAFE`). Aliases never merge identities across editions; they are resolved only for floor classification. Deny/ask rules compare a normalized name on both sides (directory path, `Module\` qualifier and executable extension dropped, case folded, alias resolved), so a deny is never escaped by `git.exe`, a full path or a module-qualified cmdlet. Encoded code is found by three launcher-agnostic rules: a base64 run anywhere that decodes to UTF-16LE text (at least 8 code units, at least 90% tab/LF/CR/printable ASCII), decoded and floored recursively; an `-e*`-family flag after a PowerShell name or a dynamic program whose operand cannot be read; and a pipeline stage that runs stdin as code (`| sh`, `| iex`, `| pwsh -`). Code strings a shell runs (`bash -c`, `pwsh -Command`, `cmd /c`) get the same rules, and every scan bound fails closed. Encoded code gets the forced modal, no allow rule covers it, the card shows each decoded script and offers no exact rule. A token that is an expression, expansion, quote, separator or wildcard makes the command non-literal, so it has no exact rule; such an input still meets deny rules on its literal prefix. A trailing ` *` makes a prefix rule, which (like a Bash prefix) authorizes only sandboxed runs.
+**Exact PowerShell rules (owner decision 2026-10-25).** `PowerShell(<command>)` follows the same contract as `Bash(<command>)`. The host builds the card's rule from the parsed command and matches it again before saving. Matching uses a literal identity: case is folded only for a known cmdlet's name and its unquoted named `-Parameter` options (before a `:`); native programs, unknown commands and every value stay verbatim, including quoted parameter-looking data (`git -d` ≠ `git -D`, `java -Dfoo=SAFE`). Aliases never merge identities across editions; they are resolved only for floor classification. Deny/ask rules compare a normalized name on both sides (directory path, `Module\` qualifier and executable extension dropped, case folded, alias resolved), so a deny is never escaped by `git.exe`, a full path or a module-qualified cmdlet. Exact allows additionally require the [literal-command proof](../architecture/permission-policy-design.md#literal-command-proof): the input limit precedes parsing, every word must be plain or literally quoted, and parser failures, budget limits, expansions, code carriers and nested dialects remain unproven. Literal quoted arguments use canonical quoted argv, so `git commit -m 'msg'` is rememberable; a quoted active expansion is not. Launcher recognition uses the centralized exact basename list, including `pwsh-preview` and supported `.exe` forms, with Windows case folding. A launcher carrying a literal `-enc`/`-EncodedCommand` operand never matches an exact allow. In the sandboxed lane only visible-text floors remain above the sandbox; encoded-looking data adds no content floor. A literal `-enc` operand is decoded only for card display and never for a permission decision. A trailing ` *` makes a prefix rule, which authorizes only sandboxed runs.
 
 **The approval card (owner decision 2026-10-25, unified approval card).** Every approval card draws one shared row: Deny ▾ | Allow for session ▾ | Allow once. Always deny is in the Deny dropdown; Allow for session, Always allow in this project and Always allow everywhere are in the allow dropdown. Selecting a choice shows the rule it saves and an Edit rule button above the row. On a shell card each remembering choice saves a rule: Always deny a user-global deny rule (the command's literal argv unless edited), the allows a session, project or user-global allow rule (the host-derived exact rule unless edited). The renderer sends `{ action, scope }` and, only when edited, `pattern`. The host validates an edited rule against the card's grammar and requires it to decide the live request, failing clearly otherwise. An allow edited into a wildcard is saved with a warning that it applies only to sandboxed runs; the exact-only rule for unsandboxed execution is unchanged. A network card's Always deny saves a `Network(<host>[:<port>])` deny rule, and its edited allows save `Network(...)` allow rules; unedited allows keep the grant of that lifetime. An exact tool approval maps the allows onto Store B session, project and user-global (`global`, owner decision 2026-10-25: Always allow everywhere) records and Always deny onto an exact deny, edited in Settings; any deny beats any allow, and among allows the conversation, then the project, then the global entry is consulted. Where the host records no exact decision for a request (`exactRecordAllowed: false`), Always deny is shown disabled with the one-shot reason. A folder card's lasting allow reads "Always allow this folder".
 
-Deny wins over every allow, regardless of specificity or scope. Existing strict-mode and untrusted-origin gates remain before automatic lanes. A session approval never changes the execution plan or switches off the sandbox for later commands. Unsandboxed calls do not consume session or persistent exact-tuple approval memory from Store B: each retry asks afresh unless covered by an exact `Bash(<command>)` allow rule (unsandboxed shell exact-rule requirement).
+Deny wins over every allow, regardless of specificity or scope. Existing strict-mode and untrusted-origin gates remain before automatic lanes. A session approval never changes the execution plan or switches off the sandbox for later commands. Unsandboxed calls do not consume session or persistent exact-tuple approval memory from Store B: each retry asks afresh unless covered by a proven exact `Bash(<command>)` or `PowerShell(<command>)` allow rule for its dialect (unsandboxed shell exact-rule requirement).
 
 For shell rule subjects, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed }`. The host invocation authorization pipeline derives this input for native shells from the sealed execution plan; the sandbox producer can supply its per-invocation answer at this single boundary. Whether a sandbox is active for other commands no longer matters (unsandboxed shell exact-rule requirement). Terminal commands carry an explicit plain route. A missing route is also treated as plain, and every shell subject still receives the destructive and sensitive-path floors. The dock never infers sandboxed execution from missing plan evidence. After mandatory human approval floors are satisfied, native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
 
@@ -60,12 +60,14 @@ For shell rule subjects, the permission layer consumes one host-only input, `she
 - Code-executing runners keep their full argv in rule matching. An applicable
   prefix must include the runner and its proven literal command, such as
   `Bash(npx prettier *)`; an inner-only `Bash(prettier *)` cannot cover it.
-  Opaque runner identity or an unknown runner option alone adds no hidden-code
-  blocker. The persistent-prefix boundary is checked separately below.
+  An opaque runner label or unknown option alone is not a credential/sink
+  floor. Exact allows still require a proven literal command boundary; an
+  unsupported boundary or exhausted analysis budget remains unproven. The
+  persistent-prefix boundary is checked separately below.
 
-**4. Prefix suggestions and validation.** `BANNED_PREFIX_SUGGESTIONS` in `src/permissions/rules/shell-prefix-values.ts` owns the broad-prefix refusals shared by the dock and the store. Program identities are normalized by basename and interpreter-version suffix before comparison. A banned vector followed only by switches or assignment bindings remains broad, so `node` and `node -e` are refused wildcard prefixes while `node scripts/build.mjs` may be saved. An exact rule can name an otherwise broad program. Empty prefixes remain refused; identified destructive/irreversible commands are refused as both exact and prefix allow rules. Deny and ask rules may still name them.
+**4. Prefix suggestions and validation.** `BANNED_PREFIX_SUGGESTIONS` in `src/permissions/rules/shell-prefix-values.ts` owns the broad-prefix refusals shared by the dock and the store. Broad-prefix validation normalizes program identities by basename and interpreter-version suffix; this is separate from the exact launcher list used by literal proof. A banned vector followed only by switches or assignment bindings remains broad, so `node` and `node -e` are refused wildcard prefixes. An exact rule can name an otherwise broad program only when the literal-command proof succeeds; script execution remains unproven. Empty prefixes remain refused; identified destructive/irreversible commands are refused as both exact and prefix allow rules. Deny and ask rules may still name them.
 
-The default suggestion is an exact rule for the complete static, spellable argv. A wider prefix requires an explicit edit and must pass the same refusal check. Hidden execution, including inline code, script execution, substitutions and evaluation, cannot be covered by an allow rule and produces no persistent suggestion. The host still proves that the candidate covers the whole invocation. There is no read-only program catalog or option-level safety model: search, repository, cluster and runner options do not invalidate a rule merely for loading code, writing files or changing a target. Such a rule is an outside-sandbox permission, not proof of a command's effects. Structural argv matching, explicit restrictions and the floors remain authoritative.
+The default suggestion is an exact rule for the complete static, spellable argv. A wider prefix requires an explicit edit and must pass the same refusal check. Hidden execution, including inline code, script execution, substitutions and evaluation, cannot be covered by an allow rule and produces no persistent suggestion. The host still proves that the candidate covers the whole invocation. There is no read-only program catalog or option-level safety model: ordinary program options do not prove or disprove the program's effects. Code-carrier roles, unsupported syntax and unresolved command boundaries independently prevent literal proof. A proven exact rule grants outside-sandbox permission; it does not prove the command's effects. Structural argv matching, explicit restrictions and the floors remain authoritative.
 
 **5. Shell verdict.** The blanket `shell → high` in `resolveUserApprovalVerdict` is no longer the first answer.
 - An unreviewed shell ask carries the host's rule-classifier verdict (`ApprovalRequest.ruleVerdict`): read-only is LOW, ordinary is MEDIUM, destructive is HIGH.
@@ -81,7 +83,7 @@ The default suggestion is an exact rule for the complete static, spellable argv.
 
 **7. Approval storage and retained floors.** Existing Store B entries are never converted to command rules. Non-shell matching remains unchanged; plain-shell execution does not reuse them.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
-- For eligible requests, Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Plain-shell calls disable this control and ignore retained entries. Existing entries keep their original identities.
+- For eligible non-shell requests, Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Shell requests instead save a session command rule when the host offers an exact rule and has a session id; retained Store B shell entries remain inert. Existing entries keep their original identities.
 - The destructive floor reads each command's argv: recursive or forced deletion in any option order, recursive or world-writable permission changes, raw disk writers and `find -delete` ask on every invocation.
 - **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. These commands require per-call consent, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
   - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
@@ -119,7 +121,7 @@ The default suggestion is an exact rule for the complete static, spellable argv.
 - The dock names the directory a project rule applies to, which is the repository root when one is found, not the execution directory.
 - A rule save reports `invalid-rule` for a rule that fails validation or does not cover the command, and `rule-save-failed` when a valid rule cannot be written.
 - Settings presents user and project rules together with persistent and session exact approvals in one revocable list. Project enumeration preserves the identity stored in each file, including retained exact-directory scopes. A file whose stored root no longer derives its own name is reported as unavailable, and its rules are still listed and revocable by that stored identity without rewriting the root.
-- An edited rule is normalized by one shared function before it is checked: outer and inner whitespace is trimmed and runs of spaces or tabs in a `Bash(...)` body collapse to one space. The dock previews the normalized rule, and the host save path applies the same function; the rule store's parser stays strict for every other writer. The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
+- An edited rule is normalized by one shared function before it is checked: outer whitespace is trimmed and argv is serialized canonically; whitespace inside a literal quoted argument is preserved. The dock previews the normalized rule, and the host save path applies the same function; the rule store's parser stays strict for every other writer. The host validates edited rules against the live command and the same refused-prefix policy used by the rule store. A save failure keeps the approval pending. Credential, destructive and other forced one-shot requests cannot acquire remembered allows.
 - A corrupt Store A, Store B or project file fails clearly with a visible error.
 - Corrupt files are never silently dropped and never overwritten.
 
@@ -355,7 +357,7 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 `PermissionManager.checkDetailed` uses two host-built context fields:
 
 - `ruleSubject`: a shell command with its dialect, sealed native edit targets, a mediated fetch URL, or the original MCP server/tool identity;
-- `projectRulesCwd`, which the tool pipeline loads through `ensureProjectRulesLoaded` before a synchronous decision. Relative Edit globs use that scope's project root. PowerShell has no project command-rule scope.
+- `projectRulesCwd`, which the tool pipeline loads through `ensureProjectRulesLoaded` before a synchronous decision. Relative Edit globs use that scope's project root. Both shell dialects load user, project and session command rules.
 
 Checks run in this order:
 
@@ -365,24 +367,39 @@ Checks run in this order:
    a forced, never-remembered prompt, before any allow rule or saved approval.
 4. Explicit ask rules decide at layer 2 as forced, never-remembered prompts.
    They also win over `allow` mode.
-5. Applicable allow rules decide at layer 3 and saved approvals at layer 5.
-   Both may satisfy an ordinary shell ask.
-6. Without an applicable rule or grant, an ordinary shell reason keeps the
-   category/mode path at layer 6 asking. It does not set `forceModal` and remains
-   rememberable, subject to existing approval-scope and risk requirements.
+5. Shell execution follows the actual route: a sandboxed command allows at
+   layer 3 after the earlier gates; an unsandboxed command allows only on a
+   proven exact rule at layer 3. Prefixes, tool-wide rules, remembered grants,
+   modes and judges cannot replace that exact rule.
+6. An unsandboxed shell without that proof and exact match asks at layer 6 in
+   the foreground and denies headless. Its ordinary reason, if present,
+   explains the ask without adding a credential/sink floor. An unproven
+   command has no exact-rule offer and cannot become rememberable merely
+   because its reason is ordinary. Every unsandboxed headless ask from an
+   earlier gate also becomes deny while preserving its reason and layer.
+7. Non-shell subjects retain their applicable allow rules at layer 3, saved
+   approvals at layer 5 and category/mode decisions at layer 6.
 
 The Layer-numbered gates already in place (remote controller, overlay, strict) are unchanged.
 
 ### Allow is refused for input the matcher cannot reason about
 
-- parse failure or unsupported syntax (`case`, `select`, `((…))`, coprocesses);
-- opaque word expansions (brace expansion, `${x/a/b}`, `$"…"`);
-- any substitution;
-- command-scoped or assignment-only environment changes (`GIT_DIR=… git status`, `PATH=…; git status`);
-- write redirections other than `/dev/null`;
-- function definitions;
-- a dynamic program name;
-- any command the rule classifier grades destructive (the floor).
+The [literal-command proof](../architecture/permission-policy-design.md#literal-command-proof)
+is required before any exact shell allow. It refuses:
+
+- input over the shared preparse length limit, parse failure or any exhausted
+  lexer, proof or path-analysis budget;
+- unsupported syntax, substitutions, active expansions or a dynamic word;
+- command-scoped or assignment-only environment changes
+  (`GIT_DIR=… git status`, `PATH=…; git status`);
+- redirections, including reads and writes to `/dev/null`;
+- functions and unsupported command structures;
+- code carriers, script/stdin code and nested dialects;
+- any destructive, irreversible, sensitive-path or credential/sink floor.
+
+The card derives an exact rule only from one simple command. A compound body
+cannot acquire that rule by flattening to the same argv. Literal quoted
+arguments remain eligible when their contents have no active expansion.
 
 ### Deny and ask cannot see everything
 
@@ -396,16 +413,16 @@ blockers without becoming a credential/sink floor:
 - code-carrying variables (`GIT_SSH_COMMAND=… git fetch`, `PAGER`, `LESSOPEN`, `BASH_ENV`, `PATH`, …);
 - unsupported syntax.
 
-A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a per-call `forceModal` ask before allow rules and saved grants, even in `allow` mode. An allow rule never covers a command with hidden execution, even without a deny/ask visibility conflict. Program options alone do not invalidate a rule. `find -delete` still reaches the destructive floor.
+A deny rule that matches a visible command decides first. Otherwise, a restriction that cannot inspect every command asks with `forceModal` before any automatic allow, even in `allow` mode; unsandboxed headless execution denies instead. This is a restriction-visibility gate, not an encoded-content detector. An exact allow never covers code carriers or other unproven execution, even without a deny/ask visibility conflict. `find -delete` still reaches the destructive floor.
 
-Hidden code alone adds no `ordinaryAsk`. Without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance, statically bound direct interpreter forms such as `python -c`, `perl -e`, `node -e`, `node x.js`, `python x.py`, `bash -c ls` and `pwsh -c Get-Date` follow the actual-route shell decision order above. Their rule-visibility limits do not prove that their contents are read-only.
+Code-carrier identity alone need not add `ordinaryAsk` to visible-floor analysis. Statically bound direct interpreter forms such as `python -c`, `perl -e`, `node -e`, `node x.js`, `python x.py`, `bash -c ls` and `pwsh -c Get-Date` are nevertheless unproven for exact allows: unsandboxed execution asks, or denies headless. Sandboxed execution follows its route after visible floors and explicit restrictions. Neither outcome proves script contents read-only.
 
-An opaque runner prefix alone is not hidden code for rule matching. Runner
-argv remains available to raw command rules regardless of task or subcommand
-spelling. That visibility does not inspect package or script contents. Option
-spelling does not add a hidden-code blocker; rule coverage still requires
-matching static argv and the shared broad-prefix check. The inner command is not a
-transparent alias.
+Runner argv remains visible to raw command restrictions without inspecting
+package or script contents. An ordinary runner classification does not establish
+literal proof. Exact coverage requires the complete literal runner argv, a
+proven command boundary and no code carrier or other blocker; an uncertain
+boundary or exhausted budget cannot be covered by a stored exact rule. The
+inner command is not a transparent alias.
 
 ### Scoped rule storage
 
@@ -419,28 +436,32 @@ destructive, explicit-ask and one-shot requirements retain their own authority.
 
 | Bucket | Signal | Decision without another controlling rule |
 |---|---|---|
-| Floor | Sensitive/credential paths or retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`; no saved approval, allow rule or mode bypass |
-| Ordinary | Parser refusal, analysis-budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6; no `forceModal`; applicable rules and saved grants may cover it |
-| Normal | No credential/sink floor or ordinary reason | Existing category, mode, rules and grants |
+| Floor | Sensitive/credential paths or retained credential-store, certificate-export and transport/sink catalogue effects | Per-call foreground ask with `forceModal`; unsandboxed headless deny; no saved approval, allow rule or mode bypass |
+| Ordinary | Parser refusal, analysis-budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No content floor by this signal alone; sandboxed execution follows its route, while unsandboxed execution requires proven exact coverage or asks/denies |
+| Normal | No credential/sink floor or ordinary reason | Sandboxed execution follows its route; unsandboxed execution still requires proven exact coverage |
 
-An ordinary ask remains rememberable under the existing approval-scope and risk
-requirements. An unparseable command cannot match a `Bash(...)` allow rule, but
-that matching limit does not turn it into a per-call floor or invalidate an
-otherwise applicable tool allow rule or saved grant.
+These are visible-floor classifications, separate from exact-rule eligibility.
+An ordinary reason never makes a failed parse, exhausted budget, unresolved
+binding or code carrier exact-allowable. A runner with fully literal argv and
+a proven boundary can still be eligible despite its ordinary runner label.
+Shell tool-wide allows and legacy saved grants remain inert and cannot repair
+failed proof. The card offers a remembered exact rule only when the shared
+proof and the other approval gates permit it.
 
 Path inspection snapshots policy roots for one decision and bounds filesystem
-and glob work. Exhaustion keeps an ordinary reason and prevents a command-prefix
-allow match. Remaining visible literal paths still receive lexical credential
+and glob work. Exhaustion keeps an ordinary reason and prevents any exact
+allow proof. Remaining visible literal paths still receive lexical credential
 checks, and explicit upload arguments retain their sink checks. An unresolved
 alias beyond the work limit remains opaque; the scan does not claim to resolve
 every filesystem alias after exhaustion.
 
-These buckets describe the permission decision. A hard deny rejects the request
+These buckets describe visible-floor evidence; the actual execution route and
+literal proof complete the permission decision. A hard deny rejects the request
 and cannot be approved; a forced per-call ask permits only that approval step.
-Neither an ordinary grant nor per-call approval overrides execution-time path
-authority or unsupported-syntax rejection. For example, `npx prettier .` can be
-covered by an applicable runner command rule, while `source ./setup.sh` remains
-rejected by the separate path-authority contract even after a permission grant.
+Neither an exact command rule nor per-call approval overrides execution-time
+path authority or unsupported-syntax rejection. For example, `npx prettier .`
+can be covered by a proven exact runner command rule outside the sandbox, while
+`source ./setup.sh` remains rejected by the separate path-authority contract even after a permission grant.
 
 ### Retained credential and sink floors
 
@@ -451,7 +472,8 @@ Sensitive-path arguments to shell commands remain enforced by
 `sensitive-paths.ts` anywhere in the command line, including argv, `=value`,
 `@file`, redirections, assignments, loop lists, executed substitutions and
 literal inline code, is never covered by an allow rule and forces a per-call
-ask in `checkDetailed` in every mode. `~`, `~user`, `$HOME` and `${HOME}` normalize
+foreground ask in `checkDetailed` in every mode; unsandboxed headless execution
+denies instead. `~`, `~user`, `$HOME` and `${HOME}` normalize
 to a home directory; other expansions (`$(echo ~)/.aws/credentials`) keep their
 literal tail; brace expansion is expanded; a glob is instantiated against the
 sensitive names that exist where it would expand. After the work limit, a
@@ -487,23 +509,25 @@ secret. It covers:
 Senders are seen through wrappers, `busybox`, and literal `sh -c` / `eval` /
 here-documents. The check applies to the whole compound command. It produces a
 HIGH rule-classifier verdict, no allow-rule match, and a forced per-call ask in
-`checkDetailed` in every mode. Unknown code alone does not establish a sender.
+`checkDetailed` in every mode; unsandboxed headless execution denies instead.
+Unknown code alone does not establish a sender.
 Plain GETs, form fields without `@`, local `rsync`, `scp` downloads and `git push`
 do not establish this floor by themselves.
 
 ### Opaque runner prefixes
 
-`SHELL_PREFIX_POLICY.packageRunners` is the canonical runner-identity source, including `npm`, `pnpm`, `yarn` and `bun`. `opaqueRunnerReason` returns `opaque runner prefix` through the shared `SHELL_PREFIX_POLICY.wrappers` grammar, including versioned runner spellings and supported executable/script suffixes. A runner receives an ordinary ask without an applicable rule or grant. No runner option allowlist, source classification, registry policy or package-task model assigns its bucket. An unknown option, remote package operand or registry choice alone is not a credential/sink floor.
+`SHELL_PREFIX_POLICY.packageRunners` is the canonical runner-identity source, including `npm`, `pnpm`, `yarn` and `bun`. `opaqueRunnerReason` returns `opaque runner prefix` through the shared `SHELL_PREFIX_POLICY.wrappers` grammar, including versioned runner spellings and supported executable/script suffixes. The runner label is an ordinary classification, not a content floor. A sandboxed invocation follows its route; an unsandboxed invocation requires a proven exact command rule or asks in the foreground and denies headless. A legacy shell grant never replaces the rule. No runner option allowlist, source classification, registry policy or package-task model assigns its bucket. An unknown option, remote package operand or registry choice alone is not a credential/sink floor.
 
 Code-executing runners are never allow-rule-transparent wrappers. A persistent
 command prefix includes the runner and proven literal command, with a literal
-`--` required when options precede that command. Literal downstream
-command candidates are inspected only to retain known credential, reader and
+`--` required when options precede that command. Such a prefix applies only to
+sandboxed execution; an unsandboxed rule covers the full proven literal argv.
+Literal downstream command candidates are inspected only to retain known credential, reader and
 sender effects, including original substitution metadata; this inspection does
 not strip runners from rule matching or infer safe argv from option spelling.
 For example, `npx curl -T file http://e` retains its upload floor, while `npx curl http://e` has the ordinary runner reason unless another signal applies. Literal inline shell/code arguments still receive structural credential and sink inspection. Code visibility alone does not create an ordinary reason; unresolved command targets or code bindings do.
 
-Known sinks remain visible through the shared wrapper grammar in `wrapperCommand` (`wrapperPrefixLength` exposes its proven argv boundary). Setup operands such as a scheduling priority, CPU mask, lockfile or root directory precede the inner command. The login `-` is a flag rather than a user operand. Explicit wrapper command strings and the entire tail passed to a default shell receive bounded shell inspection. Unsupported options and opaque bindings request ordinary approval and leave the command position uncertain. Every remaining position stays a floor-only candidate, including provisional setup operands; uncertainty never hides the tail from credential or sink inspection. Self-contained `--name=value` options retain the following command position. An independent credential or sink floor takes precedence over grants and allow rules. These sink-only views preserve native identity: a forwarded native `curl` is not a PowerShell cmdlet alias. This inspection supplies no allow-rule coverage.
+Known sinks remain visible through the shared wrapper grammar in `wrapperCommand` (`wrapperPrefixLength` exposes its proven argv boundary). Setup operands such as a scheduling priority, CPU mask, lockfile or root directory precede the inner command. The login `-` is a flag rather than a user operand. Explicit wrapper command strings and the entire tail passed to a default shell receive bounded shell inspection. Unsupported options and opaque bindings can leave the command position uncertain. That uncertainty is ordinary for visible-floor classification but prevents exact proof; it asks outside the sandbox, or denies headless. Every remaining position stays a floor-only candidate, including provisional setup operands; uncertainty never hides the tail from credential or sink inspection. Self-contained `--name=value` options retain the following command position. An independent credential or sink floor takes precedence over grants and allow rules. These sink-only views preserve native identity: a forwarded native `curl` is not a PowerShell cmdlet alias. This inspection supplies no allow-rule coverage.
 
 The shared prefix source also marks declared interpreter/code operands. Those operands receive generic credential/sink inspection through literal delegates; their words do not become command candidates in another language. This role adds no runner-option policy or rule coverage.
 
@@ -572,11 +596,14 @@ The rule classifier grades the builtin `powershell` tool with the same reading.
 
 ### Dialect-scoped rules and grants
 
-PowerShell currently has no per-command rule language. `Bash(...)` rules match
-`bash` only and a PowerShell call carries no project command-rule scope.
-Existing tool allow rules and saved grants can satisfy PowerShell's ordinary
-asks, including opaque runners and parser refusal; they cannot satisfy a
-credential/sink floor. No `PowerShell(...)` command-rule grammar is introduced.
+`Bash(...)` matches Bash and `PowerShell(...)` matches PowerShell, with
+user, project and session scope in both dialects. Unsandboxed execution in
+either dialect requires proven literal argv and an exact rule; parser refusal,
+budget exhaustion and code carriers never match an allow. Tool-wide allows and
+saved shell grants remain inert. Sandboxed execution follows the actual route
+after explicit restrictions and visible floors. Exact PowerShell identity and
+quoted argument provenance follow the
+[permission-policy contract](../architecture/permission-policy-design.md#literal-command-proof).
 
 `sensitive-paths.ts` retains the home-anchored credential rows marked `windows`:
 `AppData/Roaming|Local/Microsoft/Credentials`, `Microsoft/Protect`,
@@ -590,12 +617,14 @@ anchor-free matching under `C:/Users/<name>/`.
 
 ### Egress and verification boundary
 
-The sink catalogue remains necessary until a separate egress boundary exists.
-Sandbox defaults, platform availability and network enforcement belong to the
+Visible credential/sink floors coexist with the sandbox's filesystem and
+egress boundary. Sandbox defaults, platform availability and network enforcement
+belong to the
 [architecture contract](../architecture/architecture.md#os-execution-sandbox-and-plugin-workers).
-This rule-model change does not introduce a proxy or delegate credential/sink
-analysis to isolation. Plain-shell approval follows the decision order above. Shell URLs and remote package/registry sources alone do
-not replace credential/sink evidence.
+These floors inspect visible input; decoded payload contents do not feed the
+permission decision. Shell URLs and remote package/registry sources alone do
+not replace credential/sink evidence. Unsandboxed permission follows literal
+proof and exact-rule coverage rather than inferred egress safety.
 
 The decision-table and classifier checks establish policy-analysis behavior.
 Native shell execution and proxy/sandbox egress behavior are not validated by
