@@ -1009,7 +1009,7 @@ function gitQuarantineExclusions(filesystem: Partial<FilesystemConfig>, floor: r
   // Every pattern above is an absolute normalized path, so off Windows the
   // grant test is a prefix test; isGrantPathWithin re-resolves both sides.
   const within = process.platform === "win32" ? isGrantPathWithin : (root: string, path: string): boolean =>
-    path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+    path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
   const covers = (pattern: string, path: string): boolean => {
     const glob = globCovers.get(pattern);
     return glob ? glob(path) : within(pattern, path);
