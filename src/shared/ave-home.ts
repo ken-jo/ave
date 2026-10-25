@@ -258,11 +258,11 @@ export function ensureAveHomePrivate(
   let path = home;
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
-    // The protection helper creates home and secrets with current-user ownership; create only the parent here.
+    // The protection helper creates private directories with current-user ownership.
     mkdirSync(dirname(home), { recursive: true });
     category = "read-back-failed";
     path = home;
-    const paths = [home, join(home, "secrets")];
+    const paths = [home, join(home, "secrets"), join(home, "subscription-runtimes")];
     const descriptors = runtime.readDacls(paths, true);
     const sid = descriptors[0]?.currentUserSid;
     for (const target of paths) {

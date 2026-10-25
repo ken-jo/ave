@@ -2127,7 +2127,8 @@ with its own owner rule:
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
+  directory does not exist yet,
   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
   create it with the user as owner and an owner-only protected DACL, so no
   grant for the token's default owner is left behind. Before it changes an
