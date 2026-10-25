@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import test from "node:test";
-import { checkSyncSafeStorage, runSyncSafeStorageCli, scanSafeStorageText } from "../../scripts/check-safestorage-sync.mjs";
+import { SAFE_STORAGE_OWNERS, checkSyncSafeStorage, runSyncSafeStorageCli, scanSafeStorageText } from "../../scripts/check-safestorage-sync.mjs";
 
 /** A root with an installed electron of `version` (null: none) and `files`. */
 function fixtureRoot(version, files) {
@@ -131,34 +132,98 @@ test("counts a sync member destructured out of safeStorage, and fails on it from
   }
 });
 
-test("fails on any Electron when a file binds Electron's safeStorage to another name", () => {
-  const forms = {
-    "src/a.ts": 'import { safeStorage } from "electron";\nconst s = safeStorage;\ns.encryptString(x);\n',
-    "src/b.ts": 'import { app, safeStorage as store } from "electron";\n',
-    "src/c.ts": 'import { safeStorage } from "electron";\nexport const deps = { store: safeStorage };\n',
-    "src/d.ts": 'import { safeStorage } from "electron";\nnew Chain(safeStorage);\n',
-    "src/e.ts": 'import { safeStorage } from "electron";\nnew Chain({ safeStorage, path });\n',
-    "src/f.cjs": 'const { safeStorage: s } = require("electron");\n',
-  };
-  for (const [rel, text] of Object.entries(forms)) {
-    assert.equal(scanSafeStorageText(text).aliases.length > 0, true, `${rel} binds safeStorage and was not flagged`);
-  }
-  const root = fixtureRoot("45.0.0", forms);
+/** Every alias reason the gate reports for `text` at `rel`. */
+function aliasesOf(text, rel = "src/main/other.ts") {
+  return scanSafeStorageText(text, rel).aliases.map((alias) => `${alias.reason}@${alias.line}`);
+}
+
+const BYPASSES = {
+  "re-export under another name": 'export { safeStorage as ss } from "electron";\n',
+  "re-export of all of Electron": 'export * from "electron";\n',
+  "rename out of a default import": 'import electron from "electron";\nconst { safeStorage: s } = electron;\n',
+  "rename out of a dynamic import": 'const { safeStorage: s } = await import("electron");\ns.encryptString(x);\n',
+  "bracket access on the namespace": 'import * as e from "electron";\ne["safeStorage"].encryptString(x);\n',
+  "default export": 'import { safeStorage } from "electron";\nexport default safeStorage;\n',
+  "return": 'import { safeStorage } from "electron";\nexport function store() {\n  return safeStorage;\n}\n',
+  "array element": 'import { safeStorage } from "electron";\nexport const stores = [safeStorage];\n',
+  "ternary": 'import { safeStorage } from "electron";\nexport const store = ready ? safeStorage : null;\n',
+  "require then alias": 'const electron = require("electron");\nconst s = electron.safeStorage;\n',
+};
+
+for (const [form, text] of Object.entries(BYPASSES)) {
+  test(`fails on any Electron for a ${form}`, () => {
+    assert.notDeepEqual(aliasesOf(text), [], `${form} was not flagged`);
+    const root = fixtureRoot("45.0.0", { "src/main/other.ts": text });
+    try {
+      const { code, err } = cli(root);
+      assert.equal(code, 1);
+      assert.match(err, /reach Electron's safeStorage outside src\/main\/desktop-secret-encryption\.ts/);
+      assert.match(err, /src\/main\/other\.ts:\d+ {2}\(/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("flags the re-exporting module, so its importer cannot hide the call", () => {
+  const root = fixtureRoot("45.0.0", {
+    "src/a.ts": 'export { safeStorage as ss } from "electron";\n',
+    "src/b.ts": 'import { ss } from "./a.js";\nss.encryptString(x);\n',
+  });
   try {
     const { code, err } = cli(root);
     assert.equal(code, 1);
-    assert.match(err, /6 place\(s\) bind Electron's safeStorage to another name/);
-    assert.match(err, /src\/a\.ts:2 {2}\(binds safeStorage to another name\)/);
-    assert.match(err, /src\/f\.cjs:1 {2}\(binds safeStorage to another name\)/);
+    assert.match(err, /src\/a\.ts:1 {2}\(re-exports Electron's safeStorage\)/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("leaves a direct import and direct member use alone", () => {
-  const text = 'import { app, safeStorage } from "electron";\nconst backend = safeStorage.getSelectedStorageBackend();\nif (safeStorage.isEncryptionAvailable()) run();\n';
-  assert.deepEqual(scanSafeStorageText(text).aliases, []);
-  assert.deepEqual(reached(text), ["call:isEncryptionAvailable@3"]);
+test("lets the three owners use safeStorage, and holds even them to no exports", () => {
+  assert.deepEqual([...SAFE_STORAGE_OWNERS], [
+    "src/main/desktop-secret-encryption.ts",
+    "scripts/smoke-live-app.mjs",
+    "scripts/smoke-live-model.mjs",
+  ]);
+  const owner =
+    'import { safeStorage } from "electron";\n' +
+    "export const adapter = { encryptString: (v) => safeStorage.encryptString(v) };\n" +
+    // Destructuring an async member is neither an alias (owners may) nor a sync site.
+    "const { encryptStringAsync } = safeStorage;\n";
+  const files = Object.fromEntries(SAFE_STORAGE_OWNERS.map((rel) => [rel, owner]));
+  const root = fixtureRoot("45.0.0", files);
+  try {
+    const result = checkSyncSafeStorage(root);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.aliases, []);
+    assert.deepEqual(result.calls.map((c) => `${c.rel}:${c.method}`), SAFE_STORAGE_OWNERS.map((rel) => `${rel}:encryptString`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  assert.deepEqual(
+    aliasesOf('import { safeStorage } from "electron";\nexport { safeStorage };\n', SAFE_STORAGE_OWNERS[0]),
+    ["exports Electron's safeStorage@2"],
+  );
+});
+
+test("does not take a test file's electron mock for a use, but counts its sync references", () => {
+  const mock =
+    'vi.mock("electron", () => ({ safeStorage: { encryptString: vi.fn(), isAsyncEncryptionAvailable: vi.fn() } }));\n' +
+    'const mockedElectron = vi.mocked(await import("electron"));\n' +
+    "mockedElectron.safeStorage.encryptString.mockClear();\n";
+  for (const rel of ["src/data/__tests__/settings-store.test.ts", "src/main/thing.test.ts", "scripts/thing.spec.mjs"]) {
+    const found = scanSafeStorageText(mock, rel);
+    assert.deepEqual(found.aliases, [], `${rel} tripped the alias rule`);
+    assert.deepEqual(found.sites.map((site) => site.method), ["encryptString"]);
+  }
+  // The same text outside a test file is a use.
+  assert.notDeepEqual(aliasesOf(mock), []);
+});
+
+test("checks this tree with no file outside the owners naming safeStorage beside Electron", () => {
+  const result = checkSyncSafeStorage(process.cwd());
+  assert.deepEqual(result.aliases, []);
+  assert.equal(result.ok, true);
 });
 
 test("never counts the async methods", () => {

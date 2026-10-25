@@ -21,11 +21,17 @@
  * whitespace between the parts, or by destructuring it out of `safeStorage`. A
  * reference is enough: passing `safeStorage.encryptString` along calls it later.
  *
- * A file that imports `safeStorage` from "electron" and binds it to another name
- * (`import { safeStorage as s }`, `const s = safeStorage`, `{ store: safeStorage }`,
- * an argument, a `{ safeStorage }` shorthand) would hide every later call from the
- * scan, so that fails on any Electron version. Hand the adapter in
- * `src/main/desktop-secret-encryption.ts` around instead.
+ * WHO MAY TOUCH IT. Only the files in SAFE_STORAGE_OWNERS may name `safeStorage` in
+ * a file that also loads Electron (`from "electron"`, `require("electron")`,
+ * `import("electron")`); everyone else uses the adapter in
+ * `src/main/desktop-secret-encryption.ts`. Any other such file fails on every
+ * Electron version: once the object is renamed, re-exported or passed around, no
+ * pattern can follow it to its calls, so an allowlist is the only rule that holds.
+ * Test files are exempt from that rule, because their `vi.mock("electron", …)` and
+ * `mockedElectron.safeStorage` are mocks, not uses; their sync-member references
+ * still count toward the migration. Exporting `safeStorage`, or re-exporting it
+ * (or all of Electron) from "electron", fails everywhere, owners and test files
+ * included.
  */
 import { readFileSync } from "node:fs";
 import { relative, sep } from "node:path";
@@ -43,25 +49,23 @@ const SYNC_BRACKET = new RegExp(`\\bsafeStorage\\s*(?:\\?\\.\\s*)?\\[\\s*(["'\`]
 /** `{ … } = safeStorage` (also `= this.safeStorage`), the pattern's body in group 1. */
 const DESTRUCTURE = /\{([^{}]*)\}\s*=\s*(?:[\w$]+\s*(?:\?\.|\.)\s*)*safeStorage\b(?!\s*(?:\?\.|\.|\[))/g;
 const SYNC_NAME = new RegExp(`\\b(${SYNC_NAMES})\\b`, "g");
-/** A file that takes `safeStorage` from Electron. */
-const ELECTRON_IMPORT = /\bfrom\s*["']electron(?:\/main)?["']|\brequire\s*\(\s*["']electron(?:\/main)?["']\s*\)/;
-/** The import and require statements themselves, removed before looking for aliases. */
-const IMPORT_STATEMENTS = [
-  /\bimport\s+[^;]*?\bfrom\s*["'][^"']+["']/g,
-  /\b(?:const|let|var)\s*\{[^{}]*\}\s*=\s*require\s*\(\s*["'][^"']+["']\s*\)/g,
-];
-/** Renaming at the import: `safeStorage as s`, `{ safeStorage: s } = require(…)`. */
-const IMPORT_ALIAS = [
-  /\bimport\s+[^;]*?\bsafeStorage\s+as\s+[\w$]+[^;]*?\bfrom\s*["']electron(?:\/main)?["']/g,
-  /\{[^{}]*\bsafeStorage\s*:\s*[\w${}]+[^{}]*\}\s*=\s*require\s*\(\s*["']electron(?:\/main)?["']\s*\)/g,
-];
-/** `safeStorage` as a value: assigned, an object value, an argument, a shorthand property. */
-const VALUE_USE = [
-  /(?<![=!<>])=(?![=>])\s*(?:[\w$]+\s*\.\s*)?safeStorage\b(?!\s*(?:\?\.|\.|\[|[\w$]))/g,
-  /:\s*(?:[\w$]+\s*\.\s*)?safeStorage\s*[,}\n]/g,
-  /[(,]\s*safeStorage\s*[,)]/g,
-  /[{,]\s*safeStorage\s*[,}]/g,
-];
+/** A file that loads Electron. */
+const ELECTRON_REF = /\bfrom\s*["']electron(?:\/[\w-]+)?["']|\b(?:require|import)\s*\(\s*["']electron(?:\/[\w-]+)?["']\s*\)/;
+/** `export { safeStorage … } from "electron"` and `export * from "electron"`. */
+const ELECTRON_REEXPORT = /\bexport\s+(?:type\s+)?(?:\{[^{}]*\bsafeStorage\b[^{}]*\}|\*(?:\s+as\s+[\w$]+)?)\s*from\s*["']electron(?:\/[\w-]+)?["']/g;
+/** `export { safeStorage }` / `export default safeStorage`: an owner handing the object out. */
+const SAFE_STORAGE_EXPORT = /\bexport\s+(?:default\s+safeStorage\b(?!\s*(?:\?\.|\.|\[))|(?:type\s+)?\{[^{}]*\bsafeStorage\b[^{}]*\}(?!\s*from\b))/g;
+const SAFE_STORAGE_IDENTIFIER = /\bsafeStorage\b/;
+/** The only files that may name `safeStorage` beside Electron. */
+export const SAFE_STORAGE_OWNERS = Object.freeze([
+  "src/main/desktop-secret-encryption.ts",
+  "scripts/smoke-live-app.mjs",
+  "scripts/smoke-live-model.mjs",
+]);
+/** A vitest file: `__tests__/`, `*.test.*` or `*.spec.*`. */
+export function isTestFile(rel) {
+  return /(?:^|\/)__tests__\//.test(rel) || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(rel);
+}
 const SCAN_DIRS = ["src", "scripts"];
 /** This gate names every form it looks for, so it does not read itself. */
 const SELF = "scripts/check-safestorage-sync.mjs";
@@ -87,18 +91,15 @@ function lineAt(text, index) {
   return line;
 }
 
-/** Same length, so indexes (and line numbers) still point into the original text. */
-function blank(text, patterns) {
-  let out = text;
-  for (const pattern of patterns) out = out.replace(pattern, (match) => match.replace(/[^\n]/g, " "));
-  return out;
-}
-
-/** Every reach of a sync member (`kind` "call" or "destructure") and every alias in one file's text. */
-export function scanSafeStorageText(text) {
+/**
+ * Every reach of a sync member (`kind` "call" or "destructure") in one file's text,
+ * and every `aliases` entry: a re-export, or (outside the owners and test files) a
+ * use of `safeStorage` beside Electron.
+ */
+export function scanSafeStorageText(text, rel = "") {
   const sites = [];
   const aliases = [];
-  if (!text.includes("safeStorage")) return { sites, aliases };
+  if (!text.includes("safeStorage") && !text.includes("electron")) return { sites, aliases };
   for (const pattern of [SYNC_MEMBER, SYNC_BRACKET]) {
     for (const match of text.matchAll(pattern)) {
       sites.push({ line: lineAt(text, match.index), method: match.at(-1), kind: "call" });
@@ -109,14 +110,15 @@ export function scanSafeStorageText(text) {
       sites.push({ line: lineAt(text, match.index), method: name[1], kind: "destructure" });
     }
   }
-  if (ELECTRON_IMPORT.test(text)) {
-    for (const pattern of IMPORT_ALIAS) {
-      for (const match of text.matchAll(pattern)) aliases.push({ line: lineAt(text, match.index) });
-    }
-    const code = blank(text, IMPORT_STATEMENTS);
-    for (const pattern of VALUE_USE) {
-      for (const match of code.matchAll(pattern)) aliases.push({ line: lineAt(code, match.index) });
-    }
+  for (const match of text.matchAll(ELECTRON_REEXPORT)) {
+    aliases.push({ line: lineAt(text, match.index), reason: "re-exports Electron's safeStorage" });
+  }
+  for (const match of text.matchAll(SAFE_STORAGE_EXPORT)) {
+    aliases.push({ line: lineAt(text, match.index), reason: "exports Electron's safeStorage" });
+  }
+  if (!SAFE_STORAGE_OWNERS.includes(rel) && !isTestFile(rel) && ELECTRON_REF.test(text)) {
+    const use = SAFE_STORAGE_IDENTIFIER.exec(text);
+    if (use) aliases.push({ line: lineAt(text, use.index), reason: "names safeStorage beside Electron outside the owners" });
   }
   sites.sort((a, b) => a.line - b.line);
   aliases.sort((a, b) => a.line - b.line);
@@ -134,7 +136,7 @@ export function collectSyncSafeStorageCalls(root = ROOT) {
     })) {
       const rel = relative(root, path).split(sep).join("/");
       if (rel === SELF) continue;
-      const found = scanSafeStorageText(readFileSync(path, "utf-8"));
+      const found = scanSafeStorageText(readFileSync(path, "utf-8"), rel);
       for (const site of found.sites) calls.push({ rel, ...site });
       for (const alias of found.aliases) aliases.push({ rel, ...alias });
     }
@@ -150,8 +152,8 @@ export function checkSyncSafeStorage(root = ROOT, options = {}) {
   const problems = [];
   if (aliases.length > 0) {
     problems.push(
-      `${aliases.length} place(s) bind Electron's safeStorage to another name, which hides its calls from this gate. ` +
-        "Use the adapter in src/main/desktop-secret-encryption.ts instead.",
+      `${aliases.length} place(s) reach Electron's safeStorage outside ${SAFE_STORAGE_OWNERS.join(", ")}, ` +
+        "where this gate cannot follow its calls. Use the adapter in src/main/desktop-secret-encryption.ts instead.",
     );
   }
   if (installed.major >= SYNC_SAFE_STORAGE_REMOVED_IN && calls.length > 0) {
@@ -177,7 +179,7 @@ export function runSyncSafeStorageCli(options = {}) {
     return 0;
   }
   for (const problem of result.problems) stderr(`[safestorage-sync] ${problem}`);
-  for (const alias of result.aliases) stderr(`  ${alias.rel}:${alias.line}  (binds safeStorage to another name)`);
+  for (const alias of result.aliases) stderr(`  ${alias.rel}:${alias.line}  (${alias.reason})`);
   if (result.major >= SYNC_SAFE_STORAGE_REMOVED_IN) {
     for (const call of result.calls) {
       stderr(`  ${call.rel}:${call.line}  (${call.kind === "destructure" ? "destructures " : ""}safeStorage.${call.method})`);
