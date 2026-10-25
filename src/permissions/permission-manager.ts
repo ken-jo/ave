@@ -1284,7 +1284,8 @@ export class PermissionManager {
         ? evaluatePowerShellSubject({
           command: ruleSubject.command,
           exactAllowOnly: !shellExecution.runsSandboxed,
-          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? null,
+          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive
+            ?? (powerShellSignals!.analysisLimited ? "PowerShell analysis budget exceeded" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;

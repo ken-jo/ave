@@ -2020,6 +2020,7 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
   return { ok: true, commands, opaque, ...(literalParameters.some((indexes) => indexes.length > 0) ? { literalParameters } : {}) };
 }
 
+// Syntax evidence only; reusable allow consumers also require inspection without analysisLimited and without a visible floor.
 export function proveLiteralPowerShell(input: ShellCommandInput): { proven: true; commands: readonly (readonly string[])[]; literalParameters?: readonly (readonly number[])[] } | { proven: false; reason: string } {
   const shape = powerShellRuleShape(input);
   if (!shape.ok) return { proven: false, reason: shape.reason };
@@ -2039,6 +2040,8 @@ export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: str
 }
 
 interface FloorSignals {
+  // Parsing or value analysis exhausted its budget; no reusable allow proof survives.
+  analysisLimited?: true;
   sensitive: string | null;
   exfiltration: string | null;
   // Opaque parsing, bindings and execution ask after explicit rules and grants.
@@ -2163,7 +2166,7 @@ function runInspection(input: ShellCommandInput, cwd: string | undefined, budget
   catch (error) {
     if (error instanceof PowerShellBudgetError) {
       const command = typeof input === "string" ? input : input.command;
-      return visibleFallback(command, cwd, "PowerShell hidden code (analysis budget exceeded)", budget);
+      return { ...visibleFallback(command, cwd, "PowerShell hidden code (analysis budget exceeded)", budget), analysisLimited: true };
     }
     throw error;
   }

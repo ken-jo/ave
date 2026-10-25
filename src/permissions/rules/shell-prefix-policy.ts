@@ -510,6 +510,13 @@ export function hiddenCodeReason(argv: readonly (string | undefined)[]): string 
     if (prefixes === undefined) break;
     const verb = literalCommandAfterPrefix(argv, command + 1);
     if (verb === undefined) break;
+    const selected = prefixes === true ? undefined : prefixes.find((prefix) =>
+      (typeof prefix === "string" ? prefix : prefix[0]) === argv[verb]?.toLowerCase());
+    if (selected !== undefined && typeof selected !== "string") {
+      const reason = hiddenCodeAt([selected[1], ...argv.slice(verb + 1)], 0);
+      if (reason) return reason;
+      break;
+    }
     const delegated = prefixes === true ? verb : runnerHasPrefix(prefixes, argv[verb]) ? literalCommandAfterPrefix(argv, verb + 1) : undefined;
     if (delegated === undefined) break;
     command = delegated + wrapperPrefixLength(argv.slice(delegated));
