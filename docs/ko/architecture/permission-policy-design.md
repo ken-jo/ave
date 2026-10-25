@@ -161,7 +161,10 @@ INPUT origin classification (user-keyboard | plugin-emitted | llm-tool-arg | fil
 │   ├ Sensitive list:                                        │
 │   │   ~/.ssh/, ~/.aws/credentials, ~/.netrc, ~/.pgpass,    │
 │   │   /etc/shadow, /etc/sudoers, ~/.bash_history,          │
-│   │   ~/Library/Cookies/**, ~/.config/**/Login Data,       │
+│   │   ~/Library/Cookies/**, ~/Library/Keychains/**,        │
+│   │   ~/.local/share/keyrings, ~/.password-store,          │
+│   │   ~/.config/op, browser profile roots (3 OS),          │
+│   │   ~/.config/**/Login Data,                             │
 │   │   **/.env, **/.env.*, **/id_{rsa,ed25519,ecdsa},       │
 │   │   ~/.ave/secrets/**, ~/.ave/audit*,                  │
 │   │   ~/.ave/permissions/deferred-queue.jsonl,            │
@@ -288,7 +291,10 @@ export function canonicalizePathForMatch(rawPath: string): string {
 - OS/system: `/etc/shadow`, `/etc/sudoers`, `/etc/passwd-`
 - User credentials: `~/.netrc`, `~/.pgpass`, `~/.npmrc`
 - Shell history: `~/.bash_history`, `~/.zsh_history`, `~/.python_history`, `~/.psql_history`, `~/.viminfo`
-- Browser/keychain: `~/Library/Cookies/**`, `~/.config/**/Login Data`, `~/Library/Keychains/**`
+- Keychain/keyring/password manager: `~/Library/Keychains/**`, `~/.local/share/keyrings/**`, `~/.password-store/**`, `~/.config/op/**`
+- Browser: `~/Library/Cookies/**`, `~/.config/**/Login Data`, 그리고 브라우저 프로필 루트 전체 — macOS `~/Library/Application Support/{Google/Chrome, Microsoft Edge, BraveSoftware, Chromium, Arc, Vivaldi, com.operasoftware.Opera, Firefox}`, Linux `~/.mozilla`, `~/.config/{google-chrome, chromium, BraveSoftware, microsoft-edge, vivaldi, opera}`, Windows `%LOCALAPPDATA%\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave-Browser, Chromium, Vivaldi}\User Data`, `%APPDATA%\Opera Software`, `%APPDATA%\Mozilla\Firefox\Profiles`
+- 위 항목은 `SENSITIVE_PATH_ENTRIES` 행이라 host guard 와 3개 OS 의 sandbox read/write floor 에 동시에 projection 된다. 암호화 저장은 제외 사유가 아니다 — 복호화 키(Firefox `key4.db`, Chromium `Local State`)나 로그인 암호 파생 키가 같은 위치에 있다. 홈 전체 deny 는 하지 않는다.
+- Shell 스캔: glob 인자는 첫 wildcard 앞의 literal 디렉터리 prefix 로도 검사한다(`~/.mozilla/firefox/*/log*ns.json`). 상대 경로와 재귀 검색 root 는 같은 입력 안의 정적 `cd`/`chdir`/`pushd` 가 남길 수 있는 모든 작업 디렉터리에 대해 resolve 한다. 비정적 `cd` 대상(변수·치환·glob·`~user`·`cd -`·재할당된 `HOME`·`CDPATH`)은 ordinary ask, 그 뒤의 상대 재귀 검색은 floor 다.
 - Env/secrets: `**/.env`, `**/.env.*`
 - SSH keys outside `.ssh/`: `**/id_{rsa,ed25519,ecdsa}` (generic glob)
 - **Ave 자체:** `~/.ave/secrets/**`, `~/.ave/audit*`, `~/.ave/permissions/deferred-queue.jsonl`, `~/.ave/sessions/**`, `~/.config/ave/hooks/**`

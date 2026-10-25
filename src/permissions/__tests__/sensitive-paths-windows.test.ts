@@ -28,6 +28,14 @@ const WINDOWS_SECRETS: string[] = [
   `${PROFILE}/AppData/Roaming/GitHub CLI/hosts.yml`,
   `${PROFILE}/AppData/Local/Google/Chrome/User Data/Default/Login Data`,
   `${PROFILE}/AppData/Local/Microsoft/Edge/User Data/Profile 1/Login Data`,
+  // Whole browser profile roots: any file under them, a random profile name included.
+  `${PROFILE}/AppData/Local/Microsoft/Edge/User Data/Default/History`,
+  `${PROFILE}/AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies`,
+  `${PROFILE}/AppData/Local/Chromium/User Data/Local State`,
+  `${PROFILE}/AppData/Local/Vivaldi/User Data/Default/Login Data`,
+  `${PROFILE}/AppData/Roaming/Opera Software/Opera Stable/Login Data`,
+  `${PROFILE}/AppData/Roaming/Mozilla/Firefox/Profiles/x1y2.default-release/key4.db`,
+  `c:/users/owner/appdata/roaming/mozilla/firefox/profiles/x1y2.default-release/logins.json`,
   // Lower-case spellings are the same file on Windows.
   `c:/users/owner/appdata/roaming/microsoft/credentials/x`,
   `c:/users/owner/appdata/local/microsoft/powershell/secretmanagement/localstore/storefile`,
@@ -47,7 +55,7 @@ const ALREADY_COVERED: string[] = [
 const NOT_SECRET: string[] = [
   `${PROFILE}/AppData/Roaming/Code/User/settings.json`,
   `${PROFILE}/AppData/Local/Temp/build.log`,
-  `${PROFILE}/AppData/Local/Microsoft/Edge/User Data/Default/History`,
+  `${PROFILE}/AppData/Local/Microsoft/Edge/Application/msedge.exe`,
   `${PROFILE}/AppData/Local/Microsoft/PowerShell/ModuleAnalysisCache`,
   `${PROFILE}/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/x.lnk`,
   `${PROFILE}/Documents/Credentials.txt`,

@@ -63,6 +63,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  getBuiltinShellReadPolicy,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -1033,6 +1034,72 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).not.toContain(join(home, ".cargo"));
     // ~/.config wholesale must never be denied — only specific subdirs.
     expect(paths).not.toContain(join(home, ".config"));
+  });
+
+  // Credential floor review: browser profiles, keychains, keyrings and
+  // password managers are on the OS read floor of every platform's builtin
+  // shell, beside `.ssh`. Spelled out here, not derived from the table, so a
+  // dropped row fails.
+  describe.each([
+    ["darwin", [
+      ["Library", "Keychains"],
+      ["Library", "Cookies"],
+      ["Library", "Application Support", "Google", "Chrome"],
+      ["Library", "Application Support", "Microsoft Edge"],
+      ["Library", "Application Support", "BraveSoftware"],
+      ["Library", "Application Support", "Chromium"],
+      ["Library", "Application Support", "Arc"],
+      ["Library", "Application Support", "Vivaldi"],
+      ["Library", "Application Support", "com.operasoftware.Opera"],
+      ["Library", "Application Support", "Firefox"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["linux", [
+      [".mozilla"],
+      [".config", "google-chrome"],
+      [".config", "chromium"],
+      [".config", "BraveSoftware"],
+      [".config", "microsoft-edge"],
+      [".config", "vivaldi"],
+      [".config", "opera"],
+      [".local", "share", "keyrings"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["win32", [
+      ["AppData", "Local", "Google", "Chrome", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge", "User Data"],
+      ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"],
+      ["AppData", "Local", "Chromium", "User Data"],
+      ["AppData", "Local", "Vivaldi", "User Data"],
+      ["AppData", "Roaming", "Opera Software"],
+      ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"],
+      ["AppData", "Roaming", "Microsoft", "Credentials"],
+      ["AppData", "Local", "Microsoft", "Credentials"],
+      ["AppData", "Roaming", "Microsoft", "Protect"],
+    ]],
+  ] as const)("credential floor on %s", (platform, stores) => {
+    const hostPlatform = process.platform;
+    beforeEach(() => setProcessPlatform(platform));
+    afterEach(() => setProcessPlatform(hostPlatform));
+
+    it.each(stores.map((segments) => [segments.join("/"), segments] as const))("denies reads of ~/%s", (_name, segments) => {
+      const store = join(homedir(), ...segments);
+      const cwd = join(tmpdir(), "ave-credential-floor-cwd");
+      expect(getBuiltinShellReadPolicy([cwd], homedir()).denyRead).toContain(store);
+      expect(getDefaultSensitiveReadDenyPaths()).toContain(store);
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(store);
+    });
+
+    it("keeps ordinary home reads and the home itself off the floor", () => {
+      const read = getBuiltinShellReadPolicy([join(homedir(), "projects", "x")], homedir());
+      expect(read.denyRead).not.toContain(homedir());
+      expect(read.allowRead).toContain(join(homedir(), "projects", "x"));
+      for (const ordinary of [["projects"], [".config"], [".local", "share"], ["Library", "Application Support"], ["AppData", "Local"]]) {
+        expect(read.denyRead).not.toContain(join(homedir(), ...ordinary));
+      }
+    });
   });
 
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {

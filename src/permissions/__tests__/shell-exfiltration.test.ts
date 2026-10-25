@@ -487,6 +487,147 @@ describe("security review: a sensitive path in any shell argument is a floor", (
   });
 });
 
+// Credential floor review: browser profiles, keychains, keyrings and password
+// managers are floored however the path is spelled, and a relative path
+// resolves against the directory a `cd` moved to.
+describe("credential floor: browser, keychain and keyring stores through globs", () => {
+  it.each([
+    "cat ~/.mozilla/firefox/*/log*ns.json",
+    "cat ~/.mozilla/firefox/*/key4.db",
+    "cat ~/Library/Application\\ Support/Google/Chrome/Default/Cook*",
+    "cat ~/Library/Application\\ Support/Firefox/Profiles/*/logins.json",
+    "cat ~/Library/Application\\ Support/Microsoft\\ Edge/*/Login*",
+    "cat ~/.local/share/keyrings/login.keyring",
+    "cat ~/.local/share/keyrings/*",
+    "cat ~/Library/Keychains/login.keychain-db",
+    "cp ~/Library/Keychains/*/keychain-2.db /tmp/x",
+    "cat ~/Library/Cookies/Cookies.binarycookies",
+    "cat ~/.password-store/email/*.gpg",
+    "cat ~/.config/op/config",
+    "cat ~/.config/google-chrome/*/Cook*",
+    "cat ~/.config/BraveSoftware/Brave-Browser/Default/Login*",
+    "cat ~/.config/chromium/Default/Cook??s",
+    "cat \"$HOME/.mozilla/firefox/\"*/cookies.sqlite",
+  ])("floors %s", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+    expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
+  });
+
+  // The literal prefix before the first wildcard is itself checked, so a glob
+  // below a file-row entry is floored even though no table pattern matches the
+  // expanded name.
+  it.each(["cat ~/.kube/config/*", "ls ~/.git-credentials/*", "cat ~/.docker/config.json/**"])(
+    "floors the glob below a sensitive entry %s", (command) => {
+      expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+    },
+  );
+
+  it.each([
+    "cat ~/projects/x/README.md",
+    "cat ~/projects/*/README.md",
+    "ls ~/proj*",
+    "cat ~/Library/Application\\ Support/Code/User/settings.json",
+    "ls ~/.config/nvim/*",
+    "cat ~/.local/share/fonts/*.ttf",
+    "ls ~/*",
+  ])("leaves the ordinary home path %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+  });
+});
+
+describe("credential floor: recursive searches after cd", () => {
+  it.each([
+    "cd ~ && grep -r x .",
+    "cd ~ && rg x",
+    "cd $HOME; grep -r x .",
+    "cd \"${HOME}\" && rg -uu x .",
+    "cd && grep -r x .",
+    "builtin cd ~ && grep -r x .",
+    "pushd ~ && rg x",
+    "cd ~/projects && cd .. && grep -r x .",
+    "cd / ; rg x",
+    "(cd ~ && rg x)",
+    "cd /tmp; cd ~; cd /tmp; grep -r x .",
+    "for d in a b; do grep -r x .; cd ~; done",
+    "f() { rg x; }; cd ~; f",
+    "cd ~/.config && cat gh/hosts.yml",
+    "cd ~/.kube && cat config",
+  ])("floors %s", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+  });
+
+  it.each([
+    "cd \"$X\" && grep -r y .",
+    "cd $(mktemp -d) && rg y",
+    "cd ~proj && rg y",
+    "cd ~/pro* && grep -r y .",
+    "cd - && rg y",
+    "popd; rg y",
+    "HOME=/x; cd && rg y",
+    "CDPATH=~ cd projects && rg y",
+  ])("floors a relative search after the non-static cd in %s", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).toMatch(/cd whose target is not static/);
+    expect(shellScanOrdinaryAsk(command, CWD)).not.toBeNull();
+  });
+
+  it.each(["cd \"$X\"", "cd \"$X\" && make test", "cd ~user", "cd -", "pushd +1"])(
+    "asks for the non-static directory change %s", (command) => {
+      expect(shellScanOrdinaryAsk(command, CWD)).not.toBeNull();
+      expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+    },
+  );
+
+  it.each([
+    "cd ~/projects/x && grep -r y .",
+    "cd ~/projects/x && rg y",
+    "cd /tmp/build && grep -r y .",
+    "cd src && rg y",
+    "cd \"$X\" && grep -r y /tmp/abs",
+    "pushd ~/projects/x && rg y && popd",
+    "cd ~/projects/x && cd - && rg y src",
+  ])("leaves the ordinary search %s alone", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+  });
+
+  it.each(["cd ~/projects/x && rg y", "export PATH=$HOME/bin:$PATH; cd ~/projects/x && rg y"])(
+    "static cd tracking keeps the scan canonical and asks nothing extra: %s", (command) => {
+      expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
+      expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+    },
+  );
+
+  it.each(["unset HOME; cd && rg y", "read -r HOME; cd ~ && rg y", "export HOME=/x; cd && rg y"])(
+    "treats a cd through a reassigned HOME as unknown: %s", (command) => {
+      expect(shellSensitivePathSignal(command, CWD)).toMatch(/cd whose target is not static/);
+    },
+  );
+
+  it("allow rules do not cover a non-static cd", () => {
+    const rules = { allow: ["Bash(cd *)", "Bash(make *)"].map((pattern) => ({ pattern, spec: parseRuleSpecifier(pattern) as Extract<ReturnType<typeof parseRuleSpecifier>, { kind: "bash" }> })), deny: [], ask: [] };
+    expect(evaluateShellRules("cd src && make test", rules, CWD).decision).toBe("allow");
+    expect(evaluateShellRules("cd \"$X\" && make test", rules, CWD)).toMatchObject({ decision: null, reason: "cd target is not static" });
+  });
+
+  it("asks in the sandboxed auto-allow lane", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-cd-"));
+    try {
+      const pm = new PermissionManager(join(dir, "permissions.json"));
+      const subject = (command: string) => ({
+        ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir },
+        shellExecution: { runsSandboxed: true, sandboxAvailable: true },
+      });
+      for (const command of ["cd ~ && grep -r x .", "cd ~ && rg x", "cd $HOME; grep -r x .", "cd \"$X\" && grep -r y .",
+        "cat ~/.mozilla/firefox/*/log*ns.json", "cat ~/.local/share/keyrings/login.keyring"]) {
+        expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command)), command)
+          .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      }
+      expect(pm.checkDetailed("bash", "builtin", "shell", null, subject("cd src && rg y"))).toMatchObject({ decision: "allow" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("path sources in colon destination bindings", () => {
   it.each([
     "~/.ssh:/x",

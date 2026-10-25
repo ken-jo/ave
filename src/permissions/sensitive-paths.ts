@@ -130,9 +130,6 @@ type SensitiveAnchor = "ave-home" | "home" | "root";
  *     seatbelt, and stay host-guard-only in {@link SENSITIVE_PATH_PATTERNS}.
  *     (A table row is also matched anchor-free by the host guard; what makes
  *     these different is that they have no anchored form AT ALL.)
- *   - `~/Library/Cookies` and `~/Library/Keychains` are a deliberate sandbox
- *     exclusion (encrypted-at-rest, outside ASRT's filesystem threat model) and
- *     stay host-guard-only for that recorded reason.
  *   - the {@link SensitiveEntry.rotations} flag is the same unanchored case one
  *     level down: `<name>.*` has no literal form, so a row's rotation glob is
  *     host-guard-only while its base file is on both surfaces.
@@ -207,6 +204,33 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".npmrc"], kind: "file", why: "npm registry auth token" },
   { anchor: "home", segments: [".netrc"], kind: "file", why: "generic machine credentials" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
+  // ── Keychains, keyrings and password managers ───────────────────────
+  // Encrypted at rest is not a reason to leave them readable: the login
+  // keychain and a GNOME keyring are cracked offline against the login password.
+  { anchor: "home", segments: ["Library", "Keychains"], kind: "dir", why: "macOS login keychain databases" },
+  { anchor: "home", segments: [".local", "share", "keyrings"], kind: "dir", why: "GNOME Keyring / libsecret stores" },
+  { anchor: "home", segments: [".password-store"], kind: "dir", why: "pass(1) GPG-encrypted password store" },
+  { anchor: "home", segments: [".config", "op"], kind: "dir", why: "1Password CLI configuration and session state" },
+  // ── Browser profiles: saved logins, cookies, and the keys that decrypt them ──
+  // A profile directory holds the encrypted store AND what decrypts it
+  // (Firefox key4.db, Chromium Local State), so a copy is decrypted offline.
+  // Whole profile roots, so a glob over a random profile name stays inside.
+  { anchor: "home", segments: ["Library", "Cookies"], kind: "dir", why: "macOS shared cookie jar (Safari, WebKit apps)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Google", "Chrome"], kind: "dir", why: "Chrome profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge"], kind: "dir", why: "Edge profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "BraveSoftware"], kind: "dir", why: "Brave profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Chromium"], kind: "dir", why: "Chromium profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Arc"], kind: "dir", why: "Arc profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Vivaldi"], kind: "dir", why: "Vivaldi profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "com.operasoftware.Opera"], kind: "dir", why: "Opera profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Firefox"], kind: "dir", why: "Firefox profiles (macOS)" },
+  { anchor: "home", segments: [".mozilla"], kind: "dir", why: "Firefox profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome"], kind: "dir", why: "Chrome profiles (Linux)" },
+  { anchor: "home", segments: [".config", "chromium"], kind: "dir", why: "Chromium profiles (Linux)" },
+  { anchor: "home", segments: [".config", "BraveSoftware"], kind: "dir", why: "Brave profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge"], kind: "dir", why: "Edge profiles (Linux)" },
+  { anchor: "home", segments: [".config", "vivaldi"], kind: "dir", why: "Vivaldi profiles (Linux)" },
+  { anchor: "home", segments: [".config", "opera"], kind: "dir", why: "Opera profiles (Linux)" },
   // ── Shell / tool histories — routinely contain pasted secrets ────────
   { anchor: "home", segments: [".bash_history"], kind: "file", why: "shell history" },
   { anchor: "home", segments: [".zsh_history"], kind: "file", why: "shell history" },
@@ -228,6 +252,13 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     why: "PowerShell SecretStore vault",
   },
   { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", windows: true, why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome", "User Data"], kind: "dir", windows: true, why: "Chrome profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge", "User Data"], kind: "dir", windows: true, why: "Edge profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"], kind: "dir", windows: true, why: "Brave profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Chromium", "User Data"], kind: "dir", windows: true, why: "Chromium profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Vivaldi", "User Data"], kind: "dir", windows: true, why: "Vivaldi profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Opera Software"], kind: "dir", windows: true, why: "Opera profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"], kind: "dir", windows: true, why: "Firefox profiles (Windows)" },
   // ── Ave hook scripts — supply-chain / re-exec protection ────────────
   {
     anchor: "home",
@@ -378,11 +409,6 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ecdsa.pub",
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
   ...WINDOWS_UNANCHORED_PATTERNS,
-  // ── Host-guard-only: deliberate sandbox exclusion ───
-  // Recorded in `getDefaultSensitiveReadDenyPaths`: encrypted-at-rest and
-  // outside ASRT's filesystem threat model, so consciously not on the OS floor.
-  "**/Library/Cookies/**",
-  "**/Library/Keychains/**",
   // ── Electron userData dir — per-platform DEFAULT locations ──────────
   // Holds plugin OAuth session cookies/tokens (Partitions/), Cookies (SQLite),
   // and the safeStorage-encrypted ave-secrets.json. The sandbox floor denies
@@ -580,8 +606,7 @@ export function getConfiguredSessionReadPolicy(): {
 /**
  * Directories whose contents hold secrets, canonical and case-folded: every
  * anchored table row, plus the stores the unanchored globs reach under the
- * home (`Library/Application Support`, `.config`, `.mozilla`, `AppData`,
- * `Library/Cookies`, `Library/Keychains`) and `/proc`. A recursive search
+ * home (`Library/Application Support`, `.config`, `AppData`) and `/proc`. A recursive search
  * started at or above one of them reads it. Resolved per call: the home and
  * the Ave home are read live, never cached at module load.
  */
@@ -590,7 +615,7 @@ function sensitiveSearchAnchors(): string[] {
   const ave = aveHome();
   const paths = SENSITIVE_PATH_ENTRIES.map((entry) =>
     pathResolve(entry.anchor === "home" ? home : entry.anchor === "ave-home" ? ave : "/", ...entry.segments));
-  for (const segments of [["Library", "Application Support"], ["Library", "Cookies"], ["Library", "Keychains"], [".config"], [".mozilla"], ["AppData"]]) {
+  for (const segments of [["Library", "Application Support"], [".config"], ["AppData"]]) {
     paths.push(pathResolve(home, ...segments));
   }
   paths.push("/proc");

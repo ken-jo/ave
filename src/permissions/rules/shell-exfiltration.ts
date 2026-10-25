@@ -566,8 +566,19 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   spend?.(1, glob.length);
   if (!glob || glob === "-") return null;
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
+  const segments = absolute.split(/[\\/]/);
+  // Whatever a wildcard expands to stays below its literal directory prefix:
+  // `~/.mozilla/firefox/*/log*ns.json` reads inside `~/.mozilla` however the
+  // random profile name or the file name is spelled.
+  const firstWild = segments.findIndex(hasWildcard);
+  if (firstWild > 0) {
+    const prefix = unescapeGlob(segments.slice(0, firstWild).join("/")) || "/";
+    spend?.(canonical ? MAX_WALK_UP + 1 : 1, prefix.length);
+    const hit = match(caseFoldForMatch(canonical ? canonicalizePathForMatch(prefix) : foldCanonicalPathSeparators(prefix)));
+    if (hit) return hit;
+  }
   let instances: string[][] = [[]];
-  for (const segment of absolute.split(/[\\/]/)) {
+  for (const segment of segments) {
     spend?.(1, segment.length);
     const next: string[][] = [];
     const add = (parts: string[]): void => { next.push(parts); };
@@ -709,7 +720,25 @@ function wordGlob(word: ShellWord): string | null {
 }
 
 interface ScanState {
-  cwd: string | undefined;
+  /**
+   * Every working directory a later command may run in. A `cd`/`pushd` adds
+   * its target and never removes one: a failed `cd`, a subshell or a pipeline
+   * stage leaves an earlier directory in force, so each one stays a candidate.
+   */
+  cwds: (string | undefined)[];
+  /** A directory change whose target is not static: a relative root is unknown. */
+  cwdUnknown: boolean;
+  /** Bumped whenever {@link cwds} grows, so loops and functions are rescanned. */
+  cwdVersion: number;
+  /** A `cd`/`pushd` already ran earlier in the command (OLDPWD and the stack are in {@link cwds}). */
+  dirChanged: boolean;
+  /** The command reassigns HOME, so `cd` / `cd ~` names an unknown directory. */
+  homeReassigned: boolean;
+  /** CDPATH, `cdable_vars` or `autocd` can redirect a relative `cd`. */
+  cdRedirects: boolean;
+  /** Ask reason from directory tracking; unlike {@link ordinaryAsk} it keeps path checks canonical. */
+  cdAsk?: string;
+  functions: { body: ShellStatement; version: number }[];
   dotglob: boolean;
   sensitive: string | null;
   network: boolean;
@@ -722,11 +751,16 @@ interface ScanState {
   spend?: ScanWork;
 }
 
-function createScanState(cwd: string | undefined, dotglob: boolean, spend?: ScanWork): ScanState {
+function createScanState(cwd: string | undefined, dotglob: boolean, spend?: ScanWork, command = ""): ScanState {
   let steps = 0;
   let chars = 0;
-  const state: ScanState = { cwd, dotglob, sensitive: null, network: false, hidden: false,
+  const state: ScanState = { cwds: [cwd], cwdUnknown: false, cwdVersion: 0, dirChanged: false,
+    homeReassigned: HOME_REASSIGNMENT.test(command),
+    cdRedirects: CD_REDIRECTION.test(command) || (process.env.CDPATH ?? "") !== "",
+    functions: [], dotglob, sensitive: null, network: false, hidden: false,
     match: createSensitivePathMatcher("read"), pathResults: new Map(), fallbackSteps: 0 };
+  // zsh `autocd` turns any bare directory word into a `cd`.
+  if (/auto_?cd/i.test(command)) markCwdUnknown(state, "autocd can change directory");
   state.spend = spend ?? ((nextSteps, nextChars = 0) => {
     if (steps + nextSteps > SHELL_PATH_SCAN_LIMITS.steps || chars + nextChars > SHELL_PATH_SCAN_LIMITS.chars) {
       state.ordinaryAsk = "Analysis budget exceeded";
@@ -738,7 +772,7 @@ function createScanState(cwd: string | undefined, dotglob: boolean, spend?: Scan
   return state;
 }
 
-function lexicalPathHit(glob: string, state: ScanState, braceExpansion: boolean): string | null {
+function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState, braceExpansion: boolean): string | null {
   const spend: ScanWork = (steps) => {
     if (state.fallbackSteps + steps > SHELL_PATH_SCAN_LIMITS.steps) throw new ShellScanBudgetError("Analysis budget exceeded");
     state.fallbackSteps += steps;
@@ -749,7 +783,7 @@ function lexicalPathHit(glob: string, state: ScanState, braceExpansion: boolean)
       const expanded = braceExpansion ? expandBraces(glob, spend) : [glob];
       if (expanded.length >= BRACE_EXPANSION_LIMIT) return "glob too broad to rule out a sensitive path";
       for (const candidate of expanded) {
-        const hit = sensitivePathHit(candidate, state.cwd, state.dotglob, state.match, spend, false);
+        const hit = sensitivePathHit(candidate, cwd, state.dotglob, state.match, spend, false);
         if (hit) return hit;
       }
       return null;
@@ -760,29 +794,32 @@ function lexicalPathHit(glob: string, state: ScanState, braceExpansion: boolean)
   }
   // Plain lexical checks are linear in the bounded source text against the
   // fixed path catalogue; they do not perform filesystem or glob expansion.
-  const path = resolve(state.cwd ?? "/", unescapeGlob(glob));
+  const path = resolve(cwd ?? "/", unescapeGlob(glob));
   return state.match(caseFoldForMatch(foldCanonicalPathSeparators(path)));
 }
 
 function checkGlob(glob: string, state: ScanState, braceExpansion = false): void {
   for (const candidate of argumentCandidates(glob)) {
-    if (state.sensitive) return;
-    // Canonical nulls cannot answer the conservative, filesystem-free pass:
-    // a glob may reach a sensitive name whose existence was not established.
-    const resultKey = (): string => `${state.ordinaryAsk ? "lexical" : "canonical"}:${braceExpansion ? "brace" : "literal"}:${candidate}`;
-    if (state.pathResults.has(resultKey())) {
-      state.sensitive = state.pathResults.get(resultKey()) ?? null;
-      continue;
+    // A relative path names a location under every directory the command may be in.
+    for (const cwd of [...state.cwds]) {
+      if (state.sensitive) return;
+      // Canonical nulls cannot answer the conservative, filesystem-free pass:
+      // a glob may reach a sensitive name whose existence was not established.
+      const resultKey = (): string => `${state.ordinaryAsk ? "lexical" : "canonical"}:${braceExpansion ? "brace" : "literal"}:${cwd ?? ""}\0${candidate}`;
+      if (state.pathResults.has(resultKey())) {
+        state.sensitive = state.pathResults.get(resultKey()) ?? null;
+        continue;
+      }
+      try {
+        state.sensitive = state.ordinaryAsk ? lexicalPathHit(candidate, cwd, state, braceExpansion)
+          : sensitivePathHit(candidate, cwd, state.dotglob, state.match, state.spend);
+      } catch (error) {
+        if (!(error instanceof ShellScanBudgetError)) throw error;
+        state.ordinaryAsk = error.message;
+        state.sensitive = lexicalPathHit(candidate, cwd, state, braceExpansion);
+      }
+      state.pathResults.set(resultKey(), state.sensitive);
     }
-    try {
-      state.sensitive = state.ordinaryAsk ? lexicalPathHit(candidate, state, braceExpansion)
-        : sensitivePathHit(candidate, state.cwd, state.dotglob, state.match, state.spend);
-    } catch (error) {
-      if (!(error instanceof ShellScanBudgetError)) throw error;
-      state.ordinaryAsk = error.message;
-      state.sensitive = lexicalPathHit(candidate, state, braceExpansion);
-    }
-    state.pathResults.set(resultKey(), state.sensitive);
   }
 }
 
@@ -1002,25 +1039,141 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
   }
   if (roots.length === 0) roots.push(".");
   for (const root of roots) {
+    if (!isAbsolute(root) && state.cwdUnknown) {
+      // After a `cd` to an unknown directory a relative root may be the home
+      // or any directory above a secret store; it cannot be ruled out.
+      state.sensitive = `recursive search of ${root} after a cd whose target is not static`;
+      return;
+    }
     // Without a working directory a relative root names no location; the
     // decision path always supplies one.
-    if (!isAbsolute(root) && state.cwd === undefined) continue;
-    const absolute = isAbsolute(root) ? root : resolve(state.cwd!, root);
-    const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
-    // A content search reads every file below its root.
-    const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
-    if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
-    if (shape.follow) {
-      // A followed root link counts like any other followed link.
-      const lexical = caseFoldForMatch(foldCanonicalPathSeparators(absolute));
-      const viaLink = canonical !== lexical ? state.match(canonical) ?? sensitiveLocationUnder(canonical) : null;
-      if (viaLink) { state.sensitive = `search root ${absolute} links to ${viaLink}`; return; }
-    }
-    if (shape.follow === "all") {
-      const link = sensitiveSymlinkUnder(absolute, state);
-      if (link) { state.sensitive = link; return; }
+    for (const cwd of isAbsolute(root) ? [undefined] : state.cwds.filter((dir) => dir !== undefined)) {
+      searchRoot(isAbsolute(root) ? root : resolve(cwd!, root), shape, state);
+      if (state.sensitive) return;
     }
   }
+}
+
+function searchRoot(absolute: string, shape: SearchShape, state: ScanState): void {
+  const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
+  // A content search reads every file below its root.
+  const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
+  if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
+  if (shape.follow) {
+    // A followed root link counts like any other followed link.
+    const lexical = caseFoldForMatch(foldCanonicalPathSeparators(absolute));
+    const viaLink = canonical !== lexical ? state.match(canonical) ?? sensitiveLocationUnder(canonical) : null;
+    if (viaLink) { state.sensitive = `search root ${absolute} links to ${viaLink}`; return; }
+  }
+  if (shape.follow === "all") {
+    const link = sensitiveSymlinkUnder(absolute, state);
+    if (link) { state.sensitive = link; return; }
+  }
+}
+
+// ── Effective working directory ─────────────────────────────────────
+// A relative path resolves against the directory the shell is in when it
+// runs, not the tool's cwd: `cd ~ && grep -r x .` searches the home.
+
+/** Directories one command may be in before tracking gives up and treats the cwd as unknown. */
+const CWD_CANDIDATE_LIMIT = 16;
+/** An assignment, declaration or removal of HOME anywhere in the command. */
+const HOME_REASSIGNMENT = /(?:^|[^A-Za-z0-9_$])HOME\+?=|\b(?:export|declare|typeset|local|readonly|unset|read)\s(?:[^;&|\n]*\s)?HOME(?=[\s=;&|)]|$)/;
+/** Settings that make a relative `cd` resolve somewhere other than the cwd. */
+const CD_REDIRECTION = /\bcdpath\b|cdable_vars/i;
+
+function markCwdUnknown(state: ScanState, reason: string): void {
+  state.cwdUnknown = true;
+  state.cdAsk ??= reason;
+}
+
+function addCwd(state: ScanState, directory: string): void {
+  if (state.cwds.includes(directory)) return;
+  if (state.cwds.length >= CWD_CANDIDATE_LIMIT) {
+    markCwdUnknown(state, "too many directory changes to track");
+    return;
+  }
+  state.cwds.push(directory);
+  state.cwdVersion += 1;
+}
+
+/** The static directory a `cd`/`pushd` operand names under each candidate cwd, or a reason it is unknown. */
+function cdTargets(word: ShellWord, state: ScanState): string[] | string {
+  const glob = wordGlob(word);
+  if (glob === null || glob.includes(DYNAMIC_SEGMENT)) return "cd target is not static";
+  if (hasWildcard(glob)) return "cd target is a glob";
+  if (state.homeReassigned && word.parts.some((part) => part.kind === "parameter" && part.name === "HOME")) {
+    return "cd target depends on a reassigned HOME";
+  }
+  const target = unescapeGlob(glob);
+  if (target === "") return "cd target is empty";
+  if (isAbsolute(target)) return [target];
+  // CDPATH is consulted for a relative name that does not start with `.`/`..`.
+  if (state.cdRedirects && !/^\.\.?(?:\/|$)/.test(target)) return "cd target may resolve through CDPATH";
+  if (state.cwds.includes(undefined)) return "cd target is relative to an unknown working directory";
+  return state.cwds.map((cwd) => resolve(cwd!, target));
+}
+
+/**
+ * Track `cd`, `chdir`, `pushd` and `popd` (also behind `builtin`/`command`).
+ * A static target adds a candidate directory; anything the scanner cannot
+ * resolve — a variable, a substitution, a glob, `cd -` or a stack rotation
+ * before this command changed directory — makes the cwd unknown and asks.
+ */
+function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
+  let words = cmd.words;
+  for (;;) {
+    const head = words[0] === undefined ? undefined : staticShellWord(words[0]);
+    if (head === "builtin") { words = words.slice(1); continue; }
+    if (head === "command") {
+      words = words.slice(1);
+      while (words[0] !== undefined && /^-[pvV]+$/.test(staticShellWord(words[0]) ?? "")) words = words.slice(1);
+      continue;
+    }
+    break;
+  }
+  const name = words[0] === undefined ? undefined : staticShellWord(words[0]);
+  if (name !== "cd" && name !== "chdir" && name !== "pushd" && name !== "popd") return;
+  const operands: ShellWord[] = [];
+  let delimited = false;
+  for (const word of words.slice(1)) {
+    const text = staticShellWord(word);
+    if (!delimited && text === "--") { delimited = true; continue; }
+    // `-L -P -e -@` (cd) and `-n` (pushd/popd) are options; `-` and `-N` are operands.
+    if (!delimited && text !== undefined && /^-[LPe@n]+$/.test(text)) continue;
+    operands.push(word);
+  }
+  const stackReference = (): void => {
+    // OLDPWD and the directory stack hold only earlier candidates once this
+    // command has changed directory; before that they are inherited.
+    if (!state.dirChanged) markCwdUnknown(state, `${name} refers to a directory this command did not set`);
+  };
+  if (name === "popd") stackReference();
+  else if (operands.length === 0) {
+    if (name === "pushd") stackReference();
+    else if (state.homeReassigned) markCwdUnknown(state, "cd target depends on a reassigned HOME");
+    else addCwd(state, homedir());
+  } else if (operands.length > 1) {
+    markCwdUnknown(state, `${name} with several operands is not tracked`);
+  } else {
+    const text = staticShellWord(operands[0]!);
+    if (text === "-" || (text !== undefined && /^[+-]\d+$/.test(text))) stackReference();
+    else {
+      const targets = cdTargets(operands[0]!, state);
+      if (typeof targets === "string") markCwdUnknown(state, targets);
+      else for (const target of targets) addCwd(state, target);
+    }
+  }
+  state.dirChanged = true;
+}
+
+/** Scan a loop body until the directories it may change to stop growing. */
+function scanUntilCwdStable(scan: () => void, state: ScanState): void {
+  let version: number;
+  do {
+    version = state.cwdVersion;
+    scan();
+  } while (version !== state.cwdVersion && !state.sensitive);
 }
 
 /** `git show HEAD:.env`, `git cat-file -p :.env`: the path inside a `<rev>:<path>` object name. */
@@ -1059,6 +1212,7 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       if (statement.words.length > 0) {
         scanGitObjectPaths(statement, state);
         scanRecursiveSearch(statement, state);
+        trackDirectoryChange(statement, state);
       }
       for (const assignment of statement.assignments) {
         checkWord(assignment.value, state);
@@ -1085,8 +1239,13 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       scanStatement(statement.left, state);
       scanStatement(statement.right, state);
       return;
-    case "subshell": case "background": case "negate": case "function":
+    case "subshell": case "background": case "negate":
       scanStatement(statement.body, state);
+      return;
+    case "function":
+      // The body runs where the function is called, which may be after a later `cd`.
+      scanStatement(statement.body, state);
+      state.functions.push({ body: statement.body, version: state.cwdVersion });
       return;
     case "redirected":
       for (const redirect of statement.redirects) if (redirect.target) scanRedirectTarget(redirect.target, state);
@@ -1094,11 +1253,14 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       return;
     case "for":
       for (const value of statement.values ?? []) checkWord(value, state);
-      scanStatement(statement.body, state);
+      // A later iteration runs in the directory an earlier one changed to.
+      scanUntilCwdStable(() => scanStatement(statement.body, state), state);
       return;
     case "while":
-      scanStatement(statement.condition, state);
-      scanStatement(statement.body, state);
+      scanUntilCwdStable(() => {
+        scanStatement(statement.condition, state);
+        scanStatement(statement.body, state);
+      }, state);
       return;
     case "if":
       scanStatement(statement.condition, state);
@@ -1124,7 +1286,7 @@ function boundedInspectionText(command: string): string {
 }
 
 function scanStateFor(parsed: ParsedShellCommand, cwd: string | undefined): ScanState {
-  return shellFact(parsed, `scan-state\0${cwd ?? ""}`, () => createScanState(cwd, /dotglob|GLOBIGNORE/.test(parsed.command)));
+  return shellFact(parsed, `scan-state\0${cwd ?? ""}`, () => createScanState(cwd, /dotglob|GLOBIGNORE/.test(parsed.command), undefined, parsed.command));
 }
 
 function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
@@ -1133,7 +1295,15 @@ function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
     state.hidden = true;
     state.network ||= NETWORK_DEVICE.test(visible) || NETWORK_WORD.test(visible);
     scanCodeText(visible, state);
-  } else scanStatement(parsed.analysis.program, state);
+  } else {
+    scanStatement(parsed.analysis.program, state);
+    // Rescan function bodies against directories added after their definition.
+    for (let stale = state.functions.find((fn) => fn.version !== state.cwdVersion); stale && !state.sensitive;
+      stale = state.functions.find((fn) => fn.version !== state.cwdVersion)) {
+      stale.version = state.cwdVersion;
+      scanStatement(stale.body, state);
+    }
+  }
 }
 
 function scanCommand(parsed: ParsedShellCommand, cwd: string | undefined): ScanState {
@@ -1207,5 +1377,6 @@ export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string)
 
 /** Incomplete path inspection is an ordinary ask, never credential evidence. */
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
-  return scanCommand(asParsedShellCommand(input), cwd).ordinaryAsk ?? null;
+  const scan = scanCommand(asParsedShellCommand(input), cwd);
+  return scan.ordinaryAsk ?? scan.cdAsk ?? null;
 }

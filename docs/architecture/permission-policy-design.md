@@ -230,6 +230,18 @@ requirements keep their own authority.
 | Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
 | Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
 
+The path scan checks a glob argument's literal directory prefix, before its
+first wildcard, as well as its expansions, so a wildcard below a protected
+entry (`~/.mozilla/firefox/*/log*ns.json`) is a floor whatever the profile or
+file name. Relative paths, including recursive-search roots, resolve against
+every working directory that a static `cd`, `chdir` or `pushd` earlier in the
+same input may leave in force. A change is never assumed to fail or to be
+undone by a subshell, so each earlier directory stays a candidate. A directory
+change whose target is not static is an ordinary ask: a variable, substitution,
+glob or `~user` target, `cd -` or a stack reference before the input changed
+directory, a reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. A later
+relative recursive search is then a floor, because its root cannot be ruled out.
+
 Ordinary asks remain rememberable under the existing approval-scope and risk
 requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
 but it does not invalidate an otherwise applicable tool allow rule or saved
@@ -1253,7 +1265,23 @@ floor still protects sessions from confined plugin, MCP and terminal processes.
 The builtin projection retains other sensitive paths, nested exclusions and
 trusted custom read denies; a conflicting protected ancestor suppresses the
 session grant. `getBuiltinShellReadPolicy` composes broad invocation reads for
-both shell dialects without denying the real home as a whole. Read candidates
+both shell dialects without denying the real home as a whole. The protected
+floor that stands in for a whole-home deny is the anchored row set of
+`SENSITIVE_PATH_ENTRIES` in
+[sensitive-paths.ts](../../src/permissions/sensitive-paths.ts); the host guard
+and every OS sandbox wrap project the same rows, so each one is denied on macOS,
+Linux and Windows. Besides SSH, cloud, git and package-manager credentials and
+shell histories, the floor covers keychains and keyrings
+(`~/Library/Keychains`, `~/.local/share/keyrings`), password managers
+(`~/.password-store`, `~/.config/op`), the macOS cookie jar
+(`~/Library/Cookies`) and whole browser profile roots: Chrome, Edge, Brave,
+Chromium, Arc, Vivaldi, Opera and Firefox under `~/Library/Application Support`
+on macOS, `~/.config/<browser>` and `~/.mozilla` on Linux, and
+`%LOCALAPPDATA%\<vendor>\User Data`, `%APPDATA%\Opera Software` and
+`%APPDATA%\Mozilla\Firefox\Profiles` on Windows, beside the Windows Credential
+Manager, DPAPI, Crypto and Vault rows. Encryption at rest is no exclusion:
+these stores keep their decrypting key (Firefox `key4.db`, Chromium
+`Local State`) or a login-password-derived key beside them. Read candidates
 cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone
