@@ -41,8 +41,7 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
     }
     const canonical = foldCanonicalPathSeparators(resolved);
     const sensitive = isSensitivePath(caseFoldForMatch(lexical), "write") ?? isSensitivePath(caseFoldForMatch(canonical), "write");
-    const projectRoot = foldCanonicalPathSeparators(root);
-    const control = protectedControlEntryFor(projectRoot, lexical) ?? protectedControlEntryFor(projectRoot, canonical);
+    const control = protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical);
     return { lexical, canonical, floor: sensitive
       ? `Sensitive write path: ${sensitive}`
       : control !== undefined ? `Protected control path: ${control}`

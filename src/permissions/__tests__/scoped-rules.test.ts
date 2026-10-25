@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { editDepthCandidates, evaluateScopedRules, type ScopedRuleSubject } from "../rules/scoped-rule-matcher.js";
 import { canonicalRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
+import { protectedControlEntryFor } from "../sandbox-write-policy.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "../sensitive-paths.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -93,6 +94,7 @@ describe("scoped permission rules", () => {
     ".git/hooks/pre-commit", ".git/config", ".husky/pre-commit",
     ".claude/settings.json", ".claude/settings.local.json",
     ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json", ".idea/workspace.xml",
+    ".githooks/pre-commit", ".claude/hooks/stop.sh", ".claude/commands/x.md", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
   ])("keeps broad Edit grants below the write floor for %s", async (path) => {
     await manager.ensureProjectRulesLoaded(project);
     manager.setMode("allow");
@@ -102,6 +104,43 @@ describe("scoped permission rules", () => {
         ruleSubject: edit(path), projectRulesCwd: project,
       })).toMatchObject({ decision: "ask", forceModal: true });
     }
+  });
+
+  async function writeUnderGrant(rule: string, path: string) {
+    const registry = new ToolRegistry();
+    registry.register(new WriteFileTool());
+    await manager.loadRulesFromFile();
+    await manager.addRulePersist(allow(rule), { kind: "user" });
+    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    await runWithToolExecutionCwd(project, () => executor.executeAll([
+      { id: "control-file", name: "write_file", input: { path, content: "#!/bin/sh" } },
+    ], { sessionId: "control-files", permissionContext: userPermissionContext() }));
+    return requestAndWait;
+  }
+
+  it.runIf(process.platform !== "linux").each([".GIT/hooks/pre-push", ".VSCODE/tasks.json", ".Claude/Settings.json"])(
+    "asks before writing the case-variant control file %s under Edit(**)", async (path) => {
+      const requestAndWait = await writeUnderGrant("Edit(**)", path);
+      expect(requestAndWait).toHaveBeenCalledOnce();
+      expect(existsSync(join(project, path))).toBe(false);
+    });
+
+  it("asks before writing a control file under an external absolute Edit grant", async () => {
+    const external = join(directory, "external");
+    mkdirSync(join(external, ".git", "hooks"), { recursive: true });
+    const target = join(external, ".git", "hooks", "pre-commit");
+    const requestAndWait = await writeUnderGrant(`Edit(${foldCanonicalPathSeparators(external)}/**)`, target);
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it.each([["darwin", ".git"], ["win32", ".git"], ["linux", undefined]] as const)("folds control entries like sensitive paths on %s", (platform, expected) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    try {
+      expect(protectedControlEntryFor("/Users/Example/Repo/.GIT/hooks/pre-push")).toBe(expected);
+      expect(protectedControlEntryFor("/elsewhere/.vscode/tasks.json")).toBe(".vscode");
+    } finally { vi.restoreAllMocks(); }
   });
 
   it("keeps relative recursive and single-segment rules within the project", () => {

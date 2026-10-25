@@ -16,16 +16,18 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js
 const PROTECTED_ROOT_ENTRIES = [
   ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
   ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
-  ".husky", ".claude/settings.json", ".claude/settings.local.json", ".idea/workspace.xml",
+  ".husky", ".githooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands",
+  ".idea/workspace.xml", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
 ] as const;
 
-/** Host write tools floor the same control files at any depth below a granted root. */
-export function protectedControlEntryFor(root: string, path: string): string | undefined {
-  if (!isCanonicalPathWithin(root, path)) return undefined;
-  const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
-  const segments = fold(path.slice(root.length)).split("/").filter(Boolean);
+/**
+ * Host write tools floor the same control files wherever they appear in a
+ * canonical path, inside or outside the project, folded like sensitive paths.
+ */
+export function protectedControlEntryFor(path: string): string | undefined {
+  const segments = caseFoldForMatch(path).split("/").filter(Boolean);
   return PROTECTED_ROOT_ENTRIES.find((entry) => {
-    const parts = fold(entry).split("/");
+    const parts = entry.split("/");
     return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
   });
 }
