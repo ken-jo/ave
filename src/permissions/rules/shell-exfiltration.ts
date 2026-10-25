@@ -874,8 +874,18 @@ function isMetadataListing(cmd: ShellCommand, state: ScanState): boolean {
   // A listing piped into `xargs` becomes the reader's arguments.
   if (state.feedsXargs || cmd.words.length === 0) return false;
   const argv = commandArgv(cmd);
-  const name = program(argv[Math.min(wrapperCommand(argv).index, argv.length - 1)])?.toLowerCase();
-  return name !== undefined && METADATA_LISTERS.has(name);
+  const at = Math.min(wrapperCommand(argv).index, argv.length - 1);
+  const name = program(argv[at])?.toLowerCase();
+  if (name === undefined || !METADATA_LISTERS.has(name)) return false;
+  // Some listers also read a file the caller names, and print or quote it:
+  // `tree --fromfile f`, `tree --hintro=f`, `du --files0-from=f`, `du -X f`,
+  // `lsd --config-file f`. Such a command is a content read, not a listing.
+  return !cmd.words.slice(at + 1).some((word) => {
+    const head = literalHead(word);
+    if (head === "--") return false;
+    if (/^--[A-Za-z0-9-]*(?:file|from|intro|outro)/i.test(head)) return true;
+    return (name === "du" || name === "gdu") && /^-[A-Za-z]*X/.test(head);
+  });
 }
 
 /** Runs `scan` once per shell home anchor, resolving the anchors only if the scan reads one. */

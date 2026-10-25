@@ -263,7 +263,9 @@ ordinary ask. A metadata lister (`ls`, `du`, `stat`, `tree`, `eza`/`exa`,
 `lsd`) reads no file content, so a glob whose expansion only reaches a
 protected directory (`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`)
 is an ordinary ask too; a glob whose literal prefix is protected
-(`ls ~/.ssh/*`), a lister feeding `xargs`, and every content read stay a floor. A directory
+(`ls ~/.ssh/*`), a lister feeding `xargs`, a lister given a file-input option
+(`tree --fromfile`/`--hintro`/`--infofile`/`--gitfile`, `du --files0-from`/`-X`/
+`--exclude-from`, `lsd --config-file`), and every content read stay a floor. A directory
 change whose target is not static is an ordinary ask: a variable, substitution,
 glob or `~user` target, `cd -` or a stack reference before the input changed
 directory, an `eval` whose text is not static or changes directory, a

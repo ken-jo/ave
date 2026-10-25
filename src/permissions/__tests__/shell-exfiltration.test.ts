@@ -857,6 +857,34 @@ describe("credential floor: metadata listing globs", () => {
     expect(verdict(command)).toBe(expected);
   });
 
+  // A lister option that reads a named file (and prints or quotes it) makes
+  // the command a content read, so a glob reaching a secret stays a floor.
+  // `**/.env` is a host-guard-only pattern with no OS floor behind it.
+  it.each<[string, Verdict]>([
+    ["tree --fromfile a/.en?", "floor"],
+    ["tree --fromtabfile a/.en?", "floor"],
+    ["tree --hintro=a/.en? .", "floor"],
+    ["tree --infofile=a/.en? .", "floor"],
+    ["tree --gitfile a/.en? .", "floor"],
+    ["du --files0-from=a/.en?", "floor"],
+    ["du --files0-from a/.en?", "floor"],
+    ["du -X a/.en? .", "floor"],
+    ["du -aX a/.en? .", "floor"],
+    ["du --exclude-from=a/.en? .", "floor"],
+    ["lsd --config-file a/.en? .", "floor"],
+    ["eza --from-file=a/.en?", "floor"],
+    // Without such an option the same glob is a listing.
+    ["ls a/.en?", "ask"],
+    ["tree a/.en?", "ask"],
+  ])("file-input option: %s -> %s", (command, expected) => {
+    const project = join(home, "proj");
+    mkdirSync(join(project, "a"), { recursive: true });
+    writeFileSync(join(project, "a", ".env"), "SECRET=1\n");
+    const got = shellSensitivePathSignal(command, project) !== null ? "floor"
+      : shellScanOrdinaryAsk(command, project) !== null ? "ask" : "clean";
+    expect(got).toBe(expected);
+  });
+
   it("asks without forceModal, and the sandboxed lane allows it", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-listing-pm-"));
     try {
