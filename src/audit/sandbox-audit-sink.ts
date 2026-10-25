@@ -68,9 +68,12 @@ function sinkPath(date = new Date()): string {
  * or surface the error. Production call-sites in `permission-manager.ts` wrap
  * this in a try/catch and log the error without blocking the tool execution.
  */
-export function emitSandboxAudit(
+export async function emitSandboxAudit(
   entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
 ): Promise<void> {
+  // Stay async: a path that cannot be resolved must reach the caller's
+  // `.catch` as a rejection, never as a synchronous throw. The tracking below
+  // still runs synchronously, before the first await.
   const write = appendSandboxAudit(sinkPath(), entry);
   // Call sites fire this without awaiting so a slow disk never delays a tool.
   // Track the write anyway, so whoever retires the audit directory can wait
@@ -79,7 +82,7 @@ export function emitSandboxAudit(
     pendingSandboxAuditWrites.delete(tracked);
   });
   pendingSandboxAuditWrites.add(tracked);
-  return write;
+  await write;
 }
 
 const pendingSandboxAuditWrites = new Set<Promise<void>>();
