@@ -136,7 +136,8 @@ async function expectResponse(client: ReturnType<typeof connect>, status: number
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {
   it("keeps the invocation listener identity through the ordinary shell frontend", async () => {
-    const runtime = await startRuntime();
+    // Shell calls are offered Allow once and Always only.
+    const runtime = await startRuntime(() => "always");
     const invocation = openShell();
     const other = openShell();
     const frontend = await invocationFrontend(invocation.token);
@@ -150,16 +151,15 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait.mock.calls[0]?.[0]).toMatchObject({
       kind: "egress-host", toolName: "powershell", sessionId: invocation.owner.kind === "shell" ? invocation.owner.context.sessionId : undefined,
       forceExplicit: true, durableApprovalRecordAllowed: false,
-      egressHost: { ...DESTINATION, scopes: ["once", "conversation", "workspace", "always"], network: "public" },
+      egressHost: { ...DESTINATION, scopes: ["once", "always"], network: "public" },
     });
     expect(await listEgressGrants()).toEqual([expect.objectContaining({
-      scope: "conversation", sessionId: invocation.owner.kind === "shell" ? invocation.owner.context.sessionId : undefined,
-      ...DESTINATION, network: "public",
+      scope: "always", origin: "shell", ...DESTINATION, network: "public",
     })]);
     expect(runtime.upstream.received).toHaveLength(1);
   });
 
-  it("offers shared frontend conversation scope without reusing or deleting a stronger stored grant", async () => {
+  it("offers a shared frontend shell call only once, without reusing or deleting a stronger stored grant", async () => {
     let scope: EgressGrantScope = "always";
     const runtime = await startRuntime(() => scope);
     const invocation = openShell();
@@ -168,7 +168,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     const stronger = (await listEgressGrants()).filter((grant) => grant.scope === "always");
     expect(stronger).toEqual([expect.objectContaining({ scope: "always", origin: "shell", ...DESTINATION, network: "public" })]);
 
-    scope = "conversation";
+    scope = "once";
     runtime.observed.length = 0;
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 200);
     expect(runtime.observed.every(({ context }) => context?.identity === "username"
@@ -176,11 +176,13 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(2);
     expect(runtime.requestAndWait.mock.calls[1]?.[0]).toMatchObject({
       forceExplicit: true, durableApprovalRecordAllowed: false,
-      egressHost: { ...DESTINATION, scopes: ["once", "conversation"], network: "public" },
+      // A shared channel stops shell grants below Always, and shell calls
+      // have no This conversation scope, so only once remains.
+      egressHost: { ...DESTINATION, scopes: ["once"], network: "public" },
     });
     const grants = await listEgressGrants();
     expect(grants.filter((grant) => grant.scope === "always")).toEqual(stronger);
-    expect(grants.filter((grant) => grant.scope === "conversation")).toHaveLength(1);
+    expect(grants).toHaveLength(stronger.length);
     const nextInvocation = openShell();
     const nextFrontend = await invocationFrontend(nextInvocation.token);
     await expectResponse(connect(nextFrontend.port), 200);
@@ -219,7 +221,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     const invocation = openShell();
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 403);
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(1);
-    expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once", "conversation"]);
+    expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once"]);
     expect(runtime.upstream.received).toEqual([]);
     expect(await listEgressGrants()).toEqual([]);
   });

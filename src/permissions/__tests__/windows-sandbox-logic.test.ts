@@ -277,6 +277,9 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
   });
 
   it("keeps omitted read grants absent and restates retained write grants with mandatory denies", () => {
+    // The restated floor is the subject here, so the composition runs as on a
+    // POSIX host; Windows drops profile-redundant denies (covered on its own).
+    forcePlatform("linux");
     const config = buildPerCommandSandboxCustomConfig({
       denyRead: ["/home/u/.ssh"],
       denyWrite: ["/home/u/.config"],
@@ -294,6 +297,9 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
   });
 
   it("keeps explicitly empty allow arrays when the caller intentionally overrides them", () => {
+    // The restated floor is the subject here, so the composition runs as on a
+    // POSIX host; Windows drops profile-redundant denies (covered on its own).
+    forcePlatform("linux");
     const config = buildPerCommandSandboxCustomConfig({
       allowRead: [],
       allowWrite: [],
