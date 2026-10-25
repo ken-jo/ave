@@ -76,6 +76,7 @@ import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
   SUBSCRIPTION_RUNTIME_ROW_PARTNER,
+  openAiLoginTypeFor,
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
@@ -2281,17 +2282,39 @@ export function LlmTab(props: LlmTabProps) {
 
   /** Which sign-in method a two-way card is showing, or null when it should ask. The user's pick wins. Without one the card opens on the method that is already in use; the route chat runs on, then a subscription that is
    * signed in or signing in, then a stored or half-typed key; and with nothing configured it asks, so no key field appears until "API key" is chosen. A row reached only one way has nothing to choose and answers that way. */
+  /** The method this row is serving chat through right now, or null. The OpenAI row (the only row with plan usage)
+   * reads it from the one OpenAI login-type selector, so its three ways in can never disagree with the persisted selection. */
+  const rowActiveMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
+    const activeRuntime = subscription.activeRuntime;
+    if (row.planSubscription) {
+      const loginType = openAiLoginTypeFor(activeRuntime, vendor);
+      switch (loginType) {
+        case "codex-cli":
+          return "subscription";
+        case "chatgpt-plan":
+          return "plan";
+        case "api-key":
+          return rowIsActiveApiProvider(row) ? "api" : null;
+        case null:
+          return null;
+        default: {
+          const unhandled: never = loginType;
+          throw new Error(`unhandled OpenAI login type: ${String(unhandled)}`);
+        }
+      }
+    }
+    if (activeRuntime.kind === "subscription") return activeRuntime.provider === row.id ? "subscription" : null;
+    return rowIsActiveApiProvider(row) ? "api" : null;
+  }, [rowIsActiveApiProvider, subscription.activeRuntime, vendor]);
+
   const rowAuthMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
     if (!row.subscription) return row.apiVendorId ? "api" : null;
     if (!row.apiVendorId) return "subscription";
     const picked = authMethodByRow[row.id];
     if (picked) return picked;
-    if (subscription.activeRuntime.kind === "subscription") {
-      if (subscription.activeRuntime.provider === row.id) return "subscription";
-      if (subscription.activeRuntime.provider === row.planSubscription?.descriptor.id) return "plan";
-    } else if (rowIsActiveApiProvider(row) && credentialedProviderIds.has(rowCredentialId(row))) {
-      return "api";
-    }
+    const active = rowActiveMethod(row);
+    if (active === "subscription" || active === "plan") return active;
+    if (active === "api" && credentialedProviderIds.has(rowCredentialId(row))) return "api";
     const connection = row.subscription.status?.connection;
     if (connection === "connected" || connection === "pending") return "subscription";
     const planConnection = row.planSubscription?.status?.connection;
@@ -2299,8 +2322,7 @@ export function LlmTab(props: LlmTabProps) {
     if (credentialedProviderIds.has(rowCredentialId(row)) || rowCredentialDirty(row.id)) return "api";
     return null;
   }, [
-    authMethodByRow, credentialedProviderIds, rowCredentialDirty, rowCredentialId,
-    rowIsActiveApiProvider, subscription.activeRuntime,
+    authMethodByRow, credentialedProviderIds, rowActiveMethod, rowCredentialDirty, rowCredentialId,
   ]);
 
   /** Whether this row draws the API-key form when open. */
@@ -2624,11 +2646,7 @@ export function LlmTab(props: LlmTabProps) {
   // Which of this provider's two routes is serving chat right now. The user asked for exactly this: the row
   // says the provider, the badge says the mode. Which path this row is serving chat through right now, or null.
   const activeMode = (row: ProviderConnection): ProviderSignInMethod | null =>
-    subscription.activeRuntime.kind === "subscription"
-      ? (subscription.activeRuntime.provider === row.id
-        ? "subscription"
-        : subscription.activeRuntime.provider === row.planSubscription?.descriptor.id ? "plan" : null)
-      : (rowIsActiveApiProvider(row) ? "api" : null);
+    rowActiveMethod(row);
 
   /** What this card still needs before its models join the chooser. The card carries no switch of its own: picking a model IS picking the provider, so a provider that cannot answer a turn
    * is simply absent from the one list. Absent with no explanation reads as a bug, so the card that owns the missing piece says what it is, in the same words the list would have needed. */

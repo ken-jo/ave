@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -15,6 +16,13 @@ export interface ChatGptPlanCallbackListener {
   /** Resolves with the first request to the callback path. */
   readonly callback: Promise<URL>;
   close(): void;
+}
+
+function sameState(received: string | null, expected: string): boolean {
+  if (received === null) return false;
+  const a = Buffer.from(received);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function listen(server: Server, port: number): Promise<number> {
@@ -36,10 +44,14 @@ function listen(server: Server, port: number): Promise<number> {
 /**
  * Start the loopback listener before the browser opens. It binds 127.0.0.1
  * only, prefers the documented port and takes any free port when that one is
- * busy; scheme, host and path never change. Only the callback path is
- * answered, and only once.
+ * busy; scheme, host and path never change. Only a GET to the callback path,
+ * addressed to `127.0.0.1:<port>` and carrying this attempt's `state`,
+ * completes it, and only once. Anything else (another page probing the port,
+ * a rebinding host name, a stale or forged state) is refused and the listener
+ * keeps waiting, so a web page cannot end a sign-in in progress.
  */
 export async function startChatGptPlanCallbackListener(
+  expectedState: string,
   preferredPort: number = CHATGPT_PLAN_PREFERRED_CALLBACK_PORT,
 ): Promise<ChatGptPlanCallbackListener> {
   let deliver: (url: URL) => void = () => undefined;
@@ -52,7 +64,13 @@ export async function startChatGptPlanCallbackListener(
   let port = preferredPort;
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", `http://${CHATGPT_PLAN_CALLBACK_HOST}:${port}`);
-    if (request.method !== "GET" || url.pathname !== CHATGPT_PLAN_CALLBACK_PATH || settled) {
+    if (
+      request.method !== "GET"
+      || url.pathname !== CHATGPT_PLAN_CALLBACK_PATH
+      || request.headers.host !== `${CHATGPT_PLAN_CALLBACK_HOST}:${port}`
+      || !sameState(url.searchParams.get("state"), expectedState)
+      || settled
+    ) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
       return;

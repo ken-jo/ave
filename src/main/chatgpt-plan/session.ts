@@ -1,5 +1,5 @@
 import { CHATGPT_PLAN_ISSUER, CHATGPT_PLAN_USAGE_SCOPE } from "./endpoints.js";
-import type { ChatGptPlanIdTokenVerifier } from "./id-token.js";
+import { ChatGptPlanIdTokenError, type ChatGptPlanIdTokenVerifier } from "./id-token.js";
 import { fetchChatGptPlanModels, type ChatGptPlanModel } from "./models.js";
 import {
   buildAuthorizationUrl,
@@ -107,7 +107,8 @@ export interface ChatGptPlanSessionOptions {
   readonly secrets: ChatGptPlanSecretStore;
   readonly hostId: () => Promise<string>;
   readonly openExternal: (url: string) => Promise<void>;
-  readonly startListener: () => Promise<ChatGptPlanCallbackListener>;
+  /** Starts the loopback listener for one attempt; it completes only on a callback carrying `expectedState`. */
+  readonly startListener: (expectedState: string) => Promise<ChatGptPlanCallbackListener>;
   readonly verifier: Pick<ChatGptPlanIdTokenVerifier, "verify">;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -219,7 +220,7 @@ export class ChatGptPlanSession {
         }
       : { kind: "register" };
     const attempt = createAuthorizationAttempt();
-    const listener = await this.options.startListener();
+    const listener = await this.options.startListener(attempt.state);
     const url = buildAuthorizationUrl({ attempt, redirectUri: listener.redirectUri, hostId, target });
     const completion = (async () => {
       try {
@@ -393,11 +394,25 @@ export class ChatGptPlanSession {
       }
       let idToken = record.tokens.idToken;
       if (response.idToken) {
-        await this.options.verifier.verify(response.idToken, {
-          clientId: record.clientId,
-          ...(record.subject ? { subject: record.subject } : {}),
-        });
-        idToken = response.idToken;
+        try {
+          await this.options.verifier.verify(response.idToken, {
+            clientId: record.clientId,
+            ...(record.subject ? { subject: record.subject } : {}),
+          });
+          idToken = response.idToken;
+        } catch (error) {
+          if (!(error instanceof ChatGptPlanIdTokenError) || error.failure !== "jwks-unavailable") {
+            // A rotated ID token that fails its signature, issuer, audience or subject check is not this account's:
+            // nothing from the response is stored, and the superseded refresh token cannot be reused.
+            this.emit({ event: "refresh-failed", failure: failureCode(error) });
+            await this.save({ ...record, tokens: null });
+            this.notice = "reconnect-required";
+            throw new ChatGptPlanSessionError("reconnect-required");
+          }
+          // The issuer's keys could not be fetched, so the new ID token is unverified. The refresh itself succeeded
+          // and the old refresh token is now spent, so keep the rotated tokens and the previous, verified ID token.
+          this.emit({ event: "refresh-failed", failure: "id-token-jwks-unavailable" });
+        }
       }
       const tokens = this.storedTokens(response, idToken);
       await this.save({ ...record, tokens });

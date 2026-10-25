@@ -19,6 +19,7 @@ import {
 import { rejectedToolNameFromError } from "../engine/llm/rejected-tool-schema.js";
 import {
   normalizeSubscriptionUsageTelemetry,
+  openAiLoginTypeOfRuntime,
   type SubscriptionChatRuntimeSelection,
   type SubscriptionImageAttachmentLimits,
 } from "../shared/subscription-runtime.js";
@@ -645,31 +646,40 @@ export class SubscriptionLlmProvider implements LLMProvider {
 export function createSubscriptionLlmProvider(
   options: SubscriptionLlmProviderOptions,
 ): SubscriptionLlmProvider | OpenAiProvider {
-  if (options.selection.provider === "chatgpt-plan") {
-    // Plan usage never opens a CLI text session; it is the OpenAI Responses wire with the session's token.
-    // There is no runtime default model; a selection without one is not configured, and nothing falls back to an API key.
-    if (!options.selection.model) throw new Error("subscription-chat-unavailable");
-    const selection = { ...immutableSelection(options.selection), provider: "chatgpt-plan" as const };
-    return createOpenAiProvider({
-      kind: "chatgpt-plan",
-      selection,
-      transport: new ChatGptPlanTransport(selection, async () => {
-        const service = options.service?.requireChatGptPlan
-          ? options.service
-          : options.openExternal
-            ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
-            : undefined;
-        if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
-        return service.requireChatGptPlan();
-      }),
-    });
-  }
-  const transport = new SubscriptionLlmProvider(options);
-  return transport.subscriptionRuntime.provider === "codex"
-    ? createOpenAiProvider({
+  const loginType = openAiLoginTypeOfRuntime(options.selection.provider);
+  switch (loginType) {
+    case "chatgpt-plan": {
+      // Plan usage never opens a CLI text session; it is the OpenAI Responses wire with the session's token.
+      // There is no runtime default model; a selection without one is not configured, and nothing falls back to an API key.
+      if (!options.selection.model) throw new Error("subscription-chat-unavailable");
+      const selection = { ...immutableSelection(options.selection), provider: "chatgpt-plan" as const };
+      return createOpenAiProvider({
+        kind: "chatgpt-plan",
+        selection,
+        transport: new ChatGptPlanTransport(selection, async () => {
+          const service = options.service?.requireChatGptPlan
+            ? options.service
+            : options.openExternal
+              ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
+              : undefined;
+          if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
+          return service.requireChatGptPlan();
+        }),
+      });
+    }
+    case "codex-cli": {
+      const transport = new SubscriptionLlmProvider(options);
+      return createOpenAiProvider({
         kind: "codex-subscription",
         selection: { ...transport.subscriptionRuntime, provider: "codex" },
         transport,
-      })
-    : transport;
+      });
+    }
+    case null:
+      return new SubscriptionLlmProvider(options);
+    default: {
+      const unhandled: never = loginType;
+      throw new Error(`unhandled OpenAI login type: ${String(unhandled)}`);
+    }
+  }
 }

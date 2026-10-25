@@ -553,22 +553,20 @@ export function SignInMethodChoice({
   value: ProviderSignInMethod | null;
   onChange: (method: ProviderSignInMethod) => void;
   disabled?: boolean;
-  /** The row also has plan usage (Sign in with ChatGPT), so the CLI option names its CLI. */
+  /** The row also has plan usage (Sign in with ChatGPT): offer it as a third choice. */
   offersPlan?: boolean;
 }) {
   const { t } = useTranslation();
   const labelId = useId();
   const optionId = (method: ProviderSignInMethod) => `${labelId}-${method}`;
-  const options: { method: ProviderSignInMethod; label: string }[] = offersPlan
-    ? [
-        { method: "subscription", label: t("subscriptionProvidersSection.methodCodexCli", { plan: planName }) },
-        { method: "plan", label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) },
-        { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
-      ]
-    : [
-        { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
-        { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
-      ];
+  // The existing two choices keep their labels; plan usage, when offered, is a third choice with its own.
+  const options: { method: ProviderSignInMethod; label: string }[] = [
+    { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
+    ...(offersPlan
+      ? [{ method: "plan" as const, label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) }]
+      : []),
+    { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
+  ];
   return (
     <div className="space-y-2" data-testid={`llm-tab:sign-in-method:${rowId}`}>
       <p id={labelId} className="text-sm font-medium">{t("subscriptionProvidersSection.methodQuestion")}</p>

@@ -32,7 +32,7 @@ export interface ChatGptPlanRuntimeDeps {
   /** The host's network stack (proxy and trust store); never an ambient fetch. */
   readonly networkFetch: typeof fetch;
   readonly namespace?: FeatureNamespaceHandle;
-  readonly startListener?: () => Promise<ChatGptPlanCallbackListener>;
+  readonly startListener?: (expectedState: string) => Promise<ChatGptPlanCallbackListener>;
   readonly onEvent?: (event: ChatGptPlanSessionEvent) => void;
 }
 
@@ -208,7 +208,7 @@ export function createChatGptPlanRuntime(
     openExternal: async (url) => {
       await openExternal(url);
     },
-    startListener: deps.startListener ?? (() => startChatGptPlanCallbackListener()),
+    startListener: deps.startListener ?? ((expectedState) => startChatGptPlanCallbackListener(expectedState)),
     verifier: new ChatGptPlanIdTokenVerifier(planFetch),
     ...(deps.onEvent ? { onEvent: deps.onEvent } : {}),
   });

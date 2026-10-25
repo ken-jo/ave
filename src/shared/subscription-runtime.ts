@@ -262,6 +262,29 @@ export const SUBSCRIPTION_RUNTIME_ROW_PARTNER: Readonly<
 export type OpenAiLoginType = "codex-cli" | "api-key" | "chatgpt-plan";
 
 /**
+ * Which OpenAI login type a subscription runtime is, or null for another company's runtime. Exhaustive over
+ * `SubscriptionRuntimeId`: adding a runtime is a compile error here until it is classified.
+ */
+export function openAiLoginTypeOfRuntime(
+  runtimeId: SubscriptionRuntimeId,
+): Exclude<OpenAiLoginType, "api-key"> | null {
+  switch (runtimeId) {
+    case "codex":
+      return "codex-cli";
+    case "chatgpt-plan":
+      return "chatgpt-plan";
+    case "kimi-code":
+    case "grok-build":
+    case "claude-code":
+      return null;
+    default: {
+      const unclassified: never = runtimeId;
+      throw new Error(`unclassified subscription runtime: ${String(unclassified)}`);
+    }
+  }
+}
+
+/**
  * Name the OpenAI sign-in a chat selection uses, or null when chat is not on OpenAI. This is derived from the one
  * persisted selection (`activeChatRuntime` plus the API vendor), never stored separately, so the two cannot disagree:
  * `{kind:"subscription", provider:"codex"}` is the Codex CLI, `{kind:"subscription", provider:"chatgpt-plan"}` is
@@ -272,11 +295,7 @@ export function openAiLoginTypeFor(
   runtime: ActiveChatRuntime | undefined,
   apiVendor: string | undefined,
 ): OpenAiLoginType | null {
-  if (runtime?.kind === "subscription") {
-    if (runtime.provider === "codex") return "codex-cli";
-    if (runtime.provider === "chatgpt-plan") return "chatgpt-plan";
-    return null;
-  }
+  if (runtime?.kind === "subscription") return openAiLoginTypeOfRuntime(runtime.provider);
   return apiVendor === "openai" ? "api-key" : null;
 }
 

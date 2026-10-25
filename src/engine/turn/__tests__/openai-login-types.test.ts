@@ -62,7 +62,7 @@ function planFactory(runtime: Partial<ChatGptPlanRuntime> | null) {
     service: {
       openTextSession: vi.fn(async () => { throw new Error("plan usage must not open a CLI session"); }),
       requireChatGptPlan: () => {
-        if (!runtime) throw new Error("subscription-runtime-not-configured");
+        if (!runtime) throw Object.assign(new Error("subscription-runtime-not-configured"), { code: "subscription-runtime-not-configured" });
         return runtime as ChatGptPlanRuntime;
       },
     },
@@ -147,7 +147,7 @@ describe("OpenAI login type selection", () => {
       expect(getSecret).not.toHaveBeenCalled();
     });
 
-    it("ends a turn as not signed in when no plan runtime is configured, with no API-key request", async () => {
+    it("ends a turn with a configuration error when no plan runtime is configured, with no API-key request", async () => {
       const { deps: d, getSecret } = deps(
         { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
         { apiKey: OPENAI_KEY, subscriptionProviderFactory: planFactory(null) },
@@ -157,7 +157,7 @@ describe("OpenAI login type selection", () => {
       for await (const event of provider.streamTurn({ model: "gpt-6.1-sol", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] })) {
         events.push(event);
       }
-      expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-reconnect-required" });
+      expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-not-configured" });
       expect(getSecret).not.toHaveBeenCalled();
     });
   });

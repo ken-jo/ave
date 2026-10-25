@@ -183,6 +183,84 @@ describe("ChatGPT plan transport", () => {
     expect((error as { error: string }).error).not.toMatch(/^subscriptionProvidersSection\./);
   });
 
+  const STREAM_START = [
+    { type: "response.created", sequence_number: 0, response: { id: "r1", created_at: 1, model: "gpt-6.1-sol" } },
+    { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { type: "message", id: "m1", role: "assistant", content: [] } },
+    { type: "response.output_text.delta", sequence_number: 2, item_id: "m1", output_index: 0, content_index: 0, delta: "He" },
+  ];
+
+  async function streamWith(terminal: Record<string, unknown>, runtime?: ChatGptPlanRuntime) {
+    const h = harness(PLAN_SCOPES, () => sse([...STREAM_START, terminal]));
+    const planRuntime = runtime ?? h.runtime;
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => planRuntime,
+    );
+    return collect(transport.streamTurn({ model: "m", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] }));
+  }
+
+  it("classifies a usage limit that arrives as response.failed after streaming began, without its text", async () => {
+    const events = await streamWith({
+      type: "response.failed",
+      sequence_number: 3,
+      response: {
+        id: "r1",
+        status: "failed",
+        error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit for user@example.com" },
+        usage: null,
+      },
+    });
+    expect(events[0]).toEqual({ type: "text_delta", text: "He" });
+    const error = events.at(-1)!;
+    expect(error).toMatchObject({
+      type: "error",
+      error: t("subscriptionProvidersSection.chatgptPlanErrorUsageLimit"),
+      classification: "chatgpt-plan-usage-limit",
+      providerError: { providerCode: "subscription_sharing_usage_limit_exceeded", isRetryable: false },
+    });
+    expect(error).not.toHaveProperty("providerError.statusCode", 500);
+    expect(JSON.stringify(events)).not.toContain("user@example.com");
+  });
+
+  it("confirms the session when a stream error says the subscriber context was not accepted", async () => {
+    const invalidUser = {
+      type: "error", sequence_number: 3, code: "subscription_sharing_invalid_user", message: "bad user@example.com", param: null,
+    };
+    const h = harness(PLAN_SCOPES, () => sse([...STREAM_START, invalidUser]));
+    const confirmSession = vi.spyOn(h.runtime, "confirmSession").mockResolvedValue(undefined);
+    const events = await streamWith(invalidUser, h.runtime);
+    expect(confirmSession).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-permission-denied" });
+    expect(JSON.stringify(events)).not.toContain("user@example.com");
+  });
+
+  it("never passes on the text of an uncoded stream failure", async () => {
+    const events = await streamWith({
+      type: "response.failed",
+      sequence_number: 3,
+      response: { id: "r1", status: "failed", error: { message: "account user@example.com hit an internal error" }, usage: null },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: t("subscriptionProvidersSection.chatgptPlanErrorRequestFailed"),
+      classification: "chatgpt-plan-request-failed",
+    });
+    expect(JSON.stringify(events)).not.toContain("user@example.com");
+  });
+
+  it("still hands a context-length failure to compaction in fixed wording", async () => {
+    const events = await streamWith({
+      type: "response.failed",
+      sequence_number: 3,
+      response: { id: "r1", status: "failed", error: { code: "context_length_exceeded", message: "Your input for user@example.com exceeds the context window" }, usage: null },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      providerError: { providerCode: "context_length_exceeded", messagePreview: "maximum context length exceeded" },
+    });
+    expect(JSON.stringify(events)).not.toContain("user@example.com");
+  });
+
   it("keeps the session when a refresh cannot reach the provider, and says to retry rather than sign in", async () => {
     const secrets = storedSecrets(PLAN_SCOPES);
     const record = JSON.parse(secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);

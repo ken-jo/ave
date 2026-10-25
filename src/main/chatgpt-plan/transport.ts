@@ -5,6 +5,7 @@ import type {
   StreamTurnParams,
 } from "../../engine/llm/types.js";
 import { t } from "../../i18n/index.js";
+import { isContextLengthError } from "../../engine/auto-compact.js";
 import { classifyChatGptPlanError } from "../../shared/chatgpt-plan.js";
 import {
   normalizeSubscriptionUsageTelemetry,
@@ -31,10 +32,17 @@ const FAILURE_MESSAGE_KEYS = Object.freeze({
   "chatgpt-plan-reconnect-required": "subscriptionProvidersSection.chatgptPlanErrorReconnectRequired",
   "chatgpt-plan-model-unavailable": "subscriptionProvidersSection.chatgptPlanErrorModelUnavailable",
   "chatgpt-plan-request-failed": "subscriptionProvidersSection.chatgptPlanErrorRequestFailed",
+  /** Boot supplied no secret store or network stack: a configuration fault, not something signing in fixes. */
+  "chatgpt-plan-not-configured": "subscriptionProvidersSection.chatgptPlanNotConfigured",
 } as const);
 
-function failureEvent(failure: ChatGptPlanResponseFailure | undefined, fallback: ErrorStreamEvent): ErrorStreamEvent {
-  if (!failure) return fallback;
+const SAFE_CODE = /^[A-Za-z0-9_.:-]{1,120}$/;
+
+/**
+ * The renderer-safe event for a failed plan request. The provider's own text is never passed on: it can carry account
+ * details (an email in a usage-limit message). Only the documented code, the status and the request id survive.
+ */
+function failureEvent(failure: ChatGptPlanResponseFailure): ErrorStreamEvent {
   const classified = classifyChatGptPlanError(failure);
   return {
     type: "error",
@@ -42,7 +50,7 @@ function failureEvent(failure: ChatGptPlanResponseFailure | undefined, fallback:
     classification: classified.code,
     providerError: {
       origin: "provider",
-      statusCode: failure.status,
+      ...(failure.status !== undefined ? { statusCode: failure.status } : {}),
       ...(failure.code ? { providerCode: failure.code } : {}),
       isRetryable: classified.retryable,
       urlHost: "api.openai.com",
@@ -50,6 +58,19 @@ function failureEvent(failure: ChatGptPlanResponseFailure | undefined, fallback:
       messagePreview: [classified.code, failure.code, failure.param, failure.requestId].filter(Boolean).join(" "),
     },
   };
+}
+
+/**
+ * What an error event says about the failure when no HTTP failure was recorded: a `response.failed` or `error` stream
+ * event after the stream opened. The code comes from the event's structured diagnostics; its message is dropped.
+ */
+function streamFailure(event: ErrorStreamEvent): ChatGptPlanResponseFailure {
+  const raw = event.providerError?.providerCode;
+  const code = raw && SAFE_CODE.test(raw) ? raw : undefined;
+  const status = event.providerError?.statusCode;
+  // The SDK labels a mid-stream `response.failed` as a retryable 500; a documented code, not that label, decides recovery.
+  const keepStatus = status !== undefined && !(code && event.providerError?.providerType === "response.failed");
+  return { ...(code ? { code } : {}), ...(keepStatus ? { status } : {}) };
 }
 
 function unavailableEvent(code: keyof typeof FAILURE_MESSAGE_KEYS): ErrorStreamEvent {
@@ -101,8 +122,9 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
     let runtime: ChatGptPlanRuntime;
     try {
       runtime = await this.runtime();
-    } catch {
-      yield unavailableEvent("chatgpt-plan-reconnect-required");
+    } catch (error) {
+      const notConfigured = (error as { code?: unknown } | null)?.code === "subscription-runtime-not-configured";
+      yield unavailableEvent(notConfigured ? "chatgpt-plan-not-configured" : "chatgpt-plan-request-failed");
       return;
     }
     let lastFailure: ChatGptPlanResponseFailure | undefined;
@@ -160,12 +182,27 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
           yield unavailableEvent(tokenFailure);
           return;
         }
-        const failure = lastFailure;
-        if (failure && classifyChatGptPlanError(failure).confirmSession) {
+        const failure = lastFailure ?? streamFailure(event);
+        if (failure.code === "context_length_exceeded" || isContextLengthError(event.providerError?.messagePreview ?? event.error)) {
+          // Compaction recognises this fixed wording; the provider's own text stays here.
+          yield {
+            type: "error",
+            error: t(FAILURE_MESSAGE_KEYS["chatgpt-plan-request-failed"]),
+            classification: "chatgpt-plan-request-failed",
+            providerError: {
+              origin: "provider",
+              providerCode: "context_length_exceeded",
+              isRetryable: false,
+              messagePreview: "maximum context length exceeded",
+            },
+          };
+          return;
+        }
+        if (classifyChatGptPlanError(failure).confirmSession) {
           // A rejected subscriber context ends the session only once a refresh confirms it.
           await runtime.confirmSession().catch(() => undefined);
         }
-        yield failureEvent(failure, event);
+        yield failureEvent(failure);
         return;
       }
       yield event;

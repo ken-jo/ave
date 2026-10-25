@@ -86,6 +86,21 @@ describe("plan-usage ID token validation", () => {
     expect(urls).toHaveLength(2);
   });
 
+  it("accepts only RS256, even from a key the issuer publishes", async () => {
+    const ecKey = await generateKeyPair("ES256");
+    const ecJwk: JWK = { ...(await exportJWK(ecKey.publicKey)), kid: "ec1", use: "sig" };
+    const { verifier: v } = verifier([[primaryJwk, ecJwk]]);
+    const token = await new SignJWT({ nonce: "n1" })
+      .setProtectedHeader({ alg: "ES256", kid: "ec1" })
+      .setIssuer("https://auth.openai.com")
+      .setAudience(CLIENT_ID)
+      .setSubject("user-sub")
+      .setIssuedAt(NOW_SECONDS - 10)
+      .setExpirationTime(NOW_SECONDS + 3600)
+      .sign(ecKey.privateKey);
+    await expect(v.verify(token, { clientId: CLIENT_ID, nonce: "n1" })).rejects.toMatchObject({ failure: "signature" });
+  });
+
   it("requires the stored subject on a refreshed token", async () => {
     const { verifier: v } = verifier([[primaryJwk]]);
     await expect(v.verify(await idToken({ sub: "someone-else" }), { clientId: CLIENT_ID, subject: "user-sub" }))

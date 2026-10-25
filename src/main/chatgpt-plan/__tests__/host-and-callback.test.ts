@@ -22,9 +22,9 @@ function isolatedHome(): string {
   return root;
 }
 
-function get(url: string): Promise<{ status: number; body: string }> {
+function get(url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    request(url, (response) => {
+    request(url, { headers }, (response) => {
       let body = "";
       response.on("data", (chunk) => { body += chunk; });
       response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
@@ -53,12 +53,12 @@ describe("plan-usage host id", () => {
 
 describe("plan-usage loopback callback", () => {
   it("listens on 127.0.0.1 at /auth/callback and answers only that path, once", async () => {
-    const listener = await startChatGptPlanCallbackListener(0);
+    const listener = await startChatGptPlanCallbackListener("s1", 0);
     try {
       const redirect = new URL(listener.redirectUri);
       expect(redirect.hostname).toBe("127.0.0.1");
       expect(redirect.pathname).toBe("/auth/callback");
-      expect((await get(`http://127.0.0.1:${redirect.port}/callback?code=x`)).status).toBe(404);
+      expect((await get(`http://127.0.0.1:${redirect.port}/callback?code=x&state=s1`)).status).toBe(404);
       const answered = await get(`${listener.redirectUri}?code=c1&state=s1`);
       expect(answered.status).toBe(200);
       expect((await listener.callback).searchParams.get("code")).toBe("c1");
@@ -68,10 +68,30 @@ describe("plan-usage loopback callback", () => {
     }
   });
 
+  it("ignores a callback with another state or host and keeps waiting for the real one", async () => {
+    const listener = await startChatGptPlanCallbackListener("s1", 0);
+    const port = new URL(listener.redirectUri).port;
+    let settled = false;
+    void listener.callback.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      // A web page that guesses the port cannot end the attempt: no state, a wrong state, or an error without state.
+      expect((await get(`${listener.redirectUri}?error=access_denied`)).status).toBe(404);
+      expect((await get(`${listener.redirectUri}?code=evil&state=s2`)).status).toBe(404);
+      // A rebinding host name reaches the same socket but names another host.
+      expect((await get(`${listener.redirectUri}?code=evil&state=s1`, { host: `attacker.example:${port}` })).status).toBe(404);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      expect((await get(`${listener.redirectUri}?code=c1&state=s1`)).status).toBe(200);
+      expect((await listener.callback).searchParams.get("code")).toBe("c1");
+    } finally {
+      listener.close();
+    }
+  });
+
   it("takes another port when the preferred one is busy", async () => {
-    const busy = await startChatGptPlanCallbackListener(0);
+    const busy = await startChatGptPlanCallbackListener("s1", 0);
     const port = Number(new URL(busy.redirectUri).port);
-    const second = await startChatGptPlanCallbackListener(port);
+    const second = await startChatGptPlanCallbackListener("s1", port);
     try {
       expect(Number(new URL(second.redirectUri).port)).not.toBe(port);
     } finally {

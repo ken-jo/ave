@@ -89,6 +89,8 @@ export class ChatGptPlanIdTokenVerifier {
   ): Promise<Record<string, unknown>> {
     const keys = await this.keys(forceRefetch);
     const { payload } = await jwtVerify(idToken, keys, {
+      // The issuer publishes only RS256 (`id_token_signing_alg_values_supported`); any other algorithm is refused.
+      algorithms: ["RS256"],
       issuer: CHATGPT_PLAN_ISSUER,
       audience: clientId,
       requiredClaims: ["sub", "exp", "iat"],

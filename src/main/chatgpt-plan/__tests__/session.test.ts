@@ -48,6 +48,8 @@ function harness(options: {
   revoke?: Route[];
   models?: Route;
   verifyFails?: boolean;
+  /** The failure a refresh's rotated ID token (verified without a nonce) meets. */
+  refreshVerify?: { failure: ConstructorParameters<typeof ChatGptPlanIdTokenError>[0] | null };
   subject?: string;
   now?: () => number;
 } = {}) {
@@ -96,6 +98,9 @@ function harness(options: {
     verifier: {
       verify: async (idToken, expected) => {
         if (options.verifyFails) throw new ChatGptPlanIdTokenError("signature");
+        if (expected.nonce === undefined && options.refreshVerify?.failure) {
+          throw new ChatGptPlanIdTokenError(options.refreshVerify.failure);
+        }
         if (expected.nonce !== undefined && !idToken.endsWith(expected.nonce)) throw new ChatGptPlanIdTokenError("nonce");
         return { issuer: "https://auth.openai.com", subject: options.subject ?? "user-sub", email: "user@example.com" };
       },
@@ -225,10 +230,16 @@ describe("plan-usage sign-in state machine", () => {
   });
 });
 
-async function connected(extra: { token?: Route[]; revoke?: Route[]; models?: Route; clock?: { now: number } } = {}) {
+async function connected(extra: {
+  token?: Route[]; revoke?: Route[]; models?: Route; clock?: { now: number };
+  refreshVerify?: { failure: ConstructorParameters<typeof ChatGptPlanIdTokenError>[0] | null };
+} = {}) {
   const clock = extra.clock ?? { now: 1_000_000 };
   const routes: Route[] = [];
-  const h = harness({ token: routes, ...(extra.revoke ? { revoke: extra.revoke } : {}), ...(extra.models ? { models: extra.models } : {}), now: () => clock.now });
+  const h = harness({
+    token: routes, ...(extra.revoke ? { revoke: extra.revoke } : {}), ...(extra.models ? { models: extra.models } : {}),
+    ...(extra.refreshVerify ? { refreshVerify: extra.refreshVerify } : {}), now: () => clock.now,
+  });
   routes.push(tokensFor(h, 1));
   await signIn(h, (p) => `code=c1&state=${p.get("state")}&client_id=oaiapp_1`);
   routes.push(...(extra.token ?? []));
@@ -267,6 +278,30 @@ describe("plan-usage token refresh", () => {
     expect(stored.tokens).toBeNull();
     expect(stored.clientId).toBe("oaiapp_1");
   });
+
+  it("keeps the rotated tokens and the previous ID token when the issuer's keys are unavailable", async () => {
+    const h = await connected({ token: [tokens(2)], refreshVerify: { failure: "jwks-unavailable" } });
+    h.clock.now += 3600_000;
+    await expect(h.session.accessToken()).resolves.toBe("access-2");
+    const stored = JSON.parse(h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
+    expect(stored.tokens).toMatchObject({ accessToken: "access-2", refreshToken: "refresh-2" });
+    // The unverified rotated ID token is not kept; the last verified one still serves as the sign-in hint.
+    expect(stored.tokens.idToken).toBe(`id-1.${h.authorizeParams().get("nonce")}`);
+    expect(h.session.status().connection).toBe("connected");
+  });
+
+  it.each(["signature", "issuer", "audience", "subject"] as const)(
+    "fails closed when the rotated ID token fails its %s check",
+    async (failure) => {
+      const h = await connected({ token: [tokens(2)], refreshVerify: { failure } });
+      h.clock.now += 3600_000;
+      await expect(h.session.accessToken()).rejects.toMatchObject({ failure: "reconnect-required" });
+      const stored = JSON.parse(h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
+      expect(stored.tokens).toBeNull();
+      expect(JSON.stringify(stored)).not.toContain("refresh-2");
+      expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "reconnect-required" });
+    },
+  );
 
   it("keeps credentials through a temporary refresh failure", async () => {
     const h = await connected({ token: [() => json(503, {})] });

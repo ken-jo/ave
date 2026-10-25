@@ -1188,6 +1188,11 @@ describe("LlmTab provider cards", () => {
     for (const method of ["subscription", "plan", "api"]) {
       expect(screen.getByTestId(`llm-tab:sign-in-method:codex:${method}`)).toBeInTheDocument();
     }
+    // The existing Codex choice keeps its label; plan usage has its own.
+    expect(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"))
+      .toHaveAccessibleName(t("subscriptionProvidersSection.methodSubscription", { plan: "ChatGPT" }));
+    expect(screen.getByTestId("llm-tab:sign-in-method:codex:plan"))
+      .toHaveAccessibleName(t("subscriptionProvidersSection.methodChatgptPlan", { plan: "ChatGPT" }));
     fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:plan"));
     expect(screen.getByTestId("subscription-provider:chatgpt-plan:login-browser"))
       .toHaveTextContent(t("subscriptionProvidersSection.chatgptPlanContinue"));

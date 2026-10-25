@@ -118,7 +118,8 @@ export function enforceChatGptPlanRequestBody(body: unknown): JsonObject {
 
 /** What a failed plan-usage response told us, without its body text. */
 export interface ChatGptPlanResponseFailure {
-  readonly status: number;
+  /** Absent for a failure reported inside an open stream. */
+  readonly status?: number;
   readonly code?: string;
   readonly param?: string;
   readonly requestId?: string;
