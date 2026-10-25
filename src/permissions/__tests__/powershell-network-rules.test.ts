@@ -382,6 +382,12 @@ describe("PowerShell -EncodedCommand", () => {
     "pwsh -enc $(Get-Content p.txt)",
     "pwsh -enc @a",
     "& $p -enc !!!",
+    "wsl pwsh -enc $X",
+    "env pwsh -enc $X",
+    "pwsh-preview -enc $X",
+    "C:\\Tools\\PowerShell_ISE.exe -enc $X",
+    "& $p -enc $X",
+    "env $p -enc $X",
     `pwsh -enc ${Buffer.from("Get-Date; rm -rf /", "utf8").toString("base64")}`,
   ])("hides a pwsh -e* flag with an undecodable payload: %s", (command) => {
     manager.setRules(ALLOW_LAUNCHERS);
@@ -425,6 +431,9 @@ describe("PowerShell -EncodedCommand", () => {
       ["echo eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl", "bash"],
       ["grep -e pattern -e other src/a.ts", "bash"],
       ["sed -e s/a/b/ notes.txt", "bash"],
+      ["printf %s -enc 'not-base64!'", "bash"],
+      ["node -e 'console.log(1)'", "bash"],
+      ["grep -e needle -enc notes.txt", "powershell"],
       ["git log --oneline | grep -e fix | head -5", "bash"],
       ["git diff | python3 -c 'import sys; print(len(sys.stdin.read()))'", "bash"],
       ["git status --short | awk '{print $2}'", "bash"],

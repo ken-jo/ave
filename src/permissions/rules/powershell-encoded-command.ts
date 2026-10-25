@@ -8,8 +8,8 @@
 //    and past the depth or byte bound the input is hidden too. Only UTF-16LE counts: ASCII text in UTF-16LE has a zero high byte in every unit,
 //    which hashes, JWTs, UTF-8 data and commit messages essentially never produce, so ordinary base64 data does not trip the scan.
 // 2. An `-EncodedCommand`-family flag whose payload is not a decodable literal (missing, a concatenation, a variable, a subexpression, a splat, or
-//    bytes that are not UTF-16LE text), after a PowerShell name or a dynamic program name. The payload is not resolved: the code it runs cannot be
-//    read, and that is the reason.
+//    bytes that are not UTF-16LE text), after a PowerShell name (a basename starting with pwsh or powershell) or a dynamic program name, before
+//    -Command/-File. The payload is not resolved: the code it runs cannot be read, and that is the reason. `node -e`, `grep -e` stay ordinary.
 // 3. A pipeline stage that reads code from stdin: a shell or interpreter after `|` with no inline code or script option (`| sh`, `| bash -s`,
 //    `| pwsh -`, `base64 -d | sh`), `| iex`, `xargs` into a shell, or `/dev/stdin` as a script. What the previous stage prints is not visible
 //    as code, whatever its encoding.
@@ -20,7 +20,13 @@ import { INTERPRETER_SET, SHELL_SET, programName } from "./shell-prefix-values.j
 import { analyzeShellForRules } from "./shell-rule-matcher.js";
 
 const ENCODED_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
-const POWERSHELL_NAME_RE = /pwsh|powershell/i;
+// A PowerShell name: a basename (any directory, `-Param:` prefix and .exe/.com/.cmd/.bat dropped) that starts with pwsh or powershell, so
+// pwsh-preview, powershell_ise and full paths count.
+function isPowerShellName(word: string): boolean {
+  const value = word.replace(/^[-\u2013\u2014\u2015/][^:]*:/, "");
+  const base = (value.split(/[\\/]/).pop() ?? value).replace(/\.(?:exe|com|cmd|bat)$/i, "").toLowerCase();
+  return base.startsWith("pwsh") || base.startsWith("powershell");
+}
 // The PowerShell parameters after which the rest of the line is a script and its arguments: -Command, -CommandWithArgs, -File, and prefixes.
 const POWERSHELL_SCRIPT_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 // PowerShell's call operators: the next word is the command.
@@ -182,10 +188,12 @@ class Scanner {
     });
     let program = 0;
     while (program < parts.length && CALL_OPERATORS.has(parts[program]!.text ?? "")) program += 1;
-    let launcher = program < parts.length && !parts[program]!.literal;
+    // A dynamic program name, at the head or behind a wrapper (`env $p`, `sudo $p`), could be PowerShell.
+    const wrapped = program + wrapperPrefixLength(parts.slice(program).map((part) => part.literal && part.text !== null ? part.text : undefined));
+    let launcher = parts.slice(program, wrapped + 1).some((part) => !part.literal);
     for (const [index, part] of parts.entries()) {
       if (part.text === null) continue;
-      if (POWERSHELL_NAME_RE.test(part.text)) {
+      if (isPowerShellName(part.text)) {
         launcher = true;
         continue;
       }
