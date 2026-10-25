@@ -114,6 +114,14 @@ describe("CSV / TSV", () => {
     },
   );
 
+  it.each([
+    ['a\tb\n5"\t2', [["a", "b"], ['5"', "2"]]],
+    ["a\tb\n\u201c\uc778\uc6a9\u201d \uad6c\uac04\t2", [["a", "b"], ["\u201c\uc778\uc6a9\u201d \uad6c\uac04", "2"]]],
+  ])("keeps a literal quote inside an unquoted TSV field: %j", async (text, rows) => {
+    const doc = await parseTableDocument(Buffer.from(text), "tsv", 0);
+    expect(doc.sheet.rows).toEqual(rows);
+  });
+
   it("parses quoted records across bounded input chunks", async () => {
     const value = "a\n".repeat(40);
     const doc = await parseTableDocument(Buffer.from(`a,b\n1,"${value}"\n2,end`), "csv", 0,

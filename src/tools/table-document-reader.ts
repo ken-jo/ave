@@ -91,7 +91,7 @@ function readDelimitedSample(decoded: Generator<string>, maxChars: number): {
 }
 
 /** Validate only complete inspected records, before permissive field decoding. */
-function validateDelimitedRecord(record: string, delimiter: string, newline: string): void {
+function validateDelimitedRecord(record: string, delimiter: string, newline: string, format: "csv" | "tsv"): void {
   if (record.endsWith(newline)) record = record.slice(0, -newline.length);
   let state: "start" | "plain" | "quoted" | "closed" = "start";
   for (const character of record) {
@@ -105,8 +105,9 @@ function validateDelimitedRecord(record: string, delimiter: string, newline: str
     else if (character === "\r" || character === "\n") {
       throw new TableDocumentError("corrupt-document", "Unexpected line break inside a field.");
     } else if (character === '"') {
-      if (state !== "start") throw new TableDocumentError("corrupt-document", "Quote inside an unquoted field.");
-      state = "quoted";
+      // IANA text/tab-separated-values defines no quoting, so a mid-field quote is literal text.
+      if (state === "start") state = "quoted";
+      else if (format === "csv") throw new TableDocumentError("corrupt-document", "Quote inside an unquoted field.");
     } else state = "plain";
   }
   if (state === "quoted") throw new TableDocumentError("corrupt-document", "Unterminated quoted field.");
@@ -212,7 +213,7 @@ async function parseDelimited(
             if (consumed < 0 || consumed > inspectionBuffer.length) {
               throw new TableDocumentError("read-failed", "Delimited record cursor is invalid.");
             }
-            validateDelimitedRecord(inspectionBuffer.slice(0, consumed), delimiter, newline);
+            validateDelimitedRecord(inspectionBuffer.slice(0, consumed), delimiter, newline, format);
             inspectionBuffer = inspectionBuffer.slice(consumed);
             inspectedCharacters = result.meta.cursor;
           } catch (error) {
