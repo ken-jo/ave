@@ -18,6 +18,7 @@ import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rule
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { encodedPowerShellPayloads } from "./rules/powershell-encoded-command.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./rules/shell-prefix-values.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
@@ -410,6 +411,15 @@ export function isIssuedShellAllowRuleDecision(
     isShellAllowRuleAuthorizationCurrent(authorization);
 }
 
+// Layer-3 allows for a shell without a sandbox that an exact `Bash(...)`/`PowerShell(...)` rule decided, keyed on the exact result object and its
+// issuer (owner 2026-10-25: such a shell — the Windows Plan B among them — runs headless only on that rule). A `{ decision: "allow", layer: 3 }`
+// lookalike is not in this map and lets nothing run headless.
+const issuedPlainShellExactRuleDecisions = new WeakMap<PermissionCheckResult, PermissionManager>();
+
+export function isIssuedPlainShellExactRuleDecision(result: PermissionCheckResult | undefined, issuer: PermissionManager | undefined): boolean {
+  return result !== undefined && issuer !== undefined && issuedPlainShellExactRuleDecisions.get(result) === issuer;
+}
+
 // Verify and burn the allow-rule proof for one shell action. Delete before comparison so a mismatched or replayed attempt cannot probe or reuse it.
 export function consumeIssuedShellAllowRuleDecision(
   result: PermissionCheckResult | undefined,
@@ -427,6 +437,9 @@ export function consumeIssuedShellAllowRuleDecision(
     actual.command === expected.command &&
     actual.cwd === expected.cwd ? actual : undefined;
 }
+
+// Where a `Network(...)` rule is stored: the user rules, a project's rules, or a conversation's "This session" rules.
+export type NetworkRuleScope = "user" | "project" | "session";
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
@@ -901,7 +914,8 @@ export class PermissionManager {
   }
 
   // The `Network(<host>[:port])` rule that decides a sandboxed shell's or terminal's connection, from the user rules, the project's rules (a shell call with a project) and the conversation's "This session" rules, with the precedence of every rule kind: deny, then ask (no grant is consulted and the card asks), then allow. Undefined when no rule matches; the grant store and the card then decide. The network card's "Always deny" and its edited rules are stored as these rules (owner 2026-10-25). A corrupt project rules file throws, which the egress callback turns into an audited deny.
-  async networkRuleDecision(subject: { host: string; port: number; sessionId?: string; projectCwd?: string }): Promise<{ decision: "deny" | "ask" | "allow"; pattern: string } | undefined> {
+  // `scope` names where the deciding rule is stored, so the egress callback can hold an allow to the lifetimes the connection's identity may use.
+  async networkRuleDecision(subject: { host: string; port: number; sessionId?: string; projectCwd?: string }): Promise<{ decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope } | undefined> {
     let projectRules: readonly PermissionRule[] = [];
     if (subject.projectCwd !== undefined) {
       const state = await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
@@ -909,16 +923,19 @@ export class PermissionManager {
       projectRules = state.rules;
     }
     const sessionRules = subject.sessionId === undefined ? [] : this.sessionRules.get(approvalConversationRoot(subject.sessionId)) ?? [];
-    const matched: { deny?: string; ask?: string; allow?: string } = {};
-    for (const rule of [...this.rules, ...projectRules, ...sessionRules]) {
-      if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
-      const spec = parseRuleSpecifier(rule.pattern);
-      if (spec.kind !== "network" || !matchesWebFetchHost(spec, subject.host, subject.port)) continue;
-      matched[rule.action] ??= rule.pattern;
+    const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
+    const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", projectRules], ["session", sessionRules]];
+    for (const [scope, rules] of scoped) {
+      for (const rule of rules) {
+        if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
+        const spec = parseRuleSpecifier(rule.pattern);
+        if (spec.kind !== "network" || !matchesWebFetchHost(spec, subject.host, subject.port)) continue;
+        matched[rule.action] ??= { pattern: rule.pattern, scope };
+      }
     }
     for (const decision of ["deny", "ask", "allow"] as const) {
-      const pattern = matched[decision];
-      if (pattern !== undefined) return { decision, pattern };
+      const found = matched[decision];
+      if (found !== undefined) return { decision, ...found };
     }
     return undefined;
   }
@@ -1231,6 +1248,10 @@ export class PermissionManager {
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
     const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
+    // Scripts handed to PowerShell as `-EncodedCommand` (from either dialect) are decoded and meet the same floors as plaintext `-Command`; no allow
+    // rule covers a command that carries one.
+    const encodedScripts = ruleSubject === undefined ? [] : encodedPowerShellPayloads(ruleSubject.command);
+    const encodedSignals = encodedScripts.map((script) => inspectPowerShellCommand(script, ruleSubject!.cwd));
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
@@ -1238,36 +1259,40 @@ export class PermissionManager {
     const sessionRules = context.sessionId === undefined || ruleSubject === undefined
       ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
     // `Bash(...)` rules match bash and `PowerShell(...)` rules match PowerShell; neither dialect's rules satisfy the other.
-    const shellRuleEvaluation = shellSubject
+    const rawShellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules, sessionRules)
       : ruleSubject?.dialect === "powershell"
         ? evaluatePowerShellSubject({
           command: ruleSubject.command,
           exactAllowOnly: !shellExecution.runsSandboxed,
-          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? powerShellSignals!.ordinaryAsk ?? null,
+          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? powerShellSignals!.ordinaryAsk
+            ?? (encodedScripts.length > 0 ? "encoded command" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
+    const shellRuleEvaluation = encodedScripts.length > 0 && rawShellRuleEvaluation?.decision === "allow"
+      ? { decision: null, reason: "an encoded command is never covered by an allow rule" } as const
+      : rawShellRuleEvaluation;
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       isDestructiveShellText(ruleSubject.command) ||
+      encodedScripts.some(isDestructiveShellText) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in any mode, for every host shell (rules/shell-exfiltration.ts, rules/powershell-exfiltration.ts).
-    const shellExfiltration = shellSubject
+    const shellExfiltration = (shellSubject
       ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
       : ruleSubject?.dialect === "powershell"
         ? powerShellSignals!.exfiltration
-        : null;
+        : null) ?? encodedSignals.find((signals) => signals.exfiltration !== null)?.exfiltration ?? null;
     // Sensitive-path floor for shell arguments (same normalization as the exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
     const shellSensitivePath = shellExfiltration !== null
       ? null
-      : shellSubject
+      : (shellSubject
         ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
-        : ruleSubject?.dialect === "powershell"
-          ? powerShellSignals!.sensitive
-          : null;
+        : ruleSubject?.dialect === "powershell" ? powerShellSignals!.sensitive : null)
+          ?? encodedSignals.find((signals) => signals.sensitive !== null)?.sensitive ?? null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
@@ -1483,6 +1508,10 @@ export class PermissionManager {
       };
     }
 
+    if (result.decision === "allow" && result.layer === 3 && requestedRuleSubject !== undefined && !shellExecution.runsSandboxed &&
+        shellRuleEvaluation?.decision === "allow") {
+      issuedPlainShellExactRuleDecisions.set(result, this);
+    }
     // Record the host-shell action a layer-3 allow rule matched. Every floor, deny and ask rule has already returned above, so this result is the rule lane itself; the record lets an explicit unsandboxed request be authorized by the same exact rule without a prompt (unsandboxed shell exact-rule requirement).
     if (
       result.decision === "allow" &&

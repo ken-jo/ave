@@ -176,6 +176,12 @@ export function approvalConversationRoot(sessionId: string): string {
   return root;
 }
 
+// A user-global exact decision (owner 2026-10-25): the same tool, input and origin in any project. Its own key namespace, so it never collides with a
+// legacy unscoped row (those only ever restrict a lookup) or with a project row.
+function globalEntryKey(unscopedKey: string): string {
+  return sha256Hex(canonicalStringify({ version: "global/v1", key: unscopedKey }));
+}
+
 function conversationEntryKey(key: string, rootSessionId: string): string {
   return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId: rootSessionId }));
 }
@@ -282,7 +288,11 @@ export async function recordApproval(
       (entry.riskCeilingAtApproval !== undefined && !isApprovalVerdict(entry.riskCeilingAtApproval))) {
     throw new Error("Invalid approval risk provenance");
   }
-  const baseKey = entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  // A global decision is keyed without the working directory: it applies in every project.
+  const baseKey = entry.scope === "global"
+    ? globalEntryKey(entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey))
+    : entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  if (entry.scope === "global" && entry.projectCwd !== undefined) throw new Error("A global approval names no project");
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
   // A session approval always belongs to a root conversation (owner decision 2026-10-23); an unscoped one would authorize every conversation.
   if (entry.scope === "session" && entry.sessionId === undefined) throw new Error("A session approval requires its conversation session");
@@ -314,7 +324,7 @@ export async function recordApproval(
     return;
   }
 
-  // persistent — write to disk
+  // persistent or global — write to disk
   await mutatePersistentApprovals((file) => {
     file.approvals[key] = full;
   });
@@ -348,7 +358,8 @@ export async function lookupUserDecision(
     }
   }
   const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
-  const keys = [...denyOnlyKeys, key];
+  const globalKey = globalEntryKey(unscopedKey);
+  const keys = [...denyOnlyKeys, key, globalKey];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
   const readActive = (candidate: string): UserApprovalEntry | null => {
     const entry = sessionStore.get(candidate) ?? file?.approvals[candidate];
@@ -362,11 +373,15 @@ export async function lookupUserDecision(
     const restrictive = readActive(candidate);
     if (restrictive?.decision === "deny") return restrictive;
   }
+  // A deny at any scope beats every allow. Among allows the narrower one answers (conversation, then project, then global); since all of them allow,
+  // the order only decides which row the hit reports.
   const legacy = readActive(key);
   if (legacy?.decision === "deny") return legacy;
+  const global = readActive(globalKey);
+  if (global?.decision === "deny") return global;
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
   if (conversation && !conversation.revokedAt && hasValidRiskProvenance(conversation)) return conversation;
-  return legacy;
+  return legacy ?? global;
 }
 
 // Backward-compatible allow-only lookup used by the existing reviewer and foreground memory-skip lanes. Exact denies are deliberately invisible here: the authorization choke point reads them through lookupUserDecision and returns a deny before either auto-allow lane can run.

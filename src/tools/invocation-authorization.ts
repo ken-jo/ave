@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
+  isIssuedPlainShellExactRuleDecision,
   isIssuedShellAllowRuleDecision,
   isReviewerAutoDecisionOutcome,
   isTailnetControllerP1BlockedTool,
@@ -98,10 +99,6 @@ type AuditPermissionAsk = (
  * excluded from §S4 by its `kind`, but that exclusion lives in a third module
  * and is not what makes this value correct.
  */
-// A permission result that let a shell without a sandbox run on its exact rule: the layer-3 allow `PermissionManager.checkDetailed` gives only for an exact `Bash(...)`/`PowerShell(...)` rule match (owner 2026-10-25).
-function isPlainShellExactRuleAllow(result: PermissionCheckResult | undefined): boolean {
-  return result?.decision === "allow" && result.layer === 3;
-}
 
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
@@ -516,7 +513,8 @@ export async function authorizeToolInvocation(
       explicitHostRequest &&
       remoteControllerOrigin === undefined &&
       isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager);
-    const planBExactRuleAllow = !explicitHostRequest && isPlainShellExactRuleAllow(permissionResult);
+    // The host-issued proof that an exact shell rule decided this plain shell (owner 2026-10-25), never the result's shape.
+    const planBExactRuleAllow = !explicitHostRequest && isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager);
     const exactShellAllowRule = explicitHostAllowRule || planBExactRuleAllow;
     if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
     if (hostShellRequiresExplicitApproval && permissionResult.decision !== "deny" && !exactShellAllowRule) {
@@ -2068,7 +2066,7 @@ export async function authorizeToolInvocation(
       // Defense in depth for the gate above: the policy lane is the Windows
       // Plan B only, and headless only on its exact shell allow rule (I5).
       hostShellExecutionPlan?.executionRequest !== "host" &&
-      (invocationPermissionContext.headless !== true || isPlainShellExactRuleAllow(permissionResult))) {
+      (invocationPermissionContext.headless !== true || isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager))) {
     recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }
 

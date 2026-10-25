@@ -88,7 +88,8 @@ export function createApprovalGateEgressRequester(
         port,
         scopes: [...request.scopes],
         network: request.network,
-        rule: exactNetworkRule(host, port),
+        // Host rules are shell-origin; a terminal tab's connections are decided by its grants alone.
+        rule: terminal ? null : exactNetworkRule(host, port),
         ...(terminal ? { terminalTabId: request.tabId } : {}),
         ...(!terminal && request.scopes.includes("project") && request.workspaceRoot !== undefined ? { projectCwd: request.workspaceRoot } : {}),
       },

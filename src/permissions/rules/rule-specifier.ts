@@ -1,5 +1,5 @@
 // Settings, dock and persistence share strict Bash/PowerShell/Edit/WebFetch/Network/Mcp rule grammar; malformed rules throw rather than broaden. Legacy tool/path globs contain no parenthesis and retain their separate semantics.
-import { canonicalPowerShellName } from "./powershell-command-policy.js";
+import { POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 
 export type RuleSpecifier =
   | {
@@ -102,10 +102,29 @@ function parseBash(text: string, body: string): RuleSpecifier {
   return { kind: "bash", tokens: Object.freeze([...tokens]), wildcard };
 }
 
-// The canonical spelling of one PowerShell argv token at `index`: the command name resolved and lower-cased, a `-Parameter` name lower-cased (PowerShell binds parameter names case-insensitively), any other token verbatim.
-export function canonicalPowerShellRuleToken(token: string, index: number): string {
-  if (index === 0) return canonicalPowerShellName(token);
-  return /^-[A-Za-z]/.test(token) ? token.toLowerCase() : token;
+// True for a built-in cmdlet (Verb-Noun) the command catalogue knows. Its name and parameter names bind case-insensitively on every edition.
+function isKnownCmdlet(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (!/^[a-z]+-[a-z0-9]+$/.test(lower)) return false;
+  const policy = POWERSHELL_COMMAND_POLICIES[lower];
+  return policy !== undefined && policy.native === undefined;
+}
+
+// The canonical spelling of a PowerShell rule argv (a literal argv, or a stored rule's tokens; `null` marks a non-literal token and stays null). Rule
+// identity compares the literal command name: aliases differ between editions and platforms (`sc` is Set-Content in Windows PowerShell 5.1 but
+// sc.exe in PowerShell 7; `ls`, `rm`, `cat`, `curl` and `wget` are native programs on macOS and Linux), so they are resolved only for floor
+// classification, never here. Only a known cmdlet is case-folded: its name, and the NAME of each `-Parameter` (never a value after `:`). A native
+// program's arguments are case-sensitive data (`git branch -d` is not `git branch -D`) and stay verbatim, as does an unknown command's.
+export function canonicalPowerShellRuleTokens<T extends string | null>(tokens: readonly T[]): T[] {
+  const head = tokens[0];
+  const cmdlet = typeof head === "string" && isKnownCmdlet(head);
+  if (!cmdlet) return [...tokens];
+  return tokens.map((token, index) => {
+    if (token === null) return token;
+    if (index === 0) return token.toLowerCase() as T;
+    const parameter = /^(-[A-Za-z][A-Za-z0-9]*)(:[\s\S]*)?$/.exec(token);
+    return (parameter ? parameter[1]!.toLowerCase() + (parameter[2] ?? "") : token) as T;
+  });
 }
 
 function parsePowerShell(text: string, body: string): RuleSpecifier {
@@ -123,7 +142,7 @@ function parsePowerShell(text: string, body: string): RuleSpecifier {
     }
   }
   if (tokens[0] === ".") throw new RuleSpecifierError(text, "the dot-source operator is not a command");
-  return { kind: "powershell", tokens: Object.freeze(tokens.map(canonicalPowerShellRuleToken)), wildcard };
+  return { kind: "powershell", tokens: Object.freeze(canonicalPowerShellRuleTokens(tokens)), wildcard };
 }
 
 function parseEdit(text: string, body: string): RuleSpecifier {
@@ -155,8 +174,16 @@ function parseWebFetch(text: string, body: string): RuleSpecifier {
   return { kind: "webfetch", ...parseHostPattern(text, body.slice("domain:".length)) };
 }
 
+// A connection is decided by its canonical host name; an address literal never reaches a host rule (the card offers none), so a rule naming one would
+// parse, save and never match — a deny that is silently inert. Every spelling a resolver reads as an address is refused: dotted decimal, and any name
+// whose last label is a number (`0x7f000001`, `2130706433`, `127.1`), since no host name ends in a numeric label.
 function parseNetwork(text: string, body: string): RuleSpecifier {
-  return { kind: "network", ...parseHostPattern(text, body) };
+  const spec = parseHostPattern(text, body);
+  const last = spec.host.split(".").pop()!;
+  if (/^(?:0x[0-9a-f]*|[0-9]+)$/.test(last)) {
+    throw new RuleSpecifierError(text, "an IP address is not a host name; a Network(...) rule names a host (an address literal is never matched by one)");
+  }
+  return { kind: "network", ...spec };
 }
 
 // `<host>`, `*.<host>`, either with `:<port>`.
@@ -216,7 +243,9 @@ export function normalizeRuleSpecifierInput(text: string): string {
   const body = shell[2]!.replace(/[ \t]+/g, " ").replace(/^ | $/g, "");
   if (shell[1] === "Bash") return `Bash(${body})`;
   const parts = body.split(" ");
-  return `PowerShell(${parts.map((part, index) => part === "*" && index === parts.length - 1 ? part : canonicalPowerShellRuleToken(part, index)).join(" ")})`;
+  const wildcard = parts.length > 1 && parts[parts.length - 1] === "*";
+  const tokens = canonicalPowerShellRuleTokens(wildcard ? parts.slice(0, -1) : parts);
+  return `PowerShell(${[...tokens, ...(wildcard ? ["*"] : [])].join(" ")})`;
 }
 
 // Storage admits only rule kinds wired into the host decision path.

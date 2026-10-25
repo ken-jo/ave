@@ -233,7 +233,8 @@ describe("a workspace terminal tab's egress ask", () => {
       kind: "egress-host",
       toolName: "terminal",
       args: { host: "github.com", port: 443, tabId: TAB },
-      egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "tab", "always"], network: "public", terminalTabId: TAB },
+      // Host rules are shell-origin: a terminal tab's card names none to save.
+      egressHost: { host: "github.com", port: 443, rule: null, scopes: ["once", "tab", "always"], network: "public", terminalTabId: TAB },
     });
     expect(card.sessionId).toBeUndefined();
     expect(resolver).toHaveBeenCalledWith(undefined, TAB);
