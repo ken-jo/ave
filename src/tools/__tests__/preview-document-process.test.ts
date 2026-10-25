@@ -115,7 +115,11 @@ describe("isolated table parsing", () => {
   });
 
   it("reports heap exhaustion clearly without retaining fatal diagnostics", async () => {
-    childProgram("const retained=[]; for (;;) retained.push(new Array(100000).fill('cell')); ");
+    // Unboxed double arrays have no pointer slots for the collector to mark, so
+    // V8 reaches its old-space limit in a fraction of the parse deadline. Arrays
+    // of string pointers spent seconds in last-resort mark-compacts on slow
+    // runners and lost the race to the deadline kill.
+    childProgram("const retained=[]; for (;;) retained.push(new Array(100000).fill(0.5)); ");
     const spawned = vi.spyOn(managedChildren, "spawnManaged");
     const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
     try {
