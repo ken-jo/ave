@@ -551,21 +551,23 @@ describe("credential floor: browser, keychain and keyring stores through globs",
     "cat ~/.config/BraveSoftware/Brave-Browser/Default/Login*",
     "cat ~/.config/chromium/Default/Cook??s",
     "cat \"$HOME/.mozilla/firefox/\"*/cookies.sqlite",
-    // Sibling channels, sandboxed packages, mail clients and wallets: each
-    // row below fires only through its own table row (not an older one).
-    "cat ~/Library/Application\\ Support/Google/Chrome\\ Beta/*/Cookies",
-    "cat ~/Library/Application\\ Support/Google/Chrome\\ Canary/Default/Login\\ Data",
+    // Sibling channels, sandboxed packages, mail clients and wallets. The
+    // file names avoid Cookies/Login Data, which older `**/` patterns already
+    // catch, so each probe fires through its new row (1Password also has a
+    // team-id pattern; the asrt floor table pins its rows).
+    "cat ~/Library/Application\\ Support/Google/Chrome\\ Beta/*/History",
+    "ls ~/Library/Application\\ Support/Google/Chrome\\ Dev/*",
     "cat ~/Library/Application\\ Support/Microsoft\\ Edge\\ Dev/*/Login*",
-    "cat ~/Library/Application\\ Support/com.operasoftware.OperaGX/*/Cookies",
+    "cat ~/Library/Application\\ Support/com.operasoftware.OperaGX/*/History",
     "cat ~/Library/Containers/com.apple.Safari/Data/Library/WebKit/*/LocalStorage/*",
     "cat ~/Library/Group\\ Containers/2BUA8C4S2C.com.1password/Library/Application\\ Support/*/1password.sqlite",
     "cat ~/Library/Thunderbird/Profiles/*/key4.db",
-    "cat ~/.config/google-chrome-beta/*/Cookies",
+    "cat ~/.config/google-chrome-beta/*/History",
     "cat ~/.config/microsoft-edge-dev/*/Login*",
     "ls ~/snap/firefox/common/*",
     "cat ~/snap/firefox/common/.mozilla/firefox/*/logins.json",
-    "cat ~/snap/chromium/common/chromium/*/Cookies",
-    "cat ~/.var/app/com.google.Chrome/config/google-chrome/*/Cookies",
+    "cat ~/snap/chromium/common/chromium/*/History",
+    "cat ~/.var/app/com.google.Chrome/config/google-chrome/*/History",
     "cat ~/.thunderbird/*/logins.json",
     "cat ~/.local/share/kwalletd/*.kwl",
   ])("floors %s", (command) => {
