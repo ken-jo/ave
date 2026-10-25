@@ -1,6 +1,6 @@
 import { build } from "esbuild";
-import { readdirSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readdirSync } from "node:fs";
+import { builtinModules, createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAIN_BUNDLE_EXTERNALS } from "../../scripts/lib/main-bundle-externals.mjs";
@@ -69,5 +69,18 @@ describe("document child bundle boundary", () => {
       return !notices.some((notice) => notice.startsWith(prefix));
     });
     expect(missing).toEqual([]);
+
+    // Externalized runtime packages ship as files; each needs a packaged notice.
+    const externals = new Set([...pageReader].flatMap((path) => (inputs[path]?.imports ?? [])
+      .filter((imported) => imported.external && !imported.path.startsWith("node:") && !builtinModules.includes(imported.path))
+      .map((imported) => /^((?:@[^/]+\/)?[^/]+)/.exec(imported.path)![1]!)));
+    expect([...externals].sort()).toEqual(["@napi-rs/canvas", "pdfjs-dist"]);
+    const externalNotices: Record<string, string[]> = {
+      "@napi-rs/canvas": ["resources/licenses/canvas/LICENSE", "resources/licenses/canvas/THIRD-PARTY-NOTICES.txt"],
+      "pdfjs-dist": ["node_modules/pdfjs-dist/LICENSE", "node_modules/pdfjs-dist/wasm/LICENSE_OPENJPEG", "node_modules/pdfjs-dist/wasm/LICENSE_QCMS", "node_modules/pdfjs-dist/wasm/LICENSE_JBIG2"],
+    };
+    for (const name of externals) {
+      for (const notice of externalNotices[name] ?? [""]) expect(existsSync(resolve(root, notice)), `${name}: ${notice}`).toBe(true);
+    }
   });
 });

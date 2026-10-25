@@ -186,7 +186,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
       }
       if (typeof sheetIndex !== "number" || !Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-        return { ok: false, error: "sheet-not-found", message: "sheetIndex must be a non-negative integer" };
+        return { ok: false, error: "invalid-index", message: "sheetIndex must be a non-negative integer" };
       }
 
       const { cwd, extraAllowed } = currentReadScope();

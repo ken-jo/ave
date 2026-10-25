@@ -10,6 +10,7 @@ import { createZipFixture, zipCentralOffset } from "../../__tests__/support/zip-
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { PAGE_PREVIEW_LIMITS } from "../../shared/preview-page-document.js";
 import { parsePageDocument } from "../page-document-reader.js";
+import { CFB_MAGIC } from "../workbook-container.js";
 import { readPageDocumentResponse } from "../preview-page-protocol.js";
 
 function pngChunk(kind: string, data: Buffer): Buffer {
@@ -121,6 +122,27 @@ describe("page document previews", () => {
     await expect(parsePageDocument(encrypted, "pptx", 0)).rejects.toMatchObject({ code: "encrypted" });
   });
 
+  it("refuses an Office password-protected presentation stored as a compound file", async () => {
+    const compound = Buffer.alloc(1024);
+    Buffer.from(CFB_MAGIC).copy(compound);
+    compound.write("EncryptedPackage", 512, "utf16le");
+    await expect(parsePageDocument(compound, "pptx", 0)).rejects.toMatchObject({ code: "encrypted" });
+  });
+
+  it("decodes numeric character references once in slide text", async () => {
+    const document = await parsePageDocument(presentationFixture("A&#8211;B&#x2014;C &amp;#8211; &lt;tag&gt;"), "pptx", 0);
+    expect(document.page.paragraphs).toEqual(["A\u2013B\u2014C &#8211; <tag>\nNext line"]);
+  });
+
+  it("maps the parser's reserved-name refusal to a corrupt document", async () => {
+    for (const name of ["__proto__", "constructor"]) {
+      const zip = new AdmZip(presentationFixture());
+      const slide = "ppt/slides/slide2.xml";
+      zip.updateFile(slide, Buffer.from(zip.readAsText(slide).replace("<p:cSld>", `<p:cSld><a:${name}>x</a:${name}>`)));
+      await expect(parsePageDocument(zip.toBuffer(), "pptx", 0), name).rejects.toMatchObject({ code: "corrupt-document" });
+    }
+  });
+
   it("reports an unavailable page for an empty presentation", async () => {
     for (const replacement of ["", "<p:sldIdLst/>"]) {
       const zip = new AdmZip(presentationFixture());
@@ -196,7 +218,8 @@ describe("page document previews", () => {
     pdfFixture().copy(oversized);
     await expect(parsePageDocument(oversized, "pdf", 0)).rejects.toMatchObject({ code: "too-large" });
     await expect(parsePageDocument(oversized, "pptx", 0)).rejects.toMatchObject({ code: "too-large" });
-    await expect(parsePageDocument(pdfFixture(), "pdf", -1)).rejects.toMatchObject({ code: "page-not-found" });
+    await expect(parsePageDocument(pdfFixture(), "pdf", -1)).rejects.toMatchObject({ code: "invalid-index" });
+    await expect(parsePageDocument(presentationFixture(), "pptx", 0.5)).rejects.toMatchObject({ code: "invalid-index" });
   });
 
   it("refuses truncated PDF streams", async () => {

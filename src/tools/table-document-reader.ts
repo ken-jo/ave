@@ -338,7 +338,7 @@ export async function parseTableDocument(
   limits: TableDocumentLimits = PREVIEW_DOCUMENT_LIMITS,
 ): Promise<PreviewTableDocument> {
   if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-    throw new TableDocumentError("sheet-not-found", `sheet index ${String(sheetIndex)} is not a non-negative integer`);
+    throw new TableDocumentError("invalid-index", `sheet index ${String(sheetIndex)} is not a non-negative integer`);
   }
   if (bytes.length > limits.maxFileBytes) {
     throw new TableDocumentError("too-large", `${bytes.length} bytes exceeds ${limits.maxFileBytes}`);

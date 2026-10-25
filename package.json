@@ -130,6 +130,7 @@
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@napi-rs/canvas": "1.0.10",
+    "@nodable/entities": "3.1.0",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.0.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
@@ -265,6 +266,8 @@
       "!node_modules/pdfjs-dist/{build,web,image_decoders,types}{,/**/*}",
       "!node_modules/pdfjs-dist/legacy/{web,image_decoders}{,/**/*}",
       "!node_modules/pdfjs-dist/legacy/build/{pdf.min.mjs,pdf.worker.min.mjs,pdf.sandbox.mjs,pdf.sandbox.min.mjs}",
+      "!node_modules/@nodable/entities{,/**/*}",
+      "!node_modules/pdfjs-dist/wasm/{quickjs-eval.js,quickjs-eval.wasm}",
       "!node_modules/@ai-sdk{,/**/*}",
       "!node_modules/@azure/msal-*{,/**/*}",
       "!node_modules/@radix-ui{,/**/*}",
@@ -309,6 +312,10 @@
       {
         "from": "resources/licenses/document-preview",
         "to": "licenses/document-preview"
+      },
+      {
+        "from": "resources/licenses/canvas",
+        "to": "licenses/canvas"
       },
       {
         "from": "build/icon.png",

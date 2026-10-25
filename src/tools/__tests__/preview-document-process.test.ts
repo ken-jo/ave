@@ -254,7 +254,9 @@ describe("isolated table parsing", () => {
     await expect(parseTableDocumentIsolated(Buffer.alloc(PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1), "csv", 0))
       .rejects.toMatchObject({ code: "too-large" });
     await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", Number.NaN))
-      .rejects.toMatchObject({ code: "sheet-not-found" });
+      .rejects.toMatchObject({ code: "invalid-index" });
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", -1))
+      .rejects.toMatchObject({ code: "invalid-index" });
     expect(getManagedChildProcessCount()).toBe(0);
   });
 

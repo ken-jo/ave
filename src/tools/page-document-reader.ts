@@ -1,10 +1,12 @@
 import JSZip from "jszip";
+import { EntityDecoder, XML } from "@nodable/entities";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { fileURLToPath } from "node:url";
 import { isPlainRecord } from "../shared/is-record.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { PAGE_PREVIEW_LIMITS, type PreviewPageDocument, type PreviewPageFormat } from "../shared/preview-page-document.js";
 import { TableDocumentError } from "./table-document-error.js";
+import { CFB_MAGIC } from "./workbook-container.js";
 import { verifyZipInflateLimits } from "./zip-inflate-guard.js";
 
 const RELATIONSHIP_BASES = [
@@ -48,6 +50,18 @@ function assertXmlDepth(text: string): void {
   }
 }
 
+
+/** The parser refuses reserved JavaScript names; that is malformed input, not a read failure. */
+function parseXml(text: string, options: ConstructorParameters<typeof XMLParser>[0]): unknown {
+  try {
+    // The five XML entities plus numeric character references (`&#8211;`, `&#x2013;`); no HTML names.
+    const entityDecoder = new EntityDecoder({ namedEntities: { ...XML }, numericAllowed: true });
+    return new XMLParser({ ...options, trimValues: false, processEntities: true, entityDecoder }).parse(text);
+  } catch {
+    return corrupt();
+  }
+}
+
 function xml(bytes: Buffer): Record<string, unknown> {
   if (bytes.length > PAGE_PREVIEW_LIMITS.maxXmlBytes) limit();
   let text: string;
@@ -55,12 +69,11 @@ function xml(bytes: Buffer): Record<string, unknown> {
   if (/<!DOCTYPE|<!ENTITY|\0/i.test(text)) corrupt();
   assertXmlDepth(text);
   if (XMLValidator.validate(text) !== true) corrupt();
-  return record(new XMLParser({
+  return record(parseXml(text, {
     ignoreAttributes: false, attributeNamePrefix: "@",
     transformTagName: (name) => name.slice(name.lastIndexOf(":") + 1),
-    parseTagValue: false, parseAttributeValue: false, trimValues: false,
-    processEntities: true,
-  }).parse(text));
+    parseTagValue: false, parseAttributeValue: false,
+  }));
 }
 
 interface Relationship { type: string; target: string; internal: boolean }
@@ -110,6 +123,10 @@ function boundedParagraphs(values: Iterable<string>): { paragraphs: string[]; te
 }
 
 async function presentation(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
+  // Office stores password-protected packages in a compound file, not a ZIP.
+  if (CFB_MAGIC.every((byte, offset) => bytes[offset] === byte)) {
+    throw new TableDocumentError("encrypted", "Encrypted documents cannot be previewed.");
+  }
   const verdict = verifyZipInflateLimits(bytes, PREVIEW_DOCUMENT_LIMITS, {
     opaqueArchiveMemberPrefixes: ["ppt/embeddings/"],
   });
@@ -168,8 +185,8 @@ async function presentation(bytes: Buffer, index: number): Promise<PreviewPageDo
   }
   const slideBytes = await part(selected);
   record(xml(slideBytes).sld);
-  const slide: unknown = new XMLParser({ preserveOrder: true, ignoreAttributes: true, removeNSPrefix: true,
-    parseTagValue: false, trimValues: false }).parse(slideBytes.toString("utf8"));
+  const slide = parseXml(slideBytes.toString("utf8"), { preserveOrder: true, ignoreAttributes: true, removeNSPrefix: true,
+    parseTagValue: false });
   const paragraphs: string[] = [];
   function walk(value: unknown): void {
     if (Array.isArray(value)) { for (const item of value) walk(item); return; }
@@ -201,48 +218,80 @@ interface PdfStreamHandler {
 }
 
 const IMAGE_LIMIT_MESSAGE = "Image exceeded maximum allowed size and was removed.";
+/** Worker streams a rendered page must be read through. */
+const OBSERVED_PDF_STREAMS = ["GetOperatorList", "GetTextContent"] as const;
+
+function rendererUnavailable(detail: string): never {
+  throw new TableDocumentError("renderer-unavailable", detail);
+}
 
 /**
  * Record failures of the worker streams behind rendering and text extraction.
  * With `stopAtErrors`, pdf.js marks a failed operator stream as complete before
  * it rejects, so a page can render partially and still resolve. The display
- * transport is not a public API; the exact dependency pin and the resource
- * tests keep this contract checked.
+ * transport is not a public API: the exact dependency pin keeps it stable, and
+ * the check fails closed when the hook point is missing or was not used for
+ * both streams, so a changed transport cannot pass a partial page.
  */
-function observePdfStreamFailures(document: object): () => void {
+export function observePdfStreamFailures(document: object): { assertComplete(): void } {
   const handler = (document as { _transport?: { messageHandler?: PdfStreamHandler } })._transport?.messageHandler;
-  if (!handler || typeof handler.sendWithStream !== "function") {
-    throw new TableDocumentError("read-failed", "PDF stream transport is unavailable.");
-  }
+  if (!handler || typeof handler.sendWithStream !== "function") rendererUnavailable("PDF stream transport is unavailable.");
   let failure: { reason: unknown } | null = null;
+  const streams = new Map<string, number>();
   const send = handler.sendWithStream;
+  const record = (reason: unknown): never => {
+    failure ??= { reason };
+    throw reason;
+  };
   handler.sendWithStream = function (action, ...rest) {
     const stream = send.call(this, action, ...rest);
+    streams.set(action, (streams.get(action) ?? 0) + 1);
+    // Rendering reads through getReader(); text extraction iterates with for-await.
     const getReader = stream.getReader.bind(stream) as () => ReadableStreamDefaultReader<unknown>;
     stream.getReader = (() => {
       const reader = getReader();
       const read = reader.read.bind(reader);
-      reader.read = () => read().catch((reason: unknown) => {
-        failure ??= { reason };
-        throw reason;
-      });
+      reader.read = () => read().catch(record);
       return reader;
     }) as typeof stream.getReader;
+    const iterate = stream[Symbol.asyncIterator].bind(stream);
+    stream[Symbol.asyncIterator] = ((...options: unknown[]) => {
+      const iterator = (iterate as (...args: unknown[]) => AsyncIterableIterator<unknown>)(...options);
+      const next = iterator.next.bind(iterator);
+      iterator.next = () => next().catch(record);
+      return iterator;
+    }) as typeof stream[typeof Symbol.asyncIterator];
     return stream;
   };
-  return () => {
-    if (!failure) return;
-    if (failure.reason instanceof Error && failure.reason.message === IMAGE_LIMIT_MESSAGE) limit();
-    corrupt();
+  return {
+    assertComplete() {
+      if (failure) {
+        if (failure.reason instanceof Error && failure.reason.message === IMAGE_LIMIT_MESSAGE) limit();
+        corrupt();
+      }
+      if (OBSERVED_PDF_STREAMS.some((action) => !streams.get(action))) {
+        rendererUnavailable("PDF rendering bypassed the observed worker streams.");
+      }
+    },
   };
+}
+
+async function loadPdfRuntime() {
+  try {
+    const [canvas, library] = await Promise.all([import("@napi-rs/canvas"), import("pdfjs-dist/legacy/build/pdf.mjs")]);
+    return { createCanvas: canvas.createCanvas, library };
+  } catch {
+    return rendererUnavailable("The PDF page renderer or its native canvas module could not be loaded.");
+  }
 }
 
 async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   if (!bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) corrupt();
-  const { createCanvas } = await import("@napi-rs/canvas");
-  const library = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const { createCanvas, library } = await loadPdfRuntime();
   const moduleUrl = import.meta.resolve("pdfjs-dist/legacy/build/pdf.mjs");
   library.GlobalWorkerOptions.workerSrc = import.meta.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  // pdf.js 6 has no eval-based paths (the former isEvalSupported option is gone);
+  // the child also runs with --disallow-code-generation-from-strings.
   const task = library.getDocument({
     data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false,
     useWorkerFetch: false, isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
@@ -255,7 +304,7 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   });
   try {
     const document = await task.promise;
-    const assertStreamsComplete = observePdfStreamFailures(document);
+    const streams = observePdfStreamFailures(document);
     if (index >= Math.min(document.numPages, PAGE_PREVIEW_LIMITS.maxPages)) {
       throw new TableDocumentError("page-not-found", "Requested page does not exist.");
     }
@@ -271,7 +320,7 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
     try {
       await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
       const text = await page.getTextContent();
-      assertStreamsComplete();
+      streams.assertComplete();
       const png = canvas.toBuffer("image/png");
       if (png.length > PAGE_PREVIEW_LIMITS.maxPngBytes) limit();
       return { format: "pdf", totalPages: document.numPages, pagesTruncated: document.numPages > PAGE_PREVIEW_LIMITS.maxPages,
@@ -291,6 +340,6 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
 export async function parsePageDocument(bytes: Buffer, format: PreviewPageFormat, index: number): Promise<PreviewPageDocument> {
   if (format !== "pptx" && format !== "pdf") throw new TableDocumentError("unsupported-format", "Unsupported document format.");
   if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) throw new TableDocumentError("too-large", "Document exceeds the file size limit.");
-  if (!Number.isSafeInteger(index) || index < 0) throw new TableDocumentError("page-not-found", "Invalid page index.");
+  if (!Number.isSafeInteger(index) || index < 0) throw new TableDocumentError("invalid-index", "Page index must be a non-negative integer.");
   return format === "pptx" ? presentation(bytes, index) : pdf(bytes, index);
 }

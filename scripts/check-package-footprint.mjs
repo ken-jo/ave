@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
 import { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } from "./lib/ripgrep-runtime-files.cjs";
+import { assertCanvasRuntimeFiles, assertPdfRuntimeEntries, PAGE_RENDERER_LICENSE_NOTICES } from "./lib/page-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -426,6 +427,11 @@ for (const notice of RIPGREP_LICENSE_NOTICES) {
   const path = resolve(resourcesDir, "licenses", "ripgrep", notice);
   if (!existsSync(path)) fail(`ripgrep license notice missing: ${path}`);
 }
+// The PDF page renderer: canvas wrapper (MIT) and the Skia and third-party code in its binary.
+for (const notice of PAGE_RENDERER_LICENSE_NOTICES) {
+  const path = resolve(resourcesDir, "licenses", "canvas", notice);
+  if (!existsSync(path)) fail(`page renderer license notice missing: ${path}`);
+}
 
 const localeCount = isMacAppPackage() ? validateMacElectronLocales() : validatePakElectronLocales();
 
@@ -455,6 +461,8 @@ assertSandboxRuntimeFiles(
 const [imagePlatform, imageArch] = resolveBetterSqlitePrebuildTarget().split("-");
 assertImageRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 assertRipgrepRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertCanvasRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertPdfRuntimeEntries(entries);
 
 process.stdout.write(
   [

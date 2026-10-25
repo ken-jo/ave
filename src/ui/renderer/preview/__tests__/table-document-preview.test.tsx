@@ -84,6 +84,9 @@ describe("tableErrorKey", () => {
     expect(tableErrorKey("encrypted")).toBe("chatPreviewRail.tableErrorEncrypted");
     expect(tableErrorKey("parse-limit")).toBe("chatPreviewRail.tableErrorParseLimit");
     expect(tableErrorKey("busy")).toBe("chatPreviewRail.tableErrorBusy");
+    expect(tableErrorKey("invalid-index")).toBe("formatIpcError.invalidIndex");
+    expect(tableErrorKey("page-not-found")).toBe("pagePreview.notFound");
+    expect(tableErrorKey("renderer-unavailable")).toBe("pagePreview.rendererUnavailable");
   });
 });
 
@@ -252,6 +255,7 @@ describe("file preview routing", () => {
     ["encrypted", /ncrypt|암호/],
     ["parse-limit", /./],
     ["page-not-found", /page isn't available|페이지를 찾을 수 없/],
+    ["renderer-unavailable", /renderer|렌더러/],
   ] as const)("localizes a %s page refusal with a retry", async (code, text) => {
     readDocument.mockResolvedValueOnce({ ok: false, error: code, message: "raw child detail" });
     render(<PreviewBody api={{} as never} target={fileTarget("/w/pages.pdf")} />);

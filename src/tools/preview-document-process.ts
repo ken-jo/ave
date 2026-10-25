@@ -72,7 +72,7 @@ export async function acquireParseSlot(owner: string, controller = new AbortCont
         signal.throwIfAborted();
         if (!Buffer.isBuffer(bytes) || (previewDocumentFormatOf(`input.${format}`) ?? previewPageFormatOf(`input.${format}`)) !== format) throw documentError("read-failed");
         if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) throw documentError("too-large");
-        if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) throw documentError("sheet-not-found");
+        if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) throw documentError("invalid-index");
         request.running = true;
         try {
           const document = await runChild(bytes, format, sheetIndex, signal);

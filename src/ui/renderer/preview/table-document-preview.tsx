@@ -45,10 +45,14 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
       return "chatPreviewRail.tableErrorEncrypted";
     case "unsupported-encoding":
       return "chatPreviewRail.tableErrorEncoding";
+    case "invalid-index":
+      return "formatIpcError.invalidIndex";
     case "sheet-not-found":
       return "chatPreviewRail.tableErrorSheetNotFound";
     case "page-not-found":
       return "pagePreview.notFound";
+    case "renderer-unavailable":
+      return "pagePreview.rendererUnavailable";
     case "unsupported-format":
       return "chatPreviewRail.tableErrorUnsupported";
     case "read-failed":

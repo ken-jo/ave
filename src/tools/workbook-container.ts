@@ -2,7 +2,7 @@ import type { PreviewDocumentLimits } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { verifyZipInflateLimits } from "./zip-inflate-guard.js";
 
-const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
+export const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
 const ODS_MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
 const WORKBOOK_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const WORKSHEET_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
