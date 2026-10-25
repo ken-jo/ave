@@ -205,15 +205,20 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".netrc"], kind: "file", why: "generic machine credentials" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
   // ── Keychains, keyrings and password managers ───────────────────────
-  // Encrypted at rest is not a reason to leave them readable: the login
-  // keychain and a GNOME keyring are cracked offline against the login password.
+  // `Library/Keychains` and `Library/Cookies` were once a recorded sandbox
+  // exclusion, written while the builtin shell also denied the whole real HOME
+  // (as main still does), which already kept them unreadable. Without that
+  // whole-home deny, leaving them out would expose them below main's level, so
+  // they are rows for parity. Cost (same as main): keychain-backed credential
+  // helpers (git osxkeychain, `security`, docker) fail inside the sandbox.
   { anchor: "home", segments: ["Library", "Keychains"], kind: "dir", why: "macOS login keychain databases" },
   { anchor: "home", segments: [".local", "share", "keyrings"], kind: "dir", why: "GNOME Keyring / libsecret stores" },
   { anchor: "home", segments: [".password-store"], kind: "dir", why: "pass(1) GPG-encrypted password store" },
   { anchor: "home", segments: [".config", "op"], kind: "dir", why: "1Password CLI configuration and session state" },
   // ── Browser profiles: saved logins, cookies, and the keys that decrypt them ──
-  // A profile directory holds the encrypted store AND what decrypts it
-  // (Firefox key4.db, Chromium Local State), so a copy is decrypted offline.
+  // Firefox and Linux Chromium keep the decrypting key in the profile
+  // (key4.db, a fixed or keyring-held Local State key), so a copy is decrypted
+  // offline; macOS/Windows Chromium keys live in the keychain/DPAPI, also floored.
   // Whole profile roots, so a glob over a random profile name stays inside.
   { anchor: "home", segments: ["Library", "Cookies"], kind: "dir", why: "macOS shared cookie jar (Safari, WebKit apps)" },
   { anchor: "home", segments: ["Library", "Application Support", "Google", "Chrome"], kind: "dir", why: "Chrome profiles (macOS)" },

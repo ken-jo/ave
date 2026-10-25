@@ -254,6 +254,48 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
     },
   );
 
+  // A read the credential floor denies fails visibly: the command's own
+  // permission error reaches the output, the result is an error, and no store
+  // content leaks. There is no silent fallback or empty success.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "surfaces the native permission error for a floored browser or keychain read",
+    async (context) => {
+      if (!(await asrtCanInitialize())) return context.skip();
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-credential-floor-")));
+      const cwd = join(root, "workspace");
+      mkdirSync(cwd);
+      const stores = [
+        join(root, ".mozilla", "firefox", "abc.default-release", "logins.json"),
+        join(root, "Library", "Keychains", "login.keychain-db"),
+        join(root, ".local", "share", "keyrings", "login.keyring"),
+      ];
+      for (const store of stores) {
+        mkdirSync(dirname(store), { recursive: true });
+        writeFileSync(store, "credential-store-secret");
+      }
+      writeFileSync(join(root, "notes.txt"), "ordinary-home-file");
+      try {
+        vi.stubEnv("HOME", root);
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+        for (const store of stores) {
+          const command = `/bin/cat ${shellQuote(store)}`;
+          const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
+          expect(result.metadata.sandboxed).toBe(true);
+          expect(result.isError, result.output).toBe(true);
+          expect(result.output).toMatch(/Operation not permitted|Permission denied|No such file or directory/);
+          expect(result.output).not.toContain("credential-store-secret");
+        }
+        const control = `/bin/cat ${shellQuote(join(root, "notes.txt"))}`;
+        const ordinary = await spawnWithSandbox(control, cwd, [cwd], 15, prepareSandboxFixture(control, cwd));
+        expect(ordinary.isError, ordinary.output).toBe(false);
+        expect(ordinary.output).toContain("ordinary-home-file");
+      } finally {
+        vi.unstubAllEnvs();
+        await cleanupTmpDir(root);
+      }
+    },
+  );
+
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "reads a pre-created git repository with a disposable HOME and isolated fixture config",
     async () => {
@@ -1099,7 +1141,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     afterEach(() => setProcessPlatform(hostPlatform));
 
     it.each(stores.map((segments) => [segments.join("/"), segments] as const))("denies reads of ~/%s", (_name, segments) => {
-      const store = join(homedir(), ...segments);
+      // A Windows directory row keeps its separator so ASRT denies a directory.
+      const store = join(homedir(), ...segments) + (platform === "win32" ? sep : "");
       const cwd = join(tmpdir(), "ave-credential-floor-cwd");
       expect(getBuiltinShellReadPolicy([cwd], homedir()).denyRead).toContain(store);
       expect(getDefaultSensitiveReadDenyPaths()).toContain(store);

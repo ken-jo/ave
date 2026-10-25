@@ -196,8 +196,8 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  // Encrypted at rest is no exclusion: the store is decrypted offline with the
-  // key or password beside it, so both surfaces deny the whole store.
+  // Parity with main: main's builtin shell denies the whole real HOME, which
+  // kept these unreadable; without it each store is a floor row on both surfaces.
   it.each([
     ["Library", "Keychains", "login.keychain-db"],
     ["Library", "Cookies", "Cookies.binarycookies"],

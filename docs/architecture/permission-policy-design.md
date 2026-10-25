@@ -1282,9 +1282,14 @@ Chromium, Arc, Vivaldi, Opera and Firefox under `~/Library/Application Support`
 on macOS, `~/.config/<browser>` and `~/.mozilla` on Linux, and
 `%LOCALAPPDATA%\<vendor>\User Data`, `%APPDATA%\Opera Software` and
 `%APPDATA%\Mozilla\Firefox\Profiles` on Windows, beside the Windows Credential
-Manager, DPAPI, Crypto and Vault rows. Encryption at rest is no exclusion:
-these stores keep their decrypting key (Firefox `key4.db`, Chromium
-`Local State`) or a login-password-derived key beside them. Read candidates
+Manager, DPAPI, Crypto and Vault rows. Firefox and Linux Chromium profiles keep
+their decrypting key (`key4.db`, the `Local State` key) beside the store. The
+macOS keychain databases are encrypted under the login password instead; they
+are rows for parity with main, whose builtin shell denies the whole real HOME.
+The earlier Keychains/Cookies exclusion was written under that whole-home deny,
+and keeping it without the deny would leave them more exposed than on main.
+As on main, keychain-backed credential helpers fail inside the sandboxed shell.
+A floored read fails visibly with the native permission error. Read candidates
 cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone

@@ -1117,7 +1117,18 @@ function addCwd(state: ScanState, directory: string): void {
 
 /** The static directory a `cd`/`pushd` operand names under each candidate cwd, or a reason it is unknown. */
 function cdTargets(word: ShellWord, state: ScanState): string[] | string {
-  const glob = wordGlob(word);
+  // A `~`/`$HOME` target stands for every policy home.
+  let targets: string[] | string = [];
+  scanEachHome((home) => {
+    if (typeof targets === "string") return;
+    const next = cdTargetsUnder(word, state, home);
+    targets = typeof next === "string" ? next : [...targets, ...next];
+  });
+  return targets;
+}
+
+function cdTargetsUnder(word: ShellWord, state: ScanState, home: () => string): string[] | string {
+  const glob = wordGlob(word, home);
   if (glob === null || glob.includes(DYNAMIC_SEGMENT)) return "cd target is not static";
   if (hasWildcard(glob)) return "cd target is a glob";
   if (state.homeReassigned && word.parts.some((part) => part.kind === "parameter" && part.name === "HOME")) {
@@ -1178,7 +1189,7 @@ function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
   else if (operands.length === 0) {
     if (name === "pushd") stackReference();
     else if (state.homeReassigned) markCwdUnknown(state, "cd target depends on a reassigned HOME");
-    else addCwd(state, homedir());
+    else for (const home of expandShellTildePaths("~")) addCwd(state, home);
   } else if (operands.length > 1) {
     markCwdUnknown(state, `${name} with several operands is not tracked`);
   } else {
